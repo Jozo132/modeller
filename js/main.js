@@ -133,6 +133,7 @@ class App {
     const topBar = 34;
     const panelBottomHeight = mobile ? Math.floor(window.innerHeight * 0.36) : 0;
 
+    // Subtract both left and right panel widths from available canvas width
     const width = Math.max(1, window.innerWidth - panelWidth * 2);
     const height = Math.max(1, window.innerHeight - topBar - bottomBars - panelBottomHeight);
 
@@ -915,8 +916,8 @@ class App {
     if (c.seg) { ids.add(c.seg.id); ids.add(c.seg.p1.id); ids.add(c.seg.p2.id); }
     if (c.segA) { ids.add(c.segA.id); ids.add(c.segA.p1.id); ids.add(c.segA.p2.id); }
     if (c.segB) { ids.add(c.segB.id); ids.add(c.segB.p1.id); ids.add(c.segB.p2.id); }
-    if (c.circle) { ids.add(c.circle.id); ids.add(c.circle.center.id); }
-    if (c.shape) { ids.add(c.shape.id); ids.add(c.shape.center.id); }
+    if (c.circle) { ids.add(c.circle.id); if (c.circle.center) ids.add(c.circle.center.id); }
+    if (c.shape) { ids.add(c.shape.id); if (c.shape.center) ids.add(c.shape.center.id); }
     return ids;
   }
 
@@ -1119,6 +1120,20 @@ class App {
   /** Update highlight classes on left panel items without full rebuild */
   _updateLeftPanelHighlights() {
     const scene = state.scene;
+    const hoverEnt = this.renderer.hoverEntity;
+
+    // Pre-compute hovered constraint's prim IDs
+    let hcPrimIds = null;
+    if (this._lpHoverConstraintId != null) {
+      const hc = scene.constraints.find(c => c.id === this._lpHoverConstraintId);
+      if (hc) hcPrimIds = this._constraintPrimIds(hc);
+    }
+
+    // Build a shapes map for quick lookup by id
+    const shapesArr = [...scene.shapes()];
+    const shapesById = new Map();
+    for (const s of shapesArr) shapesById.set(s.id, s);
+
     // Update primitives list highlights
     const primItems = document.querySelectorAll('#primitives-list .lp-item');
     for (const item of primItems) {
@@ -1126,21 +1141,21 @@ class App {
       let hl = false;
 
       // Highlight if this prim is hovered on canvas
-      const hoverEnt = this.renderer.hoverEntity;
       if (hoverEnt && hoverEnt.id === id) hl = true;
 
       // Highlight if a constraint being hovered references this prim
-      if (this._lpHoverConstraintId != null) {
-        const hc = scene.constraints.find(c => c.id === this._lpHoverConstraintId);
-        if (hc && this._constraintPrimIds(hc).has(id)) hl = true;
-      }
+      if (hcPrimIds && hcPrimIds.has(id)) hl = true;
 
       item.classList.toggle('highlight', hl);
 
       // Update selected class
-      const prim = [...scene.shapes()].find(s => s.id === id);
+      const prim = shapesById.get(id);
       item.classList.toggle('selected', prim ? prim.selected : false);
     }
+
+    // Build a constraints map for quick lookup by id
+    const constraintsById = new Map();
+    for (const c of scene.constraints) constraintsById.set(c.id, c);
 
     // Update constraints list highlights
     const cItems = document.querySelectorAll('#constraints-list .lp-item');
@@ -1148,17 +1163,15 @@ class App {
       const cId = parseInt(item.dataset.constraintId);
       let hl = false;
 
-      // Highlight if canvas hover target is referenced by this constraint
-      const hoverEnt = this.renderer.hoverEntity;
-      if (hoverEnt) {
-        const c = scene.constraints.find(c => c.id === cId);
-        if (c && this._constraintPrimIds(c).has(hoverEnt.id)) hl = true;
-      }
+      const c = constraintsById.get(cId);
+      if (c) {
+        const cPrimIds = this._constraintPrimIds(c);
 
-      // Highlight if a primitive hovered in left panel is referenced by this constraint
-      if (this._lpHoverPrimId != null) {
-        const c = scene.constraints.find(c => c.id === cId);
-        if (c && this._constraintPrimIds(c).has(this._lpHoverPrimId)) hl = true;
+        // Highlight if canvas hover target is referenced by this constraint
+        if (hoverEnt && cPrimIds.has(hoverEnt.id)) hl = true;
+
+        // Highlight if a primitive hovered in left panel is referenced by this constraint
+        if (this._lpHoverPrimId != null && cPrimIds.has(this._lpHoverPrimId)) hl = true;
       }
 
       item.classList.toggle('highlight', hl);
