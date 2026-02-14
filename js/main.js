@@ -963,17 +963,19 @@ class App {
     document.getElementById('btn-add-variable').addEventListener('click', async () => {
       const val = await showPrompt({
         title: 'Add Variable',
-        message: 'Enter variable as name=value (e.g. width=50):',
+        message: 'Enter variable as name=value or name=formula (e.g. width=50, height=width*2):',
         defaultValue: '',
       });
       if (val !== null && val !== '') {
         const eqIdx = val.indexOf('=');
         if (eqIdx > 0) {
           const name = val.substring(0, eqIdx).trim();
-          const num = parseFloat(val.substring(eqIdx + 1).trim());
-          if (name && !isNaN(num)) {
+          const valueStr = val.substring(eqIdx + 1).trim();
+          const num = parseFloat(valueStr);
+          if (name) {
             takeSnapshot();
-            setVariable(name, num);
+            // Store as number if purely numeric, otherwise as formula string
+            setVariable(name, isNaN(num) ? valueStr : num);
             state.scene.solve();
             state.emit('change');
             this._scheduleRender();
@@ -1492,14 +1494,21 @@ class App {
       return;
     }
 
-    for (const [name, value] of vars) {
+    for (const [name, rawValue] of vars) {
       const row = document.createElement('div');
       row.className = 'lp-item';
+
+      // Compute resolved value for display
+      const isFormula = typeof rawValue === 'string';
+      const resolved = isFormula ? resolveValue(rawValue) : rawValue;
+      const displayValue = isFormula
+        ? `${rawValue} = ${isNaN(resolved) ? '?' : resolved.toFixed(4)}`
+        : rawValue;
 
       row.innerHTML = `<span class="lp-icon" style="color:var(--accent)">𝑥</span>` +
         `<span class="lp-var-name">${name}</span>` +
         `<span class="lp-var-eq">=</span>` +
-        `<span class="lp-var-value">${value}</span>` +
+        `<span class="lp-var-value">${displayValue}</span>` +
         `<button class="lp-edit" title="Edit variable (name &amp; value)">✎</button>` +
         `<button class="lp-delete" title="Delete variable">✕</button>`;
 
@@ -1507,32 +1516,33 @@ class App {
       const valueSpan = row.querySelector('.lp-var-value');
       valueSpan.addEventListener('click', (e) => {
         e.stopPropagation();
-        this._inlineEditVariableValue(row, name, value);
+        this._inlineEditVariableValue(row, name, rawValue);
       });
 
       // --- Inline name edit: double-click on the name span ---
       const nameSpan = row.querySelector('.lp-var-name');
       nameSpan.addEventListener('dblclick', (e) => {
         e.stopPropagation();
-        this._inlineEditVariableName(row, name, value);
+        this._inlineEditVariableName(row, name, rawValue);
       });
 
       // --- Edit button: full popup for name=value ---
       row.querySelector('.lp-edit').addEventListener('click', async () => {
         const val = await showPrompt({
           title: 'Edit Variable',
-          message: `Edit variable (name=value):`,
-          defaultValue: `${name}=${value}`,
+          message: `Edit variable (name=value or name=formula):`,
+          defaultValue: `${name}=${rawValue}`,
         });
         if (val !== null && val !== '') {
           const eqIdx = val.indexOf('=');
           if (eqIdx > 0) {
             const newName = val.substring(0, eqIdx).trim();
-            const num = parseFloat(val.substring(eqIdx + 1).trim());
-            if (newName && !isNaN(num)) {
+            const valueStr = val.substring(eqIdx + 1).trim();
+            const num = parseFloat(valueStr);
+            if (newName) {
               takeSnapshot();
               if (newName !== name) removeVariable(name);
-              setVariable(newName, num);
+              setVariable(newName, isNaN(num) ? valueStr : num);
               state.scene.solve();
               state.emit('change');
               this._scheduleRender();
@@ -1572,10 +1582,12 @@ class App {
       if (done) return;
       done = true;
       if (save) {
-        const num = parseFloat(input.value);
-        if (!isNaN(num) && num !== currentValue) {
+        const valueStr = input.value.trim();
+        const num = parseFloat(valueStr);
+        const newValue = isNaN(num) ? valueStr : num;
+        if (newValue !== currentValue) {
           takeSnapshot();
-          setVariable(name, num);
+          setVariable(name, newValue);
           state.scene.solve();
           state.emit('change');
           return; // change event already triggers _rebuildLeftPanel

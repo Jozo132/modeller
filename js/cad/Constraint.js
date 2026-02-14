@@ -12,11 +12,20 @@ export function resetConstraintIds(v = 1) { _nextCId = v; }
 
 // ---------------------------------------------------------------------------
 // Named variables — a simple store that constraints can reference by name
+// Values can be numbers or formula strings (e.g., "x + 10")
 // ---------------------------------------------------------------------------
-const _variables = new Map(); // name → number
+const _variables = new Map(); // name → number | string (formula)
 
 export function setVariable(name, value) { _variables.set(name, value); }
-export function getVariable(name) { return _variables.get(name); }
+export function getVariableRaw(name) { return _variables.get(name); }
+export function getVariable(name) {
+  // Resolve the variable value (evaluates formulas)
+  const raw = _variables.get(name);
+  if (raw === undefined) return undefined;
+  if (typeof raw === 'number') return raw;
+  // It's a formula string — resolve it
+  return _resolveWithCycleCheck(raw, new Set([name]));
+}
 export function removeVariable(name) { _variables.delete(name); }
 export function getAllVariables() { return new Map(_variables); }
 export function clearVariables() { _variables.clear(); }
@@ -28,7 +37,11 @@ export function serializeVariables() {
 export function deserializeVariables(data) {
   _variables.clear();
   if (data && typeof data === 'object') {
-    for (const [k, v] of Object.entries(data)) _variables.set(k, Number(v));
+    for (const [k, v] of Object.entries(data)) {
+      // Store as number if it parses cleanly, otherwise keep as formula string
+      const num = Number(v);
+      _variables.set(k, (typeof v === 'string' && isNaN(num)) ? v : num);
+    }
   }
 }
 
@@ -37,23 +50,36 @@ export function deserializeVariables(data) {
  * Supports simple mathematical expressions with +, -, *, /, parentheses, and variables.
  * Examples: "x", "x + 10", "width * 2", "(a + b) / 2"
  */
-export function resolveValue(val) {
+export function resolveValue(val, visiting = new Set()) {
   if (typeof val === 'number') return val;
   if (typeof val === 'string') {
-    // Try simple variable lookup first
-    const simple = _variables.get(val);
-    if (simple !== undefined) return simple;
+    // Try simple variable lookup first (single identifier)
+    if (/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(val)) {
+      if (visiting.has(val)) return NaN; // circular reference
+      const raw = _variables.get(val);
+      if (raw !== undefined) {
+        return _resolveWithCycleCheck(raw, new Set([...visiting, val]));
+      }
+    }
     // Otherwise try parsing as an expression
-    return _evalExpression(val);
+    return _evalExpression(val, visiting);
   }
   return NaN;
+}
+
+/** Internal helper to resolve a raw value with cycle detection */
+function _resolveWithCycleCheck(raw, visiting) {
+  if (typeof raw === 'number') return raw;
+  return _evalExpression(raw, visiting);
 }
 
 /**
  * Simple expression evaluator supporting +, -, *, /, parentheses, numbers, and variables.
  * Returns NaN if the expression is invalid or references undefined variables.
+ * @param {string} expr - The expression to evaluate
+ * @param {Set<string>} visiting - Set of variable names currently being resolved (for cycle detection)
  */
-function _evalExpression(expr) {
+function _evalExpression(expr, visiting = new Set()) {
   // Tokenize: numbers, identifiers, operators, parentheses
   const tokens = [];
   const re = /(\d+\.?\d*|\.\d+)|([a-zA-Z_][a-zA-Z0-9_]*)|([+\-*/()])/g;
@@ -115,11 +141,16 @@ function _evalExpression(expr) {
       consume();
       return tok.val;
     }
-    // Variable
+    // Variable — recursively resolve with cycle detection
     if (tok.type === 'var') {
       consume();
-      const v = _variables.get(tok.val);
-      return v !== undefined ? v : NaN;
+      const varName = tok.val;
+      if (visiting.has(varName)) return NaN; // circular reference
+      const raw = _variables.get(varName);
+      if (raw === undefined) return NaN;
+      if (typeof raw === 'number') return raw;
+      // It's a formula — resolve recursively
+      return _evalExpression(raw, new Set([...visiting, varName]));
     }
     return NaN;
   }
