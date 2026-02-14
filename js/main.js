@@ -678,9 +678,12 @@ class App {
     const cmdInput = document.getElementById('cmd-input');
 
     document.addEventListener('keydown', (e) => {
-      // Don't intercept when typing in command line
-      if (document.activeElement === cmdInput) {
-        if (e.key === 'Enter') {
+      // Don't intercept when typing in input fields, textareas, or contenteditable
+      const tag = document.activeElement?.tagName?.toLowerCase();
+      const isEditable = tag === 'input' || tag === 'textarea' || document.activeElement?.isContentEditable;
+      if (isEditable) {
+        // Special handling for command input
+        if (document.activeElement === cmdInput && e.key === 'Enter') {
           this._handleCommand(cmdInput.value.trim());
           cmdInput.value = '';
         }
@@ -1437,20 +1440,29 @@ class App {
     const { value: inputVal, driven } = result;
     const num = parseFloat(inputVal);
     const isNum = !isNaN(num);
-    const varName = (!isNum && inputVal.trim()) ? inputVal.trim() : null;
+    const trimmed = inputVal.trim();
+    // A simple variable name is an identifier (letters/underscore, optionally followed by letters/digits/underscore)
+    const isSimpleVar = /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(trimmed);
+    const isFormula = !isNum && !isSimpleVar && trimmed.length > 0;
 
     takeSnapshot();
 
     const wasConstraint = dim.isConstraint;
     dim.isConstraint = !driven;
-    dim.displayMode = varName ? 'both' : 'value';
+    dim.displayMode = (isSimpleVar || isFormula) ? 'both' : 'value';
 
-    if (varName) {
-      dim.formula = varName;
-      dim.variableName = varName;
-      setVariable(varName, dim.value);
+    if (isSimpleVar) {
+      // Simple variable name — create/update the variable and link to it
+      dim.formula = trimmed;
+      dim.variableName = trimmed;
+      setVariable(trimmed, dim.value);
+    } else if (isFormula) {
+      // Formula expression (e.g., "x + 10") — use as formula without creating a variable
+      dim.formula = trimmed;
+      dim.variableName = null;
     } else if (isNum) {
       dim.formula = isAngle ? (num * Math.PI / 180) : num;
+      dim.variableName = null;
     }
 
     // Handle constraint state transitions

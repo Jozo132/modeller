@@ -119,6 +119,10 @@ export function showPrompt({
     input.className = 'app-modal-input';
     input.type = 'text';
     input.value = defaultValue;
+    // Stop keyboard events from propagating to prevent tool hotkeys
+    input.addEventListener('keydown', (e) => e.stopPropagation());
+    input.addEventListener('keypress', (e) => e.stopPropagation());
+    input.addEventListener('keyup', (e) => e.stopPropagation());
 
     const actions = document.createElement('div');
     actions.className = 'app-modal-actions';
@@ -250,6 +254,10 @@ export function showDimensionInput({
     input.className = 'dim-inline-input';
     input.value = defaultValue;
     input.placeholder = 'value or variable…';
+    // Stop all keyboard events from bubbling up to prevent tool hotkeys
+    input.addEventListener('keydown', (e) => e.stopPropagation());
+    input.addEventListener('keypress', (e) => e.stopPropagation());
+    input.addEventListener('keyup', (e) => e.stopPropagation());
     inputRow.appendChild(input);
 
     const okBtn = document.createElement('button');
@@ -291,14 +299,16 @@ export function showDimensionInput({
     };
 
     const onKeyDown = (e) => {
+      // Stop all key events from propagating to the main keyboard handler
+      // This prevents tool hotkeys (like 'X' for Trim) from triggering while typing
+      // Use stopImmediatePropagation to ensure no other listeners on document fire
+      e.stopImmediatePropagation();
       if (e.key === 'Escape') {
         e.preventDefault();
-        e.stopPropagation();
         finish(null);
       }
       if (e.key === 'Enter') {
         e.preventDefault();
-        e.stopPropagation();
         trySubmit();
       }
     };
@@ -315,6 +325,8 @@ export function showDimensionInput({
     });
 
     document.addEventListener('keydown', onKeyDown, true);
+    // Also add container-level handler as backup
+    container.addEventListener('keydown', (e) => e.stopPropagation(), true);
     okBtn.addEventListener('click', trySubmit);
 
     _inlineWidget = { container, cleanup: () => {

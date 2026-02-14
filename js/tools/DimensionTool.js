@@ -164,20 +164,29 @@ export class DimensionTool extends BaseTool {
 
       const { value: inputVal, driven } = result;
 
-      // Parse value — could be numeric or a variable name
+      // Parse value — could be numeric, a simple variable name, or a formula expression
       const num = parseFloat(inputVal);
       const isNum = !isNaN(num);
-      const varName = (!isNum && inputVal.trim()) ? inputVal.trim() : null;
+      const trimmed = inputVal.trim();
+      // A simple variable name is an identifier (letters/underscore, optionally followed by letters/digits/underscore)
+      const isSimpleVar = /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(trimmed);
+      const isFormula = !isNum && !isSimpleVar && trimmed.length > 0;
 
       dim.isConstraint = !driven;
-      dim.displayMode = varName ? 'both' : 'value';
+      dim.displayMode = (isSimpleVar || isFormula) ? 'both' : 'value';
 
-      if (varName) {
-        dim.formula = varName;
-        dim.variableName = varName;
-        setVariable(varName, dim.value);
+      if (isSimpleVar) {
+        // Simple variable name — create/update the variable and link to it
+        dim.formula = trimmed;
+        dim.variableName = trimmed;
+        setVariable(trimmed, dim.value);
+      } else if (isFormula) {
+        // Formula expression (e.g., "x + 10") — use as formula without creating a variable
+        dim.formula = trimmed;
+        dim.variableName = null;
       } else if (isNum) {
         dim.formula = dim.dimType === 'angle' ? (num * Math.PI / 180) : num;
+        dim.variableName = null;
       }
 
       takeSnapshot();

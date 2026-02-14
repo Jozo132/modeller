@@ -32,14 +32,102 @@ export function deserializeVariables(data) {
   }
 }
 
-/** Resolve a value that may be a number or a variable name string. */
+/**
+ * Resolve a value that may be a number, a variable name, or a formula string.
+ * Supports simple mathematical expressions with +, -, *, /, parentheses, and variables.
+ * Examples: "x", "x + 10", "width * 2", "(a + b) / 2"
+ */
 export function resolveValue(val) {
   if (typeof val === 'number') return val;
   if (typeof val === 'string') {
-    const v = _variables.get(val);
-    return v !== undefined ? v : NaN;
+    // Try simple variable lookup first
+    const simple = _variables.get(val);
+    if (simple !== undefined) return simple;
+    // Otherwise try parsing as an expression
+    return _evalExpression(val);
   }
   return NaN;
+}
+
+/**
+ * Simple expression evaluator supporting +, -, *, /, parentheses, numbers, and variables.
+ * Returns NaN if the expression is invalid or references undefined variables.
+ */
+function _evalExpression(expr) {
+  // Tokenize: numbers, identifiers, operators, parentheses
+  const tokens = [];
+  const re = /(\d+\.?\d*|\.\d+)|([a-zA-Z_][a-zA-Z0-9_]*)|([+\-*/()])/g;
+  let m;
+  while ((m = re.exec(expr)) !== null) {
+    if (m[1]) tokens.push({ type: 'num', val: parseFloat(m[1]) });
+    else if (m[2]) tokens.push({ type: 'var', val: m[2] });
+    else if (m[3]) tokens.push({ type: 'op', val: m[3] });
+  }
+  if (tokens.length === 0) return NaN;
+
+  let pos = 0;
+  const peek = () => tokens[pos];
+  const consume = () => tokens[pos++];
+
+  // Recursive descent parser
+  function parseExpr() {
+    let left = parseTerm();
+    while (peek() && (peek().val === '+' || peek().val === '-')) {
+      const op = consume().val;
+      const right = parseTerm();
+      left = op === '+' ? left + right : left - right;
+    }
+    return left;
+  }
+
+  function parseTerm() {
+    let left = parseFactor();
+    while (peek() && (peek().val === '*' || peek().val === '/')) {
+      const op = consume().val;
+      const right = parseFactor();
+      left = op === '*' ? left * right : left / right;
+    }
+    return left;
+  }
+
+  function parseFactor() {
+    const tok = peek();
+    if (!tok) return NaN;
+    // Unary minus
+    if (tok.val === '-') {
+      consume();
+      return -parseFactor();
+    }
+    // Unary plus
+    if (tok.val === '+') {
+      consume();
+      return parseFactor();
+    }
+    // Parentheses
+    if (tok.val === '(') {
+      consume(); // '('
+      const val = parseExpr();
+      if (peek() && peek().val === ')') consume(); // ')'
+      return val;
+    }
+    // Number
+    if (tok.type === 'num') {
+      consume();
+      return tok.val;
+    }
+    // Variable
+    if (tok.type === 'var') {
+      consume();
+      const v = _variables.get(tok.val);
+      return v !== undefined ? v : NaN;
+    }
+    return NaN;
+  }
+
+  const result = parseExpr();
+  // If there are leftover tokens, expression was malformed
+  if (pos < tokens.length) return NaN;
+  return result;
 }
 
 // ---------------------------------------------------------------------------
