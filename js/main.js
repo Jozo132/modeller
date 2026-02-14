@@ -1321,30 +1321,48 @@ class App {
       row.className = 'lp-item';
 
       row.innerHTML = `<span class="lp-icon" style="color:var(--accent)">𝑥</span>` +
-        `<span class="lp-label">${name} = ${value}</span>` +
-        `<button class="lp-edit" title="Edit variable">✎</button>` +
+        `<span class="lp-var-name">${name}</span>` +
+        `<span class="lp-var-eq">=</span>` +
+        `<span class="lp-var-value">${value}</span>` +
+        `<button class="lp-edit" title="Edit variable (name &amp; value)">✎</button>` +
         `<button class="lp-delete" title="Delete variable">✕</button>`;
 
+      // --- Inline value edit: click on the value span ---
+      const valueSpan = row.querySelector('.lp-var-value');
+      valueSpan.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this._inlineEditVariableValue(row, name, value);
+      });
+
+      // --- Inline name edit: double-click on the name span ---
+      const nameSpan = row.querySelector('.lp-var-name');
+      nameSpan.addEventListener('dblclick', (e) => {
+        e.stopPropagation();
+        this._inlineEditVariableName(row, name, value);
+      });
+
+      // --- Edit button: full popup for name=value ---
       row.querySelector('.lp-edit').addEventListener('click', async () => {
         const val = await showPrompt({
           title: 'Edit Variable',
-          message: `Variable "${name}" — enter new value:`,
-          defaultValue: String(value),
+          message: `Edit variable (name=value):`,
+          defaultValue: `${name}=${value}`,
         });
         if (val !== null && val !== '') {
-          const num = parseFloat(val);
-          if (!isNaN(num)) {
-            takeSnapshot();
-            setVariable(name, num);
-            state.scene.solve();
-            state.emit('change');
-            this._scheduleRender();
+          const eqIdx = val.indexOf('=');
+          if (eqIdx > 0) {
+            const newName = val.substring(0, eqIdx).trim();
+            const num = parseFloat(val.substring(eqIdx + 1).trim());
+            if (newName && !isNaN(num)) {
+              takeSnapshot();
+              if (newName !== name) removeVariable(name);
+              setVariable(newName, num);
+              state.scene.solve();
+              state.emit('change');
+              this._scheduleRender();
+            }
           }
         }
-      });
-
-      row.addEventListener('dblclick', () => {
-        row.querySelector('.lp-edit').click();
       });
 
       row.querySelector('.lp-delete').addEventListener('click', async () => {
@@ -1357,6 +1375,85 @@ class App {
 
       list.appendChild(row);
     }
+  }
+
+  /** Replace the value span with an inline input, commit on Enter/blur */
+  _inlineEditVariableValue(row, name, currentValue) {
+    const valueSpan = row.querySelector('.lp-var-value');
+    if (!valueSpan || row.querySelector('.lp-inline-input')) return; // already editing
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'lp-inline-input';
+    input.value = String(currentValue);
+
+    valueSpan.replaceWith(input);
+    input.focus();
+    input.select();
+
+    let done = false;
+    const finish = (save) => {
+      if (done) return;
+      done = true;
+      if (save) {
+        const num = parseFloat(input.value);
+        if (!isNaN(num) && num !== currentValue) {
+          takeSnapshot();
+          setVariable(name, num);
+          state.scene.solve();
+          state.emit('change');
+          return; // change event already triggers _rebuildLeftPanel
+        }
+      }
+      this._rebuildVariablesList();
+    };
+
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+      if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+      e.stopPropagation();
+    });
+    input.addEventListener('blur', () => finish(true));
+  }
+
+  /** Replace the name span with an inline input, commit on Enter/blur */
+  _inlineEditVariableName(row, currentName, value) {
+    const nameSpan = row.querySelector('.lp-var-name');
+    if (!nameSpan || row.querySelector('.lp-inline-input')) return; // already editing
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'lp-inline-input';
+    input.value = currentName;
+
+    nameSpan.replaceWith(input);
+    input.focus();
+    input.select();
+
+    let done = false;
+    const finish = (save) => {
+      if (done) return;
+      done = true;
+      if (save) {
+        const newName = input.value.trim();
+        if (newName && newName !== currentName) {
+          takeSnapshot();
+          removeVariable(currentName);
+          setVariable(newName, value);
+          state.scene.solve();
+          state.emit('change');
+          return; // change event already triggers _rebuildLeftPanel
+        }
+      }
+      this._rebuildVariablesList();
+    };
+
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+      if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+      e.stopPropagation();
+    });
+    input.addEventListener('blur', () => finish(true));
   }
 
   /** Update highlight classes on left panel items without full rebuild */

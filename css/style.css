@@ -353,6 +353,53 @@ html, body {
   color: var(--accent-hover);
 }
 
+.lp-item .lp-var-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.lp-item .lp-var-eq {
+  flex-shrink: 0;
+  margin: 0 2px;
+  color: var(--text-secondary);
+}
+
+.lp-item .lp-var-value {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: text;
+  border-radius: 2px;
+  padding: 0 3px;
+  transition: background 0.15s;
+}
+
+.lp-item .lp-var-value:hover {
+  background: rgba(255,255,255,0.1);
+}
+
+.lp-inline-input {
+  background: rgba(0,0,0,0.35);
+  border: 1px solid var(--accent);
+  color: var(--text-primary);
+  font-size: 11px;
+  font-family: inherit;
+  padding: 1px 4px;
+  border-radius: 2px;
+  outline: none;
+  width: 60px;
+  flex-shrink: 1;
+  min-width: 30px;
+}
+
+.lp-inline-input:focus {
+  border-color: var(--accent-hover);
+  box-shadow: 0 0 3px rgba(0,191,255,0.3);
+}
+
 #variables-section {
   min-height: 60px;
   display: flex;
