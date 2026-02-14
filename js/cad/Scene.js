@@ -149,10 +149,11 @@ export class Scene {
 
   removePrimitive(prim) {
     switch (prim.type) {
-      case 'point':  this.removePoint(prim); break;
-      case 'segment': this.removeSegment(prim); break;
-      case 'circle': this.removeCircle(prim); break;
-      case 'arc':    this.removeArc(prim); break;
+      case 'point':     this.removePoint(prim); break;
+      case 'segment':   this.removeSegment(prim); break;
+      case 'circle':    this.removeCircle(prim); break;
+      case 'arc':       this.removeArc(prim); break;
+      case 'dimension': this.dimensions = this.dimensions.filter(d => d !== prim); break;
     }
   }
 
@@ -365,10 +366,20 @@ export class Scene {
 
     // 6. Rebuild dimensions
     for (const d of (data.dimensions || [])) {
-      const dm = new DimensionPrimitive(d.x1, d.y1, d.x2, d.y2, d.offset);
+      const dm = new DimensionPrimitive(d.x1, d.y1, d.x2, d.y2, d.offset, {
+        dimType: d.dimType,
+        isConstraint: d.isConstraint,
+        variableName: d.variableName,
+        displayMode: d.displayMode,
+        formula: d.formula,
+        sourceAId: d.sourceAId,
+        sourceBId: d.sourceBId,
+      });
       dm.id = d.id;
       dm.layer = d.layer || '0';
       dm.color = d.color || null;
+      if (d._angleStart != null) dm._angleStart = d._angleStart;
+      if (d._angleSweep != null) dm._angleSweep = d._angleSweep;
       scene.dimensions.push(dm);
       if (d.id > maxPrimId) maxPrimId = d.id;
     }

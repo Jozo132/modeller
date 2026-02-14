@@ -871,7 +871,12 @@ class App {
         html += `<div class="prop-row"><label>Text</label><span>${e.text}</span></div>`;
         html += `<div class="prop-row"><label>Height</label><span>${e.height}</span></div>`;
       } else if (e.type === 'dimension') {
-        html += `<div class="prop-row"><label>Value</label><span>${e.value.toFixed(2)}</span></div>`;
+        html += `<div class="prop-row"><label>Dim Type</label><span>${e.dimType}</span></div>`;
+        html += `<div class="prop-row"><label>Value</label><span>${e.displayLabel}</span></div>`;
+        html += `<div class="prop-row"><label>Constraint</label><span>${e.isConstraint ? 'Yes' : 'No'}</span></div>`;
+        html += `<div class="prop-row"><label>Display</label><span>${e.displayMode}</span></div>`;
+        if (e.variableName) html += `<div class="prop-row"><label>Variable</label><span>${e.variableName}</span></div>`;
+        if (e.formula != null) html += `<div class="prop-row"><label>Formula</label><span>${e.formula}</span></div>`;
       }
 
       // Show constraints on this entity
