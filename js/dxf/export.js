@@ -117,12 +117,11 @@ function writeEntity(w, entity) {
       w(11, entity.x2); w(21, entity.y2); w(31, 0);
       const mx = (entity.x1 + entity.x2) / 2;
       const my = (entity.y1 + entity.y2) / 2;
-      const len = Math.hypot(entity.x2 - entity.x1, entity.y2 - entity.y1);
       w(0, 'TEXT');
       w(8, entity.layer);
       w(10, mx); w(20, my + entity.offset); w(30, 0);
       w(40, 3);
-      w(1, len.toFixed(2));
+      w(1, entity.displayLabel);
       break;
     }
 
