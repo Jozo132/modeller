@@ -213,11 +213,144 @@ html, body {
   background: rgba(0,120,212,0.1);
 }
 
+/* Left Panel (Primitives & Constraints) */
+#left-panel {
+  position: fixed;
+  top: 34px;
+  left: 0;
+  width: var(--panel-width);
+  bottom: 56px;
+  background: var(--bg-panel);
+  border-right: 1px solid var(--border);
+  padding: 10px;
+  overflow-y: auto;
+  z-index: 90;
+  user-select: none;
+  display: flex;
+  flex-direction: column;
+}
+
+#left-panel h3 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#left-panel hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 8px 0;
+  flex-shrink: 0;
+}
+
+#primitives-section {
+  flex: 1;
+  min-height: 80px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+#primitives-list {
+  flex: 1;
+  overflow-y: auto;
+}
+
+#constraints-section {
+  flex: 1;
+  min-height: 80px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+#constraints-list {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.lp-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 11px;
+  margin-bottom: 1px;
+  color: var(--text-primary);
+  transition: background 0.1s;
+}
+
+.lp-item:hover {
+  background: rgba(255,255,255,0.08);
+}
+
+.lp-item.highlight {
+  background: rgba(0,191,255,0.15);
+  color: #7fd8ff;
+}
+
+.lp-item.selected {
+  background: rgba(0,120,212,0.25);
+  color: #00bfff;
+}
+
+.lp-item .lp-icon {
+  width: 14px;
+  text-align: center;
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+
+.lp-item .lp-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lp-item .lp-delete {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0 2px;
+  line-height: 1;
+  visibility: hidden;
+}
+
+.lp-item:hover .lp-delete,
+.lp-item.highlight .lp-delete {
+  visibility: visible;
+}
+
+.lp-item .lp-delete:hover {
+  color: #ff6644;
+}
+
+.filter-badge {
+  font-size: 10px;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.filter-badge:hover {
+  color: var(--accent-hover);
+}
+
 /* Canvas */
 #cad-canvas {
   position: fixed;
   top: 34px;
-  left: 0;
+  left: var(--panel-width);
   right: var(--panel-width);
   bottom: 56px;
   background: var(--canvas-bg);
@@ -450,6 +583,10 @@ html, body {
     --panel-width: 0px;
   }
 
+  #left-panel {
+    display: none;
+  }
+
   #properties-panel {
     right: 0;
     left: 0;
@@ -462,6 +599,7 @@ html, body {
   }
 
   #cad-canvas {
+    left: 0;
     right: 0;
     bottom: calc(56px + 36vh);
   }
