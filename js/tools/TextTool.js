@@ -1,7 +1,8 @@
 // js/tools/TextTool.js
 import { BaseTool } from './BaseTool.js';
-import { TextEntity } from '../entities/index.js';
+import { TextPrimitive } from '../cad/index.js';
 import { state } from '../state.js';
+import { takeSnapshot } from '../history.js';
 import { showPrompt } from '../ui/popup.js';
 
 export class TextTool extends BaseTool {
@@ -29,9 +30,11 @@ export class TextTool extends BaseTool {
       });
       const height = parseFloat(heightRaw);
       const safeHeight = Number.isFinite(height) && height > 0 ? height : 5;
-      state.snapshot();
-      const entity = new TextEntity(wx, wy, text.trim(), safeHeight);
-      state.addEntity(entity);
+      takeSnapshot();
+      const tp = new TextPrimitive(wx, wy, text.trim(), safeHeight);
+      tp.layer = state.activeLayer;
+      state.scene.texts.push(tp);
+      state.emit('change');
     }
     this.setStatus('Text: Click to place text');
   }

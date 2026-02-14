@@ -72,7 +72,8 @@ export function exportDXF() {
 
 function writeEntity(w, entity) {
   switch (entity.type) {
-    case 'LINE':
+    // --- Primitive types ---
+    case 'segment':
       w(0, 'LINE');
       w(8, entity.layer);
       if (entity.color) w(62, colorToAci(entity.color));
@@ -80,7 +81,7 @@ function writeEntity(w, entity) {
       w(11, entity.x2); w(21, entity.y2); w(31, 0);
       break;
 
-    case 'CIRCLE':
+    case 'circle':
       w(0, 'CIRCLE');
       w(8, entity.layer);
       if (entity.color) w(62, colorToAci(entity.color));
@@ -88,7 +89,7 @@ function writeEntity(w, entity) {
       w(40, entity.radius);
       break;
 
-    case 'ARC':
+    case 'arc':
       w(0, 'ARC');
       w(8, entity.layer);
       if (entity.color) w(62, colorToAci(entity.color));
@@ -96,6 +97,42 @@ function writeEntity(w, entity) {
       w(40, entity.radius);
       w(50, entity.startAngle * 180 / Math.PI);
       w(51, entity.endAngle * 180 / Math.PI);
+      break;
+
+    case 'text':
+      w(0, 'TEXT');
+      w(8, entity.layer);
+      if (entity.color) w(62, colorToAci(entity.color));
+      w(10, entity.x); w(20, entity.y); w(30, 0);
+      w(40, entity.height);
+      w(1, entity.text);
+      if (entity.rotation) w(50, entity.rotation);
+      break;
+
+    case 'dimension': {
+      // Export as two lines + text (simplified for compatibility)
+      w(0, 'LINE');
+      w(8, entity.layer);
+      w(10, entity.x1); w(20, entity.y1); w(30, 0);
+      w(11, entity.x2); w(21, entity.y2); w(31, 0);
+      const mx = (entity.x1 + entity.x2) / 2;
+      const my = (entity.y1 + entity.y2) / 2;
+      const len = Math.hypot(entity.x2 - entity.x1, entity.y2 - entity.y1);
+      w(0, 'TEXT');
+      w(8, entity.layer);
+      w(10, mx); w(20, my + entity.offset); w(30, 0);
+      w(40, 3);
+      w(1, len.toFixed(2));
+      break;
+    }
+
+    // --- Legacy entity types (for backward compat) ---
+    case 'LINE':
+      w(0, 'LINE');
+      w(8, entity.layer);
+      if (entity.color) w(62, colorToAci(entity.color));
+      w(10, entity.x1); w(20, entity.y1); w(30, 0);
+      w(11, entity.x2); w(21, entity.y2); w(31, 0);
       break;
 
     case 'LWPOLYLINE': {

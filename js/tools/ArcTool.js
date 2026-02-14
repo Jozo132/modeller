@@ -1,7 +1,8 @@
 // js/tools/ArcTool.js — Center-start-end arc
 import { BaseTool } from './BaseTool.js';
-import { Arc } from '../entities/index.js';
+import { PArc, PPoint } from '../cad/index.js';
 import { state } from '../state.js';
+import { takeSnapshot } from '../history.js';
 
 export class ArcTool extends BaseTool {
   constructor(app) {
@@ -31,9 +32,10 @@ export class ArcTool extends BaseTool {
       }
     } else {
       const endAngle = Math.atan2(wy - this._cy, wx - this._cx);
-      state.snapshot();
-      const arc = new Arc(this._cx, this._cy, this._radius, this._startAngle, endAngle);
-      state.addEntity(arc);
+      takeSnapshot();
+      state.scene.addArc(this._cx, this._cy, this._radius, this._startAngle, endAngle,
+        { merge: true, layer: state.activeLayer });
+      state.emit('change');
       this.step = 0;
       this.app.renderer.previewEntities = [];
       this.setStatus('Arc: Click center point');
@@ -44,12 +46,12 @@ export class ArcTool extends BaseTool {
     if (this.step === 1) {
       const r = Math.hypot(wx - this._cx, wy - this._cy);
       if (r > 0) {
-        const preview = new Arc(this._cx, this._cy, r, 0, Math.PI * 2);
+        const preview = new PArc(new PPoint(this._cx, this._cy), r, 0, Math.PI * 2);
         this.app.renderer.previewEntities = [preview];
       }
     } else if (this.step === 2) {
       const endAngle = Math.atan2(wy - this._cy, wx - this._cx);
-      const preview = new Arc(this._cx, this._cy, this._radius, this._startAngle, endAngle);
+      const preview = new PArc(new PPoint(this._cx, this._cy), this._radius, this._startAngle, endAngle);
       this.app.renderer.previewEntities = [preview];
     }
   }

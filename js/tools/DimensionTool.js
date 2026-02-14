@@ -1,7 +1,8 @@
 // js/tools/DimensionTool.js
 import { BaseTool } from './BaseTool.js';
-import { Dimension } from '../entities/index.js';
+import { DimensionPrimitive } from '../cad/index.js';
 import { state } from '../state.js';
+import { takeSnapshot } from '../history.js';
 
 export class DimensionTool extends BaseTool {
   constructor(app) {
@@ -21,9 +22,11 @@ export class DimensionTool extends BaseTool {
       this.step = 1;
       this.setStatus('Dimension: Click second point');
     } else {
-      state.snapshot();
-      const dim = new Dimension(this._x1, this._y1, wx, wy, 10);
-      state.addEntity(dim);
+      takeSnapshot();
+      const dim = new DimensionPrimitive(this._x1, this._y1, wx, wy, 10);
+      dim.layer = state.activeLayer;
+      state.scene.dimensions.push(dim);
+      state.emit('change');
       this.step = 0;
       this.app.renderer.previewEntities = [];
       this.setStatus('Dimension: Click first point');
@@ -32,7 +35,7 @@ export class DimensionTool extends BaseTool {
 
   onMouseMove(wx, wy) {
     if (this.step === 1) {
-      const preview = new Dimension(this._x1, this._y1, wx, wy, 10);
+      const preview = new DimensionPrimitive(this._x1, this._y1, wx, wy, 10);
       this.app.renderer.previewEntities = [preview];
     }
   }

@@ -1,7 +1,8 @@
 // js/tools/CircleTool.js
 import { BaseTool } from './BaseTool.js';
-import { Circle } from '../entities/index.js';
+import { PCircle, PPoint } from '../cad/index.js';
 import { state } from '../state.js';
+import { takeSnapshot } from '../history.js';
 
 export class CircleTool extends BaseTool {
   constructor(app) {
@@ -25,9 +26,10 @@ export class CircleTool extends BaseTool {
     } else {
       const radius = Math.hypot(wx - this._cx, wy - this._cy);
       if (radius > 0) {
-        state.snapshot();
-        const circle = new Circle(this._cx, this._cy, radius);
-        state.addEntity(circle);
+        takeSnapshot();
+        state.scene.addCircle(this._cx, this._cy, radius,
+          { merge: true, layer: state.activeLayer });
+        state.emit('change');
       }
       this.step = 0;
       this.app.renderer.previewEntities = [];
@@ -39,7 +41,7 @@ export class CircleTool extends BaseTool {
     if (this.step === 1) {
       const radius = Math.hypot(wx - this._cx, wy - this._cy);
       if (radius > 0) {
-        const preview = new Circle(this._cx, this._cy, radius);
+        const preview = new PCircle(new PPoint(this._cx, this._cy), radius);
         this.app.renderer.previewEntities = [preview];
       }
     }

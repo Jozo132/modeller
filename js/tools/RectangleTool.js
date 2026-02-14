@@ -1,7 +1,8 @@
 // js/tools/RectangleTool.js
 import { BaseTool } from './BaseTool.js';
-import { Rectangle } from '../entities/index.js';
+import { PSegment, PPoint } from '../cad/index.js';
 import { state } from '../state.js';
+import { takeSnapshot } from '../history.js';
 
 export class RectangleTool extends BaseTool {
   constructor(app) {
@@ -23,9 +24,15 @@ export class RectangleTool extends BaseTool {
       this.step = 1;
       this.setStatus('Rectangle: Click opposite corner (Esc to cancel)');
     } else {
-      state.snapshot();
-      const rect = new Rectangle(this._startX, this._startY, wx, wy);
-      state.addEntity(rect);
+      takeSnapshot();
+      const x1 = this._startX, y1 = this._startY, x2 = wx, y2 = wy;
+      const layer = state.activeLayer;
+      // Create 4 segments sharing corner points (auto-merge via scene)
+      state.scene.addSegment(x1, y1, x2, y1, { merge: true, layer });
+      state.scene.addSegment(x2, y1, x2, y2, { merge: true, layer });
+      state.scene.addSegment(x2, y2, x1, y2, { merge: true, layer });
+      state.scene.addSegment(x1, y2, x1, y1, { merge: true, layer });
+      state.emit('change');
       this.step = 0;
       this.app.renderer.previewEntities = [];
       this.setStatus('Rectangle: Click first corner');
@@ -34,8 +41,14 @@ export class RectangleTool extends BaseTool {
 
   onMouseMove(wx, wy) {
     if (this.step === 1) {
-      const preview = new Rectangle(this._startX, this._startY, wx, wy);
-      this.app.renderer.previewEntities = [preview];
+      const x1 = this._startX, y1 = this._startY, x2 = wx, y2 = wy;
+      const previews = [
+        new PSegment(new PPoint(x1, y1), new PPoint(x2, y1)),
+        new PSegment(new PPoint(x2, y1), new PPoint(x2, y2)),
+        new PSegment(new PPoint(x2, y2), new PPoint(x1, y2)),
+        new PSegment(new PPoint(x1, y2), new PPoint(x1, y1)),
+      ];
+      this.app.renderer.previewEntities = previews;
     }
   }
 

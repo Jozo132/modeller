@@ -1,6 +1,6 @@
 // js/dxf/import.js — DXF parser (supports R12/R2000 ASCII)
 import { state } from '../state.js';
-import { Line, Circle, Arc, Polyline, TextEntity } from '../entities/index.js';
+import { TextPrimitive, DimensionPrimitive } from '../cad/index.js';
 import { info, debug, warn, error } from '../logger.js';
 
 /**
@@ -16,9 +16,8 @@ export function importDXF(dxfContent) {
   let imported = 0;
   for (const ent of entities) {
     try {
-      const entity = createEntity(ent);
-      if (entity) {
-        state.addEntity(entity);
+      const prim = createEntity(ent);
+      if (prim) {
         imported += 1;
       }
     } catch (err) {
@@ -125,7 +124,7 @@ function extractLayers(pairs) {
 }
 
 /**
- * Create an entity from parsed DXF entity data.
+ * Create a primitive from parsed DXF entity data and add to scene.
  */
 function createEntity(ent) {
   const p = ent.props;
@@ -133,31 +132,31 @@ function createEntity(ent) {
 
   switch (ent.type) {
     case 'LINE': {
-      const line = new Line(
+      const seg = state.scene.addSegment(
         parseFloat(p[10]) || 0, parseFloat(p[20]) || 0,
-        parseFloat(p[11]) || 0, parseFloat(p[21]) || 0
+        parseFloat(p[11]) || 0, parseFloat(p[21]) || 0,
+        { merge: true, layer }
       );
-      line.layer = layer;
-      return line;
+      return seg;
     }
 
     case 'CIRCLE': {
-      const circle = new Circle(
+      const circ = state.scene.addCircle(
         parseFloat(p[10]) || 0, parseFloat(p[20]) || 0,
-        parseFloat(p[40]) || 1
+        parseFloat(p[40]) || 1,
+        { merge: true, layer }
       );
-      circle.layer = layer;
-      return circle;
+      return circ;
     }
 
     case 'ARC': {
-      const arc = new Arc(
+      const arc = state.scene.addArc(
         parseFloat(p[10]) || 0, parseFloat(p[20]) || 0,
         parseFloat(p[40]) || 1,
         (parseFloat(p[50]) || 0) * Math.PI / 180,
-        (parseFloat(p[51]) || 360) * Math.PI / 180
+        (parseFloat(p[51]) || 360) * Math.PI / 180,
+        { merge: true, layer }
       );
-      arc.layer = layer;
       return arc;
     }
 
@@ -169,26 +168,31 @@ function createEntity(ent) {
         points.push({ x: parseFloat(xs[i]) || 0, y: parseFloat(ys[i]) || 0 });
       }
       const closed = (parseInt(p[70], 10) & 1) === 1;
-      const poly = new Polyline(points, closed);
-      poly.layer = layer;
-      return poly;
+      const count = closed ? points.length : points.length - 1;
+      let firstSeg = null;
+      for (let i = 0; i < count; i++) {
+        const a = points[i], b = points[(i + 1) % points.length];
+        const seg = state.scene.addSegment(a.x, a.y, b.x, b.y, { merge: true, layer });
+        if (!firstSeg) firstSeg = seg;
+      }
+      return firstSeg;
     }
 
     case 'POLYLINE': {
-      // Old-style polyline (POLYLINE + VERTEX + SEQEND)
-      // Simplified: skip for now
+      // Old-style polyline — skip
       return null;
     }
 
     case 'TEXT': {
-      const text = new TextEntity(
+      const tp = new TextPrimitive(
         parseFloat(p[10]) || 0, parseFloat(p[20]) || 0,
         p[1] || 'Text',
         parseFloat(p[40]) || 5
       );
-      text.rotation = parseFloat(p[50]) || 0;
-      text.layer = layer;
-      return text;
+      tp.rotation = parseFloat(p[50]) || 0;
+      tp.layer = layer;
+      state.scene.texts.push(tp);
+      return tp;
     }
 
     default:

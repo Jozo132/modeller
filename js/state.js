@@ -1,4 +1,5 @@
 // js/state.js — Global application state (singleton)
+import { Scene } from './cad/index.js';
 
 const LAYER_COLORS = [
   '#ffffff', '#ff0000', '#ffff00', '#00ff00', '#00ffff',
@@ -7,7 +8,9 @@ const LAYER_COLORS = [
 
 class AppState {
   constructor() {
-    this.entities = [];
+    /** The parametric scene — all primitives + constraints live here */
+    this.scene = new Scene();
+
     this.layers = [
       { name: '0', color: '#ffffff', visible: true, locked: false },
     ];
@@ -18,7 +21,7 @@ class AppState {
     this.gridVisible = true;
     this.gridSize = 10;
 
-    // Selection
+    // Selection (primitives)
     this.selectedEntities = [];
 
     // History (undo/redo)
@@ -28,6 +31,12 @@ class AppState {
 
     // Listeners
     this._listeners = {};
+  }
+
+  // --- Compatibility shim ---
+  // Many parts of the app iterate state.entities — redirect to shapes
+  get entities() {
+    return [...this.scene.shapes()];
   }
 
   // --- Event system ---
@@ -44,25 +53,30 @@ class AppState {
     (this._listeners[event] || []).forEach(fn => fn(data));
   }
 
-  // --- Entity management ---
+  // --- Entity management (works with primitives) ---
   addEntity(entity) {
     entity.layer = this.activeLayer;
-    this.entities.push(entity);
+    // Push into the appropriate scene collection
+    switch (entity.type) {
+      case 'segment':   if (!this.scene.segments.includes(entity)) this.scene.segments.push(entity); break;
+      case 'circle':    if (!this.scene.circles.includes(entity)) this.scene.circles.push(entity); break;
+      case 'arc':       if (!this.scene.arcs.includes(entity)) this.scene.arcs.push(entity); break;
+      case 'text':      if (!this.scene.texts.includes(entity)) this.scene.texts.push(entity); break;
+      case 'dimension': if (!this.scene.dimensions.includes(entity)) this.scene.dimensions.push(entity); break;
+      case 'point':     if (!this.scene.points.includes(entity)) this.scene.points.push(entity); break;
+    }
     this.emit('entity:add', entity);
     this.emit('change');
   }
 
   removeEntity(entity) {
-    const idx = this.entities.indexOf(entity);
-    if (idx >= 0) {
-      this.entities.splice(idx, 1);
-      this.emit('entity:remove', entity);
-      this.emit('change');
-    }
+    this.scene.removePrimitive(entity);
+    this.emit('entity:remove', entity);
+    this.emit('change');
   }
 
   clearAll() {
-    this.entities = [];
+    this.scene.clear();
     this.selectedEntities = [];
     this._undoStack = [];
     this._redoStack = [];
@@ -107,18 +121,6 @@ class AppState {
   isLayerVisible(layerName) {
     const layer = this.layers.find(l => l.name === layerName);
     return layer ? layer.visible : true;
-  }
-
-  // --- History ---
-  snapshot() {
-    // Save a JSON snapshot of entities
-    const data = this.entities.map(e => ({
-      proto: e.constructor.name,
-      props: { ...e },
-    }));
-    this._undoStack.push(JSON.stringify(data));
-    if (this._undoStack.length > this._maxHistory) this._undoStack.shift();
-    this._redoStack = [];
   }
 
   // Set tool

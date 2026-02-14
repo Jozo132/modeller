@@ -30,6 +30,8 @@ export class Renderer {
       if (state.gridVisible) this._drawGrid();
       this._drawAxes();
       this._drawEntities();
+      this._drawPoints();
+      this._drawConstraints();
       this._drawPreview();
       this._drawSnapIndicator();
       this._drawCrosshair();
@@ -161,6 +163,51 @@ export class Renderer {
     }
   }
 
+  // --- Points (shared vertices) ---
+  _drawPoints() {
+    const { ctx, vp } = this;
+    const scene = state.scene;
+    ctx.save();
+    for (const pt of scene.points) {
+      const s = vp.worldToScreen(pt.x, pt.y);
+      // How many shapes share this point?
+      const refs = scene.shapesUsingPoint(pt).length;
+      if (refs <= 1 && !pt.selected && !pt.fixed) continue; // skip lonely points
+      const r = pt.selected ? 5 : (pt.fixed ? 4 : 3);
+      ctx.fillStyle = pt.fixed ? '#ff6644' : (pt.selected ? '#00bfff' : 'rgba(255,255,0,0.55)');
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // --- Constraint indicators ---
+  _drawConstraints() {
+    const { ctx, vp } = this;
+    const scene = state.scene;
+    ctx.save();
+    ctx.font = '10px Consolas, monospace';
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'center';
+    for (const c of scene.constraints) {
+      const pts = c.involvedPoints();
+      if (pts.length === 0) continue;
+      // Draw a small icon near the centroid of involved points
+      let cx = 0, cy = 0;
+      for (const p of pts) { cx += p.x; cy += p.y; }
+      cx /= pts.length; cy /= pts.length;
+      const s = vp.worldToScreen(cx, cy);
+      // Offset a bit so it doesn't overlap geometry
+      const ox = s.x + 12, oy = s.y - 10;
+
+      ctx.fillStyle = c.error() < 1e-4 ? 'rgba(0,230,118,0.7)' : 'rgba(255,100,60,0.8)';
+      const label = _constraintLabel(c.type);
+      ctx.fillText(label, ox, oy);
+    }
+    ctx.restore();
+  }
+
   // --- Preview (ghost entities being drawn) ---
   _drawPreview() {
     const { ctx, vp } = this;
@@ -253,4 +300,17 @@ export class Renderer {
     ctx.stroke();
     ctx.restore();
   }
+}
+
+// Map constraint type to a short display label
+function _constraintLabel(type) {
+  const map = {
+    coincident: '⊙', distance: '↔', fixed: '⊕',
+    horizontal: 'H', vertical: 'V',
+    parallel: '∥', perpendicular: '⊥', angle: '∠',
+    equal_length: '=L', length: 'L',
+    radius: 'R', tangent: 'T',
+    on_line: '—·', on_circle: '○·', midpoint: 'M',
+  };
+  return map[type] || type;
 }

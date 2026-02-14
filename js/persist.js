@@ -1,6 +1,6 @@
 // js/persist.js — LocalStorage persistence for project state
 import { state } from './state.js';
-import { serializeEntity, deserializeEntity } from './history.js';
+import { Scene } from './cad/index.js';
 import { info, warn, error } from './logger.js';
 
 const STORAGE_KEY = 'dxf-modeller-project';
@@ -13,12 +13,12 @@ let _viewport = null;
 export function setViewport(vp) { _viewport = vp; }
 
 /**
- * Serialize the full project (entities, layers, settings) to a plain object.
+ * Serialize the full project (scene, layers, settings) to a plain object.
  */
 function projectToJSON() {
   return {
-    version: 1,
-    entities: state.entities.map(e => serializeEntity(e)),
+    version: 2,
+    scene: state.scene.serialize(),
     layers: state.layers.map(l => ({ ...l })),
     activeLayer: state.activeLayer,
     gridSize: state.gridSize,
@@ -35,15 +35,14 @@ function projectToJSON() {
 function projectFromJSON(data) {
   if (!data || data.version == null) return { ok: false, hasViewport: false };
 
-  // Restore entities
-  state.entities = [];
-  state.selectedEntities = [];
-  if (Array.isArray(data.entities)) {
-    for (const d of data.entities) {
-      const entity = deserializeEntity(d);
-      if (entity) state.entities.push(entity);
-    }
+  // Restore scene
+  if (data.scene) {
+    state.scene = Scene.deserialize(data.scene);
+  } else if (Array.isArray(data.entities)) {
+    // Legacy v1 format — just clear, can't restore old entities
+    state.scene.clear();
   }
+  state.selectedEntities = [];
 
   // Restore layers
   if (Array.isArray(data.layers) && data.layers.length > 0) {

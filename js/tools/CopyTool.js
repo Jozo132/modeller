@@ -1,6 +1,8 @@
 // js/tools/CopyTool.js
 import { BaseTool } from './BaseTool.js';
+import { PSegment, PPoint, PCircle, PArc, TextPrimitive, DimensionPrimitive } from '../cad/index.js';
 import { state } from '../state.js';
+import { takeSnapshot } from '../history.js';
 
 export class CopyTool extends BaseTool {
   constructor(app) {
@@ -30,13 +32,43 @@ export class CopyTool extends BaseTool {
     } else {
       const dx = wx - this._baseX;
       const dy = wy - this._baseY;
-      state.snapshot();
+      takeSnapshot();
       for (const e of state.selectedEntities) {
-        const clone = e.clone();
-        clone.translate(dx, dy);
-        state.addEntity(clone);
+        this._copyPrimitive(e, dx, dy);
       }
+      state.emit('change');
       this.setStatus('Copy: Click another destination (Esc to finish)');
+    }
+  }
+
+  /** Create a new primitive offset by (dx, dy) and add to scene */
+  _copyPrimitive(e, dx, dy) {
+    const layer = e.layer;
+    switch (e.type) {
+      case 'segment':
+        state.scene.addSegment(e.x1 + dx, e.y1 + dy, e.x2 + dx, e.y2 + dy,
+          { merge: true, layer });
+        break;
+      case 'circle':
+        state.scene.addCircle(e.cx + dx, e.cy + dy, e.radius,
+          { merge: true, layer });
+        break;
+      case 'arc':
+        state.scene.addArc(e.cx + dx, e.cy + dy, e.radius, e.startAngle, e.endAngle,
+          { merge: true, layer });
+        break;
+      case 'text': {
+        const tp = new TextPrimitive(e.x + dx, e.y + dy, e.text, e.height);
+        tp.layer = layer;
+        state.scene.texts.push(tp);
+        break;
+      }
+      case 'dimension': {
+        const dp = new DimensionPrimitive(e.x1 + dx, e.y1 + dy, e.x2 + dx, e.y2 + dy, e.offset);
+        dp.layer = layer;
+        state.scene.dimensions.push(dp);
+        break;
+      }
     }
   }
 
@@ -46,11 +78,26 @@ export class CopyTool extends BaseTool {
       const dy = wy - this._baseY;
       const previews = [];
       for (const e of state.selectedEntities) {
-        const clone = e.clone();
-        clone.translate(dx, dy);
-        previews.push(clone);
+        const prev = this._makePreview(e, dx, dy);
+        if (prev) previews.push(prev);
       }
       this.app.renderer.previewEntities = previews;
+    }
+  }
+
+  _makePreview(e, dx, dy) {
+    switch (e.type) {
+      case 'segment':
+        return new PSegment(
+          new PPoint(e.x1 + dx, e.y1 + dy),
+          new PPoint(e.x2 + dx, e.y2 + dy)
+        );
+      case 'circle':
+        return new PCircle(new PPoint(e.cx + dx, e.cy + dy), e.radius);
+      case 'arc':
+        return new PArc(new PPoint(e.cx + dx, e.cy + dy), e.radius, e.startAngle, e.endAngle);
+      default:
+        return null;
     }
   }
 

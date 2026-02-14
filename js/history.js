@@ -1,12 +1,12 @@
-// js/history.js — Undo/Redo system using deep-copy snapshots
+// js/history.js — Undo/Redo system using Scene deep-copy snapshots
 import { state } from './state.js';
-import { Line, Circle, Arc, Polyline, TextEntity, Dimension, Rectangle } from './entities/index.js';
+import { Scene } from './cad/index.js';
 
 /**
- * Take a snapshot of all entities for undo.
+ * Take a snapshot of the current scene for undo.
  */
 export function takeSnapshot() {
-  const data = state.entities.map(e => serializeEntity(e));
+  const data = state.scene.serialize();
   state._undoStack.push(JSON.stringify(data));
   if (state._undoStack.length > state._maxHistory) state._undoStack.shift();
   state._redoStack = [];
@@ -18,11 +18,11 @@ export function takeSnapshot() {
 export function undo() {
   if (state._undoStack.length === 0) return;
   // Save current state to redo
-  const current = state.entities.map(e => serializeEntity(e));
+  const current = state.scene.serialize();
   state._redoStack.push(JSON.stringify(current));
   // Restore previous state
   const prev = JSON.parse(state._undoStack.pop());
-  restoreEntities(prev);
+  _restoreScene(prev);
   state.emit('change');
 }
 
@@ -31,56 +31,20 @@ export function undo() {
  */
 export function redo() {
   if (state._redoStack.length === 0) return;
-  const current = state.entities.map(e => serializeEntity(e));
+  const current = state.scene.serialize();
   state._undoStack.push(JSON.stringify(current));
   const next = JSON.parse(state._redoStack.pop());
-  restoreEntities(next);
+  _restoreScene(next);
   state.emit('change');
 }
 
-export function serializeEntity(e) {
-  return { ...e.serialize(), id: e.id };
-}
-
-function restoreEntities(dataArray) {
-  state.entities = [];
+function _restoreScene(data) {
+  state.scene = Scene.deserialize(data);
   state.selectedEntities = [];
-  for (const d of dataArray) {
-    const entity = deserializeEntity(d);
-    if (entity) state.entities.push(entity);
-  }
 }
 
-export function deserializeEntity(d) {
-  let entity;
-  switch (d.type) {
-    case 'LINE':
-      entity = new Line(d.x1, d.y1, d.x2, d.y2);
-      break;
-    case 'CIRCLE':
-      entity = new Circle(d.cx, d.cy, d.radius);
-      break;
-    case 'ARC':
-      entity = new Arc(d.cx, d.cy, d.radius, d.startAngle, d.endAngle);
-      break;
-    case 'LWPOLYLINE':
-      if (d.points) {
-        entity = new Polyline(d.points, d.closed);
-      } else {
-        entity = new Rectangle(d.x1, d.y1, d.x2, d.y2);
-      }
-      break;
-    case 'TEXT':
-      entity = new TextEntity(d.x, d.y, d.text, d.height);
-      entity.rotation = d.rotation || 0;
-      break;
-    case 'DIMENSION':
-      entity = new Dimension(d.x1, d.y1, d.x2, d.y2, d.offset);
-      break;
-    default:
-      return null;
-  }
-  entity.layer = d.layer || '0';
-  entity.color = d.color || null;
-  return entity;
+// Legacy compat — kept for persist.js bridge (deprecated)
+export function serializeEntity(e) {
+  return e.serialize ? e.serialize() : {};
 }
+export function deserializeEntity() { return null; }

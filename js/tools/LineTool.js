@@ -1,7 +1,9 @@
 // js/tools/LineTool.js
 import { BaseTool } from './BaseTool.js';
-import { Line } from '../entities/index.js';
+import { PSegment } from '../cad/index.js';
+import { PPoint } from '../cad/index.js';
 import { state } from '../state.js';
+import { takeSnapshot } from '../history.js';
 
 export class LineTool extends BaseTool {
   constructor(app) {
@@ -23,9 +25,11 @@ export class LineTool extends BaseTool {
       this.step = 1;
       this.setStatus('Line: Click second point (Esc to cancel)');
     } else {
-      state.snapshot();
-      const line = new Line(this._startX, this._startY, wx, wy);
-      state.addEntity(line);
+      takeSnapshot();
+      const seg = state.scene.addSegment(this._startX, this._startY, wx, wy,
+        { merge: true, layer: state.activeLayer });
+      state.emit('entity:add', seg);
+      state.emit('change');
       // Chain: next line starts from end of previous
       this._startX = wx;
       this._startY = wy;
@@ -35,7 +39,9 @@ export class LineTool extends BaseTool {
 
   onMouseMove(wx, wy) {
     if (this.step === 1) {
-      const preview = new Line(this._startX, this._startY, wx, wy);
+      const p1 = new PPoint(this._startX, this._startY);
+      const p2 = new PPoint(wx, wy);
+      const preview = new PSegment(p1, p2);
       this.app.renderer.previewEntities = [preview];
     }
   }

@@ -1,7 +1,8 @@
 // js/tools/PolylineTool.js
 import { BaseTool } from './BaseTool.js';
-import { Polyline } from '../entities/index.js';
+import { PSegment, PPoint } from '../cad/index.js';
 import { state } from '../state.js';
+import { takeSnapshot } from '../history.js';
 
 export class PolylineTool extends BaseTool {
   constructor(app) {
@@ -23,20 +24,36 @@ export class PolylineTool extends BaseTool {
     }
   }
 
+  _commitSegments(closed) {
+    const pts = this._points;
+    const layer = state.activeLayer;
+    const count = closed ? pts.length : pts.length - 1;
+    for (let i = 0; i < count; i++) {
+      const a = pts[i], b = pts[(i + 1) % pts.length];
+      state.scene.addSegment(a.x, a.y, b.x, b.y, { merge: true, layer });
+    }
+    state.emit('change');
+  }
+
   onMouseMove(wx, wy) {
     if (this._points.length > 0) {
       const pts = [...this._points, { x: wx, y: wy }];
-      const preview = new Polyline(pts, false);
-      this.app.renderer.previewEntities = [preview];
+      const previews = [];
+      for (let i = 0; i < pts.length - 1; i++) {
+        previews.push(new PSegment(
+          new PPoint(pts[i].x, pts[i].y),
+          new PPoint(pts[i + 1].x, pts[i + 1].y)
+        ));
+      }
+      this.app.renderer.previewEntities = previews;
     }
   }
 
   onCancel() {
     // Finish polyline (open)
     if (this._points.length >= 2) {
-      state.snapshot();
-      const poly = new Polyline(this._points, false);
-      state.addEntity(poly);
+      takeSnapshot();
+      this._commitSegments(false);
     }
     this._points = [];
     this.app.renderer.previewEntities = [];
@@ -47,9 +64,8 @@ export class PolylineTool extends BaseTool {
   onKeyDown(event) {
     if (event.key === 'Enter' && this._points.length >= 3) {
       // Close polyline
-      state.snapshot();
-      const poly = new Polyline(this._points, true);
-      state.addEntity(poly);
+      takeSnapshot();
+      this._commitSegments(true);
       this._points = [];
       this.app.renderer.previewEntities = [];
       this.setStatus('Polyline: Click first point');
