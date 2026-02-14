@@ -66,18 +66,25 @@ class App {
     this.activeTool = this.tools.select;
     this.activeTool.activate();
 
+    // Left panel state
+    this._lpHoverPrimId = null;    // primitive hovered from left panel
+    this._lpHoverConstraintId = null; // constraint hovered from left panel
+    this._lpSelectedConstraintId = null; // constraint selected in left panel
+
     // Bind events
     this._bindCanvasEvents();
     this._bindToolbarEvents();
     this._bindKeyboardEvents();
     this._bindResizeEvent();
     this._bindStateEvents();
+    this._bindLeftPanelEvents();
 
     // Register viewport for persistence and restore saved project
     setViewport(this.viewport);
     const loaded = loadProject();
     if (loaded.ok) {
       this._rebuildLayersPanel();
+      this._rebuildLeftPanel();
       if (!loaded.hasViewport && state.entities.length > 0) {
         this.viewport.fitEntities(state.entities);
       }
@@ -126,7 +133,7 @@ class App {
     const topBar = 34;
     const panelBottomHeight = mobile ? Math.floor(window.innerHeight * 0.36) : 0;
 
-    const width = Math.max(1, window.innerWidth - panelWidth);
+    const width = Math.max(1, window.innerWidth - panelWidth * 2);
     const height = Math.max(1, window.innerHeight - topBar - bottomBars - panelBottomHeight);
 
     if (width !== this.viewport.width || height !== this.viewport.height) {
@@ -164,6 +171,9 @@ class App {
         `X: ${display.x.toFixed(2)}  Y: ${display.y.toFixed(2)}`;
 
       this.activeTool.onMouseMove(world.x, world.y, sx, sy);
+
+      // Update left panel highlights when canvas hover changes
+      this._updateLeftPanelHighlights();
 
       const dt = performance.now() - t0;
       if (dt > 12) {
@@ -764,9 +774,13 @@ class App {
   _bindStateEvents() {
     state.on('change', () => {
       this._scheduleRender();
+      this._rebuildLeftPanel();
       debouncedSave();
     });
-    state.on('selection:change', (sel) => this._updatePropertiesPanel(sel));
+    state.on('selection:change', (sel) => {
+      this._updatePropertiesPanel(sel);
+      this._rebuildLeftPanel();
+    });
     state.on('layers:change', () => {
       this._rebuildLayersPanel();
       debouncedSave();
@@ -774,6 +788,7 @@ class App {
     state.on('file:loaded', () => {
       this.viewport.fitEntities(state.entities);
       this._rebuildLayersPanel();
+      this._rebuildLeftPanel();
       this._scheduleRender();
     });
   }
@@ -838,6 +853,323 @@ class App {
       panel.innerHTML = `<p class="hint">${selection.length} entities selected</p>`;
     }
     this._scheduleRender();
+  }
+
+  // --- Left panel (Primitives & Constraints) ---
+  _bindLeftPanelEvents() {
+    // Handle DELETE key on selected constraint
+    document.getElementById('left-panel').addEventListener('keydown', (e) => {
+      if ((e.key === 'Delete' || e.key === 'Backspace') && this._lpSelectedConstraintId != null) {
+        const c = state.scene.constraints.find(c => c.id === this._lpSelectedConstraintId);
+        if (c) {
+          takeSnapshot();
+          state.scene.removeConstraint(c);
+          this._lpSelectedConstraintId = null;
+          state.emit('change');
+          this._scheduleRender();
+        }
+        e.preventDefault();
+      }
+    });
+  }
+
+  _rebuildLeftPanel() {
+    this._rebuildPrimitivesList();
+    this._rebuildConstraintsList();
+  }
+
+  /** Get a short icon string for a primitive type */
+  _primIcon(type) {
+    const icons = { segment: '╱', circle: '○', arc: '◠', point: '·', text: 'T', dimension: '↔' };
+    return icons[type] || '?';
+  }
+
+  /** Get a short icon string for a constraint type */
+  _constraintIcon(type) {
+    const icons = {
+      coincident: '⊙', distance: '↔', fixed: '⊕',
+      horizontal: 'H', vertical: 'V',
+      parallel: '∥', perpendicular: '⊥', angle: '∠',
+      equal_length: '=', length: 'L',
+      radius: 'R', tangent: 'T',
+      on_line: '—·', on_circle: '○·', midpoint: 'M',
+    };
+    return icons[type] || type;
+  }
+
+  /** Describe a constraint in a compact way */
+  _constraintLabel(c) {
+    const t = c.type.replace(/_/g, ' ');
+    let details = '';
+    if (c.value !== undefined) details = ` (${typeof c.value === 'number' ? c.value.toFixed(2) : c.value})`;
+    if (c.fx !== undefined) details = ` (${c.fx.toFixed(1)}, ${c.fy.toFixed(1)})`;
+    return `${t} #${c.id}${details}`;
+  }
+
+  /** Get all primitive IDs involved in a constraint */
+  _constraintPrimIds(c) {
+    const ids = new Set();
+    if (c.ptA) ids.add(c.ptA.id);
+    if (c.ptB) ids.add(c.ptB.id);
+    if (c.pt) ids.add(c.pt.id);
+    if (c.seg) { ids.add(c.seg.id); ids.add(c.seg.p1.id); ids.add(c.seg.p2.id); }
+    if (c.segA) { ids.add(c.segA.id); ids.add(c.segA.p1.id); ids.add(c.segA.p2.id); }
+    if (c.segB) { ids.add(c.segB.id); ids.add(c.segB.p1.id); ids.add(c.segB.p2.id); }
+    if (c.circle) { ids.add(c.circle.id); ids.add(c.circle.center.id); }
+    if (c.shape) { ids.add(c.shape.id); ids.add(c.shape.center.id); }
+    return ids;
+  }
+
+  /** Get all shape primitives (non-point) involved in a constraint */
+  _constraintShapes(c) {
+    const shapes = [];
+    if (c.seg) shapes.push(c.seg);
+    if (c.segA) shapes.push(c.segA);
+    if (c.segB) shapes.push(c.segB);
+    if (c.circle) shapes.push(c.circle);
+    if (c.shape) shapes.push(c.shape);
+    return shapes;
+  }
+
+  _rebuildPrimitivesList() {
+    const list = document.getElementById('primitives-list');
+    list.innerHTML = '';
+    const scene = state.scene;
+    const allShapes = [...scene.shapes()];
+
+    if (allShapes.length === 0) {
+      list.innerHTML = '<p class="hint">No primitives</p>';
+      return;
+    }
+
+    for (const prim of allShapes) {
+      const row = document.createElement('div');
+      row.className = 'lp-item';
+      row.dataset.primId = prim.id;
+      row.dataset.primType = prim.type;
+
+      // Mark as selected if the primitive is selected in the scene
+      if (prim.selected) row.classList.add('selected');
+
+      // Mark as highlighted if this primitive is being hovered on the canvas
+      const hoverEnt = this.renderer.hoverEntity;
+      if (hoverEnt && hoverEnt.id === prim.id) row.classList.add('highlight');
+
+      // Mark as highlighted if a constraint in the left panel references this primitive
+      if (this._lpHoverConstraintId != null) {
+        const hc = scene.constraints.find(c => c.id === this._lpHoverConstraintId);
+        if (hc && this._constraintPrimIds(hc).has(prim.id)) {
+          row.classList.add('highlight');
+        }
+      }
+
+      const typeName = prim.type.charAt(0).toUpperCase() + prim.type.slice(1);
+      let desc = `${typeName} #${prim.id}`;
+      if (prim.type === 'text') desc = `Text #${prim.id} "${prim.text}"`;
+
+      row.innerHTML = `<span class="lp-icon">${this._primIcon(prim.type)}</span><span class="lp-label">${desc}</span>`;
+
+      // Mouse events for cross-highlighting
+      row.addEventListener('mouseenter', () => {
+        this._lpHoverPrimId = prim.id;
+        this.renderer.hoverEntity = prim;
+        this._scheduleRender();
+        this._updateLeftPanelHighlights();
+      });
+      row.addEventListener('mouseleave', () => {
+        this._lpHoverPrimId = null;
+        if (this.renderer.hoverEntity === prim) this.renderer.hoverEntity = null;
+        this._scheduleRender();
+        this._updateLeftPanelHighlights();
+      });
+
+      // Click to select/deselect and filter constraints
+      row.addEventListener('click', (e) => {
+        if (!e.shiftKey) state.clearSelection();
+        if (prim.selected && e.shiftKey) {
+          state.deselect(prim);
+        } else {
+          state.select(prim);
+        }
+        this._scheduleRender();
+      });
+
+      list.appendChild(row);
+    }
+  }
+
+  _rebuildConstraintsList() {
+    const list = document.getElementById('constraints-list');
+    const badge = document.getElementById('constraints-filter-badge');
+    list.innerHTML = '';
+    const scene = state.scene;
+
+    // Filter constraints by selected primitives
+    const sel = state.selectedEntities;
+    let constraints = scene.constraints;
+    let filtered = false;
+
+    if (sel.length > 0) {
+      const selIds = new Set(sel.map(e => e.id));
+      // Also include IDs of points belonging to selected shapes
+      for (const e of sel) {
+        if (e.type === 'segment') { selIds.add(e.p1.id); selIds.add(e.p2.id); }
+        if (e.type === 'circle' || e.type === 'arc') { selIds.add(e.center.id); }
+      }
+      constraints = constraints.filter(c => {
+        const cIds = this._constraintPrimIds(c);
+        for (const id of cIds) {
+          if (selIds.has(id)) return true;
+        }
+        return false;
+      });
+      filtered = true;
+    }
+
+    badge.style.display = filtered ? 'inline' : 'none';
+    badge.onclick = () => {
+      state.clearSelection();
+      this._scheduleRender();
+    };
+
+    if (constraints.length === 0) {
+      list.innerHTML = `<p class="hint">${filtered ? 'No related constraints' : 'No constraints'}</p>`;
+      return;
+    }
+
+    for (const c of constraints) {
+      const row = document.createElement('div');
+      row.className = 'lp-item';
+      row.dataset.constraintId = c.id;
+      row.tabIndex = 0; // make focusable for keyboard delete
+
+      if (this._lpSelectedConstraintId === c.id) row.classList.add('selected');
+
+      // Highlight if canvas is hovering a primitive that this constraint references
+      const hoverEnt = this.renderer.hoverEntity;
+      if (hoverEnt) {
+        const cIds = this._constraintPrimIds(c);
+        if (cIds.has(hoverEnt.id)) row.classList.add('highlight');
+      }
+
+      // Highlight if a primitive in the left panel is hovered and this constraint references it
+      if (this._lpHoverPrimId != null) {
+        const cIds = this._constraintPrimIds(c);
+        if (cIds.has(this._lpHoverPrimId)) row.classList.add('highlight');
+      }
+
+      const satisfied = c.error() < 1e-4;
+      const iconColor = satisfied ? 'color:rgba(0,230,118,0.9)' : 'color:rgba(255,100,60,0.9)';
+
+      row.innerHTML = `<span class="lp-icon" style="${iconColor}">${this._constraintIcon(c.type)}</span>` +
+        `<span class="lp-label">${this._constraintLabel(c)}</span>` +
+        `<button class="lp-delete" title="Delete constraint">✕</button>`;
+
+      // Mouse events for cross-highlighting
+      row.addEventListener('mouseenter', () => {
+        this._lpHoverConstraintId = c.id;
+        // Highlight the first shape involved in the constraint on the canvas
+        const shapes = this._constraintShapes(c);
+        if (shapes.length > 0) this.renderer.hoverEntity = shapes[0];
+        this._scheduleRender();
+        this._updateLeftPanelHighlights();
+      });
+      row.addEventListener('mouseleave', () => {
+        this._lpHoverConstraintId = null;
+        const shapes = this._constraintShapes(c);
+        if (shapes.includes(this.renderer.hoverEntity)) this.renderer.hoverEntity = null;
+        this._scheduleRender();
+        this._updateLeftPanelHighlights();
+      });
+
+      // Click to select constraint
+      row.addEventListener('click', (e) => {
+        if (e.target.classList.contains('lp-delete')) return;
+        this._lpSelectedConstraintId = (this._lpSelectedConstraintId === c.id) ? null : c.id;
+        this._updateLeftPanelHighlights();
+        row.focus();
+      });
+
+      // Delete button
+      row.querySelector('.lp-delete').addEventListener('click', () => {
+        takeSnapshot();
+        state.scene.removeConstraint(c);
+        if (this._lpSelectedConstraintId === c.id) this._lpSelectedConstraintId = null;
+        state.emit('change');
+        this._scheduleRender();
+      });
+
+      // DELETE key on focused constraint row
+      row.addEventListener('keydown', (e) => {
+        if (e.key === 'Delete' || e.key === 'Backspace') {
+          takeSnapshot();
+          state.scene.removeConstraint(c);
+          if (this._lpSelectedConstraintId === c.id) this._lpSelectedConstraintId = null;
+          state.emit('change');
+          this._scheduleRender();
+          e.preventDefault();
+          e.stopPropagation();
+        }
+      });
+
+      list.appendChild(row);
+    }
+  }
+
+  /** Update highlight classes on left panel items without full rebuild */
+  _updateLeftPanelHighlights() {
+    const scene = state.scene;
+    // Update primitives list highlights
+    const primItems = document.querySelectorAll('#primitives-list .lp-item');
+    for (const item of primItems) {
+      const id = parseInt(item.dataset.primId);
+      let hl = false;
+
+      // Highlight if this prim is hovered on canvas
+      const hoverEnt = this.renderer.hoverEntity;
+      if (hoverEnt && hoverEnt.id === id) hl = true;
+
+      // Highlight if a constraint being hovered references this prim
+      if (this._lpHoverConstraintId != null) {
+        const hc = scene.constraints.find(c => c.id === this._lpHoverConstraintId);
+        if (hc && this._constraintPrimIds(hc).has(id)) hl = true;
+      }
+
+      item.classList.toggle('highlight', hl);
+
+      // Update selected class
+      const prim = [...scene.shapes()].find(s => s.id === id);
+      item.classList.toggle('selected', prim ? prim.selected : false);
+    }
+
+    // Update constraints list highlights
+    const cItems = document.querySelectorAll('#constraints-list .lp-item');
+    for (const item of cItems) {
+      const cId = parseInt(item.dataset.constraintId);
+      let hl = false;
+
+      // Highlight if canvas hover target is referenced by this constraint
+      const hoverEnt = this.renderer.hoverEntity;
+      if (hoverEnt) {
+        const c = scene.constraints.find(c => c.id === cId);
+        if (c && this._constraintPrimIds(c).has(hoverEnt.id)) hl = true;
+      }
+
+      // Highlight if a primitive hovered in left panel is referenced by this constraint
+      if (this._lpHoverPrimId != null) {
+        const c = scene.constraints.find(c => c.id === cId);
+        if (c && this._constraintPrimIds(c).has(this._lpHoverPrimId)) hl = true;
+      }
+
+      item.classList.toggle('highlight', hl);
+      item.classList.toggle('selected', this._lpSelectedConstraintId === cId);
+    }
+
+    // Scroll highlighted items into view
+    const highlightedPrim = document.querySelector('#primitives-list .lp-item.highlight');
+    if (highlightedPrim) highlightedPrim.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    const highlightedConstraint = document.querySelector('#constraints-list .lp-item.highlight');
+    if (highlightedConstraint) highlightedConstraint.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   }
 
   // --- Layers panel ---
