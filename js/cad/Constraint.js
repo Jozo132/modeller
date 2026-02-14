@@ -11,17 +11,64 @@ let _nextCId = 1;
 export function resetConstraintIds(v = 1) { _nextCId = v; }
 
 // ---------------------------------------------------------------------------
+// Named variables — a simple store that constraints can reference by name
+// ---------------------------------------------------------------------------
+const _variables = new Map(); // name → number
+
+export function setVariable(name, value) { _variables.set(name, value); }
+export function getVariable(name) { return _variables.get(name); }
+export function removeVariable(name) { _variables.delete(name); }
+export function getAllVariables() { return new Map(_variables); }
+export function clearVariables() { _variables.clear(); }
+export function serializeVariables() {
+  const out = {};
+  for (const [k, v] of _variables) out[k] = v;
+  return out;
+}
+export function deserializeVariables(data) {
+  _variables.clear();
+  if (data && typeof data === 'object') {
+    for (const [k, v] of Object.entries(data)) _variables.set(k, Number(v));
+  }
+}
+
+/** Resolve a value that may be a number or a variable name string. */
+export function resolveValue(val) {
+  if (typeof val === 'number') return val;
+  if (typeof val === 'string') {
+    const v = _variables.get(val);
+    return v !== undefined ? v : NaN;
+  }
+  return NaN;
+}
+
+// ---------------------------------------------------------------------------
 // Base
 // ---------------------------------------------------------------------------
 export class Constraint {
   constructor(type) {
     this.id = _nextCId++;
     this.type = type;
+    this.min = null; // optional limit range minimum
+    this.max = null; // optional limit range maximum
   }
   error() { return 0; }
   apply() {}
   involvedPoints() { return []; }
-  serialize() { return { id: this.id, type: this.type }; }
+  /** Check if this constraint type has an editable value. */
+  get editable() { return false; }
+  serialize() {
+    const out = { id: this.id, type: this.type };
+    if (this.min != null) out.min = this.min;
+    if (this.max != null) out.max = this.max;
+    return out;
+  }
+  /** Clamp a value to the constraint's limit range if set. */
+  clampToRange(v) {
+    if (this.min != null && v < this.min) v = this.min;
+    if (this.max != null && v > this.max) v = this.max;
+    return v;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -57,17 +104,21 @@ export class Distance extends Constraint {
     super('distance');
     this.ptA = ptA;
     this.ptB = ptB;
-    this.value = value;
+    this.value = value; // number or variable name string
   }
+  get editable() { return true; }
+  _resolvedValue() { return this.clampToRange(resolveValue(this.value)); }
   error() {
-    return Math.abs(Math.hypot(this.ptB.x - this.ptA.x, this.ptB.y - this.ptA.y) - this.value);
+    return Math.abs(Math.hypot(this.ptB.x - this.ptA.x, this.ptB.y - this.ptA.y) - this._resolvedValue());
   }
   apply() {
     const a = this.ptA, b = this.ptB;
     if (a.fixed && b.fixed) return;
+    const target = this._resolvedValue();
+    if (isNaN(target)) return;
     const dx = b.x - a.x, dy = b.y - a.y;
     const d = Math.hypot(dx, dy) || 1e-9;
-    const err = d - this.value;
+    const err = d - target;
     const ux = dx / d, uy = dy / d;
     if (a.fixed) {
       b.x -= ux * err; b.y -= uy * err;
@@ -94,6 +145,7 @@ export class Fixed extends Constraint {
     this.fy = y ?? pt.y;
     pt.fixed = true;
   }
+  get editable() { return true; }
   error() {
     return Math.hypot(this.pt.x - this.fx, this.pt.y - this.fy);
   }
@@ -271,8 +323,10 @@ export class Angle extends Constraint {
     super('angle');
     this.segA = segA;
     this.segB = segB;
-    this.value = value; // radians
+    this.value = value; // radians, number or variable name
   }
+  get editable() { return true; }
+  _resolvedValue() { return this.clampToRange(resolveValue(this.value)); }
   error() {
     const dxA = this.segA.x2 - this.segA.x1, dyA = this.segA.y2 - this.segA.y1;
     const dxB = this.segB.x2 - this.segB.x1, dyB = this.segB.y2 - this.segB.y1;
@@ -281,16 +335,18 @@ export class Angle extends Constraint {
     let diff = b - a;
     while (diff > Math.PI) diff -= 2 * Math.PI;
     while (diff < -Math.PI) diff += 2 * Math.PI;
-    return Math.abs(diff - this.value);
+    return Math.abs(diff - this._resolvedValue());
   }
   apply() {
+    const target = this._resolvedValue();
+    if (isNaN(target)) return;
     const dxA = this.segA.x2 - this.segA.x1, dyA = this.segA.y2 - this.segA.y1;
     const angleA = Math.atan2(dyA, dxA);
-    const target = angleA + this.value;
+    const targetAngle = angleA + target;
 
     const dxB = this.segB.x2 - this.segB.x1, dyB = this.segB.y2 - this.segB.y1;
     const lenB = Math.hypot(dxB, dyB) || 1e-9;
-    const ux = Math.cos(target), uy = Math.sin(target);
+    const ux = Math.cos(targetAngle), uy = Math.sin(targetAngle);
 
     const mx = this.segB.midX, my = this.segB.midY;
     const halfLen = lenB / 2;
@@ -333,10 +389,16 @@ export class Length extends Constraint {
   constructor(seg, value) {
     super('length');
     this.seg = seg;
-    this.value = value;
+    this.value = value; // number or variable name
   }
-  error() { return Math.abs(this.seg.length - this.value); }
-  apply() { _scaleSegToLength(this.seg, this.value); }
+  get editable() { return true; }
+  _resolvedValue() { return this.clampToRange(resolveValue(this.value)); }
+  error() { return Math.abs(this.seg.length - this._resolvedValue()); }
+  apply() {
+    const target = this._resolvedValue();
+    if (isNaN(target)) return;
+    _scaleSegToLength(this.seg, target);
+  }
   involvedPoints() { return [this.seg.p1, this.seg.p2]; }
   serialize() { return { ...super.serialize(), seg: this.seg.id, value: this.value }; }
 }
@@ -348,10 +410,16 @@ export class RadiusConstraint extends Constraint {
   constructor(shape, value) {
     super('radius');
     this.shape = shape; // PCircle or PArc
-    this.value = value;
+    this.value = value; // number or variable name
   }
-  error() { return Math.abs(this.shape.radius - this.value); }
-  apply() { this.shape.radius = this.value; }
+  get editable() { return true; }
+  _resolvedValue() { return this.clampToRange(resolveValue(this.value)); }
+  error() { return Math.abs(this.shape.radius - this._resolvedValue()); }
+  apply() {
+    const target = this._resolvedValue();
+    if (isNaN(target)) return;
+    this.shape.radius = target;
+  }
   involvedPoints() { return [this.shape.center]; }
   serialize() { return { ...super.serialize(), shape: this.shape.id, value: this.value }; }
 }

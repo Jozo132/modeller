@@ -12,7 +12,8 @@ import { showConfirm, showPrompt } from './ui/popup.js';
 import {
   Coincident, Horizontal, Vertical,
   Parallel, Perpendicular, EqualLength,
-  Fixed, Distance, Tangent,
+  Fixed, Distance, Tangent, Angle,
+  resolveValue, setVariable, getVariable, removeVariable, getAllVariables,
 } from './cad/Constraint.js';
 import { union } from './cad/Operations.js';
 import {
@@ -22,7 +23,7 @@ import {
   TrimTool, SplitTool, DisconnectTool, UnionTool,
   CoincidentTool, HorizontalTool, VerticalTool,
   ParallelTool, PerpendicularTool, DistanceConstraintTool,
-  LockTool, EqualTool, TangentTool,
+  LockTool, EqualTool, TangentTool, AngleTool,
 } from './tools/index.js';
 
 class App {
@@ -62,6 +63,7 @@ class App {
       lock:          new LockTool(this),
       equal:         new EqualTool(this),
       tangent:       new TangentTool(this),
+      angle:         new AngleTool(this),
     };
     this.activeTool = this.tools.select;
     this.activeTool.activate();
@@ -295,6 +297,38 @@ class App {
           takeSnapshot();
           state.scene.addConstraint(new Tangent(segments[0], curves[0]));
           applied = true;
+        }
+        break;
+
+      // --- Angle: 2 segments ---
+      case 'angle':
+        if (segments.length === 2) {
+          const segA = segments[0], segB = segments[1];
+          const dxA = segA.x2 - segA.x1, dyA = segA.y2 - segA.y1;
+          const dxB = segB.x2 - segB.x1, dyB = segB.y2 - segB.y1;
+          const aA = Math.atan2(dyA, dxA);
+          const aB = Math.atan2(dyB, dxB);
+          let diff = aB - aA;
+          while (diff > Math.PI) diff -= 2 * Math.PI;
+          while (diff < -Math.PI) diff += 2 * Math.PI;
+          const currentDeg = (diff * 180 / Math.PI).toFixed(2);
+          showPrompt({
+            title: 'Angle Constraint',
+            message: 'Enter angle in degrees:',
+            defaultValue: currentDeg,
+          }).then(val => {
+            if (val !== null && val !== '') {
+              const deg = parseFloat(val);
+              if (!isNaN(deg)) {
+                const rad = deg * Math.PI / 180;
+                takeSnapshot();
+                state.scene.addConstraint(new Angle(segA, segB, rad));
+                state.emit('change');
+                this._scheduleRender();
+              }
+            }
+          });
+          return true; // handled (async)
         }
         break;
     }
@@ -872,11 +906,35 @@ class App {
         e.preventDefault();
       }
     });
+
+    // Add variable button
+    document.getElementById('btn-add-variable').addEventListener('click', async () => {
+      const val = await showPrompt({
+        title: 'Add Variable',
+        message: 'Enter variable as name=value (e.g. width=50):',
+        defaultValue: '',
+      });
+      if (val !== null && val !== '') {
+        const eqIdx = val.indexOf('=');
+        if (eqIdx > 0) {
+          const name = val.substring(0, eqIdx).trim();
+          const num = parseFloat(val.substring(eqIdx + 1).trim());
+          if (name && !isNaN(num)) {
+            takeSnapshot();
+            setVariable(name, num);
+            state.scene.solve();
+            state.emit('change');
+            this._scheduleRender();
+          }
+        }
+      }
+    });
   }
 
   _rebuildLeftPanel() {
     this._rebuildPrimitivesList();
     this._rebuildConstraintsList();
+    this._rebuildVariablesList();
   }
 
   /** Get a short icon string for a primitive type */
@@ -902,8 +960,27 @@ class App {
   _constraintLabel(c) {
     const t = c.type.replace(/_/g, ' ');
     let details = '';
-    if (c.value !== undefined) details = ` (${typeof c.value === 'number' ? c.value.toFixed(2) : c.value})`;
+    if (c.value !== undefined) {
+      if (c.type === 'angle') {
+        // Show angle in degrees
+        if (typeof c.value === 'number') {
+          details = ` (${(c.value * 180 / Math.PI).toFixed(2)}°)`;
+        } else {
+          details = ` (${c.value})`;
+        }
+      } else if (typeof c.value === 'number') {
+        details = ` (${c.value.toFixed(2)})`;
+      } else {
+        details = ` (${c.value})`;
+      }
+    }
     if (c.fx !== undefined) details = ` (${c.fx.toFixed(1)}, ${c.fy.toFixed(1)})`;
+    // Show range if set
+    if (c.min != null || c.max != null) {
+      const lo = c.min != null ? c.min.toFixed(1) : '–∞';
+      const hi = c.max != null ? c.max.toFixed(1) : '∞';
+      details += ` [${lo}..${hi}]`;
+    }
     return `${t} #${c.id}${details}`;
   }
 
@@ -1062,8 +1139,10 @@ class App {
       const satisfied = c.error() < 1e-4;
       const iconColor = satisfied ? 'color:rgba(0,230,118,0.9)' : 'color:rgba(255,100,60,0.9)';
 
+      const editBtn = c.editable ? `<button class="lp-edit" title="Edit constraint value">✎</button>` : '';
       row.innerHTML = `<span class="lp-icon" style="${iconColor}">${this._constraintIcon(c.type)}</span>` +
         `<span class="lp-label">${this._constraintLabel(c)}</span>` +
+        editBtn +
         `<button class="lp-delete" title="Delete constraint">✕</button>`;
 
       // Mouse events for cross-highlighting
@@ -1085,11 +1164,26 @@ class App {
 
       // Click to select constraint
       row.addEventListener('click', (e) => {
-        if (e.target.classList.contains('lp-delete')) return;
+        if (e.target.classList.contains('lp-delete') || e.target.classList.contains('lp-edit')) return;
         this._lpSelectedConstraintId = (this._lpSelectedConstraintId === c.id) ? null : c.id;
         this._updateLeftPanelHighlights();
         row.focus();
       });
+
+      // Double-click to edit constraint value
+      if (c.editable) {
+        row.addEventListener('dblclick', (e) => {
+          if (e.target.classList.contains('lp-delete')) return;
+          this._editConstraint(c);
+        });
+      }
+
+      // Edit button
+      if (c.editable) {
+        row.querySelector('.lp-edit').addEventListener('click', () => {
+          this._editConstraint(c);
+        });
+      }
 
       // Delete button
       row.querySelector('.lp-delete').addEventListener('click', () => {
@@ -1111,6 +1205,154 @@ class App {
           e.preventDefault();
           e.stopPropagation();
         }
+      });
+
+      list.appendChild(row);
+    }
+  }
+
+  /** Edit a constraint value via prompt dialog */
+  async _editConstraint(c) {
+    if (c.type === 'fixed') {
+      const val = await showPrompt({
+        title: 'Edit Fixed Position',
+        message: 'Enter position as X, Y:',
+        defaultValue: `${c.fx.toFixed(4)}, ${c.fy.toFixed(4)}`,
+      });
+      if (val !== null && val !== '') {
+        const parts = val.split(',').map(s => s.trim());
+        if (parts.length === 2) {
+          const x = parseFloat(parts[0]), y = parseFloat(parts[1]);
+          if (!isNaN(x) && !isNaN(y)) {
+            takeSnapshot();
+            c.fx = x;
+            c.fy = y;
+            state.scene.solve();
+            state.emit('change');
+            this._scheduleRender();
+          }
+        }
+      }
+    } else if (c.type === 'angle') {
+      const currentDeg = typeof c.value === 'number' ? (c.value * 180 / Math.PI).toFixed(2) : String(c.value);
+      const rangeStr = (c.min != null || c.max != null)
+        ? ` [${c.min != null ? (c.min * 180 / Math.PI).toFixed(1) : ''}..${c.max != null ? (c.max * 180 / Math.PI).toFixed(1) : ''}]` : '';
+      const val = await showPrompt({
+        title: 'Edit Angle Constraint',
+        message: 'Enter angle in degrees (or variable name).\nOptionally add min..max range, e.g. "45 [0..90]":',
+        defaultValue: currentDeg + rangeStr,
+      });
+      if (val !== null && val !== '') {
+        const parsed = this._parseConstraintInput(val);
+        if (parsed) {
+          takeSnapshot();
+          const numVal = parseFloat(parsed.value);
+          if (!isNaN(numVal)) {
+            c.value = numVal * Math.PI / 180;
+          } else if (parsed.value.trim()) {
+            c.value = parsed.value.trim(); // variable name
+          } else {
+            return;
+          }
+          c.min = parsed.min != null ? parsed.min * Math.PI / 180 : null;
+          c.max = parsed.max != null ? parsed.max * Math.PI / 180 : null;
+          state.scene.solve();
+          state.emit('change');
+          this._scheduleRender();
+        }
+      }
+    } else {
+      // distance, length, radius
+      const currentVal = typeof c.value === 'number' ? c.value.toFixed(4) : String(c.value);
+      const rangeStr = (c.min != null || c.max != null)
+        ? ` [${c.min != null ? c.min.toFixed(1) : ''}..${c.max != null ? c.max.toFixed(1) : ''}]` : '';
+      const val = await showPrompt({
+        title: `Edit ${c.type.charAt(0).toUpperCase() + c.type.slice(1)} Constraint`,
+        message: 'Enter value (or variable name).\nOptionally add min..max range, e.g. "50 [10..100]":',
+        defaultValue: currentVal + rangeStr,
+      });
+      if (val !== null && val !== '') {
+        const parsed = this._parseConstraintInput(val);
+        if (parsed) {
+          takeSnapshot();
+          const numVal = parseFloat(parsed.value);
+          if (!isNaN(numVal) && numVal > 0) {
+            c.value = numVal;
+          } else if (isNaN(numVal) && parsed.value.trim()) {
+            c.value = parsed.value.trim(); // variable name
+          } else {
+            return; // invalid
+          }
+          c.min = parsed.min;
+          c.max = parsed.max;
+          state.scene.solve();
+          state.emit('change');
+          this._scheduleRender();
+        }
+      }
+    }
+  }
+
+  /** Parse constraint input string like "50 [10..100]" or "myVar [0..200]" */
+  _parseConstraintInput(input) {
+    const rangeMatch = input.match(/\[([^.]*)\.\.(.*)\]/);
+    let min = null, max = null;
+    if (rangeMatch) {
+      if (rangeMatch[1].trim()) min = parseFloat(rangeMatch[1]);
+      if (rangeMatch[2].trim()) max = parseFloat(rangeMatch[2]);
+      if ((min != null && isNaN(min)) || (max != null && isNaN(max))) return null;
+      input = input.replace(/\[.*\]/, '').trim();
+    }
+    return { value: input.trim(), min, max };
+  }
+
+  _rebuildVariablesList() {
+    const list = document.getElementById('variables-list');
+    list.innerHTML = '';
+    const vars = getAllVariables();
+
+    if (vars.size === 0) {
+      list.innerHTML = '<p class="hint">No variables</p>';
+      return;
+    }
+
+    for (const [name, value] of vars) {
+      const row = document.createElement('div');
+      row.className = 'lp-item';
+
+      row.innerHTML = `<span class="lp-icon" style="color:var(--accent)">𝑥</span>` +
+        `<span class="lp-label">${name} = ${value}</span>` +
+        `<button class="lp-edit" title="Edit variable">✎</button>` +
+        `<button class="lp-delete" title="Delete variable">✕</button>`;
+
+      row.querySelector('.lp-edit').addEventListener('click', async () => {
+        const val = await showPrompt({
+          title: 'Edit Variable',
+          message: `Variable "${name}" — enter new value:`,
+          defaultValue: String(value),
+        });
+        if (val !== null && val !== '') {
+          const num = parseFloat(val);
+          if (!isNaN(num)) {
+            takeSnapshot();
+            setVariable(name, num);
+            state.scene.solve();
+            state.emit('change');
+            this._scheduleRender();
+          }
+        }
+      });
+
+      row.addEventListener('dblclick', () => {
+        row.querySelector('.lp-edit').click();
+      });
+
+      row.querySelector('.lp-delete').addEventListener('click', async () => {
+        takeSnapshot();
+        removeVariable(name);
+        state.scene.solve();
+        state.emit('change');
+        this._scheduleRender();
       });
 
       list.appendChild(row);
