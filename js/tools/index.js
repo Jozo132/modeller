@@ -26,3 +26,4 @@ export { DistanceConstraintTool } from './DistanceConstraintTool.js';
 export { LockTool } from './LockTool.js';
 export { EqualTool } from './EqualTool.js';
 export { TangentTool } from './TangentTool.js';
+export { AngleTool } from './AngleTool.js';

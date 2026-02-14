@@ -327,13 +327,57 @@ html, body {
   visibility: hidden;
 }
 
+.lp-item .lp-edit {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0 2px;
+  line-height: 1;
+  visibility: hidden;
+}
+
 .lp-item:hover .lp-delete,
-.lp-item.highlight .lp-delete {
+.lp-item.highlight .lp-delete,
+.lp-item:hover .lp-edit,
+.lp-item.highlight .lp-edit {
   visibility: visible;
 }
 
 .lp-item .lp-delete:hover {
   color: #ff6644;
+}
+
+.lp-item .lp-edit:hover {
+  color: var(--accent-hover);
+}
+
+#variables-section {
+  min-height: 60px;
+  display: flex;
+  flex-direction: column;
+}
+
+#variables-list {
+  flex: 1;
+  overflow-y: auto;
+}
+
+#btn-add-variable {
+  width: 100%;
+  margin-top: 4px;
+  background: transparent;
+  color: var(--accent);
+  border: 1px dashed var(--border);
+  border-radius: 3px;
+  padding: 3px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+#btn-add-variable:hover {
+  background: rgba(0,120,212,0.1);
 }
 
 .filter-badge {

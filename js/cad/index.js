@@ -16,5 +16,8 @@ export {
   EqualLength, Length,
   RadiusConstraint, Tangent,
   OnLine, OnCircle, Midpoint,
+  resolveValue,
+  setVariable, getVariable, removeVariable, getAllVariables,
+  clearVariables, serializeVariables, deserializeVariables,
 } from './Constraint.js';
 export { disconnect, union, trim, split, movePoint, moveShape } from './Operations.js';

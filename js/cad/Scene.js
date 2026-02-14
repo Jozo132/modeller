@@ -7,7 +7,7 @@ import { TextPrimitive } from './TextPrimitive.js';
 import { DimensionPrimitive } from './DimensionPrimitive.js';
 import { solve } from './Solver.js';
 import { resetPrimitiveIds, peekNextPrimitiveId } from './Primitive.js';
-import { resetConstraintIds } from './Constraint.js';
+import { resetConstraintIds, serializeVariables, deserializeVariables, clearVariables } from './Constraint.js';
 import {
   Coincident, Distance, Fixed,
   Horizontal, Vertical,
@@ -269,6 +269,7 @@ export class Scene {
     this.dimensions = [];
     resetPrimitiveIds();
     resetConstraintIds();
+    clearVariables();
   }
 
   // -----------------------------------------------------------------------
@@ -284,6 +285,7 @@ export class Scene {
       constraints: this.constraints.map(c => c.serialize()),
       texts: this.texts.map(t => t.serialize()),
       dimensions: this.dimensions.map(d => d.serialize()),
+      variables: serializeVariables(),
     };
   }
 
@@ -377,12 +379,17 @@ export class Scene {
       const c = Scene._deserializeConstraint(d, ptMap, shapeMap);
       if (c) {
         c.id = d.id;
+        if (d.min != null) c.min = d.min;
+        if (d.max != null) c.max = d.max;
         scene.constraints.push(c);
         if (d.id > maxCId) maxCId = d.id;
       }
     }
 
-    // 8. Reset counters so new primitives get unique IDs
+    // 8. Restore named variables
+    deserializeVariables(data.variables);
+
+    // 9. Reset counters so new primitives get unique IDs
     resetPrimitiveIds(maxPrimId + 1);
     resetConstraintIds(maxCId + 1);
 

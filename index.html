@@ -49,6 +49,7 @@
       <button id="btn-lock" title="Lock Point" data-tool="lock"><svg viewBox="0 0 20 20"><rect x="4" y="9" width="12" height="9" rx="1.5" fill="none"/><path d="M7 9V6a3 3 0 016 0v3" fill="none"/></svg></button>
       <button id="btn-equal" title="Equal Length" data-tool="equal"><svg viewBox="0 0 20 20"><line x1="3" y1="8" x2="17" y2="8"/><line x1="3" y1="12" x2="17" y2="12"/></svg></button>
       <button id="btn-tangent" title="Tangent" data-tool="tangent"><svg viewBox="0 0 20 20"><circle cx="8" cy="10" r="5" fill="none"/><line x1="13" y1="4" x2="13" y2="16"/></svg></button>
+      <button id="btn-angle" title="Angle" data-tool="angle"><svg viewBox="0 0 20 20"><line x1="3" y1="17" x2="17" y2="17"/><line x1="3" y1="17" x2="12" y2="5"/><path d="M8 17 A5 5 0 0 1 6.5 13" fill="none"/><text x="9" y="15" font-size="6" fill="currentColor" stroke="none">∠</text></svg></button>
     </div>
     <div class="toolbar-sep"></div>
     <div class="tool-group">
@@ -95,6 +96,12 @@
     <div id="constraints-section">
       <h3>Constraints <span id="constraints-filter-badge" class="filter-badge" style="display:none" title="Filtered by selection">⊘</span></h3>
       <div id="constraints-list"></div>
+    </div>
+    <hr />
+    <div id="variables-section">
+      <h3>Variables</h3>
+      <div id="variables-list"></div>
+      <button id="btn-add-variable" title="Add Variable">+ Variable</button>
     </div>
   </div>
 
