@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>2D DXF Modeller</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <!-- Toolbar -->
+  <div id="toolbar">
+    <div class="tool-group">
+      <span class="group-label">File</span>
+      <button id="btn-new" title="New (Ctrl+N)">New</button>
+      <button id="btn-open" title="Open DXF">Open</button>
+      <button id="btn-save" title="Save DXF (Ctrl+S)">Save</button>
+    </div>
+    <div class="tool-group">
+      <span class="group-label">Draw</span>
+      <button id="btn-line" title="Line (L)" data-tool="line">Line</button>
+      <button id="btn-rect" title="Rectangle (R)" data-tool="rectangle">Rect</button>
+      <button id="btn-circle" title="Circle (C)" data-tool="circle">Circle</button>
+      <button id="btn-arc" title="Arc (A)" data-tool="arc">Arc</button>
+      <button id="btn-polyline" title="Polyline (P)" data-tool="polyline">Polyline</button>
+      <button id="btn-text" title="Text (T)" data-tool="text">Text</button>
+      <button id="btn-dimension" title="Dimension (D)" data-tool="dimension">Dim</button>
+    </div>
+    <div class="tool-group">
+      <span class="group-label">Edit</span>
+      <button id="btn-select" title="Select (Esc)" data-tool="select">Select</button>
+      <button id="btn-move" title="Move (M)" data-tool="move">Move</button>
+      <button id="btn-copy" title="Copy (Ctrl+D)" data-tool="copy">Copy</button>
+      <button id="btn-delete" title="Delete (Del)">Delete</button>
+      <button id="btn-undo" title="Undo (Ctrl+Z)">Undo</button>
+      <button id="btn-redo" title="Redo (Ctrl+Y)">Redo</button>
+    </div>
+    <div class="tool-group">
+      <span class="group-label">View</span>
+      <button id="btn-zoom-fit" title="Zoom Fit (F)">Fit</button>
+      <button id="btn-zoom-in" title="Zoom In (+)">+</button>
+      <button id="btn-zoom-out" title="Zoom Out (-)">-</button>
+      <button id="btn-grid-toggle" title="Toggle Grid (G)">Grid</button>
+    </div>
+    <div class="tool-group">
+      <span class="group-label">Snap</span>
+      <button id="btn-snap-toggle" title="Toggle Snap (S)" class="active">Snap</button>
+      <button id="btn-ortho-toggle" title="Toggle Ortho (O)">Ortho</button>
+    </div>
+  </div>
+
+  <!-- Properties Panel -->
+  <div id="properties-panel">
+    <h3>Properties</h3>
+    <div id="properties-content">
+      <p class="hint">Select an entity to view properties</p>
+    </div>
+    <hr />
+    <h3>Layers</h3>
+    <div id="layers-panel">
+      <div class="layer-row active-layer" data-layer="0">
+        <span class="layer-color" style="background:#fff"></span>
+        <span class="layer-name">0</span>
+        <button class="layer-visibility" title="Toggle visibility">&#128065;</button>
+      </div>
+    </div>
+    <button id="btn-add-layer" title="Add Layer">+ Layer</button>
+  </div>
+
+  <!-- Canvas -->
+  <canvas id="cad-canvas"></canvas>
+
+  <!-- Status Bar -->
+  <div id="status-bar">
+    <span id="status-tool">Tool: Select</span>
+    <span id="status-coords">X: 0.00 Y: 0.00</span>
+    <span id="status-snap">SNAP</span>
+    <span id="status-ortho">ORTHO</span>
+    <span id="status-message"></span>
+  </div>
+
+  <!-- Command Line -->
+  <div id="command-line">
+    <label for="cmd-input">Command:</label>
+    <input type="text" id="cmd-input" placeholder="Type command..." autocomplete="off" />
+  </div>
+
+  <!-- Hidden file input -->
+  <input type="file" id="file-input" accept=".dxf" style="display:none" />
+
+  <!-- Reusable popup modal -->
+  <div id="app-modal-root" class="app-modal-root" aria-hidden="true"></div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

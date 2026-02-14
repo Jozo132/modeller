@@ -1,0 +1,8 @@
+{
+  "name": "dxf-modeller",
+  "version": "1.0.0",
+  "description": "2D Canvas DXF Modeller",
+  "scripts": {
+    "start": "npx serve ."
+  }
+}
