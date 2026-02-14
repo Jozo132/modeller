@@ -165,10 +165,21 @@ export class Parallel extends Constraint {
     return Math.abs((dxA * dyB - dyA * dxB) / (lenA * lenB));
   }
   apply() {
-    // Rotate segB to match segA's direction, keeping segB's midpoint fixed
+    // Rotate segB to match segA's direction.
+    // If segA is axis-aligned, enforce exact axis alignment on segB too.
     const dxA = this.segA.x2 - this.segA.x1, dyA = this.segA.y2 - this.segA.y1;
     const lenA = Math.hypot(dxA, dyA) || 1e-9;
-    const uxA = dxA / lenA, uyA = dyA / lenA;
+    let uxA = dxA / lenA, uyA = dyA / lenA;
+
+    // Preserve exact horizontal/vertical orientation when segA is near axis-aligned.
+    const axisTol = 1e-9;
+    if (Math.abs(dyA) <= axisTol * lenA) {
+      uyA = 0;
+      uxA = dxA >= 0 ? 1 : -1;
+    } else if (Math.abs(dxA) <= axisTol * lenA) {
+      uxA = 0;
+      uyA = dyA >= 0 ? 1 : -1;
+    }
 
     const dxB = this.segB.x2 - this.segB.x1, dyB = this.segB.y2 - this.segB.y1;
     const lenB = Math.hypot(dxB, dyB) || 1e-9;
@@ -177,16 +188,32 @@ export class Parallel extends Constraint {
     const dot = dxB * uxA + dyB * uyA;
     const sign = dot >= 0 ? 1 : -1;
 
+    const dirX = sign * uxA;
+    const dirY = sign * uyA;
+    const p1 = this.segB.p1;
+    const p2 = this.segB.p2;
+
+    if (p1.fixed && p2.fixed) return;
+
+    // One fixed endpoint: move the other along the target direction.
+    if (p1.fixed && !p2.fixed) {
+      p2.x = p1.x + dirX * lenB;
+      p2.y = p1.y + dirY * lenB;
+      return;
+    }
+    if (!p1.fixed && p2.fixed) {
+      p1.x = p2.x - dirX * lenB;
+      p1.y = p2.y - dirY * lenB;
+      return;
+    }
+
+    // No fixed endpoints: keep segB midpoint fixed.
     const mx = this.segB.midX, my = this.segB.midY;
     const halfLen = lenB / 2;
-    if (!this.segB.p1.fixed) {
-      this.segB.p1.x = mx - sign * uxA * halfLen;
-      this.segB.p1.y = my - sign * uyA * halfLen;
-    }
-    if (!this.segB.p2.fixed) {
-      this.segB.p2.x = mx + sign * uxA * halfLen;
-      this.segB.p2.y = my + sign * uyA * halfLen;
-    }
+    p1.x = mx - dirX * halfLen;
+    p1.y = my - dirY * halfLen;
+    p2.x = mx + dirX * halfLen;
+    p2.y = my + dirY * halfLen;
   }
   involvedPoints() { return [this.segA.p1, this.segA.p2, this.segB.p1, this.segB.p2]; }
   serialize() { return { ...super.serialize(), segA: this.segA.id, segB: this.segB.id }; }

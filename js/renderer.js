@@ -4,6 +4,7 @@ import { state } from './state.js';
 import { error as logError } from './logger.js';
 
 const SNAP_MARKER_SIZE = 6;
+const FULLY_CONSTRAINED_COLOR = '#123a5a';
 
 export class Renderer {
   constructor(viewport) {
@@ -26,6 +27,9 @@ export class Renderer {
       ctx.clearRect(0, 0, vp.width, vp.height);
       ctx.fillStyle = '#1a1a2e';
       ctx.fillRect(0, 0, vp.width, vp.height);
+
+      // Compute fully-constrained sets for this frame
+      this._fc = _computeFullyConstrained(state.scene);
 
       if (state.gridVisible) this._drawGrid();
       this._drawAxes();
@@ -128,7 +132,10 @@ export class Renderer {
       if (!entity.visible) continue;
       if (!state.isLayerVisible(entity.layer)) continue;
 
-      const color = entity.color || state.getLayerColor(entity.layer);
+      const baseColor = entity.color || state.getLayerColor(entity.layer);
+      const color = this._fc.entities.has(entity)
+        ? FULLY_CONSTRAINED_COLOR
+        : baseColor;
 
       if (entity.selected) {
         ctx.strokeStyle = '#00bfff';
@@ -170,14 +177,28 @@ export class Renderer {
     ctx.save();
     for (const pt of scene.points) {
       const s = vp.worldToScreen(pt.x, pt.y);
-      // How many shapes share this point?
+      const isHover = pt === this.hoverEntity;
+      // Show all points that are shared, fixed, selected, or hovered
       const refs = scene.shapesUsingPoint(pt).length;
-      if (refs <= 1 && !pt.selected && !pt.fixed) continue; // skip lonely points
-      const r = pt.selected ? 5 : (pt.fixed ? 4 : 3);
-      ctx.fillStyle = pt.fixed ? '#ff6644' : (pt.selected ? '#00bfff' : 'rgba(255,255,0,0.55)');
+      if (refs <= 1 && !pt.selected && !pt.fixed && !isHover) continue;
+      const isFCPt = this._fc.points.has(pt);
+      const r = pt.selected ? 5.5 : (isHover ? 5 : ((pt.fixed || isFCPt) ? 4.5 : 3.5));
+      ctx.fillStyle = pt.selected ? '#00bfff'
+        : isHover ? '#7fd8ff'
+        : isFCPt ? FULLY_CONSTRAINED_COLOR
+        : pt.fixed ? '#ff6644'
+        : 'rgba(255,255,0,0.55)';
       ctx.beginPath();
       ctx.arc(s.x, s.y, r, 0, Math.PI * 2);
       ctx.fill();
+      // Draw a ring around selected / hovered points for clarity
+      if (pt.selected || isHover) {
+        ctx.strokeStyle = pt.selected ? '#00bfff' : '#7fd8ff';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, r + 2.5, 0, Math.PI * 2);
+        ctx.stroke();
+      }
     }
     ctx.restore();
   }
@@ -300,6 +321,223 @@ export class Renderer {
     ctx.stroke();
     ctx.restore();
   }
+}
+
+// ---------------------------------------------------------------------------
+// Recursive DOF propagation for fully-constrained evaluation.
+// Starts from fixed points and follows constraints + shared-point topology.
+//
+// Per-point state: xLock / yLock (axis determined), radialSources (set of
+// FC points with known-distance), onFCLine (on a line whose two endpoints
+// are FC).  A point is FC when enough independent constraints remove both
+// degrees of freedom.
+//
+// Per-segment state: dirKnown (angle is determined, from H/V/Parallel/
+// Perpendicular/Angle), lenKnown (length is determined, from Length/
+// EqualLength/Distance between its endpoints).
+//
+// Key derived rule: dirKnown + lenKnown + one endpoint FC → other FC.
+// ---------------------------------------------------------------------------
+
+function _computeFullyConstrained(scene) {
+  // --- per-point state ---
+  const ps = new Map();
+  for (const pt of scene.points) {
+    ps.set(pt, {
+      xLock: !!pt.fixed,
+      yLock: !!pt.fixed,
+      radials: new Set(), // FC points we have a known distance from
+      onFCLine: false,
+    });
+  }
+
+  // --- per-segment state ---
+  const ss = new Map();
+  for (const seg of scene.segments) {
+    ss.set(seg, { dirKnown: false, lenKnown: false });
+  }
+
+  // --- helpers ---
+  const isFC = (s) => {
+    if (!s) return false;
+    if (s.xLock && s.yLock) return true;
+    const axes = (s.xLock ? 1 : 0) + (s.yLock ? 1 : 0);
+    if (axes >= 1 && (s.radials.size >= 1 || s.onFCLine)) return true;
+    if (s.radials.size >= 2) return true;
+    if (s.onFCLine && s.radials.size >= 1) return true;
+    return false;
+  };
+  const markFC = (s) => {
+    if (!s) return false;
+    let ch = false;
+    if (!s.xLock) { s.xLock = true; ch = true; }
+    if (!s.yLock) { s.yLock = true; ch = true; }
+    return ch;
+  };
+
+  // --- fixed-point iteration ---
+  let changed = true;
+  let safety = 100;
+  while (changed && safety-- > 0) {
+    changed = false;
+
+    for (const c of scene.constraints) {
+      switch (c.type) {
+
+        case 'fixed': {
+          const s = ps.get(c.pt);
+          if (s && markFC(s)) changed = true;
+          break;
+        }
+
+        case 'coincident': {
+          const sa = ps.get(c.ptA), sb = ps.get(c.ptB);
+          if (sa && sb) {
+            if (sa.xLock && !sb.xLock) { sb.xLock = true; changed = true; }
+            if (sb.xLock && !sa.xLock) { sa.xLock = true; changed = true; }
+            if (sa.yLock && !sb.yLock) { sb.yLock = true; changed = true; }
+            if (sb.yLock && !sa.yLock) { sa.yLock = true; changed = true; }
+            if (isFC(sa) && !isFC(sb) && markFC(sb)) changed = true;
+            if (isFC(sb) && !isFC(sa) && markFC(sa)) changed = true;
+          }
+          break;
+        }
+
+        case 'horizontal': {
+          const si = ss.get(c.seg);
+          if (si && !si.dirKnown) { si.dirKnown = true; changed = true; }
+          const s1 = ps.get(c.seg.p1), s2 = ps.get(c.seg.p2);
+          if (s1 && s2) {
+            if (s1.yLock && !s2.yLock) { s2.yLock = true; changed = true; }
+            if (s2.yLock && !s1.yLock) { s1.yLock = true; changed = true; }
+          }
+          break;
+        }
+
+        case 'vertical': {
+          const si = ss.get(c.seg);
+          if (si && !si.dirKnown) { si.dirKnown = true; changed = true; }
+          const s1 = ps.get(c.seg.p1), s2 = ps.get(c.seg.p2);
+          if (s1 && s2) {
+            if (s1.xLock && !s2.xLock) { s2.xLock = true; changed = true; }
+            if (s2.xLock && !s1.xLock) { s1.xLock = true; changed = true; }
+          }
+          break;
+        }
+
+        case 'parallel':
+        case 'perpendicular':
+        case 'angle': {
+          const siA = ss.get(c.segA), siB = ss.get(c.segB);
+          if (siA && siB) {
+            if (siA.dirKnown && !siB.dirKnown) { siB.dirKnown = true; changed = true; }
+            if (siB.dirKnown && !siA.dirKnown) { siA.dirKnown = true; changed = true; }
+          }
+          break;
+        }
+
+        case 'length': {
+          const si = ss.get(c.seg);
+          if (si && !si.lenKnown) { si.lenKnown = true; changed = true; }
+          break;
+        }
+
+        case 'equal_length': {
+          const siA = ss.get(c.segA), siB = ss.get(c.segB);
+          if (siA && siB) {
+            if (siA.lenKnown && !siB.lenKnown) { siB.lenKnown = true; changed = true; }
+            if (siB.lenKnown && !siA.lenKnown) { siA.lenKnown = true; changed = true; }
+          }
+          break;
+        }
+
+        case 'distance': {
+          const sa = ps.get(c.ptA), sb = ps.get(c.ptB);
+          if (sa && sb) {
+            if (isFC(sa) && !sb.radials.has(c.ptA)) { sb.radials.add(c.ptA); changed = true; }
+            if (isFC(sb) && !sa.radials.has(c.ptB)) { sa.radials.add(c.ptB); changed = true; }
+          }
+          // Also mark any segment between these endpoints as length-known
+          for (const seg of scene.segments) {
+            const si = ss.get(seg);
+            if (!si || si.lenKnown) continue;
+            if ((seg.p1 === c.ptA && seg.p2 === c.ptB) || (seg.p1 === c.ptB && seg.p2 === c.ptA)) {
+              si.lenKnown = true; changed = true;
+            }
+          }
+          break;
+        }
+
+        case 'on_line': {
+          const sp = ps.get(c.pt);
+          const s1 = ps.get(c.seg.p1), s2 = ps.get(c.seg.p2);
+          if (sp && s1 && s2 && isFC(s1) && isFC(s2) && !sp.onFCLine) {
+            sp.onFCLine = true; changed = true;
+          }
+          break;
+        }
+
+        case 'on_circle': {
+          const sp = ps.get(c.pt), sc = ps.get(c.circle.center);
+          if (sp && sc && isFC(sc) && !sp.radials.has(c.circle.center)) {
+            sp.radials.add(c.circle.center); changed = true;
+          }
+          break;
+        }
+
+        case 'midpoint': {
+          const sp = ps.get(c.pt);
+          const s1 = ps.get(c.seg.p1), s2 = ps.get(c.seg.p2);
+          if (sp && s1 && s2) {
+            if (isFC(s1) && isFC(s2) && !isFC(sp) && markFC(sp)) changed = true;
+            if (isFC(sp) && isFC(s1) && !isFC(s2) && markFC(s2)) changed = true;
+            if (isFC(sp) && isFC(s2) && !isFC(s1) && markFC(s1)) changed = true;
+          }
+          break;
+        }
+
+        // tangent, radius — don't directly lock point DOF
+        default: break;
+      }
+    }
+
+    // --- derived segment rules ---
+    for (const seg of scene.segments) {
+      const si = ss.get(seg);
+      if (!si) continue;
+      const s1 = ps.get(seg.p1), s2 = ps.get(seg.p2);
+      if (!s1 || !s2) continue;
+
+      // dir + len + one FC endpoint → other fully determined
+      if (si.dirKnown && si.lenKnown) {
+        if (isFC(s1) && !isFC(s2) && markFC(s2)) changed = true;
+        if (isFC(s2) && !isFC(s1) && markFC(s1)) changed = true;
+      }
+
+      // len + one FC endpoint (no dir) → other has radial
+      if (si.lenKnown && !si.dirKnown) {
+        if (isFC(s1) && !s2.radials.has(seg.p1)) { s2.radials.add(seg.p1); changed = true; }
+        if (isFC(s2) && !s1.radials.has(seg.p2)) { s1.radials.add(seg.p2); changed = true; }
+      }
+    }
+  }
+
+  // --- build result sets ---
+  const fcPoints = new Set();
+  for (const [pt, s] of ps) { if (isFC(s)) fcPoints.add(pt); }
+
+  const fcEntities = new Set();
+  for (const seg of scene.segments) {
+    if (fcPoints.has(seg.p1) && fcPoints.has(seg.p2)) fcEntities.add(seg);
+  }
+  for (const circ of scene.circles) {
+    if (fcPoints.has(circ.center)) fcEntities.add(circ);
+  }
+  for (const arc of scene.arcs) {
+    if (fcPoints.has(arc.center)) fcEntities.add(arc);
+  }
+
+  return { points: fcPoints, entities: fcEntities };
 }
 
 // Map constraint type to a short display label

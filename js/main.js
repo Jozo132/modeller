@@ -10,9 +10,19 @@ import { debug, info, warn, error } from './logger.js';
 import { loadProject, debouncedSave, clearSavedProject, setViewport } from './persist.js';
 import { showConfirm, showPrompt } from './ui/popup.js';
 import {
+  Coincident, Horizontal, Vertical,
+  Parallel, Perpendicular, EqualLength,
+  Fixed, Distance, Tangent,
+} from './cad/Constraint.js';
+import { union } from './cad/Operations.js';
+import {
   SelectTool, LineTool, RectangleTool, CircleTool,
   ArcTool, PolylineTool, TextTool, DimensionTool,
   MoveTool, CopyTool,
+  TrimTool, SplitTool, DisconnectTool, UnionTool,
+  CoincidentTool, HorizontalTool, VerticalTool,
+  ParallelTool, PerpendicularTool, DistanceConstraintTool,
+  LockTool, EqualTool, TangentTool,
 } from './tools/index.js';
 
 class App {
@@ -29,16 +39,29 @@ class App {
 
     // Tools
     this.tools = {
-      select:    new SelectTool(this),
-      line:      new LineTool(this),
-      rectangle: new RectangleTool(this),
-      circle:    new CircleTool(this),
-      arc:       new ArcTool(this),
-      polyline:  new PolylineTool(this),
-      text:      new TextTool(this),
-      dimension: new DimensionTool(this),
-      move:      new MoveTool(this),
-      copy:      new CopyTool(this),
+      select:        new SelectTool(this),
+      line:          new LineTool(this),
+      rectangle:     new RectangleTool(this),
+      circle:        new CircleTool(this),
+      arc:           new ArcTool(this),
+      polyline:      new PolylineTool(this),
+      text:          new TextTool(this),
+      dimension:     new DimensionTool(this),
+      move:          new MoveTool(this),
+      copy:          new CopyTool(this),
+      trim:          new TrimTool(this),
+      split:         new SplitTool(this),
+      disconnect:    new DisconnectTool(this),
+      union:         new UnionTool(this),
+      coincident:    new CoincidentTool(this),
+      horizontal:    new HorizontalTool(this),
+      vertical:      new VerticalTool(this),
+      parallel:      new ParallelTool(this),
+      perpendicular: new PerpendicularTool(this),
+      distance:      new DistanceConstraintTool(this),
+      lock:          new LockTool(this),
+      equal:         new EqualTool(this),
+      tangent:       new TangentTool(this),
     };
     this.activeTool = this.tools.select;
     this.activeTool.activate();
@@ -100,7 +123,7 @@ class App {
     const mobile = window.matchMedia('(max-width: 780px)').matches;
     const panelWidth = mobile ? 0 : (compact ? 180 : 220);
     const bottomBars = 56;
-    const topBar = 42;
+    const topBar = 34;
     const panelBottomHeight = mobile ? Math.floor(window.innerHeight * 0.36) : 0;
 
     const width = Math.max(1, window.innerWidth - panelWidth);
@@ -118,13 +141,19 @@ class App {
     requestAnimationFrame(() => {
       this._pointerFramePending = false;
       if (!this._lastPointer) return;
-      const { sx, sy } = this._lastPointer;
+      const { sx, sy, ctrlKey } = this._lastPointer;
       const t0 = performance.now();
 
       const basePoint = this.activeTool._startX !== undefined && this.activeTool.step > 0
         ? { x: this.activeTool._startX, y: this.activeTool._startY }
         : null;
-      const { world, snap } = getSnappedPosition(sx, sy, this.viewport, basePoint);
+      const { world, snap } = getSnappedPosition(
+        sx,
+        sy,
+        this.viewport,
+        basePoint,
+        { ignoreGridSnap: !!ctrlKey }
+      );
 
       this.renderer.cursorWorld = world;
       this.renderer.snapPoint = snap;
@@ -145,6 +174,129 @@ class App {
   }
 
   // --- Tool switching ---
+
+  /**
+   * If the select tool is active and the current selection matches the
+   * requirement for a constraint, apply it immediately and return true.
+   * Otherwise return false so the caller can switch tools normally.
+   */
+  _tryApplyConstraintFromSelection(toolName) {
+    if (this.activeTool.name !== 'select') return false;
+    const sel = state.selectedEntities;
+    if (sel.length === 0) return false;
+
+    const segments = sel.filter(e => e.type === 'segment');
+    const points   = sel.filter(e => e.type === 'point');
+    const curves   = sel.filter(e => e.type === 'circle' || e.type === 'arc');
+
+    let constraint = null;
+    let applied = false;
+
+    switch (toolName) {
+      // --- Single-segment constraints ---
+      case 'horizontal':
+        if (segments.length >= 1) {
+          takeSnapshot();
+          for (const s of segments) state.scene.addConstraint(new Horizontal(s));
+          applied = true;
+        }
+        break;
+      case 'vertical':
+        if (segments.length >= 1) {
+          takeSnapshot();
+          for (const s of segments) state.scene.addConstraint(new Vertical(s));
+          applied = true;
+        }
+        break;
+
+      // --- Two-segment constraints ---
+      case 'parallel':
+        if (segments.length === 2) {
+          takeSnapshot();
+          state.scene.addConstraint(new Parallel(segments[0], segments[1]));
+          applied = true;
+        }
+        break;
+      case 'perpendicular':
+        if (segments.length === 2) {
+          takeSnapshot();
+          state.scene.addConstraint(new Perpendicular(segments[0], segments[1]));
+          applied = true;
+        }
+        break;
+      case 'equal':
+        if (segments.length === 2) {
+          takeSnapshot();
+          state.scene.addConstraint(new EqualLength(segments[0], segments[1]));
+          applied = true;
+        }
+        break;
+
+      // --- Point constraints ---
+      case 'lock':
+        if (points.length >= 1) {
+          takeSnapshot();
+          for (const pt of points) {
+            const existing = state.scene.constraints.find(c => c.type === 'fixed' && c.pt === pt);
+            if (existing) {
+              state.scene.removeConstraint(existing);
+              pt.fixed = false;
+            } else {
+              state.scene.addConstraint(new Fixed(pt));
+            }
+          }
+          applied = true;
+        }
+        break;
+      case 'coincident':
+        if (points.length === 2) {
+          takeSnapshot();
+          union(state.scene, points[0], points[1]);
+          applied = true;
+        }
+        break;
+      case 'distance':
+        if (points.length === 2) {
+          const ptA = points[0], ptB = points[1];
+          const currentDist = Math.hypot(ptB.x - ptA.x, ptB.y - ptA.y);
+          showPrompt({
+            title: 'Distance Constraint',
+            message: 'Enter distance value:',
+            defaultValue: currentDist.toFixed(4),
+          }).then(val => {
+            if (val !== null && val !== '') {
+              const d = parseFloat(val);
+              if (!isNaN(d) && d > 0) {
+                takeSnapshot();
+                state.scene.addConstraint(new Distance(ptA, ptB, d));
+                state.emit('change');
+                this._scheduleRender();
+              }
+            }
+          });
+          return true; // handled (async)
+        }
+        break;
+
+      // --- Tangent: 1 segment + 1 circle/arc ---
+      case 'tangent':
+        if (segments.length === 1 && curves.length === 1) {
+          takeSnapshot();
+          state.scene.addConstraint(new Tangent(segments[0], curves[0]));
+          applied = true;
+        }
+        break;
+    }
+
+    if (applied) {
+      state.emit('change');
+      this._scheduleRender();
+      this.setStatus(`${toolName.charAt(0).toUpperCase() + toolName.slice(1)} applied from selection.`);
+      return true;
+    }
+    return false;
+  }
+
   setActiveTool(name) {
     if (this.activeTool) this.activeTool.deactivate();
     this.activeTool = this.tools[name] || this.tools.select;
@@ -192,7 +344,13 @@ class App {
       const basePoint = this.activeTool._startX !== undefined
         ? { x: this.activeTool._startX, y: this.activeTool._startY }
         : null;
-      const { world } = getSnappedPosition(sx, sy, this.viewport, this.activeTool.step > 0 ? basePoint : null);
+      const { world } = getSnappedPosition(
+        sx,
+        sy,
+        this.viewport,
+        this.activeTool.step > 0 ? basePoint : null,
+        { ignoreGridSnap: !!e.ctrlKey }
+      );
 
       if (e.button === 0) {
         if (this.activeTool.onMouseDown) {
@@ -215,7 +373,7 @@ class App {
         return;
       }
 
-      this._lastPointer = { sx, sy };
+      this._lastPointer = { sx, sy, ctrlKey: e.ctrlKey };
       this._schedulePointerProcessing();
 
       this._moveEventCount += 1;
@@ -260,7 +418,13 @@ class App {
       const basePoint = this.activeTool._startX !== undefined && this.activeTool.step > 0
         ? { x: this.activeTool._startX, y: this.activeTool._startY }
         : null;
-      const { world } = getSnappedPosition(sx, sy, this.viewport, basePoint);
+      const { world } = getSnappedPosition(
+        sx,
+        sy,
+        this.viewport,
+        basePoint,
+        { ignoreGridSnap: !!e.ctrlKey }
+      );
 
       // Only fire onClick if not coming from a drag (select tool)
       if (this.activeTool.name === 'select' && this.activeTool._isDragging) return;
@@ -325,9 +489,13 @@ class App {
 
   // --- Toolbar ---
   _bindToolbarEvents() {
-    // Draw tools
+    // Draw tools — intercept constraint buttons to apply from selection
     document.querySelectorAll('#toolbar button[data-tool]').forEach(btn => {
-      btn.addEventListener('click', () => this.setActiveTool(btn.dataset.tool));
+      btn.addEventListener('click', () => {
+        const tool = btn.dataset.tool;
+        if (this._tryApplyConstraintFromSelection(tool)) return;
+        this.setActiveTool(tool);
+      });
     });
 
     // File
@@ -483,6 +651,8 @@ class App {
         case 't': case 'T': this.setActiveTool('text'); break;
         case 'd': case 'D': this.setActiveTool('dimension'); break;
         case 'm': case 'M': this.setActiveTool('move'); break;
+        case 'x': case 'X': this.setActiveTool('trim'); break;
+        case 'k': case 'K': this.setActiveTool('split'); break;
         case 'f': case 'F':
           this.viewport.fitEntities(state.entities);
           this._scheduleRender();
@@ -522,6 +692,19 @@ class App {
       case 'move': case 'm': this.setActiveTool('move'); break;
       case 'copy': case 'co': this.setActiveTool('copy'); break;
       case 'select': case 'sel': this.setActiveTool('select'); break;
+      case 'trim': case 'x': this.setActiveTool('trim'); break;
+      case 'split': case 'k': this.setActiveTool('split'); break;
+      case 'coincident': this.setActiveTool('coincident'); break;
+      case 'horizontal': case 'hor': this.setActiveTool('horizontal'); break;
+      case 'vertical': case 'ver': this.setActiveTool('vertical'); break;
+      case 'parallel': case 'par': this.setActiveTool('parallel'); break;
+      case 'perpendicular': case 'perp': this.setActiveTool('perpendicular'); break;
+      case 'distance': case 'dist': this.setActiveTool('distance'); break;
+      case 'lock': case 'fix': this.setActiveTool('lock'); break;
+      case 'equal': case 'eq': this.setActiveTool('equal'); break;
+      case 'tangent': case 'tan': this.setActiveTool('tangent'); break;
+      case 'disconnect': case 'disc': this.setActiveTool('disconnect'); break;
+      case 'union': case 'join': this.setActiveTool('union'); break;
       case 'undo': case 'u': undo(); this._scheduleRender(); break;
       case 'redo': redo(); this._scheduleRender(); break;
       case 'delete': case 'del': case 'erase':
@@ -604,33 +787,52 @@ class App {
     }
     if (selection.length === 1) {
       const e = selection[0];
-      let html = `<div class="prop-row"><label>Type</label><span>${e.type}</span></div>`;
+      const typeName = e.type.charAt(0).toUpperCase() + e.type.slice(1);
+      let html = `<div class="prop-row"><label>Type</label><span>${typeName}</span></div>`;
       html += `<div class="prop-row"><label>Layer</label><span>${e.layer}</span></div>`;
       html += `<div class="prop-row"><label>ID</label><span>${e.id}</span></div>`;
 
-      if (e.type === 'LINE') {
+      if (e.type === 'point') {
+        html += `<div class="prop-row"><label>X</label><span>${e.x.toFixed(4)}</span></div>`;
+        html += `<div class="prop-row"><label>Y</label><span>${e.y.toFixed(4)}</span></div>`;
+        html += `<div class="prop-row"><label>Fixed</label><span>${e.fixed ? 'Yes' : 'No'}</span></div>`;
+        const shapes = state.scene.shapesUsingPoint(e);
+        html += `<div class="prop-row"><label>Shared by</label><span>${shapes.length} shape${shapes.length !== 1 ? 's' : ''}</span></div>`;
+      } else if (e.type === 'segment') {
         html += `<div class="prop-row"><label>X1</label><span>${e.x1.toFixed(2)}</span></div>`;
         html += `<div class="prop-row"><label>Y1</label><span>${e.y1.toFixed(2)}</span></div>`;
         html += `<div class="prop-row"><label>X2</label><span>${e.x2.toFixed(2)}</span></div>`;
         html += `<div class="prop-row"><label>Y2</label><span>${e.y2.toFixed(2)}</span></div>`;
         const len = Math.hypot(e.x2 - e.x1, e.y2 - e.y1);
         html += `<div class="prop-row"><label>Length</label><span>${len.toFixed(2)}</span></div>`;
-      } else if (e.type === 'CIRCLE') {
+      } else if (e.type === 'circle') {
         html += `<div class="prop-row"><label>Center X</label><span>${e.cx.toFixed(2)}</span></div>`;
         html += `<div class="prop-row"><label>Center Y</label><span>${e.cy.toFixed(2)}</span></div>`;
         html += `<div class="prop-row"><label>Radius</label><span>${e.radius.toFixed(2)}</span></div>`;
-      } else if (e.type === 'ARC') {
+      } else if (e.type === 'arc') {
         html += `<div class="prop-row"><label>Center X</label><span>${e.cx.toFixed(2)}</span></div>`;
         html += `<div class="prop-row"><label>Center Y</label><span>${e.cy.toFixed(2)}</span></div>`;
         html += `<div class="prop-row"><label>Radius</label><span>${e.radius.toFixed(2)}</span></div>`;
         html += `<div class="prop-row"><label>Start°</label><span>${(e.startAngle * 180 / Math.PI).toFixed(1)}</span></div>`;
         html += `<div class="prop-row"><label>End°</label><span>${(e.endAngle * 180 / Math.PI).toFixed(1)}</span></div>`;
-      } else if (e.type === 'TEXT') {
+      } else if (e.type === 'text') {
         html += `<div class="prop-row"><label>X</label><span>${e.x.toFixed(2)}</span></div>`;
         html += `<div class="prop-row"><label>Y</label><span>${e.y.toFixed(2)}</span></div>`;
         html += `<div class="prop-row"><label>Text</label><span>${e.text}</span></div>`;
         html += `<div class="prop-row"><label>Height</label><span>${e.height}</span></div>`;
+      } else if (e.type === 'dimension') {
+        html += `<div class="prop-row"><label>Value</label><span>${e.value.toFixed(2)}</span></div>`;
       }
+
+      // Show constraints on this entity
+      const constraints = state.scene.constraintsOn(e);
+      if (constraints.length > 0) {
+        html += '<hr/><div class="prop-row"><label>Constraints</label><span>' + constraints.length + '</span></div>';
+        for (const c of constraints) {
+          html += `<div class="prop-row"><label></label><span style="font-size:11px;color:var(--text-secondary)">${c.type} #${c.id}</span></div>`;
+        }
+      }
+
       panel.innerHTML = html;
     } else {
       panel.innerHTML = `<p class="hint">${selection.length} entities selected</p>`;

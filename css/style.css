@@ -33,13 +33,13 @@ html, body {
 #toolbar {
   position: fixed;
   top: 0; left: 0; right: 0;
-  height: 42px;
+  height: 34px;
   background: var(--bg-toolbar);
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
-  padding: 0 8px;
-  gap: 4px;
+  padding: 0 6px;
+  gap: 2px;
   z-index: 100;
   user-select: none;
   overflow-x: auto;
@@ -50,17 +50,22 @@ html, body {
 .tool-group {
   display: flex;
   align-items: center;
-  gap: 2px;
-  padding: 0 6px;
-  border-right: 1px solid var(--border);
+  gap: 1px;
+  padding: 0 2px;
 }
 
-.tool-group:last-child { border-right: none; }
+.toolbar-sep {
+  width: 1px;
+  height: 20px;
+  background: var(--border);
+  margin: 0 3px;
+  flex-shrink: 0;
+}
 
 .group-label {
-  font-size: 10px;
+  font-size: 9px;
   color: var(--text-secondary);
-  margin-right: 4px;
+  margin-right: 3px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -70,11 +75,24 @@ html, body {
   color: var(--text-primary);
   border: 1px solid transparent;
   border-radius: 3px;
-  padding: 4px 8px;
+  width: 26px;
+  height: 26px;
+  padding: 0;
   cursor: pointer;
-  font-size: 12px;
-  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
   transition: background 0.15s, border-color 0.15s;
+}
+
+#toolbar button svg {
+  width: 16px;
+  height: 16px;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  fill: none;
+  flex-shrink: 0;
 }
 
 #toolbar button:hover {
@@ -91,7 +109,7 @@ html, body {
 /* Properties Panel */
 #properties-panel {
   position: fixed;
-  top: 42px;
+  top: 34px;
   right: 0;
   width: var(--panel-width);
   bottom: 56px;
@@ -198,7 +216,7 @@ html, body {
 /* Canvas */
 #cad-canvas {
   position: fixed;
-  top: 42px;
+  top: 34px;
   left: 0;
   right: var(--panel-width);
   bottom: 56px;

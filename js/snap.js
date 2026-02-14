@@ -13,6 +13,7 @@ const SNAP_RADIUS = 15; // screen pixels
  * @returns {{x: number, y: number, type: string} | null}
  */
 export function findSnap(sx, sy, viewport) {
+  const opts = arguments[3] || {};
   const t0 = performance.now();
   if (!state.snapEnabled) return null;
 
@@ -37,18 +38,20 @@ export function findSnap(sx, sy, viewport) {
 
   if (bestSnap) return bestSnap;
 
-  // Grid snap
-  const gs = state.gridSize;
-  const gx = Math.round(world.x / gs) * gs;
-  const gy = Math.round(world.y / gs) * gs;
-  const gs_screen = viewport.worldToScreen(gx, gy);
-  const gridDist = Math.hypot(gs_screen.x - sx, gs_screen.y - sy);
-  if (gridDist < SNAP_RADIUS) {
-    const dt = performance.now() - t0;
-    if (dt > 8) {
-      warn('findSnap slow (grid)', { ms: dt.toFixed(2), entities: state.entities.length });
+  // Grid snap (optional bypass for Ctrl-drag)
+  if (!opts.ignoreGridSnap) {
+    const gs = state.gridSize;
+    const gx = Math.round(world.x / gs) * gs;
+    const gy = Math.round(world.y / gs) * gs;
+    const gs_screen = viewport.worldToScreen(gx, gy);
+    const gridDist = Math.hypot(gs_screen.x - sx, gs_screen.y - sy);
+    if (gridDist < SNAP_RADIUS) {
+      const dt = performance.now() - t0;
+      if (dt > 8) {
+        warn('findSnap slow (grid)', { ms: dt.toFixed(2), entities: state.entities.length });
+      }
+      return { x: gx, y: gy, type: 'grid' };
     }
-    return { x: gx, y: gy, type: 'grid' };
   }
 
   const dt = performance.now() - t0;
@@ -81,7 +84,8 @@ export function applyOrtho(bx, by, px, py) {
  * Get the final snapped/constrained world position.
  */
 export function getSnappedPosition(sx, sy, viewport, basePoint = null) {
-  const snap = findSnap(sx, sy, viewport);
+  const opts = arguments[4] || {};
+  const snap = findSnap(sx, sy, viewport, opts);
   let world;
   if (snap) {
     world = { x: snap.x, y: snap.y };

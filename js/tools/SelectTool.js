@@ -1,6 +1,25 @@
 // js/tools/SelectTool.js
 import { BaseTool } from './BaseTool.js';
 import { state } from '../state.js';
+import { takeSnapshot } from '../history.js';
+
+const PICK_PX = 18;       // pixel tolerance for shape picking
+const PICK_PT_PX = 14;    // pixel tolerance for point picking (tighter — points are small)
+const DRAG_THRESHOLD = 5; // min pixels before a drag starts
+
+/** Collect the unique movable points of a shape. */
+function _shapePoints(shape) {
+  if (shape.type === 'segment') return [shape.p1, shape.p2];
+  if (shape.type === 'circle' || shape.type === 'arc') return [shape.center];
+  return [];
+}
+
+/** True when every defining point of a primitive is fully locked. */
+function _isFullyConstrained(prim) {
+  if (prim.type === 'point') return prim.fixed;
+  const pts = _shapePoints(prim);
+  return pts.length > 0 && pts.every(p => p.fixed);
+}
 
 export class SelectTool extends BaseTool {
   constructor(app) {
@@ -9,20 +28,42 @@ export class SelectTool extends BaseTool {
     this._dragStart = null;
     this._isDragging = false;
     this._selectionBox = null;
+
+    // Vertex drag state
+    this._dragPoint = null;       // PPoint being dragged
+    this._dragTookSnapshot = false;
+
+    // Shape drag state
+    this._dragShape = null;       // shape being dragged (segment / circle / arc)
+    this._dragShapePts = [];      // non-fixed points of that shape
   }
 
   activate() {
     super.activate();
     this.app.renderer.hoverEntity = null;
-    this.setStatus('Click to select, drag for box selection');
+    this.setStatus('Click to select, drag for box selection, drag a point/shape to move it');
   }
 
   deactivate() {
     this.app.renderer.hoverEntity = null;
+    this._dragPoint = null;
+    this._dragShape = null;
+    this._dragShapePts = [];
     super.deactivate();
   }
 
-  _findClosestEntity(wx, wy, pixelTolerance = 12) {
+  // ------------------------------------------------------------------
+  //  Hit-testing helpers
+  // ------------------------------------------------------------------
+
+  /** Find closest point (vertex) near screen position */
+  _findClosestPoint(wx, wy, pixelTolerance = PICK_PT_PX) {
+    const worldTol = pixelTolerance / this.app.viewport.zoom;
+    return state.scene.findClosestPoint(wx, wy, worldTol);
+  }
+
+  /** Find closest shape (segment/circle/arc/text/dim) near screen position */
+  _findClosestEntity(wx, wy, pixelTolerance = PICK_PX) {
     const worldTolerance = pixelTolerance / this.app.viewport.zoom;
     let hit = null;
     let minDist = Infinity;
@@ -38,36 +79,133 @@ export class SelectTool extends BaseTool {
     return hit;
   }
 
+  /** Combined hit: prefer point if very close, otherwise shape */
+  _hitTest(wx, wy) {
+    const pt = this._findClosestPoint(wx, wy, PICK_PT_PX);
+    if (pt) return { kind: 'point', target: pt };
+    const shape = this._findClosestEntity(wx, wy, PICK_PX);
+    if (shape) return { kind: 'shape', target: shape };
+    return null;
+  }
+
+  // ------------------------------------------------------------------
+  //  Events
+  // ------------------------------------------------------------------
+
   onClick(wx, wy, event) {
+    // If we just finished a drag, suppress the click
+    if (this._dragPoint || this._dragShape) return;
     if (this._isDragging) return;
 
-    const hit = this.app.renderer.hoverEntity || this._findClosestEntity(wx, wy, 14);
+    const hit = this._hitTest(wx, wy);
 
     if (!event.shiftKey) {
       state.clearSelection();
     }
 
     if (hit) {
-      if (event.shiftKey && hit.selected) {
-        state.deselect(hit);
+      const t = hit.target;
+      if (event.shiftKey && t.selected) {
+        state.deselect(t);
       } else {
-        state.select(hit);
+        state.select(t);
       }
     }
   }
 
   onMouseDown(wx, wy, sx, sy, event) {
-    if (event.button === 0) {
-      this._dragStart = { wx, wy, sx, sy };
+    if (event.button !== 0) return;
+
+    // 1. Point takes priority
+    const pt = this._findClosestPoint(wx, wy, PICK_PT_PX);
+    if (pt) {
+      if (pt.fixed) {
+        // Fully constrained point — allow click-select but not drag
+        this._dragStart = { wx, wy, sx, sy };
+        this._isDragging = false;
+        this._dragPoint = null;
+        this._dragShape = null;
+        return;
+      }
+      this._dragPoint = pt;
+      this._dragShape = null;
+      this._dragShapePts = [];
+      this._dragTookSnapshot = false;
       this._isDragging = false;
+      this._dragStart = { wx, wy, sx, sy };
+      return;
     }
+
+    // 2. Shape drag (segment / circle / arc)
+    const shape = this._findClosestEntity(wx, wy, PICK_PX);
+    if (shape && !_isFullyConstrained(shape)) {
+      const movable = _shapePoints(shape).filter(p => !p.fixed);
+      if (movable.length > 0) {
+        this._dragShape = shape;
+        this._dragShapePts = movable;
+        this._dragPoint = null;
+        this._dragTookSnapshot = false;
+        this._isDragging = false;
+        this._dragStart = { wx, wy, sx, sy };
+        return;
+      }
+    }
+
+    // 3. Default — box select / click-select
+    this._dragStart = { wx, wy, sx, sy };
+    this._isDragging = false;
+    this._dragPoint = null;
+    this._dragShape = null;
+    this._dragShapePts = [];
   }
 
   onMouseMove(wx, wy, sx, sy) {
+    // ---- Vertex drag in progress ----
+    if (this._dragPoint && this._dragStart) {
+      const dx = sx - this._dragStart.sx;
+      const dy = sy - this._dragStart.sy;
+      if (!this._isDragging && (Math.abs(dx) > DRAG_THRESHOLD || Math.abs(dy) > DRAG_THRESHOLD)) {
+        this._isDragging = true;
+        if (!this._dragTookSnapshot) { takeSnapshot(); this._dragTookSnapshot = true; }
+      }
+      if (this._isDragging) {
+        this._dragPoint.x = wx;
+        this._dragPoint.y = wy;
+        state.scene.solve();
+        state.emit('change');
+      }
+      return;
+    }
+
+    // ---- Shape drag in progress ----
+    if (this._dragShape && this._dragStart) {
+      const dx = sx - this._dragStart.sx;
+      const dy = sy - this._dragStart.sy;
+      if (!this._isDragging && (Math.abs(dx) > DRAG_THRESHOLD || Math.abs(dy) > DRAG_THRESHOLD)) {
+        this._isDragging = true;
+        if (!this._dragTookSnapshot) { takeSnapshot(); this._dragTookSnapshot = true; }
+      }
+      if (this._isDragging) {
+        const wdx = wx - this._dragStart.wx;
+        const wdy = wy - this._dragStart.wy;
+        for (const p of this._dragShapePts) {
+          p.x += wdx;
+          p.y += wdy;
+        }
+        // Update reference so delta is cumulative
+        this._dragStart.wx = wx;
+        this._dragStart.wy = wy;
+        state.scene.solve();
+        state.emit('change');
+      }
+      return;
+    }
+
+    // ---- Box-select drag ----
     if (this._dragStart) {
       const dx = sx - this._dragStart.sx;
       const dy = sy - this._dragStart.sy;
-      if (Math.abs(dx) > 5 || Math.abs(dy) > 5) {
+      if (Math.abs(dx) > DRAG_THRESHOLD || Math.abs(dy) > DRAG_THRESHOLD) {
         this._isDragging = true;
         this._selectionBox = {
           x1: this._dragStart.wx,
@@ -77,12 +215,43 @@ export class SelectTool extends BaseTool {
         };
       }
       this.app.renderer.hoverEntity = null;
-    } else {
-      this.app.renderer.hoverEntity = this._findClosestEntity(wx, wy, 12);
+      return;
     }
+
+    // ---- Hover highlight ----
+    const hit = this._hitTest(wx, wy);
+    this.app.renderer.hoverEntity = hit ? hit.target : null;
   }
 
   onMouseUp(wx, wy, event) {
+    // ---- Finish vertex drag ----
+    if (this._dragPoint) {
+      if (this._isDragging) {
+        state.scene.solve();
+        state.emit('change');
+      }
+      this._dragPoint = null;
+      this._isDragging = false;
+      this._dragStart = null;
+      this._dragTookSnapshot = false;
+      return;
+    }
+
+    // ---- Finish shape drag ----
+    if (this._dragShape) {
+      if (this._isDragging) {
+        state.scene.solve();
+        state.emit('change');
+      }
+      this._dragShape = null;
+      this._dragShapePts = [];
+      this._isDragging = false;
+      this._dragStart = null;
+      this._dragTookSnapshot = false;
+      return;
+    }
+
+    // ---- Finish box selection ----
     if (this._isDragging && this._selectionBox) {
       const box = this._selectionBox;
       const minX = Math.min(box.x1, box.x2);
@@ -114,9 +283,20 @@ export class SelectTool extends BaseTool {
     this._isDragging = false;
     this._selectionBox = null;
 
-    if (!this._isDragging) {
-      this.app.renderer.hoverEntity = this._findClosestEntity(wx, wy, 12);
-    }
+    // Refresh hover
+    const hit = this._hitTest(wx, wy);
+    this.app.renderer.hoverEntity = hit ? hit.target : null;
+  }
+
+  onCancel() {
+    this._dragPoint = null;
+    this._dragShape = null;
+    this._dragShapePts = [];
+    this._isDragging = false;
+    this._dragStart = null;
+    this._selectionBox = null;
+    this._dragTookSnapshot = false;
+    super.onCancel();
   }
 
   /** Render the selection box overlay */
