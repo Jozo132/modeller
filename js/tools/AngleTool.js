@@ -3,7 +3,7 @@ import { BaseTool } from './BaseTool.js';
 import { state } from '../state.js';
 import { takeSnapshot } from '../history.js';
 import { Angle } from '../cad/Constraint.js';
-import { showPrompt } from '../ui/popup.js';
+import { showDimensionInput } from '../ui/popup.js';
 
 export class AngleTool extends BaseTool {
   constructor(app) {
@@ -51,18 +51,43 @@ export class AngleTool extends BaseTool {
       while (diff > Math.PI) diff -= 2 * Math.PI;
       while (diff < -Math.PI) diff += 2 * Math.PI;
       const currentDeg = (diff * 180 / Math.PI).toFixed(2);
-      const val = await showPrompt({
-        title: 'Angle Constraint',
-        message: 'Enter angle in degrees:',
+
+      // Check if already constrained
+      const segA = this._firstSeg, segB = hit;
+      const existingConstraints = state.scene.constraintsOn(segA);
+      const alreadyConstrained = existingConstraints.some(c =>
+        c.type === 'angle' && (c.segA === segB || c.segB === segB));
+
+      // Screen position at midpoint between segments
+      const vp = this.app.viewport;
+      const midScreen = vp.worldToScreen(
+        (segA.midX + segB.midX) / 2,
+        (segA.midY + segB.midY) / 2
+      );
+
+      const result = await showDimensionInput({
+        dimType: 'angle',
         defaultValue: currentDeg,
+        driven: alreadyConstrained,
+        hint: 'degrees or variable',
+        screenPos: { x: midScreen.x, y: midScreen.y },
       });
-      if (val !== null && val !== '') {
-        const deg = parseFloat(val);
-        if (!isNaN(deg)) {
-          const rad = deg * Math.PI / 180;
-          takeSnapshot();
-          state.scene.addConstraint(new Angle(this._firstSeg, hit, rad));
-          state.emit('change');
+
+      if (result !== null && result.value !== '') {
+        if (!result.driven) {
+          const deg = parseFloat(result.value);
+          if (!isNaN(deg)) {
+            const rad = deg * Math.PI / 180;
+            takeSnapshot();
+            state.scene.addConstraint(new Angle(segA, segB, rad));
+            state.emit('change');
+          } else if (result.value.trim()) {
+            // Variable name
+            const rad = diff; // keep current angle as initial
+            takeSnapshot();
+            state.scene.addConstraint(new Angle(segA, segB, result.value.trim()));
+            state.emit('change');
+          }
         }
       }
       this._firstSeg = null;

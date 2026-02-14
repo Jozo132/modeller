@@ -36,6 +36,8 @@ export class DimensionPrimitive extends Primitive {
    * @param {string|number|null} [opts.formula=null]  Formula / variable ref for constraint value
    * @param {number|null} [opts.sourceAId=null]  ID of first source primitive
    * @param {number|null} [opts.sourceBId=null]  ID of second source primitive
+   * @param {object|null} [opts.sourceA=null]   Direct reference to first source primitive
+   * @param {object|null} [opts.sourceB=null]   Direct reference to second source primitive
    */
   constructor(x1, y1, x2, y2, offset = 10, opts = {}) {
     super('dimension');
@@ -51,6 +53,228 @@ export class DimensionPrimitive extends Primitive {
     this.formula = opts.formula ?? null;     // number or variable name string
     this.sourceAId = opts.sourceAId ?? null; // id of first source primitive
     this.sourceBId = opts.sourceBId ?? null; // id of second source primitive
+
+    // Direct object references to source primitives (for constraint solving)
+    this.sourceA = opts.sourceA ?? null;
+    this.sourceB = opts.sourceB ?? null;
+
+    // Constraint range limits (like Constraint base class)
+    this.min = opts.min ?? null;
+    this.max = opts.max ?? null;
+  }
+
+  // -----------------------------------------------------------------------
+  // Constraint interface — duck-typed so the Solver can call error() / apply()
+  // -----------------------------------------------------------------------
+
+  /** Whether this dimension's value can be edited in the constraint panel */
+  get editable() { return this.isConstraint; }
+
+  /** Resolve the constraint target value (formula → number, clamped to range) */
+  _resolvedValue() {
+    if (this.formula == null) return this.value;
+    let v = resolveValue(this.formula);
+    if (this.min != null && v < this.min) v = this.min;
+    if (this.max != null && v > this.max) v = this.max;
+    return v;
+  }
+
+  /** Constraint error — how far the current geometry deviates from the target */
+  error() {
+    if (!this.isConstraint || this.formula == null) return 0;
+    const target = this._resolvedValue();
+    if (isNaN(target)) return 0;
+
+    const srcA = this.sourceA;
+    const srcB = this.sourceB;
+    if (!srcA) return 0;
+
+    switch (this.dimType) {
+      case 'distance': {
+        if (srcA.type === 'point' && srcB && srcB.type === 'point') {
+          return Math.abs(Math.hypot(srcB.x - srcA.x, srcB.y - srcA.y) - target);
+        }
+        if (srcA.type === 'segment' && !srcB) {
+          return Math.abs(srcA.length - target);
+        }
+        return 0;
+      }
+      case 'dx': {
+        if (srcA.type === 'point' && srcB && srcB.type === 'point') {
+          return Math.abs(Math.abs(srcB.x - srcA.x) - target);
+        }
+        return 0;
+      }
+      case 'dy': {
+        if (srcA.type === 'point' && srcB && srcB.type === 'point') {
+          return Math.abs(Math.abs(srcB.y - srcA.y) - target);
+        }
+        return 0;
+      }
+      case 'angle': {
+        if (srcA.type === 'segment' && srcB && srcB.type === 'segment') {
+          const dxA = srcA.x2 - srcA.x1, dyA = srcA.y2 - srcA.y1;
+          const dxB = srcB.x2 - srcB.x1, dyB = srcB.y2 - srcB.y1;
+          const a = Math.atan2(dyA, dxA);
+          const b = Math.atan2(dyB, dxB);
+          let diff = b - a;
+          while (diff > Math.PI) diff -= 2 * Math.PI;
+          while (diff < -Math.PI) diff += 2 * Math.PI;
+          return Math.abs(diff - target);
+        }
+        return 0;
+      }
+      case 'radius': {
+        if ((srcA.type === 'circle' || srcA.type === 'arc') && !srcB) {
+          return Math.abs(srcA.radius - target);
+        }
+        return 0;
+      }
+      default: return 0;
+    }
+  }
+
+  /** Constraint apply — push geometry toward the target value */
+  apply() {
+    if (!this.isConstraint || this.formula == null) return;
+    const target = this._resolvedValue();
+    if (isNaN(target)) return;
+
+    const srcA = this.sourceA;
+    const srcB = this.sourceB;
+    if (!srcA) return;
+
+    switch (this.dimType) {
+      case 'distance': {
+        if (srcA.type === 'point' && srcB && srcB.type === 'point') {
+          // Same logic as Distance constraint
+          const a = srcA, b = srcB;
+          if (a.fixed && b.fixed) return;
+          const dx = b.x - a.x, dy = b.y - a.y;
+          const d = Math.hypot(dx, dy) || 1e-9;
+          const err = d - target;
+          const ux = dx / d, uy = dy / d;
+          if (a.fixed) { b.x -= ux * err; b.y -= uy * err; }
+          else if (b.fixed) { a.x += ux * err; a.y += uy * err; }
+          else { const h = err / 2; a.x += ux * h; a.y += uy * h; b.x -= ux * h; b.y -= uy * h; }
+          return;
+        }
+        if (srcA.type === 'segment' && !srcB) {
+          // Same logic as Length constraint
+          _scaleSegToLength(srcA, target);
+          return;
+        }
+        return;
+      }
+      case 'dx': {
+        if (srcA.type === 'point' && srcB && srcB.type === 'point') {
+          const a = srcA, b = srcB;
+          if (a.fixed && b.fixed) return;
+          const currentDx = b.x - a.x;
+          const sign = currentDx >= 0 ? 1 : -1;
+          const targetDx = sign * target;
+          const err = currentDx - targetDx;
+          if (a.fixed) { b.x -= err; }
+          else if (b.fixed) { a.x += err; }
+          else { const h = err / 2; a.x += h; b.x -= h; }
+          return;
+        }
+        return;
+      }
+      case 'dy': {
+        if (srcA.type === 'point' && srcB && srcB.type === 'point') {
+          const a = srcA, b = srcB;
+          if (a.fixed && b.fixed) return;
+          const currentDy = b.y - a.y;
+          const sign = currentDy >= 0 ? 1 : -1;
+          const targetDy = sign * target;
+          const err = currentDy - targetDy;
+          if (a.fixed) { b.y -= err; }
+          else if (b.fixed) { a.y += err; }
+          else { const h = err / 2; a.y += h; b.y -= h; }
+          return;
+        }
+        return;
+      }
+      case 'angle': {
+        if (srcA.type === 'segment' && srcB && srcB.type === 'segment') {
+          // Same logic as Angle constraint
+          const dxA = srcA.x2 - srcA.x1, dyA = srcA.y2 - srcA.y1;
+          const angleA = Math.atan2(dyA, dxA);
+          const targetAngle = angleA + target;
+          const dxB = srcB.x2 - srcB.x1, dyB = srcB.y2 - srcB.y1;
+          const lenB = Math.hypot(dxB, dyB) || 1e-9;
+          const ux = Math.cos(targetAngle), uy = Math.sin(targetAngle);
+          const mx = srcB.midX, my = srcB.midY;
+          const halfLen = lenB / 2;
+          if (!srcB.p1.fixed) { srcB.p1.x = mx - ux * halfLen; srcB.p1.y = my - uy * halfLen; }
+          if (!srcB.p2.fixed) { srcB.p2.x = mx + ux * halfLen; srcB.p2.y = my + uy * halfLen; }
+          return;
+        }
+        return;
+      }
+      case 'radius': {
+        if ((srcA.type === 'circle' || srcA.type === 'arc') && !srcB) {
+          srcA.radius = target;
+          return;
+        }
+        return;
+      }
+    }
+  }
+
+  /** Return points involved in this dimension constraint (for the solver/panel) */
+  involvedPoints() {
+    const pts = [];
+    const srcA = this.sourceA;
+    const srcB = this.sourceB;
+    if (srcA) {
+      if (srcA.type === 'point') pts.push(srcA);
+      else if (srcA.type === 'segment') { pts.push(srcA.p1); pts.push(srcA.p2); }
+      else if (srcA.type === 'circle' || srcA.type === 'arc') pts.push(srcA.center);
+    }
+    if (srcB) {
+      if (srcB.type === 'point') pts.push(srcB);
+      else if (srcB.type === 'segment') { pts.push(srcB.p1); pts.push(srcB.p2); }
+      else if (srcB.type === 'circle' || srcB.type === 'arc') pts.push(srcB.center);
+    }
+    return pts;
+  }
+
+  /** Update drawing coordinates from live source geometry (call after solver) */
+  syncFromSources() {
+    const srcA = this.sourceA;
+    const srcB = this.sourceB;
+    if (!srcA) return;
+
+    if (this.dimType === 'angle') {
+      // Recalculate angle info
+      if (srcA.type === 'segment' && srcB && srcB.type === 'segment') {
+        const info = _segAngleInfoLive(srcA, srcB);
+        this.x1 = info.vx; this.y1 = info.vy;
+        this.x2 = info.vx; this.y2 = info.vy;
+        this._angleStart = info.startAngle;
+        this._angleSweep = info.sweep;
+      }
+      return;
+    }
+
+    if (this.dimType === 'radius') {
+      if (srcA.type === 'circle' || srcA.type === 'arc') {
+        this.x1 = srcA.cx; this.y1 = srcA.cy;
+        this.x2 = srcA.cx + srcA.radius; this.y2 = srcA.cy;
+      }
+      return;
+    }
+
+    // distance / dx / dy
+    if (srcA.type === 'point' && srcB && srcB.type === 'point') {
+      this.x1 = srcA.x; this.y1 = srcA.y;
+      this.x2 = srcB.x; this.y2 = srcB.y;
+    } else if (srcA.type === 'segment' && !srcB) {
+      this.x1 = srcA.x1; this.y1 = srcA.y1;
+      this.x2 = srcA.x2; this.y2 = srcA.y2;
+    }
   }
 
   /** Computed measured value */
@@ -248,6 +472,8 @@ export class DimensionPrimitive extends Primitive {
     if (this.sourceBId != null) out.sourceBId = this.sourceBId;
     if (this._angleStart != null) out._angleStart = this._angleStart;
     if (this._angleSweep != null) out._angleSweep = this._angleSweep;
+    if (this.min != null) out.min = this.min;
+    if (this.max != null) out.max = this.max;
     return out;
   }
 }
@@ -386,6 +612,24 @@ function _segAngleInfo(segA, segB) {
   while (sweep > Math.PI) sweep -= 2 * Math.PI;
   while (sweep < -Math.PI) sweep += 2 * Math.PI;
   return { vx, vy, startAngle: angleA, sweep };
+}
+
+// Re-exported for use in syncFromSources (same logic as _segAngleInfo)
+const _segAngleInfoLive = _segAngleInfo;
+
+function _scaleSegToLength(seg, target) {
+  const dx = seg.x2 - seg.x1, dy = seg.y2 - seg.y1;
+  const len = Math.hypot(dx, dy) || 1e-9;
+  const scale = target / len;
+  const mx = seg.midX, my = seg.midY;
+  if (!seg.p1.fixed) {
+    seg.p1.x = mx - (dx / 2) * scale;
+    seg.p1.y = my - (dy / 2) * scale;
+  }
+  if (!seg.p2.fixed) {
+    seg.p2.x = mx + (dx / 2) * scale;
+    seg.p2.y = my + (dy / 2) * scale;
+  }
 }
 
 function _drawArrow(ctx, x, y, angle, len) {

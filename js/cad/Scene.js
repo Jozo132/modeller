@@ -102,7 +102,12 @@ export class Scene {
 
   /** Run the solver on all constraints. */
   solve(opts) {
-    return solve(this.constraints, opts);
+    const result = solve(this.constraints, opts);
+    // Update dimension coordinates from live geometry after solving
+    for (const dim of this.dimensions) {
+      if (dim.sourceA) dim.syncFromSources();
+    }
+    return result;
   }
 
   // -----------------------------------------------------------------------
@@ -124,6 +129,7 @@ export class Scene {
     this.segments = this.segments.filter(s => s !== seg);
     this.constraints = this.constraints.filter(c => {
       if (c.seg === seg || c.segA === seg || c.segB === seg) return false;
+      if (c.sourceA === seg || c.sourceB === seg) return false;
       return true;
     });
     this._cleanOrphanPoints();
@@ -133,6 +139,7 @@ export class Scene {
     this.circles = this.circles.filter(c => c !== circ);
     this.constraints = this.constraints.filter(c => {
       if (c.circle === circ || c.shape === circ) return false;
+      if (c.sourceA === circ || c.sourceB === circ) return false;
       return true;
     });
     this._cleanOrphanPoints();
@@ -142,6 +149,7 @@ export class Scene {
     this.arcs = this.arcs.filter(a => a !== arc);
     this.constraints = this.constraints.filter(c => {
       if (c.circle === arc || c.shape === arc) return false;
+      if (c.sourceA === arc || c.sourceB === arc) return false;
       return true;
     });
     this._cleanOrphanPoints();
@@ -153,7 +161,11 @@ export class Scene {
       case 'segment':   this.removeSegment(prim); break;
       case 'circle':    this.removeCircle(prim); break;
       case 'arc':       this.removeArc(prim); break;
-      case 'dimension': this.dimensions = this.dimensions.filter(d => d !== prim); break;
+      case 'dimension':
+        this.dimensions = this.dimensions.filter(d => d !== prim);
+        // Also remove from constraints if it was acting as one
+        this.constraints = this.constraints.filter(c => c !== prim);
+        break;
     }
   }
 
@@ -167,6 +179,17 @@ export class Scene {
     this.constraints = this.constraints.filter(c =>
       c.involvedPoints().every(pt => this.points.includes(pt))
     );
+    // Also mark orphaned dimension constraints as non-constraining
+    for (const dim of this.dimensions) {
+      if (dim.isConstraint && dim.sourceA) {
+        const pts = dim.involvedPoints();
+        if (pts.length > 0 && !pts.every(pt => this.points.includes(pt))) {
+          dim.isConstraint = false;
+          dim.sourceA = null;
+          dim.sourceB = null;
+        }
+      }
+    }
   }
 
   // -----------------------------------------------------------------------
@@ -229,6 +252,15 @@ export class Scene {
   /** Get constraints involving a specific primitive. */
   constraintsOn(prim) {
     return this.constraints.filter(c => {
+      // Handle dimension constraints which use sourceA/sourceB
+      if (c.type === 'dimension') {
+        if (c.sourceA === prim || c.sourceB === prim) return true;
+        const pts = c.involvedPoints();
+        if (prim.type === 'point') return pts.includes(prim);
+        if (prim.type === 'segment') return pts.includes(prim.p1) || pts.includes(prim.p2);
+        if (prim.type === 'circle' || prim.type === 'arc') return pts.includes(prim.center);
+        return false;
+      }
       const pts = c.involvedPoints();
       if (prim.type === 'point') return pts.includes(prim);
       if (prim.type === 'segment') return c.seg === prim || c.segA === prim || c.segB === prim ||
@@ -283,7 +315,8 @@ export class Scene {
       segments: this.segments.map(s => s.serialize()),
       circles: this.circles.map(c => c.serialize()),
       arcs: this.arcs.map(a => a.serialize()),
-      constraints: this.constraints.map(c => c.serialize()),
+      // Exclude dimension-type constraints — they are serialized via dimensions[]
+      constraints: this.constraints.filter(c => c.type !== 'dimension').map(c => c.serialize()),
       texts: this.texts.map(t => t.serialize()),
       dimensions: this.dimensions.map(d => d.serialize()),
       variables: serializeVariables(),
@@ -380,7 +413,24 @@ export class Scene {
       dm.color = d.color || null;
       if (d._angleStart != null) dm._angleStart = d._angleStart;
       if (d._angleSweep != null) dm._angleSweep = d._angleSweep;
+      if (d.min != null) dm.min = d.min;
+      if (d.max != null) dm.max = d.max;
+
+      // Resolve source references from the rebuilt primitives
+      if (d.sourceAId != null) {
+        dm.sourceA = ptMap.get(d.sourceAId) || shapeMap.get(d.sourceAId) || null;
+      }
+      if (d.sourceBId != null) {
+        dm.sourceB = ptMap.get(d.sourceBId) || shapeMap.get(d.sourceBId) || null;
+      }
+
       scene.dimensions.push(dm);
+
+      // If this dimension is a constraint and sources are resolved, add to solver
+      if (dm.isConstraint && dm.sourceA) {
+        scene.constraints.push(dm);
+      }
+
       if (d.id > maxPrimId) maxPrimId = d.id;
     }
 

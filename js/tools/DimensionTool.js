@@ -18,7 +18,7 @@ import { BaseTool } from './BaseTool.js';
 import { DimensionPrimitive, detectDimensionType } from '../cad/DimensionPrimitive.js';
 import { state } from '../state.js';
 import { takeSnapshot } from '../history.js';
-import { showPrompt } from '../ui/popup.js';
+import { showDimensionInput, dismissDimensionInput } from '../ui/popup.js';
 import { setVariable } from '../cad/Constraint.js';
 
 export class DimensionTool extends BaseTool {
@@ -133,49 +133,93 @@ export class DimensionTool extends BaseTool {
       const dim = this._buildDimension(offset);
       if (!dim) { this._reset(); return; }
 
-      // Prompt for options
-      const val = await showPrompt({
-        title: 'Dimension Options',
-        message: `Type: ${dim.dimType}\nValue: ${dim.displayLabel}\n\nEnter options (or press OK for defaults):\n  c = constraint, v:<name> = variable, d:value|formula|both`,
-        defaultValue: '',
+      // Check if there's already a constraint between the involved entities
+      const alreadyConstrained = this._isAlreadyConstrained(dim);
+
+      // Compute screen position for the inline widget (midpoint of dimension line)
+      const vp = this.app.viewport;
+      const midWx = (dim.x1 + dim.x2) / 2;
+      const midWy = (dim.y1 + dim.y2) / 2;
+      const screenMid = vp.worldToScreen(midWx, midWy);
+
+      const isAngle = dim.dimType === 'angle';
+      const currentVal = isAngle
+        ? (dim.value * 180 / Math.PI).toFixed(2)
+        : dim.value.toFixed(4);
+
+      const result = await showDimensionInput({
+        dimType: dim.dimType,
+        defaultValue: currentVal,
+        driven: alreadyConstrained,
+        hint: 'value or variable name',
+        screenPos: { x: screenMid.x, y: screenMid.y },
       });
 
-      let isConstraint = false;
-      let variableName = null;
-      let displayMode = 'value';
-      let formula = null;
-
-      if (val !== null) {
-        const parts = val.split(/[\s,;]+/).filter(Boolean);
-        for (const p of parts) {
-          if (p === 'c' || p === 'constraint') isConstraint = true;
-          else if (p.startsWith('v:')) variableName = p.slice(2);
-          else if (p.startsWith('d:') && ['value', 'formula', 'both'].includes(p.slice(2))) displayMode = p.slice(2);
-          else if (p.startsWith('f:')) formula = p.slice(2);
-        }
+      if (result === null) {
+        // Cancelled — still place dimension as non-constraint
+        this._reset();
+        this.setStatus('Smart Dimension: Cancelled');
+        return;
       }
 
-      dim.isConstraint = isConstraint;
-      dim.variableName = variableName;
-      dim.displayMode = displayMode;
-      if (formula != null) {
-        const num = parseFloat(formula);
-        dim.formula = isNaN(num) ? formula : num;
-      }
+      const { value: inputVal, driven } = result;
 
-      // Write value to variable if requested
-      if (variableName) {
-        setVariable(variableName, dim.value);
+      // Parse value — could be numeric or a variable name
+      const num = parseFloat(inputVal);
+      const isNum = !isNaN(num);
+      const varName = (!isNum && inputVal.trim()) ? inputVal.trim() : null;
+
+      dim.isConstraint = !driven;
+      dim.displayMode = varName ? 'both' : 'value';
+
+      if (varName) {
+        dim.formula = varName;
+        dim.variableName = varName;
+        setVariable(varName, dim.value);
+      } else if (isNum) {
+        dim.formula = dim.dimType === 'angle' ? (num * Math.PI / 180) : num;
       }
 
       takeSnapshot();
       dim.layer = state.activeLayer;
       state.scene.dimensions.push(dim);
+
+      // If not driven (i.e. constraining), add dimension directly as a solver constraint
+      if (!driven && dim.sourceA) {
+        state.scene.addConstraint(dim);
+      }
+
       state.emit('change');
 
       this._reset();
       this.setStatus('Smart Dimension: Click first entity for next dimension');
     }
+  }
+
+  /** Check if the two source entities already have a distance/angle constraint between them. */
+  _isAlreadyConstrained(dim) {
+    const scene = state.scene;
+    const srcA = dim.sourceAId != null ? this._findPrimById(dim.sourceAId) : null;
+    const srcB = dim.sourceBId != null ? this._findPrimById(dim.sourceBId) : null;
+    if (!srcA) return false;
+    const consts = scene.constraintsOn(srcA);
+    if (!srcB) {
+      // Single entity — check for length/radius constraint
+      return consts.some(c => c.type === 'length' || c.type === 'radius' || (c.type === 'dimension' && c.isConstraint));
+    }
+    const constsB = scene.constraintsOn(srcB);
+    const ids = new Set(consts.map(c => c.id));
+    return constsB.some(c => ids.has(c.id));
+  }
+
+  _findPrimById(id) {
+    for (const s of state.scene.shapes()) {
+      if (s.id === id) return s;
+    }
+    for (const p of state.scene.points) {
+      if (p.id === id) return p;
+    }
+    return null;
   }
 
   _computeOffset(wx, wy) {
@@ -201,6 +245,8 @@ export class DimensionTool extends BaseTool {
       dimType: info.dimType,
       sourceAId: info.sourceA ? info.sourceA.id : null,
       sourceBId: info.sourceB ? info.sourceB.id : null,
+      sourceA: info.sourceA || null,
+      sourceB: info.sourceB || null,
     });
     if (info.angleStart != null) dim._angleStart = info.angleStart;
     if (info.angleSweep != null) dim._angleSweep = info.angleSweep;

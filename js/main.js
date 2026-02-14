@@ -8,7 +8,7 @@ import { downloadDXF } from './dxf/export.js';
 import { openDXFFile } from './dxf/import.js';
 import { debug, info, warn, error } from './logger.js';
 import { loadProject, debouncedSave, clearSavedProject, setViewport } from './persist.js';
-import { showConfirm, showPrompt } from './ui/popup.js';
+import { showConfirm, showPrompt, showDimensionInput } from './ui/popup.js';
 import {
   Coincident, Horizontal, Vertical,
   Parallel, Perpendicular, EqualLength,
@@ -272,19 +272,25 @@ class App {
         if (points.length === 2) {
           const ptA = points[0], ptB = points[1];
           const currentDist = Math.hypot(ptB.x - ptA.x, ptB.y - ptA.y);
-          showPrompt({
-            title: 'Distance Constraint',
-            message: 'Enter distance value:',
+          const existDist = state.scene.constraintsOn(ptA).some(c =>
+            c.type === 'distance' && (c.ptA === ptB || c.ptB === ptB));
+          const midScreenD = this.viewport.worldToScreen(
+            (ptA.x + ptB.x) / 2, (ptA.y + ptB.y) / 2);
+          showDimensionInput({
+            dimType: 'distance',
             defaultValue: currentDist.toFixed(4),
-          }).then(val => {
-            if (val !== null && val !== '') {
-              const d = parseFloat(val);
-              if (!isNaN(d) && d > 0) {
-                takeSnapshot();
-                state.scene.addConstraint(new Distance(ptA, ptB, d));
-                state.emit('change');
-                this._scheduleRender();
-              }
+            driven: existDist,
+            hint: 'value or variable',
+            screenPos: { x: midScreenD.x, y: midScreenD.y },
+          }).then(result => {
+            if (result !== null && result.value !== '' && !result.driven) {
+              const d = parseFloat(result.value);
+              const val = isNaN(d) ? result.value.trim() : d;
+              if (typeof val === 'number' && val <= 0) return;
+              takeSnapshot();
+              state.scene.addConstraint(new Distance(ptA, ptB, val));
+              state.emit('change');
+              this._scheduleRender();
             }
           });
           return true; // handled (async)
@@ -312,17 +318,28 @@ class App {
           while (diff > Math.PI) diff -= 2 * Math.PI;
           while (diff < -Math.PI) diff += 2 * Math.PI;
           const currentDeg = (diff * 180 / Math.PI).toFixed(2);
-          showPrompt({
-            title: 'Angle Constraint',
-            message: 'Enter angle in degrees:',
+          const existAngle = state.scene.constraintsOn(segA).some(c =>
+            c.type === 'angle' && (c.segA === segB || c.segB === segB));
+          const midScreenA = this.viewport.worldToScreen(
+            (segA.midX + segB.midX) / 2, (segA.midY + segB.midY) / 2);
+          showDimensionInput({
+            dimType: 'angle',
             defaultValue: currentDeg,
-          }).then(val => {
-            if (val !== null && val !== '') {
-              const deg = parseFloat(val);
+            driven: existAngle,
+            hint: 'degrees or variable',
+            screenPos: { x: midScreenA.x, y: midScreenA.y },
+          }).then(result => {
+            if (result !== null && result.value !== '' && !result.driven) {
+              const deg = parseFloat(result.value);
               if (!isNaN(deg)) {
                 const rad = deg * Math.PI / 180;
                 takeSnapshot();
                 state.scene.addConstraint(new Angle(segA, segB, rad));
+                state.emit('change');
+                this._scheduleRender();
+              } else if (result.value.trim()) {
+                takeSnapshot();
+                state.scene.addConstraint(new Angle(segA, segB, result.value.trim()));
                 state.emit('change');
                 this._scheduleRender();
               }
@@ -497,6 +514,33 @@ class App {
       e.preventDefault();
       this.activeTool.onCancel();
       this._scheduleRender();
+    });
+
+    // Double-click on canvas to edit dimensions inline
+    canvas.addEventListener('dblclick', (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const sx = e.clientX - rect.left;
+      const sy = e.clientY - rect.top;
+      const world = this.viewport.screenToWorld(sx, sy);
+      const tol = 12 / this.viewport.zoom;
+
+      // Find the closest dimension near the double-click position
+      let closestDim = null;
+      let closestDist = Infinity;
+      for (const dim of state.scene.dimensions) {
+        if (!dim.visible) continue;
+        const d = dim.distanceTo(world.x, world.y);
+        if (d < tol && d < closestDist) {
+          closestDist = d;
+          closestDim = dim;
+        }
+      }
+
+      if (closestDim) {
+        e.preventDefault();
+        e.stopPropagation();
+        this._editDimensionConstraint(closestDim, { x: sx, y: sy });
+      }
     });
 
     canvas.addEventListener('touchstart', (e) => {
@@ -957,12 +1001,34 @@ class App {
       equal_length: '=', length: 'L',
       radius: 'R', tangent: 'T',
       on_line: '—·', on_circle: '○·', midpoint: 'M',
+      dimension: '📐',
     };
     return icons[type] || type;
   }
 
   /** Describe a constraint in a compact way */
   _constraintLabel(c) {
+    if (c.type === 'dimension') {
+      // Dimension constraint: show dim type and formula/value
+      const dimT = c.dimType || 'distance';
+      let details = '';
+      if (c.formula != null) {
+        if (c.dimType === 'angle') {
+          const numVal = typeof c.formula === 'number' ? (c.formula * 180 / Math.PI).toFixed(2) + '°' : String(c.formula);
+          details = ` (${numVal})`;
+        } else if (typeof c.formula === 'number') {
+          details = ` (${c.formula.toFixed(2)})`;
+        } else {
+          details = ` (${c.formula})`;
+        }
+      }
+      if (c.min != null || c.max != null) {
+        const lo = c.min != null ? c.min.toFixed(1) : '–∞';
+        const hi = c.max != null ? c.max.toFixed(1) : '∞';
+        details += ` [${lo}..${hi}]`;
+      }
+      return `dim ${dimT} #${c.id}${details}`;
+    }
     const t = c.type.replace(/_/g, ' ');
     let details = '';
     if (c.value !== undefined) {
@@ -992,6 +1058,13 @@ class App {
   /** Get all primitive IDs involved in a constraint */
   _constraintPrimIds(c) {
     const ids = new Set();
+    if (c.type === 'dimension') {
+      // Use source IDs and involved points
+      if (c.sourceAId != null) ids.add(c.sourceAId);
+      if (c.sourceBId != null) ids.add(c.sourceBId);
+      for (const pt of c.involvedPoints()) ids.add(pt.id);
+      return ids;
+    }
     if (c.ptA) ids.add(c.ptA.id);
     if (c.ptB) ids.add(c.ptB.id);
     if (c.pt) ids.add(c.pt.id);
@@ -1006,6 +1079,11 @@ class App {
   /** Get all shape primitives (non-point) involved in a constraint */
   _constraintShapes(c) {
     const shapes = [];
+    if (c.type === 'dimension') {
+      if (c.sourceA && c.sourceA.type !== 'point') shapes.push(c.sourceA);
+      if (c.sourceB && c.sourceB.type !== 'point') shapes.push(c.sourceB);
+      return shapes;
+    }
     if (c.seg) shapes.push(c.seg);
     if (c.segA) shapes.push(c.segA);
     if (c.segB) shapes.push(c.segB);
@@ -1193,7 +1271,13 @@ class App {
       // Delete button
       row.querySelector('.lp-delete').addEventListener('click', () => {
         takeSnapshot();
-        state.scene.removeConstraint(c);
+        if (c.type === 'dimension') {
+          // For dimension constraints, remove from constraints and mark as driven
+          state.scene.removeConstraint(c);
+          c.isConstraint = false;
+        } else {
+          state.scene.removeConstraint(c);
+        }
         if (this._lpSelectedConstraintId === c.id) this._lpSelectedConstraintId = null;
         state.emit('change');
         this._scheduleRender();
@@ -1203,7 +1287,12 @@ class App {
       row.addEventListener('keydown', (e) => {
         if (e.key === 'Delete' || e.key === 'Backspace') {
           takeSnapshot();
-          state.scene.removeConstraint(c);
+          if (c.type === 'dimension') {
+            state.scene.removeConstraint(c);
+            c.isConstraint = false;
+          } else {
+            state.scene.removeConstraint(c);
+          }
           if (this._lpSelectedConstraintId === c.id) this._lpSelectedConstraintId = null;
           state.emit('change');
           this._scheduleRender();
@@ -1216,8 +1305,13 @@ class App {
     }
   }
 
-  /** Edit a constraint value via prompt dialog */
+  /** Edit a constraint value via prompt dialog or inline input */
   async _editConstraint(c) {
+    if (c.type === 'dimension') {
+      // Use inline dimension input for dimension constraints
+      await this._editDimensionConstraint(c);
+      return;
+    }
     if (c.type === 'fixed') {
       const val = await showPrompt({
         title: 'Edit Fixed Position',
@@ -1309,6 +1403,71 @@ class App {
       input = input.replace(/\[[\d.eE+\-]*\.\.[\d.eE+\-]*\]/, '').trim();
     }
     return { value: input.trim(), min, max };
+  }
+
+  /** Edit a dimension-type constraint via the inline dimension widget */
+  async _editDimensionConstraint(dim, screenPos = null) {
+    const isAngle = dim.dimType === 'angle';
+    const currentVal = dim.formula != null
+      ? (isAngle && typeof dim.formula === 'number'
+          ? (dim.formula * 180 / Math.PI).toFixed(2)
+          : String(dim.formula))
+      : (isAngle
+          ? (dim.value * 180 / Math.PI).toFixed(2)
+          : dim.value.toFixed(4));
+
+    // Compute screen position from dimension midpoint if not given
+    if (!screenPos) {
+      const midWx = (dim.x1 + dim.x2) / 2;
+      const midWy = (dim.y1 + dim.y2) / 2;
+      const s = this.viewport.worldToScreen(midWx, midWy);
+      screenPos = { x: s.x, y: s.y };
+    }
+
+    const result = await showDimensionInput({
+      dimType: dim.dimType,
+      defaultValue: currentVal,
+      driven: !dim.isConstraint,
+      hint: 'value or variable name',
+      screenPos,
+    });
+
+    if (result === null) return; // cancelled
+
+    const { value: inputVal, driven } = result;
+    const num = parseFloat(inputVal);
+    const isNum = !isNaN(num);
+    const varName = (!isNum && inputVal.trim()) ? inputVal.trim() : null;
+
+    takeSnapshot();
+
+    const wasConstraint = dim.isConstraint;
+    dim.isConstraint = !driven;
+    dim.displayMode = varName ? 'both' : 'value';
+
+    if (varName) {
+      dim.formula = varName;
+      dim.variableName = varName;
+      setVariable(varName, dim.value);
+    } else if (isNum) {
+      dim.formula = isAngle ? (num * Math.PI / 180) : num;
+    }
+
+    // Handle constraint state transitions
+    const inConstraints = state.scene.constraints.includes(dim);
+    if (!driven && dim.sourceA && !inConstraints) {
+      // Becoming a constraint — add to solver
+      state.scene.addConstraint(dim);
+    } else if (driven && inConstraints) {
+      // Becoming driven — remove from solver
+      state.scene.removeConstraint(dim);
+    } else {
+      // Still a constraint — re-solve with new value
+      state.scene.solve();
+    }
+
+    state.emit('change');
+    this._scheduleRender();
   }
 
   _rebuildVariablesList() {

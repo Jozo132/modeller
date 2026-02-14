@@ -212,6 +212,8 @@ export class Renderer {
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'center';
     for (const c of scene.constraints) {
+      // Dimension constraints draw themselves — skip the small icon
+      if (c.type === 'dimension') continue;
       const pts = c.involvedPoints();
       if (pts.length === 0) continue;
       // Draw a small icon near the centroid of involved points
@@ -498,6 +500,26 @@ function _computeFullyConstrained(scene) {
 
         // tangent, radius — don't directly lock point DOF
         default: break;
+      }
+
+      // Handle dimension constraints (duck-typed, not using standard fields)
+      if (c.type === 'dimension' && c.isConstraint && c.sourceA) {
+        if (c.dimType === 'distance' && c.sourceA.type === 'point' && c.sourceB && c.sourceB.type === 'point') {
+          const sa = ps.get(c.sourceA), sb = ps.get(c.sourceB);
+          if (sa && sb) {
+            if (isFC(sa) && !sb.radials.has(c.sourceA)) { sb.radials.add(c.sourceA); changed = true; }
+            if (isFC(sb) && !sa.radials.has(c.sourceB)) { sa.radials.add(c.sourceB); changed = true; }
+          }
+        } else if (c.dimType === 'distance' && c.sourceA.type === 'segment' && !c.sourceB) {
+          const si = ss.get(c.sourceA);
+          if (si && !si.lenKnown) { si.lenKnown = true; changed = true; }
+        } else if (c.dimType === 'angle' && c.sourceA.type === 'segment' && c.sourceB && c.sourceB.type === 'segment') {
+          const siA = ss.get(c.sourceA), siB = ss.get(c.sourceB);
+          if (siA && siB) {
+            if (siA.dirKnown && !siB.dirKnown) { siB.dirKnown = true; changed = true; }
+            if (siB.dirKnown && !siA.dirKnown) { siA.dirKnown = true; changed = true; }
+          }
+        }
       }
     }
 

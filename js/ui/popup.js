@@ -173,3 +173,163 @@ export function showPrompt({
     input.select();
   });
 }
+
+// ---------------------------------------------------------------------------
+// Inline dimension input — floating widget anchored near the canvas
+// ---------------------------------------------------------------------------
+let _inlineWidget = null;
+
+function _removeInlineWidget() {
+  if (_inlineWidget) {
+    _inlineWidget.container.remove();
+    if (_inlineWidget.cleanup) _inlineWidget.cleanup();
+    _inlineWidget = null;
+  }
+}
+
+/**
+ * Show an inline dimension input floating near the cursor / canvas center.
+ *
+ * @param {object} opts
+ * @param {string}  opts.dimType      — e.g. 'distance', 'angle', 'radius', 'length'
+ * @param {string}  opts.defaultValue — pre-filled value string
+ * @param {boolean} opts.driven       — initial state of "Driven" toggle
+ * @param {string}  [opts.hint]       — optional extra description
+ * @param {HTMLElement} [opts.anchor] — element to position near (e.g. canvas)
+ * @param {{x:number,y:number}} [opts.screenPos] — screen-space position for the widget
+ * @returns {Promise<{value:string, driven:boolean}|null>}  null = cancelled
+ */
+export function showDimensionInput({
+  dimType = 'distance',
+  defaultValue = '',
+  driven = false,
+  hint = '',
+  anchor = null,
+  screenPos = null,
+} = {}) {
+  _removeInlineWidget(); // only one at a time
+
+  return new Promise((resolve) => {
+    const container = document.createElement('div');
+    container.className = 'dim-inline-widget';
+
+    // --- Tooltip / header ---
+    const tooltip = document.createElement('div');
+    tooltip.className = 'dim-inline-tooltip';
+
+    const typeLabel = document.createElement('span');
+    typeLabel.className = 'dim-inline-type';
+    typeLabel.textContent = dimType.charAt(0).toUpperCase() + dimType.slice(1);
+    tooltip.appendChild(typeLabel);
+
+    if (hint) {
+      const hintEl = document.createElement('span');
+      hintEl.className = 'dim-inline-hint';
+      hintEl.textContent = hint;
+      tooltip.appendChild(hintEl);
+    }
+
+    // --- Driven checkbox ---
+    const drivenRow = document.createElement('label');
+    drivenRow.className = 'dim-inline-driven';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = driven;
+    drivenRow.appendChild(cb);
+    drivenRow.appendChild(document.createTextNode(' Driven'));
+    tooltip.appendChild(drivenRow);
+
+    container.appendChild(tooltip);
+
+    // --- Input row ---
+    const inputRow = document.createElement('div');
+    inputRow.className = 'dim-inline-input-row';
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'dim-inline-input';
+    input.value = defaultValue;
+    input.placeholder = 'value or variable…';
+    inputRow.appendChild(input);
+
+    const okBtn = document.createElement('button');
+    okBtn.type = 'button';
+    okBtn.className = 'dim-inline-ok';
+    okBtn.textContent = '✓';
+    okBtn.title = 'Confirm (Enter)';
+    inputRow.appendChild(okBtn);
+
+    container.appendChild(inputRow);
+
+    // --- Position the widget ---
+    const canvasEl = anchor || document.getElementById('cad-canvas');
+    if (canvasEl) {
+      const rect = canvasEl.getBoundingClientRect();
+      if (screenPos) {
+        container.style.left = `${rect.left + screenPos.x}px`;
+        container.style.top = `${rect.top + screenPos.y - 80}px`;
+      } else {
+        container.style.left = `${rect.left + rect.width / 2}px`;
+        container.style.top = `${rect.top + rect.height / 2 - 40}px`;
+      }
+    }
+
+    document.body.appendChild(container);
+
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      document.removeEventListener('keydown', onKeyDown, true);
+      document.removeEventListener('mousedown', onOutsideClick, true);
+      _removeInlineWidget();
+      resolve(result);
+    };
+
+    const trySubmit = () => {
+      finish({ value: input.value, driven: cb.checked });
+    };
+
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        finish(null);
+      }
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        e.stopPropagation();
+        trySubmit();
+      }
+    };
+
+    const onOutsideClick = (e) => {
+      if (!container.contains(e.target)) {
+        finish(null);
+      }
+    };
+
+    // Defer outside-click listener to avoid immediate close from the click that opened us
+    requestAnimationFrame(() => {
+      document.addEventListener('mousedown', onOutsideClick, true);
+    });
+
+    document.addEventListener('keydown', onKeyDown, true);
+    okBtn.addEventListener('click', trySubmit);
+
+    _inlineWidget = { container, cleanup: () => {
+      document.removeEventListener('keydown', onKeyDown, true);
+      document.removeEventListener('mousedown', onOutsideClick, true);
+    }};
+
+    input.focus();
+    input.select();
+  });
+}
+
+/** Dismiss any open inline dimension input (e.g. on tool switch). */
+export function dismissDimensionInput() {
+  if (_inlineWidget) {
+    _removeInlineWidget();
+  }
+}

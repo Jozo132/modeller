@@ -653,6 +653,108 @@ html, body {
   border-color: var(--accent-hover);
 }
 
+/* Inline dimension input widget */
+.dim-inline-widget {
+  position: fixed;
+  z-index: 400;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  pointer-events: auto;
+  animation: dim-inline-fade-in 0.1s ease-out;
+}
+
+@keyframes dim-inline-fade-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(4px); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+.dim-inline-tooltip {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: 5px 5px 0 0;
+  padding: 6px 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.dim-inline-type {
+  font-weight: 600;
+  color: var(--accent);
+  font-size: 11px;
+}
+
+.dim-inline-hint {
+  color: var(--text-secondary);
+  font-size: 10px;
+  opacity: 0.8;
+}
+
+.dim-inline-driven {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--text-primary);
+  margin-left: auto;
+  user-select: none;
+}
+
+.dim-inline-driven input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 13px;
+  height: 13px;
+  cursor: pointer;
+}
+
+.dim-inline-input-row {
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+
+.dim-inline-input {
+  background: var(--bg-dark);
+  color: var(--text-primary);
+  border: 1px solid var(--accent);
+  border-radius: 0 0 0 5px;
+  padding: 5px 8px;
+  font-size: 13px;
+  font-family: 'Consolas', monospace;
+  outline: none;
+  width: 160px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+}
+
+.dim-inline-input:focus {
+  border-color: var(--accent-hover);
+  box-shadow: 0 0 6px rgba(0,191,255,0.35);
+}
+
+.dim-inline-ok {
+  background: var(--accent);
+  color: #fff;
+  border: 1px solid var(--accent);
+  border-left: none;
+  border-radius: 0 0 5px 0;
+  padding: 5px 10px;
+  font-size: 13px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.dim-inline-ok:hover {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
 @media (max-width: 1000px) {
   :root {
     --panel-width: 180px;
