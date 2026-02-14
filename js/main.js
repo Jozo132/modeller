@@ -1276,7 +1276,7 @@ class App {
         if (parsed) {
           takeSnapshot();
           const numVal = parseFloat(parsed.value);
-          if (!isNaN(numVal) && numVal > 0) {
+          if (!isNaN(numVal) && numVal >= 0) {
             c.value = numVal;
           } else if (isNaN(numVal) && parsed.value.trim()) {
             c.value = parsed.value.trim(); // variable name
@@ -1295,13 +1295,13 @@ class App {
 
   /** Parse constraint input string like "50 [10..100]" or "myVar [0..200]" */
   _parseConstraintInput(input) {
-    const rangeMatch = input.match(/\[([^.]*)\.\.(.*)\]/);
+    const rangeMatch = input.match(/\[([\d.eE+\-]*)\.\.([\d.eE+\-]*)\]/);
     let min = null, max = null;
     if (rangeMatch) {
       if (rangeMatch[1].trim()) min = parseFloat(rangeMatch[1]);
       if (rangeMatch[2].trim()) max = parseFloat(rangeMatch[2]);
       if ((min != null && isNaN(min)) || (max != null && isNaN(max))) return null;
-      input = input.replace(/\[.*\]/, '').trim();
+      input = input.replace(/\[[\d.eE+\-]*\.\.[\d.eE+\-]*\]/, '').trim();
     }
     return { value: input.trim(), min, max };
   }

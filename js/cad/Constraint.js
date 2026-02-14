@@ -65,8 +65,8 @@ export class Constraint {
   }
   /** Clamp a value to the constraint's limit range if set. */
   clampToRange(v) {
-    if (this.min != null && v < this.min) v = this.min;
-    if (this.max != null && v > this.max) v = this.max;
+    if (this.min != null && v < this.min) return this.min;
+    if (this.max != null && v > this.max) return this.max;
     return v;
   }
 }
