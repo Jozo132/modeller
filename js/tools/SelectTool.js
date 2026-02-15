@@ -3,10 +3,12 @@ import { BaseTool } from './BaseTool.js';
 import { state } from '../state.js';
 import { takeSnapshot } from '../history.js';
 import { union } from '../cad/Operations.js';
+import { OnLine } from '../cad/Constraint.js';
 
 const PICK_PX = 18;       // pixel tolerance for shape picking
 const PICK_PT_PX = 14;    // pixel tolerance for point picking (tighter — points are small)
 const DRAG_THRESHOLD = 5; // min pixels before a drag starts
+const ALIGN_TOL_PX = 5;   // pixel tolerance for alignment guide detection
 
 /** Collect the unique movable points of a shape. */
 function _shapePoints(shape) {
@@ -42,7 +44,13 @@ export class SelectTool extends BaseTool {
     this._dragDimension = null;   // DimensionPrimitive being dragged
 
     // Snap-to-coincidence state
-    this._snapCandidate = null;   // {point, x, y} — nearby point to merge on drop
+    this._snapCandidates = [];    // [{dragPt, targetPt, x, y}, ...] — nearby points to merge on drop
+
+    // Point-to-line snap state
+    this._lineSnapCandidates = []; // [{dragPt, seg, x, y}, ...] — points to constrain on-line on drop
+
+    // Alignment guide state (visual only, no constraints)
+    this._alignmentGuides = [];   // [{axis:'h'|'v', dragPt, matchPt, value}, ...]
   }
 
   activate() {
@@ -57,7 +65,9 @@ export class SelectTool extends BaseTool {
     this._dragShape = null;
     this._dragShapePts = [];
     this._dragDimension = null;
-    this._snapCandidate = null;
+    this._snapCandidates = [];
+    this._lineSnapCandidates = [];
+    this._alignmentGuides = [];
     super.deactivate();
   }
 
@@ -95,6 +105,171 @@ export class SelectTool extends BaseTool {
     const shape = this._findClosestEntity(wx, wy, PICK_PX);
     if (shape) return { kind: 'shape', target: shape };
     return null;
+  }
+
+  // ------------------------------------------------------------------
+  //  Snap-to-coincidence helpers
+  // ------------------------------------------------------------------
+
+  /**
+   * Find snap-to-coincidence candidates for a set of dragged points.
+   * For each dragged point, find the closest non-connected scene point within
+   * snap tolerance. Returns array of {dragPt, targetPt, x, y}.
+   * Each target point is only used once (closest drag point wins).
+   */
+  _findSnapCandidates(dragPts) {
+    const snapTol = PICK_PT_PX / this.app.viewport.zoom;
+    const scene = state.scene;
+    const dragSet = new Set(dragPts);
+
+    // Build exclusion set: points connected to any dragged point
+    const excluded = new Set(dragPts);
+    for (const dp of dragPts) {
+      for (const s of scene.segments) {
+        if (s.p1 === dp) excluded.add(s.p2);
+        if (s.p2 === dp) excluded.add(s.p1);
+      }
+      for (const c of scene.constraints) {
+        if (c.type === 'coincident') {
+          if (c.ptA === dp) excluded.add(c.ptB);
+          if (c.ptB === dp) excluded.add(c.ptA);
+        }
+      }
+    }
+
+    // For each dragged point find the best target
+    const candidates = [];
+    const usedTargets = new Set();
+    for (const dp of dragPts) {
+      let bestDist = Infinity;
+      let bestTarget = null;
+      for (const p of scene.points) {
+        if (excluded.has(p) || usedTargets.has(p)) continue;
+        const d = Math.hypot(p.x - dp.x, p.y - dp.y);
+        if (d < snapTol && d < bestDist) {
+          bestDist = d;
+          bestTarget = p;
+        }
+      }
+      if (bestTarget) {
+        candidates.push({ dragPt: dp, targetPt: bestTarget, x: bestTarget.x, y: bestTarget.y });
+        usedTargets.add(bestTarget);
+      }
+    }
+    return candidates;
+  }
+
+  /** Apply all snap candidates — merge each drag point into its target. */
+  _applySnapCandidates() {
+    if (this._snapCandidates.length === 0) return;
+    const scene = state.scene;
+    for (const c of this._snapCandidates) {
+      // Verify both points still exist (union may have removed some)
+      if (scene.points.includes(c.dragPt) && scene.points.includes(c.targetPt)) {
+        union(scene, c.dragPt, c.targetPt);
+      }
+    }
+    this._snapCandidates = [];
+  }
+
+  /**
+   * Find point-to-line snap candidates for dragged points.
+   * Only activates if the point is NOT already snapping to a coincident point.
+   * Returns array of {dragPt, seg, x, y} where (x,y) is the projection.
+   */
+  _findLineSnapCandidates(dragPts) {
+    const snapTol = PICK_PX / this.app.viewport.zoom;
+    const scene = state.scene;
+    const dragSet = new Set(dragPts);
+    // Points that already have a coincident snap — skip line snap for those
+    const coincidentDragPts = new Set(this._snapCandidates.map(c => c.dragPt));
+
+    const candidates = [];
+    for (const dp of dragPts) {
+      if (coincidentDragPts.has(dp)) continue;
+      // Check if already on-line constrained to a segment
+      const alreadyOnLine = scene.constraints.some(c =>
+        c.type === 'on_line' && c.pt === dp
+      );
+      if (alreadyOnLine) continue;
+
+      let bestDist = Infinity;
+      let bestSeg = null;
+      let bestX = 0, bestY = 0;
+      for (const seg of scene.segments) {
+        // Skip segments that own this point
+        if (seg.p1 === dp || seg.p2 === dp) continue;
+        const d = seg.distanceTo(dp.x, dp.y);
+        if (d < snapTol && d < bestDist) {
+          // Compute projection onto segment
+          const dx = seg.x2 - seg.x1, dy = seg.y2 - seg.y1;
+          const lenSq = dx * dx + dy * dy;
+          if (lenSq < 1e-12) continue;
+          let t = ((dp.x - seg.x1) * dx + (dp.y - seg.y1) * dy) / lenSq;
+          t = Math.max(0, Math.min(1, t));
+          bestX = seg.x1 + t * dx;
+          bestY = seg.y1 + t * dy;
+          bestDist = d;
+          bestSeg = seg;
+        }
+      }
+      if (bestSeg) {
+        candidates.push({ dragPt: dp, seg: bestSeg, x: bestX, y: bestY });
+      }
+    }
+    return candidates;
+  }
+
+  /** Apply line snap candidates — add OnLine constraints. */
+  _applyLineSnapCandidates() {
+    if (this._lineSnapCandidates.length === 0) return;
+    const scene = state.scene;
+    for (const c of this._lineSnapCandidates) {
+      if (scene.points.includes(c.dragPt) && scene.segments.includes(c.seg)) {
+        const constraint = new OnLine(c.dragPt, c.seg);
+        scene.addConstraint(constraint);
+      }
+    }
+    this._lineSnapCandidates = [];
+  }
+
+  /**
+   * Find horizontal/vertical alignment guides for dragged points.
+   * Returns array of {axis, dragPt, matchX, matchY, value}.
+   * Only visual — no constraints applied.
+   */
+  _findAlignmentGuides(dragPts) {
+    const alignTol = ALIGN_TOL_PX / this.app.viewport.zoom;
+    const scene = state.scene;
+    const dragSet = new Set(dragPts);
+    const guides = [];
+    const seenH = new Set(); // avoid duplicate guides for same Y value
+    const seenV = new Set(); // avoid duplicate guides for same X value
+
+    for (const dp of dragPts) {
+      for (const p of scene.points) {
+        if (dragSet.has(p)) continue;
+        // Horizontal alignment (same Y)
+        const dy = Math.abs(p.y - dp.y);
+        if (dy < alignTol && dy > 1e-9) {
+          const key = `h_${dp.id}_${Math.round(p.y * 1000)}`;
+          if (!seenH.has(key)) {
+            seenH.add(key);
+            guides.push({ axis: 'h', dragPt: dp, matchX: p.x, matchY: p.y, value: p.y });
+          }
+        }
+        // Vertical alignment (same X)
+        const dx = Math.abs(p.x - dp.x);
+        if (dx < alignTol && dx > 1e-9) {
+          const key = `v_${dp.id}_${Math.round(p.x * 1000)}`;
+          if (!seenV.has(key)) {
+            seenV.add(key);
+            guides.push({ axis: 'v', dragPt: dp, matchX: p.x, matchY: p.y, value: p.x });
+          }
+        }
+      }
+    }
+    return guides;
   }
 
   // ------------------------------------------------------------------
@@ -196,33 +371,10 @@ export class SelectTool extends BaseTool {
         this._dragPoint.y = wy;
         state.scene.solve();
 
-        // --- Snap-to-coincidence detection ---
-        this._snapCandidate = null;
-        const snapTol = PICK_PT_PX / this.app.viewport.zoom;
-        const dragPt = this._dragPoint;
-        // Collect points that already share this point (same primitive endpoints)
-        const connectedPts = new Set();
-        connectedPts.add(dragPt);
-        for (const s of state.scene.segments) {
-          if (s.p1 === dragPt) connectedPts.add(s.p2);
-          if (s.p2 === dragPt) connectedPts.add(s.p1);
-        }
-        // Also skip points already coincident-constrained with dragPt
-        for (const c of state.scene.constraints) {
-          if (c.type === 'coincident') {
-            if (c.ptA === dragPt) connectedPts.add(c.ptB);
-            if (c.ptB === dragPt) connectedPts.add(c.ptA);
-          }
-        }
-        let bestDist = Infinity;
-        for (const p of state.scene.points) {
-          if (connectedPts.has(p)) continue;
-          const d = Math.hypot(p.x - dragPt.x, p.y - dragPt.y);
-          if (d < snapTol && d < bestDist) {
-            bestDist = d;
-            this._snapCandidate = { point: p, x: p.x, y: p.y };
-          }
-        }
+        // Snap-to-coincidence detection for the single dragged point
+        this._snapCandidates = this._findSnapCandidates([this._dragPoint]);
+        this._lineSnapCandidates = this._findLineSnapCandidates([this._dragPoint]);
+        this._alignmentGuides = this._findAlignmentGuides([this._dragPoint]);
 
         state.emit('change');
       }
@@ -263,6 +415,12 @@ export class SelectTool extends BaseTool {
         this._dragStart.wx = wx;
         this._dragStart.wy = wy;
         state.scene.solve();
+
+        // Snap-to-coincidence detection for all movable points of the shape
+        this._snapCandidates = this._findSnapCandidates(this._dragShapePts);
+        this._lineSnapCandidates = this._findLineSnapCandidates(this._dragShapePts);
+        this._alignmentGuides = this._findAlignmentGuides(this._dragShapePts);
+
         state.emit('change');
       }
       return;
@@ -294,16 +452,15 @@ export class SelectTool extends BaseTool {
     // ---- Finish vertex drag ----
     if (this._dragPoint) {
       if (this._isDragging) {
-        // Apply coincidence if snapped to a candidate point
-        if (this._snapCandidate) {
-          union(state.scene, this._dragPoint, this._snapCandidate.point);
-          this._snapCandidate = null;
-        }
+        this._applySnapCandidates();
+        this._applyLineSnapCandidates();
         state.scene.solve();
         state.emit('change');
       }
       this._dragPoint = null;
-      this._snapCandidate = null;
+      this._snapCandidates = [];
+      this._lineSnapCandidates = [];
+      this._alignmentGuides = [];
       this._isDragging = false;
       this._dragStart = null;
       this._dragTookSnapshot = false;
@@ -325,11 +482,16 @@ export class SelectTool extends BaseTool {
     // ---- Finish shape drag ----
     if (this._dragShape) {
       if (this._isDragging) {
+        this._applySnapCandidates();
+        this._applyLineSnapCandidates();
         state.scene.solve();
         state.emit('change');
       }
       this._dragShape = null;
       this._dragShapePts = [];
+      this._snapCandidates = [];
+      this._lineSnapCandidates = [];
+      this._alignmentGuides = [];
       this._isDragging = false;
       this._dragStart = null;
       this._dragTookSnapshot = false;
@@ -378,7 +540,9 @@ export class SelectTool extends BaseTool {
     this._dragShape = null;
     this._dragShapePts = [];
     this._dragDimension = null;
-    this._snapCandidate = null;
+    this._snapCandidates = [];
+    this._lineSnapCandidates = [];
+    this._alignmentGuides = [];
     this._isDragging = false;
     this._dragStart = null;
     this._selectionBox = null;
@@ -410,28 +574,107 @@ export class SelectTool extends BaseTool {
 
   /** Render the selection box overlay */
   drawOverlay(ctx, vp) {
-    // --- Coincidence snap indicator ---
-    if (this._snapCandidate && this._isDragging) {
-      const s = vp.worldToScreen(this._snapCandidate.x, this._snapCandidate.y);
-      const r = 8;
+    // --- Coincidence snap indicators ---
+    if (this._snapCandidates.length > 0 && this._isDragging) {
       ctx.save();
-      // Outer circle
-      ctx.strokeStyle = '#00e676';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.arc(s.x, s.y, r, 0, Math.PI * 2);
-      ctx.stroke();
-      // Inner dot
-      ctx.fillStyle = '#00e676';
-      ctx.beginPath();
-      ctx.arc(s.x, s.y, 2.5, 0, Math.PI * 2);
-      ctx.fill();
-      // "Coincident" label
-      ctx.font = '10px Consolas, monospace';
-      ctx.textBaseline = 'bottom';
-      ctx.textAlign = 'left';
-      ctx.fillStyle = 'rgba(0,230,118,0.85)';
-      ctx.fillText('⊙ Coincident', s.x + r + 4, s.y - 2);
+      for (const cand of this._snapCandidates) {
+        const s = vp.worldToScreen(cand.x, cand.y);
+        const r = 8;
+        // Outer circle
+        ctx.strokeStyle = '#00e676';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, r, 0, Math.PI * 2);
+        ctx.stroke();
+        // Inner dot
+        ctx.fillStyle = '#00e676';
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+        // "Coincident" label
+        ctx.font = '10px Consolas, monospace';
+        ctx.textBaseline = 'bottom';
+        ctx.textAlign = 'left';
+        ctx.fillStyle = 'rgba(0,230,118,0.85)';
+        ctx.fillText('\u2299 Coincident', s.x + r + 4, s.y - 2);
+      }
+      ctx.restore();
+    }
+
+    // --- On-line snap indicators ---
+    if (this._lineSnapCandidates.length > 0 && this._isDragging) {
+      ctx.save();
+      for (const cand of this._lineSnapCandidates) {
+        const s = vp.worldToScreen(cand.x, cand.y);
+        const r = 8;
+        // Draw a small "X" on the line
+        ctx.strokeStyle = '#ff9800';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(s.x - r * 0.6, s.y - r * 0.6);
+        ctx.lineTo(s.x + r * 0.6, s.y + r * 0.6);
+        ctx.moveTo(s.x + r * 0.6, s.y - r * 0.6);
+        ctx.lineTo(s.x - r * 0.6, s.y + r * 0.6);
+        ctx.stroke();
+        // Circle around it
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, r, 0, Math.PI * 2);
+        ctx.stroke();
+        // "On Line" label
+        ctx.font = '10px Consolas, monospace';
+        ctx.textBaseline = 'bottom';
+        ctx.textAlign = 'left';
+        ctx.fillStyle = 'rgba(255,152,0,0.85)';
+        ctx.fillText('\u2295 On Line', s.x + r + 4, s.y - 2);
+      }
+      ctx.restore();
+    }
+
+    // --- Alignment guides (thin dashed lines) ---
+    if (this._alignmentGuides.length > 0 && this._isDragging) {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(0,200,255,0.45)';
+      ctx.lineWidth = 0.5;
+      ctx.setLineDash([6, 4]);
+      const cw = ctx.canvas.width;
+      const ch = ctx.canvas.height;
+      for (const g of this._alignmentGuides) {
+        if (g.axis === 'h') {
+          // Horizontal guide at y = g.value
+          const sy = vp.worldToScreen(0, g.value).y;
+          ctx.beginPath();
+          ctx.moveTo(0, sy);
+          ctx.lineTo(cw, sy);
+          ctx.stroke();
+          // Small diamond at the matched point
+          const ms = vp.worldToScreen(g.matchX, g.matchY);
+          ctx.fillStyle = 'rgba(0,200,255,0.6)';
+          ctx.beginPath();
+          ctx.moveTo(ms.x, ms.y - 4);
+          ctx.lineTo(ms.x + 4, ms.y);
+          ctx.lineTo(ms.x, ms.y + 4);
+          ctx.lineTo(ms.x - 4, ms.y);
+          ctx.closePath();
+          ctx.fill();
+        } else {
+          // Vertical guide at x = g.value
+          const sx = vp.worldToScreen(g.value, 0).x;
+          ctx.beginPath();
+          ctx.moveTo(sx, 0);
+          ctx.lineTo(sx, ch);
+          ctx.stroke();
+          // Small diamond at the matched point
+          const ms = vp.worldToScreen(g.matchX, g.matchY);
+          ctx.fillStyle = 'rgba(0,200,255,0.6)';
+          ctx.beginPath();
+          ctx.moveTo(ms.x, ms.y - 4);
+          ctx.lineTo(ms.x + 4, ms.y);
+          ctx.lineTo(ms.x, ms.y + 4);
+          ctx.lineTo(ms.x - 4, ms.y);
+          ctx.closePath();
+          ctx.fill();
+        }
+      }
       ctx.restore();
     }
 

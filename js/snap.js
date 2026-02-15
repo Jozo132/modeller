@@ -36,6 +36,14 @@ export function findSnap(sx, sy, viewport) {
     }
   }
 
+  // Origin snap — always available as a high-priority snap
+  const originScreen = viewport.worldToScreen(0, 0);
+  const originDist = Math.hypot(originScreen.x - sx, originScreen.y - sy);
+  if (originDist < SNAP_RADIUS && originDist < bestDist) {
+    bestDist = originDist;
+    bestSnap = { x: 0, y: 0, type: 'origin' };
+  }
+
   if (bestSnap) return bestSnap;
 
   // Grid snap (optional bypass for Ctrl-drag)

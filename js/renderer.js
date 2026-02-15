@@ -406,6 +406,16 @@ export class Renderer {
         ctx.closePath();
         ctx.stroke();
         break;
+      case 'origin':
+        // Circle + crosshair, slightly larger
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, sz + 1, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(s.x - sz - 1, s.y); ctx.lineTo(s.x + sz + 1, s.y);
+        ctx.moveTo(s.x, s.y - sz - 1); ctx.lineTo(s.x, s.y + sz + 1);
+        ctx.stroke();
+        break;
       case 'grid':
         ctx.beginPath();
         ctx.moveTo(s.x - sz, s.y); ctx.lineTo(s.x + sz, s.y);
