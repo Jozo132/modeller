@@ -646,13 +646,11 @@ export class WasmRenderer {
         const sx = bb.max.x - bb.min.x;
         const sy = bb.max.y - bb.min.y;
         const sz = bb.max.z - bb.min.z;
-        const maxDim = Math.max(sx, sy, sz, 1);
+        const maxDim = Math.max(sx, sy, sz, 10);
         this._orbitRadius = maxDim * 2.5;
 
         // Scale grid and axes to match the part scale
-        const gridSize = maxDim * 3;
-        const gridDivisions = 20;
-        this.wasm.setGridSize(gridSize, gridDivisions);
+        this.wasm.setGridSize(maxDim * 3, 20);
         this.wasm.setAxesSize(maxDim * 0.5);
       } else {
         this._orbitTarget = { x: 0, y: 0, z: 0 };
