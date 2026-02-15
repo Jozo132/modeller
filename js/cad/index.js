@@ -7,6 +7,9 @@ export { PCircle } from './CirclePrimitive.js';
 export { TextPrimitive } from './TextPrimitive.js';
 export { DimensionPrimitive, detectDimensionType, detectAllDimensionTypes, DIM_TYPES, DISPLAY_MODES } from './DimensionPrimitive.js';
 export { Scene } from './Scene.js';
+export { Sketch } from './Sketch.js';
+export { Part } from './Part.js';
+export { Assembly } from './Assembly.js';
 export { solve } from './Solver.js';
 export {
   Constraint, resetConstraintIds,
