@@ -22,6 +22,15 @@ export const DIM_TYPES = ['distance', 'dx', 'dy', 'angle', 'radius', 'diameter']
 /** Display modes for the dimension label */
 export const DISPLAY_MODES = ['value', 'formula', 'both'];
 
+/** Cached background color for label clearing (avoids getComputedStyle per frame) */
+let _bgColor = null;
+function _getBgColor() {
+  if (!_bgColor) {
+    _bgColor = getComputedStyle(document.body).getPropertyValue('--bg-dark').trim() || '#1e1e2e';
+  }
+  return _bgColor;
+}
+
 export class DimensionPrimitive extends Primitive {
   /**
    * @param {number} x1  Start point X (world)
@@ -449,12 +458,24 @@ export class DimensionPrimitive extends Primitive {
     ctx.font = `${fontSize}px 'Consolas', monospace`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'bottom';
+    const label = this.displayLabel;
+    const tm = ctx.measureText(label);
+    const pad = 3;
     ctx.save();
     ctx.translate(mx, my);
     let ta = angle;
     if (ta > Math.PI / 2 || ta < -Math.PI / 2) ta += Math.PI;
     ctx.rotate(ta);
-    ctx.fillText(this.displayLabel, 0, -4);
+    // Clear background behind text
+    ctx.fillStyle = _getBgColor();
+    ctx.fillRect(-tm.width / 2 - pad, -4 - fontSize - pad + 2, tm.width + pad * 2, fontSize + pad * 2);
+    // Draw text
+    if (this.isConstraint) {
+      ctx.fillStyle = 'rgba(255,180,50,0.9)';
+    } else {
+      ctx.fillStyle = ctx.strokeStyle || 'rgba(0,191,255,0.85)';
+    }
+    ctx.fillText(label, 0, -4);
     ctx.restore();
     ctx.restore();
   }
@@ -496,7 +517,20 @@ export class DimensionPrimitive extends Primitive {
     ctx.font = `${fontSize}px 'Consolas', monospace`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(this.displayLabel, lx, ly);
+    const label = this.displayLabel;
+    const tm = ctx.measureText(label);
+    const pad = 3;
+    // Clear background behind text
+    const bgColor = _getBgColor();
+    ctx.fillStyle = bgColor;
+    ctx.fillRect(lx - tm.width / 2 - pad, ly - fontSize / 2 - pad, tm.width + pad * 2, fontSize + pad * 2);
+    // Draw text
+    if (this.isConstraint) {
+      ctx.fillStyle = 'rgba(255,180,50,0.9)';
+    } else {
+      ctx.fillStyle = 'rgba(0,191,255,0.85)';
+    }
+    ctx.fillText(label, lx, ly);
 
     ctx.restore();
   }
