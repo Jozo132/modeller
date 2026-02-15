@@ -523,11 +523,13 @@ export class DimensionPrimitive extends Primitive {
     if (style !== 'none') {
       const useOutside = style === 'outside' || (style === 'auto' && pixelDist < arrowLen * 4);
       if (useOutside) {
-        _drawArrow(ctx, d1.x, d1.y, angle + Math.PI, arrowLen);
-        _drawArrow(ctx, d2.x, d2.y, angle, arrowLen);
-      } else {
+        // Arrows point inward from outside the dimension line
         _drawArrow(ctx, d1.x, d1.y, angle, arrowLen);
         _drawArrow(ctx, d2.x, d2.y, angle + Math.PI, arrowLen);
+      } else {
+        // Arrows point outward from inside the dimension line
+        _drawArrow(ctx, d1.x, d1.y, angle + Math.PI, arrowLen);
+        _drawArrow(ctx, d2.x, d2.y, angle, arrowLen);
       }
     }
 
