@@ -59,6 +59,9 @@ export class DimensionPrimitive extends Primitive {
     this.sourceA = opts.sourceA ?? null;
     this.sourceB = opts.sourceB ?? null;
 
+    // Arrow style: 'auto' | 'inside' | 'outside' | 'none'
+    this.arrowStyle = opts.arrowStyle || 'auto';
+
     // Constraint range limits (like Constraint base class)
     this.min = opts.min ?? null;
     this.max = opts.max ?? null;
@@ -490,13 +493,15 @@ export class DimensionPrimitive extends Primitive {
       ctx.fillStyle = 'rgba(255,180,50,0.9)';
     }
 
-    // Extension lines (dashed)
-    ctx.setLineDash([4, 3]);
+    // Extension lines (thin solid grey)
+    ctx.save();
+    ctx.strokeStyle = this.isConstraint ? 'rgba(200,200,200,0.35)' : 'rgba(255,180,50,0.35)';
+    ctx.lineWidth = 0.5;
     ctx.beginPath();
     ctx.moveTo(p1.x, p1.y); ctx.lineTo(d1.x, d1.y);
     ctx.moveTo(p2.x, p2.y); ctx.lineTo(d2.x, d2.y);
     ctx.stroke();
-    ctx.setLineDash([]);
+    ctx.restore();
 
     // Measure label
     const fontSize = Math.max(10, 12);
@@ -512,8 +517,19 @@ export class DimensionPrimitive extends Primitive {
 
     const arrowLen = 8;
     const angle = Math.atan2(d2.y - d1.y, d2.x - d1.x);
-    _drawArrow(ctx, d1.x, d1.y, angle, arrowLen);
-    _drawArrow(ctx, d2.x, d2.y, angle + Math.PI, arrowLen);
+    const pixelDist = Math.hypot(d2.x - d1.x, d2.y - d1.y);
+    const style = this.arrowStyle || 'auto';
+    // 'auto': inside if enough room, outside if too tight; 'inside'/'outside' forced; 'none' = no arrows
+    if (style !== 'none') {
+      const useOutside = style === 'outside' || (style === 'auto' && pixelDist < arrowLen * 4);
+      if (useOutside) {
+        _drawArrow(ctx, d1.x, d1.y, angle + Math.PI, arrowLen);
+        _drawArrow(ctx, d2.x, d2.y, angle, arrowLen);
+      } else {
+        _drawArrow(ctx, d1.x, d1.y, angle, arrowLen);
+        _drawArrow(ctx, d2.x, d2.y, angle + Math.PI, arrowLen);
+      }
+    }
 
     // Label at midpoint — blit scene buffer behind text, then draw text
     const mx = (d1.x + d2.x) / 2, my = (d1.y + d2.y) / 2;
@@ -637,6 +653,7 @@ export class DimensionPrimitive extends Primitive {
     if (this._angleSweep != null) out._angleSweep = this._angleSweep;
     if (this.min != null) out.min = this.min;
     if (this.max != null) out.max = this.max;
+    if (this.arrowStyle && this.arrowStyle !== 'auto') out.arrowStyle = this.arrowStyle;
     return out;
   }
 }

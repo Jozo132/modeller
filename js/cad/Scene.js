@@ -361,6 +361,7 @@ export class Scene {
       if (d.construction) seg.construction = true;
       if (d.constructionType) seg.constructionType = d.constructionType;
       if (d.constructionDash) seg.constructionDash = d.constructionDash;
+      if (d.lineWidth != null) seg.lineWidth = d.lineWidth;
       scene.segments.push(seg);
       shapeMap.set(d.id, seg);
       if (d.id > maxPrimId) maxPrimId = d.id;
@@ -377,6 +378,7 @@ export class Scene {
       if (d.construction) c.construction = true;
       if (d.constructionType) c.constructionType = d.constructionType;
       if (d.constructionDash) c.constructionDash = d.constructionDash;
+      if (d.lineWidth != null) c.lineWidth = d.lineWidth;
       scene.circles.push(c);
       shapeMap.set(d.id, c);
       if (d.id > maxPrimId) maxPrimId = d.id;
@@ -393,6 +395,7 @@ export class Scene {
       if (d.construction) a.construction = true;
       if (d.constructionType) a.constructionType = d.constructionType;
       if (d.constructionDash) a.constructionDash = d.constructionDash;
+      if (d.lineWidth != null) a.lineWidth = d.lineWidth;
       scene.arcs.push(a);
       shapeMap.set(d.id, a);
       if (d.id > maxPrimId) maxPrimId = d.id;
@@ -427,6 +430,7 @@ export class Scene {
       if (d._angleSweep != null) dm._angleSweep = d._angleSweep;
       if (d.min != null) dm.min = d.min;
       if (d.max != null) dm.max = d.max;
+      if (d.arrowStyle) dm.arrowStyle = d.arrowStyle;
 
       // Resolve source references from the rebuilt primitives
       if (d.sourceAId != null) {

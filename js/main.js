@@ -503,6 +503,34 @@ class App {
           });
         }
 
+        items.push(this._thicknessSubmenu([entity]));
+        items.push({ type: 'separator' });
+      }
+
+      // Dimension-specific options
+      if (entity.type === 'dimension') {
+        items.push({
+          type: 'item',
+          label: entity.isConstraint ? 'Make Driven' : 'Make Driving',
+          icon: entity.isConstraint ? '📐' : '📏',
+          action: () => {
+            takeSnapshot();
+            if (entity.isConstraint) {
+              const inC = state.scene.constraints.includes(entity);
+              if (inC) state.scene.removeConstraint(entity);
+              entity.isConstraint = false;
+            } else {
+              entity.isConstraint = true;
+              if (entity.sourceA && !state.scene.constraints.includes(entity)) {
+                state.scene.addConstraint(entity);
+              }
+            }
+            state.scene.solve();
+            state.emit('change');
+            this._scheduleRender();
+          },
+        });
+        items.push(this._arrowStyleSubmenu([entity]));
         items.push({ type: 'separator' });
       }
 
@@ -1244,10 +1272,85 @@ class App {
     this._rebuildVariablesList();
   }
 
-  /** Get a short icon string for a primitive type */
-  _primIcon(type) {
-    const icons = { segment: '╱', circle: '○', arc: '◠', point: '·', text: 'T', dimension: '↔' };
-    return icons[type] || '?';
+  /** Get an icon for a primitive, reflecting its visual style */
+  _primIcon(prim) {
+    if (typeof prim === 'string') {
+      // Fallback for plain type string
+      const icons = { segment: '╱', circle: '○', arc: '◠', point: '·', text: 'T', dimension: '↔' };
+      return icons[prim] || '?';
+    }
+    const type = prim.type;
+    const color = prim.construction ? '#90EE90' : '#ccc';
+    const w = prim.lineWidth || 1;
+    const sw = Math.min(Math.max(w, 0.5), 3); // clamp for icon display
+    let dash = '';
+    if (prim.construction) {
+      const ds = prim.constructionDash || 'dashed';
+      if (ds === 'dashed') dash = ' stroke-dasharray="4,2"';
+      else if (ds === 'dash-dot') dash = ' stroke-dasharray="4,1.5,1,1.5"';
+      else if (ds === 'dotted') dash = ' stroke-dasharray="1,2"';
+    }
+    if (type === 'segment') {
+      return `<svg width="14" height="14" viewBox="0 0 14 14" style="display:block"><line x1="1" y1="13" x2="13" y2="1" stroke="${color}" stroke-width="${sw}"${dash}/></svg>`;
+    }
+    if (type === 'circle') {
+      return `<svg width="14" height="14" viewBox="0 0 14 14" style="display:block"><circle cx="7" cy="7" r="5.5" fill="none" stroke="${color}" stroke-width="${sw}"${dash}/></svg>`;
+    }
+    if (type === 'arc') {
+      return `<svg width="14" height="14" viewBox="0 0 14 14" style="display:block"><path d="M 2 10 A 6 6 0 0 1 12 10" fill="none" stroke="${color}" stroke-width="${sw}"${dash}/></svg>`;
+    }
+    const fallback = { point: '·', text: 'T', dimension: '↔' };
+    return fallback[type] || '?';
+  }
+
+  /** Build a 'Line Thickness' submenu for one or more entities */
+  _thicknessSubmenu(entities) {
+    const thicknesses = [0.25, 0.5, 1, 1.5, 2, 3, 5];
+    const current = entities[0]?.lineWidth ?? 1;
+    return {
+      type: 'submenu',
+      label: 'Line Thickness',
+      icon: '━',
+      items: thicknesses.map(t => ({
+        type: 'item',
+        label: `${t}`,
+        icon: current === t ? '✓' : '',
+        labelHtml: `<span style="display:flex;align-items:center;gap:8px"><span>${t}</span><svg width="36" height="4" viewBox="0 0 36 4" style="display:block"><line x1="0" y1="2" x2="36" y2="2" stroke="#ccc" stroke-width="${Math.min(t * 1.5, 4)}"/></svg></span>`,
+        action: () => {
+          takeSnapshot();
+          for (const e of entities) e.lineWidth = t;
+          state.emit('change');
+          this._scheduleRender();
+        },
+      })),
+    };
+  }
+
+  /** Build an 'Arrow Style' submenu for dimensions */
+  _arrowStyleSubmenu(dims) {
+    const current = dims[0]?.arrowStyle || 'auto';
+    const styles = [
+      { key: 'auto', label: 'Automatic' },
+      { key: 'inside', label: 'Inside' },
+      { key: 'outside', label: 'Outside' },
+      { key: 'none', label: 'None' },
+    ];
+    return {
+      type: 'submenu',
+      label: 'Arrow Style',
+      icon: '⟷',
+      items: styles.map(s => ({
+        type: 'item',
+        label: s.label,
+        icon: current === s.key ? '✓' : '',
+        action: () => {
+          takeSnapshot();
+          for (const d of dims) d.arrowStyle = s.key;
+          state.emit('change');
+          this._scheduleRender();
+        },
+      })),
+    };
   }
 
   /** Get a short icon string for a constraint type */
@@ -1388,10 +1491,18 @@ class App {
       if (prim.construction) {
         const ct = prim.constructionType || 'finite';
         const ctTag = ct === 'finite' ? 'C' : ct === 'infinite-start' ? 'C←' : ct === 'infinite-end' ? 'C→' : 'C↔';
-        desc += ` <span style="opacity:0.5;color:#90EE90">(${ctTag})</span>`;
+        const ds = prim.constructionDash || 'dashed';
+        const dsTag = ds === 'dashed' ? '' : ds === 'dash-dot' ? ', ─·' : ', ···';
+        desc += ` <span style="opacity:0.5;color:#90EE90">(${ctTag}${dsTag})</span>`;
+      }
+      if (prim.lineWidth !== 1) {
+        desc += ` <span style="opacity:0.4;font-size:10px">[${prim.lineWidth}]</span>`;
       }
 
-      row.innerHTML = `<span class="lp-icon">${this._primIcon(prim.type)}</span><span class="lp-label">${desc}</span>`;
+      const iconHtml = this._primIcon(prim);
+      const isHtml = iconHtml.startsWith('<');
+      row.innerHTML = `<span class="lp-icon">${isHtml ? '' : iconHtml}</span><span class="lp-label">${desc}</span>`;
+      if (isHtml) row.querySelector('.lp-icon').innerHTML = iconHtml;
 
       // Mouse events for cross-highlighting
       row.addEventListener('mouseenter', () => {
@@ -1479,6 +1590,7 @@ class App {
               })),
             });
           }
+          ctxItems.push(this._thicknessSubmenu([prim]));
           ctxItems.push({ type: 'separator' });
         }
         ctxItems.push({
@@ -1612,6 +1724,7 @@ class App {
           icon: '✎',
           action: () => { this._editDimensionConstraint(dim); },
         });
+        ctxItems.push(this._arrowStyleSubmenu([dim]));
         ctxItems.push({ type: 'separator' });
         ctxItems.push({
           type: 'item',

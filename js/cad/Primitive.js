@@ -38,6 +38,7 @@ export class Primitive {
   /** Serialise to plain object */
   serialize() {
     const o = { id: this.id, type: this.type, layer: this.layer, color: this.color };
+    if (this.lineWidth !== 1) o.lineWidth = this.lineWidth;
     if (this.construction) {
       o.construction = true;
       if (this.constructionType !== 'finite') o.constructionType = this.constructionType;
