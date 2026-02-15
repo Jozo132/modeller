@@ -27,6 +27,14 @@ export class Renderer3D {
     this.gridLines = null;
     this.axesHelper = null;
 
+    // Origin planes for 3D view (XY, XZ, YZ)
+    this.originPlanes = {};
+    this.originPlaneLabels = {};
+
+    // Sketch mode state
+    this.sketchMode = false;
+    this.sketchPlane = null; // 'xy', 'xz', or 'yz'
+
     this.init();
   }
 
@@ -61,13 +69,15 @@ export class Renderer3D {
     this.renderer.setClearColor(0x1e1e1e, 1); // Dark background like original 2D canvas
     this.container.appendChild(this.renderer.domElement);
 
-    // Setup controls
+    // Setup controls — higher damping and speed values for snappier, more responsive camera
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
-    this.controls.dampingFactor = 0.05;
+    this.controls.dampingFactor = 0.25; // Higher = settles faster (default 0.05 felt sluggish)
     this.controls.screenSpacePanning = true;
-    this.controls.minDistance = 50;
+    this.controls.minDistance = 10;
     this.controls.maxDistance = 5000;
+    this.controls.zoomSpeed = 1.2;
+    this.controls.panSpeed = 1.0;
     
     // In 2D mode, constrain rotation
     this.controls.enableRotate = false;
@@ -90,6 +100,9 @@ export class Renderer3D {
     // Add axes helper
     this.axesHelper = new THREE.AxesHelper(100);
     this.scene.add(this.axesHelper);
+
+    // Create origin planes for 3D view
+    this.createOriginPlanes();
 
     // Handle window resize
     this.resizeHandler = () => this.onWindowResize();
@@ -176,6 +189,123 @@ export class Renderer3D {
     this.scene.add(majorGridLines);
   }
 
+  /**
+   * Create semi-transparent origin planes for XY, XZ, YZ in 3D view
+   */
+  createOriginPlanes() {
+    const planeSize = 100;
+
+    // XY plane (blue tint) — normal along Z
+    const xyGeo = new THREE.PlaneGeometry(planeSize, planeSize);
+    const xyMat = new THREE.MeshBasicMaterial({
+      color: 0x2196F3, side: THREE.DoubleSide,
+      transparent: true, opacity: 0.08, depthWrite: false
+    });
+    const xyPlane = new THREE.Mesh(xyGeo, xyMat);
+    xyPlane.position.set(planeSize / 2, planeSize / 2, 0);
+    xyPlane.userData = { originPlane: 'xy' };
+    this.scene.add(xyPlane);
+
+    // XY border
+    const xyBorder = new THREE.LineSegments(
+      new THREE.EdgesGeometry(xyGeo),
+      new THREE.LineBasicMaterial({ color: 0x2196F3, transparent: true, opacity: 0.4 })
+    );
+    xyBorder.position.copy(xyPlane.position);
+    this.scene.add(xyBorder);
+
+    // XZ plane (green tint) — normal along Y, rotated -90° about X
+    const xzGeo = new THREE.PlaneGeometry(planeSize, planeSize);
+    const xzMat = new THREE.MeshBasicMaterial({
+      color: 0x4CAF50, side: THREE.DoubleSide,
+      transparent: true, opacity: 0.08, depthWrite: false
+    });
+    const xzPlane = new THREE.Mesh(xzGeo, xzMat);
+    xzPlane.rotation.x = -Math.PI / 2;
+    xzPlane.position.set(planeSize / 2, 0, planeSize / 2);
+    xzPlane.userData = { originPlane: 'xz' };
+    this.scene.add(xzPlane);
+
+    // XZ border
+    const xzBorder = new THREE.LineSegments(
+      new THREE.EdgesGeometry(xzGeo),
+      new THREE.LineBasicMaterial({ color: 0x4CAF50, transparent: true, opacity: 0.4 })
+    );
+    xzBorder.rotation.x = -Math.PI / 2;
+    xzBorder.position.copy(xzPlane.position);
+    this.scene.add(xzBorder);
+
+    // YZ plane (red tint) — normal along X, rotated 90° about Y
+    const yzGeo = new THREE.PlaneGeometry(planeSize, planeSize);
+    const yzMat = new THREE.MeshBasicMaterial({
+      color: 0xF44336, side: THREE.DoubleSide,
+      transparent: true, opacity: 0.08, depthWrite: false
+    });
+    const yzPlane = new THREE.Mesh(yzGeo, yzMat);
+    yzPlane.rotation.y = Math.PI / 2;
+    yzPlane.position.set(0, planeSize / 2, planeSize / 2);
+    yzPlane.userData = { originPlane: 'yz' };
+    this.scene.add(yzPlane);
+
+    // YZ border
+    const yzBorder = new THREE.LineSegments(
+      new THREE.EdgesGeometry(yzGeo),
+      new THREE.LineBasicMaterial({ color: 0xF44336, transparent: true, opacity: 0.4 })
+    );
+    yzBorder.rotation.y = Math.PI / 2;
+    yzBorder.position.copy(yzPlane.position);
+    this.scene.add(yzBorder);
+
+    this.originPlanes = { xy: xyPlane, xz: xzPlane, yz: yzPlane };
+    this.originPlaneBorders = { xy: xyBorder, xz: xzBorder, yz: yzBorder };
+
+    // Initially hidden (shown only in 3D mode)
+    this.setOriginPlanesVisible(false);
+  }
+
+  /**
+   * Show or hide origin planes
+   */
+  setOriginPlanesVisible(visible) {
+    for (const key of ['xy', 'xz', 'yz']) {
+      if (this.originPlanes[key]) this.originPlanes[key].visible = visible;
+      if (this.originPlaneBorders[key]) this.originPlaneBorders[key].visible = visible;
+    }
+  }
+
+  /**
+   * Highlight a specific origin plane (for hover/selection)
+   */
+  highlightOriginPlane(planeName) {
+    for (const key of ['xy', 'xz', 'yz']) {
+      if (this.originPlanes[key]) {
+        this.originPlanes[key].material.opacity = (key === planeName) ? 0.25 : 0.08;
+      }
+    }
+  }
+
+  /**
+   * Raycast to find which origin plane is under the mouse
+   * @param {number} screenX - screen X
+   * @param {number} screenY - screen Y
+   * @returns {string|null} 'xy', 'xz', 'yz', or null
+   */
+  pickOriginPlane(screenX, screenY) {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const x = ((screenX - rect.left) / rect.width) * 2 - 1;
+    const y = -((screenY - rect.top) / rect.height) * 2 + 1;
+
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(new THREE.Vector2(x, y), this.camera);
+
+    const planeObjects = Object.values(this.originPlanes).filter(p => p.visible);
+    const intersects = raycaster.intersectObjects(planeObjects);
+    if (intersects.length > 0) {
+      return intersects[0].object.userData.originPlane;
+    }
+    return null;
+  }
+
   onWindowResize() {
     const width = this.container.clientWidth;
     const height = this.container.clientHeight;
@@ -221,8 +351,11 @@ export class Renderer3D {
       this.orthographicCamera.lookAt(0, 0, 0);
       this.controls.target.set(0, 0, 0);
       
-      // Show grid, hide 3D-specific elements
+      // Show grid, hide origin planes
       if (this.gridLines) this.gridLines.visible = true;
+      this.setOriginPlanesVisible(false);
+      this.sketchMode = true;
+      this.sketchPlane = 'xy';
       
     } else if (mode === '3d') {
       // Switch to perspective camera for 3D viewing
@@ -236,8 +369,11 @@ export class Renderer3D {
       this.perspectiveCamera.lookAt(0, 0, 0);
       this.controls.target.set(0, 0, 0);
       
-      // Keep grid visible in 3D mode too
+      // Keep grid visible in 3D mode too, show origin planes
       if (this.gridLines) this.gridLines.visible = true;
+      this.setOriginPlanesVisible(true);
+      this.sketchMode = false;
+      this.sketchPlane = null;
     }
     
     this.controls.update();
@@ -261,11 +397,11 @@ export class Renderer3D {
     // Render segments (lines)
     if (scene.segments) {
       scene.segments.forEach((segment, index) => {
-        if (segment.start && segment.end) {
+        if (segment.p1 && segment.p2) {
           const geometry = new THREE.BufferGeometry();
           const vertices = new Float32Array([
-            segment.start.x, segment.start.y, 0,
-            segment.end.x, segment.end.y, 0
+            segment.p1.x, segment.p1.y, 0,
+            segment.p2.x, segment.p2.y, 0
           ]);
           geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
           

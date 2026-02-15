@@ -524,6 +524,41 @@ html, body {
 }
 
 #status-tool { color: var(--accent); font-weight: 600; }
+
+/* Mode indicator badge in status bar */
+.status-mode {
+  padding: 1px 8px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+.status-mode.sketch-mode {
+  background: rgba(33, 150, 243, 0.25);
+  color: #64B5F6;
+  border: 1px solid rgba(33, 150, 243, 0.4);
+}
+.status-mode.view-3d-mode {
+  background: rgba(76, 175, 80, 0.25);
+  color: #81C784;
+  border: 1px solid rgba(76, 175, 80, 0.4);
+}
+
+/* Hide drawing/edit/constrain tool groups when not in sketch mode */
+.tool-group[data-group="draw"],
+.tool-group[data-group="edit"],
+.tool-group[data-group="constrain"],
+.tool-group[data-group="ops"] {
+  transition: opacity 0.2s, pointer-events 0s;
+}
+body.mode-3d .tool-group[data-group="draw"],
+body.mode-3d .tool-group[data-group="edit"],
+body.mode-3d .tool-group[data-group="constrain"],
+body.mode-3d .tool-group[data-group="ops"] {
+  opacity: 0.3;
+  pointer-events: none;
+}
 #status-coords { font-family: 'Consolas', monospace; }
 #status-snap, #status-ortho {
   padding: 1px 6px;
