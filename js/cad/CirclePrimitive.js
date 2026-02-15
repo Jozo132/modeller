@@ -41,9 +41,14 @@ export class PCircle extends Primitive {
   draw(ctx, vp) {
     const c = vp.worldToScreen(this.cx, this.cy);
     const r = this.radius * vp.zoom;
+    if (this.construction) {
+      ctx.save();
+      ctx.setLineDash([8, 4]); // dashed
+    }
     ctx.beginPath();
     ctx.arc(c.x, c.y, r, 0, Math.PI * 2);
     ctx.stroke();
+    if (this.construction) ctx.restore();
   }
 
   translate(dx, dy) {

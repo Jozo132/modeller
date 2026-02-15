@@ -15,6 +15,7 @@ export class Primitive {
     this.lineWidth = 1;
     this.selected = false;
     this.visible = true;
+    this.construction = false; // construction geometry — dashed, light green, excluded from DXF/fill
   }
 
   /** Axis-aligned bounding box */
@@ -34,6 +35,8 @@ export class Primitive {
 
   /** Serialise to plain object */
   serialize() {
-    return { id: this.id, type: this.type, layer: this.layer, color: this.color };
+    const o = { id: this.id, type: this.type, layer: this.layer, color: this.color };
+    if (this.construction) o.construction = true;
+    return o;
   }
 }

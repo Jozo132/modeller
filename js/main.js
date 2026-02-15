@@ -764,6 +764,18 @@ class App {
           document.getElementById('btn-ortho-toggle').classList.toggle('active', state.orthoEnabled);
           document.getElementById('status-ortho').classList.toggle('active', state.orthoEnabled);
           break;
+        case 'q': case 'Q': {
+          // Toggle construction on selected primitives
+          const sel = state.selectedEntities.filter(e => e.type === 'segment' || e.type === 'circle' || e.type === 'arc');
+          if (sel.length > 0) {
+            takeSnapshot();
+            const newVal = !sel[0].construction;
+            for (const e of sel) e.construction = newVal;
+            state.emit('change');
+            this._scheduleRender();
+          }
+          break;
+        }
       }
     });
   }
@@ -904,10 +916,12 @@ class App {
         const len = Math.hypot(e.x2 - e.x1, e.y2 - e.y1);
         html += `<div class="prop-row"><label>Length</label><span>${len.toFixed(2)}</span></div>`;
       } else if (e.type === 'circle') {
+        html += `<div class="prop-row"><label>Construction</label><span>${e.construction ? 'Yes' : 'No'}</span></div>`;
         html += `<div class="prop-row"><label>Center X</label><span>${e.cx.toFixed(2)}</span></div>`;
         html += `<div class="prop-row"><label>Center Y</label><span>${e.cy.toFixed(2)}</span></div>`;
         html += `<div class="prop-row"><label>Radius</label><span>${e.radius.toFixed(2)}</span></div>`;
       } else if (e.type === 'arc') {
+        html += `<div class="prop-row"><label>Construction</label><span>${e.construction ? 'Yes' : 'No'}</span></div>`;
         html += `<div class="prop-row"><label>Center X</label><span>${e.cx.toFixed(2)}</span></div>`;
         html += `<div class="prop-row"><label>Center Y</label><span>${e.cy.toFixed(2)}</span></div>`;
         html += `<div class="prop-row"><label>Radius</label><span>${e.radius.toFixed(2)}</span></div>`;
@@ -1134,6 +1148,7 @@ class App {
       const typeName = prim.type.charAt(0).toUpperCase() + prim.type.slice(1);
       let desc = `${typeName} #${prim.id}`;
       if (prim.type === 'text') desc = `Text #${prim.id} "${prim.text}"`;
+      if (prim.construction) desc += ' <span style="opacity:0.5;color:#90EE90">(C)</span>';
 
       row.innerHTML = `<span class="lp-icon">${this._primIcon(prim.type)}</span><span class="lp-label">${desc}</span>`;
 

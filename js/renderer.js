@@ -5,6 +5,7 @@ import { error as logError } from './logger.js';
 
 const SNAP_MARKER_SIZE = 6;
 const FULLY_CONSTRAINED_COLOR = '#569CD6';
+const CONSTRUCTION_COLOR = '#90EE90'; // light green
 
 export class Renderer {
   constructor(viewport) {
@@ -160,6 +161,7 @@ export class Renderer {
     // Fill circles
     for (const circ of scene.circles) {
       if (!circ.visible) continue;
+      if (circ.construction) continue;
       if (!state.isLayerVisible(circ.layer)) continue;
       const c = vp.worldToScreen(circ.cx, circ.cy);
       const r = circ.radius * vp.zoom;
@@ -215,9 +217,11 @@ export class Renderer {
       if (entity.type === 'dimension') continue; // drawn separately
 
       const baseColor = entity.color || state.getLayerColor(entity.layer);
-      const color = this._fc.entities.has(entity)
-        ? FULLY_CONSTRAINED_COLOR
-        : baseColor;
+      const color = entity.construction
+        ? CONSTRUCTION_COLOR
+        : this._fc.entities.has(entity)
+          ? FULLY_CONSTRAINED_COLOR
+          : baseColor;
 
       if (entity.selected) {
         ctx.strokeStyle = '#00bfff';
@@ -688,6 +692,7 @@ function _findClosedLoops(scene) {
   // Segments connect via shared PPoint references
   for (const seg of scene.segments) {
     if (!seg.visible) continue;
+    if (seg.construction) continue;
     ensure(seg.p1);
     ensure(seg.p2);
     adj.get(seg.p1).push({ edge: seg, other: seg.p2 });
@@ -697,6 +702,7 @@ function _findClosedLoops(scene) {
   // Arcs — match computed endpoints to nearest PPoints
   for (const arc of scene.arcs) {
     if (!arc.visible) continue;
+    if (arc.construction) continue;
     const sp = arc.startPt, ep = arc.endPt;
     let pStart = null, pEnd = null;
     for (const pt of scene.points) {

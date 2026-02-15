@@ -44,12 +44,36 @@ export class PSegment extends Primitive {
   }
 
   draw(ctx, vp) {
-    const a = vp.worldToScreen(this.x1, this.y1);
-    const b = vp.worldToScreen(this.x2, this.y2);
-    ctx.beginPath();
-    ctx.moveTo(a.x, a.y);
-    ctx.lineTo(b.x, b.y);
-    ctx.stroke();
+    if (this.construction) {
+      // Infinite construction line: extend to screen edges
+      const dx = this.x2 - this.x1;
+      const dy = this.y2 - this.y1;
+      const len = Math.hypot(dx, dy);
+      if (len < 1e-12) return;
+      const ux = dx / len, uy = dy / len;
+      // Extend far in both directions (safe large value)
+      const ext = Math.max(vp.width, vp.height) / vp.zoom * 2;
+      const ax = this.x1 - ux * ext;
+      const ay = this.y1 - uy * ext;
+      const bx = this.x2 + ux * ext;
+      const by = this.y2 + uy * ext;
+      const a = vp.worldToScreen(ax, ay);
+      const b = vp.worldToScreen(bx, by);
+      ctx.save();
+      ctx.setLineDash([12, 4, 2, 4]); // dash-dot pattern
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+      ctx.restore();
+    } else {
+      const a = vp.worldToScreen(this.x1, this.y1);
+      const b = vp.worldToScreen(this.x2, this.y2);
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+    }
   }
 
   translate(dx, dy) {

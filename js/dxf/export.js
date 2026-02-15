@@ -55,6 +55,7 @@ export function exportDXF() {
   w(2, 'ENTITIES');
 
   for (const entity of state.entities) {
+    if (entity.construction) continue; // construction geometry is not exported
     try {
       writeEntity(w, entity);
     } catch (err) {
