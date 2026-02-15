@@ -235,11 +235,13 @@ export class ExtrudeFeature extends Feature {
 
   /**
    * Calculate volume of the extruded geometry (approximate).
+   * TODO: Implement accurate volume calculation using profile area and extrusion distance
    * @param {Object} geometry - Geometry data
    * @returns {number} Volume
    */
   calculateVolume(geometry) {
-    // Simplified calculation - would need proper implementation
+    // Simplified calculation - proper implementation would calculate profile area
+    // and multiply by extrusion distance
     return Math.abs(this.distance) * 100; // Placeholder
   }
 

@@ -287,11 +287,13 @@ export class RevolveFeature extends Feature {
 
   /**
    * Calculate volume of the revolved geometry (approximate).
+   * TODO: Implement accurate volume calculation using Pappus's centroid theorem
    * @param {Object} geometry - Geometry data
    * @returns {number} Volume
    */
   calculateVolume(geometry) {
-    // Simplified calculation - would need proper implementation
+    // Simplified calculation - proper implementation would use Pappus's theorem:
+    // V = 2π * A * d, where A is profile area and d is distance from axis
     return 100; // Placeholder
   }
 

@@ -143,7 +143,7 @@ export class Part {
     if (options.symmetric !== undefined) extrudeFeature.symmetric = options.symmetric;
     
     this.featureTree.addFeature(extrudeFeature);
-    this.updatePhysicalProperties();
+    // Note: Physical properties are computed lazily when requested
     
     return extrudeFeature;
   }
@@ -171,7 +171,7 @@ export class Part {
     if (options.axis) revolveFeature.setAxis(options.axis.origin, options.axis.direction);
     
     this.featureTree.addFeature(revolveFeature);
-    this.updatePhysicalProperties();
+    // Note: Physical properties are computed lazily when requested
     
     return revolveFeature;
   }
@@ -261,7 +261,7 @@ export class Part {
   reorderFeature(featureOrId, newIndex) {
     this.featureTree.reorderFeature(featureOrId, newIndex);
     this.modified = new Date();
-    this.updatePhysicalProperties();
+    // Note: Physical properties will be recomputed when requested
   }
 
   // -----------------------------------------------------------------------

@@ -2,8 +2,6 @@
 // Features represent operations in the parametric history tree
 // Each feature can depend on previous features and triggers recalculation when modified
 
-import { resetPrimitiveIds, peekNextPrimitiveId } from './Primitive.js';
-
 let nextFeatureId = 1;
 
 /**
