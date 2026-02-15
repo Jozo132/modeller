@@ -47,13 +47,21 @@ function _buildItems(container, items) {
     // Icon
     const iconSpan = document.createElement('span');
     iconSpan.className = 'menu-icon';
-    iconSpan.textContent = item.icon || '';
+    if (item.iconHtml) {
+      iconSpan.innerHTML = item.iconHtml;
+    } else {
+      iconSpan.textContent = item.icon || '';
+    }
     row.appendChild(iconSpan);
 
     // Label
     const labelSpan = document.createElement('span');
     labelSpan.className = 'menu-label';
-    labelSpan.textContent = item.label || '';
+    if (item.labelHtml) {
+      labelSpan.innerHTML = item.labelHtml;
+    } else {
+      labelSpan.textContent = item.label || '';
+    }
     row.appendChild(labelSpan);
 
     if (item.type === 'submenu') {

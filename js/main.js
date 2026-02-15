@@ -14,7 +14,7 @@ import {
   Coincident, Horizontal, Vertical,
   Parallel, Perpendicular, EqualLength,
   Fixed, Distance, Tangent, Angle,
-  resolveValue, setVariable, getVariable, removeVariable, getAllVariables,
+  resolveValue, setVariable, getVariable, getVariableRaw, removeVariable, getAllVariables,
 } from './cad/Constraint.js';
 import { union } from './cad/Operations.js';
 import {
@@ -468,11 +468,22 @@ class App {
         // Dash style submenu (for all construction shapes)
         if (entity.construction) {
           const currentDash = entity.constructionDash || 'dashed';
-          const dashOptions = [
-            { key: 'dashed', label: 'Dashed ── ──', icon: currentDash === 'dashed' ? '✓' : '' },
-            { key: 'dash-dot', label: 'Dash-Dot ──·──', icon: currentDash === 'dash-dot' ? '✓' : '' },
-            { key: 'dotted', label: 'Dotted ·····', icon: currentDash === 'dotted' ? '✓' : '' },
-          ];
+          const dashArrays = {
+            'dashed':   '6,4',
+            'dash-dot': '6,3,1,3',
+            'dotted':   '1.5,3',
+          };
+          const dashLabels = {
+            'dashed':   'Dashed',
+            'dash-dot': 'Dash-Dot',
+            'dotted':   'Dotted',
+          };
+          const dashOptions = Object.keys(dashArrays).map(key => ({
+            key,
+            label: dashLabels[key],
+            icon: currentDash === key ? '✓' : '',
+            svg: `<svg width="40" height="2" viewBox="0 0 40 2" style="display:block"><line x1="0" y1="1" x2="40" y2="1" stroke="#ccc" stroke-width="1.5" stroke-dasharray="${dashArrays[key]}"/></svg>`,
+          }));
           items.push({
             type: 'submenu',
             label: 'Dash Style',
@@ -481,6 +492,7 @@ class App {
               type: 'item',
               label: opt.label,
               icon: opt.icon,
+              labelHtml: `<span style="display:flex;align-items:center;gap:10px"><span>${opt.label}</span>${opt.svg}</span>`,
               action: () => {
                 takeSnapshot();
                 entity.constructionDash = opt.key;
@@ -1406,6 +1418,79 @@ class App {
         this._scheduleRender();
       });
 
+      // Right-click context menu
+      row.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        // Select if not already
+        if (!prim.selected) {
+          state.clearSelection();
+          state.select(prim);
+          this._scheduleRender();
+        }
+        const isShape = prim.type === 'segment' || prim.type === 'circle' || prim.type === 'arc';
+        const ctxItems = [];
+        if (isShape) {
+          ctxItems.push({
+            type: 'item',
+            label: prim.construction ? 'Make Normal' : 'Make Construction',
+            icon: prim.construction ? '━' : '┄',
+            shortcut: 'Q',
+            action: () => {
+              takeSnapshot();
+              prim.construction = !prim.construction;
+              state.emit('change');
+              this._scheduleRender();
+            },
+          });
+          if (prim.type === 'segment' && prim.construction) {
+            const currentType = prim.constructionType || 'finite';
+            ctxItems.push({
+              type: 'submenu',
+              label: 'Construction Type',
+              icon: '⇔',
+              items: [
+                { key: 'finite', label: 'Finite' },
+                { key: 'infinite-start', label: 'Infinite Start' },
+                { key: 'infinite-end', label: 'Infinite End' },
+                { key: 'infinite-both', label: 'Infinite Both' },
+              ].map(opt => ({
+                type: 'item',
+                label: opt.label,
+                icon: currentType === opt.key ? '✓' : '',
+                action: () => { takeSnapshot(); prim.constructionType = opt.key; state.emit('change'); this._scheduleRender(); },
+              })),
+            });
+          }
+          if (prim.construction) {
+            const currentDash = prim.constructionDash || 'dashed';
+            const dashArrays = { 'dashed': '6,4', 'dash-dot': '6,3,1,3', 'dotted': '1.5,3' };
+            const dashLabels = { 'dashed': 'Dashed', 'dash-dot': 'Dash-Dot', 'dotted': 'Dotted' };
+            ctxItems.push({
+              type: 'submenu',
+              label: 'Dash Style',
+              icon: '┄',
+              items: Object.keys(dashArrays).map(key => ({
+                type: 'item',
+                label: dashLabels[key],
+                icon: currentDash === key ? '✓' : '',
+                labelHtml: `<span style="display:flex;align-items:center;gap:10px"><span>${dashLabels[key]}</span><svg width="40" height="2" viewBox="0 0 40 2" style="display:block"><line x1="0" y1="1" x2="40" y2="1" stroke="#ccc" stroke-width="1.5" stroke-dasharray="${dashArrays[key]}"/></svg></span>`,
+                action: () => { takeSnapshot(); prim.constructionDash = key; state.emit('change'); this._scheduleRender(); },
+              })),
+            });
+          }
+          ctxItems.push({ type: 'separator' });
+        }
+        ctxItems.push({
+          type: 'item',
+          label: 'Delete',
+          icon: '🗑',
+          shortcut: 'Del',
+          action: () => { takeSnapshot(); this._deleteSelection(); },
+        });
+        showContextMenu(e.clientX, e.clientY, ctxItems);
+      });
+
       list.appendChild(row);
     }
   }
@@ -1480,6 +1565,62 @@ class App {
           state.select(dim);
         }
         this._scheduleRender();
+      });
+
+      // Right-click context menu
+      row.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!dim.selected) {
+          state.clearSelection();
+          state.select(dim);
+          this._scheduleRender();
+        }
+        const ctxItems = [];
+        ctxItems.push({
+          type: 'item',
+          label: dim.visible ? 'Hide' : 'Show',
+          icon: dim.visible ? '—' : '👁',
+          action: () => { dim.visible = !dim.visible; this._rebuildDimensionsList(); this._scheduleRender(); },
+        });
+        ctxItems.push({
+          type: 'item',
+          label: dim.isConstraint ? 'Make Driven' : 'Make Driving',
+          icon: dim.isConstraint ? '📐' : '📏',
+          action: () => {
+            takeSnapshot();
+            if (dim.isConstraint) {
+              // Remove from constraints
+              const inC = state.scene.constraints.includes(dim);
+              if (inC) state.scene.removeConstraint(dim);
+              dim.isConstraint = false;
+            } else {
+              // Make a constraint
+              dim.isConstraint = true;
+              if (dim.sourceA && !state.scene.constraints.includes(dim)) {
+                state.scene.addConstraint(dim);
+              }
+            }
+            state.scene.solve();
+            state.emit('change');
+            this._scheduleRender();
+          },
+        });
+        ctxItems.push({
+          type: 'item',
+          label: 'Edit',
+          icon: '✎',
+          action: () => { this._editDimensionConstraint(dim); },
+        });
+        ctxItems.push({ type: 'separator' });
+        ctxItems.push({
+          type: 'item',
+          label: 'Delete',
+          icon: '🗑',
+          shortcut: 'Del',
+          action: () => { takeSnapshot(); this._deleteSelection(); },
+        });
+        showContextMenu(e.clientX, e.clientY, ctxItems);
       });
 
       list.appendChild(row);
@@ -1626,6 +1767,42 @@ class App {
           e.preventDefault();
           e.stopPropagation();
         }
+      });
+
+      // Right-click context menu
+      row.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this._lpSelectedConstraintId = c.id;
+        this._updateLeftPanelHighlights();
+        const ctxItems = [];
+        if (c.editable) {
+          ctxItems.push({
+            type: 'item',
+            label: 'Edit',
+            icon: '✎',
+            action: () => { this._editConstraint(c); },
+          });
+        }
+        ctxItems.push({
+          type: 'item',
+          label: 'Delete',
+          icon: '🗑',
+          shortcut: 'Del',
+          action: () => {
+            takeSnapshot();
+            if (c.type === 'dimension') {
+              state.scene.removeConstraint(c);
+              c.isConstraint = false;
+            } else {
+              state.scene.removeConstraint(c);
+            }
+            if (this._lpSelectedConstraintId === c.id) this._lpSelectedConstraintId = null;
+            state.emit('change');
+            this._scheduleRender();
+          },
+        });
+        showContextMenu(e.clientX, e.clientY, ctxItems);
       });
 
       list.appendChild(row);
@@ -1863,7 +2040,9 @@ class App {
             const num = parseFloat(valueStr);
             if (newName) {
               takeSnapshot();
-              if (newName !== name) removeVariable(name);
+              if (newName !== name) {
+                this._renameVariableEverywhere(name, newName);
+              }
               setVariable(newName, isNaN(num) ? valueStr : num);
               state.scene.solve();
               state.emit('change');
@@ -1881,7 +2060,109 @@ class App {
         this._scheduleRender();
       });
 
+      // Right-click context menu
+      row.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const ctxItems = [];
+        ctxItems.push({
+          type: 'item',
+          label: 'Rename',
+          icon: '✎',
+          action: () => { this._inlineEditVariableName(row, name, rawValue); },
+        });
+        ctxItems.push({
+          type: 'item',
+          label: 'Edit Value',
+          icon: '=',
+          action: () => { this._inlineEditVariableValue(row, name, rawValue); },
+        });
+        ctxItems.push({ type: 'separator' });
+        ctxItems.push({
+          type: 'item',
+          label: 'Delete',
+          icon: '🗑',
+          action: () => {
+            takeSnapshot();
+            removeVariable(name);
+            state.scene.solve();
+            state.emit('change');
+            this._scheduleRender();
+          },
+        });
+        showContextMenu(e.clientX, e.clientY, ctxItems);
+      });
+
       list.appendChild(row);
+    }
+  }
+
+  /**
+   * Rename a variable everywhere in the project:
+   * - The variables map itself
+   * - All constraint .value properties that reference it (by name or in formulas)
+   * - All dimension .formula and .variableName properties
+   * - All other variable values that are formulas referencing the old name
+   */
+  _renameVariableEverywhere(oldName, newName) {
+    if (oldName === newName) return;
+    const value = getVariableRaw(oldName);
+    removeVariable(oldName);
+    setVariable(newName, value);
+
+    // Regex to match whole-word occurrences of oldName in formula strings
+    const re = new RegExp('\\b' + oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'g');
+
+    // Update constraints that reference this variable
+    for (const c of state.scene.constraints) {
+      if (c.value !== undefined) {
+        if (typeof c.value === 'string') {
+          if (c.value === oldName) {
+            c.value = newName;
+          } else {
+            c.value = c.value.replace(re, newName);
+          }
+        }
+      }
+      // Dimension constraints (duck-typed)
+      if (c.formula !== undefined && typeof c.formula === 'string') {
+        if (c.formula === oldName) {
+          c.formula = newName;
+        } else {
+          c.formula = c.formula.replace(re, newName);
+        }
+      }
+      if (c.variableName !== undefined && c.variableName === oldName) {
+        c.variableName = newName;
+      }
+    }
+
+    // Update dimensions that aren't in the constraints list (driven dimensions)
+    for (const dim of state.scene.dimensions) {
+      if (state.scene.constraints.includes(dim)) continue; // already handled
+      if (typeof dim.formula === 'string') {
+        if (dim.formula === oldName) {
+          dim.formula = newName;
+        } else {
+          dim.formula = dim.formula.replace(re, newName);
+        }
+      }
+      if (dim.variableName === oldName) {
+        dim.variableName = newName;
+      }
+    }
+
+    // Update other variables whose values are formulas referencing the old name
+    for (const [vName, vVal] of getAllVariables()) {
+      if (vName === newName) continue; // skip the renamed variable itself
+      if (typeof vVal === 'string') {
+        if (vVal === oldName) {
+          setVariable(vName, newName);
+        } else {
+          const updated = vVal.replace(re, newName);
+          if (updated !== vVal) setVariable(vName, updated);
+        }
+      }
     }
   }
 
@@ -1948,8 +2229,7 @@ class App {
         const newName = input.value.trim();
         if (newName && newName !== currentName) {
           takeSnapshot();
-          removeVariable(currentName);
-          setVariable(newName, value);
+          this._renameVariableEverywhere(currentName, newName);
           state.scene.solve();
           state.emit('change');
           return; // change event already triggers _rebuildLeftPanel
