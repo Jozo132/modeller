@@ -35,17 +35,31 @@ import {
 class App {
   constructor() {
     info('App initialization started');
+    this._renderer3d = null;
+    this._webglFallback = false;
     
     // Initialize unified 3D renderer
     const view3dContainer = document.getElementById('view-3d');
-    this._renderer3d = new WasmRenderer(view3dContainer);
-    this._renderer3d.setMode('2d'); // Start in 2D sketching mode
-    this._renderer3d.setVisible(true);
+    try {
+      this._renderer3d = new WasmRenderer(view3dContainer);
+      this._renderer3d.setMode('2d'); // Start in 2D sketching mode
+      this._renderer3d.setVisible(true);
+    } catch (err) {
+      warn('WasmRenderer unavailable; falling back to legacy 2D canvas renderer', err);
+      this._renderer3d = null;
+      this._webglFallback = true;
+      if (view3dContainer) {
+        view3dContainer.style.display = 'none';
+      }
+    }
     
     // Keep legacy canvas hidden for compatibility
     this.canvas = document.getElementById('cad-canvas');
     this.viewport = new Viewport(this.canvas);
     this.renderer = new Renderer(this.viewport); // Keep for legacy code
+    if (this._webglFallback) {
+      this.canvas.style.setProperty('display', 'block', 'important');
+    }
     
     this._pointerFramePending = false;
     this._lastPointer = null;
@@ -119,6 +133,9 @@ class App {
 
     // Initial render
     this._scheduleRender();
+    if (this._webglFallback) {
+      this.setStatus('WebGL2 unavailable here. Running in 2D fallback mode.');
+    }
     info('App initialization completed');
   }
 
@@ -150,6 +167,8 @@ class App {
               allDimensionsVisible: state.allDimensionsVisible,
               constraintIconsVisible: state.constraintIconsVisible,
             });
+          } else {
+            this.renderer.render();
           }
         }
       } catch (err) {
@@ -872,7 +891,8 @@ class App {
 
   // --- 3D Canvas Events ---
   _bind3DCanvasEvents() {
-    const canvas = this._renderer3d.renderer.domElement;
+    const canvas = this._renderer3d?.renderer?.domElement || this.canvas;
+    if (!canvas) return;
     let movedSinceDown = false;
     let mouseDown = false;
 
@@ -3329,7 +3349,12 @@ class App {
     });
 
     // 3D Mode Toggle
-    document.getElementById('btn-3d-mode').addEventListener('click', () => {
+    const btn3DMode = document.getElementById('btn-3d-mode');
+    if (!this._renderer3d) {
+      btn3DMode.disabled = true;
+      btn3DMode.title = '3D unavailable: WebGL2 is not supported in this browser context';
+    }
+    btn3DMode.addEventListener('click', () => {
       this._toggle3DMode();
     });
 
@@ -3367,6 +3392,12 @@ class App {
   }
 
   _toggle3DMode() {
+    if (!this._renderer3d) {
+      this._3dMode = false;
+      this.setStatus('3D mode unavailable in this browser context (WebGL2 missing).');
+      return;
+    }
+
     this._3dMode = !this._3dMode;
     const featurePanel = document.getElementById('feature-panel');
     const parametersPanel = document.getElementById('parameters-panel');
