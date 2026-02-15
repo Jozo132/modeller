@@ -16,6 +16,7 @@ export class Primitive {
     this.selected = false;
     this.visible = true;
     this.construction = false; // construction geometry — dashed, light green, excluded from DXF/fill
+    this.constructionType = 'finite'; // 'finite' | 'infinite-start' | 'infinite-end' | 'infinite-both'
   }
 
   /** Axis-aligned bounding box */
@@ -36,7 +37,10 @@ export class Primitive {
   /** Serialise to plain object */
   serialize() {
     const o = { id: this.id, type: this.type, layer: this.layer, color: this.color };
-    if (this.construction) o.construction = true;
+    if (this.construction) {
+      o.construction = true;
+      if (this.constructionType !== 'finite') o.constructionType = this.constructionType;
+    }
     return o;
   }
 }

@@ -9,6 +9,7 @@ import { openDXFFile } from './dxf/import.js';
 import { debug, info, warn, error } from './logger.js';
 import { loadProject, debouncedSave, clearSavedProject, setViewport } from './persist.js';
 import { showConfirm, showPrompt, showDimensionInput } from './ui/popup.js';
+import { showContextMenu, closeContextMenu, isContextMenuOpen } from './ui/contextMenu.js';
 import {
   Coincident, Horizontal, Vertical,
   Parallel, Perpendicular, EqualLength,
@@ -393,6 +394,138 @@ class App {
     }
   }
 
+  // --- Context Menu ---
+  _deleteSelection() {
+    for (const e of [...state.selectedEntities]) {
+      state.removeEntity(e);
+    }
+    state.clearSelection();
+    this._scheduleRender();
+  }
+
+  _showContextMenu(x, y, entity) {
+    const items = [];
+
+    if (entity) {
+      // Select the entity if not already selected
+      if (!entity.selected) {
+        state.selectedEntities.forEach(e => e.selected = false);
+        state.selectedEntities = [entity];
+        entity.selected = true;
+        state.emit('change');
+        this._scheduleRender();
+      }
+
+      const isShape = entity.type === 'segment' || entity.type === 'circle' || entity.type === 'arc';
+
+      if (isShape) {
+        // Toggle construction
+        items.push({
+          type: 'item',
+          label: entity.construction ? 'Make Normal' : 'Make Construction',
+          icon: entity.construction ? '━' : '┄',
+          shortcut: 'Q',
+          action: () => {
+            takeSnapshot();
+            entity.construction = !entity.construction;
+            state.emit('change');
+            this._scheduleRender();
+          },
+        });
+
+        // Construction type submenu (only for segments, and only if already construction or about to become one)
+        if (entity.type === 'segment' && entity.construction) {
+          const currentType = entity.constructionType || 'finite';
+          const typeOptions = [
+            { key: 'finite', label: 'Finite', icon: currentType === 'finite' ? '✓' : '' },
+            { key: 'infinite-start', label: 'Infinite Start', icon: currentType === 'infinite-start' ? '✓' : '' },
+            { key: 'infinite-end', label: 'Infinite End', icon: currentType === 'infinite-end' ? '✓' : '' },
+            { key: 'infinite-both', label: 'Infinite Both', icon: currentType === 'infinite-both' ? '✓' : '' },
+          ];
+          items.push({
+            type: 'submenu',
+            label: 'Construction Type',
+            icon: '⇔',
+            items: typeOptions.map(opt => ({
+              type: 'item',
+              label: opt.label,
+              icon: opt.icon,
+              action: () => {
+                takeSnapshot();
+                entity.constructionType = opt.key;
+                state.emit('change');
+                this._scheduleRender();
+              },
+            })),
+          });
+        }
+
+        items.push({ type: 'separator' });
+      }
+
+      // Delete
+      items.push({
+        type: 'item',
+        label: 'Delete',
+        icon: '🗑',
+        shortcut: 'Del',
+        action: () => {
+          takeSnapshot();
+          this._deleteSelection();
+        },
+      });
+    } else {
+      // Canvas right-click (no entity)
+      items.push({
+        type: 'item',
+        label: 'Fit All',
+        icon: '⊡',
+        shortcut: 'F',
+        action: () => { this.viewport.fitEntities(state.entities); this._scheduleRender(); },
+      });
+      items.push({
+        type: 'item',
+        label: state.gridVisible ? 'Hide Grid' : 'Show Grid',
+        icon: '#',
+        shortcut: 'G',
+        action: () => {
+          state.gridVisible = !state.gridVisible;
+          document.getElementById('btn-grid-toggle').classList.toggle('active', state.gridVisible);
+          this._scheduleRender();
+        },
+      });
+      items.push({
+        type: 'item',
+        label: state.snapEnabled ? 'Disable Snap' : 'Enable Snap',
+        icon: '⊙',
+        shortcut: 'S',
+        action: () => {
+          state.snapEnabled = !state.snapEnabled;
+          document.getElementById('btn-snap-toggle').classList.toggle('active', state.snapEnabled);
+          document.getElementById('status-snap').classList.toggle('active', state.snapEnabled);
+          this._scheduleRender();
+        },
+      });
+      items.push({ type: 'separator' });
+      items.push({
+        type: 'item',
+        label: 'Undo',
+        icon: '↩',
+        shortcut: 'Ctrl+Z',
+        action: () => { undo(); this._scheduleRender(); },
+      });
+      items.push({
+        type: 'item',
+        label: 'Redo',
+        icon: '↪',
+        shortcut: 'Ctrl+Y',
+        action: () => { redo(); this._scheduleRender(); },
+      });
+    }
+
+    showContextMenu(x, y, items);
+  }
+
   // --- Canvas events ---
   _bindCanvasEvents() {
     const canvas = this.canvas;
@@ -520,12 +653,34 @@ class App {
       this._scheduleRender();
     }, { passive: false });
 
-    // Context menu — cancel current tool and return to select
+    // Context menu — right-click menu with entity-specific options
     canvas.addEventListener('contextmenu', (e) => {
       e.preventDefault();
-      this.activeTool.onCancel();
-      if (this.activeTool.name !== 'select') this.setActiveTool('select');
-      this._scheduleRender();
+
+      // If a multi-step tool is active, cancel it and return to select
+      if (this.activeTool.name !== 'select') {
+        this.activeTool.onCancel();
+        this.setActiveTool('select');
+        this._scheduleRender();
+        return;
+      }
+
+      const rect = canvas.getBoundingClientRect();
+      const sx = e.clientX - rect.left;
+      const sy = e.clientY - rect.top;
+      const world = this.viewport.screenToWorld(sx, sy);
+      const tol = 18 / this.viewport.zoom;
+
+      // Hit-test for entity under cursor
+      let hitEntity = null;
+      let minDist = Infinity;
+      for (const entity of state.entities) {
+        if (!entity.visible || !state.isLayerVisible(entity.layer)) continue;
+        const d = entity.distanceTo(world.x, world.y);
+        if (d <= tol && d < minDist) { minDist = d; hitEntity = entity; }
+      }
+
+      this._showContextMenu(e.clientX, e.clientY, hitEntity);
     });
 
     // Double-click on canvas to edit dimensions inline
@@ -928,6 +1083,12 @@ class App {
         const shapes = state.scene.shapesUsingPoint(e);
         html += `<div class="prop-row"><label>Shared by</label><span>${shapes.length} shape${shapes.length !== 1 ? 's' : ''}</span></div>`;
       } else if (e.type === 'segment') {
+        html += `<div class="prop-row"><label>Construction</label><span>${e.construction ? 'Yes' : 'No'}</span></div>`;
+        if (e.construction) {
+          const ct = e.constructionType || 'finite';
+          const ctLabel = { 'finite': 'Finite', 'infinite-start': 'Inf. Start', 'infinite-end': 'Inf. End', 'infinite-both': 'Inf. Both' }[ct] || ct;
+          html += `<div class="prop-row"><label>Type</label><span>${ctLabel}</span></div>`;
+        }
         html += `<div class="prop-row"><label>X1</label><span>${e.x1.toFixed(2)}</span></div>`;
         html += `<div class="prop-row"><label>Y1</label><span>${e.y1.toFixed(2)}</span></div>`;
         html += `<div class="prop-row"><label>X2</label><span>${e.x2.toFixed(2)}</span></div>`;
@@ -1167,7 +1328,11 @@ class App {
       const typeName = prim.type.charAt(0).toUpperCase() + prim.type.slice(1);
       let desc = `${typeName} #${prim.id}`;
       if (prim.type === 'text') desc = `Text #${prim.id} "${prim.text}"`;
-      if (prim.construction) desc += ' <span style="opacity:0.5;color:#90EE90">(C)</span>';
+      if (prim.construction) {
+        const ct = prim.constructionType || 'finite';
+        const ctTag = ct === 'finite' ? 'C' : ct === 'infinite-start' ? 'C←' : ct === 'infinite-end' ? 'C→' : 'C↔';
+        desc += ` <span style="opacity:0.5;color:#90EE90">(${ctTag})</span>`;
+      }
 
       row.innerHTML = `<span class="lp-icon">${this._primIcon(prim.type)}</span><span class="lp-label">${desc}</span>`;
 

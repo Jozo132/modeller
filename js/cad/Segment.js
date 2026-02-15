@@ -40,23 +40,42 @@ export class PSegment extends Primitive {
   }
 
   distanceTo(px, py) {
+    if (this.construction) {
+      const ct = this.constructionType || 'finite';
+      if (ct === 'infinite-both') {
+        return _ptLineDist(px, py, this.x1, this.y1, this.x2, this.y2);
+      } else if (ct === 'infinite-start') {
+        return _ptRayDist(px, py, this.x2, this.y2, this.x1, this.y1); // ray from p2 through p1
+      } else if (ct === 'infinite-end') {
+        return _ptRayDist(px, py, this.x1, this.y1, this.x2, this.y2); // ray from p1 through p2
+      }
+    }
     return _ptSegDist(px, py, this.x1, this.y1, this.x2, this.y2);
   }
 
   draw(ctx, vp) {
     if (this.construction) {
-      // Infinite construction line: extend to screen edges
       const dx = this.x2 - this.x1;
       const dy = this.y2 - this.y1;
       const len = Math.hypot(dx, dy);
       if (len < 1e-12) return;
       const ux = dx / len, uy = dy / len;
-      // Extend far in both directions (safe large value)
       const ext = Math.max(vp.width, vp.height) / vp.zoom * 2;
-      const ax = this.x1 - ux * ext;
-      const ay = this.y1 - uy * ext;
-      const bx = this.x2 + ux * ext;
-      const by = this.y2 + uy * ext;
+      const ct = this.constructionType || 'finite';
+      let ax, ay, bx, by;
+      if (ct === 'infinite-both') {
+        ax = this.x1 - ux * ext; ay = this.y1 - uy * ext;
+        bx = this.x2 + ux * ext; by = this.y2 + uy * ext;
+      } else if (ct === 'infinite-start') {
+        ax = this.x1 - ux * ext; ay = this.y1 - uy * ext;
+        bx = this.x2; by = this.y2;
+      } else if (ct === 'infinite-end') {
+        ax = this.x1; ay = this.y1;
+        bx = this.x2 + ux * ext; by = this.y2 + uy * ext;
+      } else { // finite
+        ax = this.x1; ay = this.y1;
+        bx = this.x2; by = this.y2;
+      }
       const a = vp.worldToScreen(ax, ay);
       const b = vp.worldToScreen(bx, by);
       ctx.save();
@@ -92,5 +111,25 @@ function _ptSegDist(px, py, ax, ay, bx, by) {
   if (lenSq === 0) return Math.hypot(px - ax, py - ay);
   let t = ((px - ax) * dx + (py - ay) * dy) / lenSq;
   t = Math.max(0, Math.min(1, t));
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+
+/** Distance from point to infinite line through (ax,ay)-(bx,by) */
+function _ptLineDist(px, py, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) return Math.hypot(px - ax, py - ay);
+  // perpendicular distance = |cross| / len
+  const cross = Math.abs((px - ax) * dy - (py - ay) * dx);
+  return cross / Math.sqrt(lenSq);
+}
+
+/** Distance from point to ray starting at (ax,ay) going through (bx,by) and beyond */
+function _ptRayDist(px, py, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) return Math.hypot(px - ax, py - ay);
+  let t = ((px - ax) * dx + (py - ay) * dy) / lenSq;
+  t = Math.max(0, t); // clamp at ray origin, no upper bound
   return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
 }
