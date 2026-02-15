@@ -364,7 +364,7 @@ class CSGSolid {
 
 /**
  * Classify the type of a face based on its normal and vertex positions.
- * Returns: 'planar', 'cylindrical', 'conical', 'spherical', or 'freeform'
+ * Returns: 'planar-horizontal', 'planar-vertical', 'planar', 'cylindrical', or 'freeform'
  */
 function classifyFaceType(normal, vertices) {
   if (vertices.length < 3) return 'planar';
