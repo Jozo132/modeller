@@ -1008,3 +1008,284 @@ html, body {
     bottom: calc(56px + 36vh);
   }
 }
+
+/* ── Motion Analysis Panel ── */
+.motion-panel {
+  position: fixed;
+  bottom: 56px;
+  left: var(--panel-width);
+  right: var(--panel-width);
+  background: var(--bg-panel);
+  border-top: 2px solid var(--accent);
+  z-index: 90;
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+.motion-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.motion-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--accent-hover);
+}
+
+.motion-header-actions {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.motion-label {
+  display: block;
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-bottom: 2px;
+}
+
+.motion-select,
+.motion-input {
+  width: 100%;
+  background: var(--bg-dark);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 3px 6px;
+  font-size: 12px;
+  font-family: 'Consolas', monospace;
+}
+
+.motion-select:focus,
+.motion-input:focus {
+  outline: 1px solid var(--accent);
+  border-color: var(--accent);
+}
+
+.motion-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.motion-field {
+  flex: 1;
+}
+
+.motion-section {
+  margin-bottom: 2px;
+}
+
+.motion-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.motion-btn {
+  padding: 5px 14px;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  background: var(--bg-toolbar);
+  color: var(--text-primary);
+}
+
+.motion-btn.primary {
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+.motion-btn.primary:hover {
+  background: var(--accent-hover);
+}
+
+.motion-btn-sm {
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 11px;
+  background: var(--bg-toolbar);
+  color: var(--text-primary);
+}
+
+.motion-btn-sm:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+.motion-btn-close {
+  font-weight: bold;
+  border-color: transparent;
+  font-size: 14px;
+}
+
+.motion-btn-stop {
+  background: #6e2020;
+  border-color: #8b3030;
+  color: #ffa0a0;
+}
+
+.motion-btn-stop:hover {
+  background: #8b3030;
+}
+
+.motion-probes-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-bottom: 4px;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.motion-probe-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  padding: 2px 4px;
+  background: var(--bg-dark);
+  border-radius: 3px;
+}
+
+.motion-probe-row select {
+  flex: 1;
+  background: var(--bg-toolbar);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  padding: 1px 4px;
+  font-size: 11px;
+  font-family: 'Consolas', monospace;
+}
+
+.motion-probe-type {
+  font-size: 10px;
+  color: var(--accent-hover);
+  min-width: 30px;
+}
+
+.motion-probe-remove {
+  cursor: pointer;
+  color: var(--text-secondary);
+  border: none;
+  background: none;
+  font-size: 13px;
+  padding: 0 2px;
+}
+
+.motion-probe-remove:hover {
+  color: #f44;
+}
+
+.motion-probe-actions {
+  display: flex;
+  gap: 4px;
+}
+
+/* Playback controls */
+.motion-transport {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.motion-slider {
+  flex: 1;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 6px;
+  background: var(--bg-dark);
+  border-radius: 3px;
+  outline: none;
+}
+
+.motion-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent-hover);
+  cursor: pointer;
+  border: 2px solid var(--bg-panel);
+}
+
+.motion-frame-info {
+  font-size: 11px;
+  color: var(--text-secondary);
+  min-width: 60px;
+  text-align: right;
+  font-family: 'Consolas', monospace;
+}
+
+.motion-speed {
+  width: 80px;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  background: var(--bg-dark);
+  border-radius: 2px;
+}
+
+.motion-speed::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--text-primary);
+  cursor: pointer;
+}
+
+.motion-speed-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-family: 'Consolas', monospace;
+  min-width: 30px;
+}
+
+.motion-value {
+  font-size: 12px;
+  font-family: 'Consolas', monospace;
+  color: var(--accent-hover);
+}
+
+.motion-probe-output {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  font-size: 11px;
+  padding-top: 2px;
+}
+
+.motion-probe-output-item {
+  display: flex;
+  gap: 4px;
+  align-items: baseline;
+}
+
+.motion-probe-output-item .probe-label {
+  color: var(--text-secondary);
+}
+
+.motion-probe-output-item .probe-value {
+  font-family: 'Consolas', monospace;
+  color: var(--accent-hover);
+}
+
+/* Canvas adjusts when motion panel is open */
+body.motion-active #cad-canvas {
+  bottom: calc(56px + var(--motion-panel-h, 0px));
+}

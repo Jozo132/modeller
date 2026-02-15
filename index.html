@@ -57,6 +57,7 @@
       <span class="group-label">Ops</span>
       <button id="btn-disconnect" title="Disconnect Point" data-tool="disconnect"><svg viewBox="0 0 20 20"><circle cx="7" cy="10" r="2.5" fill="none"/><circle cx="13" cy="10" r="2.5" fill="none"/><line x1="4" y1="4" x2="16" y2="16" stroke-dasharray="2,2"/></svg></button>
       <button id="btn-union" title="Union / Join Points" data-tool="union"><svg viewBox="0 0 20 20"><circle cx="7" cy="10" r="2.5" fill="none"/><circle cx="13" cy="10" r="2.5" fill="none"/><path d="M9 8l2 2-2 2" fill="none"/></svg></button>
+      <button id="btn-motion" title="Motion Analysis"><svg viewBox="0 0 20 20"><polygon points="6,4 6,16 16,10" fill="none"/><circle cx="10" cy="10" r="8" fill="none"/></svg></button>
     </div>
     <div class="toolbar-sep"></div>
     <div class="tool-group">
@@ -114,6 +115,74 @@
 
   <!-- Canvas -->
   <canvas id="cad-canvas"></canvas>
+
+  <!-- Motion Analysis Panel -->
+  <div id="motion-panel" class="motion-panel" style="display:none">
+    <div class="motion-panel-header">
+      <span class="motion-title">🎬 Motion Analysis</span>
+      <div class="motion-header-actions">
+        <button id="motion-export-csv" class="motion-btn-sm" title="Export CSV" style="display:none">📊 CSV</button>
+        <button id="motion-close" class="motion-btn-sm motion-btn-close" title="Close">✕</button>
+      </div>
+    </div>
+
+    <!-- Setup View -->
+    <div id="motion-setup" class="motion-setup">
+      <div class="motion-section">
+        <label class="motion-label">Driver (reference parameter)</label>
+        <select id="motion-driver" class="motion-select"><option value="">— Select a driving dimension —</option></select>
+      </div>
+      <div class="motion-row">
+        <div class="motion-field">
+          <label class="motion-label">From</label>
+          <input id="motion-from" type="number" class="motion-input" step="any" value="0" />
+        </div>
+        <div class="motion-field">
+          <label class="motion-label">To</label>
+          <input id="motion-to" type="number" class="motion-input" step="any" value="100" />
+        </div>
+        <div class="motion-field">
+          <label class="motion-label">Steps</label>
+          <input id="motion-steps" type="number" class="motion-input" min="1" max="10000" value="50" />
+        </div>
+      </div>
+      <div class="motion-section">
+        <label class="motion-label">Output Probes</label>
+        <div id="motion-probes" class="motion-probes-list"></div>
+        <div class="motion-probe-actions">
+          <button id="motion-add-point-probe" class="motion-btn-sm">+ Point</button>
+          <button id="motion-add-dim-probe" class="motion-btn-sm">+ Dimension</button>
+        </div>
+      </div>
+      <div class="motion-actions">
+        <button id="motion-run" class="motion-btn primary">▶ Run Analysis</button>
+      </div>
+    </div>
+
+    <!-- Playback View -->
+    <div id="motion-playback" class="motion-playback" style="display:none">
+      <div class="motion-transport">
+        <button id="motion-play" class="motion-btn-sm" title="Play / Pause">▶</button>
+        <input id="motion-slider" type="range" class="motion-slider" min="0" max="100" step="0.1" value="0" />
+        <span id="motion-frame-info" class="motion-frame-info">0 / 0</span>
+      </div>
+      <div class="motion-row">
+        <div class="motion-field">
+          <label class="motion-label">Speed</label>
+          <input id="motion-speed" type="range" class="motion-speed" min="0.1" max="5" step="0.1" value="1" />
+          <span id="motion-speed-label" class="motion-speed-label">1.0×</span>
+        </div>
+        <div class="motion-field">
+          <label class="motion-label">Driver value</label>
+          <span id="motion-driver-value" class="motion-value">—</span>
+        </div>
+        <div class="motion-field" style="flex:0 0 auto">
+          <button id="motion-stop" class="motion-btn-sm motion-btn-stop">⏹ Stop</button>
+        </div>
+      </div>
+      <div id="motion-probe-output" class="motion-probe-output"></div>
+    </div>
+  </div>
 
   <!-- Status Bar -->
   <div id="status-bar">

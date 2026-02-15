@@ -17,6 +17,7 @@ import {
   resolveValue, setVariable, getVariable, getVariableRaw, removeVariable, getAllVariables,
 } from './cad/Constraint.js';
 import { union } from './cad/Operations.js';
+import { motionAnalysis } from './motion.js';
 import {
   SelectTool, LineTool, RectangleTool, CircleTool,
   ArcTool, PolylineTool, TextTool, DimensionTool,
@@ -81,6 +82,7 @@ class App {
     this._bindResizeEvent();
     this._bindStateEvents();
     this._bindLeftPanelEvents();
+    this._bindMotionEvents();
 
     // Register viewport for persistence and restore saved project
     setViewport(this.viewport);
@@ -366,6 +368,8 @@ class App {
   }
 
   setActiveTool(name) {
+    // Block tool changes during motion playback (except select)
+    if (motionAnalysis.isRunning && name !== 'select') return;
     if (this.activeTool) this.activeTool.deactivate();
     this.activeTool = this.tools[name] || this.tools.select;
     this.activeTool.activate();
@@ -917,6 +921,11 @@ class App {
     // Construction mode toggle
     document.getElementById('btn-construction').addEventListener('click', () => {
       this._toggleConstructionMode();
+    });
+
+    // Motion Analysis
+    document.getElementById('btn-motion').addEventListener('click', () => {
+      this._toggleMotionPanel();
     });
 
     // Layer add
@@ -2517,6 +2526,415 @@ class App {
       });
       panel.appendChild(row);
     }
+  }
+
+  // =====================================================================
+  //  Motion Analysis
+  // =====================================================================
+
+  _toggleMotionPanel() {
+    const panel = document.getElementById('motion-panel');
+    const isOpen = panel.style.display !== 'none';
+    if (isOpen) {
+      this._closeMotionPanel();
+    } else {
+      this._openMotionPanel();
+    }
+  }
+
+  _openMotionPanel() {
+    if (motionAnalysis.isRunning) {
+      // If analysis is running, just show the panel
+      document.getElementById('motion-panel').style.display = '';
+      document.getElementById('btn-motion').classList.add('active');
+      this._adjustCanvasForMotion();
+      return;
+    }
+
+    // Switch to select tool
+    this.setActiveTool('select');
+
+    // Show the panel
+    const panel = document.getElementById('motion-panel');
+    const setup = document.getElementById('motion-setup');
+    const playback = document.getElementById('motion-playback');
+    panel.style.display = '';
+    setup.style.display = '';
+    playback.style.display = 'none';
+    document.getElementById('motion-export-csv').style.display = 'none';
+    document.getElementById('btn-motion').classList.add('active');
+
+    // Populate driver dropdown
+    this._motionPopulateDrivers();
+
+    // Clear probes
+    this._motionProbes = [];
+    this._motionRebuildProbes();
+
+    this._adjustCanvasForMotion();
+  }
+
+  _closeMotionPanel() {
+    if (motionAnalysis.isRunning) {
+      motionAnalysis.stop();
+      state.selectedEntities = [];
+      state.emit('change');
+    }
+    // Stop playback animation
+    if (this._motionAnimId) {
+      cancelAnimationFrame(this._motionAnimId);
+      this._motionAnimId = null;
+    }
+    this._motionPlaying = false;
+
+    document.getElementById('motion-panel').style.display = 'none';
+    document.getElementById('btn-motion').classList.remove('active');
+    document.body.classList.remove('motion-active');
+    // Restore canvas
+    document.getElementById('cad-canvas').style.bottom = '';
+    this.viewport.resize();
+    this._scheduleRender();
+  }
+
+  _adjustCanvasForMotion() {
+    requestAnimationFrame(() => {
+      const panel = document.getElementById('motion-panel');
+      const h = panel.offsetHeight;
+      document.body.classList.add('motion-active');
+      document.body.style.setProperty('--motion-panel-h', h + 'px');
+      document.getElementById('cad-canvas').style.bottom = (56 + h) + 'px';
+      this.viewport.resize();
+      this._scheduleRender();
+    });
+  }
+
+  _motionPopulateDrivers() {
+    const sel = document.getElementById('motion-driver');
+    sel.innerHTML = '<option value="">— Select a driving dimension or constraint —</option>';
+    const scene = state.scene;
+
+    // Driving dimensions (isConstraint && formula != null)
+    for (const dim of scene.dimensions) {
+      if (dim.isConstraint && dim.formula != null) {
+        const label = `Dim #${dim.id}: ${dim.dimType} = ${dim.displayLabel}`;
+        const opt = document.createElement('option');
+        opt.value = `dim:${dim.id}`;
+        opt.textContent = label;
+        sel.appendChild(opt);
+      }
+    }
+
+    // Editable constraints (Distance, Length, Angle, Radius, Fixed)
+    for (const c of scene.constraints) {
+      if (c.editable && c.type !== 'dimension') {
+        let label = `${c.type} #${c.id}`;
+        if (c.value !== undefined) label += ` = ${typeof c.value === 'number' ? c.value.toFixed(2) : c.value}`;
+        const opt = document.createElement('option');
+        opt.value = `con:${c.id}`;
+        opt.textContent = label;
+        sel.appendChild(opt);
+      }
+    }
+  }
+
+  _motionGetSelectedDriver() {
+    const val = document.getElementById('motion-driver').value;
+    if (!val) return null;
+    const scene = state.scene;
+    if (val.startsWith('dim:')) {
+      const id = parseInt(val.slice(4));
+      return { target: scene.dimensions.find(d => d.id === id), isDim: true };
+    } else if (val.startsWith('con:')) {
+      const id = parseInt(val.slice(4));
+      return { target: scene.constraints.find(c => c.id === id), isDim: false };
+    }
+    return null;
+  }
+
+  _motionRebuildProbes() {
+    const container = document.getElementById('motion-probes');
+    container.innerHTML = '';
+    const scene = state.scene;
+
+    for (let i = 0; i < this._motionProbes.length; i++) {
+      const probe = this._motionProbes[i];
+      const row = document.createElement('div');
+      row.className = 'motion-probe-row';
+
+      const typeSpan = document.createElement('span');
+      typeSpan.className = 'motion-probe-type';
+      typeSpan.textContent = probe.type === 'point' ? 'PT' : 'DIM';
+
+      const select = document.createElement('select');
+      if (probe.type === 'point') {
+        for (const p of scene.points) {
+          const opt = document.createElement('option');
+          opt.value = p.id;
+          opt.textContent = `Point #${p.id} (${p.x.toFixed(1)}, ${p.y.toFixed(1)})`;
+          if (probe._targetId === p.id) opt.selected = true;
+          select.appendChild(opt);
+        }
+      } else {
+        for (const d of scene.dimensions) {
+          const opt = document.createElement('option');
+          opt.value = d.id;
+          opt.textContent = `Dim #${d.id}: ${d.dimType} = ${d.displayLabel}`;
+          if (probe._targetId === d.id) opt.selected = true;
+          select.appendChild(opt);
+        }
+      }
+      select.addEventListener('change', () => {
+        probe._targetId = parseInt(select.value);
+        if (probe.type === 'point') {
+          probe.target = scene.points.find(p => p.id === probe._targetId);
+          probe.label = `P${probe._targetId}`;
+        } else {
+          probe.target = scene.dimensions.find(d => d.id === probe._targetId);
+          probe.label = `D${probe._targetId}`;
+        }
+      });
+
+      const removeBtn = document.createElement('button');
+      removeBtn.className = 'motion-probe-remove';
+      removeBtn.textContent = '✕';
+      removeBtn.addEventListener('click', () => {
+        this._motionProbes.splice(i, 1);
+        this._motionRebuildProbes();
+      });
+
+      row.appendChild(typeSpan);
+      row.appendChild(select);
+      row.appendChild(removeBtn);
+      container.appendChild(row);
+
+      // Auto-select first item if not set
+      if (!probe._targetId && select.options.length > 0) {
+        select.dispatchEvent(new Event('change'));
+      }
+    }
+  }
+
+  _bindMotionEvents() {
+    this._motionProbes = [];
+    this._motionPlaying = false;
+    this._motionAnimId = null;
+    this._motionSpeed = 1;
+
+    // Close
+    document.getElementById('motion-close').addEventListener('click', () => {
+      this._closeMotionPanel();
+    });
+
+    // Driver selection — auto-populate from/to
+    document.getElementById('motion-driver').addEventListener('change', () => {
+      const info = this._motionGetSelectedDriver();
+      if (info && info.target) {
+        let currentVal;
+        if (info.isDim) {
+          currentVal = info.target.value;
+        } else {
+          currentVal = typeof info.target.value === 'number' ? info.target.value : resolveValue(info.target.value);
+        }
+        if (typeof currentVal === 'number' && !isNaN(currentVal)) {
+          document.getElementById('motion-from').value = currentVal.toFixed(4);
+          // Suggest a range: ±50% or ±20 for small values
+          const range = Math.max(Math.abs(currentVal) * 0.5, 20);
+          document.getElementById('motion-to').value = (currentVal + range).toFixed(4);
+        }
+      }
+    });
+
+    // Add probes
+    document.getElementById('motion-add-point-probe').addEventListener('click', () => {
+      const scene = state.scene;
+      if (scene.points.length === 0) return;
+      const first = scene.points[0];
+      this._motionProbes.push({
+        type: 'point',
+        target: first,
+        _targetId: first.id,
+        label: `P${first.id}`,
+      });
+      this._motionRebuildProbes();
+    });
+
+    document.getElementById('motion-add-dim-probe').addEventListener('click', () => {
+      const scene = state.scene;
+      if (scene.dimensions.length === 0) return;
+      const first = scene.dimensions[0];
+      this._motionProbes.push({
+        type: 'dimension',
+        target: first,
+        _targetId: first.id,
+        label: `D${first.id}`,
+      });
+      this._motionRebuildProbes();
+    });
+
+    // Run Analysis
+    document.getElementById('motion-run').addEventListener('click', () => {
+      const driverInfo = this._motionGetSelectedDriver();
+      if (!driverInfo || !driverInfo.target) {
+        this.setStatus('Motion: Select a driver first');
+        return;
+      }
+      const from = parseFloat(document.getElementById('motion-from').value);
+      const to = parseFloat(document.getElementById('motion-to').value);
+      const steps = parseInt(document.getElementById('motion-steps').value) || 50;
+      if (isNaN(from) || isNaN(to)) {
+        this.setStatus('Motion: Invalid from/to values');
+        return;
+      }
+
+      // Save the original formula/value for restoration
+      const driver = driverInfo.target;
+      this._motionOriginalDriverValue = driverInfo.isDim ? driver.formula : driver.value;
+
+      const config = {
+        driver: driver,
+        from, to, steps,
+        probes: this._motionProbes.filter(p => p.target),
+        _driverId: driver.id,
+        _driverIsDim: driverInfo.isDim,
+      };
+
+      // Tag probes with IDs for re-linking
+      for (const p of config.probes) {
+        p._targetId = p.target.id;
+      }
+
+      this.setStatus(`Motion: Running analysis (${steps} steps)...`);
+      // Use setTimeout to allow UI to update before blocking
+      setTimeout(() => {
+        const result = motionAnalysis.run(config);
+        if (!result.ok) {
+          this.setStatus(`Motion Error: ${result.error}`);
+          return;
+        }
+
+        // Switch to playback view
+        document.getElementById('motion-setup').style.display = 'none';
+        document.getElementById('motion-playback').style.display = '';
+        document.getElementById('motion-export-csv').style.display = '';
+
+        const slider = document.getElementById('motion-slider');
+        slider.max = motionAnalysis.frames.length - 1;
+        slider.value = 0;
+
+        this._motionUpdateDisplay(0);
+        this._adjustCanvasForMotion();
+        this.setStatus(`Motion: Analysis complete — ${motionAnalysis.frames.length} frames`);
+        this._scheduleRender();
+      }, 50);
+    });
+
+    // Playback slider
+    document.getElementById('motion-slider').addEventListener('input', (e) => {
+      const t = parseFloat(e.target.value);
+      motionAnalysis.seekSmooth(t);
+      this._motionUpdateDisplay(t);
+      this._scheduleRender();
+    });
+
+    // Play / Pause
+    document.getElementById('motion-play').addEventListener('click', () => {
+      this._motionPlaying = !this._motionPlaying;
+      document.getElementById('motion-play').textContent = this._motionPlaying ? '⏸' : '▶';
+      if (this._motionPlaying) this._motionAnimate();
+    });
+
+    // Speed
+    document.getElementById('motion-speed').addEventListener('input', (e) => {
+      this._motionSpeed = parseFloat(e.target.value) || 1;
+      document.getElementById('motion-speed-label').textContent = this._motionSpeed.toFixed(1) + '×';
+    });
+
+    // Stop — back to setup
+    document.getElementById('motion-stop').addEventListener('click', () => {
+      motionAnalysis.stop();
+      state.selectedEntities = [];
+      state.emit('change');
+
+      if (this._motionAnimId) {
+        cancelAnimationFrame(this._motionAnimId);
+        this._motionAnimId = null;
+      }
+      this._motionPlaying = false;
+
+      // Back to setup
+      document.getElementById('motion-setup').style.display = '';
+      document.getElementById('motion-playback').style.display = 'none';
+      document.getElementById('motion-export-csv').style.display = 'none';
+      document.getElementById('motion-play').textContent = '▶';
+      this._motionPopulateDrivers();
+      this._motionRebuildProbes();
+      this._adjustCanvasForMotion();
+      this._scheduleRender();
+    });
+
+    // Export CSV
+    document.getElementById('motion-export-csv').addEventListener('click', () => {
+      const csv = motionAnalysis.exportCSV();
+      if (!csv) return;
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'motion_analysis.csv';
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+  }
+
+  _motionUpdateDisplay(t) {
+    const total = motionAnalysis.frames.length - 1;
+    const frameIdx = Math.round(t);
+    document.getElementById('motion-frame-info').textContent = `${frameIdx} / ${total}`;
+    document.getElementById('motion-slider').value = t;
+
+    const driverVal = motionAnalysis.getDriverValueAt(t);
+    document.getElementById('motion-driver-value').textContent = driverVal.toFixed(4);
+
+    // Probe output
+    const probeVals = motionAnalysis.getProbeValuesAt(t);
+    const output = document.getElementById('motion-probe-output');
+    output.innerHTML = '';
+    for (const [key, val] of Object.entries(probeVals)) {
+      const item = document.createElement('span');
+      item.className = 'motion-probe-output-item';
+      item.innerHTML = `<span class="probe-label">${key}:</span> <span class="probe-value">${val.toFixed(4)}</span>`;
+      output.appendChild(item);
+    }
+  }
+
+  _motionAnimate() {
+    if (!this._motionPlaying || !motionAnalysis.isRunning) return;
+
+    const total = motionAnalysis.frames.length - 1;
+    if (total <= 0) return;
+
+    let lastTime = performance.now();
+    const step = () => {
+      if (!this._motionPlaying || !motionAnalysis.isRunning) return;
+
+      const now = performance.now();
+      const dt = (now - lastTime) / 1000; // seconds
+      lastTime = now;
+
+      // Advance by speed * frames-per-second-equivalent
+      const slider = document.getElementById('motion-slider');
+      let t = parseFloat(slider.value) + dt * this._motionSpeed * 10; // ~10 frames/sec at 1x speed
+
+      // Loop
+      if (t > total) t = 0;
+
+      motionAnalysis.seekSmooth(t);
+      this._motionUpdateDisplay(t);
+      this._scheduleRender();
+
+      this._motionAnimId = requestAnimationFrame(step);
+    };
+    this._motionAnimId = requestAnimationFrame(step);
   }
 }
 
