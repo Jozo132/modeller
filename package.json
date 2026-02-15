@@ -5,9 +5,20 @@
   "type": "module",
   "scripts": {
     "start": "npx serve .",
-    "test:parametric": "node test-parametric.js"
+    "test:parametric": "node test-parametric.js",
+    "asbuild:debug": "asc assembly/index.ts --target debug",
+    "asbuild:release": "asc assembly/index.ts --target release",
+    "asbuild": "npm run asbuild:debug && npm run asbuild:release",
+    "test": "node tests"
   },
-  "dependencies": {
-    "three": "^0.182.0"
+  "dependencies": {},
+  "devDependencies": {
+    "assemblyscript": "^0.28.9"
+  },
+  "exports": {
+    ".": {
+      "import": "./build/release.js",
+      "types": "./build/release.d.ts"
+    }
   }
 }
