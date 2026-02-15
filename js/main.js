@@ -134,21 +134,13 @@ class App {
 
       this._syncViewportSize();
       try {
-        // Render 2D scene in 3D engine
+        // Render 2D scene in unified 3D engine
         if (this._renderer3d) {
           this._renderer3d.render2DScene(state.scene);
         }
-        
-        // Legacy 2D canvas renderer (kept for compatibility, hidden)
-        // this.renderer.render();
       } catch (err) {
         error('Render loop failed', err);
       }
-      
-      // Tool overlay rendering would need to be adapted for 3D
-      // if (this.activeTool.drawOverlay) {
-      //   this.activeTool.drawOverlay(this.viewport.ctx, this.viewport);
-      // }
 
       if (this._renderRequested) {
         this._scheduleRender();

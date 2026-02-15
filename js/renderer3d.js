@@ -41,11 +41,12 @@ export class Renderer3D {
     this.perspectiveCamera.lookAt(0, 0, 0);
 
     // Setup orthographic camera for 2D sketching (top-down view)
+    // Standard 2D coordinates: X+ right, Y+ up when looking down from +Z
     const viewSize = 500;
     this.orthographicCamera = new THREE.OrthographicCamera(
-      -viewSize * aspect, viewSize * aspect,
-      viewSize, -viewSize,
-      0.1, 10000
+      -viewSize * aspect, viewSize * aspect,  // left, right
+      viewSize, -viewSize,                     // top, bottom (Y+ at top of screen)
+      0.1, 10000                               // near, far
     );
     this.orthographicCamera.position.set(0, 0, 500);
     this.orthographicCamera.lookAt(0, 0, 0);
@@ -184,12 +185,12 @@ export class Renderer3D {
     this.perspectiveCamera.aspect = aspect;
     this.perspectiveCamera.updateProjectionMatrix();
     
-    // Update orthographic camera
+    // Update orthographic camera (maintain Y+ up convention)
     const viewSize = 500;
     this.orthographicCamera.left = -viewSize * aspect;
     this.orthographicCamera.right = viewSize * aspect;
-    this.orthographicCamera.top = viewSize;
-    this.orthographicCamera.bottom = -viewSize;
+    this.orthographicCamera.top = viewSize;      // Y+ at top of screen
+    this.orthographicCamera.bottom = -viewSize;  // Y- at bottom of screen
     this.orthographicCamera.updateProjectionMatrix();
     
     this.renderer.setSize(width, height);
