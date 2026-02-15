@@ -737,6 +737,7 @@ export class WasmRenderer {
 
     // View matrix (lookAt with Z-up)
     const view = this._mat4LookAt(camX, camY, camZ, t.x, t.y, t.z, 0, 0, 1);
+    if (!view) return null;
     // Projection matrix (perspective)
     const proj = this._mat4Perspective(fov, aspect, near, far);
     // MVP = proj * view (column-major multiplication)
@@ -757,12 +758,20 @@ export class WasmRenderer {
   _mat4LookAt(ex, ey, ez, cx, cy, cz, ux, uy, uz) {
     let fx = cx - ex, fy = cy - ey, fz = cz - ez;
     let len = Math.sqrt(fx * fx + fy * fy + fz * fz);
-    if (len > 0) { fx /= len; fy /= len; fz /= len; }
+    if (len < 1e-10) return null;
+    fx /= len; fy /= len; fz /= len;
 
     // s = f × up
     let sx = fy * uz - fz * uy, sy = fz * ux - fx * uz, sz = fx * uy - fy * ux;
     len = Math.sqrt(sx * sx + sy * sy + sz * sz);
-    if (len > 0) { sx /= len; sy /= len; sz /= len; }
+    if (len < 1e-10) {
+      // Forward parallel to up — use alternative up vector
+      const ax = Math.abs(fx) < 0.9 ? 1 : 0, ay = Math.abs(fx) < 0.9 ? 0 : 1;
+      sx = fy * 0 - fz * ay; sy = fz * ax - fx * 0; sz = fx * ay - fy * ax;
+      len = Math.sqrt(sx * sx + sy * sy + sz * sz);
+      if (len < 1e-10) return null;
+    }
+    sx /= len; sy /= len; sz /= len;
 
     // u = s × f
     const ux2 = sy * fz - sz * fy, uy2 = sz * fx - sx * fz, uz2 = sx * fy - sy * fx;
