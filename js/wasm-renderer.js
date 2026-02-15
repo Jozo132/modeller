@@ -87,6 +87,12 @@ export class WasmRenderer {
     this._partNodes = [];
     this._partBounds = null;
 
+    // Pre-built mesh data for direct WebGL rendering (bypasses WASM scene nodes)
+    this._meshTriangles = null;  // Float32Array: interleaved [x,y,z,nx,ny,nz, ...]
+    this._meshTriangleCount = 0;
+    this._meshEdges = null;      // Float32Array: [x,y,z, x,y,z, ...] line pairs
+    this._meshEdgeVertexCount = 0;
+
     // Window resize handler
     this._resizeHandler = () => this.onWindowResize();
     window.addEventListener('resize', this._resizeHandler);
@@ -140,6 +146,11 @@ export class WasmRenderer {
     if (!memory) return;
     const buf = new Float32Array(memory.buffer, ptr, len);
     this.executor.execute(buf, len);
+
+    // Render Part mesh directly via WebGL (after WASM pass)
+    if (this.mode === '3d') {
+      this._renderMeshOverlay();
+    }
   }
 
   /* ---------- 3D orbit controls ---------- */
@@ -597,22 +608,188 @@ export class WasmRenderer {
     if (!geo) return;
 
     if (geo.type === 'solid' && geo.geometry) {
-      // Add a box-like representation using bounding box
       const bb = geo.boundingBox;
-      if (bb) {
-        const sx = bb.max.x - bb.min.x;
-        const sy = bb.max.y - bb.min.y;
-        const sz = bb.max.z - bb.min.z;
-        const px = (bb.max.x + bb.min.x) / 2;
-        const py = (bb.max.y + bb.min.y) / 2;
-        const pz = (bb.max.z + bb.min.z) / 2;
-        const id = this.wasm.addBox(sx, sy, sz, px, py, pz, 0.3, 0.69, 0.31, 1.0);
-        this._partNodes.push(id);
+      if (bb) this._partBounds = bb;
 
-        // Store bounding box for fitToView
-        this._partBounds = bb;
+      // Build actual mesh from geometry faces
+      this._buildMeshFromGeometry(geo.geometry);
+    }
+  }
+
+  /**
+   * Triangulate polygon faces and build Float32Arrays for WebGL rendering.
+   */
+  _buildMeshFromGeometry(geometry) {
+    const faces = geometry.faces || [];
+
+    // Count triangles needed (fan triangulation: n-gon → n-2 triangles)
+    let triCount = 0;
+    for (const face of faces) {
+      if (face.vertices.length >= 3) {
+        triCount += face.vertices.length - 2;
       }
     }
+
+    // Build interleaved triangle data: [x,y,z,nx,ny,nz] per vertex
+    const triData = new Float32Array(triCount * 3 * 6);
+    let ti = 0;
+
+    for (const face of faces) {
+      const verts = face.vertices;
+      const n = face.normal || { x: 0, y: 0, z: 1 };
+      if (verts.length < 3) continue;
+
+      // Fan triangulation from vertex 0
+      for (let i = 1; i < verts.length - 1; i++) {
+        // Triangle: v0, v[i], v[i+1]
+        const v0 = verts[0], v1 = verts[i], v2 = verts[i + 1];
+        triData[ti++] = v0.x; triData[ti++] = v0.y; triData[ti++] = v0.z;
+        triData[ti++] = n.x;  triData[ti++] = n.y;  triData[ti++] = n.z;
+        triData[ti++] = v1.x; triData[ti++] = v1.y; triData[ti++] = v1.z;
+        triData[ti++] = n.x;  triData[ti++] = n.y;  triData[ti++] = n.z;
+        triData[ti++] = v2.x; triData[ti++] = v2.y; triData[ti++] = v2.z;
+        triData[ti++] = n.x;  triData[ti++] = n.y;  triData[ti++] = n.z;
+      }
+    }
+
+    this._meshTriangles = triData;
+    this._meshTriangleCount = triCount * 3; // vertex count
+
+    // Build wireframe edges from face boundaries
+    let edgeCount = 0;
+    for (const face of faces) {
+      edgeCount += face.vertices.length;
+    }
+    const edgeData = new Float32Array(edgeCount * 2 * 3);
+    let ei = 0;
+    for (const face of faces) {
+      const verts = face.vertices;
+      for (let i = 0; i < verts.length; i++) {
+        const a = verts[i], b = verts[(i + 1) % verts.length];
+        edgeData[ei++] = a.x; edgeData[ei++] = a.y; edgeData[ei++] = a.z;
+        edgeData[ei++] = b.x; edgeData[ei++] = b.y; edgeData[ei++] = b.z;
+      }
+    }
+
+    this._meshEdges = edgeData;
+    this._meshEdgeVertexCount = edgeCount * 2;
+  }
+
+  /**
+   * Render pre-built mesh data directly via WebGL (called after WASM render pass).
+   */
+  _renderMeshOverlay() {
+    if (!this._meshTriangles || this._meshTriangleCount === 0) return;
+
+    const gl = this.executor.gl;
+    const exec = this.executor;
+
+    // Compute the same MVP as the WASM camera
+    const mvp = this._computeMVP();
+    if (!mvp) return;
+
+    // Draw solid triangles (program 0: position + normal, stride 24)
+    gl.useProgram(exec.programs[0]);
+    gl.uniformMatrix4fv(exec.uniforms[0].uMVP, false, mvp);
+    gl.uniform4f(exec.uniforms[0].uColor, 0.3, 0.69, 0.31, 1.0);
+
+    gl.bindVertexArray(exec.vaoSolid);
+    gl.bindBuffer(gl.ARRAY_BUFFER, exec.vbo);
+    gl.bufferData(gl.ARRAY_BUFFER, this._meshTriangles, gl.DYNAMIC_DRAW);
+    gl.drawArrays(gl.TRIANGLES, 0, this._meshTriangleCount);
+    gl.bindVertexArray(null);
+
+    // Draw wireframe edges (program 1: position only, stride 12)
+    if (this._meshEdges && this._meshEdgeVertexCount > 0) {
+      gl.useProgram(exec.programs[1]);
+      gl.uniformMatrix4fv(exec.uniforms[1].uMVP, false, mvp);
+      gl.uniform4f(exec.uniforms[1].uColor, 0.0, 0.0, 0.0, 1.0);
+      gl.lineWidth(1.0);
+
+      gl.bindVertexArray(exec.vaoLine);
+      gl.bindBuffer(gl.ARRAY_BUFFER, exec.vbo);
+      gl.bufferData(gl.ARRAY_BUFFER, this._meshEdges, gl.DYNAMIC_DRAW);
+      gl.drawArrays(gl.LINES, 0, this._meshEdgeVertexCount);
+      gl.bindVertexArray(null);
+    }
+  }
+
+  /**
+   * Compute MVP matrix matching the current WASM perspective camera.
+   */
+  _computeMVP() {
+    const w = this.canvas.width;
+    const h = this.canvas.height;
+    if (w === 0 || h === 0) return null;
+
+    const aspect = w / h;
+    const fov = Math.PI / 4;
+    const near = 0.1;
+    const far = 10000;
+    const t = this._orbitTarget;
+    const theta = this._orbitTheta;
+    const phi = this._orbitPhi;
+    const r = this._orbitRadius;
+
+    const camX = t.x + r * Math.sin(phi) * Math.cos(theta);
+    const camY = t.y + r * Math.sin(phi) * Math.sin(theta);
+    const camZ = t.z + r * Math.cos(phi);
+
+    // View matrix (lookAt with Z-up)
+    const view = this._mat4LookAt(camX, camY, camZ, t.x, t.y, t.z, 0, 0, 1);
+    // Projection matrix (perspective)
+    const proj = this._mat4Perspective(fov, aspect, near, far);
+    // MVP = proj * view (column-major multiplication)
+    return this._mat4Multiply(proj, view);
+  }
+
+  _mat4Perspective(fov, aspect, near, far) {
+    const f = 1.0 / Math.tan(fov / 2);
+    const nf = 1 / (near - far);
+    return new Float32Array([
+      f / aspect, 0, 0, 0,
+      0, f, 0, 0,
+      0, 0, (far + near) * nf, -1,
+      0, 0, 2 * far * near * nf, 0,
+    ]);
+  }
+
+  _mat4LookAt(ex, ey, ez, cx, cy, cz, ux, uy, uz) {
+    let fx = cx - ex, fy = cy - ey, fz = cz - ez;
+    let len = Math.sqrt(fx * fx + fy * fy + fz * fz);
+    if (len > 0) { fx /= len; fy /= len; fz /= len; }
+
+    // s = f × up
+    let sx = fy * uz - fz * uy, sy = fz * ux - fx * uz, sz = fx * uy - fy * ux;
+    len = Math.sqrt(sx * sx + sy * sy + sz * sz);
+    if (len > 0) { sx /= len; sy /= len; sz /= len; }
+
+    // u = s × f
+    const ux2 = sy * fz - sz * fy, uy2 = sz * fx - sx * fz, uz2 = sx * fy - sy * fx;
+
+    return new Float32Array([
+      sx, ux2, -fx, 0,
+      sy, uy2, -fy, 0,
+      sz, uz2, -fz, 0,
+      -(sx * ex + sy * ey + sz * ez),
+      -(ux2 * ex + uy2 * ey + uz2 * ez),
+      (fx * ex + fy * ey + fz * ez),
+      1,
+    ]);
+  }
+
+  _mat4Multiply(a, b) {
+    const out = new Float32Array(16);
+    for (let i = 0; i < 4; i++) {
+      for (let j = 0; j < 4; j++) {
+        out[j * 4 + i] =
+          a[0 * 4 + i] * b[j * 4 + 0] +
+          a[1 * 4 + i] * b[j * 4 + 1] +
+          a[2 * 4 + i] * b[j * 4 + 2] +
+          a[3 * 4 + i] * b[j * 4 + 3];
+      }
+    }
+    return out;
   }
 
   clearPartGeometry() {
@@ -622,6 +799,10 @@ export class WasmRenderer {
     }
     this._partNodes = [];
     this._partBounds = null;
+    this._meshTriangles = null;
+    this._meshTriangleCount = 0;
+    this._meshEdges = null;
+    this._meshEdgeVertexCount = 0;
   }
 
   clearGeometry() {
