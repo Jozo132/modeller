@@ -22,15 +22,6 @@ export const DIM_TYPES = ['distance', 'dx', 'dy', 'angle', 'radius', 'diameter']
 /** Display modes for the dimension label */
 export const DISPLAY_MODES = ['value', 'formula', 'both'];
 
-/** Cached background color for label clearing (avoids getComputedStyle per frame) */
-let _bgColor = null;
-function _getBgColor() {
-  if (!_bgColor) {
-    _bgColor = getComputedStyle(document.body).getPropertyValue('--bg-dark').trim() || '#1e1e2e';
-  }
-  return _bgColor;
-}
-
 export class DimensionPrimitive extends Primitive {
   /**
    * @param {number} x1  Start point X (world)
@@ -437,6 +428,7 @@ export class DimensionPrimitive extends Primitive {
       ctx.fillStyle = 'rgba(255,180,50,0.9)';
     }
 
+    // Extension lines (dashed)
     ctx.setLineDash([4, 3]);
     ctx.beginPath();
     ctx.moveTo(p1.x, p1.y); ctx.lineTo(d1.x, d1.y);
@@ -444,37 +436,44 @@ export class DimensionPrimitive extends Primitive {
     ctx.stroke();
     ctx.setLineDash([]);
 
+    // Measure label to compute gap
+    const fontSize = Math.max(10, 12);
+    ctx.font = `${fontSize}px 'Consolas', monospace`;
+    const label = this.displayLabel;
+    const tm = ctx.measureText(label);
+    const gapHalf = (tm.width / 2) + 4; // half-gap in pixels
+
+    // Dimension line with gap for text
+    const lineLen = Math.hypot(d2.x - d1.x, d2.y - d1.y);
+    const angle = Math.atan2(d2.y - d1.y, d2.x - d1.x);
+    const mx = (d1.x + d2.x) / 2, my = (d1.y + d2.y) / 2;
+    const ux = Math.cos(angle), uy = Math.sin(angle);
+    const gapStart_x = mx - ux * gapHalf, gapStart_y = my - uy * gapHalf;
+    const gapEnd_x = mx + ux * gapHalf, gapEnd_y = my + uy * gapHalf;
+
     ctx.beginPath();
-    ctx.moveTo(d1.x, d1.y); ctx.lineTo(d2.x, d2.y);
+    if (lineLen > gapHalf * 2) {
+      // Line is long enough for a gap
+      ctx.moveTo(d1.x, d1.y); ctx.lineTo(gapStart_x, gapStart_y);
+      ctx.moveTo(gapEnd_x, gapEnd_y); ctx.lineTo(d2.x, d2.y);
+    } else {
+      // Too short — draw full line, text will overlap a bit
+      ctx.moveTo(d1.x, d1.y); ctx.lineTo(d2.x, d2.y);
+    }
     ctx.stroke();
 
     const arrowLen = 8;
-    const angle = Math.atan2(d2.y - d1.y, d2.x - d1.x);
     _drawArrow(ctx, d1.x, d1.y, angle, arrowLen);
     _drawArrow(ctx, d2.x, d2.y, angle + Math.PI, arrowLen);
 
-    const mx = (d1.x + d2.x) / 2, my = (d1.y + d2.y) / 2;
-    const fontSize = Math.max(10, 12);
-    ctx.font = `${fontSize}px 'Consolas', monospace`;
+    // Draw label
     ctx.textAlign = 'center';
     ctx.textBaseline = 'bottom';
-    const label = this.displayLabel;
-    const tm = ctx.measureText(label);
-    const pad = 3;
     ctx.save();
     ctx.translate(mx, my);
     let ta = angle;
     if (ta > Math.PI / 2 || ta < -Math.PI / 2) ta += Math.PI;
     ctx.rotate(ta);
-    // Clear background behind text
-    ctx.fillStyle = _getBgColor();
-    ctx.fillRect(-tm.width / 2 - pad, -4 - fontSize - pad + 2, tm.width + pad * 2, fontSize + pad * 2);
-    // Draw text
-    if (this.isConstraint) {
-      ctx.fillStyle = 'rgba(255,180,50,0.9)';
-    } else {
-      ctx.fillStyle = ctx.strokeStyle || 'rgba(0,191,255,0.85)';
-    }
     ctx.fillText(label, 0, -4);
     ctx.restore();
     ctx.restore();
@@ -494,10 +493,32 @@ export class DimensionPrimitive extends Primitive {
       ctx.fillStyle = 'rgba(255,180,50,0.9)';
     }
 
-    // Draw the arc
-    ctx.beginPath();
-    ctx.arc(vs.x, vs.y, r, -startA, -(startA + sweepA), true);
-    ctx.stroke();
+    // Draw the arc — split around label midpoint for a gap
+    const midA = -(startA + sweepA / 2);
+    const fontSize = Math.max(10, 12);
+    ctx.font = `${fontSize}px 'Consolas', monospace`;
+    const label = this.displayLabel;
+    const tm = ctx.measureText(label);
+    const gapHalf = (tm.width / 2 + 4) / r; // angular half-gap in radians (arc length / radius)
+
+    const arcStart = -startA;
+    const arcEnd = -(startA + sweepA);
+    const gapCenter = midA; // angle of label midpoint
+
+    // Draw arc in two parts, skipping the gap
+    if (Math.abs(sweepA) > gapHalf * 2) {
+      ctx.beginPath();
+      ctx.arc(vs.x, vs.y, r, arcStart, gapCenter + gapHalf, true);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(vs.x, vs.y, r, gapCenter - gapHalf, arcEnd, true);
+      ctx.stroke();
+    } else {
+      // Arc too small for a gap — draw full
+      ctx.beginPath();
+      ctx.arc(vs.x, vs.y, r, arcStart, arcEnd, true);
+      ctx.stroke();
+    }
 
     // Arrow at end
     const endAngle = startA + sweepA;
@@ -508,28 +529,12 @@ export class DimensionPrimitive extends Primitive {
     const ey = vs.y + r * Math.sin(ea);
     _drawArrow(ctx, ex, ey, tangent, arrowLen);
 
-    // Label at midpoint of arc
-    const midA = -(startA + sweepA / 2);
+    // Label at midpoint of arc (outside)
     const labelR = r + 12;
     const lx = vs.x + labelR * Math.cos(midA);
     const ly = vs.y + labelR * Math.sin(midA);
-    const fontSize = Math.max(10, 12);
-    ctx.font = `${fontSize}px 'Consolas', monospace`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    const label = this.displayLabel;
-    const tm = ctx.measureText(label);
-    const pad = 3;
-    // Clear background behind text
-    const bgColor = _getBgColor();
-    ctx.fillStyle = bgColor;
-    ctx.fillRect(lx - tm.width / 2 - pad, ly - fontSize / 2 - pad, tm.width + pad * 2, fontSize + pad * 2);
-    // Draw text
-    if (this.isConstraint) {
-      ctx.fillStyle = 'rgba(255,180,50,0.9)';
-    } else {
-      ctx.fillStyle = 'rgba(0,191,255,0.85)';
-    }
     ctx.fillText(label, lx, ly);
 
     ctx.restore();
