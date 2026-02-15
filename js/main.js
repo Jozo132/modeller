@@ -390,6 +390,8 @@ class App {
   setActiveTool(name) {
     // Block tool changes during motion playback (except select)
     if (motionAnalysis.isRunning && name !== 'select') return;
+    // Block drawing/editing tools in 3D view mode (only select allowed)
+    if (this._3dMode && name !== 'select') return;
     if (this.activeTool) this.activeTool.deactivate();
     this.activeTool = this.tools[name] || this.tools.select;
     this.activeTool.activate();
@@ -3160,6 +3162,7 @@ class App {
     const featurePanel = document.getElementById('feature-panel');
     const parametersPanel = document.getElementById('parameters-panel');
     const btn = document.getElementById('btn-3d-mode');
+    const modeIndicator = document.getElementById('status-mode');
 
     if (this._3dMode) {
       // Enter 3D viewing mode (perspective camera)
@@ -3167,6 +3170,14 @@ class App {
       featurePanel.classList.add('active');
       parametersPanel.classList.add('active');
       btn.classList.add('active');
+      document.body.classList.add('mode-3d');
+
+      // Update mode indicator
+      modeIndicator.textContent = '3D VIEW';
+      modeIndicator.className = 'status-mode view-3d-mode';
+
+      // Switch to select tool (drawing tools are hidden in 3D)
+      this.setActiveTool('select');
       
       info('3D viewing mode activated');
     } else {
@@ -3175,6 +3186,11 @@ class App {
       featurePanel.classList.remove('active');
       parametersPanel.classList.remove('active');
       btn.classList.remove('active');
+      document.body.classList.remove('mode-3d');
+
+      // Update mode indicator
+      modeIndicator.textContent = 'SKETCH';
+      modeIndicator.className = 'status-mode sketch-mode';
       
       info('2D sketching mode activated');
     }
