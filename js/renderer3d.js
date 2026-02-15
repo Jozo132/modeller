@@ -1,49 +1,77 @@
-// renderer3d.js - 3D rendering engine using Three.js
+// renderer3d.js - Unified 3D rendering engine using Three.js for both 2D sketching and 3D viewing
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
 /**
- * Renderer3D - Manages 3D visualization using Three.js
+ * Renderer3D - Unified renderer for 2D sketching (orthographic view) and 3D viewing
  */
 export class Renderer3D {
-  constructor(container) {
+  constructor(container, viewport = null) {
     this.container = container;
+    this.viewport = viewport; // Optional viewport for coordinate conversion
     this.scene = new THREE.Scene();
-    this.camera = null;
+    this.perspectiveCamera = null;
+    this.orthographicCamera = null;
+    this.camera = null; // Active camera
     this.renderer = null;
     this.controls = null;
     this.meshes = new Map(); // Map of featureId -> mesh
     this.edges = new Map(); // Map of featureId -> edges
+    this.sketchObjects = new Map(); // 2D sketch entities
     this.animationId = null;
+    this.mode = '2d'; // '2d' for orthographic sketching, '3d' for perspective viewing
+    
+    // Grid and overlay objects
+    this.gridPlane = null;
+    this.gridLines = null;
+    this.axesHelper = null;
 
     this.init();
   }
 
   init() {
-    // Setup camera
     const width = this.container.clientWidth;
     const height = this.container.clientHeight;
-    this.camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 10000);
-    this.camera.position.set(300, 300, 300);
-    this.camera.lookAt(0, 0, 0);
+    const aspect = width / height;
+
+    // Setup perspective camera for 3D viewing
+    this.perspectiveCamera = new THREE.PerspectiveCamera(45, aspect, 0.1, 10000);
+    this.perspectiveCamera.position.set(300, 300, 300);
+    this.perspectiveCamera.lookAt(0, 0, 0);
+
+    // Setup orthographic camera for 2D sketching (top-down view)
+    const viewSize = 500;
+    this.orthographicCamera = new THREE.OrthographicCamera(
+      -viewSize * aspect, viewSize * aspect,
+      viewSize, -viewSize,
+      0.1, 10000
+    );
+    this.orthographicCamera.position.set(0, 0, 500);
+    this.orthographicCamera.lookAt(0, 0, 0);
+
+    // Start with orthographic camera for 2D mode
+    this.camera = this.orthographicCamera;
 
     // Setup renderer
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
     this.renderer.setSize(width, height);
     this.renderer.setPixelRatio(window.devicePixelRatio);
-    this.renderer.setClearColor(0xf5f5f5, 1);
+    this.renderer.setClearColor(0x1e1e1e, 1); // Dark background like original 2D canvas
     this.container.appendChild(this.renderer.domElement);
 
     // Setup controls
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.05;
-    this.controls.screenSpacePanning = false;
+    this.controls.screenSpacePanning = true;
     this.controls.minDistance = 50;
     this.controls.maxDistance = 5000;
+    
+    // In 2D mode, constrain rotation
+    this.controls.enableRotate = false;
 
-    // Setup lights
+    // Setup lights (for 3D viewing)
     const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
     this.scene.add(ambientLight);
 
@@ -55,26 +83,115 @@ export class Renderer3D {
     directionalLight2.position.set(-100, -100, -100);
     this.scene.add(directionalLight2);
 
-    // Add grid helper
-    const gridHelper = new THREE.GridHelper(500, 50, 0x888888, 0xcccccc);
-    this.scene.add(gridHelper);
+    // Create grid for 2D sketching on XY plane
+    this.createSketchGrid();
 
     // Add axes helper
-    const axesHelper = new THREE.AxesHelper(100);
-    this.scene.add(axesHelper);
+    this.axesHelper = new THREE.AxesHelper(100);
+    this.scene.add(this.axesHelper);
 
     // Handle window resize
-    window.addEventListener('resize', () => this.onWindowResize());
+    this.resizeHandler = () => this.onWindowResize();
+    window.addEventListener('resize', this.resizeHandler);
 
     // Start animation loop
     this.animate();
   }
 
+  /**
+   * Create a grid on the XY plane for 2D sketching
+   */
+  createSketchGrid() {
+    // Remove existing grid
+    if (this.gridPlane) {
+      this.scene.remove(this.gridPlane);
+      this.gridPlane.geometry.dispose();
+      this.gridPlane.material.dispose();
+    }
+    if (this.gridLines) {
+      this.scene.remove(this.gridLines);
+      this.gridLines.geometry.dispose();
+      this.gridLines.material.dispose();
+    }
+
+    // Create grid lines on XY plane (Z=0)
+    const gridSize = 1000;
+    const gridDivisions = 100;
+    const gridStep = gridSize / gridDivisions;
+    
+    const gridGeometry = new THREE.BufferGeometry();
+    const vertices = [];
+    
+    // Horizontal lines
+    for (let i = 0; i <= gridDivisions; i++) {
+      const y = -gridSize / 2 + i * gridStep;
+      vertices.push(-gridSize / 2, y, 0);
+      vertices.push(gridSize / 2, y, 0);
+    }
+    
+    // Vertical lines
+    for (let i = 0; i <= gridDivisions; i++) {
+      const x = -gridSize / 2 + i * gridStep;
+      vertices.push(x, -gridSize / 2, 0);
+      vertices.push(x, gridSize / 2, 0);
+    }
+    
+    gridGeometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+    
+    const gridMaterial = new THREE.LineBasicMaterial({
+      color: 0x333333,
+      transparent: true,
+      opacity: 0.3
+    });
+    
+    this.gridLines = new THREE.LineSegments(gridGeometry, gridMaterial);
+    this.scene.add(this.gridLines);
+
+    // Add major grid lines (every 10th line)
+    const majorGridGeometry = new THREE.BufferGeometry();
+    const majorVertices = [];
+    
+    for (let i = 0; i <= gridDivisions; i += 10) {
+      const y = -gridSize / 2 + i * gridStep;
+      majorVertices.push(-gridSize / 2, y, 0);
+      majorVertices.push(gridSize / 2, y, 0);
+    }
+    
+    for (let i = 0; i <= gridDivisions; i += 10) {
+      const x = -gridSize / 2 + i * gridStep;
+      majorVertices.push(x, -gridSize / 2, 0);
+      majorVertices.push(x, gridSize / 2, 0);
+    }
+    
+    majorGridGeometry.setAttribute('position', new THREE.Float32BufferAttribute(majorVertices, 3));
+    
+    const majorGridMaterial = new THREE.LineBasicMaterial({
+      color: 0x555555,
+      transparent: true,
+      opacity: 0.5
+    });
+    
+    const majorGridLines = new THREE.LineSegments(majorGridGeometry, majorGridMaterial);
+    this.scene.add(majorGridLines);
+  }
+
   onWindowResize() {
     const width = this.container.clientWidth;
     const height = this.container.clientHeight;
-    this.camera.aspect = width / height;
-    this.camera.updateProjectionMatrix();
+    const aspect = width / height;
+    
+    // Update perspective camera
+    this.perspectiveCamera.aspect = aspect;
+    this.perspectiveCamera.updateProjectionMatrix();
+    
+    // Update orthographic camera
+    const viewSize = 500;
+    this.orthographicCamera.left = -viewSize * aspect;
+    this.orthographicCamera.right = viewSize * aspect;
+    this.orthographicCamera.top = viewSize;
+    this.orthographicCamera.bottom = -viewSize;
+    this.orthographicCamera.updateProjectionMatrix();
+    
     this.renderer.setSize(width, height);
   }
 
@@ -85,12 +202,145 @@ export class Renderer3D {
   }
 
   /**
+   * Switch between 2D sketching mode and 3D viewing mode
+   * @param {string} mode - '2d' or '3d'
+   */
+  setMode(mode) {
+    this.mode = mode;
+    
+    if (mode === '2d') {
+      // Switch to orthographic camera for 2D sketching
+      this.camera = this.orthographicCamera;
+      this.controls.object = this.orthographicCamera;
+      this.controls.enableRotate = false;
+      this.controls.screenSpacePanning = true;
+      
+      // Position camera to look down at XY plane
+      this.orthographicCamera.position.set(0, 0, 500);
+      this.orthographicCamera.lookAt(0, 0, 0);
+      this.controls.target.set(0, 0, 0);
+      
+      // Show grid, hide 3D-specific elements
+      if (this.gridLines) this.gridLines.visible = true;
+      
+    } else if (mode === '3d') {
+      // Switch to perspective camera for 3D viewing
+      this.camera = this.perspectiveCamera;
+      this.controls.object = this.perspectiveCamera;
+      this.controls.enableRotate = true;
+      this.controls.screenSpacePanning = false;
+      
+      // Position camera for isometric-like view
+      this.perspectiveCamera.position.set(300, 300, 300);
+      this.perspectiveCamera.lookAt(0, 0, 0);
+      this.controls.target.set(0, 0, 0);
+      
+      // Keep grid visible in 3D mode too
+      if (this.gridLines) this.gridLines.visible = true;
+    }
+    
+    this.controls.update();
+  }
+
+  /**
+   * Render 2D sketch entities on the XY plane
+   * @param {Scene} scene - The 2D scene with entities
+   */
+  render2DScene(scene) {
+    // Clear previous 2D objects
+    this.sketchObjects.forEach(obj => {
+      this.scene.remove(obj);
+      if (obj.geometry) obj.geometry.dispose();
+      if (obj.material) obj.material.dispose();
+    });
+    this.sketchObjects.clear();
+
+    if (!scene) return;
+
+    // Render segments (lines)
+    if (scene.segments) {
+      scene.segments.forEach((segment, index) => {
+        if (segment.start && segment.end) {
+          const geometry = new THREE.BufferGeometry();
+          const vertices = new Float32Array([
+            segment.start.x, segment.start.y, 0,
+            segment.end.x, segment.end.y, 0
+          ]);
+          geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+          
+          const material = new THREE.LineBasicMaterial({
+            color: segment.construction ? 0x90EE90 : 0xFFFFFF,
+            linewidth: 1
+          });
+          
+          const line = new THREE.Line(geometry, material);
+          this.scene.add(line);
+          this.sketchObjects.set(`segment-${index}`, line);
+        }
+      });
+    }
+
+    // Render circles
+    if (scene.circles) {
+      scene.circles.forEach((circle, index) => {
+        const geometry = new THREE.CircleGeometry(circle.radius, 64);
+        const edges = new THREE.EdgesGeometry(geometry);
+        const material = new THREE.LineBasicMaterial({
+          color: circle.construction ? 0x90EE90 : 0xFFFFFF
+        });
+        const line = new THREE.LineSegments(edges, material);
+        line.position.set(circle.center.x, circle.center.y, 0);
+        this.scene.add(line);
+        this.sketchObjects.set(`circle-${index}`, line);
+      });
+    }
+
+    // Render arcs
+    if (scene.arcs) {
+      scene.arcs.forEach((arc, index) => {
+        const curve = new THREE.EllipseCurve(
+          arc.center.x, arc.center.y,
+          arc.radius, arc.radius,
+          arc.startAngle, arc.endAngle,
+          false, 0
+        );
+        const points = curve.getPoints(50);
+        const geometry = new THREE.BufferGeometry().setFromPoints(
+          points.map(p => new THREE.Vector3(p.x, p.y, 0))
+        );
+        const material = new THREE.LineBasicMaterial({
+          color: arc.construction ? 0x90EE90 : 0xFFFFFF
+        });
+        const line = new THREE.Line(geometry, material);
+        this.scene.add(line);
+        this.sketchObjects.set(`arc-${index}`, line);
+      });
+    }
+
+    // Render points
+    if (scene.points) {
+      scene.points.forEach((point, index) => {
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.Float32BufferAttribute([point.x, point.y, 0], 3));
+        const material = new THREE.PointsMaterial({
+          color: 0xFFFFFF,
+          size: 5,
+          sizeAttenuation: false
+        });
+        const pointMesh = new THREE.Points(geometry, material);
+        this.scene.add(pointMesh);
+        this.sketchObjects.set(`point-${index}`, pointMesh);
+      });
+    }
+  }
+
+  /**
    * Render a Part's geometry
    * @param {Part} part - The Part object with feature tree
    */
   renderPart(part) {
-    // Clear existing meshes
-    this.clearGeometry();
+    // Clear existing 3D meshes (but keep 2D sketch objects)
+    this.clearPartGeometry();
 
     if (!part) return;
 
@@ -194,9 +444,9 @@ export class Renderer3D {
   }
 
   /**
-   * Clear all geometry from the scene
+   * Clear 3D part geometry (meshes and edges) but keep 2D sketch objects
    */
-  clearGeometry() {
+  clearPartGeometry() {
     this.meshes.forEach(mesh => {
       this.scene.remove(mesh);
       if (mesh.geometry) mesh.geometry.dispose();
@@ -210,6 +460,20 @@ export class Renderer3D {
       if (edge.material) edge.material.dispose();
     });
     this.edges.clear();
+  }
+
+  /**
+   * Clear all geometry from the scene (both 2D and 3D)
+   */
+  clearGeometry() {
+    this.clearPartGeometry();
+    
+    this.sketchObjects.forEach(obj => {
+      this.scene.remove(obj);
+      if (obj.geometry) obj.geometry.dispose();
+      if (obj.material) obj.material.dispose();
+    });
+    this.sketchObjects.clear();
   }
 
   /**
@@ -227,14 +491,40 @@ export class Renderer3D {
     const center = box.getCenter(new THREE.Vector3());
     const size = box.getSize(new THREE.Vector3());
     const maxDim = Math.max(size.x, size.y, size.z);
-    const fov = this.camera.fov * (Math.PI / 180);
-    let cameraZ = Math.abs(maxDim / 2 / Math.tan(fov / 2));
-    cameraZ *= 1.5; // Add some padding
+    
+    if (this.mode === '3d') {
+      const fov = this.perspectiveCamera.fov * (Math.PI / 180);
+      let cameraZ = Math.abs(maxDim / 2 / Math.tan(fov / 2));
+      cameraZ *= 1.5; // Add some padding
 
-    this.camera.position.set(center.x + cameraZ, center.y + cameraZ, center.z + cameraZ);
-    this.camera.lookAt(center);
-    this.controls.target.copy(center);
+      this.perspectiveCamera.position.set(center.x + cameraZ, center.y + cameraZ, center.z + cameraZ);
+      this.perspectiveCamera.lookAt(center);
+      this.controls.target.copy(center);
+    }
+    
     this.controls.update();
+  }
+
+  /**
+   * Convert screen coordinates to world coordinates on the XY plane
+   * @param {number} screenX - Screen X coordinate
+   * @param {number} screenY - Screen Y coordinate
+   * @returns {Object} World coordinates {x, y}
+   */
+  screenToWorld(screenX, screenY) {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const x = ((screenX - rect.left) / rect.width) * 2 - 1;
+    const y = -((screenY - rect.top) / rect.height) * 2 + 1;
+
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(new THREE.Vector2(x, y), this.camera);
+
+    // Intersect with XY plane (Z=0)
+    const planeZ = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+    const intersection = new THREE.Vector3();
+    raycaster.ray.intersectPlane(planeZ, intersection);
+
+    return { x: intersection.x, y: intersection.y };
   }
 
   /**
@@ -254,7 +544,9 @@ export class Renderer3D {
     if (this.controls) {
       this.controls.dispose();
     }
-    window.removeEventListener('resize', () => this.onWindowResize());
+    if (this.resizeHandler) {
+      window.removeEventListener('resize', this.resizeHandler);
+    }
   }
 
   /**

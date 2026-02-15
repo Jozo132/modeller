@@ -35,9 +35,17 @@ import {
 class App {
   constructor() {
     info('App initialization started');
+    
+    // Initialize unified 3D renderer
+    const view3dContainer = document.getElementById('view-3d');
+    this._renderer3d = new Renderer3D(view3dContainer);
+    this._renderer3d.setMode('2d'); // Start in 2D sketching mode
+    
+    // Keep legacy canvas hidden for compatibility
     this.canvas = document.getElementById('cad-canvas');
     this.viewport = new Viewport(this.canvas);
-    this.renderer = new Renderer(this.viewport);
+    this.renderer = new Renderer(this.viewport); // Keep for legacy code
+    
     this._pointerFramePending = false;
     this._lastPointer = null;
     this._moveEventCount = 0;
@@ -79,16 +87,15 @@ class App {
     this._lpHoverConstraintId = null; // constraint hovered from left panel
     this._lpSelectedConstraintId = null; // constraint selected in left panel
 
-    // 3D View state
+    // 3D Part management
     this._3dMode = false;
-    this._renderer3d = null;
     this._partManager = new PartManager();
     this._featurePanel = null;
     this._parametersPanel = null;
     this._lastSketchFeatureId = null;
 
     // Bind events
-    this._bindCanvasEvents();
+    this._bind3DCanvasEvents(); // Use 3D renderer's canvas for events
     this._bindToolbarEvents();
     this._bindKeyboardEvents();
     this._bindResizeEvent();
@@ -127,13 +134,21 @@ class App {
 
       this._syncViewportSize();
       try {
-        this.renderer.render();
+        // Render 2D scene in 3D engine
+        if (this._renderer3d) {
+          this._renderer3d.render2DScene(state.scene);
+        }
+        
+        // Legacy 2D canvas renderer (kept for compatibility, hidden)
+        // this.renderer.render();
       } catch (err) {
         error('Render loop failed', err);
       }
-      if (this.activeTool.drawOverlay) {
-        this.activeTool.drawOverlay(this.viewport.ctx, this.viewport);
-      }
+      
+      // Tool overlay rendering would need to be adapted for 3D
+      // if (this.activeTool.drawOverlay) {
+      //   this.activeTool.drawOverlay(this.viewport.ctx, this.viewport);
+      // }
 
       if (this._renderRequested) {
         this._scheduleRender();
@@ -842,6 +857,114 @@ class App {
       this.renderer.cursorWorld = world;
       this.renderer.snapPoint = snap;
       this.activeTool.onMouseMove(world.x, world.y, sx, sy);
+      this._scheduleRender();
+    }, { passive: false });
+  }
+
+  // --- 3D Canvas Events ---
+  _bind3DCanvasEvents() {
+    const canvas = this._renderer3d.renderer.domElement;
+    let movedSinceDown = false;
+    let mouseDown = false;
+
+    // Mouse down
+    canvas.addEventListener('mousedown', (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const sx = e.clientX - rect.left;
+      const sy = e.clientY - rect.top;
+      movedSinceDown = false;
+      mouseDown = true;
+
+      // Middle button = pan (handled by OrbitControls)
+      if (e.button === 1) {
+        return; // Let Three.js controls handle
+      }
+
+      if (e.button === 0 && this.activeTool.onMouseDown) {
+        const world = this._renderer3d.screenToWorld(sx, sy);
+        this.activeTool.onMouseDown(world.x, world.y, sx, sy, e);
+      }
+    });
+
+    // Mouse move
+    canvas.addEventListener('mousemove', (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const sx = e.clientX - rect.left;
+      const sy = e.clientY - rect.top;
+      if (mouseDown) movedSinceDown = true;
+
+      this._lastPointer = { sx, sy, ctrlKey: e.ctrlKey };
+      this._schedulePointerProcessing();
+    });
+
+    // Mouse up
+    canvas.addEventListener('mouseup', (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const sx = e.clientX - rect.left;
+      const sy = e.clientY - rect.top;
+      mouseDown = false;
+
+      if (e.button === 1) {
+        debouncedSave();
+        return;
+      }
+
+      if (this.activeTool.onMouseUp) {
+        const world = this._renderer3d.screenToWorld(sx, sy);
+        this.activeTool.onMouseUp(world.x, world.y, e);
+      }
+
+      this._scheduleRender();
+    });
+
+    // Click
+    canvas.addEventListener('click', (e) => {
+      if (movedSinceDown && this.activeTool.name === 'select') {
+        movedSinceDown = false;
+        return;
+      }
+      
+      const rect = canvas.getBoundingClientRect();
+      const sx = e.clientX - rect.left;
+      const sy = e.clientY - rect.top;
+      const world = this._renderer3d.screenToWorld(sx, sy);
+
+      if (this.activeTool.onClick) {
+        this.activeTool.onClick(world.x, world.y, e);
+      }
+
+      this._scheduleRender();
+    });
+
+    // Double click
+    canvas.addEventListener('dblclick', (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const sx = e.clientX - rect.left;
+      const sy = e.clientY - rect.top;
+      const world = this._renderer3d.screenToWorld(sx, sy);
+
+      if (this.activeTool.onDoubleClick) {
+        this.activeTool.onDoubleClick(world.x, world.y, e);
+      }
+
+      this._scheduleRender();
+    });
+
+    // Context menu
+    canvas.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const sx = e.clientX - rect.left;
+      const sy = e.clientY - rect.top;
+      const world = this._renderer3d.screenToWorld(sx, sy);
+
+      if (this.activeTool.onContextMenu) {
+        this.activeTool.onContextMenu(world.x, world.y, e);
+      }
+    });
+
+    // Wheel for zooming (let Three.js handle, but trigger render)
+    canvas.addEventListener('wheel', (e) => {
       this._scheduleRender();
     }, { passive: false });
   }
@@ -3042,38 +3165,30 @@ class App {
 
   _toggle3DMode() {
     this._3dMode = !this._3dMode;
-    const view3d = document.getElementById('view-3d');
     const featurePanel = document.getElementById('feature-panel');
     const parametersPanel = document.getElementById('parameters-panel');
     const btn = document.getElementById('btn-3d-mode');
 
     if (this._3dMode) {
-      // Enter 3D mode
-      document.body.classList.add('view-3d-active');
-      view3d.classList.add('active');
+      // Enter 3D viewing mode (perspective camera)
+      this._renderer3d.setMode('3d');
       featurePanel.classList.add('active');
       parametersPanel.classList.add('active');
       btn.classList.add('active');
-
-      // Initialize 3D renderer if not already
-      if (!this._renderer3d) {
-        this._renderer3d = new Renderer3D(view3d);
-      }
-
-      this._update3DView();
-      this._updateOperationButtons();
       
-      info('3D mode activated');
+      info('3D viewing mode activated');
     } else {
-      // Exit 3D mode
-      document.body.classList.remove('view-3d-active');
-      view3d.classList.remove('active');
+      // Return to 2D sketching mode (orthographic camera)
+      this._renderer3d.setMode('2d');
       featurePanel.classList.remove('active');
       parametersPanel.classList.remove('active');
       btn.classList.remove('active');
       
-      info('3D mode deactivated');
+      info('2D sketching mode activated');
     }
+    
+    this._update3DView();
+    this._updateOperationButtons();
   }
 
   _addSketchToPart() {

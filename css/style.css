@@ -1290,32 +1290,29 @@ body.motion-active #cad-canvas {
   bottom: calc(56px + var(--motion-panel-h, 0px));
 }
 
-/* 3D View Styles */
+/* Unified 3D View - Full Screen */
 #view-3d {
   position: fixed;
   top: 34px;
+  left: 0;
   right: 0;
-  width: 50%;
-  height: calc(100% - 34px - 56px);
-  background: #f5f5f5;
-  border-left: 2px solid var(--border);
-  z-index: 50;
-  display: none;
+  bottom: 56px;
+  background: #1e1e1e;
+  z-index: 10;
+  display: block; /* Always visible now */
 }
 
-#view-3d.active {
-  display: block;
+/* Hide old 2D canvas */
+#cad-canvas {
+  display: none !important;
 }
 
-body.view-3d-active #cad-canvas {
-  width: 50%;
+/* Adjust left panel for unified view */
+#left-panel {
+  z-index: 20; /* Above 3D view */
 }
 
-body.view-3d-active #left-panel {
-  display: none;
-}
-
-/* Feature Tree Panel */
+/* Feature Tree Panel - shown when in part mode */
 #feature-panel {
   position: fixed;
   top: 34px;
@@ -1331,15 +1328,6 @@ body.view-3d-active #left-panel {
 
 #feature-panel.active {
   display: block;
-}
-
-body.view-3d-active #feature-panel {
-  display: block;
-}
-
-body.view-3d-active #view-3d {
-  right: 280px;
-  width: calc(50% - 140px);
 }
 
 .feature-panel-header {
@@ -1433,7 +1421,8 @@ body.view-3d-active #view-3d {
   background: rgba(255,255,255,0.1);
 }
 
-/* Parameters Panel */
+
+/* Parameters Panel - shown when feature is selected */
 #parameters-panel {
   position: fixed;
   bottom: 56px;
@@ -1449,10 +1438,6 @@ body.view-3d-active #view-3d {
 }
 
 #parameters-panel.active {
-  display: block;
-}
-
-body.view-3d-active #parameters-panel {
   display: block;
 }
 
@@ -1513,9 +1498,4 @@ body.view-3d-active #parameters-panel {
 /* 3D Mode Toggle Button */
 #btn-3d-mode {
   margin-left: auto;
-}
-
-/* View mode adjustments */
-body.view-3d-active #properties-panel {
-  right: 280px;
 }
