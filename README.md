@@ -17,7 +17,7 @@ A browser-based 2D CAD modeller with parametric 3D part modeling capabilities. B
 ### Parametric 3D Part Modeling (Integrated!)
 - **Feature Tree** — Industry-standard parametric history tree with UI panel
 - **Sketch + Operation Workflow** — Draw in 2D, convert to 3D parts with extrude/revolve
-- **Split View Interface** — 2D canvas + 3D viewport with Three.js WebGL rendering
+- **Split View Interface** — 2D canvas + 3D viewport with AssemblyScript WASM WebGL rendering
 - **Recursive Recalculation** — Changing lower-level features automatically updates everything
 - **Dependency Tracking** — Features declare dependencies; system validates operations
 - **Feature Management** — Add, remove, reorder, suppress features with automatic validation

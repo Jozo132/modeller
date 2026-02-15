@@ -1,2 +1,4 @@
-*
-!.gitignore
+# Keep build artifacts tracked since the app serves directly without CI
+*.wasm.map
+*.wat
+debug.*

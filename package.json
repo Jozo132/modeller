@@ -11,9 +11,7 @@
     "asbuild": "npm run asbuild:debug && npm run asbuild:release",
     "test": "node tests"
   },
-  "dependencies": {
-    "three": "^0.182.0"
-  },
+  "dependencies": {},
   "devDependencies": {
     "assemblyscript": "^0.28.9"
   },

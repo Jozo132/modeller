@@ -2,7 +2,7 @@
 import { state } from './state.js';
 import { Viewport } from './viewport.js';
 import { Renderer } from './renderer.js';
-import { Renderer3D } from './renderer3d.js';
+import { WasmRenderer } from './wasm-renderer.js';
 import { PartManager } from './part-manager.js';
 import { FeaturePanel } from './ui/featurePanel.js';
 import { ParametersPanel } from './ui/parametersPanel.js';
@@ -38,7 +38,7 @@ class App {
     
     // Initialize unified 3D renderer
     const view3dContainer = document.getElementById('view-3d');
-    this._renderer3d = new Renderer3D(view3dContainer);
+    this._renderer3d = new WasmRenderer(view3dContainer);
     this._renderer3d.setMode('2d'); // Start in 2D sketching mode
     this._renderer3d.setVisible(true);
     
@@ -914,7 +914,7 @@ class App {
 
       // Middle button = pan (handled by OrbitControls)
       if (e.button === 1) {
-        return; // Let Three.js controls handle
+        return; // Let WASM renderer controls handle
       }
 
       if (e.button === 0 && this.activeTool.onMouseDown) {
@@ -1107,7 +1107,7 @@ class App {
       }
     });
 
-    // Wheel for zooming (let Three.js handle, but trigger render)
+    // Wheel for zooming (trigger render)
     canvas.addEventListener('wheel', (e) => {
       if (!this._3dMode) {
         e.preventDefault();

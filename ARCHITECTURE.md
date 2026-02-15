@@ -278,7 +278,7 @@ assembly.addMate(comp1, comp2, 'coincident'); // Future implementation
 - ⏳ **More 3D Operations**: Fillet, chamfer, sweep, loft
 - ⏳ **Boolean Operations**: Union, subtract, intersect using CSG
 - ⏳ **Assembly Constraints**: Mates, alignments
-- ⏳ **3D Rendering**: WebGL-based 3D viewport
+- ✅ **3D Rendering**: AssemblyScript WASM WebGL rendering engine (replaced Three.js)
 - ⏳ **Export Formats**: STEP, IGES, STL
 
 ## Integration with Existing Code
@@ -290,11 +290,80 @@ The new parametric system is **fully backward compatible** with the existing app
 - All existing tools and features work exactly as before
 - No breaking changes to the API
 
+## WASM Rendering Engine
+
+The rendering engine has been migrated from Three.js to a custom **AssemblyScript → WASM** pipeline that interfaces WebGL directly.
+
+### Architecture
+
+```
+AssemblyScript (assembly/)     JS (js/)
+┌────────────────────┐     ┌──────────────────────┐
+│ Scene state         │     │ WasmRenderer          │
+│ Camera (ortho/persp)│◄────│ (wasm-renderer.js)    │
+│ Geometry generators │     │  - loads WASM module   │
+│ Command buffer      │────►│  - manages lifecycle   │
+│ (batched WebGL cmds)│     │  - 2D overlay canvas   │
+└────────────────────┘     └──────────┬───────────┘
+                                      │
+                           ┌──────────▼───────────┐
+                           │ WebGLExecutor         │
+                           │ (webgl-executor.js)   │
+                           │  - WebGL2 context     │
+                           │  - Shader programs    │
+                           │  - Executes batched   │
+                           │    draw commands       │
+                           └──────────────────────┘
+```
+
+### Key Components
+
+- **`assembly/`** — AssemblyScript source compiled to WASM
+  - `math.ts` — Vec3, Mat4, Color types
+  - `camera.ts` — Perspective/orthographic camera
+  - `commands.ts` — Command buffer protocol (batched WebGL calls)
+  - `geometry.ts` — Geometry generators (box, grid, axes, lines)
+  - `scene.ts` — Scene graph with nodes
+  - `index.ts` — Exported WASM API functions
+
+- **`js/webgl-executor.js`** — Processes the command buffer and executes WebGL2 calls
+- **`js/wasm-renderer.js`** — Drop-in replacement for the old Three.js renderer
+
+### Command Protocol
+
+The WASM module produces a flat `Float32Array` command buffer with encoded WebGL operations:
+
+| Command | ID | Data |
+|---------|-----|------|
+| END | 0 | — |
+| CLEAR | 1 | r, g, b, a |
+| SET_PROGRAM | 2 | program index |
+| SET_MATRIX | 3 | 16 floats (MVP) |
+| SET_COLOR | 4 | r, g, b, a |
+| DRAW_TRIANGLES | 5 | count, vertices+normals |
+| DRAW_LINES | 6 | count, vertices |
+| DRAW_POINTS | 7 | count, pointSize, vertices |
+| SET_LINE_DASH | 8 | dashSize, gapSize |
+| SET_DEPTH_TEST | 9 | enabled (0/1) |
+| SET_LINE_WIDTH | 10 | width |
+
+### Building
+
+```bash
+npm run asbuild          # Build both debug and release WASM
+npm run asbuild:release  # Build optimized WASM only
+```
+
 ## Testing
 
 Run the parametric system test:
 ```bash
 npm run test:parametric
+```
+
+Run the WASM module test:
+```bash
+npm test
 ```
 
 This demonstrates:
