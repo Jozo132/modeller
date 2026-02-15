@@ -45,40 +45,48 @@ export class PartManager {
     sketch.name = name;
     
     // Copy segments from the scene
-    scene.segments.forEach(seg => {
-      sketch.addSegment(seg.start.x, seg.start.y, seg.end.x, seg.end.y);
-    });
+    if (scene.segments && scene.segments.length > 0) {
+      scene.segments.forEach(seg => {
+        if (seg.start && seg.end) {
+          sketch.addSegment(seg.start.x, seg.start.y, seg.end.x, seg.end.y);
+        }
+      });
+    }
 
     // Copy circles
-    scene.circles.forEach(circle => {
-      // Convert circle to segments for now (16-segment approximation)
-      const numSegments = 16;
-      for (let i = 0; i < numSegments; i++) {
-        const angle1 = (i / numSegments) * Math.PI * 2;
-        const angle2 = ((i + 1) / numSegments) * Math.PI * 2;
-        const x1 = circle.center.x + Math.cos(angle1) * circle.radius;
-        const y1 = circle.center.y + Math.sin(angle1) * circle.radius;
-        const x2 = circle.center.x + Math.cos(angle2) * circle.radius;
-        const y2 = circle.center.y + Math.sin(angle2) * circle.radius;
-        sketch.addSegment(x1, y1, x2, y2);
-      }
-    });
+    if (scene.circles && scene.circles.length > 0) {
+      scene.circles.forEach(circle => {
+        // Convert circle to segments for now (16-segment approximation)
+        const numSegments = 16;
+        for (let i = 0; i < numSegments; i++) {
+          const angle1 = (i / numSegments) * Math.PI * 2;
+          const angle2 = ((i + 1) / numSegments) * Math.PI * 2;
+          const x1 = circle.center.x + Math.cos(angle1) * circle.radius;
+          const y1 = circle.center.y + Math.sin(angle1) * circle.radius;
+          const x2 = circle.center.x + Math.cos(angle2) * circle.radius;
+          const y2 = circle.center.y + Math.sin(angle2) * circle.radius;
+          sketch.addSegment(x1, y1, x2, y2);
+        }
+      });
+    }
 
     // Copy arcs
-    scene.arcs.forEach(arc => {
-      // Convert arc to segments (8-segment approximation)
-      const numSegments = 8;
-      const totalAngle = arc.endAngle - arc.startAngle;
-      for (let i = 0; i < numSegments; i++) {
-        const angle1 = arc.startAngle + (i / numSegments) * totalAngle;
-        const angle2 = arc.startAngle + ((i + 1) / numSegments) * totalAngle;
-        const x1 = arc.center.x + Math.cos(angle1) * arc.radius;
-        const y1 = arc.center.y + Math.sin(angle1) * arc.radius;
-        const x2 = arc.center.x + Math.cos(angle2) * arc.radius;
-        const y2 = arc.center.y + Math.sin(angle2) * arc.radius;
-        sketch.addSegment(x1, y1, x2, y2);
-      }
-    });
+    if (scene.arcs && scene.arcs.length > 0) {
+      scene.arcs.forEach(arc => {
+        // Convert arc to segments (8-segment approximation)
+        const numSegments = 8;
+        const totalAngle = arc.endAngle - arc.startAngle;
+        for (let i = 0; i < numSegments; i++) {
+          const angle1 = arc.startAngle + (i / numSegments) * totalAngle;
+          const angle2 = arc.startAngle + ((i + 1) / numSegments) * totalAngle;
+          const x1 = arc.center.x + Math.cos(angle1) * arc.radius;
+          const y1 = arc.center.y + Math.sin(angle1) * arc.radius;
+          const x2 = arc.center.x + Math.cos(angle2) * arc.radius;
+          const y2 = arc.center.y + Math.sin(angle2) * arc.radius;
+          sketch.addSegment(x1, y1, x2, y2);
+        }
+      });
+    }
 
     const sketchFeature = this.part.addSketch(sketch);
     this.activeFeature = sketchFeature;
