@@ -1639,3 +1639,138 @@ body.motion-active #view-3d {
   opacity: 0.4;
   text-decoration: line-through;
 }
+
+/* ── Quick-Start Page ── */
+.quick-start-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 500;
+  background: var(--bg-dark);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.quick-start-overlay.hidden {
+  display: none;
+}
+
+.quick-start-content {
+  text-align: center;
+  max-width: 700px;
+  padding: 40px 24px;
+}
+
+.quick-start-title {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+}
+
+.quick-start-subtitle {
+  font-size: 14px;
+  color: var(--text-secondary);
+  margin-bottom: 32px;
+}
+
+.quick-start-options {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.quick-start-card {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 24px 20px 18px;
+  width: 180px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  transition: background 0.15s, border-color 0.15s, transform 0.1s;
+  color: var(--text-primary);
+}
+
+.quick-start-card:hover {
+  background: rgba(255,255,255,0.06);
+  border-color: var(--accent);
+  transform: translateY(-2px);
+}
+
+.quick-start-card:active {
+  transform: translateY(0);
+}
+
+.quick-start-card.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.qs-icon {
+  width: 48px;
+  height: 48px;
+}
+
+.qs-icon svg {
+  width: 100%;
+  height: 100%;
+  stroke: var(--accent);
+  fill: none;
+  stroke-width: 1.5;
+}
+
+.qs-label {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.qs-desc {
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.3;
+}
+
+/* ── Part Mode Toolbar ── */
+.part-mode-only {
+  display: none;
+}
+
+body.workspace-part .part-mode-only {
+  display: flex;
+}
+
+/* Part mode status indicator */
+.status-mode.part-mode {
+  background: rgba(255, 152, 0, 0.25);
+  color: #FFB74D;
+  border: 1px solid rgba(255, 152, 0, 0.4);
+}
+
+/* In Part workspace 3D mode, hide sketch-only tool groups */
+body.workspace-part.mode-3d .tool-group[data-group="draw"],
+body.workspace-part.mode-3d .tool-group[data-group="edit"],
+body.workspace-part.mode-3d .tool-group[data-group="constrain"],
+body.workspace-part.mode-3d .tool-group[data-group="ops"] {
+  opacity: 0.3;
+  pointer-events: none;
+}
+
+/* In Part workspace 2D (sketch-on-plane) mode, re-enable sketch tools */
+body.workspace-part:not(.mode-3d) .tool-group[data-group="draw"],
+body.workspace-part:not(.mode-3d) .tool-group[data-group="edit"],
+body.workspace-part:not(.mode-3d) .tool-group[data-group="constrain"],
+body.workspace-part:not(.mode-3d) .tool-group[data-group="ops"] {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* In Sketch workspace, hide Part-only tools */
+body.workspace-sketch .part-mode-only {
+  display: none;
+}

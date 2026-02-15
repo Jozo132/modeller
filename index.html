@@ -3,11 +3,36 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>2D DXF Modeller</title>
+  <title>DXF Modeller</title>
   <link rel="stylesheet" href="css/style.css" />
   <!-- WASM-based rendering engine (no import map needed) -->
 </head>
 <body>
+  <!-- Quick-Start Page -->
+  <div id="quick-start" class="quick-start-overlay">
+    <div class="quick-start-content">
+      <h1 class="quick-start-title">DXF Modeller</h1>
+      <p class="quick-start-subtitle">Choose a workspace to get started</p>
+      <div class="quick-start-options">
+        <button class="quick-start-card" id="qs-sketch" title="2D Sketch workspace">
+          <div class="qs-icon"><svg viewBox="0 0 48 48"><line x1="8" y1="40" x2="40" y2="8" stroke-width="2.5"/><rect x="6" y="6" width="36" height="36" rx="3" fill="none" stroke-width="1.5" opacity="0.3"/></svg></div>
+          <span class="qs-label">Sketch</span>
+          <span class="qs-desc">2D drawing with constraints, dimensions &amp; DXF export</span>
+        </button>
+        <button class="quick-start-card" id="qs-part" title="3D Part workspace">
+          <div class="qs-icon"><svg viewBox="0 0 48 48"><rect x="10" y="22" width="20" height="16" fill="none" stroke-width="2"/><rect x="16" y="12" width="20" height="16" fill="none" stroke-width="2"/><line x1="10" y1="22" x2="16" y2="12" stroke-width="1.5"/><line x1="30" y1="22" x2="36" y2="12" stroke-width="1.5"/><line x1="10" y1="38" x2="16" y2="28" stroke-width="1.5"/><line x1="30" y1="38" x2="36" y2="28" stroke-width="1.5"/></svg></div>
+          <span class="qs-label">Part</span>
+          <span class="qs-desc">3D parametric part design with sketches &amp; features</span>
+        </button>
+        <button class="quick-start-card disabled" id="qs-assembly" title="Assembly workspace (coming soon)">
+          <div class="qs-icon"><svg viewBox="0 0 48 48"><rect x="6" y="26" width="14" height="14" fill="none" stroke-width="2"/><rect x="28" y="26" width="14" height="14" fill="none" stroke-width="2"/><rect x="17" y="8" width="14" height="14" fill="none" stroke-width="2"/><line x1="20" y1="22" x2="13" y2="26" stroke-width="1.5" stroke-dasharray="2,2"/><line x1="28" y1="22" x2="35" y2="26" stroke-width="1.5" stroke-dasharray="2,2"/></svg></div>
+          <span class="qs-label">Assembly</span>
+          <span class="qs-desc">Multi-part assembly design (coming soon)</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
   <!-- Toolbar -->
   <div id="toolbar">
     <div class="tool-group">
@@ -71,12 +96,20 @@
       <button id="btn-ortho-toggle" title="Ortho (O)"><svg viewBox="0 0 20 20"><line x1="3" y1="17" x2="3" y2="3"/><line x1="3" y1="17" x2="17" y2="17"/><text x="6" y="14" font-size="9" fill="currentColor" stroke="none">90</text></svg></button>
     </div>
     <div class="toolbar-sep"></div>
-    <div class="tool-group">
+    <div class="tool-group" data-group="3d">
       <span class="group-label">3D</span>
       <button id="btn-3d-mode" title="Toggle 3D View (3)"><svg viewBox="0 0 20 20"><rect x="2" y="7" width="7" height="7" fill="none"/><rect x="5" y="4" width="7" height="7" fill="none"/><rect x="8" y="7" width="7" height="7" fill="none"/></svg></button>
       <button id="btn-add-sketch" title="Add Sketch to Part" disabled><svg viewBox="0 0 20 20"><path d="M4 2h8l4 4v12H4V2z"/><path d="M12 2v4h4" fill="none"/><line x1="7" y1="10" x2="13" y2="10"/><line x1="10" y1="7" x2="10" y2="13"/></svg></button>
       <button id="btn-extrude" title="Extrude Sketch" disabled><svg viewBox="0 0 20 20"><rect x="5" y="12" width="10" height="6" fill="none"/><rect x="7" y="6" width="6" height="6" fill="none"/><line x1="7" y1="6" x2="5" y2="12"/><line x1="13" y1="6" x2="15" y2="12"/></svg></button>
       <button id="btn-revolve" title="Revolve Sketch" disabled><svg viewBox="0 0 20 20"><ellipse cx="10" cy="10" rx="6" ry="3" fill="none"/><path d="M4 10 Q4 7, 10 7" fill="none"/><path d="M16 10 Q16 13, 10 13" fill="none"/><line x1="2" y1="4" x2="2" y2="16"/></svg></button>
+    </div>
+    <div class="toolbar-sep part-mode-only"></div>
+    <div class="tool-group part-mode-only" data-group="part-tools">
+      <span class="group-label">Part</span>
+      <button id="btn-create-plane" title="Create Plane"><svg viewBox="0 0 20 20"><polygon points="2,14 10,18 18,14 10,6" fill="none" stroke-width="1.5"/><line x1="10" y1="2" x2="10" y2="6" stroke-dasharray="1.5,1.5"/></svg></button>
+      <button id="btn-sketch-on-plane" title="Sketch on Plane"><svg viewBox="0 0 20 20"><polygon points="3,14 10,17 17,14 10,8" fill="none" stroke-width="1" opacity="0.5"/><line x1="6" y1="12" x2="14" y2="12" stroke-width="1.5"/><line x1="7" y1="10" x2="13" y2="10" stroke-width="1.5"/></svg></button>
+      <button id="btn-extrude-part" title="Extrude"><svg viewBox="0 0 20 20"><rect x="5" y="12" width="10" height="6" fill="none"/><rect x="7" y="4" width="6" height="8" fill="none"/><line x1="7" y1="4" x2="5" y2="12"/><line x1="13" y1="4" x2="15" y2="12"/><line x1="10" y1="1" x2="10" y2="4" stroke-width="1.5"/><polygon points="8,3 10,1 12,3" fill="currentColor" stroke="none"/></svg></button>
+      <button id="btn-extrude-cut" title="Extrude Cut"><svg viewBox="0 0 20 20"><rect x="5" y="4" width="10" height="6" fill="none"/><rect x="7" y="10" width="6" height="8" fill="none"/><line x1="7" y1="10" x2="5" y2="10"/><line x1="13" y1="10" x2="15" y2="10"/><line x1="10" y1="18" x2="10" y2="15" stroke-width="1.5"/><polygon points="8,17 10,19 12,17" fill="currentColor" stroke="none"/></svg></button>
     </div>
   </div>
 

@@ -37,6 +37,9 @@ class App {
     info('App initialization started');
     this._renderer3d = null;
     this._webglFallback = false;
+    this._workspaceMode = null; // 'sketch' | 'part' | null (quick-start)
+    this._sketchingOnPlane = false; // true when in sketch-on-plane mode inside Part workspace
+    this._activeSketchPlane = null; // plane reference for current sketch
     
     // Initialize unified 3D renderer
     const view3dContainer = document.getElementById('view-3d');
@@ -119,6 +122,8 @@ class App {
     this._bindLeftPanelEvents();
     this._bindMotionEvents();
     this._bind3DEvents();
+    this._bindQuickStartEvents();
+    this._bindPartToolEvents();
 
     // Register viewport for persistence and restore saved project
     setViewport(this.viewport);
@@ -130,6 +135,9 @@ class App {
         this.viewport.fitEntities(state.entities);
       }
     }
+
+    // Show quick-start page on startup
+    this._showQuickStart();
 
     // Initial render
     this._scheduleRender();
@@ -425,7 +433,8 @@ class App {
     // Block tool changes during motion playback (except select)
     if (motionAnalysis.isRunning && name !== 'select') return;
     // Block drawing/editing tools in 3D view mode (only select allowed)
-    if (this._3dMode && name !== 'select') return;
+    // but allow them during sketch-on-plane mode in Part workspace
+    if (this._3dMode && !this._sketchingOnPlane && name !== 'select') return;
     if (this.activeTool) this.activeTool.deactivate();
     this.activeTool = this.tools[name] || this.tools.select;
     this.activeTool.activate();
@@ -3399,6 +3408,12 @@ class App {
       return;
     }
 
+    // If in Part workspace and currently sketching on plane, finish the sketch
+    if (this._workspaceMode === 'part' && this._sketchingOnPlane && !this._3dMode) {
+      this._finishSketchOnPlane();
+      return;
+    }
+
     this._3dMode = !this._3dMode;
     const featurePanel = document.getElementById('feature-panel');
     const parametersPanel = document.getElementById('parameters-panel');
@@ -3414,9 +3429,14 @@ class App {
       btn.classList.add('active');
       document.body.classList.add('mode-3d');
 
-      // Update mode indicator
-      modeIndicator.textContent = '3D VIEW';
-      modeIndicator.className = 'status-mode view-3d-mode';
+      // Update mode indicator based on workspace
+      if (this._workspaceMode === 'part') {
+        modeIndicator.textContent = 'PART';
+        modeIndicator.className = 'status-mode part-mode';
+      } else {
+        modeIndicator.textContent = '3D VIEW';
+        modeIndicator.className = 'status-mode view-3d-mode';
+      }
 
       // Switch to select tool (drawing tools are hidden in 3D)
       this.setActiveTool('select');
@@ -3530,6 +3550,17 @@ class App {
     
     const features = this._partManager.getFeatures();
     container.innerHTML = '';
+
+    // Show custom planes if any
+    const part = this._partManager.getPart();
+    if (part && part._customPlanes && part._customPlanes.length > 0) {
+      part._customPlanes.forEach((plane) => {
+        const div = document.createElement('div');
+        div.className = 'node-tree-item node-tree-plane';
+        div.innerHTML = `<span class="node-tree-icon" style="color:#ffaa44">▬</span><span class="node-tree-label">${plane.name}</span>`;
+        container.appendChild(div);
+      });
+    }
     
     if (features.length === 0) return;
 
@@ -3570,6 +3601,289 @@ class App {
     document.getElementById('btn-add-sketch').disabled = !hasEntities || !this._3dMode;
     document.getElementById('btn-extrude').disabled = !hasSketch || !this._3dMode;
     document.getElementById('btn-revolve').disabled = !hasSketch || !this._3dMode;
+  }
+
+  // --- Quick-Start Page ---
+
+  _showQuickStart() {
+    const qs = document.getElementById('quick-start');
+    if (qs) qs.classList.remove('hidden');
+  }
+
+  _hideQuickStart() {
+    const qs = document.getElementById('quick-start');
+    if (qs) qs.classList.add('hidden');
+  }
+
+  _bindQuickStartEvents() {
+    const qsSketch = document.getElementById('qs-sketch');
+    const qsPart = document.getElementById('qs-part');
+    const qsAssembly = document.getElementById('qs-assembly');
+
+    if (qsSketch) {
+      qsSketch.addEventListener('click', () => {
+        this._enterWorkspace('sketch');
+      });
+    }
+
+    if (qsPart) {
+      qsPart.addEventListener('click', () => {
+        this._enterWorkspace('part');
+      });
+    }
+
+    if (qsAssembly) {
+      qsAssembly.addEventListener('click', () => {
+        // Assembly is a stub - show message
+        this.setStatus('Assembly workspace is coming soon.');
+      });
+    }
+  }
+
+  _enterWorkspace(mode) {
+    this._workspaceMode = mode;
+    this._hideQuickStart();
+
+    // Remove any previous workspace class
+    document.body.classList.remove('workspace-sketch', 'workspace-part');
+    document.body.classList.add(`workspace-${mode}`);
+
+    const modeIndicator = document.getElementById('status-mode');
+
+    if (mode === 'sketch') {
+      // Sketch workspace: 2D mode, all sketch tools available
+      this._3dMode = false;
+      if (this._renderer3d) {
+        this._renderer3d.setMode('2d');
+        this._renderer3d.setVisible(true);
+      }
+      document.body.classList.remove('mode-3d');
+      modeIndicator.textContent = 'SKETCH';
+      modeIndicator.className = 'status-mode sketch-mode';
+      this.setActiveTool('select');
+      info('Entered Sketch workspace');
+    } else if (mode === 'part') {
+      // Part workspace: Start in 3D mode with Part tools
+      this._partManager.createPart('Part1');
+      this._3dMode = true;
+      if (this._renderer3d) {
+        this._renderer3d.setMode('3d');
+        this._renderer3d.setVisible(true);
+      }
+      document.body.classList.add('mode-3d');
+      const featurePanel = document.getElementById('feature-panel');
+      const parametersPanel = document.getElementById('parameters-panel');
+      featurePanel.classList.add('active');
+      parametersPanel.classList.add('active');
+      document.getElementById('btn-3d-mode').classList.add('active');
+      modeIndicator.textContent = 'PART';
+      modeIndicator.className = 'status-mode part-mode';
+      this.setActiveTool('select');
+      this._updateOperationButtons();
+      this._updateNodeTree();
+      info('Entered Part workspace');
+    }
+    this._scheduleRender();
+  }
+
+  // --- Part Mode Tool Events ---
+
+  _bindPartToolEvents() {
+    const btnCreatePlane = document.getElementById('btn-create-plane');
+    const btnSketchOnPlane = document.getElementById('btn-sketch-on-plane');
+    const btnExtrudePart = document.getElementById('btn-extrude-part');
+    const btnExtrudeCut = document.getElementById('btn-extrude-cut');
+
+    if (btnCreatePlane) {
+      btnCreatePlane.addEventListener('click', () => {
+        this._startCreatePlane();
+      });
+    }
+
+    if (btnSketchOnPlane) {
+      btnSketchOnPlane.addEventListener('click', () => {
+        this._startSketchOnPlane();
+      });
+    }
+
+    if (btnExtrudePart) {
+      btnExtrudePart.addEventListener('click', async () => {
+        await this._startExtrude(false);
+      });
+    }
+
+    if (btnExtrudeCut) {
+      btnExtrudeCut.addEventListener('click', async () => {
+        await this._startExtrude(true);
+      });
+    }
+  }
+
+  async _startCreatePlane() {
+    if (this._workspaceMode !== 'part') {
+      this.setStatus('Create Plane is only available in Part workspace.');
+      return;
+    }
+
+    // Prompt for plane parameters
+    const offset = await showPrompt({
+      title: 'Create Plane',
+      message: 'Enter offset distance from the reference plane (XY):',
+      defaultValue: '0',
+    });
+
+    if (offset === null || offset === undefined) return;
+
+    const offsetVal = parseFloat(offset) || 0;
+
+    const rotU = await showPrompt({
+      title: 'Create Plane – Rotation U',
+      message: 'Enter rotation around U-axis (degrees):',
+      defaultValue: '0',
+    });
+
+    if (rotU === null || rotU === undefined) return;
+
+    const rotV = await showPrompt({
+      title: 'Create Plane – Rotation V',
+      message: 'Enter rotation around V-axis (degrees):',
+      defaultValue: '0',
+    });
+
+    if (rotV === null || rotV === undefined) return;
+
+    const rotUVal = parseFloat(rotU) || 0;
+    const rotVVal = parseFloat(rotV) || 0;
+
+    // Store the plane definition in the part
+    if (!this._partManager.part) this._partManager.createPart('Part1');
+    if (!this._partManager.part._customPlanes) {
+      this._partManager.part._customPlanes = [];
+    }
+
+    const planeId = `plane_${this._partManager.part._customPlanes.length + 1}`;
+    const planeDef = {
+      id: planeId,
+      name: `Plane ${this._partManager.part._customPlanes.length + 1}`,
+      offset: offsetVal,
+      rotationU: rotUVal,
+      rotationV: rotVVal,
+      basePlane: 'XY',
+    };
+
+    this._partManager.part._customPlanes.push(planeDef);
+    this._updateNodeTree();
+    this.setStatus(`Created plane: ${planeDef.name} (offset: ${offsetVal}, rotU: ${rotUVal}°, rotV: ${rotVVal}°)`);
+    info(`Created custom plane: ${planeId}`);
+  }
+
+  _startSketchOnPlane() {
+    if (this._workspaceMode !== 'part') {
+      this.setStatus('Sketch on Plane is only available in Part workspace.');
+      return;
+    }
+
+    // Switch to 2D sketch mode on the selected plane
+    this._sketchingOnPlane = true;
+    this._activeSketchPlane = 'XY'; // default to XY for now
+    this._3dMode = false;
+
+    if (this._renderer3d) {
+      this._renderer3d.setMode('2d');
+      this._renderer3d.setVisible(true);
+      this._renderer3d.sync2DView(this.viewport);
+    }
+
+    document.body.classList.remove('mode-3d');
+    document.getElementById('btn-3d-mode').classList.remove('active');
+
+    const modeIndicator = document.getElementById('status-mode');
+    modeIndicator.textContent = 'SKETCH ON PLANE';
+    modeIndicator.className = 'status-mode sketch-mode';
+
+    this.setActiveTool('select');
+    this.setStatus('Sketching on plane. Draw your profile, then return to 3D to extrude.');
+    info('Entered sketch-on-plane mode');
+    this._scheduleRender();
+  }
+
+  _finishSketchOnPlane() {
+    if (!this._sketchingOnPlane) return;
+
+    // Add the current 2D scene as a sketch feature
+    if (state.entities.length > 0) {
+      this._addSketchToPart();
+    }
+
+    // Return to 3D Part mode
+    this._sketchingOnPlane = false;
+    this._activeSketchPlane = null;
+    this._3dMode = true;
+
+    if (this._renderer3d) {
+      this._renderer3d.setMode('3d');
+      this._renderer3d.setVisible(true);
+    }
+
+    document.body.classList.add('mode-3d');
+    document.getElementById('btn-3d-mode').classList.add('active');
+
+    const modeIndicator = document.getElementById('status-mode');
+    modeIndicator.textContent = 'PART';
+    modeIndicator.className = 'status-mode part-mode';
+
+    this.setActiveTool('select');
+    this._update3DView();
+    this._updateOperationButtons();
+    this.setStatus('Returned to Part 3D mode.');
+    info('Finished sketch-on-plane, returned to Part 3D mode');
+    this._scheduleRender();
+  }
+
+  async _startExtrude(isCut = false) {
+    if (this._workspaceMode !== 'part') {
+      this.setStatus('Extrude is only available in Part workspace.');
+      return;
+    }
+
+    if (!this._lastSketchFeatureId) {
+      this.setStatus('Create a sketch first before extruding.');
+      return;
+    }
+
+    const opName = isCut ? 'Extrude Cut' : 'Extrude';
+
+    const distance = await showPrompt({
+      title: opName,
+      message: `Enter ${opName.toLowerCase()} distance:`,
+      defaultValue: '10',
+    });
+
+    if (distance === null || distance === undefined) return;
+    const distVal = parseFloat(distance);
+    if (isNaN(distVal) || distVal === 0) {
+      this.setStatus('Invalid distance value.');
+      return;
+    }
+
+    // For extrude cut, use negative direction
+    const effectiveDistance = isCut ? -Math.abs(distVal) : Math.abs(distVal);
+
+    const feature = this._partManager.extrude(this._lastSketchFeatureId, effectiveDistance);
+    if (feature) {
+      // Mark the operation mode for extrude cut
+      if (isCut) {
+        feature.operation = 'subtract';
+      }
+    }
+
+    this._featurePanel.update();
+    this._updateNodeTree();
+    this._update3DView();
+    this._updateOperationButtons();
+
+    this.setStatus(`${opName}: ${Math.abs(distVal)} units`);
+    info(`Created ${opName.toLowerCase()} feature: ${feature ? feature.id : 'failed'}`);
   }
 }
 
