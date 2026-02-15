@@ -69,10 +69,10 @@ export class Renderer3D {
     this.renderer.setClearColor(0x1e1e1e, 1); // Dark background like original 2D canvas
     this.container.appendChild(this.renderer.domElement);
 
-    // Setup controls
+    // Setup controls — higher damping and speed values for snappier, more responsive camera
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
-    this.controls.dampingFactor = 0.25;
+    this.controls.dampingFactor = 0.25; // Higher = settles faster (default 0.05 felt sluggish)
     this.controls.screenSpacePanning = true;
     this.controls.minDistance = 10;
     this.controls.maxDistance = 5000;
