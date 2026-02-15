@@ -545,7 +545,7 @@ html, body {
   border: 1px solid rgba(76, 175, 80, 0.4);
 }
 
-/* Hide drawing/edit/constrain tool groups when not in sketch mode */
+/* Hide drawing/edit/constrain tool groups when in 3D mode */
 .tool-group[data-group="draw"],
 .tool-group[data-group="edit"],
 .tool-group[data-group="constrain"],
@@ -556,8 +556,7 @@ body.mode-3d .tool-group[data-group="draw"],
 body.mode-3d .tool-group[data-group="edit"],
 body.mode-3d .tool-group[data-group="constrain"],
 body.mode-3d .tool-group[data-group="ops"] {
-  opacity: 0.3;
-  pointer-events: none;
+  display: none;
 }
 #status-coords { font-family: 'Consolas', monospace; }
 #status-snap, #status-ortho {
@@ -1757,8 +1756,7 @@ body.workspace-part.mode-3d .tool-group[data-group="draw"],
 body.workspace-part.mode-3d .tool-group[data-group="edit"],
 body.workspace-part.mode-3d .tool-group[data-group="constrain"],
 body.workspace-part.mode-3d .tool-group[data-group="ops"] {
-  opacity: 0.3;
-  pointer-events: none;
+  display: none;
 }
 
 /* In Part workspace 2D (sketch-on-plane) mode, re-enable sketch tools */
@@ -1766,11 +1764,16 @@ body.workspace-part:not(.mode-3d) .tool-group[data-group="draw"],
 body.workspace-part:not(.mode-3d) .tool-group[data-group="edit"],
 body.workspace-part:not(.mode-3d) .tool-group[data-group="constrain"],
 body.workspace-part:not(.mode-3d) .tool-group[data-group="ops"] {
-  opacity: 1;
-  pointer-events: auto;
+  display: flex;
 }
 
-/* In Sketch workspace, hide Part-only tools */
+/* In Sketch workspace, hide Part-only tools (3D group and part-tools) */
 body.workspace-sketch .part-mode-only {
+  display: none;
+}
+body.workspace-sketch .tool-group[data-group="3d"] {
+  display: none;
+}
+body.workspace-sketch .mode-3d-sep {
   display: none;
 }

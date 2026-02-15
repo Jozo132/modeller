@@ -67,6 +67,22 @@ export class WasmRenderer {
     this._orthoBounds = { left: -500, right: 500, bottom: -375, top: 375 };
     this._cameraPos = { x: 0, y: 0, z: 500 };
 
+    // 3D orbit camera state (spherical coordinates around target)
+    this._orbitTheta = Math.PI / 4;   // azimuthal angle (around Z axis)
+    this._orbitPhi = Math.PI / 3;     // polar angle (from Z axis)
+    this._orbitRadius = 500;
+    this._orbitTarget = { x: 0, y: 0, z: 0 };
+    this._orbitDirty = true;
+
+    // 3D interaction state
+    this._isDragging = false;
+    this._isPanning3D = false;
+    this._lastMouseX = 0;
+    this._lastMouseY = 0;
+
+    // Bind 3D mouse controls
+    this._bind3DControls();
+
     // Part data stored for 3D render
     this._partNodes = [];
 
@@ -107,6 +123,12 @@ export class WasmRenderer {
     const wasm = this.wasm;
     if (!wasm) return;
 
+    // Update 3D camera from orbit state if dirty
+    if (this.mode === '3d' && this._orbitDirty) {
+      this._applyOrbitCamera();
+      this._orbitDirty = false;
+    }
+
     wasm.render();
     const ptr = wasm.getCommandBufferPtr();
     const len = wasm.getCommandBufferLen();
@@ -117,6 +139,99 @@ export class WasmRenderer {
     if (!memory) return;
     const buf = new Float32Array(memory.buffer, ptr, len);
     this.executor.execute(buf, len);
+  }
+
+  /* ---------- 3D orbit controls ---------- */
+
+  _bind3DControls() {
+    const canvas = this.canvas;
+
+    canvas.addEventListener('mousedown', (e) => {
+      if (this.mode !== '3d') return;
+      // Left button = orbit, Middle button = pan, Shift+Left = pan
+      if (e.button === 0 && e.shiftKey) {
+        this._isPanning3D = true;
+        this._isDragging = false;
+      } else if (e.button === 0) {
+        this._isDragging = true;
+        this._isPanning3D = false;
+      } else if (e.button === 1) {
+        e.preventDefault();
+        this._isPanning3D = true;
+        this._isDragging = false;
+      }
+      this._lastMouseX = e.clientX;
+      this._lastMouseY = e.clientY;
+    });
+
+    canvas.addEventListener('mousemove', (e) => {
+      if (this.mode !== '3d') return;
+      const dx = e.clientX - this._lastMouseX;
+      const dy = e.clientY - this._lastMouseY;
+      this._lastMouseX = e.clientX;
+      this._lastMouseY = e.clientY;
+
+      if (this._isDragging) {
+        // Orbit: adjust theta (azimuth) and phi (elevation)
+        this._orbitTheta -= dx * 0.005;
+        this._orbitPhi -= dy * 0.005;
+        // Clamp phi to avoid flipping
+        this._orbitPhi = Math.max(0.05, Math.min(Math.PI - 0.05, this._orbitPhi));
+        this._orbitDirty = true;
+      } else if (this._isPanning3D) {
+        // Pan: move target in the camera's local right/up plane
+        const panSpeed = this._orbitRadius * 0.002;
+        const theta = this._orbitTheta;
+        const phi = this._orbitPhi;
+
+        // Camera right vector (perpendicular to view direction in XY plane)
+        const rightX = -Math.sin(theta);
+        const rightY = Math.cos(theta);
+        // Camera up vector (world Z projected)
+        const upX = -Math.cos(theta) * Math.cos(phi);
+        const upY = -Math.sin(theta) * Math.cos(phi);
+        const upZ = Math.sin(phi);
+
+        this._orbitTarget.x += (-dx * rightX + dy * upX) * panSpeed;
+        this._orbitTarget.y += (-dx * rightY + dy * upY) * panSpeed;
+        this._orbitTarget.z += dy * upZ * panSpeed;
+        this._orbitDirty = true;
+      }
+    });
+
+    canvas.addEventListener('mouseup', () => {
+      this._isDragging = false;
+      this._isPanning3D = false;
+    });
+
+    canvas.addEventListener('mouseleave', () => {
+      this._isDragging = false;
+      this._isPanning3D = false;
+    });
+
+    canvas.addEventListener('wheel', (e) => {
+      if (this.mode !== '3d') return;
+      e.preventDefault();
+      const factor = e.deltaY > 0 ? 1.1 : 0.9;
+      this._orbitRadius *= factor;
+      this._orbitRadius = Math.max(10, Math.min(5000, this._orbitRadius));
+      this._orbitDirty = true;
+    }, { passive: false });
+  }
+
+  _applyOrbitCamera() {
+    if (!this._ready) return;
+    const theta = this._orbitTheta;
+    const phi = this._orbitPhi;
+    const r = this._orbitRadius;
+    const t = this._orbitTarget;
+
+    const camX = t.x + r * Math.sin(phi) * Math.cos(theta);
+    const camY = t.y + r * Math.sin(phi) * Math.sin(theta);
+    const camZ = t.z + r * Math.cos(phi);
+
+    this.wasm.setCameraPosition(camX, camY, camZ);
+    this.wasm.setCameraTarget(t.x, t.y, t.z);
   }
 
   /* ---------- mode switching ---------- */
@@ -147,8 +262,9 @@ export class WasmRenderer {
       this.wasm.setAxesVisible(1);
     } else {
       this.wasm.setCameraMode(1);
-      this.wasm.setCameraPosition(300, 300, 300);
-      this.wasm.setCameraTarget(0, 0, 0);
+      // Apply orbit camera state
+      this._orbitDirty = true;
+      this._applyOrbitCamera();
       this.wasm.setGridVisible(1);
       this.wasm.setAxesVisible(1);
     }
@@ -511,8 +627,12 @@ export class WasmRenderer {
     // A simple default: position camera back to see the part
     if (!this._ready) return;
     if (this.mode === '3d') {
-      this.wasm.setCameraPosition(300, 300, 300);
-      this.wasm.setCameraTarget(0, 0, 0);
+      this._orbitTheta = Math.PI / 4;
+      this._orbitPhi = Math.PI / 3;
+      this._orbitRadius = 500;
+      this._orbitTarget = { x: 0, y: 0, z: 0 };
+      this._orbitDirty = true;
+      this._applyOrbitCamera();
     }
   }
 
