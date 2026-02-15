@@ -4,7 +4,7 @@ import { state } from './state.js';
 import { error as logError } from './logger.js';
 
 const SNAP_MARKER_SIZE = 6;
-const FULLY_CONSTRAINED_COLOR = '#123a5a';
+const FULLY_CONSTRAINED_COLOR = '#4FC1FF';
 
 export class Renderer {
   constructor(viewport) {
@@ -25,7 +25,7 @@ export class Renderer {
     try {
       const { ctx, vp } = this;
       ctx.clearRect(0, 0, vp.width, vp.height);
-      ctx.fillStyle = '#1a1a2e';
+      ctx.fillStyle = '#1e1e1e';
       ctx.fillRect(0, 0, vp.width, vp.height);
 
       // Compute fully-constrained sets for this frame

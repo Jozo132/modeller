@@ -2,7 +2,7 @@
 import { Scene } from './cad/index.js';
 
 const LAYER_COLORS = [
-  '#ffffff', '#ff0000', '#ffff00', '#00ff00', '#00ffff',
+  '#9CDCFE', '#ff0000', '#ffff00', '#00ff00', '#00ffff',
   '#0000ff', '#ff00ff', '#808080', '#c0c0c0', '#ff8000',
 ];
 
@@ -12,7 +12,7 @@ class AppState {
     this.scene = new Scene();
 
     this.layers = [
-      { name: '0', color: '#ffffff', visible: true, locked: false },
+      { name: '0', color: '#9CDCFE', visible: true, locked: false },
     ];
     this.activeLayer = '0';
     this.activeTool = 'select';
@@ -115,7 +115,7 @@ class AppState {
 
   getLayerColor(layerName) {
     const layer = this.layers.find(l => l.name === layerName);
-    return layer ? layer.color : '#ffffff';
+    return layer ? layer.color : '#9CDCFE';
   }
 
   isLayerVisible(layerName) {

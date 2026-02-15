@@ -509,10 +509,11 @@ class App {
       this._scheduleRender();
     }, { passive: false });
 
-    // Context menu
+    // Context menu — cancel current tool and return to select
     canvas.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       this.activeTool.onCancel();
+      if (this.activeTool.name !== 'select') this.setActiveTool('select');
       this._scheduleRender();
     });
 
