@@ -32,8 +32,13 @@ export class Sketch {
   }
 
   getOrCreatePoint(x, y, tolerance) {
-    this.modified = new Date();
-    return this.scene.getOrCreatePoint(x, y, tolerance);
+    const pointsBefore = this.scene.points.length;
+    const point = this.scene.getOrCreatePoint(x, y, tolerance);
+    // Only update timestamp if a new point was created
+    if (this.scene.points.length > pointsBefore) {
+      this.modified = new Date();
+    }
+    return point;
   }
 
   pointById(id) {

@@ -130,6 +130,7 @@ export class Assembly {
 
   serialize() {
     return {
+      type: 'Assembly',
       name: this.name,
       description: this.description,
       created: this.created.toISOString(),

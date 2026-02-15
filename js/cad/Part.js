@@ -122,6 +122,7 @@ export class Part {
 
   serialize() {
     return {
+      type: 'Part',
       name: this.name,
       description: this.description,
       created: this.created.toISOString(),
