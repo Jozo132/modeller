@@ -104,11 +104,17 @@ export class DimensionPrimitive extends Primitive {
         if (srcA.type === 'point' && srcB && srcB.type === 'point') {
           return Math.abs(Math.abs(srcB.x - srcA.x) - target);
         }
+        if (srcA.type === 'segment' && !srcB) {
+          return Math.abs(Math.abs(srcA.x2 - srcA.x1) - target);
+        }
         return 0;
       }
       case 'dy': {
         if (srcA.type === 'point' && srcB && srcB.type === 'point') {
           return Math.abs(Math.abs(srcB.y - srcA.y) - target);
+        }
+        if (srcA.type === 'segment' && !srcB) {
+          return Math.abs(Math.abs(srcA.y2 - srcA.y1) - target);
         }
         return 0;
       }
@@ -186,11 +192,37 @@ export class DimensionPrimitive extends Primitive {
           else { const h = err / 2; a.x += h; b.x -= h; }
           return;
         }
+        if (srcA.type === 'segment' && !srcB) {
+          const seg = srcA;
+          const a = seg.p1, b = seg.p2;
+          if (a.fixed && b.fixed) return;
+          const currentDx = b.x - a.x;
+          const sign = currentDx >= 0 ? 1 : -1;
+          const targetDx = sign * target;
+          const err = currentDx - targetDx;
+          if (a.fixed) { b.x -= err; }
+          else if (b.fixed) { a.x += err; }
+          else { const h = err / 2; a.x += h; b.x -= h; }
+          return;
+        }
         return;
       }
       case 'dy': {
         if (srcA.type === 'point' && srcB && srcB.type === 'point') {
           const a = srcA, b = srcB;
+          if (a.fixed && b.fixed) return;
+          const currentDy = b.y - a.y;
+          const sign = currentDy >= 0 ? 1 : -1;
+          const targetDy = sign * target;
+          const err = currentDy - targetDy;
+          if (a.fixed) { b.y -= err; }
+          else if (b.fixed) { a.y += err; }
+          else { const h = err / 2; a.y += h; b.y -= h; }
+          return;
+        }
+        if (srcA.type === 'segment' && !srcB) {
+          const seg = srcA;
+          const a = seg.p1, b = seg.p2;
           if (a.fixed && b.fixed) return;
           const currentDy = b.y - a.y;
           const sign = currentDy >= 0 ? 1 : -1;
