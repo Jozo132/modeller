@@ -295,7 +295,8 @@ class CSGSolid {
   /**
    * Build a CSGSolid from our internal geometry format:
    *   { vertices: [{x,y,z},...], faces: [{vertices:[{x,y,z},...], normal:{x,y,z}},...] }
-   * Each face is a convex polygon; shared metadata is preserved.
+   * All faces are pre-triangulated before BSP construction to avoid numerical
+   * issues with large n-gons (e.g. 32-point circles) being split by the BSP tree.
    */
   static fromGeometry(geometry, shared = null) {
     const polygons = [];
@@ -303,10 +304,25 @@ class CSGSolid {
       if (face.vertices.length < 3) continue;
       const n = face.normal || { x: 0, y: 0, z: 1 };
       const faceShared = face.shared || shared || null;
-      const verts = face.vertices.map(v =>
-        new Vertex(Vec3.from(v), Vec3.from(n))
-      );
-      polygons.push(new Polygon(verts, faceShared));
+      const nv = Vec3.from(n);
+
+      // Pre-triangulate: fan from vertex 0 for convex polygons
+      if (face.vertices.length === 3) {
+        const verts = face.vertices.map(v => new Vertex(Vec3.from(v), nv.clone()));
+        polygons.push(new Polygon(verts, faceShared));
+      } else {
+        const v0 = face.vertices[0];
+        for (let i = 1; i < face.vertices.length - 1; i++) {
+          const v1 = face.vertices[i];
+          const v2 = face.vertices[i + 1];
+          const verts = [
+            new Vertex(Vec3.from(v0), nv.clone()),
+            new Vertex(Vec3.from(v1), nv.clone()),
+            new Vertex(Vec3.from(v2), nv.clone()),
+          ];
+          polygons.push(new Polygon(verts, faceShared));
+        }
+      }
     }
     return CSGSolid.fromPolygons(polygons);
   }
@@ -315,14 +331,15 @@ class CSGSolid {
    * Convert back to our internal geometry format with face metadata.
    * Each polygon becomes a face with its vertices, normal, and shared metadata.
    * Faces also get a `faceType` classification.
+   * Only feature edges (sharp edges between faces with different normals) are included.
    */
   toGeometry() {
     const vertices = [];
     const faces = [];
-    const edges = [];
 
-    // Deduplicate edges using a set of sorted vertex-pair keys
-    const edgeSet = new Set();
+    // Build face list and collect per-edge normal info for feature edge detection
+    // Key: edgeKey → array of face normals touching that edge
+    const edgeNormals = new Map();
 
     for (const poly of this.polygons) {
       const faceVerts = poly.vertices.map(v => v.pos.toObj());
@@ -342,14 +359,40 @@ class CSGSolid {
         vertices.push(v);
       }
 
-      // Collect unique edges
+      // Track which normals are adjacent to each edge
       for (let i = 0; i < faceVerts.length; i++) {
         const a = faceVerts[i];
         const b = faceVerts[(i + 1) % faceVerts.length];
         const key = edgeKey(a, b);
-        if (!edgeSet.has(key)) {
-          edgeSet.add(key);
-          edges.push({ start: a, end: b });
+        if (!edgeNormals.has(key)) {
+          edgeNormals.set(key, { start: a, end: b, normals: [] });
+        }
+        edgeNormals.get(key).normals.push(normal);
+      }
+    }
+
+    // Only include feature edges: boundary edges (1 face) or sharp edges
+    // (adjacent faces with normals differing by more than ~15 degrees)
+    const SHARP_THRESHOLD = Math.cos(15 * Math.PI / 180); // ~0.966
+    const edges = [];
+    for (const [, info] of edgeNormals) {
+      if (info.normals.length === 1) {
+        // Boundary edge — always a feature edge
+        edges.push({ start: info.start, end: info.end });
+      } else if (info.normals.length >= 2) {
+        // Check if any pair of adjacent normals differs significantly
+        const n0 = info.normals[0];
+        let isFeature = false;
+        for (let i = 1; i < info.normals.length; i++) {
+          const n1 = info.normals[i];
+          const dot = n0.x * n1.x + n0.y * n1.y + n0.z * n1.z;
+          if (dot < SHARP_THRESHOLD) {
+            isFeature = true;
+            break;
+          }
+        }
+        if (isFeature) {
+          edges.push({ start: info.start, end: info.end });
         }
       }
     }

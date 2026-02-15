@@ -670,7 +670,7 @@ export class WasmRenderer {
     this._meshTriangles = triData;
     this._meshTriangleCount = triCount * 3; // vertex count
 
-    // Use deduplicated edges from CSG if available, otherwise from face boundaries
+    // Use deduplicated edges from CSG if available, otherwise compute feature edges
     if (geometry.edges && geometry.edges.length > 0) {
       const edgeData = new Float32Array(geometry.edges.length * 2 * 3);
       let ei = 0;
@@ -681,23 +681,48 @@ export class WasmRenderer {
       this._meshEdges = edgeData;
       this._meshEdgeVertexCount = geometry.edges.length * 2;
     } else {
-      // Fallback: edges from face boundaries
-      let edgeCount = 0;
-      for (const face of faces) {
-        edgeCount += face.vertices.length;
-      }
-      const edgeData = new Float32Array(edgeCount * 2 * 3);
-      let ei = 0;
+      // Compute feature edges: only show edges where adjacent faces have different normals
+      const SHARP_COS = Math.cos(15 * Math.PI / 180);
+      const edgeMap = new Map();
+      const precision = 5;
+      const vKey = (v) => `${v.x.toFixed(precision)},${v.y.toFixed(precision)},${v.z.toFixed(precision)}`;
+      const eKey = (a, b) => { const ka = vKey(a), kb = vKey(b); return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`; };
+
       for (const face of faces) {
         const verts = face.vertices;
+        const n = face.normal || { x: 0, y: 0, z: 1 };
         for (let i = 0; i < verts.length; i++) {
           const a = verts[i], b = verts[(i + 1) % verts.length];
-          edgeData[ei++] = a.x; edgeData[ei++] = a.y; edgeData[ei++] = a.z;
-          edgeData[ei++] = b.x; edgeData[ei++] = b.y; edgeData[ei++] = b.z;
+          const key = eKey(a, b);
+          if (!edgeMap.has(key)) {
+            edgeMap.set(key, { a, b, normals: [] });
+          }
+          edgeMap.get(key).normals.push(n);
         }
       }
+
+      const featureEdges = [];
+      for (const [, info] of edgeMap) {
+        if (info.normals.length === 1) {
+          featureEdges.push(info);
+        } else if (info.normals.length >= 2) {
+          const n0 = info.normals[0];
+          for (let i = 1; i < info.normals.length; i++) {
+            const n1 = info.normals[i];
+            const dot = n0.x * n1.x + n0.y * n1.y + n0.z * n1.z;
+            if (dot < SHARP_COS) { featureEdges.push(info); break; }
+          }
+        }
+      }
+
+      const edgeData = new Float32Array(featureEdges.length * 2 * 3);
+      let ei = 0;
+      for (const e of featureEdges) {
+        edgeData[ei++] = e.a.x; edgeData[ei++] = e.a.y; edgeData[ei++] = e.a.z;
+        edgeData[ei++] = e.b.x; edgeData[ei++] = e.b.y; edgeData[ei++] = e.b.z;
+      }
       this._meshEdges = edgeData;
-      this._meshEdgeVertexCount = edgeCount * 2;
+      this._meshEdgeVertexCount = featureEdges.length * 2;
     }
   }
 
@@ -714,10 +739,19 @@ export class WasmRenderer {
     const mvp = this._computeMVP();
     if (!mvp) return;
 
-    // Draw solid triangles (program 0: position + normal, stride 24)
+    // Enable depth testing and backface culling for correct solid rendering
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.LEQUAL);
+    gl.enable(gl.CULL_FACE);
+    gl.cullFace(gl.BACK);
+
+    // Draw solid triangles with polygon offset to avoid z-fighting with edges
+    gl.enable(gl.POLYGON_OFFSET_FILL);
+    gl.polygonOffset(1.0, 1.0);
+
     gl.useProgram(exec.programs[0]);
     gl.uniformMatrix4fv(exec.uniforms[0].uMVP, false, mvp);
-    gl.uniform4f(exec.uniforms[0].uColor, 0.3, 0.69, 0.31, 1.0);
+    gl.uniform4f(exec.uniforms[0].uColor, 0.65, 0.75, 0.65, 1.0);
 
     gl.bindVertexArray(exec.vaoSolid);
     gl.bindBuffer(gl.ARRAY_BUFFER, exec.vbo);
@@ -725,11 +759,13 @@ export class WasmRenderer {
     gl.drawArrays(gl.TRIANGLES, 0, this._meshTriangleCount);
     gl.bindVertexArray(null);
 
-    // Draw wireframe edges (program 1: position only, stride 12)
+    gl.disable(gl.POLYGON_OFFSET_FILL);
+
+    // Draw feature wireframe edges
     if (this._meshEdges && this._meshEdgeVertexCount > 0) {
       gl.useProgram(exec.programs[1]);
       gl.uniformMatrix4fv(exec.uniforms[1].uMVP, false, mvp);
-      gl.uniform4f(exec.uniforms[1].uColor, 0.0, 0.0, 0.0, 1.0);
+      gl.uniform4f(exec.uniforms[1].uColor, 0.1, 0.1, 0.1, 1.0);
       gl.lineWidth(1.0);
 
       gl.bindVertexArray(exec.vaoLine);
@@ -738,6 +774,8 @@ export class WasmRenderer {
       gl.drawArrays(gl.LINES, 0, this._meshEdgeVertexCount);
       gl.bindVertexArray(null);
     }
+
+    gl.disable(gl.CULL_FACE);
   }
 
   /**

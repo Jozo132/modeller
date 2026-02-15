@@ -112,9 +112,9 @@ export class ExtrudeFeature extends Feature {
         geometry.vertices.push(top3D);
       }
       
-      // Create bottom face
+      // Create bottom face (reverse winding for outward-facing normal)
       geometry.faces.push({
-        vertices: bottomVertices,
+        vertices: [...bottomVertices].reverse(),
         normal: { x: -plane.normal.x, y: -plane.normal.y, z: -plane.normal.z },
       });
       
