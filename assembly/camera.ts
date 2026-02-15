@@ -33,7 +33,7 @@ export class Camera {
     this.fov = <f32>(Math.PI / 4.0);
     this.aspect = 1.0;
     this.near = 0.1;
-    this.far = 1000.0;
+    this.far = 10000.0;
 
     this.orthoLeft = -10;
     this.orthoRight = 10;

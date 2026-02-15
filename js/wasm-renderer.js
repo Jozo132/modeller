@@ -85,6 +85,7 @@ export class WasmRenderer {
 
     // Part data stored for 3D render
     this._partNodes = [];
+    this._partBounds = null;
 
     // Window resize handler
     this._resizeHandler = () => this.onWindowResize();
@@ -262,6 +263,9 @@ export class WasmRenderer {
       this.wasm.setAxesVisible(1);
     } else {
       this.wasm.setCameraMode(1);
+      // Set a reasonable default grid for 3D mode
+      this.wasm.setGridSize(200, 20);
+      this.wasm.setAxesSize(50);
       // Apply orbit camera state
       this._orbitDirty = true;
       this._applyOrbitCamera();
@@ -604,6 +608,9 @@ export class WasmRenderer {
         const pz = (bb.max.z + bb.min.z) / 2;
         const id = this.wasm.addBox(sx, sy, sz, px, py, pz, 0.3, 0.69, 0.31, 1.0);
         this._partNodes.push(id);
+
+        // Store bounding box for fitToView
+        this._partBounds = bb;
       }
     }
   }
@@ -614,6 +621,7 @@ export class WasmRenderer {
       this.wasm.removeNode(id);
     }
     this._partNodes = [];
+    this._partBounds = null;
   }
 
   clearGeometry() {
@@ -624,13 +632,34 @@ export class WasmRenderer {
   }
 
   fitToView() {
-    // A simple default: position camera back to see the part
     if (!this._ready) return;
     if (this.mode === '3d') {
+      const bb = this._partBounds;
+      if (bb) {
+        // Center the camera on the part
+        const cx = (bb.max.x + bb.min.x) / 2;
+        const cy = (bb.max.y + bb.min.y) / 2;
+        const cz = (bb.max.z + bb.min.z) / 2;
+        this._orbitTarget = { x: cx, y: cy, z: cz };
+
+        // Compute radius to fit the part in view
+        const sx = bb.max.x - bb.min.x;
+        const sy = bb.max.y - bb.min.y;
+        const sz = bb.max.z - bb.min.z;
+        const maxDim = Math.max(sx, sy, sz, 1);
+        this._orbitRadius = maxDim * 2.5;
+
+        // Scale grid and axes to match the part scale
+        const gridSize = maxDim * 3;
+        const gridDivisions = 20;
+        this.wasm.setGridSize(gridSize, gridDivisions);
+        this.wasm.setAxesSize(maxDim * 0.5);
+      } else {
+        this._orbitTarget = { x: 0, y: 0, z: 0 };
+        this._orbitRadius = 500;
+      }
       this._orbitTheta = Math.PI / 4;
       this._orbitPhi = Math.PI / 3;
-      this._orbitRadius = 500;
-      this._orbitTarget = { x: 0, y: 0, z: 0 };
       this._orbitDirty = true;
       this._applyOrbitCamera();
     }

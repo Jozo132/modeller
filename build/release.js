@@ -51,6 +51,8 @@ export const {
   setNodeColor,
   setGridVisible,
   setAxesVisible,
+  setGridSize,
+  setAxesSize,
   setMousePosition,
   mouseAction,
   setMouseButton,
