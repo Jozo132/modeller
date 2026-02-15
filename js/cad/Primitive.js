@@ -17,6 +17,7 @@ export class Primitive {
     this.visible = true;
     this.construction = false; // construction geometry — dashed, light green, excluded from DXF/fill
     this.constructionType = 'finite'; // 'finite' | 'infinite-start' | 'infinite-end' | 'infinite-both'
+    this.constructionDash = 'dashed'; // 'dashed' | 'dash-dot' | 'dotted'
   }
 
   /** Axis-aligned bounding box */
@@ -40,6 +41,7 @@ export class Primitive {
     if (this.construction) {
       o.construction = true;
       if (this.constructionType !== 'finite') o.constructionType = this.constructionType;
+      if (this.constructionDash !== 'dashed') o.constructionDash = this.constructionDash;
     }
     return o;
   }

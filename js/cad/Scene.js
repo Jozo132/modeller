@@ -360,6 +360,7 @@ export class Scene {
       seg.color = d.color || null;
       if (d.construction) seg.construction = true;
       if (d.constructionType) seg.constructionType = d.constructionType;
+      if (d.constructionDash) seg.constructionDash = d.constructionDash;
       scene.segments.push(seg);
       shapeMap.set(d.id, seg);
       if (d.id > maxPrimId) maxPrimId = d.id;
@@ -375,6 +376,7 @@ export class Scene {
       c.color = d.color || null;
       if (d.construction) c.construction = true;
       if (d.constructionType) c.constructionType = d.constructionType;
+      if (d.constructionDash) c.constructionDash = d.constructionDash;
       scene.circles.push(c);
       shapeMap.set(d.id, c);
       if (d.id > maxPrimId) maxPrimId = d.id;
@@ -390,6 +392,7 @@ export class Scene {
       a.color = d.color || null;
       if (d.construction) a.construction = true;
       if (d.constructionType) a.constructionType = d.constructionType;
+      if (d.constructionDash) a.constructionDash = d.constructionDash;
       scene.arcs.push(a);
       shapeMap.set(d.id, a);
       if (d.id > maxPrimId) maxPrimId = d.id;

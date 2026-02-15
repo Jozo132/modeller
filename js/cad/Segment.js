@@ -79,7 +79,7 @@ export class PSegment extends Primitive {
       const a = vp.worldToScreen(ax, ay);
       const b = vp.worldToScreen(bx, by);
       ctx.save();
-      ctx.setLineDash([12, 4, 2, 4]); // dash-dot pattern
+      ctx.setLineDash(_dashPattern(this.constructionDash));
       ctx.beginPath();
       ctx.moveTo(a.x, a.y);
       ctx.lineTo(b.x, b.y);
@@ -104,6 +104,13 @@ export class PSegment extends Primitive {
     return { ...super.serialize(), p1: this.p1.id, p2: this.p2.id };
   }
 }
+
+const _DASH_PATTERNS = {
+  'dashed':   [10, 5],
+  'dash-dot': [12, 4, 2, 4],
+  'dotted':   [2, 4],
+};
+function _dashPattern(style) { return _DASH_PATTERNS[style] || _DASH_PATTERNS['dashed']; }
 
 function _ptSegDist(px, py, ax, ay, bx, by) {
   const dx = bx - ax, dy = by - ay;

@@ -1,6 +1,9 @@
 // js/cad/CirclePrimitive.js — A circle defined by a center PPoint and radius
 import { Primitive } from './Primitive.js';
 
+const _DASH_PATTERNS = { 'dashed': [10, 5], 'dash-dot': [12, 4, 2, 4], 'dotted': [2, 4] };
+function _constructionDash(style) { return _DASH_PATTERNS[style] || _DASH_PATTERNS['dashed']; }
+
 export class PCircle extends Primitive {
   /**
    * @param {import('./Point.js').PPoint} center
@@ -43,7 +46,7 @@ export class PCircle extends Primitive {
     const r = this.radius * vp.zoom;
     if (this.construction) {
       ctx.save();
-      ctx.setLineDash([8, 4]); // dashed
+      ctx.setLineDash(_constructionDash(this.constructionDash));
     }
     ctx.beginPath();
     ctx.arc(c.x, c.y, r, 0, Math.PI * 2);

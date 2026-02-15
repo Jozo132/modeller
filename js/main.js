@@ -155,16 +155,21 @@ class App {
       const { sx, sy, ctrlKey } = this._lastPointer;
       const t0 = performance.now();
 
-      const basePoint = this.activeTool._startX !== undefined && this.activeTool.step > 0
-        ? { x: this.activeTool._startX, y: this.activeTool._startY }
-        : null;
-      const { world, snap } = getSnappedPosition(
-        sx,
-        sy,
-        this.viewport,
-        basePoint,
-        { ignoreGridSnap: !!ctrlKey }
-      );
+      let world, snap;
+      if (this.activeTool.freehand) {
+        world = this.viewport.screenToWorld(sx, sy);
+        snap = null;
+      } else {
+        const basePoint = this.activeTool._startX !== undefined && this.activeTool.step > 0
+          ? { x: this.activeTool._startX, y: this.activeTool._startY }
+          : null;
+        const result = getSnappedPosition(
+          sx, sy, this.viewport, basePoint,
+          { ignoreGridSnap: !!ctrlKey }
+        );
+        world = result.world;
+        snap = result.snap;
+      }
 
       this.renderer.cursorWorld = world;
       this.renderer.snapPoint = snap;
@@ -460,6 +465,32 @@ class App {
           });
         }
 
+        // Dash style submenu (for all construction shapes)
+        if (entity.construction) {
+          const currentDash = entity.constructionDash || 'dashed';
+          const dashOptions = [
+            { key: 'dashed', label: 'Dashed ── ──', icon: currentDash === 'dashed' ? '✓' : '' },
+            { key: 'dash-dot', label: 'Dash-Dot ──·──', icon: currentDash === 'dash-dot' ? '✓' : '' },
+            { key: 'dotted', label: 'Dotted ·····', icon: currentDash === 'dotted' ? '✓' : '' },
+          ];
+          items.push({
+            type: 'submenu',
+            label: 'Dash Style',
+            icon: '┄',
+            items: dashOptions.map(opt => ({
+              type: 'item',
+              label: opt.label,
+              icon: opt.icon,
+              action: () => {
+                takeSnapshot();
+                entity.constructionDash = opt.key;
+                state.emit('change');
+                this._scheduleRender();
+              },
+            })),
+          });
+        }
+
         items.push({ type: 'separator' });
       }
 
@@ -547,20 +578,24 @@ class App {
         return;
       }
 
-      const basePoint = this.activeTool._startX !== undefined
-        ? { x: this.activeTool._startX, y: this.activeTool._startY }
-        : null;
-      const { world } = getSnappedPosition(
-        sx,
-        sy,
-        this.viewport,
-        this.activeTool.step > 0 ? basePoint : null,
-        { ignoreGridSnap: !!e.ctrlKey }
-      );
-
       if (e.button === 0) {
         if (this.activeTool.onMouseDown) {
-          this.activeTool.onMouseDown(world.x, world.y, sx, sy, e);
+          let wx, wy;
+          if (this.activeTool.freehand) {
+            const raw = this.viewport.screenToWorld(sx, sy);
+            wx = raw.x; wy = raw.y;
+          } else {
+            const basePoint = this.activeTool._startX !== undefined
+              ? { x: this.activeTool._startX, y: this.activeTool._startY }
+              : null;
+            const { world } = getSnappedPosition(
+              sx, sy, this.viewport,
+              this.activeTool.step > 0 ? basePoint : null,
+              { ignoreGridSnap: !!e.ctrlKey }
+            );
+            wx = world.x; wy = world.y;
+          }
+          this.activeTool.onMouseDown(wx, wy, sx, sy, e);
         }
       }
     });
@@ -917,6 +952,14 @@ class App {
         case 'm': case 'M': this.setActiveTool('move'); break;
         case 'x': case 'X': this.setActiveTool('trim'); break;
         case 'k': case 'K': this.setActiveTool('split'); break;
+        case 'h': case 'H':
+          if (this._tryApplyConstraintFromSelection('horizontal')) break;
+          this.setActiveTool('horizontal');
+          break;
+        case 'v': case 'V':
+          if (this._tryApplyConstraintFromSelection('vertical')) break;
+          this.setActiveTool('vertical');
+          break;
         case 'f': case 'F':
           this.viewport.fitEntities(state.entities);
           this._scheduleRender();
@@ -1088,6 +1131,8 @@ class App {
           const ct = e.constructionType || 'finite';
           const ctLabel = { 'finite': 'Finite', 'infinite-start': 'Inf. Start', 'infinite-end': 'Inf. End', 'infinite-both': 'Inf. Both' }[ct] || ct;
           html += `<div class="prop-row"><label>Type</label><span>${ctLabel}</span></div>`;
+          const dashLabel = { 'dashed': 'Dashed', 'dash-dot': 'Dash-Dot', 'dotted': 'Dotted' }[e.constructionDash || 'dashed'] || 'Dashed';
+          html += `<div class="prop-row"><label>Dash</label><span>${dashLabel}</span></div>`;
         }
         html += `<div class="prop-row"><label>X1</label><span>${e.x1.toFixed(2)}</span></div>`;
         html += `<div class="prop-row"><label>Y1</label><span>${e.y1.toFixed(2)}</span></div>`;

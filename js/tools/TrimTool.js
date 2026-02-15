@@ -10,6 +10,7 @@ export class TrimTool extends BaseTool {
   constructor(app) {
     super(app);
     this.name = 'trim';
+    this.freehand = true; // never snap to grid
     this._drawing   = false;
     this._path       = [];   // world-coord points [{x,y}, …]
     this._crossings  = [];   // [{seg, cutX, cutY, keepX, keepY, discardX, discardY}]
