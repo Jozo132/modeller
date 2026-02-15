@@ -18,7 +18,10 @@ export class Renderer3D {
     this.controls = null;
     this.meshes = new Map(); // Map of featureId -> mesh
     this.edges = new Map(); // Map of featureId -> edges
-    this.sketchObjects = new Map(); // 2D sketch entities
+    this.sketchObjects = new Map(); // legacy alias
+    this.sketchStaticObjects = new Map();
+    this.sketchOverlayObjects = new Map();
+    this._lastSketchStaticKey = null;
     this.animationId = null;
     this.mode = '2d'; // '2d' for orthographic sketching, '3d' for perspective viewing
     
@@ -326,6 +329,36 @@ export class Renderer3D {
     this.renderer.setSize(width, height);
   }
 
+  /**
+   * Sync orthographic camera to legacy viewport pan/zoom so 2D interaction
+   * maps 1:1 to rendered sketch space.
+   * @param {import('./viewport.js').Viewport} viewport
+   */
+  sync2DView(viewport) {
+    if (!viewport) return;
+    if (this.mode !== '2d') return;
+
+    const zoom = Math.max(0.0001, viewport.zoom || 1);
+    const width = Math.max(1, viewport.width || this.container.clientWidth || 1);
+    const height = Math.max(1, viewport.height || this.container.clientHeight || 1);
+
+    const halfW = width / (2 * zoom);
+    const halfH = height / (2 * zoom);
+
+    this.orthographicCamera.left = -halfW;
+    this.orthographicCamera.right = halfW;
+    this.orthographicCamera.top = halfH;
+    this.orthographicCamera.bottom = -halfH;
+
+    const cx = -viewport.panX / zoom;
+    const cy = viewport.panY / zoom;
+
+    this.orthographicCamera.position.set(cx, cy, 500);
+    this.orthographicCamera.lookAt(cx, cy, 0);
+    this.controls.target.set(cx, cy, 0);
+    this.orthographicCamera.updateProjectionMatrix();
+  }
+
   animate() {
     this.animationId = requestAnimationFrame(() => this.animate());
     this.controls.update();
@@ -343,6 +376,8 @@ export class Renderer3D {
       // Switch to orthographic camera for 2D sketching
       this.camera = this.orthographicCamera;
       this.controls.object = this.orthographicCamera;
+      this.controls.enabled = false;
+      this.controls.enableDamping = false;
       this.controls.enableRotate = false;
       this.controls.screenSpacePanning = true;
       
@@ -361,6 +396,8 @@ export class Renderer3D {
       // Switch to perspective camera for 3D viewing
       this.camera = this.perspectiveCamera;
       this.controls.object = this.perspectiveCamera;
+      this.controls.enabled = true;
+      this.controls.enableDamping = true;
       this.controls.enableRotate = true;
       this.controls.screenSpacePanning = false;
       
@@ -384,19 +421,23 @@ export class Renderer3D {
    * @param {Scene} scene - The 2D scene with entities
    */
   render2DScene(scene, overlays = {}) {
-    // Clear previous 2D objects
-    this.sketchObjects.forEach(obj => {
-      this.scene.remove(obj);
-      if (obj.geometry) obj.geometry.dispose();
-      if (Array.isArray(obj.material)) {
-        for (const m of obj.material) m.dispose?.();
-      } else if (obj.material) {
-        obj.material.dispose();
-      }
-    });
-    this.sketchObjects.clear();
-
     if (!scene) return;
+
+    const clearObjectMap = (map) => {
+      map.forEach(obj => {
+        this.scene.remove(obj);
+        if (obj.geometry) obj.geometry.dispose();
+        if (obj.material) {
+          if (Array.isArray(obj.material)) {
+            for (const material of obj.material) material.dispose?.();
+          } else {
+            obj.material.dispose?.();
+          }
+        }
+        if (obj.material?.map) obj.material.map.dispose?.();
+      });
+      map.clear();
+    };
 
     const zBase = 0.02;
     const wpp = this._worldPerPixel();
@@ -408,10 +449,24 @@ export class Renderer3D {
     const cursorWorld = overlays.cursorWorld || null;
     const allDimensionsVisible = overlays.allDimensionsVisible !== false;
     const constraintIconsVisible = overlays.constraintIconsVisible !== false;
+    const annotationScale = overlays.annotationScale ?? 0.56;
+
+    const staticKey = [
+      overlays.sceneVersion ?? 0,
+      allDimensionsVisible ? 1 : 0,
+      constraintIconsVisible ? 1 : 0,
+      Math.round(wpp * 1000),
+    ].join('|');
+    const staticDirty = this._lastSketchStaticKey !== staticKey;
+    if (staticDirty) {
+      clearObjectMap(this.sketchStaticObjects);
+      this._lastSketchStaticKey = staticKey;
+    }
+    clearObjectMap(this.sketchOverlayObjects);
+    this.sketchObjects = this.sketchStaticObjects;
 
     const colorForEntity = (entity) => {
       if (entity.selected) return 0x00bfff;
-      if (hoverEntity && hoverEntity.id === entity.id) return 0x7fd8ff;
       if (entity.construction) return 0x90EE90;
       return new THREE.Color(entity.color || getLayerColor(entity.layer)).getHex();
     };
@@ -422,7 +477,7 @@ export class Renderer3D {
       return [10 * wpp, 5 * wpp];
     };
 
-    const addLine = (key, points, color, z = zBase, dashed = false, dashStyle = 'dashed') => {
+    const addLine = (key, points, color, z = zBase, dashed = false, dashStyle = 'dashed', store = this.sketchStaticObjects) => {
       if (!points || points.length < 2) return;
       const verts = [];
       for (const p of points) verts.push(p.x, p.y, z);
@@ -438,26 +493,28 @@ export class Renderer3D {
       const line = new THREE.Line(geometry, material);
       if (dashed) line.computeLineDistances();
       this.scene.add(line);
-      this.sketchObjects.set(key, line);
+      store.set(key, line);
     };
 
-    const addCircle = (key, cx, cy, radius, color, z = zBase, dashed = false, dashStyle = 'dashed', startA = 0, endA = Math.PI * 2) => {
+    const addCircle = (key, cx, cy, radius, color, z = zBase, dashed = false, dashStyle = 'dashed', startA = 0, endA = Math.PI * 2, store = this.sketchStaticObjects) => {
       const curve = new THREE.EllipseCurve(cx, cy, radius, radius, startA, endA, false, 0);
       const pts = curve.getPoints(72).map(p => ({ x: p.x, y: p.y }));
-      addLine(key, pts, color, z, dashed, dashStyle);
+      addLine(key, pts, color, z, dashed, dashStyle, store);
     };
 
-    const addTextSprite = (key, text, x, y, color, z = zBase + 0.05, rotation = 0) => {
-      const pad = 6;
-      const fontPx = 22;
+    const addTextSprite = (key, text, x, y, color, z = zBase + 0.05, rotation = 0, store = this.sketchStaticObjects) => {
+      const pad = 4;
+      const fontPx = 16;
+      const dpr = Math.max(1, window.devicePixelRatio || 1);
       const canvas = document.createElement('canvas');
       const ctx = canvas.getContext('2d');
       ctx.font = `${fontPx}px Consolas, monospace`;
       const width = Math.ceil(ctx.measureText(text).width) + pad * 2;
       const height = fontPx + pad * 2;
-      canvas.width = Math.max(8, width);
-      canvas.height = Math.max(8, height);
+      canvas.width = Math.max(8, Math.ceil(width * dpr));
+      canvas.height = Math.max(8, Math.ceil(height * dpr));
       const c2 = canvas.getContext('2d');
+      c2.setTransform(dpr, 0, 0, dpr, 0, 0);
       c2.clearRect(0, 0, canvas.width, canvas.height);
       c2.font = `${fontPx}px Consolas, monospace`;
       c2.textBaseline = 'middle';
@@ -469,12 +526,12 @@ export class Renderer3D {
       const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false, depthWrite: false, rotation });
       const sprite = new THREE.Sprite(material);
       sprite.position.set(x, y, z);
-      sprite.scale.set(canvas.width * wpp, canvas.height * wpp, 1);
+      sprite.scale.set(canvas.width * wpp * annotationScale, canvas.height * wpp * annotationScale, 1);
       this.scene.add(sprite);
-      this.sketchObjects.set(key, sprite);
+      store.set(key, sprite);
     };
 
-    const addArrowTriangle = (key, x, y, angle, len, color, z = zBase + 0.04) => {
+    const addArrowTriangle = (key, x, y, angle, len, color, z = zBase + 0.04, store = this.sketchStaticObjects) => {
       const wing = len * 0.5;
       const pTip = { x, y };
       const p1 = { x: x - len * Math.cos(angle - 0.45), y: y - len * Math.sin(angle - 0.45) };
@@ -489,12 +546,11 @@ export class Renderer3D {
       const mesh = new THREE.Mesh(geom, mat);
       mesh.position.z = z;
       this.scene.add(mesh);
-      this.sketchObjects.set(key, mesh);
+      store.set(key, mesh);
       void wing;
     };
 
-    // Segments
-    if (scene.segments) {
+    if (staticDirty && scene.segments) {
       scene.segments.forEach((segment, index) => {
         if (!segment.visible || !isLayerVisible(segment.layer) || !segment.p1 || !segment.p2) return;
         const color = colorForEntity(segment);
@@ -529,8 +585,7 @@ export class Renderer3D {
       });
     }
 
-    // Circles
-    if (scene.circles) {
+    if (staticDirty && scene.circles) {
       scene.circles.forEach((circle, index) => {
         if (!circle.visible || !isLayerVisible(circle.layer)) return;
         const color = colorForEntity(circle);
@@ -538,8 +593,7 @@ export class Renderer3D {
       });
     }
 
-    // Arcs
-    if (scene.arcs) {
+    if (staticDirty && scene.arcs) {
       scene.arcs.forEach((arc, index) => {
         if (!arc.visible || !isLayerVisible(arc.layer)) return;
         const color = colorForEntity(arc);
@@ -547,8 +601,7 @@ export class Renderer3D {
       });
     }
 
-    // Text primitives
-    if (scene.texts) {
+    if (staticDirty && scene.texts) {
       scene.texts.forEach((text, index) => {
         if (!text.visible || !isLayerVisible(text.layer)) return;
         const colorHex = colorForEntity(text);
@@ -557,8 +610,7 @@ export class Renderer3D {
       });
     }
 
-    // Dimensions
-    if (allDimensionsVisible && scene.dimensions) {
+    if (staticDirty && allDimensionsVisible && scene.dimensions) {
       scene.dimensions.forEach((dim, index) => {
         if (!dim.visible || !isLayerVisible(dim.layer)) return;
         const dimColorHex = dim.selected ? 0x00bfff : (hoverEntity && hoverEntity.id === dim.id ? 0x7fd8ff : (!dim.isConstraint ? 0xffb432 : new THREE.Color(dim.color || getLayerColor(dim.layer)).getHex()));
@@ -573,7 +625,7 @@ export class Renderer3D {
           const endA = startA + sweepA;
           const ex = dim.x1 + r * Math.cos(endA);
           const ey = dim.y1 + r * Math.sin(endA);
-          addArrowTriangle(`dim-arrow-${index}`, ex, ey, endA - Math.PI / 2, 8 * wpp, dimColorHex, zBase + 0.03);
+          addArrowTriangle(`dim-arrow-${index}`, ex, ey, endA - Math.PI / 2, 7.5 * wpp, dimColorHex, zBase + 0.03);
 
           const midA = startA + sweepA / 2;
           const lx = dim.x1 + (r + 14 * wpp) * Math.cos(midA);
@@ -616,11 +668,11 @@ export class Renderer3D {
           const pixDist = Math.hypot((d2.x - d1.x) / wpp, (d2.y - d1.y) / wpp);
           const useOutside = style === 'outside' || (style === 'auto' && pixDist < 32);
           if (useOutside) {
-            addArrowTriangle(`dim-a1-${index}`, d1.x, d1.y, angle, 8 * wpp, dimColorHex, zBase + 0.03);
-            addArrowTriangle(`dim-a2-${index}`, d2.x, d2.y, angle + Math.PI, 8 * wpp, dimColorHex, zBase + 0.03);
+            addArrowTriangle(`dim-a1-${index}`, d1.x, d1.y, angle, 7.5 * wpp, dimColorHex, zBase + 0.03);
+            addArrowTriangle(`dim-a2-${index}`, d2.x, d2.y, angle + Math.PI, 7.5 * wpp, dimColorHex, zBase + 0.03);
           } else {
-            addArrowTriangle(`dim-a1-${index}`, d1.x, d1.y, angle + Math.PI, 8 * wpp, dimColorHex, zBase + 0.03);
-            addArrowTriangle(`dim-a2-${index}`, d2.x, d2.y, angle, 8 * wpp, dimColorHex, zBase + 0.03);
+            addArrowTriangle(`dim-a1-${index}`, d1.x, d1.y, angle + Math.PI, 7.5 * wpp, dimColorHex, zBase + 0.03);
+            addArrowTriangle(`dim-a2-${index}`, d2.x, d2.y, angle, 7.5 * wpp, dimColorHex, zBase + 0.03);
           }
         }
 
@@ -632,8 +684,7 @@ export class Renderer3D {
       });
     }
 
-    // Shared/fixed/selected points
-    if (scene.points) {
+    if (staticDirty && scene.points) {
       scene.points.forEach((point, index) => {
         const refs = scene.shapesUsingPoint ? scene.shapesUsingPoint(point).length : 1;
         const isHover = hoverEntity && hoverEntity.id === point.id;
@@ -645,12 +696,11 @@ export class Renderer3D {
         const material = new THREE.PointsMaterial({ color, size, sizeAttenuation: false, depthTest: false, depthWrite: false });
         const pointMesh = new THREE.Points(geometry, material);
         this.scene.add(pointMesh);
-        this.sketchObjects.set(`point-${index}`, pointMesh);
+        this.sketchStaticObjects.set(`point-${index}`, pointMesh);
       });
     }
 
-    // Constraint icons
-    if (constraintIconsVisible && scene.constraints) {
+    if (staticDirty && constraintIconsVisible && scene.constraints) {
       const iconMap = {
         coincident: '⊙', distance: '↔', fixed: '⊕',
         horizontal: 'H', vertical: 'V', parallel: '∥', perpendicular: '⊥',
@@ -673,8 +723,20 @@ export class Renderer3D {
         const icon = iconMap[constraint.type] || '?';
         const ok = (typeof constraint.error === 'function') ? constraint.error() < 1e-4 : false;
         const color = ok ? '#00e676' : '#ff643c';
-        addTextSprite(`constraint-${index}`, icon, cx + 12 * wpp, cy + 10 * wpp, color, zBase + 0.07);
+        addTextSprite(`constraint-${index}`, icon, cx + 12 * wpp, cy + 10 * wpp, color, zBase + 0.07, 0, this.sketchStaticObjects);
       });
+    }
+
+    // Hover highlight overlay (cheap, no static rebuild)
+    if (hoverEntity && hoverEntity.visible !== false) {
+      const hc = 0x7fd8ff;
+      if (hoverEntity.type === 'segment' && hoverEntity.p1 && hoverEntity.p2) {
+        addLine('hover-seg', [{ x: hoverEntity.p1.x, y: hoverEntity.p1.y }, { x: hoverEntity.p2.x, y: hoverEntity.p2.y }], hc, zBase + 0.1, false, 'dashed', this.sketchOverlayObjects);
+      } else if (hoverEntity.type === 'circle' && hoverEntity.center) {
+        addCircle('hover-cir', hoverEntity.center.x, hoverEntity.center.y, hoverEntity.radius, hc, zBase + 0.1, false, 'dashed', 0, Math.PI * 2, this.sketchOverlayObjects);
+      } else if (hoverEntity.type === 'arc' && hoverEntity.center) {
+        addCircle('hover-arc', hoverEntity.center.x, hoverEntity.center.y, hoverEntity.radius, hc, zBase + 0.1, false, 'dashed', hoverEntity.startAngle, hoverEntity.endAngle, this.sketchOverlayObjects);
+      }
     }
 
     // Preview entities
@@ -683,11 +745,11 @@ export class Renderer3D {
       previewEntities.forEach((entity, idx) => {
         if (!entity) return;
         if (entity.type === 'segment' && entity.p1 && entity.p2) {
-          addLine(`preview-seg-${idx}`, [{ x: entity.p1.x, y: entity.p1.y }, { x: entity.p2.x, y: entity.p2.y }], previewColor, zBase + 0.08, false);
+          addLine(`preview-seg-${idx}`, [{ x: entity.p1.x, y: entity.p1.y }, { x: entity.p2.x, y: entity.p2.y }], previewColor, zBase + 0.08, false, 'dashed', this.sketchOverlayObjects);
         } else if (entity.type === 'circle' && entity.center) {
-          addCircle(`preview-cir-${idx}`, entity.center.x, entity.center.y, entity.radius, previewColor, zBase + 0.08);
+          addCircle(`preview-cir-${idx}`, entity.center.x, entity.center.y, entity.radius, previewColor, zBase + 0.08, false, 'dashed', 0, Math.PI * 2, this.sketchOverlayObjects);
         } else if (entity.type === 'arc' && entity.center) {
-          addCircle(`preview-arc-${idx}`, entity.center.x, entity.center.y, entity.radius, previewColor, zBase + 0.08, false, 'dashed', entity.startAngle, entity.endAngle);
+          addCircle(`preview-arc-${idx}`, entity.center.x, entity.center.y, entity.radius, previewColor, zBase + 0.08, false, 'dashed', entity.startAngle, entity.endAngle, this.sketchOverlayObjects);
         } else if (entity.type === 'dimension') {
           const dx = entity.x2 - entity.x1;
           const dy = entity.y2 - entity.y1;
@@ -696,9 +758,9 @@ export class Renderer3D {
           const ny = dx / len;
           const d1 = { x: entity.x1 + nx * entity.offset, y: entity.y1 + ny * entity.offset };
           const d2 = { x: entity.x2 + nx * entity.offset, y: entity.y2 + ny * entity.offset };
-          addLine(`preview-dim-${idx}`, [d1, d2], previewColor, zBase + 0.08, false);
+          addLine(`preview-dim-${idx}`, [d1, d2], previewColor, zBase + 0.08, false, 'dashed', this.sketchOverlayObjects);
           const label = entity.displayLabel || '';
-          if (label) addTextSprite(`preview-dim-label-${idx}`, label, (d1.x + d2.x) / 2, (d1.y + d2.y) / 2 + 10 * wpp, '#00bfff', zBase + 0.09);
+          if (label) addTextSprite(`preview-dim-label-${idx}`, label, (d1.x + d2.x) / 2, (d1.y + d2.y) / 2 + 10 * wpp, '#00bfff', zBase + 0.09, 0, this.sketchOverlayObjects);
         }
       });
     }
@@ -710,16 +772,19 @@ export class Renderer3D {
       const m = new THREE.PointsMaterial({ color: 0x00ff99, size: 9, sizeAttenuation: false, depthTest: false, depthWrite: false });
       const p = new THREE.Points(g, m);
       this.scene.add(p);
-      this.sketchObjects.set('snap-indicator', p);
+      this.sketchOverlayObjects.set('snap-indicator', p);
     }
 
     // Crosshair
     if (cursorWorld && this.mode === '2d') {
       const spanX = (this.orthographicCamera.right - this.orthographicCamera.left) * 2;
       const spanY = (this.orthographicCamera.top - this.orthographicCamera.bottom) * 2;
-      addLine('crosshair-x', [{ x: cursorWorld.x - spanX, y: cursorWorld.y }, { x: cursorWorld.x + spanX, y: cursorWorld.y }], 0x2a2a2a, zBase - 0.005);
-      addLine('crosshair-y', [{ x: cursorWorld.x, y: cursorWorld.y - spanY }, { x: cursorWorld.x, y: cursorWorld.y + spanY }], 0x2a2a2a, zBase - 0.005);
+      addLine('crosshair-x', [{ x: cursorWorld.x - spanX, y: cursorWorld.y }, { x: cursorWorld.x + spanX, y: cursorWorld.y }], 0x2a2a2a, zBase - 0.005, false, 'dashed', this.sketchOverlayObjects);
+      addLine('crosshair-y', [{ x: cursorWorld.x, y: cursorWorld.y - spanY }, { x: cursorWorld.x, y: cursorWorld.y + spanY }], 0x2a2a2a, zBase - 0.005, false, 'dashed', this.sketchOverlayObjects);
     }
+
+    // Keep compatibility alias with all currently active sketch objects
+    this.sketchObjects = new Map([...this.sketchStaticObjects, ...this.sketchOverlayObjects]);
 
   }
 
@@ -873,6 +938,9 @@ export class Renderer3D {
       if (obj.material) obj.material.dispose();
     });
     this.sketchObjects.clear();
+    this.sketchStaticObjects.clear();
+    this.sketchOverlayObjects.clear();
+    this._lastSketchStaticKey = null;
   }
 
   /**

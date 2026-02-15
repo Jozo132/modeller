@@ -52,6 +52,7 @@ class App {
     this._moveEventCount = 0;
     this._renderScheduled = false;
     this._renderRequested = false;
+    this._sceneVersion = 1;
 
     // Tools
     this.tools = {
@@ -137,7 +138,9 @@ class App {
       try {
         if (!this._3dMode) {
           if (this._renderer3d) {
+            this._renderer3d.sync2DView(this.viewport);
             this._renderer3d.render2DScene(state.scene, {
+              sceneVersion: this._sceneVersion,
               hoverEntity: this.renderer.hoverEntity,
               previewEntities: this.renderer.previewEntities,
               snapPoint: this.renderer.snapPoint,
@@ -175,6 +178,7 @@ class App {
 
     if (width !== this.viewport.width || height !== this.viewport.height) {
       this.viewport.resize(width, height);
+      if (this._renderer3d) this._renderer3d.onWindowResize();
       debug('Viewport sync resize', { width: this.viewport.width, height: this.viewport.height });
     }
   }
@@ -1224,18 +1228,18 @@ class App {
     // Snap
     document.getElementById('btn-snap-toggle').addEventListener('click', (e) => {
       state.snapEnabled = !state.snapEnabled;
-      e.target.classList.toggle('active', state.snapEnabled);
+      e.currentTarget.classList.toggle('active', state.snapEnabled);
       document.getElementById('status-snap').classList.toggle('active', state.snapEnabled);
     });
     // Auto-connect coincidences
     document.getElementById('btn-autocoincidence-toggle').addEventListener('click', (e) => {
       state.autoCoincidence = !state.autoCoincidence;
-      e.target.classList.toggle('active', state.autoCoincidence);
+      e.currentTarget.classList.toggle('active', state.autoCoincidence);
       document.getElementById('status-autocoincidence').classList.toggle('active', state.autoCoincidence);
     });
     document.getElementById('btn-ortho-toggle').addEventListener('click', (e) => {
       state.orthoEnabled = !state.orthoEnabled;
-      e.target.classList.toggle('active', state.orthoEnabled);
+      e.currentTarget.classList.toggle('active', state.orthoEnabled);
       document.getElementById('status-ortho').classList.toggle('active', state.orthoEnabled);
     });
 
@@ -1367,6 +1371,12 @@ class App {
           document.getElementById('btn-ortho-toggle').classList.toggle('active', state.orthoEnabled);
           document.getElementById('status-ortho').classList.toggle('active', state.orthoEnabled);
           break;
+        case '2':
+          if (this._3dMode) this._toggle3DMode();
+          break;
+        case '3':
+          if (!this._3dMode) this._toggle3DMode();
+          break;
         case 'q': case 'Q': {
           // If primitives are selected, toggle their construction flag
           const sel = state.selectedEntities.filter(e => e.type === 'segment' || e.type === 'circle' || e.type === 'arc');
@@ -1474,19 +1484,23 @@ class App {
   // --- State events ---
   _bindStateEvents() {
     state.on('change', () => {
+      this._sceneVersion += 1;
       this._scheduleRender();
       this._rebuildLeftPanel();
       debouncedSave();
     });
     state.on('selection:change', (sel) => {
+      this._sceneVersion += 1;
       this._updatePropertiesPanel(sel);
       this._rebuildLeftPanel();
     });
     state.on('layers:change', () => {
+      this._sceneVersion += 1;
       this._rebuildLayersPanel();
       debouncedSave();
     });
     state.on('file:loaded', () => {
+      this._sceneVersion += 1;
       this.viewport.fitEntities(state.entities);
       this._rebuildLayersPanel();
       this._rebuildLeftPanel();
@@ -3380,6 +3394,7 @@ class App {
       // Return to 2D sketching mode (orthographic camera)
       this._renderer3d.setMode('2d');
       this._renderer3d.setVisible(true);
+      this._renderer3d.sync2DView(this.viewport);
       featurePanel.classList.remove('active');
       parametersPanel.classList.remove('active');
       btn.classList.remove('active');
@@ -3450,7 +3465,9 @@ class App {
     const part = this._partManager.getPart();
     if (!part) {
       this._renderer3d.clearPartGeometry();
+      this._renderer3d.sync2DView(this.viewport);
       this._renderer3d.render2DScene(state.scene, {
+        sceneVersion: this._sceneVersion,
         hoverEntity: this.renderer.hoverEntity,
         previewEntities: this.renderer.previewEntities,
         snapPoint: this.renderer.snapPoint,
