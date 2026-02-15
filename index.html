@@ -69,6 +69,14 @@
       <button id="btn-autocoincidence-toggle" title="Auto-Connect Coincidences" class="active"><svg viewBox="0 0 20 20"><circle cx="7" cy="10" r="3" fill="none"/><circle cx="13" cy="10" r="3" fill="none"/><line x1="10" y1="10" x2="10" y2="10" stroke-width="2"/><circle cx="10" cy="10" r="1" fill="currentColor" stroke="none"/></svg></button>
       <button id="btn-ortho-toggle" title="Ortho (O)"><svg viewBox="0 0 20 20"><line x1="3" y1="17" x2="3" y2="3"/><line x1="3" y1="17" x2="17" y2="17"/><text x="6" y="14" font-size="9" fill="currentColor" stroke="none">90</text></svg></button>
     </div>
+    <div class="toolbar-sep"></div>
+    <div class="tool-group">
+      <span class="group-label">3D</span>
+      <button id="btn-3d-mode" title="Toggle 3D View (3)"><svg viewBox="0 0 20 20"><rect x="2" y="7" width="7" height="7" fill="none"/><rect x="5" y="4" width="7" height="7" fill="none"/><rect x="8" y="7" width="7" height="7" fill="none"/></svg></button>
+      <button id="btn-add-sketch" title="Add Sketch to Part" disabled><svg viewBox="0 0 20 20"><path d="M4 2h8l4 4v12H4V2z"/><path d="M12 2v4h4" fill="none"/><line x1="7" y1="10" x2="13" y2="10"/><line x1="10" y1="7" x2="10" y2="13"/></svg></button>
+      <button id="btn-extrude" title="Extrude Sketch" disabled><svg viewBox="0 0 20 20"><rect x="5" y="12" width="10" height="6" fill="none"/><rect x="7" y="6" width="6" height="6" fill="none"/><line x1="7" y1="6" x2="5" y2="12"/><line x1="13" y1="6" x2="15" y2="12"/></svg></button>
+      <button id="btn-revolve" title="Revolve Sketch" disabled><svg viewBox="0 0 20 20"><ellipse cx="10" cy="10" rx="6" ry="3" fill="none"/><path d="M4 10 Q4 7, 10 7" fill="none"/><path d="M16 10 Q16 13, 10 13" fill="none"/><line x1="2" y1="4" x2="2" y2="16"/></svg></button>
+    </div>
   </div>
 
   <!-- Properties Panel -->
@@ -115,6 +123,15 @@
 
   <!-- Canvas -->
   <canvas id="cad-canvas"></canvas>
+
+  <!-- 3D View -->
+  <div id="view-3d"></div>
+
+  <!-- Feature Tree Panel -->
+  <div id="feature-panel"></div>
+
+  <!-- Parameters Panel -->
+  <div id="parameters-panel"></div>
 
   <!-- Motion Analysis Panel -->
   <div id="motion-panel" class="motion-panel" style="display:none">

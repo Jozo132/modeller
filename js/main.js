@@ -2,6 +2,10 @@
 import { state } from './state.js';
 import { Viewport } from './viewport.js';
 import { Renderer } from './renderer.js';
+import { Renderer3D } from './renderer3d.js';
+import { PartManager } from './part-manager.js';
+import { FeaturePanel } from './ui/featurePanel.js';
+import { ParametersPanel } from './ui/parametersPanel.js';
 import { getSnappedPosition } from './snap.js';
 import { undo, redo, takeSnapshot } from './history.js';
 import { downloadDXF } from './dxf/export.js';
@@ -75,6 +79,14 @@ class App {
     this._lpHoverConstraintId = null; // constraint hovered from left panel
     this._lpSelectedConstraintId = null; // constraint selected in left panel
 
+    // 3D View state
+    this._3dMode = false;
+    this._renderer3d = null;
+    this._partManager = new PartManager();
+    this._featurePanel = null;
+    this._parametersPanel = null;
+    this._lastSketchFeatureId = null;
+
     // Bind events
     this._bindCanvasEvents();
     this._bindToolbarEvents();
@@ -83,6 +95,7 @@ class App {
     this._bindStateEvents();
     this._bindLeftPanelEvents();
     this._bindMotionEvents();
+    this._bind3DEvents();
 
     // Register viewport for persistence and restore saved project
     setViewport(this.viewport);
@@ -2958,7 +2971,187 @@ class App {
     };
     this._motionAnimId = requestAnimationFrame(step);
   }
+
+  // --- 3D View Events ---
+  _bind3DEvents() {
+    // Initialize 3D panels
+    const featurePanelContainer = document.getElementById('feature-panel');
+    const parametersPanelContainer = document.getElementById('parameters-panel');
+    
+    this._featurePanel = new FeaturePanel(featurePanelContainer, this._partManager);
+    this._parametersPanel = new ParametersPanel(parametersPanelContainer, this._partManager);
+
+    // Setup callbacks
+    this._featurePanel.setOnFeatureSelect((feature) => {
+      this._parametersPanel.showFeature(feature);
+    });
+
+    this._featurePanel.setOnFeatureToggle((feature) => {
+      this._update3DView();
+    });
+
+    this._featurePanel.setOnFeatureDelete((featureId) => {
+      this._parametersPanel.clear();
+      this._update3DView();
+    });
+
+    // Listen to part changes
+    this._partManager.addListener((part) => {
+      this._featurePanel.update();
+      this._update3DView();
+      this._updateOperationButtons();
+    });
+
+    // 3D Mode Toggle
+    document.getElementById('btn-3d-mode').addEventListener('click', () => {
+      this._toggle3DMode();
+    });
+
+    // Add Sketch to Part
+    document.getElementById('btn-add-sketch').addEventListener('click', () => {
+      this._addSketchToPart();
+    });
+
+    // Extrude
+    document.getElementById('btn-extrude').addEventListener('click', async () => {
+      const distance = await showPrompt({
+        title: 'Extrude',
+        message: 'Enter extrusion distance:',
+        defaultValue: '10',
+      });
+      
+      if (distance && !isNaN(parseFloat(distance))) {
+        this._extrudeSketch(parseFloat(distance));
+      }
+    });
+
+    // Revolve
+    document.getElementById('btn-revolve').addEventListener('click', async () => {
+      const angle = await showPrompt({
+        title: 'Revolve',
+        message: 'Enter angle in degrees (360 for full):',
+        defaultValue: '360',
+      });
+      
+      if (angle && !isNaN(parseFloat(angle))) {
+        const radians = (parseFloat(angle) * Math.PI) / 180;
+        this._revolveSketch(radians);
+      }
+    });
+  }
+
+  _toggle3DMode() {
+    this._3dMode = !this._3dMode;
+    const view3d = document.getElementById('view-3d');
+    const featurePanel = document.getElementById('feature-panel');
+    const parametersPanel = document.getElementById('parameters-panel');
+    const btn = document.getElementById('btn-3d-mode');
+
+    if (this._3dMode) {
+      // Enter 3D mode
+      document.body.classList.add('view-3d-active');
+      view3d.classList.add('active');
+      featurePanel.classList.add('active');
+      parametersPanel.classList.add('active');
+      btn.classList.add('active');
+
+      // Initialize 3D renderer if not already
+      if (!this._renderer3d) {
+        this._renderer3d = new Renderer3D(view3d);
+      }
+
+      this._update3DView();
+      this._updateOperationButtons();
+      
+      info('3D mode activated');
+    } else {
+      // Exit 3D mode
+      document.body.classList.remove('view-3d-active');
+      view3d.classList.remove('active');
+      featurePanel.classList.remove('active');
+      parametersPanel.classList.remove('active');
+      btn.classList.remove('active');
+      
+      info('3D mode deactivated');
+    }
+  }
+
+  _addSketchToPart() {
+    if (state.entities.length === 0) {
+      this.setStatus('Draw something in 2D first before adding to part');
+      return;
+    }
+
+    const sketchFeature = this._partManager.addSketchFromScene(state.scene, `Sketch${this._partManager.getFeatures().length + 1}`);
+    this._lastSketchFeatureId = sketchFeature.id;
+    
+    this._featurePanel.update();
+    this._update3DView();
+    this._updateOperationButtons();
+    
+    this.setStatus(`Added sketch feature: ${sketchFeature.name}`);
+    info(`Created sketch feature: ${sketchFeature.id}`);
+  }
+
+  _extrudeSketch(distance) {
+    if (!this._lastSketchFeatureId) {
+      this.setStatus('Add a sketch to the part first');
+      return;
+    }
+
+    const feature = this._partManager.extrude(this._lastSketchFeatureId, distance);
+    
+    this._featurePanel.update();
+    this._update3DView();
+    
+    this.setStatus(`Extruded sketch: ${distance} units`);
+    info(`Created extrude feature: ${feature.id}`);
+  }
+
+  _revolveSketch(angle) {
+    if (!this._lastSketchFeatureId) {
+      this.setStatus('Add a sketch to the part first');
+      return;
+    }
+
+    const feature = this._partManager.revolve(this._lastSketchFeatureId, angle);
+    
+    this._featurePanel.update();
+    this._update3DView();
+    
+    const degrees = (angle * 180 / Math.PI).toFixed(1);
+    this.setStatus(`Revolved sketch: ${degrees}°`);
+    info(`Created revolve feature: ${feature.id}`);
+  }
+
+  _update3DView() {
+    if (!this._renderer3d || !this._3dMode) return;
+
+    const part = this._partManager.getPart();
+    if (!part) {
+      this._renderer3d.clearGeometry();
+      return;
+    }
+
+    try {
+      this._renderer3d.renderPart(part);
+      this._renderer3d.fitToView();
+    } catch (err) {
+      error('Failed to render 3D part:', err);
+      this.setStatus('Error rendering 3D part');
+    }
+  }
+
+  _updateOperationButtons() {
+    const hasSketch = this._lastSketchFeatureId !== null;
+    const hasEntities = state.entities.length > 0;
+    
+    document.getElementById('btn-add-sketch').disabled = !hasEntities || !this._3dMode;
+    document.getElementById('btn-extrude').disabled = !hasSketch || !this._3dMode;
+    document.getElementById('btn-revolve').disabled = !hasSketch || !this._3dMode;
+  }
 }
+
 
 // Bootstrap
 window.addEventListener('DOMContentLoaded', () => {

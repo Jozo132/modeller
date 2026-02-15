@@ -6,5 +6,8 @@
   "scripts": {
     "start": "npx serve .",
     "test:parametric": "node test-parametric.js"
+  },
+  "dependencies": {
+    "three": "^0.182.0"
   }
 }
