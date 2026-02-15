@@ -493,9 +493,9 @@ export class DimensionPrimitive extends Primitive {
       ctx.fillStyle = 'rgba(255,180,50,0.9)';
     }
 
-    // Extension lines (thin solid grey)
+    // Extension lines (thin solid)
     ctx.save();
-    ctx.strokeStyle = this.isConstraint ? 'rgba(200,200,200,0.35)' : 'rgba(255,180,50,0.35)';
+    ctx.strokeStyle = this.isConstraint ? 'rgba(255,255,255,0.45)' : 'rgba(255,180,50,0.45)';
     ctx.lineWidth = 0.5;
     ctx.beginPath();
     ctx.moveTo(p1.x, p1.y); ctx.lineTo(d1.x, d1.y);
@@ -916,9 +916,9 @@ function _drawArrow(ctx, x, y, angle, len) {
   ctx.beginPath();
   ctx.moveTo(x, y);
   ctx.lineTo(x - len * Math.cos(angle - 0.3), y - len * Math.sin(angle - 0.3));
-  ctx.moveTo(x, y);
   ctx.lineTo(x - len * Math.cos(angle + 0.3), y - len * Math.sin(angle + 0.3));
-  ctx.stroke();
+  ctx.closePath();
+  ctx.fill();
 }
 
 function _segDist(px, py, ax, ay, bx, by) {
