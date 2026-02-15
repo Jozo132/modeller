@@ -332,13 +332,22 @@ export class DimensionPrimitive extends Primitive {
   }
 
   _computeAngle() {
-    // Angle is stored as radians between the two direction vectors encoded in x1,y1→x2,y2
-    // For angle dims, (x1,y1) is the vertex, (x2,y2) encodes the angle span
+    // For angle dims the sweep is stored in _angleSweep (set during detection/sync).
+    // Return the absolute sweep so displayLabel shows the correct degrees.
+    if (this._angleSweep != null) return Math.abs(this._angleSweep);
+    // Fallback: compute from endpoint vectors (legacy/single-use)
     const dx = this.x2 - this.x1, dy = this.y2 - this.y1;
-    return Math.atan2(dy, dx);
+    return Math.abs(Math.atan2(dy, dx));
   }
 
   getBounds() {
+    if (this.dimType === 'angle') {
+      const r = Math.abs(this.offset) + 5;
+      return {
+        minX: this.x1 - r, minY: this.y1 - r,
+        maxX: this.x1 + r, maxY: this.y1 + r,
+      };
+    }
     const pad = Math.abs(this.offset) + 5;
     return {
       minX: Math.min(this.x1, this.x2) - pad,
@@ -357,8 +366,32 @@ export class DimensionPrimitive extends Primitive {
 
   distanceTo(px, py) {
     if (this.dimType === 'angle') {
-      // Distance from angle vertex
-      return Math.hypot(px - this.x1, py - this.y1);
+      // Distance from the arc drawn at radius = |offset| from the vertex
+      const vcx = this.x1, vcy = this.y1;
+      const r = Math.abs(this.offset);
+      const startA = this._angleStart != null ? this._angleStart : 0;
+      const sweepA = this._angleSweep != null ? this._angleSweep : 0;
+      // Angle of the point relative to vertex
+      const pAngle = Math.atan2(py - vcy, px - vcx);
+      // Normalise sweep direction
+      const s0 = startA;
+      const s1 = startA + sweepA;
+      const minA = Math.min(s0, s1);
+      const maxA = Math.max(s0, s1);
+      // Check if the point's angle falls within the arc span
+      let a = pAngle;
+      // Normalise to [-PI, PI] range relative to the arc
+      while (a < minA - Math.PI) a += 2 * Math.PI;
+      while (a > maxA + Math.PI) a -= 2 * Math.PI;
+      const dist = Math.hypot(px - vcx, py - vcy);
+      if (a >= minA && a <= maxA) {
+        // Within angular span — distance is |dist - r|
+        return Math.abs(dist - r);
+      }
+      // Outside angular span — distance to nearest endpoint of the arc
+      const e1x = vcx + r * Math.cos(s0), e1y = vcy + r * Math.sin(s0);
+      const e2x = vcx + r * Math.cos(s1), e2y = vcy + r * Math.sin(s1);
+      return Math.min(Math.hypot(px - e1x, py - e1y), Math.hypot(px - e2x, py - e2y));
     }
     const dx = this.x2 - this.x1, dy = this.y2 - this.y1;
     const len = Math.hypot(dx, dy) || 1e-9;
