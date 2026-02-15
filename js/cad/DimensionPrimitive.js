@@ -442,16 +442,16 @@ export class DimensionPrimitive extends Primitive {
     return _segDist(px, py, this.x1 + ox, this.y1 + oy, this.x2 + ox, this.y2 + oy);
   }
 
-  draw(ctx, vp) {
+  draw(ctx, vp, sceneBuffer) {
     if (!this.visible) return;
     if (this.dimType === 'angle') {
-      this._drawAngle(ctx, vp);
+      this._drawAngle(ctx, vp, sceneBuffer);
     } else {
-      this._drawLinear(ctx, vp);
+      this._drawLinear(ctx, vp, sceneBuffer);
     }
   }
 
-  _drawLinear(ctx, vp) {
+  _drawLinear(ctx, vp, sceneBuffer) {
     const dx = this.x2 - this.x1, dy = this.y2 - this.y1;
     const len = Math.hypot(dx, dy);
     if (len === 0) return;
@@ -498,50 +498,60 @@ export class DimensionPrimitive extends Primitive {
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // Measure label to compute gap
+    // Measure label
     const fontSize = Math.max(10, 12);
     ctx.font = `${fontSize}px 'Consolas', monospace`;
     const label = this.displayLabel;
     const tm = ctx.measureText(label);
-    const gapHalf = (tm.width / 2) + 4; // half-gap in pixels
+    const pad = 4; // padding around text
 
-    // Dimension line with gap for text
-    const lineLen = Math.hypot(d2.x - d1.x, d2.y - d1.y);
-    const angle = Math.atan2(d2.y - d1.y, d2.x - d1.x);
-    const mx = (d1.x + d2.x) / 2, my = (d1.y + d2.y) / 2;
-    const ux = Math.cos(angle), uy = Math.sin(angle);
-    const gapStart_x = mx - ux * gapHalf, gapStart_y = my - uy * gapHalf;
-    const gapEnd_x = mx + ux * gapHalf, gapEnd_y = my + uy * gapHalf;
-
+    // Dimension line (full, no gap)
     ctx.beginPath();
-    if (lineLen > gapHalf * 2) {
-      // Line is long enough for a gap
-      ctx.moveTo(d1.x, d1.y); ctx.lineTo(gapStart_x, gapStart_y);
-      ctx.moveTo(gapEnd_x, gapEnd_y); ctx.lineTo(d2.x, d2.y);
-    } else {
-      // Too short — draw full line, text will overlap a bit
-      ctx.moveTo(d1.x, d1.y); ctx.lineTo(d2.x, d2.y);
-    }
+    ctx.moveTo(d1.x, d1.y); ctx.lineTo(d2.x, d2.y);
     ctx.stroke();
 
     const arrowLen = 8;
+    const angle = Math.atan2(d2.y - d1.y, d2.x - d1.x);
     _drawArrow(ctx, d1.x, d1.y, angle, arrowLen);
     _drawArrow(ctx, d2.x, d2.y, angle + Math.PI, arrowLen);
 
-    // Draw label
+    // Label at midpoint — blit scene buffer behind text, then draw text
+    const mx = (d1.x + d2.x) / 2, my = (d1.y + d2.y) / 2;
+    ctx.save();
     ctx.textAlign = 'center';
     ctx.textBaseline = 'bottom';
-    ctx.save();
     ctx.translate(mx, my);
     let ta = angle;
     if (ta > Math.PI / 2 || ta < -Math.PI / 2) ta += Math.PI;
     ctx.rotate(ta);
+
+    // Compute label bounding box (in rotated local space)
+    const lw = tm.width + pad * 2;
+    const lh = fontSize + pad * 2;
+    const lx = -lw / 2;
+    const ly = -4 - lh; // text baseline is at y=-4, so box extends upward
+
+    if (sceneBuffer) {
+      // Blit the scene buffer region behind the label to mask dimension lines.
+      // We need to transform the clip rect corners to canvas bitmap coordinates,
+      // because the scene buffer is at native bitmap resolution.
+      ctx.save();
+      // Clip to the label region (in the current rotated/translated space)
+      ctx.beginPath();
+      ctx.rect(lx, ly, lw, lh);
+      ctx.clip();
+      // Reset to identity transform to draw the bitmap buffer 1:1
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.drawImage(sceneBuffer, 0, 0);
+      ctx.restore();
+    }
+
     ctx.fillText(label, 0, -4);
     ctx.restore();
     ctx.restore();
   }
 
-  _drawAngle(ctx, vp) {
+  _drawAngle(ctx, vp, sceneBuffer) {
     const vcx = this.x1, vcy = this.y1;
     const vs = vp.worldToScreen(vcx, vcy);
     const r = Math.abs(this.offset) * vp.zoom;
@@ -555,32 +565,19 @@ export class DimensionPrimitive extends Primitive {
       ctx.fillStyle = 'rgba(255,180,50,0.9)';
     }
 
-    // Draw the arc — split around label midpoint for a gap
+    // Draw the full arc (no gap)
     const midA = -(startA + sweepA / 2);
     const fontSize = Math.max(10, 12);
     ctx.font = `${fontSize}px 'Consolas', monospace`;
     const label = this.displayLabel;
     const tm = ctx.measureText(label);
-    const gapHalf = (tm.width / 2 + 4) / r; // angular half-gap in radians (arc length / radius)
 
     const arcStart = -startA;
     const arcEnd = -(startA + sweepA);
-    const gapCenter = midA; // angle of label midpoint
 
-    // Draw arc in two parts, skipping the gap
-    if (Math.abs(sweepA) > gapHalf * 2) {
-      ctx.beginPath();
-      ctx.arc(vs.x, vs.y, r, arcStart, gapCenter + gapHalf, true);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.arc(vs.x, vs.y, r, gapCenter - gapHalf, arcEnd, true);
-      ctx.stroke();
-    } else {
-      // Arc too small for a gap — draw full
-      ctx.beginPath();
-      ctx.arc(vs.x, vs.y, r, arcStart, arcEnd, true);
-      ctx.stroke();
-    }
+    ctx.beginPath();
+    ctx.arc(vs.x, vs.y, r, arcStart, arcEnd, true);
+    ctx.stroke();
 
     // Arrow at end
     const endAngle = startA + sweepA;
@@ -595,6 +592,21 @@ export class DimensionPrimitive extends Primitive {
     const labelR = r + 12;
     const lx = vs.x + labelR * Math.cos(midA);
     const ly = vs.y + labelR * Math.sin(midA);
+
+    // Blit scene buffer behind label text
+    const pad = 4;
+    const lw = tm.width + pad * 2;
+    const lh = fontSize + pad * 2;
+    if (sceneBuffer) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(lx - lw / 2, ly - lh / 2, lw, lh);
+      ctx.clip();
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.drawImage(sceneBuffer, 0, 0);
+      ctx.restore();
+    }
+
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(label, lx, ly);

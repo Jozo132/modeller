@@ -18,6 +18,10 @@ export class Renderer {
     // Temp entity for tool preview
     this.previewEntities = [];
     this.hoverEntity = null;
+
+    // Off-screen buffer for scene without dimensions (used for label backgrounds)
+    this._bufferCanvas = null;
+    this._bufferCtx = null;
   }
 
   /** Full redraw */
@@ -33,15 +37,36 @@ export class Renderer {
 
       if (state.gridVisible) this._drawGrid();
       this._drawAxes();
-      this._drawEntities();
+      this._drawEntities();       // draws everything EXCEPT dimensions
       this._drawPoints();
       this._drawConstraints();
       this._drawPreview();
+
+      // Capture scene buffer (everything drawn so far, no dimensions)
+      this._captureSceneBuffer();
+
+      // Now draw dimensions on top, passing the scene buffer for label backgrounds
+      this._drawDimensions();
+
       this._drawSnapIndicator();
       this._drawCrosshair();
     } catch (err) {
       logError('Renderer.render failed', err);
     }
+  }
+
+  /** Capture the current canvas content as a buffer (scene without dimensions). */
+  _captureSceneBuffer() {
+    const canvas = this.vp.canvas;
+    const w = canvas.width, h = canvas.height;
+    if (!this._bufferCanvas || this._bufferCanvas.width !== w || this._bufferCanvas.height !== h) {
+      this._bufferCanvas = document.createElement('canvas');
+      this._bufferCanvas.width = w;
+      this._bufferCanvas.height = h;
+      this._bufferCtx = this._bufferCanvas.getContext('2d');
+    }
+    this._bufferCtx.clearRect(0, 0, w, h);
+    this._bufferCtx.drawImage(canvas, 0, 0);
   }
 
   // --- Grid ---
@@ -125,12 +150,13 @@ export class Renderer {
     ctx.stroke();
   }
 
-  // --- Entities ---
+  // --- Entities (excludes dimensions — they are drawn after buffer capture) ---
   _drawEntities() {
     const { ctx, vp } = this;
     for (const entity of state.entities) {
       if (!entity.visible) continue;
       if (!state.isLayerVisible(entity.layer)) continue;
+      if (entity.type === 'dimension') continue; // drawn separately
 
       const baseColor = entity.color || state.getLayerColor(entity.layer);
       const color = this._fc.entities.has(entity)
@@ -156,6 +182,36 @@ export class Renderer {
       // Draw selection grips
       if (entity.selected) {
         this._drawGrips(entity);
+      }
+    }
+  }
+
+  // --- Dimensions (drawn after scene buffer capture) ---
+  _drawDimensions() {
+    const { ctx, vp } = this;
+    const buf = this._bufferCanvas;
+    for (const dim of state.scene.dimensions) {
+      if (!dim.visible) continue;
+      if (!state.isLayerVisible(dim.layer)) continue;
+
+      if (dim.selected) {
+        ctx.strokeStyle = '#00bfff';
+        ctx.fillStyle = '#00bfff';
+        ctx.lineWidth = 2;
+      } else if (dim === this.hoverEntity) {
+        ctx.strokeStyle = '#7fd8ff';
+        ctx.fillStyle = '#7fd8ff';
+        ctx.lineWidth = Math.max(1.5, (dim.lineWidth || 1) + 0.5);
+      } else {
+        ctx.strokeStyle = dim.color || state.getLayerColor(dim.layer);
+        ctx.fillStyle = dim.color || state.getLayerColor(dim.layer);
+        ctx.lineWidth = dim.lineWidth;
+      }
+
+      dim.draw(ctx, vp, buf);
+
+      if (dim.selected) {
+        this._drawGrips(dim);
       }
     }
   }
