@@ -3553,8 +3553,9 @@ class App {
 
     // Show custom planes if any
     const part = this._partManager.getPart();
-    if (part && part._customPlanes && part._customPlanes.length > 0) {
-      part._customPlanes.forEach((plane) => {
+    const customPlanes = part ? part.getCustomPlanes() : [];
+    if (customPlanes.length > 0) {
+      customPlanes.forEach((plane) => {
         const div = document.createElement('div');
         div.className = 'node-tree-item node-tree-plane';
         div.innerHTML = `<span class="node-tree-icon" style="color:#ffaa44">▬</span><span class="node-tree-label">${plane.name}</span>`;
@@ -3755,23 +3756,23 @@ class App {
     const rotUVal = parseFloat(rotU) || 0;
     const rotVVal = parseFloat(rotV) || 0;
 
-    // Store the plane definition in the part
-    if (!this._partManager.part) this._partManager.createPart('Part1');
-    if (!this._partManager.part._customPlanes) {
-      this._partManager.part._customPlanes = [];
-    }
+    // Store the plane definition in the part using public API
+    const part = this._partManager.getPart();
+    if (!part) this._partManager.createPart('Part1');
+    const activePart = this._partManager.getPart();
 
-    const planeId = `plane_${this._partManager.part._customPlanes.length + 1}`;
+    const existingPlanes = activePart.getCustomPlanes();
+    const planeId = `plane_${existingPlanes.length + 1}`;
     const planeDef = {
       id: planeId,
-      name: `Plane ${this._partManager.part._customPlanes.length + 1}`,
+      name: `Plane ${existingPlanes.length + 1}`,
       offset: offsetVal,
       rotationU: rotUVal,
       rotationV: rotVVal,
       basePlane: 'XY',
     };
 
-    this._partManager.part._customPlanes.push(planeDef);
+    activePart.addCustomPlane(planeDef);
     this._updateNodeTree();
     this.setStatus(`Created plane: ${planeDef.name} (offset: ${offsetVal}, rotU: ${rotUVal}°, rotV: ${rotVVal}°)`);
     info(`Created custom plane: ${planeId}`);
@@ -3866,13 +3867,12 @@ class App {
       return;
     }
 
-    // For extrude cut, use negative direction
-    const effectiveDistance = isCut ? -Math.abs(distVal) : Math.abs(distVal);
-
-    const feature = this._partManager.extrude(this._lastSketchFeatureId, effectiveDistance);
+    const absDistance = Math.abs(distVal);
+    const feature = this._partManager.extrude(this._lastSketchFeatureId, absDistance);
     if (feature) {
-      // Mark the operation mode for extrude cut
       if (isCut) {
+        // Extrude cut: reverse direction and set subtract operation
+        feature.direction = -1;
         feature.operation = 'subtract';
       }
     }
@@ -3882,7 +3882,7 @@ class App {
     this._update3DView();
     this._updateOperationButtons();
 
-    this.setStatus(`${opName}: ${Math.abs(distVal)} units`);
+    this.setStatus(`${opName}: ${absDistance} units`);
     info(`Created ${opName.toLowerCase()} feature: ${feature ? feature.id : 'failed'}`);
   }
 }
