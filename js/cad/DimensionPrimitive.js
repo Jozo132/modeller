@@ -393,6 +393,16 @@ export class DimensionPrimitive extends Primitive {
       const e2x = vcx + r * Math.cos(s1), e2y = vcy + r * Math.sin(s1);
       return Math.min(Math.hypot(px - e1x, py - e1y), Math.hypot(px - e2x, py - e2y));
     }
+    if (this.dimType === 'dx') {
+      // Horizontal dim line at y = y1 + offset
+      const dimY = this.y1 + this.offset;
+      return _segDist(px, py, this.x1, dimY, this.x2, dimY);
+    }
+    if (this.dimType === 'dy') {
+      // Vertical dim line at x = x1 + offset
+      const dimX = this.x1 + this.offset;
+      return _segDist(px, py, dimX, this.y1, dimX, this.y2);
+    }
     const dx = this.x2 - this.x1, dy = this.y2 - this.y1;
     const len = Math.hypot(dx, dy) || 1e-9;
     const nx = -dy / len, ny = dx / len;
@@ -413,13 +423,33 @@ export class DimensionPrimitive extends Primitive {
     const dx = this.x2 - this.x1, dy = this.y2 - this.y1;
     const len = Math.hypot(dx, dy);
     if (len === 0) return;
-    const nx = -dy / len, ny = dx / len;
-    const ox = nx * this.offset, oy = ny * this.offset;
 
-    const p1 = vp.worldToScreen(this.x1, this.y1);
-    const p2 = vp.worldToScreen(this.x2, this.y2);
-    const d1 = vp.worldToScreen(this.x1 + ox, this.y1 + oy);
-    const d2 = vp.worldToScreen(this.x2 + ox, this.y2 + oy);
+    // Compute the four key points: p1/p2 = source endpoints, d1/d2 = dimension line endpoints
+    let p1, p2, d1, d2;
+
+    if (this.dimType === 'dx') {
+      // Horizontal dimension line: measure ΔX, extension lines are vertical
+      const dimY = this.y1 + this.offset; // y-position of the horizontal dimension line
+      p1 = vp.worldToScreen(this.x1, this.y1);
+      p2 = vp.worldToScreen(this.x2, this.y2);
+      d1 = vp.worldToScreen(this.x1, dimY);
+      d2 = vp.worldToScreen(this.x2, dimY);
+    } else if (this.dimType === 'dy') {
+      // Vertical dimension line: measure ΔY, extension lines are horizontal
+      const dimX = this.x1 + this.offset; // x-position of the vertical dimension line
+      p1 = vp.worldToScreen(this.x1, this.y1);
+      p2 = vp.worldToScreen(this.x2, this.y2);
+      d1 = vp.worldToScreen(dimX, this.y1);
+      d2 = vp.worldToScreen(dimX, this.y2);
+    } else {
+      // Standard perpendicular offset
+      const nx = -dy / len, ny = dx / len;
+      const ox = nx * this.offset, oy = ny * this.offset;
+      p1 = vp.worldToScreen(this.x1, this.y1);
+      p2 = vp.worldToScreen(this.x2, this.y2);
+      d1 = vp.worldToScreen(this.x1 + ox, this.y1 + oy);
+      d2 = vp.worldToScreen(this.x2 + ox, this.y2 + oy);
+    }
 
     ctx.save();
     // Constraint dimensions shown in a different color

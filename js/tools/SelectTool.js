@@ -351,6 +351,14 @@ export class SelectTool extends BaseTool {
       // Offset = distance from vertex to mouse
       return Math.hypot(wx - dim.x1, wy - dim.y1) || 10;
     }
+    if (dim.dimType === 'dx') {
+      // Offset moves the horizontal dim line vertically
+      return (wy - dim.y1) || 10;
+    }
+    if (dim.dimType === 'dy') {
+      // Offset moves the vertical dim line horizontally
+      return (wx - dim.x1) || 10;
+    }
     // Linear: perpendicular projection onto the dimension baseline normal
     const dx = dim.x2 - dim.x1, dy = dim.y2 - dim.y1;
     const len = Math.hypot(dx, dy) || 1e-9;

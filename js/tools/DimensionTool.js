@@ -305,6 +305,14 @@ export class DimensionTool extends BaseTool {
     if (info.dimType === 'angle') {
       return Math.hypot(wx - info.x1, wy - info.y1);
     }
+    if (info.dimType === 'dx') {
+      // Offset moves the horizontal dim line vertically
+      return (wy - info.y1) || 10;
+    }
+    if (info.dimType === 'dy') {
+      // Offset moves the vertical dim line horizontally
+      return (wx - info.x1) || 10;
+    }
     const dx = info.x2 - info.x1, dy = info.y2 - info.y1;
     const len = Math.hypot(dx, dy) || 1e-9;
     const nx = -dy / len, ny = dx / len;
