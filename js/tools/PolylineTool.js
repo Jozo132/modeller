@@ -27,10 +27,11 @@ export class PolylineTool extends BaseTool {
   _commitSegments(closed) {
     const pts = this._points;
     const layer = state.activeLayer;
+    const construction = state.constructionMode;
     const count = closed ? pts.length : pts.length - 1;
     for (let i = 0; i < count; i++) {
       const a = pts[i], b = pts[(i + 1) % pts.length];
-      state.scene.addSegment(a.x, a.y, b.x, b.y, { merge: true, layer });
+      state.scene.addSegment(a.x, a.y, b.x, b.y, { merge: true, layer, construction });
     }
     state.emit('change');
   }

@@ -57,30 +57,33 @@ export class Scene {
   // -----------------------------------------------------------------------
 
   /** Add a line segment, auto-merging endpoints. */
-  addSegment(x1, y1, x2, y2, { merge = true, layer = '0', color = null } = {}) {
+  addSegment(x1, y1, x2, y2, { merge = true, layer = '0', color = null, construction = false } = {}) {
     const p1 = merge ? this.getOrCreatePoint(x1, y1) : this.addPoint(x1, y1);
     const p2 = merge ? this.getOrCreatePoint(x2, y2) : this.addPoint(x2, y2);
     const seg = new PSegment(p1, p2);
     seg.layer = layer;
     seg.color = color;
+    seg.construction = construction;
     this.segments.push(seg);
     return seg;
   }
 
-  addCircle(cx, cy, radius, { merge = true, layer = '0', color = null } = {}) {
+  addCircle(cx, cy, radius, { merge = true, layer = '0', color = null, construction = false } = {}) {
     const center = merge ? this.getOrCreatePoint(cx, cy) : this.addPoint(cx, cy);
     const c = new PCircle(center, radius);
     c.layer = layer;
     c.color = color;
+    c.construction = construction;
     this.circles.push(c);
     return c;
   }
 
-  addArc(cx, cy, radius, startAngle, endAngle, { merge = true, layer = '0', color = null } = {}) {
+  addArc(cx, cy, radius, startAngle, endAngle, { merge = true, layer = '0', color = null, construction = false } = {}) {
     const center = merge ? this.getOrCreatePoint(cx, cy) : this.addPoint(cx, cy);
     const a = new PArc(center, radius, startAngle, endAngle);
     a.layer = layer;
     a.color = color;
+    a.construction = construction;
     this.arcs.push(a);
     return a;
   }

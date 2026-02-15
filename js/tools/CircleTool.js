@@ -28,7 +28,7 @@ export class CircleTool extends BaseTool {
       if (radius > 0) {
         takeSnapshot();
         state.scene.addCircle(this._cx, this._cy, radius,
-          { merge: true, layer: state.activeLayer });
+          { merge: true, layer: state.activeLayer, construction: state.constructionMode });
         state.emit('change');
       }
       this.step = 0;

@@ -106,6 +106,22 @@ html, body {
   color: #fff;
 }
 
+#toolbar button#btn-construction.active {
+  background: rgba(144,238,144,0.25);
+  border-color: #90EE90;
+  color: #90EE90;
+}
+
+#toolbar button.construction-mode {
+  color: #90EE90;
+}
+
+#toolbar button.construction-mode.active {
+  background: rgba(144,238,144,0.25);
+  border-color: #90EE90;
+  color: #90EE90;
+}
+
 /* Properties Panel */
 #properties-panel {
   position: fixed;

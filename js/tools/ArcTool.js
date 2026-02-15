@@ -34,7 +34,7 @@ export class ArcTool extends BaseTool {
       const endAngle = Math.atan2(wy - this._cy, wx - this._cx);
       takeSnapshot();
       state.scene.addArc(this._cx, this._cy, this._radius, this._startAngle, endAngle,
-        { merge: true, layer: state.activeLayer });
+        { merge: true, layer: state.activeLayer, construction: state.constructionMode });
       state.emit('change');
       this.step = 0;
       this.app.renderer.previewEntities = [];

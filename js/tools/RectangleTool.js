@@ -27,11 +27,12 @@ export class RectangleTool extends BaseTool {
       takeSnapshot();
       const x1 = this._startX, y1 = this._startY, x2 = wx, y2 = wy;
       const layer = state.activeLayer;
+      const construction = state.constructionMode;
       // Create 4 segments sharing corner points (auto-merge via scene)
-      state.scene.addSegment(x1, y1, x2, y1, { merge: true, layer });
-      state.scene.addSegment(x2, y1, x2, y2, { merge: true, layer });
-      state.scene.addSegment(x2, y2, x1, y2, { merge: true, layer });
-      state.scene.addSegment(x1, y2, x1, y1, { merge: true, layer });
+      state.scene.addSegment(x1, y1, x2, y1, { merge: true, layer, construction });
+      state.scene.addSegment(x2, y1, x2, y2, { merge: true, layer, construction });
+      state.scene.addSegment(x2, y2, x1, y2, { merge: true, layer, construction });
+      state.scene.addSegment(x1, y2, x1, y1, { merge: true, layer, construction });
       state.emit('change');
       this.step = 0;
       this.app.renderer.previewEntities = [];

@@ -18,6 +18,7 @@ class AppState {
     this.activeTool = 'select';
     this.snapEnabled = true;
     this.orthoEnabled = false;
+    this.constructionMode = false;
     this.gridVisible = true;
     this.gridSize = 10;
 

@@ -382,6 +382,17 @@ class App {
     document.getElementById('status-message').textContent = msg;
   }
 
+  _toggleConstructionMode() {
+    state.constructionMode = !state.constructionMode;
+    const btn = document.getElementById('btn-construction');
+    btn.classList.toggle('active', state.constructionMode);
+    // Tint all Draw tool buttons when construction mode is active
+    const drawBtns = document.querySelectorAll('#btn-line, #btn-rect, #btn-circle, #btn-arc, #btn-polyline');
+    for (const b of drawBtns) {
+      b.classList.toggle('construction-mode', state.constructionMode);
+    }
+  }
+
   // --- Canvas events ---
   _bindCanvasEvents() {
     const canvas = this.canvas;
@@ -656,6 +667,11 @@ class App {
       document.getElementById('status-ortho').classList.toggle('active', state.orthoEnabled);
     });
 
+    // Construction mode toggle
+    document.getElementById('btn-construction').addEventListener('click', () => {
+      this._toggleConstructionMode();
+    });
+
     // Layer add
     document.getElementById('btn-add-layer').addEventListener('click', async () => {
       const name = await showPrompt({
@@ -765,7 +781,7 @@ class App {
           document.getElementById('status-ortho').classList.toggle('active', state.orthoEnabled);
           break;
         case 'q': case 'Q': {
-          // Toggle construction on selected primitives
+          // If primitives are selected, toggle their construction flag
           const sel = state.selectedEntities.filter(e => e.type === 'segment' || e.type === 'circle' || e.type === 'arc');
           if (sel.length > 0) {
             takeSnapshot();
@@ -773,6 +789,9 @@ class App {
             for (const e of sel) e.construction = newVal;
             state.emit('change');
             this._scheduleRender();
+          } else {
+            // Otherwise toggle the construction drawing mode
+            this._toggleConstructionMode();
           }
           break;
         }

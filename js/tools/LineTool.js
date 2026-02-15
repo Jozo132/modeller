@@ -27,7 +27,7 @@ export class LineTool extends BaseTool {
     } else {
       takeSnapshot();
       const seg = state.scene.addSegment(this._startX, this._startY, wx, wy,
-        { merge: true, layer: state.activeLayer });
+        { merge: true, layer: state.activeLayer, construction: state.constructionMode });
       state.emit('entity:add', seg);
       state.emit('change');
       // Chain: next line starts from end of previous
