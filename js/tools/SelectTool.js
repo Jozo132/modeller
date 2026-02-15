@@ -36,6 +36,9 @@ export class SelectTool extends BaseTool {
     // Shape drag state
     this._dragShape = null;       // shape being dragged (segment / circle / arc)
     this._dragShapePts = [];      // non-fixed points of that shape
+
+    // Dimension drag state (repositioning the offset)
+    this._dragDimension = null;   // DimensionPrimitive being dragged
   }
 
   activate() {
@@ -49,6 +52,7 @@ export class SelectTool extends BaseTool {
     this._dragPoint = null;
     this._dragShape = null;
     this._dragShapePts = [];
+    this._dragDimension = null;
     super.deactivate();
   }
 
@@ -94,7 +98,7 @@ export class SelectTool extends BaseTool {
 
   onClick(wx, wy, event) {
     // If we just finished a drag, suppress the click
-    if (this._dragPoint || this._dragShape) return;
+    if (this._dragPoint || this._dragShape || this._dragDimension) return;
     if (this._isDragging) return;
 
     const hit = this._hitTest(wx, wy);
@@ -136,8 +140,21 @@ export class SelectTool extends BaseTool {
       return;
     }
 
-    // 2. Shape drag (segment / circle / arc)
-    const shape = this._findClosestEntity(wx, wy, PICK_PX);
+    // 2. Dimension drag — reposition offset
+    const entity = this._findClosestEntity(wx, wy, PICK_PX);
+    if (entity && entity.type === 'dimension') {
+      this._dragDimension = entity;
+      this._dragPoint = null;
+      this._dragShape = null;
+      this._dragShapePts = [];
+      this._dragTookSnapshot = false;
+      this._isDragging = false;
+      this._dragStart = { wx, wy, sx, sy };
+      return;
+    }
+
+    // 3. Shape drag (segment / circle / arc)
+    const shape = entity;
     if (shape && !_isFullyConstrained(shape)) {
       const movable = _shapePoints(shape).filter(p => !p.fixed);
       if (movable.length > 0) {
@@ -151,12 +168,13 @@ export class SelectTool extends BaseTool {
       }
     }
 
-    // 3. Default — box select / click-select
+    // 4. Default — box select / click-select
     this._dragStart = { wx, wy, sx, sy };
     this._isDragging = false;
     this._dragPoint = null;
     this._dragShape = null;
     this._dragShapePts = [];
+    this._dragDimension = null;
   }
 
   onMouseMove(wx, wy, sx, sy) {
@@ -172,6 +190,21 @@ export class SelectTool extends BaseTool {
         this._dragPoint.x = wx;
         this._dragPoint.y = wy;
         state.scene.solve();
+        state.emit('change');
+      }
+      return;
+    }
+
+    // ---- Dimension drag in progress ----
+    if (this._dragDimension && this._dragStart) {
+      const dx = sx - this._dragStart.sx;
+      const dy = sy - this._dragStart.sy;
+      if (!this._isDragging && (Math.abs(dx) > DRAG_THRESHOLD || Math.abs(dy) > DRAG_THRESHOLD)) {
+        this._isDragging = true;
+        if (!this._dragTookSnapshot) { takeSnapshot(); this._dragTookSnapshot = true; }
+      }
+      if (this._isDragging) {
+        this._dragDimension.offset = this._computeDimOffset(this._dragDimension, wx, wy);
         state.emit('change');
       }
       return;
@@ -237,6 +270,18 @@ export class SelectTool extends BaseTool {
       return;
     }
 
+    // ---- Finish dimension drag ----
+    if (this._dragDimension) {
+      if (this._isDragging) {
+        state.emit('change');
+      }
+      this._dragDimension = null;
+      this._isDragging = false;
+      this._dragStart = null;
+      this._dragTookSnapshot = false;
+      return;
+    }
+
     // ---- Finish shape drag ----
     if (this._dragShape) {
       if (this._isDragging) {
@@ -292,11 +337,26 @@ export class SelectTool extends BaseTool {
     this._dragPoint = null;
     this._dragShape = null;
     this._dragShapePts = [];
+    this._dragDimension = null;
     this._isDragging = false;
     this._dragStart = null;
     this._selectionBox = null;
     this._dragTookSnapshot = false;
     super.onCancel();
+  }
+
+  /** Compute new offset for a dimension based on world mouse position. */
+  _computeDimOffset(dim, wx, wy) {
+    if (dim.dimType === 'angle') {
+      // Offset = distance from vertex to mouse
+      return Math.hypot(wx - dim.x1, wy - dim.y1) || 10;
+    }
+    // Linear: perpendicular projection onto the dimension baseline normal
+    const dx = dim.x2 - dim.x1, dy = dim.y2 - dim.y1;
+    const len = Math.hypot(dx, dy) || 1e-9;
+    const nx = -dy / len, ny = dx / len;
+    const dot = (wx - dim.x1) * nx + (wy - dim.y1) * ny;
+    return dot || 10;
   }
 
   /** Render the selection box overlay */
