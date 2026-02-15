@@ -114,15 +114,29 @@ export class Scene {
 
     // Grid
     if (this.gridVisible) {
-      generateGridLines(cmd, vp, this.gridSize, this.gridDivisions, this.gridColor);
+      this.renderGrid(cmd, vp);
     }
 
     // Axes
     if (this.axesVisible) {
-      generateAxes(cmd, vp, this.axesSize);
+      this.renderAxes(cmd, vp);
     }
 
     // Nodes
+    this.renderNodes(cmd, vp);
+
+    cmd.emitEnd();
+  }
+
+  renderGrid(cmd: CommandBuffer, vp: Mat4): void {
+    generateGridLines(cmd, vp, this.gridSize, this.gridDivisions, this.gridColor);
+  }
+
+  renderAxes(cmd: CommandBuffer, vp: Mat4): void {
+    generateAxes(cmd, vp, this.axesSize);
+  }
+
+  renderNodes(cmd: CommandBuffer, vp: Mat4): void {
     for (let i: i32 = 0; i < this.nodes.length; i++) {
       const node = unchecked(this.nodes[i]);
       if (!node.visible) continue;
@@ -136,7 +150,5 @@ export class Scene {
           0, 0, 0);
       }
     }
-
-    cmd.emitEnd();
   }
 }

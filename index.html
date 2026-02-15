@@ -125,6 +125,34 @@
   <!-- Unified 3D View (replaces 2D canvas) -->
   <div id="view-3d"></div>
 
+  <!-- Node Tree Overlay (transparent, top-left of viewport) -->
+  <div id="node-tree" class="node-tree">
+    <div class="node-tree-header">Part</div>
+    <div class="node-tree-content" id="node-tree-content">
+      <div class="node-tree-item node-tree-origin">
+        <span class="node-tree-icon">⊕</span>
+        <span class="node-tree-label">Origin</span>
+      </div>
+      <div class="node-tree-children">
+        <div class="node-tree-item node-tree-plane">
+          <span class="node-tree-icon" style="color:#ff4444">▬</span>
+          <span class="node-tree-label">XY Plane</span>
+        </div>
+        <div class="node-tree-item node-tree-plane">
+          <span class="node-tree-icon" style="color:#44ff44">▬</span>
+          <span class="node-tree-label">XZ Plane</span>
+        </div>
+        <div class="node-tree-item node-tree-plane">
+          <span class="node-tree-icon" style="color:#4488ff">▬</span>
+          <span class="node-tree-label">YZ Plane</span>
+        </div>
+      </div>
+      <div id="node-tree-features" class="node-tree-features">
+        <!-- Feature history timeline populated dynamically -->
+      </div>
+    </div>
+  </div>
+
   <!-- Legacy Canvas (hidden, kept for compatibility) -->
   <canvas id="cad-canvas" style="display:none;"></canvas>
 

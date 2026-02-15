@@ -3344,6 +3344,7 @@ class App {
     // Listen to part changes
     this._partManager.addListener((part) => {
       this._featurePanel.update();
+      this._updateNodeTree();
       this._update3DView();
       this._updateOperationButtons();
     });
@@ -3452,6 +3453,7 @@ class App {
     this._lastSketchFeatureId = sketchFeature.id;
     
     this._featurePanel.update();
+    this._updateNodeTree();
     this._update3DView();
     this._updateOperationButtons();
     
@@ -3468,6 +3470,7 @@ class App {
     const feature = this._partManager.extrude(this._lastSketchFeatureId, distance);
     
     this._featurePanel.update();
+    this._updateNodeTree();
     this._update3DView();
     
     this.setStatus(`Extruded sketch: ${distance} units`);
@@ -3483,6 +3486,7 @@ class App {
     const feature = this._partManager.revolve(this._lastSketchFeatureId, angle);
     
     this._featurePanel.update();
+    this._updateNodeTree();
     this._update3DView();
     
     const degrees = (angle * 180 / Math.PI).toFixed(1);
@@ -3518,6 +3522,45 @@ class App {
       error('Failed to render 3D part:', err);
       this.setStatus('Error rendering 3D part');
     }
+  }
+
+  _updateNodeTree() {
+    const container = document.getElementById('node-tree-features');
+    if (!container) return;
+    
+    const features = this._partManager.getFeatures();
+    container.innerHTML = '';
+    
+    if (features.length === 0) return;
+
+    const featureIcons = {
+      'sketch': '📐',
+      'extrude': '⬆️',
+      'revolve': '🔄',
+      'fillet': '🔘',
+      'chamfer': '📐'
+    };
+
+    features.forEach((feature) => {
+      const div = document.createElement('div');
+      div.className = 'node-tree-feature';
+      if (feature.suppressed) div.classList.add('suppressed');
+      if (this._featurePanel && this._featurePanel.selectedFeatureId === feature.id) {
+        div.classList.add('active');
+      }
+      
+      const icon = featureIcons[feature.type] || '📦';
+      div.innerHTML = `<span class="node-tree-icon">${icon}</span><span class="node-tree-label">${feature.name}</span>`;
+      
+      div.addEventListener('click', () => {
+        if (this._featurePanel) {
+          this._featurePanel.selectFeature(feature.id);
+        }
+        this._updateNodeTree();
+      });
+      
+      container.appendChild(div);
+    });
   }
 
   _updateOperationButtons() {

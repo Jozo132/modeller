@@ -203,23 +203,15 @@ export class WasmRenderer {
 
   /**
    * Render 2D sketch entities.
-   * The WASM module handles the grid/axes. 2D overlay (entities, dimensions,
-   * constraints, hover, snap, etc.) is drawn on the overlay canvas via Canvas2D
-   * since those elements are highly dynamic text/icons.
+   * Pushes entity data to WASM for GPU-accelerated rendering.
+   * Text/dimension labels and constraint icons remain on the overlay canvas
+   * since WebGL does not natively support text.
    */
   render2DScene(scene, overlays = {}) {
-    if (!scene) return;
+    if (!scene || !this._ready) return;
 
-    const ctx = this.overlayCtx;
-    const w = this.overlayCanvas.width;
-    const h = this.overlayCanvas.height;
-    ctx.clearRect(0, 0, w, h);
-
-    // Coordinate mapping helpers
-    const bounds = this._orthoBounds;
-    const worldToScreenX = (wx) => ((wx - bounds.left) / (bounds.right - bounds.left)) * w;
-    const worldToScreenY = (wy) => ((bounds.top - wy) / (bounds.top - bounds.bottom)) * h;
-    const wpp = (bounds.right - bounds.left) / w; // world per pixel
+    const wasm = this.wasm;
+    wasm.clearEntities();
 
     const isLayerVisible = overlays.isLayerVisible || (() => true);
     const getLayerColor = overlays.getLayerColor || (() => '#9CDCFE');
@@ -230,108 +222,138 @@ export class WasmRenderer {
     const allDimensionsVisible = overlays.allDimensionsVisible !== false;
     const constraintIconsVisible = overlays.constraintIconsVisible !== false;
 
-    const colorForEntity = (entity) => {
-      if (entity.selected) return '#00bfff';
-      if (entity.construction) return '#90EE90';
-      return entity.color || getLayerColor(entity.layer);
+    // Entity flag constants
+    const F_VISIBLE = 1;
+    const F_SELECTED = 2;
+    const F_CONSTRUCTION = 4;
+    const F_HOVER = 8;
+    const F_FIXED = 16;
+    const F_PREVIEW = 32;
+
+    const DEFAULT_COLOR = [0.612, 0.863, 0.996, 1.0]; // #9CDCFE
+
+    const parseColor = (colorStr) => {
+      if (!colorStr || typeof colorStr !== 'string') return DEFAULT_COLOR;
+      if (colorStr.startsWith('#')) {
+        const hex = colorStr.slice(1);
+        if (hex.length === 6) {
+          return [
+            parseInt(hex.slice(0, 2), 16) / 255,
+            parseInt(hex.slice(2, 4), 16) / 255,
+            parseInt(hex.slice(4, 6), 16) / 255,
+            1.0
+          ];
+        }
+      }
+      return DEFAULT_COLOR;
     };
 
-    // --- Segments ---
+    const entityColor = (entity) => {
+      if (entity.selected) return [0, 0.749, 1, 1];
+      if (entity.construction) return [0.565, 0.933, 0.565, 1];
+      const c = entity.color || getLayerColor(entity.layer);
+      return parseColor(c);
+    };
+
+    // --- Push segments to WASM ---
     if (scene.segments) {
       scene.segments.forEach((seg) => {
         if (!seg.visible || !isLayerVisible(seg.layer) || !seg.p1 || !seg.p2) return;
-        const color = colorForEntity(seg);
-        ctx.strokeStyle = color;
-        ctx.lineWidth = seg.selected ? 2 : 1;
-
-        if (seg.construction) {
-          ctx.setLineDash([6, 4]);
-        } else {
-          ctx.setLineDash([]);
-        }
-
-        let x1 = seg.p1.x, y1 = seg.p1.y, x2 = seg.p2.x, y2 = seg.p2.y;
-
-        if (seg.construction) {
-          const dx = x2 - x1, dy = y2 - y1;
-          const len = Math.hypot(dx, dy) || 1e-9;
-          const ux = dx / len, uy = dy / len;
-          const ext = Math.max(w, h) * wpp * 2;
-          const ct = seg.constructionType || 'finite';
-          if (ct === 'infinite-both') {
-            x1 -= ux * ext; y1 -= uy * ext;
-            x2 += ux * ext; y2 += uy * ext;
-          } else if (ct === 'infinite-start') {
-            x1 -= ux * ext; y1 -= uy * ext;
-          } else if (ct === 'infinite-end') {
-            x2 += ux * ext; y2 += uy * ext;
-          }
-        }
-
-        ctx.beginPath();
-        ctx.moveTo(worldToScreenX(x1), worldToScreenY(y1));
-        ctx.lineTo(worldToScreenX(x2), worldToScreenY(y2));
-        ctx.stroke();
-        ctx.setLineDash([]);
+        let flags = F_VISIBLE;
+        if (seg.selected) flags |= F_SELECTED;
+        if (seg.construction) flags |= F_CONSTRUCTION;
+        if (hoverEntity && hoverEntity.id === seg.id) flags |= F_HOVER;
+        const [r, g, b, a] = entityColor(seg);
+        wasm.addEntitySegment(seg.p1.x, seg.p1.y, seg.p2.x, seg.p2.y, flags, r, g, b, a);
       });
     }
 
-    // --- Circles ---
+    // --- Push circles to WASM ---
     if (scene.circles) {
       scene.circles.forEach((circle) => {
         if (!circle.visible || !isLayerVisible(circle.layer)) return;
-        const color = colorForEntity(circle);
-        ctx.strokeStyle = color;
-        ctx.lineWidth = circle.selected ? 2 : 1;
-        ctx.setLineDash(circle.construction ? [6, 4] : []);
-        const sx = worldToScreenX(circle.center.x);
-        const sy = worldToScreenY(circle.center.y);
-        const sr = circle.radius / wpp;
-        ctx.beginPath();
-        ctx.arc(sx, sy, sr, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.setLineDash([]);
+        let flags = F_VISIBLE;
+        if (circle.selected) flags |= F_SELECTED;
+        if (circle.construction) flags |= F_CONSTRUCTION;
+        if (hoverEntity && hoverEntity.id === circle.id) flags |= F_HOVER;
+        const [r, g, b, a] = entityColor(circle);
+        wasm.addEntityCircle(circle.center.x, circle.center.y, circle.radius, flags, r, g, b, a);
       });
     }
 
-    // --- Arcs ---
+    // --- Push arcs to WASM ---
     if (scene.arcs) {
       scene.arcs.forEach((arc) => {
         if (!arc.visible || !isLayerVisible(arc.layer)) return;
-        const color = colorForEntity(arc);
-        ctx.strokeStyle = color;
-        ctx.lineWidth = arc.selected ? 2 : 1;
-        ctx.setLineDash(arc.construction ? [6, 4] : []);
-        const sx = worldToScreenX(arc.center.x);
-        const sy = worldToScreenY(arc.center.y);
-        const sr = arc.radius / wpp;
-        ctx.beginPath();
-        // Canvas arcs go clockwise; flip for Y-up world
-        ctx.arc(sx, sy, sr, -arc.startAngle, -arc.endAngle, true);
-        ctx.stroke();
-        ctx.setLineDash([]);
+        let flags = F_VISIBLE;
+        if (arc.selected) flags |= F_SELECTED;
+        if (arc.construction) flags |= F_CONSTRUCTION;
+        if (hoverEntity && hoverEntity.id === arc.id) flags |= F_HOVER;
+        const [r, g, b, a] = entityColor(arc);
+        wasm.addEntityArc(arc.center.x, arc.center.y, arc.radius, arc.startAngle, arc.endAngle, flags, r, g, b, a);
       });
     }
 
-    // --- Texts ---
-    if (scene.texts) {
-      scene.texts.forEach((text) => {
-        if (!text.visible || !isLayerVisible(text.layer)) return;
-        const color = colorForEntity(text);
-        ctx.fillStyle = color;
-        ctx.font = '14px Consolas, monospace';
-        ctx.textBaseline = 'middle';
-        const sx = worldToScreenX(text.x);
-        const sy = worldToScreenY(text.y);
-        ctx.save();
-        ctx.translate(sx, sy);
-        if (text.rotation) ctx.rotate(-text.rotation * Math.PI / 180);
-        ctx.fillText(text.text, 0, 0);
-        ctx.restore();
+    // --- Push points to WASM ---
+    if (scene.points) {
+      scene.points.forEach((point) => {
+        const refs = scene.shapesUsingPoint ? scene.shapesUsingPoint(point).length : 1;
+        const isHover = hoverEntity && hoverEntity.id === point.id;
+        if (refs <= 1 && !point.selected && !point.fixed && !isHover) return;
+        let flags = F_VISIBLE;
+        if (point.selected) flags |= F_SELECTED;
+        if (isHover) flags |= F_HOVER;
+        if (point.fixed) flags |= F_FIXED;
+        const size = point.selected ? 7 : (isHover ? 6 : (point.fixed ? 5 : 4));
+        const [r, g, b, a] = point.selected ? [0, 0.749, 1, 1]
+          : (isHover ? [0.498, 0.847, 1, 1]
+            : (point.fixed ? [1, 0.4, 0.267, 1]
+              : [1, 1, 0.4, 1]));
+        wasm.addEntityPoint(point.x, point.y, size, flags, r, g, b, a);
       });
     }
 
-    // --- Dimensions ---
+    // --- Push preview entities to WASM ---
+    if (previewEntities && previewEntities.length > 0) {
+      previewEntities.forEach((entity) => {
+        if (!entity) return;
+        const flags = F_VISIBLE | F_PREVIEW;
+        if (entity.type === 'segment' && entity.p1 && entity.p2) {
+          wasm.addEntitySegment(entity.p1.x, entity.p1.y, entity.p2.x, entity.p2.y, flags, 0, 0.749, 1, 1);
+        } else if (entity.type === 'circle' && entity.center) {
+          wasm.addEntityCircle(entity.center.x, entity.center.y, entity.radius, flags, 0, 0.749, 1, 1);
+        } else if (entity.type === 'arc' && entity.center) {
+          wasm.addEntityArc(entity.center.x, entity.center.y, entity.radius, entity.startAngle, entity.endAngle, flags, 0, 0.749, 1, 1);
+        }
+      });
+    }
+
+    // --- Snap point ---
+    if (snapPoint) {
+      wasm.setSnapPosition(snapPoint.x, snapPoint.y, 1);
+    } else {
+      wasm.setSnapPosition(0, 0, 0);
+    }
+
+    // --- Cursor crosshair ---
+    if (cursorWorld && this.mode === '2d') {
+      wasm.setCursorPosition(cursorWorld.x, cursorWorld.y, 1);
+    } else {
+      wasm.setCursorPosition(0, 0, 0);
+    }
+
+    // --- Overlay canvas for text-based elements (dimensions, constraint icons) ---
+    const ctx = this.overlayCtx;
+    const w = this.overlayCanvas.width;
+    const h = this.overlayCanvas.height;
+    ctx.clearRect(0, 0, w, h);
+
+    const bounds = this._orthoBounds;
+    const worldToScreenX = (wx) => ((wx - bounds.left) / (bounds.right - bounds.left)) * w;
+    const worldToScreenY = (wy) => ((bounds.top - wy) / (bounds.top - bounds.bottom)) * h;
+    const wpp = (bounds.right - bounds.left) / w;
+
+    // --- Dimensions (text overlay) ---
     if (allDimensionsVisible && scene.dimensions) {
       scene.dimensions.forEach((dim) => {
         if (!dim.visible || !isLayerVisible(dim.layer)) return;
@@ -379,7 +401,6 @@ export class WasmRenderer {
           d2 = { x: dim.x2 + nx * dim.offset, y: dim.y2 + ny * dim.offset };
         }
 
-        // Extension lines
         ctx.beginPath();
         ctx.moveTo(worldToScreenX(dim.x1), worldToScreenY(dim.y1));
         ctx.lineTo(worldToScreenX(d1.x), worldToScreenY(d1.y));
@@ -388,14 +409,11 @@ export class WasmRenderer {
         ctx.moveTo(worldToScreenX(dim.x2), worldToScreenY(dim.y2));
         ctx.lineTo(worldToScreenX(d2.x), worldToScreenY(d2.y));
         ctx.stroke();
-
-        // Dimension line
         ctx.beginPath();
         ctx.moveTo(worldToScreenX(d1.x), worldToScreenY(d1.y));
         ctx.lineTo(worldToScreenX(d2.x), worldToScreenY(d2.y));
         ctx.stroke();
 
-        // Label
         const mx = (d1.x + d2.x) / 2;
         const my = (d1.y + d2.y) / 2 + 12 * wpp;
         ctx.font = '12px Consolas, monospace';
@@ -406,18 +424,21 @@ export class WasmRenderer {
       });
     }
 
-    // --- Points ---
-    if (scene.points) {
-      scene.points.forEach((point) => {
-        const refs = scene.shapesUsingPoint ? scene.shapesUsingPoint(point).length : 1;
-        const isHover = hoverEntity && hoverEntity.id === point.id;
-        if (refs <= 1 && !point.selected && !point.fixed && !isHover) return;
-        const color = point.selected ? '#00bfff' : (isHover ? '#7fd8ff' : (point.fixed ? '#ff6644' : '#ffff66'));
-        const size = point.selected ? 7 : (isHover ? 6 : (point.fixed ? 5 : 4));
+    // --- Texts ---
+    if (scene.texts) {
+      scene.texts.forEach((text) => {
+        if (!text.visible || !isLayerVisible(text.layer)) return;
+        const color = text.selected ? '#00bfff' : (text.color || getLayerColor(text.layer));
         ctx.fillStyle = color;
-        ctx.beginPath();
-        ctx.arc(worldToScreenX(point.x), worldToScreenY(point.y), size / 2, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.font = '14px Consolas, monospace';
+        ctx.textBaseline = 'middle';
+        const sx = worldToScreenX(text.x);
+        const sy = worldToScreenY(text.y);
+        ctx.save();
+        ctx.translate(sx, sy);
+        if (text.rotation) ctx.rotate(-text.rotation * Math.PI / 180);
+        ctx.fillText(text.text, 0, 0);
+        ctx.restore();
       });
     }
 
@@ -443,75 +464,6 @@ export class WasmRenderer {
         ctx.font = '13px Consolas, monospace';
         ctx.fillText(icon, worldToScreenX(cx + 12 * wpp), worldToScreenY(cy + 10 * wpp));
       });
-    }
-
-    // --- Hover highlight ---
-    if (hoverEntity && hoverEntity.visible !== false) {
-      const hc = '#7fd8ff';
-      ctx.strokeStyle = hc;
-      ctx.lineWidth = 2;
-      ctx.setLineDash([]);
-      if (hoverEntity.type === 'segment' && hoverEntity.p1 && hoverEntity.p2) {
-        ctx.beginPath();
-        ctx.moveTo(worldToScreenX(hoverEntity.p1.x), worldToScreenY(hoverEntity.p1.y));
-        ctx.lineTo(worldToScreenX(hoverEntity.p2.x), worldToScreenY(hoverEntity.p2.y));
-        ctx.stroke();
-      } else if (hoverEntity.type === 'circle' && hoverEntity.center) {
-        ctx.beginPath();
-        ctx.arc(worldToScreenX(hoverEntity.center.x), worldToScreenY(hoverEntity.center.y), hoverEntity.radius / wpp, 0, Math.PI * 2);
-        ctx.stroke();
-      } else if (hoverEntity.type === 'arc' && hoverEntity.center) {
-        ctx.beginPath();
-        ctx.arc(worldToScreenX(hoverEntity.center.x), worldToScreenY(hoverEntity.center.y), hoverEntity.radius / wpp, -hoverEntity.startAngle, -hoverEntity.endAngle, true);
-        ctx.stroke();
-      }
-    }
-
-    // --- Preview entities ---
-    if (previewEntities && previewEntities.length > 0) {
-      ctx.strokeStyle = '#00bfff';
-      ctx.lineWidth = 1;
-      ctx.setLineDash([]);
-      previewEntities.forEach((entity) => {
-        if (!entity) return;
-        if (entity.type === 'segment' && entity.p1 && entity.p2) {
-          ctx.beginPath();
-          ctx.moveTo(worldToScreenX(entity.p1.x), worldToScreenY(entity.p1.y));
-          ctx.lineTo(worldToScreenX(entity.p2.x), worldToScreenY(entity.p2.y));
-          ctx.stroke();
-        } else if (entity.type === 'circle' && entity.center) {
-          ctx.beginPath();
-          ctx.arc(worldToScreenX(entity.center.x), worldToScreenY(entity.center.y), entity.radius / wpp, 0, Math.PI * 2);
-          ctx.stroke();
-        } else if (entity.type === 'arc' && entity.center) {
-          ctx.beginPath();
-          ctx.arc(worldToScreenX(entity.center.x), worldToScreenY(entity.center.y), entity.radius / wpp, -entity.startAngle, -entity.endAngle, true);
-          ctx.stroke();
-        }
-      });
-    }
-
-    // --- Snap indicator ---
-    if (snapPoint) {
-      ctx.fillStyle = '#00ff99';
-      ctx.beginPath();
-      ctx.arc(worldToScreenX(snapPoint.x), worldToScreenY(snapPoint.y), 5, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    // --- Crosshair ---
-    if (cursorWorld && this.mode === '2d') {
-      ctx.strokeStyle = '#2a2a2a';
-      ctx.lineWidth = 1;
-      ctx.setLineDash([]);
-      const sx = worldToScreenX(cursorWorld.x);
-      const sy = worldToScreenY(cursorWorld.y);
-      ctx.beginPath();
-      ctx.moveTo(0, sy); ctx.lineTo(w, sy);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(sx, 0); ctx.lineTo(sx, h);
-      ctx.stroke();
     }
   }
 
