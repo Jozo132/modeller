@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Parametric 3D Modeling Demo</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      margin: 0;
+      padding: 20px;
+      background: #f5f5f5;
+    }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      background: white;
+      padding: 30px;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    h1 {
+      color: #333;
+      margin-top: 0;
+    }
+    .demo-section {
+      margin: 30px 0;
+      padding: 20px;
+      background: #f9f9f9;
+      border-radius: 4px;
+      border-left: 4px solid #4CAF50;
+    }
+    .controls {
+      margin: 20px 0;
+    }
+    button {
+      background: #4CAF50;
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      margin: 5px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    button:hover {
+      background: #45a049;
+    }
+    button:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+    .slider-control {
+      margin: 15px 0;
+    }
+    .slider-control label {
+      display: block;
+      margin-bottom: 5px;
+      font-weight: 500;
+    }
+    input[type="range"] {
+      width: 300px;
+    }
+    .value-display {
+      display: inline-block;
+      margin-left: 10px;
+      font-weight: bold;
+      color: #4CAF50;
+    }
+    pre {
+      background: #272822;
+      color: #f8f8f2;
+      padding: 15px;
+      border-radius: 4px;
+      overflow-x: auto;
+      font-size: 13px;
+    }
+    .feature-tree {
+      background: white;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      padding: 15px;
+      margin: 15px 0;
+    }
+    .feature-item {
+      padding: 8px;
+      margin: 4px 0;
+      background: #f5f5f5;
+      border-radius: 3px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .feature-item.active {
+      background: #e8f5e9;
+      border-left: 3px solid #4CAF50;
+    }
+    .feature-item.suppressed {
+      background: #ffebee;
+      border-left: 3px solid #f44336;
+      opacity: 0.6;
+    }
+    .feature-name {
+      font-weight: 500;
+    }
+    .feature-type {
+      color: #666;
+      font-size: 12px;
+    }
+    .geometry-info {
+      background: white;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      padding: 15px;
+      margin: 15px 0;
+    }
+    .info-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 5px 0;
+      border-bottom: 1px solid #eee;
+    }
+    .info-label {
+      font-weight: 500;
+      color: #666;
+    }
+    .info-value {
+      color: #333;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🔧 Parametric 3D Modeling Demo</h1>
+    <p>This demo showcases the parametric 3D part modeling system with sketch + operation workflow and recursive recalculation.</p>
+
+    <div class="demo-section">
+      <h2>Interactive Demo</h2>
+      <p>Create a simple part by sketching a rectangle and extruding it. Watch how modifying parameters automatically recalculates the geometry!</p>
+
+      <div class="controls">
+        <button id="btn-create-part">Create Part</button>
+        <button id="btn-add-extrude" disabled>Add Extrude</button>
+        <button id="btn-add-revolve" disabled>Add Revolve (Circle)</button>
+        <button id="btn-clear">Clear</button>
+      </div>
+
+      <div class="slider-control">
+        <label for="extrude-distance">
+          Extrusion Distance: <span class="value-display" id="extrude-value">25</span>mm
+        </label>
+        <input type="range" id="extrude-distance" min="5" max="100" value="25" disabled>
+      </div>
+
+      <div class="slider-control">
+        <label for="revolve-angle">
+          Revolution Angle: <span class="value-display" id="revolve-value">360</span>°
+        </label>
+        <input type="range" id="revolve-angle" min="45" max="360" value="360" disabled>
+      </div>
+
+      <h3>Feature Tree</h3>
+      <div id="feature-tree" class="feature-tree">
+        <p style="color: #999; text-align: center;">No features yet. Click "Create Part" to start.</p>
+      </div>
+
+      <h3>Geometry Information</h3>
+      <div id="geometry-info" class="geometry-info">
+        <p style="color: #999; text-align: center;">No geometry yet.</p>
+      </div>
+    </div>
+
+    <div class="demo-section">
+      <h2>Key Features</h2>
+      <ul>
+        <li><strong>Sketch + Operation Workflow:</strong> Each step builds on previous features</li>
+        <li><strong>Recursive Recalculation:</strong> Changing parameters automatically updates all dependent features</li>
+        <li><strong>Dependency Tracking:</strong> System validates operations and prevents breaking changes</li>
+        <li><strong>Feature Management:</strong> Add, remove, reorder, suppress features with validation</li>
+      </ul>
+    </div>
+
+    <div class="demo-section">
+      <h2>Code Example</h2>
+      <pre><code>import { Part, Sketch } from './js/cad/index.js';
+
+// Create a part
+const part = new Part('MyPart');
+
+// Create a sketch with a rectangle
+const sketch = new Sketch();
+sketch.addSegment(0, 0, 100, 0);
+sketch.addSegment(100, 0, 100, 50);
+sketch.addSegment(100, 50, 0, 50);
+sketch.addSegment(0, 50, 0, 0);
+
+// Add sketch as a feature
+const sketchFeature = part.addSketch(sketch);
+
+// Extrude the sketch
+const extrudeFeature = part.extrude(sketchFeature.id, 25);
+
+// Modify and watch automatic recalculation!
+part.modifyFeature(extrudeFeature.id, (feature) => {
+  feature.setDistance(50);
+});
+
+// Get the final 3D geometry
+const geometry = part.getFinalGeometry();
+console.log('Vertices:', geometry.geometry.vertices.length);
+console.log('Faces:', geometry.geometry.faces.length);</code></pre>
+    </div>
+  </div>
+
+  <script type="module">
+    import { Part, Sketch } from './js/cad/index.js';
+
+    let part = null;
+    let sketchFeature = null;
+    let extrudeFeature = null;
+    let revolveFeature = null;
+    let circleSketch = null;
+
+    const btnCreatePart = document.getElementById('btn-create-part');
+    const btnAddExtrude = document.getElementById('btn-add-extrude');
+    const btnAddRevolve = document.getElementById('btn-add-revolve');
+    const btnClear = document.getElementById('btn-clear');
+    const extrudeSlider = document.getElementById('extrude-distance');
+    const revolveSlider = document.getElementById('revolve-angle');
+    const extrudeValue = document.getElementById('extrude-value');
+    const revolveValue = document.getElementById('revolve-value');
+    const featureTreeDiv = document.getElementById('feature-tree');
+    const geometryInfoDiv = document.getElementById('geometry-info');
+
+    function updateUI() {
+      // Update feature tree
+      if (!part || part.getFeatures().length === 0) {
+        featureTreeDiv.innerHTML = '<p style="color: #999; text-align: center;">No features yet.</p>';
+      } else {
+        featureTreeDiv.innerHTML = '';
+        part.getFeatures().forEach((feature, index) => {
+          const div = document.createElement('div');
+          div.className = 'feature-item';
+          if (!feature.suppressed) {
+            div.classList.add('active');
+          } else {
+            div.classList.add('suppressed');
+          }
+          
+          const result = part.featureTree.results[feature.id];
+          const status = feature.suppressed ? 'suppressed' : (result && result.error ? 'error' : 'ok');
+          
+          div.innerHTML = `
+            <div>
+              <div class="feature-name">${index + 1}. ${feature.name}</div>
+              <div class="feature-type">${feature.type} - ${status}</div>
+            </div>
+          `;
+          featureTreeDiv.appendChild(div);
+        });
+      }
+
+      // Update geometry info
+      const geometry = part ? part.getFinalGeometry() : null;
+      if (!geometry) {
+        geometryInfoDiv.innerHTML = '<p style="color: #999; text-align: center;">No geometry yet.</p>';
+      } else {
+        let html = `
+          <div class="info-row">
+            <span class="info-label">Type:</span>
+            <span class="info-value">${geometry.type}</span>
+          </div>
+        `;
+        
+        // Only show geometry details if it's a solid (not a sketch)
+        if (geometry.type === 'solid' && geometry.geometry) {
+          html += `
+            <div class="info-row">
+              <span class="info-label">Vertices:</span>
+              <span class="info-value">${geometry.geometry.vertices.length}</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">Faces:</span>
+              <span class="info-value">${geometry.geometry.faces.length}</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">Volume:</span>
+              <span class="info-value">${geometry.volume.toFixed(2)} mm³</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">Bounding Box:</span>
+              <span class="info-value">
+                [${geometry.boundingBox.min.x.toFixed(1)}, ${geometry.boundingBox.min.y.toFixed(1)}, ${geometry.boundingBox.min.z.toFixed(1)}] to 
+                [${geometry.boundingBox.max.x.toFixed(1)}, ${geometry.boundingBox.max.y.toFixed(1)}, ${geometry.boundingBox.max.z.toFixed(1)}]
+              </span>
+            </div>
+          `;
+        } else if (geometry.type === 'sketch') {
+          html += `
+            <div class="info-row">
+              <span class="info-label">Segments:</span>
+              <span class="info-value">${geometry.sketch.segments.length}</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">Points:</span>
+              <span class="info-value">${geometry.sketch.points.length}</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">Profiles:</span>
+              <span class="info-value">${geometry.profiles.length}</span>
+            </div>
+          `;
+        }
+        
+        geometryInfoDiv.innerHTML = html;
+      }
+    }
+
+    btnCreatePart.addEventListener('click', () => {
+      // Create part with rectangle sketch
+      part = new Part('DemoPart');
+      
+      const sketch = new Sketch();
+      sketch.name = 'RectangleSketch';
+      sketch.addSegment(0, 0, 100, 0);
+      sketch.addSegment(100, 0, 100, 50);
+      sketch.addSegment(100, 50, 0, 50);
+      sketch.addSegment(0, 50, 0, 0);
+      
+      sketchFeature = part.addSketch(sketch);
+      
+      // Create circle sketch for revolve
+      circleSketch = new Sketch();
+      circleSketch.name = 'CircleSketch';
+      const numSegments = 16;
+      for (let i = 0; i < numSegments; i++) {
+        const angle1 = (i / numSegments) * Math.PI * 2;
+        const angle2 = ((i + 1) / numSegments) * Math.PI * 2;
+        const radius = 20;
+        const x1 = 50 + Math.cos(angle1) * radius;
+        const y1 = 0 + Math.sin(angle1) * radius;
+        const x2 = 50 + Math.cos(angle2) * radius;
+        const y2 = 0 + Math.sin(angle2) * radius;
+        circleSketch.addSegment(x1, y1, x2, y2);
+      }
+      
+      btnCreatePart.disabled = true;
+      btnAddExtrude.disabled = false;
+      btnAddRevolve.disabled = false;
+      updateUI();
+    });
+
+    btnAddExtrude.addEventListener('click', () => {
+      if (!part || !sketchFeature) return;
+      
+      extrudeFeature = part.extrude(sketchFeature.id, parseFloat(extrudeSlider.value));
+      extrudeSlider.disabled = false;
+      btnAddExtrude.disabled = true;
+      updateUI();
+    });
+
+    btnAddRevolve.addEventListener('click', () => {
+      if (!part || !circleSketch) return;
+      
+      const circleSketchFeature = part.addSketch(circleSketch);
+      const angle = (parseFloat(revolveSlider.value) / 180) * Math.PI;
+      revolveFeature = part.revolve(circleSketchFeature.id, angle);
+      revolveSlider.disabled = false;
+      btnAddRevolve.disabled = true;
+      updateUI();
+    });
+
+    btnClear.addEventListener('click', () => {
+      part = null;
+      sketchFeature = null;
+      extrudeFeature = null;
+      revolveFeature = null;
+      circleSketch = null;
+      
+      btnCreatePart.disabled = false;
+      btnAddExtrude.disabled = true;
+      btnAddRevolve.disabled = true;
+      extrudeSlider.disabled = true;
+      revolveSlider.disabled = true;
+      
+      extrudeSlider.value = 25;
+      revolveSlider.value = 360;
+      extrudeValue.textContent = '25';
+      revolveValue.textContent = '360';
+      
+      updateUI();
+    });
+
+    extrudeSlider.addEventListener('input', (e) => {
+      const value = parseFloat(e.target.value);
+      extrudeValue.textContent = value.toFixed(0);
+      
+      if (part && extrudeFeature) {
+        part.modifyFeature(extrudeFeature.id, (feature) => {
+          feature.setDistance(value);
+        });
+        updateUI();
+      }
+    });
+
+    revolveSlider.addEventListener('input', (e) => {
+      const degrees = parseFloat(e.target.value);
+      const radians = (degrees / 180) * Math.PI;
+      revolveValue.textContent = degrees.toFixed(0);
+      
+      if (part && revolveFeature) {
+        part.modifyFeature(revolveFeature.id, (feature) => {
+          feature.setAngle(radians);
+        });
+        updateUI();
+      }
+    });
+
+    // Initial UI update
+    updateUI();
+  </script>
+</body>
+</html>
