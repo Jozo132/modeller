@@ -37,6 +37,7 @@ export class Renderer {
 
       if (state.gridVisible) this._drawGrid();
       this._drawAxes();
+      this._drawClosedFills();    // subtle fill behind closed regions
       this._drawEntities();       // draws everything EXCEPT dimensions
       this._drawPoints();
       this._drawConstraints();
@@ -148,6 +149,61 @@ export class Renderer {
     ctx.moveTo(origin.x, 0);
     ctx.lineTo(origin.x, vp.height);
     ctx.stroke();
+  }
+
+  // --- Closed-region fills (circles, segment/arc loops) ---
+  _drawClosedFills() {
+    const { ctx, vp } = this;
+    const scene = state.scene;
+    const FILL = 'rgba(255,255,255,0.035)';
+
+    // Fill circles
+    for (const circ of scene.circles) {
+      if (!circ.visible) continue;
+      if (!state.isLayerVisible(circ.layer)) continue;
+      const c = vp.worldToScreen(circ.cx, circ.cy);
+      const r = circ.radius * vp.zoom;
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, r, 0, Math.PI * 2);
+      ctx.fillStyle = FILL;
+      ctx.fill();
+    }
+
+    // Fill closed loops of segments / arcs
+    const loops = _findClosedLoops(scene);
+    for (const loop of loops) {
+      // Skip if any edge is on a hidden layer
+      if (loop.edges.some(e => !state.isLayerVisible(e.layer))) continue;
+
+      ctx.beginPath();
+      const fp = vp.worldToScreen(loop.points[0].x, loop.points[0].y);
+      ctx.moveTo(fp.x, fp.y);
+
+      for (let i = 0; i < loop.edges.length; i++) {
+        const edge = loop.edges[i];
+        const nextPt = loop.points[(i + 1) % loop.points.length];
+
+        if (edge.type === 'segment') {
+          const np = vp.worldToScreen(nextPt.x, nextPt.y);
+          ctx.lineTo(np.x, np.y);
+        } else if (edge.type === 'arc') {
+          const c = vp.worldToScreen(edge.cx, edge.cy);
+          const r = edge.radius * vp.zoom;
+          const curPt = loop.points[i];
+          const sp = edge.startPt;
+          const isForward = Math.hypot(curPt.x - sp.x, curPt.y - sp.y) < 1e-4;
+          if (isForward) {
+            ctx.arc(c.x, c.y, r, -edge.startAngle, -edge.endAngle, true);
+          } else {
+            ctx.arc(c.x, c.y, r, -edge.endAngle, -edge.startAngle, false);
+          }
+        }
+      }
+
+      ctx.closePath();
+      ctx.fillStyle = FILL;
+      ctx.fill();
+    }
   }
 
   // --- Entities (excludes dimensions — they are drawn after buffer capture) ---
@@ -616,6 +672,92 @@ function _computeFullyConstrained(scene) {
   }
 
   return { points: fcPoints, entities: fcEntities };
+}
+
+// ---------------------------------------------------------------------------
+// Closed-loop detection for segment/arc fill.
+// Builds a point-adjacency graph from shared PPoint references (segments)
+// and proximity-matched endpoints (arcs).  Returns simple loops where every
+// vertex has degree exactly 2.
+// ---------------------------------------------------------------------------
+function _findClosedLoops(scene) {
+  const TOL = 1e-4;
+  const adj = new Map(); // PPoint → [{edge, other: PPoint}]
+  const ensure = (pt) => { if (!adj.has(pt)) adj.set(pt, []); };
+
+  // Segments connect via shared PPoint references
+  for (const seg of scene.segments) {
+    if (!seg.visible) continue;
+    ensure(seg.p1);
+    ensure(seg.p2);
+    adj.get(seg.p1).push({ edge: seg, other: seg.p2 });
+    adj.get(seg.p2).push({ edge: seg, other: seg.p1 });
+  }
+
+  // Arcs — match computed endpoints to nearest PPoints
+  for (const arc of scene.arcs) {
+    if (!arc.visible) continue;
+    const sp = arc.startPt, ep = arc.endPt;
+    let pStart = null, pEnd = null;
+    for (const pt of scene.points) {
+      if (!pStart && Math.hypot(pt.x - sp.x, pt.y - sp.y) < TOL) pStart = pt;
+      if (!pEnd && Math.hypot(pt.x - ep.x, pt.y - ep.y) < TOL) pEnd = pt;
+    }
+    if (pStart && pEnd && pStart !== pEnd) {
+      ensure(pStart);
+      ensure(pEnd);
+      adj.get(pStart).push({ edge: arc, other: pEnd });
+      adj.get(pEnd).push({ edge: arc, other: pStart });
+    }
+  }
+
+  // Find connected components where every vertex has degree exactly 2
+  const visited = new Set();
+  const loops = [];
+
+  for (const [pt] of adj) {
+    if (visited.has(pt)) continue;
+
+    // BFS to collect the full connected component
+    const component = [];
+    const queue = [pt];
+    const seen = new Set();
+    while (queue.length > 0) {
+      const cur = queue.shift();
+      if (seen.has(cur)) continue;
+      seen.add(cur);
+      component.push(cur);
+      for (const { other } of adj.get(cur)) {
+        if (!seen.has(other)) queue.push(other);
+      }
+    }
+    for (const p of component) visited.add(p);
+
+    // All vertices must have degree exactly 2 for a simple loop
+    if (component.length < 3) continue;
+    if (component.some(p => (adj.get(p) || []).length !== 2)) continue;
+
+    // Trace the loop in order
+    const orderedPts = [];
+    const orderedEdges = [];
+    let current = component[0];
+    let prevEdge = null;
+
+    for (let i = 0; i < component.length; i++) {
+      orderedPts.push(current);
+      const neighbors = adj.get(current);
+      const next = prevEdge
+        ? neighbors.find(n => n.edge !== prevEdge)
+        : neighbors[0];
+      orderedEdges.push(next.edge);
+      prevEdge = next.edge;
+      current = next.other;
+    }
+
+    loops.push({ points: orderedPts, edges: orderedEdges });
+  }
+
+  return loops;
 }
 
 // Map constraint type to a short display label
