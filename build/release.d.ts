@@ -97,6 +97,17 @@ export declare function setGridVisible(visible: number): void;
  */
 export declare function setAxesVisible(visible: number): void;
 /**
+ * assembly/index/setGridSize
+ * @param size `f32`
+ * @param divisions `i32`
+ */
+export declare function setGridSize(size: number, divisions: number): void;
+/**
+ * assembly/index/setAxesSize
+ * @param size `f32`
+ */
+export declare function setAxesSize(size: number): void;
+/**
  * assembly/index/setMousePosition
  * @param x `f32`
  * @param y `f32`

@@ -149,6 +149,15 @@ export function setAxesVisible(visible: i32): void {
   scene.axesVisible = visible != 0;
 }
 
+export function setGridSize(size: f32, divisions: i32): void {
+  scene.gridSize = size;
+  scene.gridDivisions = divisions;
+}
+
+export function setAxesSize(size: f32): void {
+  scene.axesSize = size;
+}
+
 // === Mouse/Input ===
 
 export function setMousePosition(x: f32, y: f32): void {

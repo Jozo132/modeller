@@ -2,6 +2,7 @@
 // Extrudes a 2D sketch profile to create a 3D solid
 
 import { Feature } from './Feature.js';
+import { booleanOp, calculateMeshVolume, calculateBoundingBox } from './CSG.js';
 
 /**
  * ExtrudeFeature extrudes a 2D sketch profile along its normal to create 3D geometry.
@@ -56,13 +57,16 @@ export class ExtrudeFeature extends Feature {
     
     // Apply operation
     solid = this.applyOperation(solid, geometry);
-    
+
+    // Use the result geometry (may have been modified by boolean operation)
+    const finalGeometry = solid.geometry || geometry;
+
     return {
       type: 'solid',
-      geometry,
+      geometry: finalGeometry,
       solid,
-      volume: this.calculateVolume(geometry),
-      boundingBox: this.calculateBoundingBox(geometry),
+      volume: this.calculateVolume(finalGeometry),
+      boundingBox: this.calculateBoundingBox(finalGeometry),
     };
   }
 
@@ -108,9 +112,9 @@ export class ExtrudeFeature extends Feature {
         geometry.vertices.push(top3D);
       }
       
-      // Create bottom face
+      // Create bottom face (reverse winding for outward-facing normal)
       geometry.faces.push({
-        vertices: bottomVertices,
+        vertices: [...bottomVertices].reverse(),
         normal: { x: -plane.normal.x, y: -plane.normal.y, z: -plane.normal.z },
       });
       
@@ -222,15 +226,23 @@ export class ExtrudeFeature extends Feature {
    * @returns {Object} Resulting solid
    */
   applyOperation(solid, geometry) {
-    // For now, just return the geometry
-    // In a full implementation, this would use a CSG library
     if (this.operation === 'new' || !solid) {
       return { geometry };
     }
-    
-    // Placeholder for boolean operations
-    console.warn(`Boolean operation '${this.operation}' not yet implemented`);
-    return { geometry };
+
+    // Perform boolean operation using CSG
+    const prevGeom = solid.geometry;
+    if (!prevGeom || !prevGeom.faces || prevGeom.faces.length === 0) {
+      return { geometry };
+    }
+
+    try {
+      const resultGeom = booleanOp(prevGeom, geometry, this.operation);
+      return { geometry: resultGeom };
+    } catch (err) {
+      console.warn(`Boolean operation '${this.operation}' failed:`, err.message);
+      return { geometry };
+    }
   }
 
   /**
@@ -240,9 +252,7 @@ export class ExtrudeFeature extends Feature {
    * @returns {number} Volume
    */
   calculateVolume(geometry) {
-    // Simplified calculation - proper implementation would calculate profile area
-    // and multiply by extrusion distance
-    return Math.abs(this.distance) * 100; // Placeholder
+    return calculateMeshVolume(geometry);
   }
 
   /**
@@ -251,26 +261,7 @@ export class ExtrudeFeature extends Feature {
    * @returns {Object} Bounding box with min and max points
    */
   calculateBoundingBox(geometry) {
-    if (geometry.vertices.length === 0) {
-      return { min: { x: 0, y: 0, z: 0 }, max: { x: 0, y: 0, z: 0 } };
-    }
-    
-    let minX = Infinity, minY = Infinity, minZ = Infinity;
-    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-    
-    for (const v of geometry.vertices) {
-      minX = Math.min(minX, v.x);
-      minY = Math.min(minY, v.y);
-      minZ = Math.min(minZ, v.z);
-      maxX = Math.max(maxX, v.x);
-      maxY = Math.max(maxY, v.y);
-      maxZ = Math.max(maxZ, v.z);
-    }
-    
-    return {
-      min: { x: minX, y: minY, z: minZ },
-      max: { x: maxX, y: maxY, z: maxZ },
-    };
+    return calculateBoundingBox(geometry);
   }
 
   /**

@@ -46,14 +46,28 @@ export class SketchFeature extends Feature {
 
   /**
    * Extract closed profiles from the sketch for use in 3D operations.
-   * A profile is a closed loop of connected segments.
+   * A profile is a closed loop of connected segments, or a circle.
    * @returns {Array} Array of profile objects
    */
   extractProfiles() {
     const profiles = [];
     const visited = new Set();
     
-    // Find all closed loops in the sketch
+    // Handle circles as closed profiles (a circle is inherently a closed loop)
+    for (const circle of this.sketch.circles) {
+      const numPoints = 32;
+      const points = [];
+      for (let i = 0; i < numPoints; i++) {
+        const angle = (i / numPoints) * Math.PI * 2;
+        points.push({
+          x: circle.center.x + Math.cos(angle) * circle.radius,
+          y: circle.center.y + Math.sin(angle) * circle.radius,
+        });
+      }
+      profiles.push({ points, closed: true });
+    }
+
+    // Find all closed loops of segments in the sketch
     for (const seg of this.sketch.segments) {
       if (visited.has(seg.id)) continue;
       
@@ -80,6 +94,9 @@ export class SketchFeature extends Feature {
     let currentEnd = current.p2;
     let startPoint = current.p1;
     
+    // Include the starting point of the profile
+    points.push(startPoint);
+    
     // Follow connected segments
     while (current) {
       if (visited.has(current.id)) break;
@@ -99,8 +116,10 @@ export class SketchFeature extends Feature {
       current = connected;
       currentEnd = (connected.p1 === currentEnd) ? connected.p2 : connected.p1;
       
-      // Check if we closed the loop
+      // Check if we closed the loop (don't add startPoint again — it's already first)
       if (currentEnd === startPoint) {
+        visited.add(current.id);
+        segments.push(current);
         return {
           segments,
           points,

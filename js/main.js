@@ -1149,6 +1149,8 @@ class App {
         this._scheduleRender();
         return;
       }
+      // In 3D mode, WasmRenderer handles orbit zoom via its own wheel handler
+      e.preventDefault();
       this._scheduleRender();
     }, { passive: false });
 

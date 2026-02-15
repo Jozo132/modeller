@@ -47,8 +47,10 @@ export class PartManager {
     // Copy segments from the scene
     if (scene.segments && scene.segments.length > 0) {
       scene.segments.forEach(seg => {
-        if (seg.start && seg.end) {
-          sketch.addSegment(seg.start.x, seg.start.y, seg.end.x, seg.end.y);
+        const s = seg.p1 || seg.start;
+        const e = seg.p2 || seg.end;
+        if (s && e) {
+          sketch.addSegment(s.x, s.y, e.x, e.y);
         }
       });
     }
@@ -56,17 +58,7 @@ export class PartManager {
     // Copy circles
     if (scene.circles && scene.circles.length > 0) {
       scene.circles.forEach(circle => {
-        // Convert circle to segments for now (16-segment approximation)
-        const numSegments = 16;
-        for (let i = 0; i < numSegments; i++) {
-          const angle1 = (i / numSegments) * Math.PI * 2;
-          const angle2 = ((i + 1) / numSegments) * Math.PI * 2;
-          const x1 = circle.center.x + Math.cos(angle1) * circle.radius;
-          const y1 = circle.center.y + Math.sin(angle1) * circle.radius;
-          const x2 = circle.center.x + Math.cos(angle2) * circle.radius;
-          const y2 = circle.center.y + Math.sin(angle2) * circle.radius;
-          sketch.addSegment(x1, y1, x2, y2);
-        }
+        sketch.addCircle(circle.center.x, circle.center.y, circle.radius);
       });
     }
 

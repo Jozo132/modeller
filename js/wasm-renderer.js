@@ -67,8 +67,31 @@ export class WasmRenderer {
     this._orthoBounds = { left: -500, right: 500, bottom: -375, top: 375 };
     this._cameraPos = { x: 0, y: 0, z: 500 };
 
+    // 3D orbit camera state (spherical coordinates around target)
+    this._orbitTheta = Math.PI / 4;   // azimuthal angle (around Z axis)
+    this._orbitPhi = Math.PI / 3;     // polar angle (from Z axis)
+    this._orbitRadius = 500;
+    this._orbitTarget = { x: 0, y: 0, z: 0 };
+    this._orbitDirty = true;
+
+    // 3D interaction state
+    this._isDragging = false;
+    this._isPanning3D = false;
+    this._lastMouseX = 0;
+    this._lastMouseY = 0;
+
+    // Bind 3D mouse controls
+    this._bind3DControls();
+
     // Part data stored for 3D render
     this._partNodes = [];
+    this._partBounds = null;
+
+    // Pre-built mesh data for direct WebGL rendering (bypasses WASM scene nodes)
+    this._meshTriangles = null;  // Float32Array: interleaved [x,y,z,nx,ny,nz, ...]
+    this._meshTriangleCount = 0;
+    this._meshEdges = null;      // Float32Array: [x,y,z, x,y,z, ...] line pairs
+    this._meshEdgeVertexCount = 0;
 
     // Window resize handler
     this._resizeHandler = () => this.onWindowResize();
@@ -107,6 +130,12 @@ export class WasmRenderer {
     const wasm = this.wasm;
     if (!wasm) return;
 
+    // Update 3D camera from orbit state if dirty
+    if (this.mode === '3d' && this._orbitDirty) {
+      this._applyOrbitCamera();
+      this._orbitDirty = false;
+    }
+
     wasm.render();
     const ptr = wasm.getCommandBufferPtr();
     const len = wasm.getCommandBufferLen();
@@ -117,6 +146,104 @@ export class WasmRenderer {
     if (!memory) return;
     const buf = new Float32Array(memory.buffer, ptr, len);
     this.executor.execute(buf, len);
+
+    // Render Part mesh directly via WebGL (after WASM pass)
+    if (this.mode === '3d') {
+      this._renderMeshOverlay();
+    }
+  }
+
+  /* ---------- 3D orbit controls ---------- */
+
+  _bind3DControls() {
+    const canvas = this.canvas;
+
+    canvas.addEventListener('mousedown', (e) => {
+      if (this.mode !== '3d') return;
+      // Left button = orbit, Middle button = pan, Shift+Left = pan
+      if (e.button === 0 && e.shiftKey) {
+        this._isPanning3D = true;
+        this._isDragging = false;
+      } else if (e.button === 0) {
+        this._isDragging = true;
+        this._isPanning3D = false;
+      } else if (e.button === 1) {
+        e.preventDefault();
+        this._isPanning3D = true;
+        this._isDragging = false;
+      }
+      this._lastMouseX = e.clientX;
+      this._lastMouseY = e.clientY;
+    });
+
+    canvas.addEventListener('mousemove', (e) => {
+      if (this.mode !== '3d') return;
+      const dx = e.clientX - this._lastMouseX;
+      const dy = e.clientY - this._lastMouseY;
+      this._lastMouseX = e.clientX;
+      this._lastMouseY = e.clientY;
+
+      if (this._isDragging) {
+        // Orbit: adjust theta (azimuth) and phi (elevation)
+        this._orbitTheta -= dx * 0.005;
+        this._orbitPhi -= dy * 0.005;
+        // Clamp phi to avoid flipping
+        this._orbitPhi = Math.max(0.05, Math.min(Math.PI - 0.05, this._orbitPhi));
+        this._orbitDirty = true;
+      } else if (this._isPanning3D) {
+        // Pan: move target in the camera's local right/up plane
+        const panSpeed = this._orbitRadius * 0.002;
+        const theta = this._orbitTheta;
+        const phi = this._orbitPhi;
+
+        // Camera right vector (perpendicular to view direction in XY plane)
+        const rightX = -Math.sin(theta);
+        const rightY = Math.cos(theta);
+        // Camera up vector (world Z projected)
+        const upX = -Math.cos(theta) * Math.cos(phi);
+        const upY = -Math.sin(theta) * Math.cos(phi);
+        const upZ = Math.sin(phi);
+
+        this._orbitTarget.x += (-dx * rightX + dy * upX) * panSpeed;
+        this._orbitTarget.y += (-dx * rightY + dy * upY) * panSpeed;
+        this._orbitTarget.z += dy * upZ * panSpeed;
+        this._orbitDirty = true;
+      }
+    });
+
+    canvas.addEventListener('mouseup', () => {
+      this._isDragging = false;
+      this._isPanning3D = false;
+    });
+
+    canvas.addEventListener('mouseleave', () => {
+      this._isDragging = false;
+      this._isPanning3D = false;
+    });
+
+    canvas.addEventListener('wheel', (e) => {
+      if (this.mode !== '3d') return;
+      e.preventDefault();
+      const factor = e.deltaY > 0 ? 1.1 : 0.9;
+      this._orbitRadius *= factor;
+      this._orbitRadius = Math.max(10, Math.min(5000, this._orbitRadius));
+      this._orbitDirty = true;
+    }, { passive: false });
+  }
+
+  _applyOrbitCamera() {
+    if (!this._ready) return;
+    const theta = this._orbitTheta;
+    const phi = this._orbitPhi;
+    const r = this._orbitRadius;
+    const t = this._orbitTarget;
+
+    const camX = t.x + r * Math.sin(phi) * Math.cos(theta);
+    const camY = t.y + r * Math.sin(phi) * Math.sin(theta);
+    const camZ = t.z + r * Math.cos(phi);
+
+    this.wasm.setCameraPosition(camX, camY, camZ);
+    this.wasm.setCameraTarget(t.x, t.y, t.z);
   }
 
   /* ---------- mode switching ---------- */
@@ -147,8 +274,12 @@ export class WasmRenderer {
       this.wasm.setAxesVisible(1);
     } else {
       this.wasm.setCameraMode(1);
-      this.wasm.setCameraPosition(300, 300, 300);
-      this.wasm.setCameraTarget(0, 0, 0);
+      // Set a reasonable default grid for 3D mode
+      this.wasm.setGridSize(200, 20);
+      this.wasm.setAxesSize(50);
+      // Apply orbit camera state
+      this._orbitDirty = true;
+      this._applyOrbitCamera();
       this.wasm.setGridVisible(1);
       this.wasm.setAxesVisible(1);
     }
@@ -477,19 +608,261 @@ export class WasmRenderer {
     if (!geo) return;
 
     if (geo.type === 'solid' && geo.geometry) {
-      // Add a box-like representation using bounding box
       const bb = geo.boundingBox;
-      if (bb) {
-        const sx = bb.max.x - bb.min.x;
-        const sy = bb.max.y - bb.min.y;
-        const sz = bb.max.z - bb.min.z;
-        const px = (bb.max.x + bb.min.x) / 2;
-        const py = (bb.max.y + bb.min.y) / 2;
-        const pz = (bb.max.z + bb.min.z) / 2;
-        const id = this.wasm.addBox(sx, sy, sz, px, py, pz, 0.3, 0.69, 0.31, 1.0);
-        this._partNodes.push(id);
+      if (bb) this._partBounds = bb;
+
+      // Build actual mesh from geometry faces
+      this._buildMeshFromGeometry(geo.geometry);
+    }
+  }
+
+  /**
+   * Triangulate polygon faces and build Float32Arrays for WebGL rendering.
+   * Stores face metadata for selection/identification.
+   */
+  _buildMeshFromGeometry(geometry) {
+    const faces = geometry.faces || [];
+
+    // Store face metadata for selection
+    this._meshFaces = faces.map((face, idx) => ({
+      index: idx,
+      faceType: face.faceType || 'unknown',
+      normal: face.normal || { x: 0, y: 0, z: 1 },
+      shared: face.shared || null,
+      vertexCount: face.vertices.length,
+    }));
+
+    // Count triangles needed (fan triangulation: n-gon → n-2 triangles)
+    let triCount = 0;
+    for (const face of faces) {
+      if (face.vertices.length >= 3) {
+        triCount += face.vertices.length - 2;
       }
     }
+
+    // Build interleaved triangle data: [x,y,z,nx,ny,nz] per vertex
+    const triData = new Float32Array(triCount * 3 * 6);
+    let ti = 0;
+
+    // Map triangle index → face index for hit testing
+    this._triFaceMap = new Int32Array(triCount);
+    let triIdx = 0;
+
+    for (let fi = 0; fi < faces.length; fi++) {
+      const face = faces[fi];
+      const verts = face.vertices;
+      const n = face.normal || { x: 0, y: 0, z: 1 };
+      if (verts.length < 3) continue;
+
+      // Fan triangulation from vertex 0
+      for (let i = 1; i < verts.length - 1; i++) {
+        const v0 = verts[0], v1 = verts[i], v2 = verts[i + 1];
+        triData[ti++] = v0.x; triData[ti++] = v0.y; triData[ti++] = v0.z;
+        triData[ti++] = n.x;  triData[ti++] = n.y;  triData[ti++] = n.z;
+        triData[ti++] = v1.x; triData[ti++] = v1.y; triData[ti++] = v1.z;
+        triData[ti++] = n.x;  triData[ti++] = n.y;  triData[ti++] = n.z;
+        triData[ti++] = v2.x; triData[ti++] = v2.y; triData[ti++] = v2.z;
+        triData[ti++] = n.x;  triData[ti++] = n.y;  triData[ti++] = n.z;
+        this._triFaceMap[triIdx++] = fi;
+      }
+    }
+
+    this._meshTriangles = triData;
+    this._meshTriangleCount = triCount * 3; // vertex count
+
+    // Use deduplicated edges from CSG if available, otherwise compute feature edges
+    if (geometry.edges && geometry.edges.length > 0) {
+      const edgeData = new Float32Array(geometry.edges.length * 2 * 3);
+      let ei = 0;
+      for (const edge of geometry.edges) {
+        edgeData[ei++] = edge.start.x; edgeData[ei++] = edge.start.y; edgeData[ei++] = edge.start.z;
+        edgeData[ei++] = edge.end.x;   edgeData[ei++] = edge.end.y;   edgeData[ei++] = edge.end.z;
+      }
+      this._meshEdges = edgeData;
+      this._meshEdgeVertexCount = geometry.edges.length * 2;
+    } else {
+      // Compute feature edges: only show edges where adjacent faces have different normals
+      const SHARP_COS = Math.cos(15 * Math.PI / 180);
+      const edgeMap = new Map();
+      const precision = 5;
+      const vKey = (v) => `${v.x.toFixed(precision)},${v.y.toFixed(precision)},${v.z.toFixed(precision)}`;
+      const eKey = (a, b) => { const ka = vKey(a), kb = vKey(b); return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`; };
+
+      for (const face of faces) {
+        const verts = face.vertices;
+        const n = face.normal || { x: 0, y: 0, z: 1 };
+        for (let i = 0; i < verts.length; i++) {
+          const a = verts[i], b = verts[(i + 1) % verts.length];
+          const key = eKey(a, b);
+          if (!edgeMap.has(key)) {
+            edgeMap.set(key, { a, b, normals: [] });
+          }
+          edgeMap.get(key).normals.push(n);
+        }
+      }
+
+      const featureEdges = [];
+      for (const [, info] of edgeMap) {
+        if (info.normals.length === 1) {
+          featureEdges.push(info);
+        } else if (info.normals.length >= 2) {
+          const n0 = info.normals[0];
+          for (let i = 1; i < info.normals.length; i++) {
+            const n1 = info.normals[i];
+            const dot = n0.x * n1.x + n0.y * n1.y + n0.z * n1.z;
+            if (dot < SHARP_COS) { featureEdges.push(info); break; }
+          }
+        }
+      }
+
+      const edgeData = new Float32Array(featureEdges.length * 2 * 3);
+      let ei = 0;
+      for (const e of featureEdges) {
+        edgeData[ei++] = e.a.x; edgeData[ei++] = e.a.y; edgeData[ei++] = e.a.z;
+        edgeData[ei++] = e.b.x; edgeData[ei++] = e.b.y; edgeData[ei++] = e.b.z;
+      }
+      this._meshEdges = edgeData;
+      this._meshEdgeVertexCount = featureEdges.length * 2;
+    }
+  }
+
+  /**
+   * Render pre-built mesh data directly via WebGL (called after WASM render pass).
+   */
+  _renderMeshOverlay() {
+    if (!this._meshTriangles || this._meshTriangleCount === 0) return;
+
+    const gl = this.executor.gl;
+    const exec = this.executor;
+
+    // Compute the same MVP as the WASM camera
+    const mvp = this._computeMVP();
+    if (!mvp) return;
+
+    // Enable depth testing and backface culling for correct solid rendering
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.LEQUAL);
+    gl.enable(gl.CULL_FACE);
+    gl.cullFace(gl.BACK);
+
+    // Draw solid triangles with polygon offset to avoid z-fighting with edges
+    gl.enable(gl.POLYGON_OFFSET_FILL);
+    gl.polygonOffset(1.0, 1.0);
+
+    gl.useProgram(exec.programs[0]);
+    gl.uniformMatrix4fv(exec.uniforms[0].uMVP, false, mvp);
+    gl.uniform4f(exec.uniforms[0].uColor, 0.65, 0.75, 0.65, 1.0);
+
+    gl.bindVertexArray(exec.vaoSolid);
+    gl.bindBuffer(gl.ARRAY_BUFFER, exec.vbo);
+    gl.bufferData(gl.ARRAY_BUFFER, this._meshTriangles, gl.DYNAMIC_DRAW);
+    gl.drawArrays(gl.TRIANGLES, 0, this._meshTriangleCount);
+    gl.bindVertexArray(null);
+
+    gl.disable(gl.POLYGON_OFFSET_FILL);
+
+    // Draw feature wireframe edges
+    if (this._meshEdges && this._meshEdgeVertexCount > 0) {
+      gl.useProgram(exec.programs[1]);
+      gl.uniformMatrix4fv(exec.uniforms[1].uMVP, false, mvp);
+      gl.uniform4f(exec.uniforms[1].uColor, 0.1, 0.1, 0.1, 1.0);
+      gl.lineWidth(1.0);
+
+      gl.bindVertexArray(exec.vaoLine);
+      gl.bindBuffer(gl.ARRAY_BUFFER, exec.vbo);
+      gl.bufferData(gl.ARRAY_BUFFER, this._meshEdges, gl.DYNAMIC_DRAW);
+      gl.drawArrays(gl.LINES, 0, this._meshEdgeVertexCount);
+      gl.bindVertexArray(null);
+    }
+
+    gl.disable(gl.CULL_FACE);
+  }
+
+  /**
+   * Compute MVP matrix matching the current WASM perspective camera.
+   */
+  _computeMVP() {
+    const w = this.canvas.width;
+    const h = this.canvas.height;
+    if (w === 0 || h === 0) return null;
+
+    const aspect = w / h;
+    const fov = Math.PI / 4;
+    const near = 0.1;
+    const far = 10000;
+    const t = this._orbitTarget;
+    const theta = this._orbitTheta;
+    const phi = this._orbitPhi;
+    const r = this._orbitRadius;
+
+    const camX = t.x + r * Math.sin(phi) * Math.cos(theta);
+    const camY = t.y + r * Math.sin(phi) * Math.sin(theta);
+    const camZ = t.z + r * Math.cos(phi);
+
+    // View matrix (lookAt with Z-up)
+    const view = this._mat4LookAt(camX, camY, camZ, t.x, t.y, t.z, 0, 0, 1);
+    if (!view) return null;
+    // Projection matrix (perspective)
+    const proj = this._mat4Perspective(fov, aspect, near, far);
+    // MVP = proj * view (column-major multiplication)
+    return this._mat4Multiply(proj, view);
+  }
+
+  _mat4Perspective(fov, aspect, near, far) {
+    const f = 1.0 / Math.tan(fov / 2);
+    const nf = 1 / (near - far);
+    return new Float32Array([
+      f / aspect, 0, 0, 0,
+      0, f, 0, 0,
+      0, 0, (far + near) * nf, -1,
+      0, 0, 2 * far * near * nf, 0,
+    ]);
+  }
+
+  _mat4LookAt(ex, ey, ez, cx, cy, cz, ux, uy, uz) {
+    let fx = cx - ex, fy = cy - ey, fz = cz - ez;
+    let len = Math.sqrt(fx * fx + fy * fy + fz * fz);
+    if (len < 1e-10) return null;
+    fx /= len; fy /= len; fz /= len;
+
+    // s = f × up
+    let sx = fy * uz - fz * uy, sy = fz * ux - fx * uz, sz = fx * uy - fy * ux;
+    len = Math.sqrt(sx * sx + sy * sy + sz * sz);
+    if (len < 1e-10) {
+      // Forward parallel to up — use alternative up vector
+      const ax = Math.abs(fx) < 0.9 ? 1 : 0, ay = Math.abs(fx) < 0.9 ? 0 : 1;
+      sx = fy * 0 - fz * ay; sy = fz * ax - fx * 0; sz = fx * ay - fy * ax;
+      len = Math.sqrt(sx * sx + sy * sy + sz * sz);
+      if (len < 1e-10) return null;
+    }
+    sx /= len; sy /= len; sz /= len;
+
+    // u = s × f
+    const ux2 = sy * fz - sz * fy, uy2 = sz * fx - sx * fz, uz2 = sx * fy - sy * fx;
+
+    return new Float32Array([
+      sx, ux2, -fx, 0,
+      sy, uy2, -fy, 0,
+      sz, uz2, -fz, 0,
+      -(sx * ex + sy * ey + sz * ez),
+      -(ux2 * ex + uy2 * ey + uz2 * ez),
+      (fx * ex + fy * ey + fz * ez),
+      1,
+    ]);
+  }
+
+  _mat4Multiply(a, b) {
+    const out = new Float32Array(16);
+    for (let i = 0; i < 4; i++) {
+      for (let j = 0; j < 4; j++) {
+        out[j * 4 + i] =
+          a[0 * 4 + i] * b[j * 4 + 0] +
+          a[1 * 4 + i] * b[j * 4 + 1] +
+          a[2 * 4 + i] * b[j * 4 + 2] +
+          a[3 * 4 + i] * b[j * 4 + 3];
+      }
+    }
+    return out;
   }
 
   clearPartGeometry() {
@@ -498,6 +871,31 @@ export class WasmRenderer {
       this.wasm.removeNode(id);
     }
     this._partNodes = [];
+    this._partBounds = null;
+    this._meshTriangles = null;
+    this._meshTriangleCount = 0;
+    this._meshEdges = null;
+    this._meshEdgeVertexCount = 0;
+    this._meshFaces = null;
+    this._triFaceMap = null;
+  }
+
+  /**
+   * Get face metadata for a given face index.
+   * @param {number} faceIndex - Index into the faces array
+   * @returns {Object|null} Face metadata (faceType, normal, shared)
+   */
+  getFaceInfo(faceIndex) {
+    if (!this._meshFaces || faceIndex < 0 || faceIndex >= this._meshFaces.length) return null;
+    return this._meshFaces[faceIndex];
+  }
+
+  /**
+   * Get all face metadata.
+   * @returns {Array|null} Array of face metadata objects
+   */
+  getAllFaces() {
+    return this._meshFaces || null;
   }
 
   clearGeometry() {
@@ -508,11 +906,34 @@ export class WasmRenderer {
   }
 
   fitToView() {
-    // A simple default: position camera back to see the part
     if (!this._ready) return;
     if (this.mode === '3d') {
-      this.wasm.setCameraPosition(300, 300, 300);
-      this.wasm.setCameraTarget(0, 0, 0);
+      const bb = this._partBounds;
+      if (bb) {
+        // Center the camera on the part
+        const cx = (bb.max.x + bb.min.x) / 2;
+        const cy = (bb.max.y + bb.min.y) / 2;
+        const cz = (bb.max.z + bb.min.z) / 2;
+        this._orbitTarget = { x: cx, y: cy, z: cz };
+
+        // Compute radius to fit the part in view
+        const sx = bb.max.x - bb.min.x;
+        const sy = bb.max.y - bb.min.y;
+        const sz = bb.max.z - bb.min.z;
+        const maxDim = Math.max(sx, sy, sz, 10);
+        this._orbitRadius = maxDim * 2.5;
+
+        // Scale grid and axes to match the part scale
+        this.wasm.setGridSize(maxDim * 3, 20);
+        this.wasm.setAxesSize(maxDim * 0.5);
+      } else {
+        this._orbitTarget = { x: 0, y: 0, z: 0 };
+        this._orbitRadius = 500;
+      }
+      this._orbitTheta = Math.PI / 4;
+      this._orbitPhi = Math.PI / 3;
+      this._orbitDirty = true;
+      this._applyOrbitCamera();
     }
   }
 
