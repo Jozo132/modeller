@@ -265,11 +265,9 @@ export class ConstraintSolver {
   // --- Fixed ---
   private errorFixed(c: SolverConstraint): f32 {
     const p = unchecked(this.points[c.p1]);
-    // value encodes target x in p3/p4 as float reinterpret, but simpler:
-    // For fixed constraints, we use p2 index = -1, value = 0
-    // The point should already be marked fixed, so error is 0.
+    // For fixed constraints, error is 0 if point is already fixed
     if (p.fixed) return 0;
-    return 1.0;
+    return this.tolerance + 1.0; // Return value above tolerance to trigger apply
   }
 
   private applyFixed(c: SolverConstraint): void {

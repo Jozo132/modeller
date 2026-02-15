@@ -230,8 +230,10 @@ export class WasmRenderer {
     const F_FIXED = 16;
     const F_PREVIEW = 32;
 
+    const DEFAULT_COLOR = [0.612, 0.863, 0.996, 1.0]; // #9CDCFE
+
     const parseColor = (colorStr) => {
-      if (!colorStr || typeof colorStr !== 'string') return [0.612, 0.863, 0.996, 1.0];
+      if (!colorStr || typeof colorStr !== 'string') return DEFAULT_COLOR;
       if (colorStr.startsWith('#')) {
         const hex = colorStr.slice(1);
         if (hex.length === 6) {
@@ -243,7 +245,7 @@ export class WasmRenderer {
           ];
         }
       }
-      return [0.612, 0.863, 0.996, 1.0];
+      return DEFAULT_COLOR;
     };
 
     const entityColor = (entity) => {

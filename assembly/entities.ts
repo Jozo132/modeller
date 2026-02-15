@@ -3,11 +3,8 @@
 
 import { Color } from "./math";
 
-// Maximum entity counts
-const MAX_SEGMENTS: i32 = 4096;
-const MAX_CIRCLES: i32  = 2048;
-const MAX_ARCS: i32     = 2048;
-const MAX_POINTS: i32   = 8192;
+// Maximum entity counts (unused guard — arrays are dynamic)
+// Retained for future use if we switch to fixed-size buffers.
 
 // Entity flags
 export const FLAG_VISIBLE: i32      = 1;

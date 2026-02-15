@@ -6,6 +6,7 @@ import { CommandBuffer } from "./commands";
 import { EntityStore, FLAG_VISIBLE, FLAG_SELECTED, FLAG_CONSTRUCTION, FLAG_HOVER, FLAG_FIXED, FLAG_PREVIEW } from "./entities";
 
 const CIRCLE_SEGMENTS: i32 = 64;
+const CROSSHAIR_EXTENT: f32 = 10000.0;
 
 /**
  * Render all 2D entities into the command buffer.
@@ -173,11 +174,11 @@ export function render2DEntities(cmd: CommandBuffer, vp: Mat4, entities: EntityS
     // Draw very long crosshair lines through cursor position
     const chVerts = new StaticArray<f32>(12);
     // Horizontal line
-    unchecked(chVerts[0] = entities.cursorX - 10000); unchecked(chVerts[1] = entities.cursorY); unchecked(chVerts[2] = 0);
-    unchecked(chVerts[3] = entities.cursorX + 10000); unchecked(chVerts[4] = entities.cursorY); unchecked(chVerts[5] = 0);
+    unchecked(chVerts[0] = entities.cursorX - CROSSHAIR_EXTENT); unchecked(chVerts[1] = entities.cursorY); unchecked(chVerts[2] = 0);
+    unchecked(chVerts[3] = entities.cursorX + CROSSHAIR_EXTENT); unchecked(chVerts[4] = entities.cursorY); unchecked(chVerts[5] = 0);
     // Vertical line
-    unchecked(chVerts[6] = entities.cursorX); unchecked(chVerts[7] = entities.cursorY - 10000); unchecked(chVerts[8] = 0);
-    unchecked(chVerts[9] = entities.cursorX); unchecked(chVerts[10] = entities.cursorY + 10000); unchecked(chVerts[11] = 0);
+    unchecked(chVerts[6] = entities.cursorX); unchecked(chVerts[7] = entities.cursorY - CROSSHAIR_EXTENT); unchecked(chVerts[8] = 0);
+    unchecked(chVerts[9] = entities.cursorX); unchecked(chVerts[10] = entities.cursorY + CROSSHAIR_EXTENT); unchecked(chVerts[11] = 0);
     cmd.emitDrawLines(chVerts, 4);
   }
 

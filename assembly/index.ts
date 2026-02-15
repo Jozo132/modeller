@@ -15,7 +15,7 @@ let solver: ConstraintSolver = new ConstraintSolver();
 let mouseX: f32 = 0;
 let mouseY: f32 = 0;
 let mouseButton: i32 = -1; // -1=none, 0=left, 1=middle, 2=right
-let mouseAction_: i32 = 0;  // 0=none, 1=down, 2=up, 3=move
+let mouseActionState: i32 = 0;  // 0=none, 1=down, 2=up, 3=move
 
 // Render mode: 0=2D (ortho XY projection), 1=3D (perspective)
 let renderMode: i32 = 0;
@@ -157,7 +157,7 @@ export function setMousePosition(x: f32, y: f32): void {
 }
 
 export function mouseAction(action: i32): void {
-  mouseAction_ = action;
+  mouseActionState = action;
   // 0=none, 1=down, 2=up, 3=move
 }
 
