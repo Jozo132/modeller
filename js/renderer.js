@@ -248,6 +248,7 @@ export class Renderer {
 
   // --- Dimensions (drawn after scene buffer capture) ---
   _drawDimensions() {
+    if (!state.allDimensionsVisible) return;
     const { ctx, vp } = this;
     const buf = this._bufferCanvas;
     for (const dim of state.scene.dimensions) {
@@ -321,6 +322,7 @@ export class Renderer {
 
   // --- Constraint indicators ---
   _drawConstraints() {
+    if (!state.constraintIconsVisible) return;
     const { ctx, vp } = this;
     const scene = state.scene;
     ctx.save();

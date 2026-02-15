@@ -2,6 +2,7 @@
 import { BaseTool } from './BaseTool.js';
 import { state } from '../state.js';
 import { takeSnapshot } from '../history.js';
+import { union } from '../cad/Operations.js';
 
 const PICK_PX = 18;       // pixel tolerance for shape picking
 const PICK_PT_PX = 14;    // pixel tolerance for point picking (tighter — points are small)
@@ -39,6 +40,9 @@ export class SelectTool extends BaseTool {
 
     // Dimension drag state (repositioning the offset)
     this._dragDimension = null;   // DimensionPrimitive being dragged
+
+    // Snap-to-coincidence state
+    this._snapCandidate = null;   // {point, x, y} — nearby point to merge on drop
   }
 
   activate() {
@@ -53,6 +57,7 @@ export class SelectTool extends BaseTool {
     this._dragShape = null;
     this._dragShapePts = [];
     this._dragDimension = null;
+    this._snapCandidate = null;
     super.deactivate();
   }
 
@@ -190,6 +195,35 @@ export class SelectTool extends BaseTool {
         this._dragPoint.x = wx;
         this._dragPoint.y = wy;
         state.scene.solve();
+
+        // --- Snap-to-coincidence detection ---
+        this._snapCandidate = null;
+        const snapTol = PICK_PT_PX / this.app.viewport.zoom;
+        const dragPt = this._dragPoint;
+        // Collect points that already share this point (same primitive endpoints)
+        const connectedPts = new Set();
+        connectedPts.add(dragPt);
+        for (const s of state.scene.segments) {
+          if (s.p1 === dragPt) connectedPts.add(s.p2);
+          if (s.p2 === dragPt) connectedPts.add(s.p1);
+        }
+        // Also skip points already coincident-constrained with dragPt
+        for (const c of state.scene.constraints) {
+          if (c.type === 'coincident') {
+            if (c.ptA === dragPt) connectedPts.add(c.ptB);
+            if (c.ptB === dragPt) connectedPts.add(c.ptA);
+          }
+        }
+        let bestDist = Infinity;
+        for (const p of state.scene.points) {
+          if (connectedPts.has(p)) continue;
+          const d = Math.hypot(p.x - dragPt.x, p.y - dragPt.y);
+          if (d < snapTol && d < bestDist) {
+            bestDist = d;
+            this._snapCandidate = { point: p, x: p.x, y: p.y };
+          }
+        }
+
         state.emit('change');
       }
       return;
@@ -260,10 +294,16 @@ export class SelectTool extends BaseTool {
     // ---- Finish vertex drag ----
     if (this._dragPoint) {
       if (this._isDragging) {
+        // Apply coincidence if snapped to a candidate point
+        if (this._snapCandidate) {
+          union(state.scene, this._dragPoint, this._snapCandidate.point);
+          this._snapCandidate = null;
+        }
         state.scene.solve();
         state.emit('change');
       }
       this._dragPoint = null;
+      this._snapCandidate = null;
       this._isDragging = false;
       this._dragStart = null;
       this._dragTookSnapshot = false;
@@ -338,6 +378,7 @@ export class SelectTool extends BaseTool {
     this._dragShape = null;
     this._dragShapePts = [];
     this._dragDimension = null;
+    this._snapCandidate = null;
     this._isDragging = false;
     this._dragStart = null;
     this._selectionBox = null;
@@ -369,6 +410,31 @@ export class SelectTool extends BaseTool {
 
   /** Render the selection box overlay */
   drawOverlay(ctx, vp) {
+    // --- Coincidence snap indicator ---
+    if (this._snapCandidate && this._isDragging) {
+      const s = vp.worldToScreen(this._snapCandidate.x, this._snapCandidate.y);
+      const r = 8;
+      ctx.save();
+      // Outer circle
+      ctx.strokeStyle = '#00e676';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, r, 0, Math.PI * 2);
+      ctx.stroke();
+      // Inner dot
+      ctx.fillStyle = '#00e676';
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+      // "Coincident" label
+      ctx.font = '10px Consolas, monospace';
+      ctx.textBaseline = 'bottom';
+      ctx.textAlign = 'left';
+      ctx.fillStyle = 'rgba(0,230,118,0.85)';
+      ctx.fillText('⊙ Coincident', s.x + r + 4, s.y - 2);
+      ctx.restore();
+    }
+
     if (!this._isDragging || !this._selectionBox) return;
     const box = this._selectionBox;
     const p1 = vp.worldToScreen(box.x1, box.y1);

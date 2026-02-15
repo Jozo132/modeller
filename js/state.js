@@ -21,6 +21,8 @@ class AppState {
     this.constructionMode = false;
     this.gridVisible = true;
     this.gridSize = 10;
+    this.allDimensionsVisible = true;
+    this.constraintIconsVisible = true;
 
     // Selection (primitives)
     this.selectedEntities = [];

@@ -1239,6 +1239,20 @@ class App {
       }
     });
 
+    // Toggle all dimensions visibility
+    document.getElementById('btn-toggle-all-dims').addEventListener('click', () => {
+      state.allDimensionsVisible = !state.allDimensionsVisible;
+      this._updateToggleAllButtons();
+      this._scheduleRender();
+    });
+
+    // Toggle all constraint icons visibility
+    document.getElementById('btn-toggle-all-constraints').addEventListener('click', () => {
+      state.constraintIconsVisible = !state.constraintIconsVisible;
+      this._updateToggleAllButtons();
+      this._scheduleRender();
+    });
+
     // Add variable button
     document.getElementById('btn-add-variable').addEventListener('click', async () => {
       const val = await showPrompt({
@@ -1270,6 +1284,21 @@ class App {
     this._rebuildDimensionsList();
     this._rebuildConstraintsList();
     this._rebuildVariablesList();
+    this._updateToggleAllButtons();
+  }
+
+  /** Sync the toggle-all buttons' visual state with current flags */
+  _updateToggleAllButtons() {
+    const dimBtn = document.getElementById('btn-toggle-all-dims');
+    const conBtn = document.getElementById('btn-toggle-all-constraints');
+    if (dimBtn) {
+      dimBtn.classList.toggle('off', !state.allDimensionsVisible);
+      dimBtn.title = state.allDimensionsVisible ? 'Hide all dimensions' : 'Show all dimensions';
+    }
+    if (conBtn) {
+      conBtn.classList.toggle('off', !state.constraintIconsVisible);
+      conBtn.title = state.constraintIconsVisible ? 'Hide all constraint icons' : 'Show all constraint icons';
+    }
   }
 
   /** Get an icon for a primitive, reflecting its visual style */

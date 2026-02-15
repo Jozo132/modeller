@@ -472,6 +472,29 @@ html, body {
   color: var(--accent-hover);
 }
 
+.lp-toggle-all {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0 2px;
+  margin-left: auto;
+  line-height: 1;
+  opacity: 0.6;
+  transition: opacity 0.15s;
+}
+
+.lp-toggle-all:hover {
+  opacity: 1;
+  color: var(--accent-hover);
+}
+
+.lp-toggle-all.off {
+  opacity: 0.3;
+  text-decoration: line-through;
+}
+
 /* Canvas */
 #cad-canvas {
   position: fixed;
