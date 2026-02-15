@@ -618,9 +618,19 @@ export class WasmRenderer {
 
   /**
    * Triangulate polygon faces and build Float32Arrays for WebGL rendering.
+   * Stores face metadata for selection/identification.
    */
   _buildMeshFromGeometry(geometry) {
     const faces = geometry.faces || [];
+
+    // Store face metadata for selection
+    this._meshFaces = faces.map((face, idx) => ({
+      index: idx,
+      faceType: face.faceType || 'unknown',
+      normal: face.normal || { x: 0, y: 0, z: 1 },
+      shared: face.shared || null,
+      vertexCount: face.vertices.length,
+    }));
 
     // Count triangles needed (fan triangulation: n-gon → n-2 triangles)
     let triCount = 0;
@@ -634,14 +644,18 @@ export class WasmRenderer {
     const triData = new Float32Array(triCount * 3 * 6);
     let ti = 0;
 
-    for (const face of faces) {
+    // Map triangle index → face index for hit testing
+    this._triFaceMap = new Int32Array(triCount);
+    let triIdx = 0;
+
+    for (let fi = 0; fi < faces.length; fi++) {
+      const face = faces[fi];
       const verts = face.vertices;
       const n = face.normal || { x: 0, y: 0, z: 1 };
       if (verts.length < 3) continue;
 
       // Fan triangulation from vertex 0
       for (let i = 1; i < verts.length - 1; i++) {
-        // Triangle: v0, v[i], v[i+1]
         const v0 = verts[0], v1 = verts[i], v2 = verts[i + 1];
         triData[ti++] = v0.x; triData[ti++] = v0.y; triData[ti++] = v0.z;
         triData[ti++] = n.x;  triData[ti++] = n.y;  triData[ti++] = n.z;
@@ -649,30 +663,42 @@ export class WasmRenderer {
         triData[ti++] = n.x;  triData[ti++] = n.y;  triData[ti++] = n.z;
         triData[ti++] = v2.x; triData[ti++] = v2.y; triData[ti++] = v2.z;
         triData[ti++] = n.x;  triData[ti++] = n.y;  triData[ti++] = n.z;
+        this._triFaceMap[triIdx++] = fi;
       }
     }
 
     this._meshTriangles = triData;
     this._meshTriangleCount = triCount * 3; // vertex count
 
-    // Build wireframe edges from face boundaries
-    let edgeCount = 0;
-    for (const face of faces) {
-      edgeCount += face.vertices.length;
-    }
-    const edgeData = new Float32Array(edgeCount * 2 * 3);
-    let ei = 0;
-    for (const face of faces) {
-      const verts = face.vertices;
-      for (let i = 0; i < verts.length; i++) {
-        const a = verts[i], b = verts[(i + 1) % verts.length];
-        edgeData[ei++] = a.x; edgeData[ei++] = a.y; edgeData[ei++] = a.z;
-        edgeData[ei++] = b.x; edgeData[ei++] = b.y; edgeData[ei++] = b.z;
+    // Use deduplicated edges from CSG if available, otherwise from face boundaries
+    if (geometry.edges && geometry.edges.length > 0) {
+      const edgeData = new Float32Array(geometry.edges.length * 2 * 3);
+      let ei = 0;
+      for (const edge of geometry.edges) {
+        edgeData[ei++] = edge.start.x; edgeData[ei++] = edge.start.y; edgeData[ei++] = edge.start.z;
+        edgeData[ei++] = edge.end.x;   edgeData[ei++] = edge.end.y;   edgeData[ei++] = edge.end.z;
       }
+      this._meshEdges = edgeData;
+      this._meshEdgeVertexCount = geometry.edges.length * 2;
+    } else {
+      // Fallback: edges from face boundaries
+      let edgeCount = 0;
+      for (const face of faces) {
+        edgeCount += face.vertices.length;
+      }
+      const edgeData = new Float32Array(edgeCount * 2 * 3);
+      let ei = 0;
+      for (const face of faces) {
+        const verts = face.vertices;
+        for (let i = 0; i < verts.length; i++) {
+          const a = verts[i], b = verts[(i + 1) % verts.length];
+          edgeData[ei++] = a.x; edgeData[ei++] = a.y; edgeData[ei++] = a.z;
+          edgeData[ei++] = b.x; edgeData[ei++] = b.y; edgeData[ei++] = b.z;
+        }
+      }
+      this._meshEdges = edgeData;
+      this._meshEdgeVertexCount = edgeCount * 2;
     }
-
-    this._meshEdges = edgeData;
-    this._meshEdgeVertexCount = edgeCount * 2;
   }
 
   /**
@@ -812,6 +838,26 @@ export class WasmRenderer {
     this._meshTriangleCount = 0;
     this._meshEdges = null;
     this._meshEdgeVertexCount = 0;
+    this._meshFaces = null;
+    this._triFaceMap = null;
+  }
+
+  /**
+   * Get face metadata for a given face index.
+   * @param {number} faceIndex - Index into the faces array
+   * @returns {Object|null} Face metadata (faceType, normal, shared)
+   */
+  getFaceInfo(faceIndex) {
+    if (!this._meshFaces || faceIndex < 0 || faceIndex >= this._meshFaces.length) return null;
+    return this._meshFaces[faceIndex];
+  }
+
+  /**
+   * Get all face metadata.
+   * @returns {Array|null} Array of face metadata objects
+   */
+  getAllFaces() {
+    return this._meshFaces || null;
   }
 
   clearGeometry() {
