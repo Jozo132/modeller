@@ -2610,7 +2610,7 @@ class App {
 
   _motionPopulateDrivers() {
     const sel = document.getElementById('motion-driver');
-    sel.innerHTML = '<option value="">— Select a driving dimension or constraint —</option>';
+    sel.innerHTML = '<option value="">— Select a driving dimension, constraint, or variable —</option>';
     const scene = state.scene;
 
     // Driving dimensions (isConstraint && formula != null)
@@ -2635,6 +2635,20 @@ class App {
         sel.appendChild(opt);
       }
     }
+
+    // Variables
+    for (const [name, raw] of getAllVariables()) {
+      const resolved = getVariable(name);
+      const showResolved = typeof resolved === 'number' && !isNaN(resolved);
+      const rawText = typeof raw === 'number' ? raw.toFixed(4) : String(raw);
+      const label = showResolved
+        ? `Var ${name} = ${resolved.toFixed(4)} (${rawText})`
+        : `Var ${name} = ${rawText}`;
+      const opt = document.createElement('option');
+      opt.value = `var:${name}`;
+      opt.textContent = label;
+      sel.appendChild(opt);
+    }
   }
 
   _motionGetSelectedDriver() {
@@ -2643,10 +2657,13 @@ class App {
     const scene = state.scene;
     if (val.startsWith('dim:')) {
       const id = parseInt(val.slice(4));
-      return { target: scene.dimensions.find(d => d.id === id), isDim: true };
+      return { target: scene.dimensions.find(d => d.id === id), driverType: 'dim' };
     } else if (val.startsWith('con:')) {
       const id = parseInt(val.slice(4));
-      return { target: scene.constraints.find(c => c.id === id), isDim: false };
+      return { target: scene.constraints.find(c => c.id === id), driverType: 'con' };
+    } else if (val.startsWith('var:')) {
+      const name = val.slice(4);
+      return { target: name, driverType: 'var' };
     }
     return null;
   }
@@ -2730,10 +2747,12 @@ class App {
       const info = this._motionGetSelectedDriver();
       if (info && info.target) {
         let currentVal;
-        if (info.isDim) {
+        if (info.driverType === 'dim') {
           currentVal = info.target.value;
-        } else {
+        } else if (info.driverType === 'con') {
           currentVal = typeof info.target.value === 'number' ? info.target.value : resolveValue(info.target.value);
+        } else {
+          currentVal = getVariable(info.target);
         }
         if (typeof currentVal === 'number' && !isNaN(currentVal)) {
           document.getElementById('motion-from').value = currentVal.toFixed(4);
@@ -2786,17 +2805,20 @@ class App {
         return;
       }
 
-      // Save the original formula/value for restoration
       const driver = driverInfo.target;
-      this._motionOriginalDriverValue = driverInfo.isDim ? driver.formula : driver.value;
 
       const config = {
         driver: driver,
         from, to, steps,
         probes: this._motionProbes.filter(p => p.target),
-        _driverId: driver.id,
-        _driverIsDim: driverInfo.isDim,
+        _driverType: driverInfo.driverType,
       };
+
+      if (driverInfo.driverType === 'var') {
+        config._driverName = driver;
+      } else {
+        config._driverId = driver.id;
+      }
 
       // Tag probes with IDs for re-linking
       for (const p of config.probes) {

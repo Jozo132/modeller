@@ -7,10 +7,11 @@
 
 import { state } from './state.js';
 import { Scene } from './cad/index.js';
+import { setVariable } from './cad/Constraint.js';
 
 /**
  * @typedef {Object} MotionConfig
- * @property {object} driver      — the driving dimension or constraint object
+ * @property {object|string} driver — driving dimension/constraint object or variable name
  * @property {number} from        — start value
  * @property {number} to          — end value
  * @property {number} steps       — number of steps (frames = steps + 1)
@@ -106,12 +107,15 @@ export class MotionAnalysis {
     const scene = state.scene;
 
     // Re-link driver
-    const driverId = this.config._driverId;
-    const driverIsDim = this.config._driverIsDim;
-    if (driverIsDim) {
-      this.config.driver = scene.dimensions.find(d => d.id === driverId) || null;
-    } else {
-      this.config.driver = scene.constraints.find(c => c.id === driverId) || null;
+      const driverType = this.config._driverType;
+      if (driverType === 'dim') {
+        const driverId = this.config._driverId;
+        this.config.driver = scene.dimensions.find(d => d.id === driverId) || null;
+      } else if (driverType === 'con') {
+        const driverId = this.config._driverId;
+        this.config.driver = scene.constraints.find(c => c.id === driverId) || null;
+      } else if (driverType === 'var') {
+        this.config.driver = this.config._driverName || null;
     }
 
     // Re-link probes
@@ -128,6 +132,10 @@ export class MotionAnalysis {
    * Set the driver value on the driving dimension or constraint.
    */
   _setDriverValue(driver, value) {
+    if (typeof driver === 'string') {
+      setVariable(driver, value);
+      return;
+    }
     if (driver.type === 'dimension') {
       // DimensionPrimitive — set formula to the numeric value
       driver.formula = value;
