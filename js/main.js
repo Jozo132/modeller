@@ -577,6 +577,17 @@ class App {
           this._scheduleRender();
         },
       });
+      items.push({
+        type: 'item',
+        label: state.autoCoincidence ? 'Disable Auto-Connect' : 'Enable Auto-Connect',
+        icon: '⊚',
+        action: () => {
+          state.autoCoincidence = !state.autoCoincidence;
+          document.getElementById('btn-autocoincidence-toggle').classList.toggle('active', state.autoCoincidence);
+          document.getElementById('status-autocoincidence').classList.toggle('active', state.autoCoincidence);
+          this._scheduleRender();
+        },
+      });
       items.push({ type: 'separator' });
       items.push({
         type: 'item',
@@ -891,6 +902,12 @@ class App {
       e.target.classList.toggle('active', state.snapEnabled);
       document.getElementById('status-snap').classList.toggle('active', state.snapEnabled);
     });
+    // Auto-connect coincidences
+    document.getElementById('btn-autocoincidence-toggle').addEventListener('click', (e) => {
+      state.autoCoincidence = !state.autoCoincidence;
+      e.target.classList.toggle('active', state.autoCoincidence);
+      document.getElementById('status-autocoincidence').classList.toggle('active', state.autoCoincidence);
+    });
     document.getElementById('btn-ortho-toggle').addEventListener('click', (e) => {
       state.orthoEnabled = !state.orthoEnabled;
       e.target.classList.toggle('active', state.orthoEnabled);
@@ -917,6 +934,8 @@ class App {
 
     // Initialize status indicators
     document.getElementById('status-snap').classList.toggle('active', state.snapEnabled);
+    document.getElementById('status-autocoincidence').classList.toggle('active', state.autoCoincidence);
+    document.getElementById('btn-autocoincidence-toggle').classList.toggle('active', state.autoCoincidence);
     document.getElementById('status-ortho').classList.toggle('active', state.orthoEnabled);
   }
 

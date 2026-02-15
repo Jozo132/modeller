@@ -372,8 +372,13 @@ export class SelectTool extends BaseTool {
         state.scene.solve();
 
         // Snap-to-coincidence detection for the single dragged point
-        this._snapCandidates = this._findSnapCandidates([this._dragPoint]);
-        this._lineSnapCandidates = this._findLineSnapCandidates([this._dragPoint]);
+        if (state.autoCoincidence) {
+          this._snapCandidates = this._findSnapCandidates([this._dragPoint]);
+          this._lineSnapCandidates = this._findLineSnapCandidates([this._dragPoint]);
+        } else {
+          this._snapCandidates = [];
+          this._lineSnapCandidates = [];
+        }
         this._alignmentGuides = this._findAlignmentGuides([this._dragPoint]);
 
         state.emit('change');
@@ -417,8 +422,13 @@ export class SelectTool extends BaseTool {
         state.scene.solve();
 
         // Snap-to-coincidence detection for all movable points of the shape
-        this._snapCandidates = this._findSnapCandidates(this._dragShapePts);
-        this._lineSnapCandidates = this._findLineSnapCandidates(this._dragShapePts);
+        if (state.autoCoincidence) {
+          this._snapCandidates = this._findSnapCandidates(this._dragShapePts);
+          this._lineSnapCandidates = this._findLineSnapCandidates(this._dragShapePts);
+        } else {
+          this._snapCandidates = [];
+          this._lineSnapCandidates = [];
+        }
         this._alignmentGuides = this._findAlignmentGuides(this._dragShapePts);
 
         state.emit('change');

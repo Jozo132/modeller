@@ -25,6 +25,7 @@ function projectToJSON() {
     gridVisible: state.gridVisible,
     snapEnabled: state.snapEnabled,
     orthoEnabled: state.orthoEnabled,
+    autoCoincidence: state.autoCoincidence,
     viewport: _viewport ? { zoom: _viewport.zoom, panX: _viewport.panX, panY: _viewport.panY } : null,
   };
 }
@@ -55,6 +56,7 @@ function projectFromJSON(data) {
   if (data.gridVisible != null) state.gridVisible = data.gridVisible;
   if (data.snapEnabled != null) state.snapEnabled = data.snapEnabled;
   if (data.orthoEnabled != null) state.orthoEnabled = data.orthoEnabled;
+  if (data.autoCoincidence != null) state.autoCoincidence = data.autoCoincidence;
 
   // Restore viewport
   let hasViewport = false;
