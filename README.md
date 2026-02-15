@@ -14,17 +14,30 @@ A browser-based 2D CAD modeller with parametric 3D part modeling capabilities. B
 - **Persistent State** — Project auto-saves to localStorage across page refreshes
 - **Responsive UI** — Adapts to different screen sizes with touch support
 
-### Parametric 3D Part Modeling (New!)
-- **Feature Tree** — Industry-standard parametric history tree
-- **Sketch + Operation Workflow** — Each modeling step builds on previous features
+### Parametric 3D Part Modeling (Integrated!)
+- **Feature Tree** — Industry-standard parametric history tree with UI panel
+- **Sketch + Operation Workflow** — Draw in 2D, convert to 3D parts with extrude/revolve
+- **Split View Interface** — 2D canvas + 3D viewport with Three.js WebGL rendering
 - **Recursive Recalculation** — Changing lower-level features automatically updates everything
 - **Dependency Tracking** — Features declare dependencies; system validates operations
 - **Feature Management** — Add, remove, reorder, suppress features with automatic validation
+- **Interactive Parameters Panel** — Edit feature properties with live 3D preview updates
 - **3D Operations**:
   - ✅ Extrude — Extrude 2D sketches to create 3D solids
   - ✅ Revolve — Revolve sketches around an axis
   - ⏳ Fillet, Chamfer (coming soon)
   - ⏳ Boolean operations (coming soon)
+
+## Using the 3D Workflow
+
+1. **Draw your sketch** — Use the 2D drawing tools (Line, Rectangle, Circle, etc.) to create geometry
+2. **Toggle 3D mode** — Click the "Toggle 3D View (3)" button in the toolbar
+3. **Add sketch to part** — Click "Add Sketch to Part" to convert your 2D sketch to a feature
+4. **Apply operations**:
+   - Click "Extrude Sketch" and enter a distance to create a 3D solid
+   - Or click "Revolve Sketch" and enter an angle to revolve around an axis
+5. **Modify parameters** — Select features in the Feature Tree to edit their properties
+6. **Watch live updates** — The 3D view automatically updates as you modify features
 
 ## Architecture
 
