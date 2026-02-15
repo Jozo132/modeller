@@ -10,6 +10,11 @@ export { Scene } from './Scene.js';
 export { Sketch } from './Sketch.js';
 export { Part } from './Part.js';
 export { Assembly } from './Assembly.js';
+export { Feature, resetFeatureIds } from './Feature.js';
+export { FeatureTree } from './FeatureTree.js';
+export { SketchFeature } from './SketchFeature.js';
+export { ExtrudeFeature } from './ExtrudeFeature.js';
+export { RevolveFeature } from './RevolveFeature.js';
 export { solve } from './Solver.js';
 export {
   Constraint, resetConstraintIds,
