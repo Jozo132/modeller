@@ -353,6 +353,25 @@ html, body {
   color: var(--accent-hover);
 }
 
+.lp-item .lp-eye {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 0 3px;
+  line-height: 1;
+  opacity: 0.5;
+}
+
+.lp-item:hover .lp-eye {
+  opacity: 1;
+}
+
+.lp-item .lp-eye:hover {
+  color: var(--accent-hover);
+}
+
 .lp-item .lp-var-name {
   overflow: hidden;
   text-overflow: ellipsis;

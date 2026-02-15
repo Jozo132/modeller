@@ -4,7 +4,7 @@ import { state } from './state.js';
 import { error as logError } from './logger.js';
 
 const SNAP_MARKER_SIZE = 6;
-const FULLY_CONSTRAINED_COLOR = '#4FC1FF';
+const FULLY_CONSTRAINED_COLOR = '#569CD6';
 
 export class Renderer {
   constructor(viewport) {

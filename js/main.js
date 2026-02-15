@@ -988,6 +988,7 @@ class App {
 
   _rebuildLeftPanel() {
     this._rebuildPrimitivesList();
+    this._rebuildDimensionsList();
     this._rebuildConstraintsList();
     this._rebuildVariablesList();
   }
@@ -1102,7 +1103,7 @@ class App {
     const list = document.getElementById('primitives-list');
     list.innerHTML = '';
     const scene = state.scene;
-    const allShapes = [...scene.shapes()];
+    const allShapes = [...scene.shapes()].filter(s => s.type !== 'dimension');
 
     if (allShapes.length === 0) {
       list.innerHTML = '<p class="hint">No primitives</p>';
@@ -1157,6 +1158,82 @@ class App {
           state.deselect(prim);
         } else {
           state.select(prim);
+        }
+        this._scheduleRender();
+      });
+
+      list.appendChild(row);
+    }
+  }
+
+  _rebuildDimensionsList() {
+    const list = document.getElementById('dimensions-list');
+    list.innerHTML = '';
+    const scene = state.scene;
+    const dims = scene.dimensions;
+
+    if (dims.length === 0) {
+      list.innerHTML = '<p class="hint">No dimensions</p>';
+      return;
+    }
+
+    for (const dim of dims) {
+      const row = document.createElement('div');
+      row.className = 'lp-item';
+      row.dataset.primId = dim.id;
+      row.dataset.primType = 'dimension';
+
+      if (dim.selected) row.classList.add('selected');
+
+      const hoverEnt = this.renderer.hoverEntity;
+      if (hoverEnt && hoverEnt.id === dim.id) row.classList.add('highlight');
+
+      if (this._lpHoverConstraintId != null) {
+        const hc = scene.constraints.find(c => c.id === this._lpHoverConstraintId);
+        if (hc && this._constraintPrimIds(hc).has(dim.id)) {
+          row.classList.add('highlight');
+        }
+      }
+
+      const dimT = dim.dimType || 'distance';
+      const desc = `Dimension #${dim.id}`;
+      const statusLabel = dim.isConstraint ? 'driving' : 'driven';
+      const eyeIcon = dim.visible ? '👁' : '—';
+
+      row.innerHTML = `<span class="lp-icon">↔</span>` +
+        `<span class="lp-label">${desc} <span style="opacity:0.5">(${dimT}, ${statusLabel})</span></span>` +
+        `<button class="lp-eye" title="Toggle visibility">${eyeIcon}</button>`;
+
+      // Eye toggle
+      row.querySelector('.lp-eye').addEventListener('click', (e) => {
+        e.stopPropagation();
+        dim.visible = !dim.visible;
+        this._rebuildDimensionsList();
+        this._scheduleRender();
+      });
+
+      // Mouse events for cross-highlighting
+      row.addEventListener('mouseenter', () => {
+        this._lpHoverPrimId = dim.id;
+        this.renderer.hoverEntity = dim;
+        this._scheduleRender();
+        this._updateLeftPanelHighlights();
+      });
+      row.addEventListener('mouseleave', () => {
+        this._lpHoverPrimId = null;
+        if (this.renderer.hoverEntity === dim) this.renderer.hoverEntity = null;
+        this._scheduleRender();
+        this._updateLeftPanelHighlights();
+      });
+
+      // Click to select/deselect
+      row.addEventListener('click', (e) => {
+        if (e.target.classList.contains('lp-eye')) return;
+        if (!e.shiftKey) state.clearSelection();
+        if (dim.selected && e.shiftKey) {
+          state.deselect(dim);
+        } else {
+          state.select(dim);
         }
         this._scheduleRender();
       });
@@ -1706,9 +1783,26 @@ class App {
       item.classList.toggle('selected', this._lpSelectedConstraintId === cId);
     }
 
+    // Update dimensions list highlights
+    const dimItems = document.querySelectorAll('#dimensions-list .lp-item');
+    for (const item of dimItems) {
+      const id = parseInt(item.dataset.primId);
+      let hl = false;
+
+      if (hoverEnt && hoverEnt.id === id) hl = true;
+      if (hcPrimIds && hcPrimIds.has(id)) hl = true;
+
+      item.classList.toggle('highlight', hl);
+
+      const prim = shapesById.get(id);
+      item.classList.toggle('selected', prim ? prim.selected : false);
+    }
+
     // Scroll highlighted items into view
     const highlightedPrim = document.querySelector('#primitives-list .lp-item.highlight');
     if (highlightedPrim) highlightedPrim.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    const highlightedDim = document.querySelector('#dimensions-list .lp-item.highlight');
+    if (highlightedDim) highlightedDim.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     const highlightedConstraint = document.querySelector('#constraints-list .lp-item.highlight');
     if (highlightedConstraint) highlightedConstraint.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   }

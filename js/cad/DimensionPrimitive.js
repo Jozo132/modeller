@@ -484,8 +484,8 @@ export class DimensionPrimitive extends Primitive {
     }
 
     ctx.save();
-    // Constraint dimensions shown in a different color
-    if (this.isConstraint) {
+    // Driven dimensions shown in a different color (orange); driving uses inherited color
+    if (!this.isConstraint) {
       ctx.strokeStyle = 'rgba(255,180,50,0.8)';
       ctx.fillStyle = 'rgba(255,180,50,0.9)';
     }
@@ -560,7 +560,8 @@ export class DimensionPrimitive extends Primitive {
     const sweepA = this._angleSweep != null ? this._angleSweep : this._computeAngle();
 
     ctx.save();
-    if (this.isConstraint) {
+    // Driven dimensions shown in a different color (orange); driving uses inherited color
+    if (!this.isConstraint) {
       ctx.strokeStyle = 'rgba(255,180,50,0.8)';
       ctx.fillStyle = 'rgba(255,180,50,0.9)';
     }
