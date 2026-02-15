@@ -5,7 +5,7 @@ export { PSegment } from './Segment.js';
 export { PArc } from './ArcPrimitive.js';
 export { PCircle } from './CirclePrimitive.js';
 export { TextPrimitive } from './TextPrimitive.js';
-export { DimensionPrimitive, detectDimensionType, DIM_TYPES, DISPLAY_MODES } from './DimensionPrimitive.js';
+export { DimensionPrimitive, detectDimensionType, detectAllDimensionTypes, DIM_TYPES, DISPLAY_MODES } from './DimensionPrimitive.js';
 export { Scene } from './Scene.js';
 export { solve } from './Solver.js';
 export {

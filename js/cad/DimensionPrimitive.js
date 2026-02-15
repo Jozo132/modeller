@@ -6,6 +6,7 @@
 //   'dy'        – vertical distance between two points
 //   'angle'     – angle between two non-parallel segments
 //   'radius'    – radius of a circle or arc
+//   'diameter'  – diameter of a circle or arc
 //
 // Each dimension can be a passive follower or an active constraint.
 // Dimensions can write their value into a named variable.
@@ -16,7 +17,7 @@ import { Primitive } from './Primitive.js';
 import { resolveValue } from './Constraint.js';
 
 /** Valid dimension types */
-export const DIM_TYPES = ['distance', 'dx', 'dy', 'angle', 'radius'];
+export const DIM_TYPES = ['distance', 'dx', 'dy', 'angle', 'radius', 'diameter'];
 
 /** Display modes for the dimension label */
 export const DISPLAY_MODES = ['value', 'formula', 'both'];
@@ -130,6 +131,12 @@ export class DimensionPrimitive extends Primitive {
         }
         return 0;
       }
+      case 'diameter': {
+        if ((srcA.type === 'circle' || srcA.type === 'arc') && !srcB) {
+          return Math.abs(srcA.radius * 2 - target);
+        }
+        return 0;
+      }
       default: return 0;
     }
   }
@@ -220,6 +227,13 @@ export class DimensionPrimitive extends Primitive {
         }
         return;
       }
+      case 'diameter': {
+        if ((srcA.type === 'circle' || srcA.type === 'arc') && !srcB) {
+          srcA.radius = target / 2;
+          return;
+        }
+        return;
+      }
     }
   }
 
@@ -259,7 +273,7 @@ export class DimensionPrimitive extends Primitive {
       return;
     }
 
-    if (this.dimType === 'radius') {
+    if (this.dimType === 'radius' || this.dimType === 'diameter') {
       if (srcA.type === 'circle' || srcA.type === 'arc') {
         this.x1 = srcA.cx; this.y1 = srcA.cy;
         this.x2 = srcA.cx + srcA.radius; this.y2 = srcA.cy;
@@ -284,6 +298,7 @@ export class DimensionPrimitive extends Primitive {
       case 'dy': return Math.abs(this.y2 - this.y1);
       case 'angle': return this._computeAngle();
       case 'radius': return Math.hypot(this.x2 - this.x1, this.y2 - this.y1);
+      case 'diameter': return Math.hypot(this.x2 - this.x1, this.y2 - this.y1) * 2;
       case 'distance':
       default: return Math.hypot(this.x2 - this.x1, this.y2 - this.y1);
     }
@@ -302,17 +317,18 @@ export class DimensionPrimitive extends Primitive {
   get displayLabel() {
     const val = this.value;
     const unit = this.dimType === 'angle' ? '°' : '';
+    const prefix = this.dimType === 'diameter' ? '⌀' : (this.dimType === 'radius' ? 'R' : '');
     const formatted = this.dimType === 'angle'
       ? (val * 180 / Math.PI).toFixed(1)
       : val.toFixed(2);
 
     if (this.displayMode === 'formula' && this.formula != null) {
-      return String(this.formula);
+      return `${prefix}${this.formula}`;
     }
     if (this.displayMode === 'both' && this.formula != null) {
-      return `${this.formula} = ${formatted}${unit}`;
+      return `${prefix}${this.formula} = ${formatted}${unit}`;
     }
-    return `${formatted}${unit}`;
+    return `${prefix}${formatted}${unit}`;
   }
 
   _computeAngle() {
@@ -558,6 +574,104 @@ export function detectDimensionType(a, b) {
   // Fallback: endpoint-to-endpoint
   return { dimType: 'distance', x1: a.x1 ?? a.x ?? a.cx ?? 0, y1: a.y1 ?? a.y ?? a.cy ?? 0,
            x2: b.x1 ?? b.x ?? b.cx ?? 0, y2: b.y1 ?? b.y ?? b.cy ?? 0 };
+}
+
+/**
+ * Return ALL possible dimension types for a given pair of primitives.
+ * The first entry is the default/recommended type; the rest are alternatives.
+ * Each entry has { dimType, label, x1, y1, x2, y2, angleStart?, angleSweep? }.
+ */
+export function detectAllDimensionTypes(a, b) {
+  const results = [];
+
+  if (!b) {
+    // --- Single entity ---
+    if (a.type === 'segment') {
+      results.push({ dimType: 'distance', label: 'Length', x1: a.x1, y1: a.y1, x2: a.x2, y2: a.y2 });
+      // Horizontal/vertical components
+      results.push({ dimType: 'dx', label: 'Horizontal (ΔX)', x1: a.x1, y1: a.y1, x2: a.x2, y2: a.y2 });
+      results.push({ dimType: 'dy', label: 'Vertical (ΔY)', x1: a.x1, y1: a.y1, x2: a.x2, y2: a.y2 });
+    }
+    if (a.type === 'circle' || a.type === 'arc') {
+      results.push({ dimType: 'diameter', label: 'Diameter', x1: a.cx, y1: a.cy, x2: a.cx + a.radius, y2: a.cy });
+      results.push({ dimType: 'radius', label: 'Radius', x1: a.cx, y1: a.cy, x2: a.cx + a.radius, y2: a.cy });
+    }
+    return results;
+  }
+
+  // --- Two primitives ---
+
+  // Two points
+  if (a.type === 'point' && b.type === 'point') {
+    results.push({ dimType: 'distance', label: 'Distance', x1: a.x, y1: a.y, x2: b.x, y2: b.y });
+    results.push({ dimType: 'dx', label: 'Horizontal (ΔX)', x1: a.x, y1: a.y, x2: b.x, y2: b.y });
+    results.push({ dimType: 'dy', label: 'Vertical (ΔY)', x1: a.x, y1: a.y, x2: b.x, y2: b.y });
+    return results;
+  }
+
+  // Two segments — possibly both angle and distance
+  if (a.type === 'segment' && b.type === 'segment') {
+    if (_areParallel(a, b)) {
+      // Parallel: distance is default
+      const foot = _footOnLine(a.midX, a.midY, b.x1, b.y1, b.x2, b.y2);
+      results.push({ dimType: 'distance', label: 'Distance', x1: a.midX, y1: a.midY, x2: foot.x, y2: foot.y });
+    } else {
+      // Non-parallel: angle is default, but also offer distance
+      const info = _segAngleInfo(a, b);
+      results.push({
+        dimType: 'angle', label: 'Angle',
+        x1: info.vx, y1: info.vy, x2: info.vx, y2: info.vy,
+        angleStart: info.startAngle, angleSweep: info.sweep,
+      });
+      const foot = _footOnLine(a.midX, a.midY, b.x1, b.y1, b.x2, b.y2);
+      results.push({ dimType: 'distance', label: 'Distance', x1: a.midX, y1: a.midY, x2: foot.x, y2: foot.y });
+    }
+    return results;
+  }
+
+  // Point + segment
+  if (a.type === 'point' && b.type === 'segment') {
+    const foot = _footOnSegment(a.x, a.y, b.x1, b.y1, b.x2, b.y2);
+    results.push({ dimType: 'distance', label: 'Distance', x1: a.x, y1: a.y, x2: foot.x, y2: foot.y });
+    return results;
+  }
+  if (a.type === 'segment' && b.type === 'point') {
+    const foot = _footOnSegment(b.x, b.y, a.x1, a.y1, a.x2, a.y2);
+    results.push({ dimType: 'distance', label: 'Distance', x1: b.x, y1: b.y, x2: foot.x, y2: foot.y });
+    return results;
+  }
+
+  // Circle/arc + point
+  if ((a.type === 'circle' || a.type === 'arc') && b.type === 'point') {
+    results.push({ dimType: 'distance', label: 'Distance (center)', x1: a.cx, y1: a.cy, x2: b.x, y2: b.y });
+    return results;
+  }
+  if (a.type === 'point' && (b.type === 'circle' || b.type === 'arc')) {
+    results.push({ dimType: 'distance', label: 'Distance (center)', x1: a.x, y1: a.y, x2: b.cx, y2: b.cy });
+    return results;
+  }
+
+  // Two circles/arcs
+  if ((a.type === 'circle' || a.type === 'arc') && (b.type === 'circle' || b.type === 'arc')) {
+    results.push({ dimType: 'distance', label: 'Distance (centers)', x1: a.cx, y1: a.cy, x2: b.cx, y2: b.cy });
+    return results;
+  }
+
+  // Segment + circle/arc
+  if (a.type === 'segment' && (b.type === 'circle' || b.type === 'arc')) {
+    results.push({ dimType: 'distance', label: 'Distance', x1: a.midX, y1: a.midY, x2: b.cx, y2: b.cy });
+    return results;
+  }
+  if ((a.type === 'circle' || a.type === 'arc') && b.type === 'segment') {
+    results.push({ dimType: 'distance', label: 'Distance', x1: a.cx, y1: a.cy, x2: b.midX, y2: b.midY });
+    return results;
+  }
+
+  // Fallback
+  results.push({ dimType: 'distance', label: 'Distance',
+    x1: a.x1 ?? a.x ?? a.cx ?? 0, y1: a.y1 ?? a.y ?? a.cy ?? 0,
+    x2: b.x1 ?? b.x ?? b.cx ?? 0, y2: b.y1 ?? b.y ?? b.cy ?? 0 });
+  return results;
 }
 
 // ---------------------------------------------------------------------------

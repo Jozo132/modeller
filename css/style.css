@@ -714,6 +714,40 @@ html, body {
   cursor: pointer;
 }
 
+/* Dimension type selector (alternate types) */
+.dim-type-selector {
+  display: flex;
+  gap: 2px;
+  padding: 3px 6px 4px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-top: none;
+  overflow-x: auto;
+}
+
+.dim-type-btn {
+  background: var(--bg-dark);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 2px 8px;
+  font-size: 10px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.1s, color 0.1s, border-color 0.1s;
+}
+
+.dim-type-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.dim-type-btn.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
 .dim-inline-input-row {
   display: flex;
   align-items: center;

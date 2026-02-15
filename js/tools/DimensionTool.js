@@ -1,21 +1,21 @@
 // js/tools/DimensionTool.js — Smart constraint dimension tool
 //
-// Click between any two primitives (or a single line/arc) and the tool
-// automatically detects the appropriate dimension type:
+// Click any primitive (line, circle, arc, point) and the tool automatically
+// detects the appropriate dimension type:
+//   - Single line → length (alt: ΔX, ΔY)
+//   - Single circle/arc → diameter (alt: radius)
 //   - Two parallel lines → distance between them
-//   - Two non-parallel lines → angle between them
-//   - Two points → distance (dx, dy available via prompt)
+//   - Two non-parallel lines → angle (alt: distance)
+//   - Two points → distance (alt: ΔX, ΔY)
 //   - Point + line → perpendicular distance
-//   - Arcs/circles → distance from center
-//   - Single line → length   |   Single arc/circle → radius
+//   - Circles/arcs → distance between centers
 //
-// After selecting two entities the user moves the mouse to set the offset
-// distance of the dimension annotation, then clicks to place it.
-// A prompt asks whether the dimension is a constraint or following,
-// optional variable name, and display mode.
+// During offset placement (step 2), clicking a different entity switches
+// to a two-entity dimension, inferring the best type automatically.
+// The inline widget shows a type selector when multiple types are possible.
 
 import { BaseTool } from './BaseTool.js';
-import { DimensionPrimitive, detectDimensionType } from '../cad/DimensionPrimitive.js';
+import { DimensionPrimitive, detectAllDimensionTypes } from '../cad/DimensionPrimitive.js';
 import { state } from '../state.js';
 import { takeSnapshot } from '../history.js';
 import { showDimensionInput, dismissDimensionInput } from '../ui/popup.js';
@@ -26,23 +26,22 @@ export class DimensionTool extends BaseTool {
     super(app);
     this.name = 'dimension';
     this._firstEntity = null;
-    this._dimInfo = null; // result from detectDimensionType
+    this._secondEntity = null;
+    this._dimInfo = null;        // current selected dim info
+    this._allDimInfos = [];      // all possible dim types for current pair
+    this._selectedTypeIdx = 0;   // index into _allDimInfos
     this._previewDim = null;
+    this._lastOffset = 10;
   }
 
   activate() {
     super.activate();
-    this._firstEntity = null;
-    this._dimInfo = null;
-    this._previewDim = null;
-    this.setStatus('Smart Dimension: Click first entity (point, line, arc, circle)');
+    this._reset();
+    this.setStatus('Smart Dimension: Click an entity (line, circle, arc, point)');
   }
 
   deactivate() {
-    this._firstEntity = null;
-    this._dimInfo = null;
-    this._previewDim = null;
-    this.app.renderer.hoverEntity = null;
+    this._reset();
     super.deactivate();
   }
 
@@ -57,6 +56,30 @@ export class DimensionTool extends BaseTool {
     return null;
   }
 
+  /** Update available dimension types and select the default */
+  _updateDimInfos(entityA, entityB) {
+    this._allDimInfos = detectAllDimensionTypes(entityA, entityB || null);
+    this._selectedTypeIdx = 0;
+    if (this._allDimInfos.length > 0) {
+      const info = this._allDimInfos[0];
+      this._dimInfo = { ...info, sourceA: entityA, sourceB: entityB || null };
+    } else {
+      this._dimInfo = null;
+    }
+  }
+
+  /** Switch to a specific dimension type by index */
+  _selectDimType(idx) {
+    if (idx < 0 || idx >= this._allDimInfos.length) return;
+    this._selectedTypeIdx = idx;
+    const info = this._allDimInfos[idx];
+    this._dimInfo = {
+      ...info,
+      sourceA: this._firstEntity,
+      sourceB: this._secondEntity || null,
+    };
+  }
+
   onMouseMove(wx, wy) {
     if (this.step === 0 || this.step === 1) {
       // Highlight entity under cursor
@@ -64,9 +87,17 @@ export class DimensionTool extends BaseTool {
       this.app.renderer.hoverEntity = entity;
     }
     if (this.step === 2 && this._dimInfo) {
+      // Check if mouse is near another entity (for potential second-entity switch)
+      const entity = this._findEntity(wx, wy);
+      if (entity && entity !== this._firstEntity && entity !== this._secondEntity) {
+        this.app.renderer.hoverEntity = entity;
+      } else {
+        this.app.renderer.hoverEntity = null;
+      }
+
       // User is positioning the offset
-      const offset = this._computeOffset(wx, wy);
-      const dim = this._buildDimension(offset);
+      this._lastOffset = this._computeOffset(wx, wy);
+      const dim = this._buildDimension(this._lastOffset);
       this.app.renderer.previewEntities = dim ? [dim] : [];
     }
   }
@@ -82,12 +113,14 @@ export class DimensionTool extends BaseTool {
       this._firstEntity = entity;
 
       // Check if single entity can produce a dimension by itself
-      const singleDim = detectDimensionType(entity, null);
-      if (singleDim && (entity.type === 'segment' || entity.type === 'circle' || entity.type === 'arc')) {
-        // Allow single-entity dimension — proceed to offset step
-        this._dimInfo = { ...singleDim, sourceA: entity, sourceB: null };
+      const allTypes = detectAllDimensionTypes(entity, null);
+      if (allTypes.length > 0 && (entity.type === 'segment' || entity.type === 'circle' || entity.type === 'arc')) {
+        // Single-entity dimension — proceed to offset step
+        this._allDimInfos = allTypes;
+        this._selectedTypeIdx = 0;
+        this._dimInfo = { ...allTypes[0], sourceA: entity, sourceB: null };
         this.step = 2;
-        this.setStatus('Smart Dimension: Move mouse to set offset, then click to place');
+        this.setStatus(`Smart Dimension [${allTypes[0].label}]: Move to set offset, click to place. Click another entity to dimension between them.`);
         return;
       }
       this.step = 1;
@@ -103,31 +136,47 @@ export class DimensionTool extends BaseTool {
         return;
       }
       if (entity === this._firstEntity) {
-        // Same entity — if it's a line or arc, create single-entity dim
-        const singleDim = detectDimensionType(entity, null);
-        if (singleDim) {
-          this._dimInfo = { ...singleDim, sourceA: entity, sourceB: null };
+        // Same entity — if it's a line or arc/circle, create single-entity dim
+        const allTypes = detectAllDimensionTypes(entity, null);
+        if (allTypes.length > 0) {
+          this._allDimInfos = allTypes;
+          this._selectedTypeIdx = 0;
+          this._dimInfo = { ...allTypes[0], sourceA: entity, sourceB: null };
           this.step = 2;
-          this.setStatus('Smart Dimension: Move mouse to set offset, then click to place');
+          this.setStatus(`Smart Dimension [${allTypes[0].label}]: Move to set offset, click to place`);
           return;
         }
         this.setStatus('Smart Dimension: Pick a different entity');
         return;
       }
 
-      const info = detectDimensionType(this._firstEntity, entity);
-      if (!info) {
+      this._secondEntity = entity;
+      this._updateDimInfos(this._firstEntity, entity);
+      if (!this._dimInfo) {
         this.setStatus('Smart Dimension: Cannot create dimension between these entities');
         this._reset();
         return;
       }
-      this._dimInfo = { ...info, sourceA: this._firstEntity, sourceB: entity };
       this.step = 2;
-      this.setStatus('Smart Dimension: Move mouse to set offset, then click to place');
+      this.setStatus(`Smart Dimension [${this._allDimInfos[0].label}]: Move to set offset, click to place`);
       return;
     }
 
     if (this.step === 2) {
+      // Check if user clicked on a different entity — switch to two-entity mode
+      const entity = this._findEntity(wx, wy);
+      if (entity && entity !== this._firstEntity && entity !== this._secondEntity) {
+        // Switching to a new second entity
+        this._secondEntity = entity;
+        this._updateDimInfos(this._firstEntity, entity);
+        if (!this._dimInfo) {
+          this.setStatus('Smart Dimension: Cannot create dimension between these entities');
+          return;
+        }
+        this.setStatus(`Smart Dimension [${this._allDimInfos[0].label}]: Move to set offset, click to place`);
+        return;
+      }
+
       // Place the dimension
       const offset = this._computeOffset(wx, wy);
       const dim = this._buildDimension(offset);
@@ -147,55 +196,75 @@ export class DimensionTool extends BaseTool {
         ? (dim.value * 180 / Math.PI).toFixed(2)
         : dim.value.toFixed(4);
 
+      // Prepare alternate dimension types for the widget
+      const alternateTypes = this._allDimInfos.map((info, idx) => ({
+        label: info.label,
+        dimType: info.dimType,
+        selected: idx === this._selectedTypeIdx,
+      }));
+
       const result = await showDimensionInput({
         dimType: dim.dimType,
         defaultValue: currentVal,
         driven: alreadyConstrained,
         hint: 'value or variable name',
         screenPos: { x: screenMid.x, y: screenMid.y },
+        alternateTypes: alternateTypes.length > 1 ? alternateTypes : null,
+        onTypeChange: (idx) => {
+          this._selectDimType(idx);
+          // Return the new dim info for the input to update its value
+          const newDim = this._buildDimension(offset);
+          if (!newDim) return null;
+          const newIsAngle = this._allDimInfos[idx].dimType === 'angle';
+          return {
+            dimType: this._allDimInfos[idx].dimType,
+            value: newIsAngle
+              ? (newDim.value * 180 / Math.PI).toFixed(2)
+              : newDim.value.toFixed(4),
+          };
+        },
       });
 
       if (result === null) {
-        // Cancelled — still place dimension as non-constraint
         this._reset();
         this.setStatus('Smart Dimension: Cancelled');
         return;
       }
 
+      // Rebuild dimension with potentially changed type
+      const finalDim = this._buildDimension(offset);
+      if (!finalDim) { this._reset(); return; }
+
       const { value: inputVal, driven } = result;
 
-      // Parse value — could be numeric, a simple variable name, or a formula expression
+      // Parse value
       const num = parseFloat(inputVal);
       const isNum = !isNaN(num);
       const trimmed = inputVal.trim();
-      // A simple variable name is an identifier (letters/underscore, optionally followed by letters/digits/underscore)
       const isSimpleVar = /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(trimmed);
       const isFormula = !isNum && !isSimpleVar && trimmed.length > 0;
 
-      dim.isConstraint = !driven;
-      dim.displayMode = (isSimpleVar || isFormula) ? 'both' : 'value';
+      finalDim.isConstraint = !driven;
+      finalDim.displayMode = (isSimpleVar || isFormula) ? 'both' : 'value';
 
       if (isSimpleVar) {
-        // Simple variable name — create/update the variable and link to it
-        dim.formula = trimmed;
-        dim.variableName = trimmed;
-        setVariable(trimmed, dim.value);
+        finalDim.formula = trimmed;
+        finalDim.variableName = trimmed;
+        setVariable(trimmed, finalDim.value);
       } else if (isFormula) {
-        // Formula expression (e.g., "x + 10") — use as formula without creating a variable
-        dim.formula = trimmed;
-        dim.variableName = null;
+        finalDim.formula = trimmed;
+        finalDim.variableName = null;
       } else if (isNum) {
-        dim.formula = dim.dimType === 'angle' ? (num * Math.PI / 180) : num;
-        dim.variableName = null;
+        finalDim.formula = finalDim.dimType === 'angle' ? (num * Math.PI / 180) : num;
+        finalDim.variableName = null;
       }
 
       takeSnapshot();
-      dim.layer = state.activeLayer;
-      state.scene.dimensions.push(dim);
+      finalDim.layer = state.activeLayer;
+      state.scene.dimensions.push(finalDim);
 
-      // If not driven (i.e. constraining), add dimension directly as a solver constraint
-      if (!driven && dim.sourceA) {
-        state.scene.addConstraint(dim);
+      if (!driven && finalDim.sourceA) {
+        state.scene.addConstraint(finalDim);
       }
 
       state.emit('change');
@@ -205,7 +274,7 @@ export class DimensionTool extends BaseTool {
     }
   }
 
-  /** Check if the two source entities already have a distance/angle constraint between them. */
+  /** Check if the two source entities already have a distance/angle constraint. */
   _isAlreadyConstrained(dim) {
     const scene = state.scene;
     const srcA = dim.sourceAId != null ? this._findPrimById(dim.sourceAId) : null;
@@ -213,7 +282,6 @@ export class DimensionTool extends BaseTool {
     if (!srcA) return false;
     const consts = scene.constraintsOn(srcA);
     if (!srcB) {
-      // Single entity — check for length/radius constraint
       return consts.some(c => c.type === 'length' || c.type === 'radius' || (c.type === 'dimension' && c.isConstraint));
     }
     const constsB = scene.constraintsOn(srcB);
@@ -235,14 +303,11 @@ export class DimensionTool extends BaseTool {
     if (!this._dimInfo) return 10;
     const info = this._dimInfo;
     if (info.dimType === 'angle') {
-      // Offset = distance from vertex to mouse
       return Math.hypot(wx - info.x1, wy - info.y1);
     }
-    // Perpendicular distance from dimension line to mouse
     const dx = info.x2 - info.x1, dy = info.y2 - info.y1;
     const len = Math.hypot(dx, dy) || 1e-9;
     const nx = -dy / len, ny = dx / len;
-    // Project mouse offset onto normal
     const dot = (wx - info.x1) * nx + (wy - info.y1) * ny;
     return dot || 10;
   }
@@ -264,8 +329,12 @@ export class DimensionTool extends BaseTool {
 
   _reset() {
     this._firstEntity = null;
+    this._secondEntity = null;
     this._dimInfo = null;
+    this._allDimInfos = [];
+    this._selectedTypeIdx = 0;
     this._previewDim = null;
+    this._lastOffset = 10;
     this.step = 0;
     this.app.renderer.previewEntities = [];
     this.app.renderer.hoverEntity = null;

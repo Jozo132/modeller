@@ -210,6 +210,8 @@ export function showDimensionInput({
   hint = '',
   anchor = null,
   screenPos = null,
+  alternateTypes = null,   // array of { label, dimType, selected } or null
+  onTypeChange = null,     // callback(idx) → { dimType, value } or null
 } = {}) {
   _removeInlineWidget(); // only one at a time
 
@@ -244,6 +246,40 @@ export function showDimensionInput({
     tooltip.appendChild(drivenRow);
 
     container.appendChild(tooltip);
+
+    // --- Dimension type selector (when alternates exist) ---
+    if (alternateTypes && alternateTypes.length > 1) {
+      const typeRow = document.createElement('div');
+      typeRow.className = 'dim-type-selector';
+
+      alternateTypes.forEach((alt, idx) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'dim-type-btn' + (alt.selected ? ' active' : '');
+        btn.textContent = alt.label;
+        btn.title = alt.label;
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          // Update active state
+          typeRow.querySelectorAll('.dim-type-btn').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          // Notify tool of type change
+          if (onTypeChange) {
+            const result = onTypeChange(idx);
+            if (result) {
+              typeLabel.textContent = result.dimType.charAt(0).toUpperCase() + result.dimType.slice(1);
+              input.value = result.value;
+              input.select();
+            }
+          }
+        });
+        // Also stop keyboard events from bubbling
+        btn.addEventListener('keydown', (e) => e.stopPropagation());
+        typeRow.appendChild(btn);
+      });
+
+      container.appendChild(typeRow);
+    }
 
     // --- Input row ---
     const inputRow = document.createElement('div');
