@@ -94,6 +94,9 @@ export class SketchFeature extends Feature {
     let currentEnd = current.p2;
     let startPoint = current.p1;
     
+    // Include the starting point of the profile
+    points.push(startPoint);
+    
     // Follow connected segments
     while (current) {
       if (visited.has(current.id)) break;
@@ -113,8 +116,10 @@ export class SketchFeature extends Feature {
       current = connected;
       currentEnd = (connected.p1 === currentEnd) ? connected.p2 : connected.p1;
       
-      // Check if we closed the loop
+      // Check if we closed the loop (don't add startPoint again — it's already first)
       if (currentEnd === startPoint) {
+        visited.add(current.id);
+        segments.push(current);
         return {
           segments,
           points,
