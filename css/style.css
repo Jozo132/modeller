@@ -1540,3 +1540,102 @@ body.motion-active #view-3d {
 #btn-3d-mode {
   margin-left: auto;
 }
+
+/* Node Tree Overlay — transparent panel in top-left of viewport */
+.node-tree {
+  position: fixed;
+  top: 42px;
+  left: calc(var(--panel-width) + 8px);
+  width: 200px;
+  max-height: calc(100vh - 110px);
+  background: rgba(30, 30, 30, 0.75);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  z-index: 25;
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow-y: auto;
+  pointer-events: auto;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+.node-tree-header {
+  padding: 6px 10px;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-primary);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  user-select: none;
+}
+
+.node-tree-content {
+  padding: 4px 0;
+}
+
+.node-tree-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  cursor: default;
+  user-select: none;
+  transition: background 0.12s;
+}
+
+.node-tree-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.node-tree-item.active {
+  background: rgba(0, 122, 204, 0.25);
+  color: var(--text-primary);
+}
+
+.node-tree-icon {
+  flex-shrink: 0;
+  width: 16px;
+  text-align: center;
+  font-size: 13px;
+}
+
+.node-tree-label {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.node-tree-children {
+  padding-left: 16px;
+}
+
+.node-tree-features {
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+  margin-top: 2px;
+  padding-top: 2px;
+}
+
+.node-tree-feature {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.12s;
+}
+
+.node-tree-feature:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.node-tree-feature.active {
+  background: rgba(0, 122, 204, 0.25);
+  color: var(--text-primary);
+}
+
+.node-tree-feature.suppressed {
+  opacity: 0.4;
+  text-decoration: line-through;
+}

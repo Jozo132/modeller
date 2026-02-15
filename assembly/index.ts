@@ -1,14 +1,24 @@
 import { Color } from "./math";
 import { CommandBuffer } from "./commands";
 import { Scene, SceneNode } from "./scene";
+import { EntityStore, FLAG_VISIBLE, FLAG_SELECTED, FLAG_CONSTRUCTION, FLAG_HOVER, FLAG_FIXED, FLAG_PREVIEW } from "./entities";
+import { ConstraintSolver, CONSTRAINT_COINCIDENT, CONSTRAINT_HORIZONTAL, CONSTRAINT_VERTICAL, CONSTRAINT_DISTANCE, CONSTRAINT_FIXED, CONSTRAINT_PARALLEL, CONSTRAINT_PERPENDICULAR, CONSTRAINT_EQUAL_LENGTH, CONSTRAINT_TANGENT, CONSTRAINT_ANGLE } from "./solver";
+import { render2DEntities, renderOriginPlanes } from "./render2d";
 
 // Global state — initialized in init()
 let scene: Scene = new Scene();
 let cmd: CommandBuffer = new CommandBuffer();
+let entities: EntityStore = new EntityStore();
+let solver: ConstraintSolver = new ConstraintSolver();
 
 // Mouse state
 let mouseX: f32 = 0;
 let mouseY: f32 = 0;
+let mouseButton: i32 = -1; // -1=none, 0=left, 1=middle, 2=right
+let mouseAction_: i32 = 0;  // 0=none, 1=down, 2=up, 3=move
+
+// Render mode: 0=2D (ortho XY projection), 1=3D (perspective)
+let renderMode: i32 = 0;
 
 // === Initialization ===
 
@@ -58,10 +68,12 @@ export function resize(width: i32, height: i32): void {
 // === Camera ===
 
 export function setCameraMode(mode: i32): void {
+  renderMode = mode;
   const aspect: f32 = <f32>scene.canvasWidth / <f32>scene.canvasHeight;
   if (mode == 1) {
     scene.camera.setPerspective(scene.camera.fov, aspect, scene.camera.near, scene.camera.far);
   } else {
+    // 2D mode: orthographic projection onto XY plane
     scene.camera.setOrthographic(
       -10 * aspect, 10 * aspect,
       -10, 10,
@@ -145,14 +157,135 @@ export function setMousePosition(x: f32, y: f32): void {
 }
 
 export function mouseAction(action: i32): void {
+  mouseAction_ = action;
   // 0=none, 1=down, 2=up, 3=move
-  // Reserved for orbit/pan controls implementation
+}
+
+export function setMouseButton(button: i32): void {
+  mouseButton = button;
+}
+
+// === 2D Entity Management ===
+
+export function clearEntities(): void {
+  entities.clear();
+}
+
+export function addEntitySegment(
+  x1: f32, y1: f32, x2: f32, y2: f32,
+  flags: i32, r: f32, g: f32, b: f32, a: f32
+): i32 {
+  return entities.addSegment(x1, y1, x2, y2, flags, r, g, b, a);
+}
+
+export function addEntityCircle(
+  cx: f32, cy: f32, radius: f32,
+  flags: i32, r: f32, g: f32, b: f32, a: f32
+): i32 {
+  return entities.addCircle(cx, cy, radius, flags, r, g, b, a);
+}
+
+export function addEntityArc(
+  cx: f32, cy: f32, radius: f32,
+  startAngle: f32, endAngle: f32,
+  flags: i32, r: f32, g: f32, b: f32, a: f32
+): i32 {
+  return entities.addArc(cx, cy, radius, startAngle, endAngle, flags, r, g, b, a);
+}
+
+export function addEntityPoint(
+  x: f32, y: f32, size: f32,
+  flags: i32, r: f32, g: f32, b: f32, a: f32
+): i32 {
+  return entities.addPoint(x, y, size, flags, r, g, b, a);
+}
+
+export function setSnapPosition(x: f32, y: f32, visible: i32): void {
+  entities.snapX = x;
+  entities.snapY = y;
+  entities.snapVisible = visible != 0;
+}
+
+export function setCursorPosition(x: f32, y: f32, visible: i32): void {
+  entities.cursorX = x;
+  entities.cursorY = y;
+  entities.cursorVisible = visible != 0;
+}
+
+// === Constraint Solver ===
+
+export function clearSolver(): void {
+  solver.clear();
+}
+
+export function addSolverPoint(x: f32, y: f32, fixed: i32): i32 {
+  return solver.addPoint(x, y, fixed != 0);
+}
+
+export function addSolverConstraint(
+  type: i32, p1: i32, p2: i32, p3: i32, p4: i32, value: f32
+): i32 {
+  return solver.addConstraint(type, p1, p2, p3, p4, value);
+}
+
+export function solveSolver(): i32 {
+  return solver.solve() ? 1 : 0;
+}
+
+export function getSolverPointX(index: i32): f32 {
+  return solver.getPointX(index);
+}
+
+export function getSolverPointY(index: i32): f32 {
+  return solver.getPointY(index);
+}
+
+export function getSolverConverged(): i32 {
+  return solver.converged ? 1 : 0;
+}
+
+export function getSolverIterations(): i32 {
+  return solver.iterations;
+}
+
+export function getSolverMaxError(): f32 {
+  return solver.maxError;
 }
 
 // === Render ===
 
 export function render(): void {
-  scene.renderScene(cmd);
+  cmd.reset();
+
+  // Clear
+  cmd.emitClear(0.15, 0.15, 0.15, 1.0);
+  cmd.emitSetDepthTest(true);
+
+  // View-projection matrix
+  const vp = scene.camera.getViewProjectionMatrix();
+
+  // Grid
+  if (scene.gridVisible) {
+    scene.renderGrid(cmd, vp);
+  }
+
+  // Axes
+  if (scene.axesVisible) {
+    scene.renderAxes(cmd, vp);
+  }
+
+  // Origin planes (visible in both modes, subtle)
+  if (renderMode == 1) {
+    renderOriginPlanes(cmd, vp);
+  }
+
+  // 3D scene nodes (boxes, geometry)
+  scene.renderNodes(cmd, vp);
+
+  // 2D entities on XY plane
+  render2DEntities(cmd, vp, entities);
+
+  cmd.emitEnd();
 }
 
 // === Command buffer access ===
@@ -164,3 +297,22 @@ export function getCommandBufferPtr(): usize {
 export function getCommandBufferLen(): i32 {
   return cmd.getBufferLength();
 }
+
+// Re-export constants for JS side
+export const ENTITY_FLAG_VISIBLE: i32 = FLAG_VISIBLE;
+export const ENTITY_FLAG_SELECTED: i32 = FLAG_SELECTED;
+export const ENTITY_FLAG_CONSTRUCTION: i32 = FLAG_CONSTRUCTION;
+export const ENTITY_FLAG_HOVER: i32 = FLAG_HOVER;
+export const ENTITY_FLAG_FIXED: i32 = FLAG_FIXED;
+export const ENTITY_FLAG_PREVIEW: i32 = FLAG_PREVIEW;
+
+export const SOLVER_COINCIDENT: i32 = CONSTRAINT_COINCIDENT;
+export const SOLVER_HORIZONTAL: i32 = CONSTRAINT_HORIZONTAL;
+export const SOLVER_VERTICAL: i32 = CONSTRAINT_VERTICAL;
+export const SOLVER_DISTANCE: i32 = CONSTRAINT_DISTANCE;
+export const SOLVER_FIXED: i32 = CONSTRAINT_FIXED;
+export const SOLVER_PARALLEL: i32 = CONSTRAINT_PARALLEL;
+export const SOLVER_PERPENDICULAR: i32 = CONSTRAINT_PERPENDICULAR;
+export const SOLVER_EQUAL_LENGTH: i32 = CONSTRAINT_EQUAL_LENGTH;
+export const SOLVER_TANGENT: i32 = CONSTRAINT_TANGENT;
+export const SOLVER_ANGLE: i32 = CONSTRAINT_ANGLE;
