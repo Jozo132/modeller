@@ -383,92 +383,354 @@ export class Renderer3D {
    * Render 2D sketch entities on the XY plane
    * @param {Scene} scene - The 2D scene with entities
    */
-  render2DScene(scene) {
+  render2DScene(scene, overlays = {}) {
     // Clear previous 2D objects
     this.sketchObjects.forEach(obj => {
       this.scene.remove(obj);
       if (obj.geometry) obj.geometry.dispose();
-      if (obj.material) obj.material.dispose();
+      if (Array.isArray(obj.material)) {
+        for (const m of obj.material) m.dispose?.();
+      } else if (obj.material) {
+        obj.material.dispose();
+      }
     });
     this.sketchObjects.clear();
 
     if (!scene) return;
 
-    // Render segments (lines)
+    const zBase = 0.02;
+    const wpp = this._worldPerPixel();
+    const isLayerVisible = overlays.isLayerVisible || (() => true);
+    const getLayerColor = overlays.getLayerColor || (() => '#9CDCFE');
+    const hoverEntity = overlays.hoverEntity || null;
+    const previewEntities = overlays.previewEntities || [];
+    const snapPoint = overlays.snapPoint || null;
+    const cursorWorld = overlays.cursorWorld || null;
+    const allDimensionsVisible = overlays.allDimensionsVisible !== false;
+    const constraintIconsVisible = overlays.constraintIconsVisible !== false;
+
+    const colorForEntity = (entity) => {
+      if (entity.selected) return 0x00bfff;
+      if (hoverEntity && hoverEntity.id === entity.id) return 0x7fd8ff;
+      if (entity.construction) return 0x90EE90;
+      return new THREE.Color(entity.color || getLayerColor(entity.layer)).getHex();
+    };
+
+    const dashPattern = (style) => {
+      if (style === 'dotted') return [2 * wpp, 4 * wpp];
+      if (style === 'dash-dot') return [12 * wpp, 4 * wpp];
+      return [10 * wpp, 5 * wpp];
+    };
+
+    const addLine = (key, points, color, z = zBase, dashed = false, dashStyle = 'dashed') => {
+      if (!points || points.length < 2) return;
+      const verts = [];
+      for (const p of points) verts.push(p.x, p.y, z);
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+      let material;
+      if (dashed) {
+        const [dashSize, gapSize] = dashPattern(dashStyle);
+        material = new THREE.LineDashedMaterial({ color, dashSize, gapSize, transparent: true, opacity: 0.95 });
+      } else {
+        material = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.98 });
+      }
+      const line = new THREE.Line(geometry, material);
+      if (dashed) line.computeLineDistances();
+      this.scene.add(line);
+      this.sketchObjects.set(key, line);
+    };
+
+    const addCircle = (key, cx, cy, radius, color, z = zBase, dashed = false, dashStyle = 'dashed', startA = 0, endA = Math.PI * 2) => {
+      const curve = new THREE.EllipseCurve(cx, cy, radius, radius, startA, endA, false, 0);
+      const pts = curve.getPoints(72).map(p => ({ x: p.x, y: p.y }));
+      addLine(key, pts, color, z, dashed, dashStyle);
+    };
+
+    const addTextSprite = (key, text, x, y, color, z = zBase + 0.05, rotation = 0) => {
+      const pad = 6;
+      const fontPx = 22;
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      ctx.font = `${fontPx}px Consolas, monospace`;
+      const width = Math.ceil(ctx.measureText(text).width) + pad * 2;
+      const height = fontPx + pad * 2;
+      canvas.width = Math.max(8, width);
+      canvas.height = Math.max(8, height);
+      const c2 = canvas.getContext('2d');
+      c2.clearRect(0, 0, canvas.width, canvas.height);
+      c2.font = `${fontPx}px Consolas, monospace`;
+      c2.textBaseline = 'middle';
+      c2.fillStyle = color;
+      c2.fillText(text, pad, canvas.height / 2 + 0.5);
+
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.colorSpace = THREE.SRGBColorSpace;
+      const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false, depthWrite: false, rotation });
+      const sprite = new THREE.Sprite(material);
+      sprite.position.set(x, y, z);
+      sprite.scale.set(canvas.width * wpp, canvas.height * wpp, 1);
+      this.scene.add(sprite);
+      this.sketchObjects.set(key, sprite);
+    };
+
+    const addArrowTriangle = (key, x, y, angle, len, color, z = zBase + 0.04) => {
+      const wing = len * 0.5;
+      const pTip = { x, y };
+      const p1 = { x: x - len * Math.cos(angle - 0.45), y: y - len * Math.sin(angle - 0.45) };
+      const p2 = { x: x - len * Math.cos(angle + 0.45), y: y - len * Math.sin(angle + 0.45) };
+      const shape = new THREE.Shape();
+      shape.moveTo(pTip.x, pTip.y);
+      shape.lineTo(p1.x, p1.y);
+      shape.lineTo(p2.x, p2.y);
+      shape.closePath();
+      const geom = new THREE.ShapeGeometry(shape);
+      const mat = new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide, depthTest: false, depthWrite: false });
+      const mesh = new THREE.Mesh(geom, mat);
+      mesh.position.z = z;
+      this.scene.add(mesh);
+      this.sketchObjects.set(key, mesh);
+      void wing;
+    };
+
+    // Segments
     if (scene.segments) {
       scene.segments.forEach((segment, index) => {
-        if (segment.p1 && segment.p2) {
-          const geometry = new THREE.BufferGeometry();
-          const vertices = new Float32Array([
-            segment.p1.x, segment.p1.y, 0,
-            segment.p2.x, segment.p2.y, 0
-          ]);
-          geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
-          
-          const material = new THREE.LineBasicMaterial({
-            color: segment.construction ? 0x90EE90 : 0xFFFFFF,
-            linewidth: 1
-          });
-          
-          const line = new THREE.Line(geometry, material);
-          this.scene.add(line);
-          this.sketchObjects.set(`segment-${index}`, line);
+        if (!segment.visible || !isLayerVisible(segment.layer) || !segment.p1 || !segment.p2) return;
+        const color = colorForEntity(segment);
+        const dashed = !!segment.construction;
+        const style = segment.constructionDash || 'dashed';
+
+        if (segment.construction) {
+          const dx = segment.p2.x - segment.p1.x;
+          const dy = segment.p2.y - segment.p1.y;
+          const len = Math.hypot(dx, dy) || 1e-9;
+          const ux = dx / len, uy = dy / len;
+          const ext = Math.max(this.renderer.domElement.clientWidth, this.renderer.domElement.clientHeight) * wpp * 2;
+          const ct = segment.constructionType || 'finite';
+          let ax, ay, bx, by;
+          if (ct === 'infinite-both') {
+            ax = segment.p1.x - ux * ext; ay = segment.p1.y - uy * ext;
+            bx = segment.p2.x + ux * ext; by = segment.p2.y + uy * ext;
+          } else if (ct === 'infinite-start') {
+            ax = segment.p1.x - ux * ext; ay = segment.p1.y - uy * ext;
+            bx = segment.p2.x; by = segment.p2.y;
+          } else if (ct === 'infinite-end') {
+            ax = segment.p1.x; ay = segment.p1.y;
+            bx = segment.p2.x + ux * ext; by = segment.p2.y + uy * ext;
+          } else {
+            ax = segment.p1.x; ay = segment.p1.y;
+            bx = segment.p2.x; by = segment.p2.y;
+          }
+          addLine(`segment-${index}`, [{ x: ax, y: ay }, { x: bx, y: by }], color, zBase, dashed, style);
+        } else {
+          addLine(`segment-${index}`, [{ x: segment.p1.x, y: segment.p1.y }, { x: segment.p2.x, y: segment.p2.y }], color, zBase, dashed, style);
         }
       });
     }
 
-    // Render circles
+    // Circles
     if (scene.circles) {
       scene.circles.forEach((circle, index) => {
-        const geometry = new THREE.CircleGeometry(circle.radius, 64);
-        const edges = new THREE.EdgesGeometry(geometry);
-        const material = new THREE.LineBasicMaterial({
-          color: circle.construction ? 0x90EE90 : 0xFFFFFF
-        });
-        const line = new THREE.LineSegments(edges, material);
-        line.position.set(circle.center.x, circle.center.y, 0);
-        this.scene.add(line);
-        this.sketchObjects.set(`circle-${index}`, line);
+        if (!circle.visible || !isLayerVisible(circle.layer)) return;
+        const color = colorForEntity(circle);
+        addCircle(`circle-${index}`, circle.center.x, circle.center.y, circle.radius, color, zBase, !!circle.construction, circle.constructionDash || 'dashed');
       });
     }
 
-    // Render arcs
+    // Arcs
     if (scene.arcs) {
       scene.arcs.forEach((arc, index) => {
-        const curve = new THREE.EllipseCurve(
-          arc.center.x, arc.center.y,
-          arc.radius, arc.radius,
-          arc.startAngle, arc.endAngle,
-          false, 0
-        );
-        const points = curve.getPoints(50);
-        const geometry = new THREE.BufferGeometry().setFromPoints(
-          points.map(p => new THREE.Vector3(p.x, p.y, 0))
-        );
-        const material = new THREE.LineBasicMaterial({
-          color: arc.construction ? 0x90EE90 : 0xFFFFFF
-        });
-        const line = new THREE.Line(geometry, material);
-        this.scene.add(line);
-        this.sketchObjects.set(`arc-${index}`, line);
+        if (!arc.visible || !isLayerVisible(arc.layer)) return;
+        const color = colorForEntity(arc);
+        addCircle(`arc-${index}`, arc.center.x, arc.center.y, arc.radius, color, zBase, !!arc.construction, arc.constructionDash || 'dashed', arc.startAngle, arc.endAngle);
       });
     }
 
-    // Render points
+    // Text primitives
+    if (scene.texts) {
+      scene.texts.forEach((text, index) => {
+        if (!text.visible || !isLayerVisible(text.layer)) return;
+        const colorHex = colorForEntity(text);
+        const color = `#${new THREE.Color(colorHex).getHexString()}`;
+        addTextSprite(`text-${index}`, text.text, text.x, text.y, color, zBase + 0.03, -(text.rotation || 0) * Math.PI / 180);
+      });
+    }
+
+    // Dimensions
+    if (allDimensionsVisible && scene.dimensions) {
+      scene.dimensions.forEach((dim, index) => {
+        if (!dim.visible || !isLayerVisible(dim.layer)) return;
+        const dimColorHex = dim.selected ? 0x00bfff : (hoverEntity && hoverEntity.id === dim.id ? 0x7fd8ff : (!dim.isConstraint ? 0xffb432 : new THREE.Color(dim.color || getLayerColor(dim.layer)).getHex()));
+        const dimTextColor = `#${new THREE.Color(dimColorHex).getHexString()}`;
+
+        if (dim.dimType === 'angle') {
+          const r = Math.abs(dim.offset);
+          const startA = dim._angleStart != null ? dim._angleStart : 0;
+          const sweepA = dim._angleSweep != null ? dim._angleSweep : 0;
+          addCircle(`dim-arc-${index}`, dim.x1, dim.y1, r, dimColorHex, zBase + 0.02, false, 'dashed', startA, startA + sweepA);
+
+          const endA = startA + sweepA;
+          const ex = dim.x1 + r * Math.cos(endA);
+          const ey = dim.y1 + r * Math.sin(endA);
+          addArrowTriangle(`dim-arrow-${index}`, ex, ey, endA - Math.PI / 2, 8 * wpp, dimColorHex, zBase + 0.03);
+
+          const midA = startA + sweepA / 2;
+          const lx = dim.x1 + (r + 14 * wpp) * Math.cos(midA);
+          const ly = dim.y1 + (r + 14 * wpp) * Math.sin(midA);
+          addTextSprite(`dim-label-${index}`, dim.displayLabel, lx, ly, dimTextColor, zBase + 0.05);
+          return;
+        }
+
+        const dx = dim.x2 - dim.x1;
+        const dy = dim.y2 - dim.y1;
+        const len = Math.hypot(dx, dy) || 1e-9;
+        const nx = -dy / len;
+        const ny = dx / len;
+        let p1 = { x: dim.x1, y: dim.y1 };
+        let p2 = { x: dim.x2, y: dim.y2 };
+        let d1;
+        let d2;
+
+        if (dim.dimType === 'dx') {
+          const dimY = dim.y1 + dim.offset;
+          d1 = { x: dim.x1, y: dimY };
+          d2 = { x: dim.x2, y: dimY };
+        } else if (dim.dimType === 'dy') {
+          const dimX = dim.x1 + dim.offset;
+          d1 = { x: dimX, y: dim.y1 };
+          d2 = { x: dimX, y: dim.y2 };
+        } else {
+          d1 = { x: dim.x1 + nx * dim.offset, y: dim.y1 + ny * dim.offset };
+          d2 = { x: dim.x2 + nx * dim.offset, y: dim.y2 + ny * dim.offset };
+        }
+
+        const extColor = !dim.isConstraint ? 0xffb432 : 0xffffff;
+        addLine(`dim-ext1-${index}`, [p1, d1], extColor, zBase + 0.01);
+        addLine(`dim-ext2-${index}`, [p2, d2], extColor, zBase + 0.01);
+        addLine(`dim-line-${index}`, [d1, d2], dimColorHex, zBase + 0.02);
+
+        const angle = Math.atan2(d2.y - d1.y, d2.x - d1.x);
+        const style = dim.arrowStyle || 'auto';
+        if (style !== 'none') {
+          const pixDist = Math.hypot((d2.x - d1.x) / wpp, (d2.y - d1.y) / wpp);
+          const useOutside = style === 'outside' || (style === 'auto' && pixDist < 32);
+          if (useOutside) {
+            addArrowTriangle(`dim-a1-${index}`, d1.x, d1.y, angle, 8 * wpp, dimColorHex, zBase + 0.03);
+            addArrowTriangle(`dim-a2-${index}`, d2.x, d2.y, angle + Math.PI, 8 * wpp, dimColorHex, zBase + 0.03);
+          } else {
+            addArrowTriangle(`dim-a1-${index}`, d1.x, d1.y, angle + Math.PI, 8 * wpp, dimColorHex, zBase + 0.03);
+            addArrowTriangle(`dim-a2-${index}`, d2.x, d2.y, angle, 8 * wpp, dimColorHex, zBase + 0.03);
+          }
+        }
+
+        const mx = (d1.x + d2.x) / 2;
+        const my = (d1.y + d2.y) / 2;
+        let ta = angle;
+        if (ta > Math.PI / 2 || ta < -Math.PI / 2) ta += Math.PI;
+        addTextSprite(`dim-label-${index}`, dim.displayLabel, mx, my + 12 * wpp, dimTextColor, zBase + 0.05, ta);
+      });
+    }
+
+    // Shared/fixed/selected points
     if (scene.points) {
       scene.points.forEach((point, index) => {
+        const refs = scene.shapesUsingPoint ? scene.shapesUsingPoint(point).length : 1;
+        const isHover = hoverEntity && hoverEntity.id === point.id;
+        if (refs <= 1 && !point.selected && !point.fixed && !isHover) return;
+        const color = point.selected ? 0x00bfff : isHover ? 0x7fd8ff : point.fixed ? 0xff6644 : 0xffff66;
+        const size = point.selected ? 7 : (isHover ? 6 : (point.fixed ? 5 : 4));
         const geometry = new THREE.BufferGeometry();
-        geometry.setAttribute('position', new THREE.Float32BufferAttribute([point.x, point.y, 0], 3));
-        const material = new THREE.PointsMaterial({
-          color: 0xFFFFFF,
-          size: 5,
-          sizeAttenuation: false
-        });
+        geometry.setAttribute('position', new THREE.Float32BufferAttribute([point.x, point.y, zBase + 0.06], 3));
+        const material = new THREE.PointsMaterial({ color, size, sizeAttenuation: false, depthTest: false, depthWrite: false });
         const pointMesh = new THREE.Points(geometry, material);
         this.scene.add(pointMesh);
         this.sketchObjects.set(`point-${index}`, pointMesh);
       });
     }
+
+    // Constraint icons
+    if (constraintIconsVisible && scene.constraints) {
+      const iconMap = {
+        coincident: '⊙', distance: '↔', fixed: '⊕',
+        horizontal: 'H', vertical: 'V', parallel: '∥', perpendicular: '⊥',
+        angle: '∠', equal_length: '=', length: 'L', radius: 'R', tangent: 'T',
+        on_line: '—·', on_circle: '○·', midpoint: 'M',
+      };
+      scene.constraints.forEach((constraint, index) => {
+        if (constraint.type === 'dimension') return;
+        if (typeof constraint.involvedPoints !== 'function') return;
+        const pts = constraint.involvedPoints();
+        if (!pts || pts.length === 0) return;
+        let cx = 0;
+        let cy = 0;
+        for (const point of pts) {
+          cx += point.x;
+          cy += point.y;
+        }
+        cx /= pts.length;
+        cy /= pts.length;
+        const icon = iconMap[constraint.type] || '?';
+        const ok = (typeof constraint.error === 'function') ? constraint.error() < 1e-4 : false;
+        const color = ok ? '#00e676' : '#ff643c';
+        addTextSprite(`constraint-${index}`, icon, cx + 12 * wpp, cy + 10 * wpp, color, zBase + 0.07);
+      });
+    }
+
+    // Preview entities
+    if (previewEntities && previewEntities.length > 0) {
+      const previewColor = 0x00bfff;
+      previewEntities.forEach((entity, idx) => {
+        if (!entity) return;
+        if (entity.type === 'segment' && entity.p1 && entity.p2) {
+          addLine(`preview-seg-${idx}`, [{ x: entity.p1.x, y: entity.p1.y }, { x: entity.p2.x, y: entity.p2.y }], previewColor, zBase + 0.08, false);
+        } else if (entity.type === 'circle' && entity.center) {
+          addCircle(`preview-cir-${idx}`, entity.center.x, entity.center.y, entity.radius, previewColor, zBase + 0.08);
+        } else if (entity.type === 'arc' && entity.center) {
+          addCircle(`preview-arc-${idx}`, entity.center.x, entity.center.y, entity.radius, previewColor, zBase + 0.08, false, 'dashed', entity.startAngle, entity.endAngle);
+        } else if (entity.type === 'dimension') {
+          const dx = entity.x2 - entity.x1;
+          const dy = entity.y2 - entity.y1;
+          const len = Math.hypot(dx, dy) || 1e-9;
+          const nx = -dy / len;
+          const ny = dx / len;
+          const d1 = { x: entity.x1 + nx * entity.offset, y: entity.y1 + ny * entity.offset };
+          const d2 = { x: entity.x2 + nx * entity.offset, y: entity.y2 + ny * entity.offset };
+          addLine(`preview-dim-${idx}`, [d1, d2], previewColor, zBase + 0.08, false);
+          const label = entity.displayLabel || '';
+          if (label) addTextSprite(`preview-dim-label-${idx}`, label, (d1.x + d2.x) / 2, (d1.y + d2.y) / 2 + 10 * wpp, '#00bfff', zBase + 0.09);
+        }
+      });
+    }
+
+    // Snap indicator
+    if (snapPoint) {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute([snapPoint.x, snapPoint.y, zBase + 0.12], 3));
+      const m = new THREE.PointsMaterial({ color: 0x00ff99, size: 9, sizeAttenuation: false, depthTest: false, depthWrite: false });
+      const p = new THREE.Points(g, m);
+      this.scene.add(p);
+      this.sketchObjects.set('snap-indicator', p);
+    }
+
+    // Crosshair
+    if (cursorWorld && this.mode === '2d') {
+      const spanX = (this.orthographicCamera.right - this.orthographicCamera.left) * 2;
+      const spanY = (this.orthographicCamera.top - this.orthographicCamera.bottom) * 2;
+      addLine('crosshair-x', [{ x: cursorWorld.x - spanX, y: cursorWorld.y }, { x: cursorWorld.x + spanX, y: cursorWorld.y }], 0x2a2a2a, zBase - 0.005);
+      addLine('crosshair-y', [{ x: cursorWorld.x, y: cursorWorld.y - spanY }, { x: cursorWorld.x, y: cursorWorld.y + spanY }], 0x2a2a2a, zBase - 0.005);
+    }
+
+  }
+
+  _worldPerPixel() {
+    if (!this.renderer || !this.renderer.domElement) return 1;
+    const h = Math.max(1, this.renderer.domElement.clientHeight || 1);
+    if (this.mode === '2d') {
+      return (this.orthographicCamera.top - this.orthographicCamera.bottom) / h;
+    }
+    const dist = this.camera.position.length() || 1;
+    return (dist * Math.tan((this.perspectiveCamera.fov * Math.PI / 180) / 2) * 2) / h;
   }
 
   /**
@@ -672,6 +934,7 @@ export class Renderer3D {
       cancelAnimationFrame(this.animationId);
     }
     this.clearGeometry();
+
     if (this.renderer) {
       this.renderer.dispose();
       if (this.renderer.domElement && this.renderer.domElement.parentNode) {

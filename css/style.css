@@ -1042,6 +1042,12 @@ body.mode-3d .tool-group[data-group="ops"] {
     right: 0;
     bottom: calc(56px + 36vh);
   }
+
+  #view-3d {
+    left: 0;
+    right: 0;
+    bottom: calc(56px + 36vh);
+  }
 }
 
 /* ── Motion Analysis Panel ── */
@@ -1320,8 +1326,8 @@ body.mode-3d .tool-group[data-group="ops"] {
   color: var(--accent-hover);
 }
 
-/* Canvas adjusts when motion panel is open */
-body.motion-active #cad-canvas {
+/* Viewport adjusts when motion panel is open */
+body.motion-active #view-3d {
   bottom: calc(56px + var(--motion-panel-h, 0px));
 }
 
@@ -1329,15 +1335,15 @@ body.motion-active #cad-canvas {
 #view-3d {
   position: fixed;
   top: 34px;
-  left: 0;
-  right: 0;
+  left: var(--panel-width);
+  right: var(--panel-width);
   bottom: 56px;
   background: #1e1e1e;
   z-index: 10;
-  display: block; /* Always visible now */
+  display: block;
 }
 
-/* Hide old 2D canvas */
+/* Legacy 2D canvas remains as offscreen render source */
 #cad-canvas {
   display: none !important;
 }

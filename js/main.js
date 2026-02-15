@@ -40,6 +40,7 @@ class App {
     const view3dContainer = document.getElementById('view-3d');
     this._renderer3d = new Renderer3D(view3dContainer);
     this._renderer3d.setMode('2d'); // Start in 2D sketching mode
+    this._renderer3d.setVisible(true);
     
     // Keep legacy canvas hidden for compatibility
     this.canvas = document.getElementById('cad-canvas');
@@ -95,7 +96,7 @@ class App {
     this._lastSketchFeatureId = null;
 
     // Bind events
-    this._bind3DCanvasEvents(); // Use 3D renderer's canvas for events
+    this._bind3DCanvasEvents(); // 3D-only interactions
     this._bindToolbarEvents();
     this._bindKeyboardEvents();
     this._bindResizeEvent();
@@ -134,9 +135,19 @@ class App {
 
       this._syncViewportSize();
       try {
-        // Render 2D scene in unified 3D engine
-        if (this._renderer3d) {
-          this._renderer3d.render2DScene(state.scene);
+        if (!this._3dMode) {
+          if (this._renderer3d) {
+            this._renderer3d.render2DScene(state.scene, {
+              hoverEntity: this.renderer.hoverEntity,
+              previewEntities: this.renderer.previewEntities,
+              snapPoint: this.renderer.snapPoint,
+              cursorWorld: this.renderer.cursorWorld,
+              isLayerVisible: (layer) => state.isLayerVisible(layer),
+              getLayerColor: (layer) => state.getLayerColor(layer),
+              allDimensionsVisible: state.allDimensionsVisible,
+              constraintIconsVisible: state.constraintIconsVisible,
+            });
+          }
         }
       } catch (err) {
         error('Render loop failed', err);
@@ -869,6 +880,34 @@ class App {
       movedSinceDown = false;
       mouseDown = true;
 
+      if (!this._3dMode) {
+        // 2D sketch interaction
+        if (e.button === 1) {
+          e.preventDefault();
+          this.viewport.startPan(sx, sy);
+          return;
+        }
+        if (e.button === 0 && this.activeTool.onMouseDown) {
+          let wx, wy;
+          if (this.activeTool.freehand) {
+            const raw = this.viewport.screenToWorld(sx, sy);
+            wx = raw.x; wy = raw.y;
+          } else {
+            const basePoint = this.activeTool._startX !== undefined
+              ? { x: this.activeTool._startX, y: this.activeTool._startY }
+              : null;
+            const { world } = getSnappedPosition(
+              sx, sy, this.viewport,
+              this.activeTool.step > 0 ? basePoint : null,
+              { ignoreGridSnap: !!e.ctrlKey }
+            );
+            wx = world.x; wy = world.y;
+          }
+          this.activeTool.onMouseDown(wx, wy, sx, sy, e);
+        }
+        return;
+      }
+
       // Middle button = pan (handled by OrbitControls)
       if (e.button === 1) {
         return; // Let Three.js controls handle
@@ -887,8 +926,18 @@ class App {
       const sy = e.clientY - rect.top;
       if (mouseDown) movedSinceDown = true;
 
-      this._lastPointer = { sx, sy, ctrlKey: e.ctrlKey };
-      this._schedulePointerProcessing();
+      if (!this._3dMode) {
+        if (this.viewport.isPanning) {
+          this.viewport.updatePan(sx, sy);
+          this._scheduleRender();
+          return;
+        }
+        this._lastPointer = { sx, sy, ctrlKey: e.ctrlKey };
+        this._schedulePointerProcessing();
+        return;
+      }
+
+      this._scheduleRender();
     });
 
     // Mouse up
@@ -897,6 +946,20 @@ class App {
       const sx = e.clientX - rect.left;
       const sy = e.clientY - rect.top;
       mouseDown = false;
+
+      if (!this._3dMode) {
+        if (e.button === 1) {
+          this.viewport.endPan();
+          debouncedSave();
+          return;
+        }
+        const world = this.viewport.screenToWorld(sx, sy);
+        if (this.activeTool.onMouseUp) {
+          this.activeTool.onMouseUp(world.x, world.y, e);
+        }
+        this._scheduleRender();
+        return;
+      }
 
       if (e.button === 1) {
         debouncedSave();
@@ -913,6 +976,35 @@ class App {
 
     // Click
     canvas.addEventListener('click', (e) => {
+      if (!this._3dMode) {
+        if (this.viewport.isPanning) return;
+        if (movedSinceDown && this.activeTool.name === 'select') {
+          movedSinceDown = false;
+          return;
+        }
+        const rect = canvas.getBoundingClientRect();
+        const sx = e.clientX - rect.left;
+        const sy = e.clientY - rect.top;
+
+        const basePoint = this.activeTool._startX !== undefined && this.activeTool.step > 0
+          ? { x: this.activeTool._startX, y: this.activeTool._startY }
+          : null;
+        const { world } = getSnappedPosition(
+          sx,
+          sy,
+          this.viewport,
+          basePoint,
+          { ignoreGridSnap: !!e.ctrlKey }
+        );
+
+        if (this.activeTool.name === 'select' && this.activeTool._isDragging) return;
+
+        this.activeTool.onClick(world.x, world.y, e);
+        movedSinceDown = false;
+        this._scheduleRender();
+        return;
+      }
+
       if (movedSinceDown && this.activeTool.name === 'select') {
         movedSinceDown = false;
         return;
@@ -932,6 +1024,32 @@ class App {
 
     // Double click
     canvas.addEventListener('dblclick', (e) => {
+      if (!this._3dMode) {
+        const rect = canvas.getBoundingClientRect();
+        const sx = e.clientX - rect.left;
+        const sy = e.clientY - rect.top;
+        const world = this.viewport.screenToWorld(sx, sy);
+        const tol = 12 / this.viewport.zoom;
+
+        let closestDim = null;
+        let closestDist = Infinity;
+        for (const dim of state.scene.dimensions) {
+          if (!dim.visible) continue;
+          const d = dim.distanceTo(world.x, world.y);
+          if (d < tol && d < closestDist) {
+            closestDist = d;
+            closestDim = dim;
+          }
+        }
+
+        if (closestDim) {
+          e.preventDefault();
+          e.stopPropagation();
+          this._editDimensionConstraint(closestDim, { x: sx, y: sy });
+        }
+        return;
+      }
+
       const rect = canvas.getBoundingClientRect();
       const sx = e.clientX - rect.left;
       const sy = e.clientY - rect.top;
@@ -946,6 +1064,34 @@ class App {
 
     // Context menu
     canvas.addEventListener('contextmenu', (e) => {
+      if (!this._3dMode) {
+        e.preventDefault();
+
+        if (this.activeTool.name !== 'select') {
+          this.activeTool.onCancel();
+          this.setActiveTool('select');
+          this._scheduleRender();
+          return;
+        }
+
+        const rect = canvas.getBoundingClientRect();
+        const sx = e.clientX - rect.left;
+        const sy = e.clientY - rect.top;
+        const world = this.viewport.screenToWorld(sx, sy);
+        const tol = 18 / this.viewport.zoom;
+
+        let hitEntity = null;
+        let minDist = Infinity;
+        for (const entity of state.entities) {
+          if (!entity.visible || !state.isLayerVisible(entity.layer)) continue;
+          const d = entity.distanceTo(world.x, world.y);
+          if (d <= tol && d < minDist) { minDist = d; hitEntity = entity; }
+        }
+
+        this._showContextMenu(e.clientX, e.clientY, hitEntity);
+        return;
+      }
+
       e.preventDefault();
       const rect = canvas.getBoundingClientRect();
       const sx = e.clientX - rect.left;
@@ -959,6 +1105,51 @@ class App {
 
     // Wheel for zooming (let Three.js handle, but trigger render)
     canvas.addEventListener('wheel', (e) => {
+      if (!this._3dMode) {
+        e.preventDefault();
+        const rect = canvas.getBoundingClientRect();
+        const sx = e.clientX - rect.left;
+        const sy = e.clientY - rect.top;
+        const factor = e.deltaY > 0 ? 0.9 : 1.1;
+        this.viewport.zoomAt(sx, sy, factor);
+        debouncedSave();
+        this._scheduleRender();
+        return;
+      }
+      this._scheduleRender();
+    }, { passive: false });
+
+    canvas.addEventListener('touchstart', (e) => {
+      if (this._3dMode) return;
+      if (e.touches.length !== 1) return;
+      e.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const touch = e.touches[0];
+      const sx = touch.clientX - rect.left;
+      const sy = touch.clientY - rect.top;
+      const basePoint = this.activeTool._startX !== undefined && this.activeTool.step > 0
+        ? { x: this.activeTool._startX, y: this.activeTool._startY }
+        : null;
+      const { world } = getSnappedPosition(sx, sy, this.viewport, basePoint);
+      this.activeTool.onClick(world.x, world.y, e);
+      this._scheduleRender();
+    }, { passive: false });
+
+    canvas.addEventListener('touchmove', (e) => {
+      if (this._3dMode) return;
+      if (e.touches.length !== 1) return;
+      e.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const touch = e.touches[0];
+      const sx = touch.clientX - rect.left;
+      const sy = touch.clientY - rect.top;
+      const basePoint = this.activeTool._startX !== undefined && this.activeTool.step > 0
+        ? { x: this.activeTool._startX, y: this.activeTool._startY }
+        : null;
+      const { world, snap } = getSnappedPosition(sx, sy, this.viewport, basePoint);
+      this.renderer.cursorWorld = world;
+      this.renderer.snapPoint = snap;
+      this.activeTool.onMouseMove(world.x, world.y, sx, sy);
       this._scheduleRender();
     }, { passive: false });
   }
@@ -2720,8 +2911,10 @@ class App {
     document.getElementById('motion-panel').style.display = 'none';
     document.getElementById('btn-motion').classList.remove('active');
     document.body.classList.remove('motion-active');
-    // Restore canvas
+    // Restore viewport area
     document.getElementById('cad-canvas').style.bottom = '';
+    const view3d = document.getElementById('view-3d');
+    if (view3d) view3d.style.bottom = '';
     this.viewport.resize();
     this._scheduleRender();
   }
@@ -2733,6 +2926,8 @@ class App {
       document.body.classList.add('motion-active');
       document.body.style.setProperty('--motion-panel-h', h + 'px');
       document.getElementById('cad-canvas').style.bottom = (56 + h) + 'px';
+      const view3d = document.getElementById('view-3d');
+      if (view3d) view3d.style.bottom = (56 + h) + 'px';
       this.viewport.resize();
       this._scheduleRender();
     });
@@ -3167,6 +3362,7 @@ class App {
     if (this._3dMode) {
       // Enter 3D viewing mode (perspective camera)
       this._renderer3d.setMode('3d');
+      this._renderer3d.setVisible(true);
       featurePanel.classList.add('active');
       parametersPanel.classList.add('active');
       btn.classList.add('active');
@@ -3183,6 +3379,7 @@ class App {
     } else {
       // Return to 2D sketching mode (orthographic camera)
       this._renderer3d.setMode('2d');
+      this._renderer3d.setVisible(true);
       featurePanel.classList.remove('active');
       parametersPanel.classList.remove('active');
       btn.classList.remove('active');
@@ -3252,7 +3449,17 @@ class App {
 
     const part = this._partManager.getPart();
     if (!part) {
-      this._renderer3d.clearGeometry();
+      this._renderer3d.clearPartGeometry();
+      this._renderer3d.render2DScene(state.scene, {
+        hoverEntity: this.renderer.hoverEntity,
+        previewEntities: this.renderer.previewEntities,
+        snapPoint: this.renderer.snapPoint,
+        cursorWorld: this.renderer.cursorWorld,
+        isLayerVisible: (layer) => state.isLayerVisible(layer),
+        getLayerColor: (layer) => state.getLayerColor(layer),
+        allDimensionsVisible: state.allDimensionsVisible,
+        constraintIconsVisible: state.constraintIconsVisible,
+      });
       return;
     }
 
