@@ -26,6 +26,9 @@ export class Part {
     // Parametric feature tree
     this.featureTree = new FeatureTree();
     
+    // Custom reference planes
+    this.customPlanes = [];
+    
     // Material properties
     this.material = null;
     
@@ -33,6 +36,29 @@ export class Part {
     this.mass = 0;
     this.volume = 0;
     this.centerOfMass = { x: 0, y: 0, z: 0 };
+  }
+  
+  // -----------------------------------------------------------------------
+  // Custom plane management
+  // -----------------------------------------------------------------------
+
+  /**
+   * Add a custom reference plane.
+   * @param {Object} planeDef - Plane definition with name, offset, rotationU, rotationV, basePlane
+   * @returns {Object} The added plane definition
+   */
+  addCustomPlane(planeDef) {
+    this.modified = new Date();
+    this.customPlanes.push(planeDef);
+    return planeDef;
+  }
+
+  /**
+   * Get all custom planes.
+   * @returns {Array} Array of custom plane definitions
+   */
+  getCustomPlanes() {
+    return this.customPlanes;
   }
   
   // -----------------------------------------------------------------------
