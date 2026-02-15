@@ -1,4 +1,4 @@
-# DXF Modeller
+# CAD Modeller
 
 A browser-based 2D CAD modeller with parametric 3D part modeling capabilities. Built with vanilla JavaScript and HTML5 Canvas. Supports drawing, editing, and exporting geometry in DXF format.
 

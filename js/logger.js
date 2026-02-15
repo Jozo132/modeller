@@ -9,7 +9,7 @@ const LEVELS = {
 const config = {
   enabled: true,
   level: LEVELS.debug,
-  scope: 'DXF-Modeller',
+  scope: 'CAD-Modeller',
 };
 
 function format(level, args) {

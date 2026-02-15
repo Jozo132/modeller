@@ -3,7 +3,7 @@ import { state } from './state.js';
 import { Scene } from './cad/index.js';
 import { info, warn, error } from './logger.js';
 
-const STORAGE_KEY = 'dxf-modeller-project';
+const STORAGE_KEY = 'cad-modeller-project';
 const SAVE_DEBOUNCE_MS = 500;
 
 let _saveTimer = null;

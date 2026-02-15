@@ -1,7 +1,7 @@
 {
-  "name": "dxf-modeller",
+  "name": "cad-modeller",
   "version": "1.0.0",
-  "description": "2D Canvas DXF Modeller",
+  "description": "CAD Modeller",
   "type": "module",
   "scripts": {
     "start": "npx serve .",
