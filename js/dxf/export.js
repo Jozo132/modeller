@@ -125,56 +125,6 @@ function writeEntity(w, entity) {
       w(1, entity.displayLabel);
       break;
     }
-
-    // --- Legacy entity types (for backward compat) ---
-    case 'LINE':
-      w(0, 'LINE');
-      w(8, entity.layer);
-      if (entity.color) w(62, colorToAci(entity.color));
-      w(10, entity.x1); w(20, entity.y1); w(30, 0);
-      w(11, entity.x2); w(21, entity.y2); w(31, 0);
-      break;
-
-    case 'LWPOLYLINE': {
-      const pts = entity.points || entity.vertices;
-      if (!pts || pts.length === 0) break;
-      w(0, 'LWPOLYLINE');
-      w(8, entity.layer);
-      if (entity.color) w(62, colorToAci(entity.color));
-      w(90, pts.length);
-      w(70, entity.closed ? 1 : 0);
-      for (const p of pts) {
-        w(10, p.x); w(20, p.y);
-      }
-      break;
-    }
-
-    case 'TEXT':
-      w(0, 'TEXT');
-      w(8, entity.layer);
-      if (entity.color) w(62, colorToAci(entity.color));
-      w(10, entity.x); w(20, entity.y); w(30, 0);
-      w(40, entity.height);
-      w(1, entity.text);
-      if (entity.rotation) w(50, entity.rotation);
-      break;
-
-    case 'DIMENSION':
-      // Export as two lines + text (simplified for compatbility)
-      w(0, 'LINE');
-      w(8, entity.layer);
-      w(10, entity.x1); w(20, entity.y1); w(30, 0);
-      w(11, entity.x2); w(21, entity.y2); w(31, 0);
-      // Add the dimension text
-      const mx = (entity.x1 + entity.x2) / 2;
-      const my = (entity.y1 + entity.y2) / 2;
-      const len = Math.hypot(entity.x2 - entity.x1, entity.y2 - entity.y1);
-      w(0, 'TEXT');
-      w(8, entity.layer);
-      w(10, mx); w(20, my + entity.offset); w(30, 0);
-      w(40, 3);
-      w(1, len.toFixed(2));
-      break;
   }
 }
 

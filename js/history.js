@@ -42,9 +42,3 @@ function _restoreScene(data) {
   state.scene = Scene.deserialize(data);
   state.selectedEntities = [];
 }
-
-// Legacy compat — kept for persist.js bridge (deprecated)
-export function serializeEntity(e) {
-  return e.serialize ? e.serialize() : {};
-}
-export function deserializeEntity() { return null; }

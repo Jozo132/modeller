@@ -278,21 +278,20 @@ assembly.addMate(comp1, comp2, 'coincident'); // Future implementation
 - ⏳ **More 3D Operations**: Fillet, chamfer, sweep, loft
 - ⏳ **Boolean Operations**: Union, subtract, intersect using CSG
 - ⏳ **Assembly Constraints**: Mates, alignments
-- ✅ **3D Rendering**: AssemblyScript WASM WebGL rendering engine (replaced Three.js)
+- ✅ **3D Rendering**: AssemblyScript WASM WebGL rendering engine
 - ⏳ **Export Formats**: STEP, IGES, STL
 
 ## Integration with Existing Code
 
-The new parametric system is **fully backward compatible** with the existing application:
+The parametric system integrates with the existing application:
 
 - The `Scene` class remains unchanged and continues to work
 - The `Sketch` class wraps `Scene` without modifying it
 - All existing tools and features work exactly as before
-- No breaking changes to the API
 
 ## WASM Rendering Engine
 
-The rendering engine has been migrated from Three.js to a custom **AssemblyScript → WASM** pipeline that interfaces WebGL directly.
+The rendering engine uses a custom **AssemblyScript → WASM** pipeline that interfaces WebGL directly.
 
 ### Architecture
 
@@ -327,7 +326,7 @@ AssemblyScript (assembly/)     JS (js/)
   - `index.ts` — Exported WASM API functions
 
 - **`js/webgl-executor.js`** — Processes the command buffer and executes WebGL2 calls
-- **`js/wasm-renderer.js`** — Drop-in replacement for the old Three.js renderer
+- **`js/wasm-renderer.js`** — WASM-backed renderer for 2D and 3D views
 
 ### Command Protocol
 
@@ -374,12 +373,8 @@ This demonstrates:
 - Dependency tracking
 - Serialization and deserialization
 
-## Migration Path
+## Development Roadmap
 
-For future development, the migration path is:
-
-1. **Current**: Application uses `Scene` directly through `state.scene`
-2. **Near-term**: Application can optionally use `Part` with `FeatureTree` for 3D modeling
-3. **Long-term**: 3D features will use `Part` and `Assembly` with multiple `Sketch` instances
-
-The architecture is designed to be incremental, allowing gradual adoption of new features without disrupting existing functionality.
+1. Application uses `Scene` directly through `state.scene` for 2D sketching
+2. Application uses `Part` with `FeatureTree` for 3D modeling
+3. 3D features will use `Part` and `Assembly` with multiple `Sketch` instances

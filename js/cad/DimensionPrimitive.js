@@ -339,9 +339,6 @@ export class DimensionPrimitive extends Primitive {
     }
   }
 
-  /** Alias for backward compat */
-  get length() { return this.value; }
-
   /** Resolve the formula to a numeric value (for constraint mode) */
   get resolvedFormula() {
     if (this.formula == null) return null;
@@ -370,7 +367,7 @@ export class DimensionPrimitive extends Primitive {
     // For angle dims the sweep is stored in _angleSweep (set during detection/sync).
     // Return the absolute sweep so displayLabel shows the correct degrees.
     if (this._angleSweep != null) return Math.abs(this._angleSweep);
-    // Fallback: compute from endpoint vectors (legacy/single-use)
+    // Fallback: compute from endpoint vectors
     const dx = this.x2 - this.x1, dy = this.y2 - this.y1;
     return Math.abs(Math.atan2(dy, dx));
   }

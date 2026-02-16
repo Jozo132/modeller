@@ -39,9 +39,6 @@ function projectFromJSON(data) {
   // Restore scene
   if (data.scene) {
     state.scene = Scene.deserialize(data.scene);
-  } else if (Array.isArray(data.entities)) {
-    // Legacy v1 format — just clear, can't restore old entities
-    state.scene.clear();
   }
   state.selectedEntities = [];
 
