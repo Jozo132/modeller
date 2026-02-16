@@ -352,3 +352,27 @@ export declare const SOLVER_ANGLE: {
   /** @type `i32` */
   get value(): number
 };
+/**
+ * assembly/render2d/setEntityModelMatrix
+ * @param m00 `f32`
+ * @param m01 `f32`
+ * @param m02 `f32`
+ * @param m03 `f32`
+ * @param m10 `f32`
+ * @param m11 `f32`
+ * @param m12 `f32`
+ * @param m13 `f32`
+ * @param m20 `f32`
+ * @param m21 `f32`
+ * @param m22 `f32`
+ * @param m23 `f32`
+ * @param m30 `f32`
+ * @param m31 `f32`
+ * @param m32 `f32`
+ * @param m33 `f32`
+ */
+export declare function setEntityModelMatrix(m00: number, m01: number, m02: number, m03: number, m10: number, m11: number, m12: number, m13: number, m20: number, m21: number, m22: number, m23: number, m30: number, m31: number, m32: number, m33: number): void;
+/**
+ * assembly/render2d/resetEntityModelMatrix
+ */
+export declare function resetEntityModelMatrix(): void;

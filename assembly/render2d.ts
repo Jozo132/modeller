@@ -8,13 +8,37 @@ import { EntityStore, FLAG_VISIBLE, FLAG_SELECTED, FLAG_CONSTRUCTION, FLAG_HOVER
 const CIRCLE_SEGMENTS: i32 = 64;
 const CROSSHAIR_EXTENT: f32 = 10000.0;
 
+// Model matrix for entity plane (transforms local 2D to world 3D)
+let entityModelMatrix: Mat4 = Mat4.identity();
+
+export function setEntityModelMatrix(
+  m00: f32, m01: f32, m02: f32, m03: f32,
+  m10: f32, m11: f32, m12: f32, m13: f32,
+  m20: f32, m21: f32, m22: f32, m23: f32,
+  m30: f32, m31: f32, m32: f32, m33: f32
+): void {
+  entityModelMatrix = Mat4.fromValues(
+    m00, m01, m02, m03,
+    m10, m11, m12, m13,
+    m20, m21, m22, m23,
+    m30, m31, m32, m33
+  );
+}
+
+export function resetEntityModelMatrix(): void {
+  entityModelMatrix = Mat4.identity();
+}
+
 /**
  * Render all 2D entities into the command buffer.
- * Entities are drawn on the XY plane at z=0.
+ * Entities are drawn on the entity model plane (default: XY plane at z=0).
  */
 export function render2DEntities(cmd: CommandBuffer, vp: Mat4, entities: EntityStore): void {
   cmd.emitSetProgram(1); // line/point shader
   cmd.emitSetDepthTest(false);
+
+  // Multiply model matrix with view-projection to get final MVP
+  const mvp = vp.multiply(entityModelMatrix);
 
   // --- Segments ---
   for (let i: i32 = 0; i < entities.segments.length; i++) {
@@ -38,7 +62,7 @@ export function render2DEntities(cmd: CommandBuffer, vp: Mat4, entities: EntityS
       cmd.emitSetColor(seg.r, seg.g, seg.b, seg.a);
     }
 
-    cmd.emitSetMatrix(vp);
+    cmd.emitSetMatrix(mvp);
     cmd.emitSetLineWidth(selected ? 2.0 : 1.0);
 
     const verts = new StaticArray<f32>(6);
@@ -66,7 +90,7 @@ export function render2DEntities(cmd: CommandBuffer, vp: Mat4, entities: EntityS
       cmd.emitSetColor(circle.r, circle.g, circle.b, circle.a);
     }
 
-    cmd.emitSetMatrix(vp);
+    cmd.emitSetMatrix(mvp);
     cmd.emitSetLineWidth(selected ? 2.0 : 1.0);
 
     // Tessellate circle as line segments
@@ -105,7 +129,7 @@ export function render2DEntities(cmd: CommandBuffer, vp: Mat4, entities: EntityS
       cmd.emitSetColor(arc.r, arc.g, arc.b, arc.a);
     }
 
-    cmd.emitSetMatrix(vp);
+    cmd.emitSetMatrix(mvp);
     cmd.emitSetLineWidth(selected ? 2.0 : 1.0);
 
     // Compute arc sweep
@@ -148,7 +172,7 @@ export function render2DEntities(cmd: CommandBuffer, vp: Mat4, entities: EntityS
       cmd.emitSetColor(pt.r, pt.g, pt.b, pt.a);
     }
 
-    cmd.emitSetMatrix(vp);
+    cmd.emitSetMatrix(mvp);
 
     const verts = new StaticArray<f32>(3);
     unchecked(verts[0] = pt.x); unchecked(verts[1] = pt.y); unchecked(verts[2] = 0);
@@ -158,7 +182,7 @@ export function render2DEntities(cmd: CommandBuffer, vp: Mat4, entities: EntityS
   // --- Snap indicator ---
   if (entities.snapVisible) {
     cmd.emitSetColor(0.0, 1.0, 0.6, 1.0); // #00ff99
-    cmd.emitSetMatrix(vp);
+    cmd.emitSetMatrix(mvp);
     const snapVerts = new StaticArray<f32>(3);
     unchecked(snapVerts[0] = entities.snapX);
     unchecked(snapVerts[1] = entities.snapY);
@@ -170,7 +194,7 @@ export function render2DEntities(cmd: CommandBuffer, vp: Mat4, entities: EntityS
   if (entities.cursorVisible) {
     cmd.emitSetColor(0.165, 0.165, 0.165, 1.0); // #2a2a2a
     cmd.emitSetLineWidth(1.0);
-    cmd.emitSetMatrix(vp);
+    cmd.emitSetMatrix(mvp);
     // Draw very long crosshair lines through cursor position
     const chVerts = new StaticArray<f32>(12);
     // Horizontal line

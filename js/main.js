@@ -154,7 +154,20 @@ class App {
 
       this._syncViewportSize();
       try {
-        if (!this._3dMode) {
+        if (this._sketchingOnPlane) {
+          // Sketching on a plane in 3D: render both mesh and sketch entities
+          this._renderer3d.render2DScene(state.scene, {
+            sceneVersion: this._sceneVersion,
+            hoverEntity: this.renderer.hoverEntity,
+            previewEntities: this.renderer.previewEntities,
+            snapPoint: this.renderer.snapPoint,
+            cursorWorld: this.renderer.cursorWorld,
+            isLayerVisible: (layer) => state.isLayerVisible(layer),
+            getLayerColor: (layer) => state.getLayerColor(layer),
+            allDimensionsVisible: state.allDimensionsVisible,
+            constraintIconsVisible: state.constraintIconsVisible,
+          });
+        } else if (!this._3dMode) {
           this._renderer3d.sync2DView(this.viewport);
           this._renderer3d.render2DScene(state.scene, {
             sceneVersion: this._sceneVersion,
@@ -238,6 +251,33 @@ class App {
       if (dt > 12) {
         warn('Pointer processing frame is slow', { ms: dt.toFixed(2), tool: this.activeTool.name });
       }
+      this._scheduleRender();
+    });
+  }
+
+  /**
+   * Pointer processing for sketch-on-plane in 3D mode.
+   * Uses rayToPlane instead of 2D viewport screenToWorld.
+   */
+  _scheduleSketchPointerProcessing() {
+    if (this._pointerFramePending || !this._lastPointer) return;
+    this._pointerFramePending = true;
+    requestAnimationFrame(() => {
+      this._pointerFramePending = false;
+      if (!this._lastPointer) return;
+      const { sx, sy, ctrlKey } = this._lastPointer;
+
+      const world = this._screenToSketchWorld(sx, sy);
+      if (!world) return;
+
+      this.renderer.cursorWorld = world;
+      this.renderer.snapPoint = null; // TODO: snap support in 3D sketch mode
+
+      document.getElementById('status-coords').textContent =
+        `X: ${world.x.toFixed(2)}  Y: ${world.y.toFixed(2)}`;
+
+      this.activeTool.onMouseMove(world.x, world.y, sx, sy);
+      this._updateLeftPanelHighlights();
       this._scheduleRender();
     });
   }
@@ -664,6 +704,21 @@ class App {
   }
 
   // --- 3D Canvas Events ---
+
+  /**
+   * Convert screen coordinates to 2D world coordinates on the active sketch plane.
+   * Uses raycasting in 3D mode, or the viewport in 2D mode.
+   * @param {number} sx - screen X (relative to canvas)
+   * @param {number} sy - screen Y (relative to canvas)
+   * @returns {{x: number, y: number}|null}
+   */
+  _screenToSketchWorld(sx, sy) {
+    if (this._sketchingOnPlane && this._activeSketchPlaneDef && this._renderer3d) {
+      return this._renderer3d.rayToPlane(sx, sy, this._activeSketchPlaneDef);
+    }
+    return this.viewport.screenToWorld(sx, sy);
+  }
+
   _bind3DCanvasEvents() {
     const canvas = this._renderer3d.renderer?.domElement;
     if (!canvas) return;
@@ -680,7 +735,8 @@ class App {
 
       if (!this._3dMode) {
         // 2D sketch interaction
-        if (e.button === 1) {
+        if (e.button === 2) {
+          // Right button = pan
           e.preventDefault();
           this.viewport.startPan(sx, sy);
           return;
@@ -706,14 +762,20 @@ class App {
         return;
       }
 
-      // Middle button = pan (handled by OrbitControls)
-      if (e.button === 1) {
+      // Middle button = orbit, Right button = pan (handled by WasmRenderer controls)
+      if (e.button === 1 || e.button === 2) {
         return; // Let WASM renderer controls handle
       }
 
       if (e.button === 0 && this.activeTool.onMouseDown) {
-        const world = this._renderer3d.screenToWorld(sx, sy);
-        this.activeTool.onMouseDown(world.x, world.y, sx, sy, e);
+        if (this._sketchingOnPlane) {
+          // Raycast to sketch plane for 2D coords
+          const world = this._screenToSketchWorld(sx, sy);
+          if (world) this.activeTool.onMouseDown(world.x, world.y, sx, sy, e);
+        } else {
+          const world = this._renderer3d.screenToWorld(sx, sy);
+          this.activeTool.onMouseDown(world.x, world.y, sx, sy, e);
+        }
       }
     });
 
@@ -727,11 +789,22 @@ class App {
       if (!this._3dMode) {
         if (this.viewport.isPanning) {
           this.viewport.updatePan(sx, sy);
+          // Update cursor world position so the crosshair tracks the mouse during pan
+          const world = this.viewport.screenToWorld(sx, sy);
+          this.renderer.cursorWorld = world;
           this._scheduleRender();
           return;
         }
         this._lastPointer = { sx, sy, ctrlKey: e.ctrlKey };
         this._schedulePointerProcessing();
+        return;
+      }
+
+      if (this._sketchingOnPlane) {
+        // Sketching on plane in 3D: process pointer for sketch tools
+        this._lastPointer = { sx, sy, ctrlKey: e.ctrlKey };
+        this._scheduleSketchPointerProcessing();
+        this._scheduleRender();
         return;
       }
 
@@ -746,7 +819,8 @@ class App {
       mouseDown = false;
 
       if (!this._3dMode) {
-        if (e.button === 1) {
+        if (e.button === 2) {
+          // Right button = end pan
           this.viewport.endPan();
           debouncedSave();
           return;
@@ -759,14 +833,19 @@ class App {
         return;
       }
 
-      if (e.button === 1) {
+      if (e.button === 1 || e.button === 2) {
         debouncedSave();
         return;
       }
 
       if (this.activeTool.onMouseUp) {
-        const world = this._renderer3d.screenToWorld(sx, sy);
-        this.activeTool.onMouseUp(world.x, world.y, e);
+        if (this._sketchingOnPlane) {
+          const world = this._screenToSketchWorld(sx, sy);
+          if (world) this.activeTool.onMouseUp(world.x, world.y, e);
+        } else {
+          const world = this._renderer3d.screenToWorld(sx, sy);
+          this.activeTool.onMouseUp(world.x, world.y, e);
+        }
       }
 
       this._scheduleRender();
@@ -811,6 +890,18 @@ class App {
       const rect = canvas.getBoundingClientRect();
       const sx = e.clientX - rect.left;
       const sy = e.clientY - rect.top;
+
+      if (this._sketchingOnPlane) {
+        // Sketching on plane in 3D: raycast to plane for click coords
+        const world = this._screenToSketchWorld(sx, sy);
+        if (world && this.activeTool.onClick) {
+          this.activeTool.onClick(world.x, world.y, e);
+        }
+        movedSinceDown = false;
+        this._scheduleRender();
+        return;
+      }
+
       const world = this._renderer3d.screenToWorld(sx, sy);
 
       // In Part mode 3D view: handle face/geometry picking
@@ -875,45 +966,10 @@ class App {
       this._scheduleRender();
     });
 
-    // Context menu
+    // Context menu — right-click is now used for panning, so suppress
+    // the browser context menu on the canvas entirely.
     canvas.addEventListener('contextmenu', (e) => {
-      if (!this._3dMode) {
-        e.preventDefault();
-
-        if (this.activeTool.name !== 'select') {
-          this.activeTool.onCancel();
-          this.setActiveTool('select');
-          this._scheduleRender();
-          return;
-        }
-
-        const rect = canvas.getBoundingClientRect();
-        const sx = e.clientX - rect.left;
-        const sy = e.clientY - rect.top;
-        const world = this.viewport.screenToWorld(sx, sy);
-        const tol = 18 / this.viewport.zoom;
-
-        let hitEntity = null;
-        let minDist = Infinity;
-        for (const entity of state.entities) {
-          if (!entity.visible || !state.isLayerVisible(entity.layer)) continue;
-          const d = entity.distanceTo(world.x, world.y);
-          if (d <= tol && d < minDist) { minDist = d; hitEntity = entity; }
-        }
-
-        this._showContextMenu(e.clientX, e.clientY, hitEntity);
-        return;
-      }
-
       e.preventDefault();
-      const rect = canvas.getBoundingClientRect();
-      const sx = e.clientX - rect.left;
-      const sy = e.clientY - rect.top;
-      const world = this._renderer3d.screenToWorld(sx, sy);
-
-      if (this.activeTool.onContextMenu) {
-        this.activeTool.onContextMenu(world.x, world.y, e);
-      }
     });
 
     // Wheel for zooming (trigger render)
@@ -1052,6 +1108,10 @@ class App {
       state.orthoEnabled = !state.orthoEnabled;
       e.currentTarget.classList.toggle('active', state.orthoEnabled);
       document.getElementById('status-ortho').classList.toggle('active', state.orthoEnabled);
+      if (this._renderer3d) {
+        this._renderer3d.setOrtho3D(state.orthoEnabled);
+      }
+      this._scheduleRender();
     });
 
     // Construction mode toggle
@@ -1181,6 +1241,10 @@ class App {
           state.orthoEnabled = !state.orthoEnabled;
           document.getElementById('btn-ortho-toggle').classList.toggle('active', state.orthoEnabled);
           document.getElementById('status-ortho').classList.toggle('active', state.orthoEnabled);
+          if (this._renderer3d) {
+            this._renderer3d.setOrtho3D(state.orthoEnabled);
+          }
+          this._scheduleRender();
           break;
         case '2':
           if (this._3dMode) this._toggle3DMode();
@@ -3212,9 +3276,14 @@ class App {
       return;
     }
 
-    // If in Part workspace and currently sketching on plane, finish the sketch
-    if (this._workspaceMode === 'part' && this._sketchingOnPlane && !this._3dMode) {
-      this._finishSketchOnPlane();
+    // If currently sketching on a plane, toggle only affects camera projection
+    // (perspective ↔ ortho) without leaving sketch mode
+    if (this._sketchingOnPlane) {
+      state.orthoEnabled = !state.orthoEnabled;
+      this._renderer3d.setOrtho3D(state.orthoEnabled);
+      const orthoBtn = document.getElementById('btn-ortho');
+      if (orthoBtn) orthoBtn.classList.toggle('active', state.orthoEnabled);
+      this._scheduleRender();
       return;
     }
 
@@ -3635,6 +3704,7 @@ class App {
 
     if (this._renderer3d) {
       this._renderer3d._sketchPlane = null;
+      this._renderer3d._sketchPlaneDef = null;
       this._renderer3d.setMode('3d');
       this._renderer3d.setVisible(true);
     }
@@ -3773,10 +3843,11 @@ class App {
     state.scene.clear();
     state.selectedEntities = [];
 
-    // Switch to 2D sketch mode on the selected plane
+    // Stay in 3D mode but enable sketch-on-plane
     this._sketchingOnPlane = true;
     this._activeSketchPlane = plane;
-    this._3dMode = false;
+    this._activeSketchPlaneDef = this._getPlaneDefinition(plane);
+    this._3dMode = true;
 
     // Add sketch-on-plane body class to control UI visibility
     document.body.classList.add('sketch-on-plane');
@@ -3788,22 +3859,25 @@ class App {
     if (this._renderer3d) {
       // Orient camera perpendicular to the selected plane
       this._renderer3d.orientToPlane(plane);
-      this._renderer3d.setMode('2d');
+      // Stay in 3D mode so the mesh remains visible
+      this._renderer3d.setMode('3d');
       this._renderer3d.setVisible(true);
-      this._renderer3d.sync2DView(this.viewport);
       // Tell renderer which sketch plane we're on (for colored reference axes)
       this._renderer3d._sketchPlane = plane;
+      // Store plane definition for screen projection of sketch entities
+      this._renderer3d._sketchPlaneDef = this._activeSketchPlaneDef;
     }
 
-    document.body.classList.remove('mode-3d');
-    document.getElementById('btn-3d-mode').classList.remove('active');
+    // Keep mode-3d class since we're in 3D
+    document.body.classList.add('mode-3d');
+    document.getElementById('btn-3d-mode').classList.add('active');
 
     const modeIndicator = document.getElementById('status-mode');
     modeIndicator.textContent = `SKETCH ON ${plane}`;
     modeIndicator.className = 'status-mode sketch-mode';
 
     this.setActiveTool('select');
-    this.setStatus(`Sketching on ${plane} plane. Draw your profile, then return to 3D to extrude.`);
+    this.setStatus(`Sketching on ${plane} plane. Draw your profile, then Exit Sketch to extrude.`);
     info(`Entered sketch-on-plane mode (${plane} plane)`);
     this._scheduleRender();
   }
@@ -3823,18 +3897,18 @@ class App {
     state.scene.clear();
     state.selectedEntities = [];
 
-    // Store the face-derived plane definition for later use
+    // Store the face-derived plane definition for raycasting
     this._activeSketchPlaneDef = planeDef;
 
-    // Orient camera perpendicular to the face normal before entering 2D sketch mode
+    // Orient camera perpendicular to the face normal
     if (this._renderer3d) {
       this._renderer3d.orientToPlaneNormal(faceHit.face.normal, faceHit.point);
     }
 
-    // Switch to 2D sketch mode
+    // Stay in 3D mode but enable sketch-on-plane
     this._sketchingOnPlane = true;
     this._activeSketchPlane = 'FACE';
-    this._3dMode = false;
+    this._3dMode = true;
 
     document.body.classList.add('sketch-on-plane');
 
@@ -3842,25 +3916,28 @@ class App {
     if (exitBtn) exitBtn.style.display = 'flex';
 
     if (this._renderer3d) {
-      this._renderer3d.setMode('2d');
+      // Stay in 3D mode so the mesh remains visible
+      this._renderer3d.setMode('3d');
       this._renderer3d.setVisible(true);
-      this._renderer3d.sync2DView(this.viewport);
-      this._renderer3d._sketchPlane = 'XY'; // 2D always draws on XY
+      this._renderer3d._sketchPlane = 'FACE';
+      // Store plane definition for screen projection of sketch entities
+      this._renderer3d._sketchPlaneDef = this._activeSketchPlaneDef;
     }
 
     // Clear face selection
     this._selectedFace = null;
     if (this._renderer3d) this._renderer3d.selectFace(-1);
 
-    document.body.classList.remove('mode-3d');
-    document.getElementById('btn-3d-mode').classList.remove('active');
+    // Keep mode-3d class since we're in 3D
+    document.body.classList.add('mode-3d');
+    document.getElementById('btn-3d-mode').classList.add('active');
 
     const modeIndicator = document.getElementById('status-mode');
     modeIndicator.textContent = 'SKETCH ON FACE';
     modeIndicator.className = 'status-mode sketch-mode';
 
     this.setActiveTool('select');
-    this.setStatus('Sketching on face. Draw your profile, then return to 3D to extrude.');
+    this.setStatus('Sketching on face. Draw your profile, then Exit Sketch to extrude.');
     info('Entered sketch-on-face mode');
     this._scheduleRender();
   }
@@ -3933,6 +4010,7 @@ class App {
 
     if (this._renderer3d) {
       this._renderer3d._sketchPlane = null;
+      this._renderer3d._sketchPlaneDef = null;
       this._renderer3d.setMode('3d');
       this._renderer3d.setVisible(true);
     }

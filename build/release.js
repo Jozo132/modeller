@@ -92,6 +92,8 @@ export const {
   SOLVER_EQUAL_LENGTH,
   SOLVER_TANGENT,
   SOLVER_ANGLE,
+  setEntityModelMatrix,
+  resetEntityModelMatrix,
 } = await (async url => instantiate(
   await (async () => {
     const isNodeOrBun = typeof process != "undefined" && process.versions != null && (process.versions.node != null || process.versions.bun != null);

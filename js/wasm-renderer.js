@@ -85,6 +85,7 @@ export class WasmRenderer {
     this._isPanning3D = false;
     this._lastMouseX = 0;
     this._lastMouseY = 0;
+    this._ortho3D = false; // orthographic projection in 3D mode
 
     // Bind 3D mouse controls
     this._bind3DControls();
@@ -166,7 +167,7 @@ export class WasmRenderer {
     this.executor.execute(buf, len);
 
     // Render Part mesh directly via WebGL (after WASM pass)
-    if (this.mode === '3d') {
+    if (this.mode === '3d' || this._sketchPlane) {
       this._renderMeshOverlay();
     }
   }
@@ -178,14 +179,12 @@ export class WasmRenderer {
 
     canvas.addEventListener('mousedown', (e) => {
       if (this.mode !== '3d') return;
-      // Left button = orbit, Middle button = pan, Shift+Left = pan
-      if (e.button === 0 && e.shiftKey) {
-        this._isPanning3D = true;
-        this._isDragging = false;
-      } else if (e.button === 0) {
+      // Middle button = orbit, Right button = pan
+      if (e.button === 1) {
+        e.preventDefault();
         this._isDragging = true;
         this._isPanning3D = false;
-      } else if (e.button === 1) {
+      } else if (e.button === 2) {
         e.preventDefault();
         this._isPanning3D = true;
         this._isDragging = false;
@@ -210,7 +209,7 @@ export class WasmRenderer {
         this._orbitDirty = true;
       } else if (this._isPanning3D) {
         // Pan: move target in the camera's local right/up plane
-        const panSpeed = this._orbitRadius * 0.002;
+        const panSpeed = this._orbitRadius * 0.001;
         const theta = this._orbitTheta;
         const phi = this._orbitPhi;
 
@@ -262,6 +261,63 @@ export class WasmRenderer {
 
     this.wasm.setCameraPosition(camX, camY, camZ);
     this.wasm.setCameraTarget(t.x, t.y, t.z);
+
+    // Apply orthographic or perspective projection for 3D mode
+    if (this._ortho3D) {
+      this.wasm.setCameraMode(0);
+      const w = this._cssWidth || this.container.clientWidth || 800;
+      const h = this._cssHeight || this.container.clientHeight || 600;
+      const aspect = w / h;
+      const halfH = r * 0.5;
+      const halfW = halfH * aspect;
+      this.wasm.setOrthoBounds(
+        t.x - halfW, t.x + halfW,
+        t.z - halfH, t.z + halfH
+      );
+    } else {
+      this.wasm.setCameraMode(1);
+    }
+  }
+
+  /**
+   * Set orthographic projection for 3D mode.
+   * @param {boolean} enabled
+   */
+  setOrtho3D(enabled) {
+    this._ortho3D = enabled;
+    if (this.mode === '3d') {
+      this._orbitDirty = true;
+    }
+  }
+
+  /**
+   * Project a sketch-local 2D coordinate to screen (CSS) pixel coordinates.
+   * Uses the active _sketchPlaneDef to transform from local 2D → world 3D,
+   * then the perspective/ortho MVP to project to screen.
+   * @param {number} lx - Local X in sketch plane
+   * @param {number} ly - Local Y in sketch plane
+   * @returns {{x:number, y:number}|null}
+   */
+  sketchToScreen(lx, ly) {
+    const pd = this._sketchPlaneDef;
+    if (!pd) return null;
+    const mvp = this._computeMVP();
+    if (!mvp) return null;
+    // local 2D → world 3D
+    const wx = pd.origin.x + lx * pd.xAxis.x + ly * pd.yAxis.x;
+    const wy = pd.origin.y + lx * pd.xAxis.y + ly * pd.yAxis.y;
+    const wz = pd.origin.z + lx * pd.xAxis.z + ly * pd.yAxis.z;
+    // project
+    const clip = this._mat4TransformVec4(mvp, wx, wy, wz, 1);
+    if (Math.abs(clip.w) < 1e-10) return null;
+    const ndcX = clip.x / clip.w;
+    const ndcY = clip.y / clip.w;
+    const w = this._cssWidth || this.container.clientWidth;
+    const h = this._cssHeight || this.container.clientHeight;
+    return {
+      x: (ndcX * 0.5 + 0.5) * w,
+      y: (1 - (ndcY * 0.5 + 0.5)) * h,
+    };
   }
 
   /**
@@ -407,6 +463,64 @@ export class WasmRenderer {
    */
   getSelectedFaceIndex() {
     return this._selectedFaceIndex;
+  }
+
+  /**
+   * Cast a ray from screen coordinates onto a plane in 3D world space.
+   * Returns the 2D coordinates in the plane's local frame (xAxis, yAxis).
+   * @param {number} screenX - screen X (relative to canvas left)
+   * @param {number} screenY - screen Y (relative to canvas top)
+   * @param {Object} planeDef - { origin, normal, xAxis, yAxis }
+   * @returns {{x: number, y: number}|null} 2D coords on the plane, or null if ray is parallel
+   */
+  rayToPlane(screenX, screenY, planeDef) {
+    const mvp = this._computeMVP();
+    if (!mvp) return null;
+
+    const invMVP = this._mat4Invert(mvp);
+    if (!invMVP) return null;
+
+    const rect = this.canvas.getBoundingClientRect();
+    const ndcX = (screenX / rect.width) * 2 - 1;
+    const ndcY = -(screenY / rect.height) * 2 + 1;
+
+    // Near point (NDC z = -1) and far point (NDC z = 1)
+    const nearW = this._mat4TransformVec4(invMVP, ndcX, ndcY, -1, 1);
+    const farW = this._mat4TransformVec4(invMVP, ndcX, ndcY, 1, 1);
+    if (Math.abs(nearW.w) < 1e-10 || Math.abs(farW.w) < 1e-10) return null;
+
+    const origin = { x: nearW.x / nearW.w, y: nearW.y / nearW.w, z: nearW.z / nearW.w };
+    const farPt = { x: farW.x / farW.w, y: farW.y / farW.w, z: farW.z / farW.w };
+    const dir = {
+      x: farPt.x - origin.x,
+      y: farPt.y - origin.y,
+      z: farPt.z - origin.z,
+    };
+
+    // Ray-plane intersection: t = dot(planeOrigin - origin, normal) / dot(dir, normal)
+    const n = planeDef.normal;
+    const o = planeDef.origin;
+    const denom = dir.x * n.x + dir.y * n.y + dir.z * n.z;
+    if (Math.abs(denom) < 1e-10) return null; // ray parallel to plane
+
+    const diff = { x: o.x - origin.x, y: o.y - origin.y, z: o.z - origin.z };
+    const t = (diff.x * n.x + diff.y * n.y + diff.z * n.z) / denom;
+
+    // 3D intersection point on the plane
+    const hit = {
+      x: origin.x + dir.x * t,
+      y: origin.y + dir.y * t,
+      z: origin.z + dir.z * t,
+    };
+
+    // Project onto the plane's local 2D coordinate system
+    const local = { x: hit.x - o.x, y: hit.y - o.y, z: hit.z - o.z };
+    const ax = planeDef.xAxis;
+    const ay = planeDef.yAxis;
+    return {
+      x: local.x * ax.x + local.y * ax.y + local.z * ax.z,
+      y: local.x * ay.x + local.y * ay.y + local.z * ay.z,
+    };
   }
 
   /** Möller–Trumbore ray-triangle intersection */
@@ -605,6 +719,21 @@ export class WasmRenderer {
     const wasm = this.wasm;
     wasm.clearEntities();
 
+    // Set up entity model matrix for the sketch plane
+    const pd = this._sketchPlaneDef;
+    if (this.mode === '3d' && pd && wasm.setEntityModelMatrix) {
+      // Build column-major 4x4 matrix that transforms local (x, y, 0) to world
+      // Column 0: xAxis, Column 1: yAxis, Column 2: normal (z), Column 3: origin (translation)
+      wasm.setEntityModelMatrix(
+        pd.xAxis.x, pd.xAxis.y, pd.xAxis.z, 0,
+        pd.yAxis.x, pd.yAxis.y, pd.yAxis.z, 0,
+        pd.normal.x, pd.normal.y, pd.normal.z, 0,
+        pd.origin.x, pd.origin.y, pd.origin.z, 1
+      );
+    } else if (wasm.resetEntityModelMatrix) {
+      wasm.resetEntityModelMatrix();
+    }
+
     const isLayerVisible = overlays.isLayerVisible || (() => true);
     const getLayerColor = overlays.getLayerColor || (() => '#9CDCFE');
     const hoverEntity = overlays.hoverEntity || null;
@@ -613,6 +742,17 @@ export class WasmRenderer {
     const cursorWorld = overlays.cursorWorld || null;
     const allDimensionsVisible = overlays.allDimensionsVisible !== false;
     const constraintIconsVisible = overlays.constraintIconsVisible !== false;
+
+    // Transform local sketch coordinates to world (for 3D sketch on non-XY planes).
+    // For the XY plane or 2D mode, this is identity.
+    const useSketchTransform = this.mode === '3d' && pd;
+    const localToWorld = useSketchTransform
+      ? (lx, ly) => ({
+          x: pd.origin.x + lx * pd.xAxis.x + ly * pd.yAxis.x,
+          y: pd.origin.y + lx * pd.xAxis.y + ly * pd.yAxis.y,
+          z: pd.origin.z + lx * pd.xAxis.z + ly * pd.yAxis.z,
+        })
+      : (lx, ly) => ({ x: lx, y: ly, z: 0 });
 
     // Entity flag constants
     const F_VISIBLE = 1;
@@ -728,7 +868,7 @@ export class WasmRenderer {
     }
 
     // --- Cursor crosshair ---
-    if (cursorWorld && this.mode === '2d') {
+    if (cursorWorld && (this.mode === '2d' || this._sketchPlane)) {
       wasm.setCursorPosition(cursorWorld.x, cursorWorld.y, 1);
     } else {
       wasm.setCursorPosition(0, 0, 0);
@@ -741,10 +881,31 @@ export class WasmRenderer {
     const h = this._cssHeight || this.container.clientHeight;
     ctx.clearRect(0, 0, w, h);
 
-    const bounds = this._orthoBounds;
-    const worldToScreenX = (wx) => ((wx - bounds.left) / (bounds.right - bounds.left)) * w;
-    const worldToScreenY = (wy) => ((bounds.top - wy) / (bounds.top - bounds.bottom)) * h;
-    const wpp = (bounds.right - bounds.left) / w;
+    // Choose world-to-screen transform: in 3D sketch mode, use MVP projection;
+    // otherwise use the orthographic bounds.
+    const in3DSketch = this.mode === '3d' && this._sketchPlaneDef;
+    let worldToScreenX, worldToScreenY, wpp;
+    if (in3DSketch) {
+      worldToScreenX = (wx) => {
+        const s = this.sketchToScreen(wx, 0);
+        return s ? s.x : 0;
+      };
+      worldToScreenY = (wy) => {
+        const s = this.sketchToScreen(0, wy);
+        return s ? s.y : 0;
+      };
+      // For 3D sketch, approximate wpp (world per pixel) from orbit radius
+      wpp = (this._orbitRadius || 100) / Math.max(w, 1);
+    } else {
+      const bounds = this._orthoBounds;
+      worldToScreenX = (wx) => ((wx - bounds.left) / (bounds.right - bounds.left)) * w;
+      worldToScreenY = (wy) => ((bounds.top - wy) / (bounds.top - bounds.bottom)) * h;
+      wpp = (bounds.right - bounds.left) / w;
+    }
+    // Helper: project a local 2D point (x,y) in the sketch plane to screen
+    const sketchPtToScreen = in3DSketch
+      ? (lx, ly) => this.sketchToScreen(lx, ly) || { x: 0, y: 0 }
+      : (lx, ly) => ({ x: worldToScreenX(lx), y: worldToScreenY(ly) });
 
     // --- Dimensions (text overlay) ---
     if (allDimensionsVisible && scene.dimensions) {
@@ -761,17 +922,18 @@ export class WasmRenderer {
           const r = Math.abs(dim.offset) / wpp;
           const startA = dim._angleStart != null ? dim._angleStart : 0;
           const sweepA = dim._angleSweep != null ? dim._angleSweep : 0;
-          const cx = worldToScreenX(dim.x1);
-          const cy = worldToScreenY(dim.y1);
+          const cpt = sketchPtToScreen(dim.x1, dim.y1);
           ctx.beginPath();
-          ctx.arc(cx, cy, r, -startA, -(startA + sweepA), true);
+          ctx.arc(cpt.x, cpt.y, r, -startA, -(startA + sweepA), true);
           ctx.stroke();
           const midA = startA + sweepA / 2;
-          const lx = worldToScreenX(dim.x1 + (Math.abs(dim.offset) + 14 * wpp) * Math.cos(midA));
-          const ly = worldToScreenY(dim.y1 + (Math.abs(dim.offset) + 14 * wpp) * Math.sin(midA));
+          const lpt = sketchPtToScreen(
+            dim.x1 + (Math.abs(dim.offset) + 14 * wpp) * Math.cos(midA),
+            dim.y1 + (Math.abs(dim.offset) + 14 * wpp) * Math.sin(midA)
+          );
           ctx.font = '12px Consolas, monospace';
           ctx.textBaseline = 'middle';
-          ctx.fillText(dim.displayLabel || '', lx, ly);
+          ctx.fillText(dim.displayLabel || '', lpt.x, lpt.y);
           return;
         }
 
@@ -794,25 +956,31 @@ export class WasmRenderer {
           d2 = { x: dim.x2 + nx * dim.offset, y: dim.y2 + ny * dim.offset };
         }
 
+        const sp1 = sketchPtToScreen(dim.x1, dim.y1);
+        const sp2 = sketchPtToScreen(dim.x2, dim.y2);
+        const sd1 = sketchPtToScreen(d1.x, d1.y);
+        const sd2 = sketchPtToScreen(d2.x, d2.y);
+
         ctx.beginPath();
-        ctx.moveTo(worldToScreenX(dim.x1), worldToScreenY(dim.y1));
-        ctx.lineTo(worldToScreenX(d1.x), worldToScreenY(d1.y));
+        ctx.moveTo(sp1.x, sp1.y);
+        ctx.lineTo(sd1.x, sd1.y);
         ctx.stroke();
         ctx.beginPath();
-        ctx.moveTo(worldToScreenX(dim.x2), worldToScreenY(dim.y2));
-        ctx.lineTo(worldToScreenX(d2.x), worldToScreenY(d2.y));
+        ctx.moveTo(sp2.x, sp2.y);
+        ctx.lineTo(sd2.x, sd2.y);
         ctx.stroke();
         ctx.beginPath();
-        ctx.moveTo(worldToScreenX(d1.x), worldToScreenY(d1.y));
-        ctx.lineTo(worldToScreenX(d2.x), worldToScreenY(d2.y));
+        ctx.moveTo(sd1.x, sd1.y);
+        ctx.lineTo(sd2.x, sd2.y);
         ctx.stroke();
 
         const mx = (d1.x + d2.x) / 2;
         const my = (d1.y + d2.y) / 2 + 12 * wpp;
+        const mpt = sketchPtToScreen(mx, my);
         ctx.font = '12px Consolas, monospace';
         ctx.textBaseline = 'middle';
         ctx.textAlign = 'center';
-        ctx.fillText(dim.displayLabel || '', worldToScreenX(mx), worldToScreenY(my));
+        ctx.fillText(dim.displayLabel || '', mpt.x, mpt.y);
         ctx.textAlign = 'left';
       });
     }
@@ -825,10 +993,9 @@ export class WasmRenderer {
         ctx.fillStyle = color;
         ctx.font = '14px Consolas, monospace';
         ctx.textBaseline = 'middle';
-        const sx = worldToScreenX(text.x);
-        const sy = worldToScreenY(text.y);
+        const tpt = sketchPtToScreen(text.x, text.y);
         ctx.save();
-        ctx.translate(sx, sy);
+        ctx.translate(tpt.x, tpt.y);
         if (text.rotation) ctx.rotate(-text.rotation * Math.PI / 180);
         ctx.fillText(text.text, 0, 0);
         ctx.restore();
@@ -837,9 +1004,10 @@ export class WasmRenderer {
 
     // --- Sketch plane reference axes (colored, from origin) ---
     if (this._sketchPlane) {
-      const axisLen = Math.max(bounds.right - bounds.left, bounds.top - bounds.bottom) * 0.6;
-      const ox = worldToScreenX(0);
-      const oy = worldToScreenY(0);
+      const axisLen = in3DSketch ? 50 : Math.max(this._orthoBounds.right - this._orthoBounds.left, this._orthoBounds.top - this._orthoBounds.bottom) * 0.6;
+      const origin = sketchPtToScreen(0, 0);
+      const ox = origin.x;
+      const oy = origin.y;
 
       // Determine axis labels and colors based on the sketch plane
       let hLabel, vLabel, hColor, vColor;
@@ -851,7 +1019,7 @@ export class WasmRenderer {
       }
 
       // Horizontal axis (positive direction to the right)
-      const hEndX = worldToScreenX(axisLen);
+      const hEnd = sketchPtToScreen(axisLen, 0);
       ctx.save();
       ctx.strokeStyle = hColor;
       ctx.lineWidth = 1.5;
@@ -859,14 +1027,17 @@ export class WasmRenderer {
       ctx.setLineDash([]);
       ctx.beginPath();
       ctx.moveTo(ox, oy);
-      ctx.lineTo(hEndX, oy);
+      ctx.lineTo(hEnd.x, hEnd.y);
       ctx.stroke();
       // Arrow
+      const hDx = hEnd.x - ox, hDy = hEnd.y - oy;
+      const hLen = Math.hypot(hDx, hDy) || 1;
+      const hUx = hDx / hLen, hUy = hDy / hLen;
       ctx.beginPath();
-      ctx.moveTo(hEndX, oy);
-      ctx.lineTo(hEndX - 8, oy - 4);
-      ctx.moveTo(hEndX, oy);
-      ctx.lineTo(hEndX - 8, oy + 4);
+      ctx.moveTo(hEnd.x, hEnd.y);
+      ctx.lineTo(hEnd.x - 8 * hUx - 4 * hUy, hEnd.y - 8 * hUy + 4 * hUx);
+      ctx.moveTo(hEnd.x, hEnd.y);
+      ctx.lineTo(hEnd.x - 8 * hUx + 4 * hUy, hEnd.y - 8 * hUy - 4 * hUx);
       ctx.stroke();
       // Label
       ctx.globalAlpha = 0.8;
@@ -874,11 +1045,11 @@ export class WasmRenderer {
       ctx.font = 'bold 13px Consolas, monospace';
       ctx.textBaseline = 'middle';
       ctx.textAlign = 'left';
-      ctx.fillText(hLabel, hEndX + 4, oy);
+      ctx.fillText(hLabel, hEnd.x + 4 * hUx, hEnd.y + 4 * hUy);
       ctx.restore();
 
       // Vertical axis (positive direction upward)
-      const vEndY = worldToScreenY(axisLen);
+      const vEnd = sketchPtToScreen(0, axisLen);
       ctx.save();
       ctx.strokeStyle = vColor;
       ctx.lineWidth = 1.5;
@@ -886,14 +1057,17 @@ export class WasmRenderer {
       ctx.setLineDash([]);
       ctx.beginPath();
       ctx.moveTo(ox, oy);
-      ctx.lineTo(ox, vEndY);
+      ctx.lineTo(vEnd.x, vEnd.y);
       ctx.stroke();
       // Arrow
+      const vDx = vEnd.x - ox, vDy = vEnd.y - oy;
+      const vLen = Math.hypot(vDx, vDy) || 1;
+      const vUx = vDx / vLen, vUy = vDy / vLen;
       ctx.beginPath();
-      ctx.moveTo(ox, vEndY);
-      ctx.lineTo(ox - 4, vEndY + 8);
-      ctx.moveTo(ox, vEndY);
-      ctx.lineTo(ox + 4, vEndY + 8);
+      ctx.moveTo(vEnd.x, vEnd.y);
+      ctx.lineTo(vEnd.x - 8 * vUx - 4 * vUy, vEnd.y - 8 * vUy + 4 * vUx);
+      ctx.moveTo(vEnd.x, vEnd.y);
+      ctx.lineTo(vEnd.x - 8 * vUx + 4 * vUy, vEnd.y - 8 * vUy - 4 * vUx);
       ctx.stroke();
       // Label
       ctx.globalAlpha = 0.8;
@@ -901,7 +1075,7 @@ export class WasmRenderer {
       ctx.font = 'bold 13px Consolas, monospace';
       ctx.textBaseline = 'bottom';
       ctx.textAlign = 'center';
-      ctx.fillText(vLabel, ox, vEndY - 4);
+      ctx.fillText(vLabel, vEnd.x, vEnd.y - 4);
       ctx.restore();
 
       // Origin marker
@@ -934,7 +1108,8 @@ export class WasmRenderer {
         const ok = (typeof constraint.error === 'function') ? constraint.error() < 1e-4 : false;
         ctx.fillStyle = ok ? '#00e676' : '#ff643c';
         ctx.font = '13px Consolas, monospace';
-        ctx.fillText(icon, worldToScreenX(cx + 12 * wpp), worldToScreenY(cy + 10 * wpp));
+        const cpt = sketchPtToScreen(cx + 12 * wpp, cy + 10 * wpp);
+        ctx.fillText(icon, cpt.x, cpt.y);
       });
     }
   }

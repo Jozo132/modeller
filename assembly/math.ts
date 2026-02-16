@@ -85,10 +85,31 @@ export class Mat4 {
 
   constructor() {
     this.data = new StaticArray<f32>(16);
-    this.identity();
+    this.setIdentity();
   }
 
-  identity(): Mat4 {
+  static identity(): Mat4 {
+    const m = new Mat4();
+    return m;
+  }
+
+  static fromValues(
+    m00: f32, m01: f32, m02: f32, m03: f32,
+    m10: f32, m11: f32, m12: f32, m13: f32,
+    m20: f32, m21: f32, m22: f32, m23: f32,
+    m30: f32, m31: f32, m32: f32, m33: f32
+  ): Mat4 {
+    const m = new Mat4();
+    const d = m.data;
+    // Column-major order
+    unchecked(d[0]  = m00); unchecked(d[1]  = m01); unchecked(d[2]  = m02); unchecked(d[3]  = m03);
+    unchecked(d[4]  = m10); unchecked(d[5]  = m11); unchecked(d[6]  = m12); unchecked(d[7]  = m13);
+    unchecked(d[8]  = m20); unchecked(d[9]  = m21); unchecked(d[10] = m22); unchecked(d[11] = m23);
+    unchecked(d[12] = m30); unchecked(d[13] = m31); unchecked(d[14] = m32); unchecked(d[15] = m33);
+    return m;
+  }
+
+  setIdentity(): Mat4 {
     const d = this.data;
     unchecked(d[0]  = 1); unchecked(d[1]  = 0); unchecked(d[2]  = 0); unchecked(d[3]  = 0);
     unchecked(d[4]  = 0); unchecked(d[5]  = 1); unchecked(d[6]  = 0); unchecked(d[7]  = 0);

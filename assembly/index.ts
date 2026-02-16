@@ -3,7 +3,7 @@ import { CommandBuffer } from "./commands";
 import { Scene, SceneNode } from "./scene";
 import { EntityStore, FLAG_VISIBLE, FLAG_SELECTED, FLAG_CONSTRUCTION, FLAG_HOVER, FLAG_FIXED, FLAG_PREVIEW } from "./entities";
 import { ConstraintSolver, CONSTRAINT_COINCIDENT, CONSTRAINT_HORIZONTAL, CONSTRAINT_VERTICAL, CONSTRAINT_DISTANCE, CONSTRAINT_FIXED, CONSTRAINT_PARALLEL, CONSTRAINT_PERPENDICULAR, CONSTRAINT_EQUAL_LENGTH, CONSTRAINT_TANGENT, CONSTRAINT_ANGLE } from "./solver";
-import { render2DEntities, renderOriginPlanes } from "./render2d";
+import { render2DEntities, renderOriginPlanes, setEntityModelMatrix, resetEntityModelMatrix } from "./render2d";
 
 // Global state — initialized in init()
 let scene: Scene = new Scene();
@@ -310,6 +310,9 @@ export function getCommandBufferPtr(): usize {
 export function getCommandBufferLen(): i32 {
   return cmd.getBufferLength();
 }
+
+// Re-export entity model matrix functions
+export { setEntityModelMatrix, resetEntityModelMatrix };
 
 // Re-export constants for JS side
 export const ENTITY_FLAG_VISIBLE: i32 = FLAG_VISIBLE;
