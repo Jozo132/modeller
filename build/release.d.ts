@@ -32,6 +32,13 @@ export declare function setCameraPosition(x: number, y: number, z: number): void
  */
 export declare function setCameraTarget(x: number, y: number, z: number): void;
 /**
+ * assembly/index/setCameraUp
+ * @param x `f32`
+ * @param y `f32`
+ * @param z `f32`
+ */
+export declare function setCameraUp(x: number, y: number, z: number): void;
+/**
  * assembly/index/setOrthoBounds
  * @param left `f32`
  * @param right `f32`

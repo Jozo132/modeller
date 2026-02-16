@@ -122,7 +122,7 @@ html, body {
   color: #90EE90;
 }
 
-/* Properties Panel */
+/* Properties Panel (unified right sidebar) */
 #properties-panel {
   position: fixed;
   top: 34px;
@@ -131,10 +131,44 @@ html, body {
   bottom: 56px;
   background: var(--bg-panel);
   border-left: 1px solid var(--border);
-  padding: 10px;
   overflow-y: auto;
   z-index: 90;
   user-select: none;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Sidebar sections inside the unified right panel */
+.sidebar-section {
+  padding: 0 10px;
+}
+.sidebar-section:first-child {
+  padding-top: 0;
+}
+
+/* Feature and Parameters panels: hidden by default, shown by .active */
+#feature-panel {
+  display: none;
+  border-bottom: 1px solid var(--border);
+  padding: 0;
+}
+#feature-panel.active {
+  display: block;
+}
+
+#parameters-panel {
+  display: none;
+  border-bottom: 1px solid var(--border);
+  padding: 0;
+}
+#parameters-panel.active {
+  display: block;
+}
+
+/* Properties & Layers sections get normal padding */
+#properties-section,
+#layers-section {
+  padding: 10px;
 }
 
 #properties-panel h3 {
@@ -1352,24 +1386,6 @@ body.motion-active #view-3d {
   z-index: 20; /* Above 3D view */
 }
 
-/* Feature Tree Panel - shown when in part mode */
-#feature-panel {
-  position: fixed;
-  top: 34px;
-  right: 0;
-  width: 280px;
-  height: calc(100% - 34px - 56px);
-  background: var(--bg-panel);
-  border-left: 1px solid var(--border);
-  z-index: 60;
-  display: none;
-  overflow-y: auto;
-}
-
-#feature-panel.active {
-  display: block;
-}
-
 .feature-panel-header {
   padding: 12px;
   border-bottom: 1px solid var(--border);
@@ -1461,25 +1477,6 @@ body.motion-active #view-3d {
   background: rgba(255,255,255,0.1);
 }
 
-
-/* Parameters Panel - shown when feature is selected */
-#parameters-panel {
-  position: fixed;
-  bottom: 56px;
-  right: 0;
-  width: 280px;
-  max-height: 300px;
-  background: var(--bg-panel);
-  border-top: 1px solid var(--border);
-  border-left: 1px solid var(--border);
-  z-index: 60;
-  display: none;
-  overflow-y: auto;
-}
-
-#parameters-panel.active {
-  display: block;
-}
 
 .parameters-panel-header {
   padding: 12px;
@@ -1589,6 +1586,17 @@ body.motion-active #view-3d {
 .node-tree-item.active {
   background: rgba(0, 122, 204, 0.25);
   color: var(--text-primary);
+}
+
+.node-tree-plane {
+  cursor: pointer;
+}
+
+.node-tree-plane.selected {
+  background: rgba(0, 122, 204, 0.35);
+  color: var(--text-primary);
+  outline: 1px solid rgba(0, 122, 204, 0.6);
+  outline-offset: -1px;
 }
 
 .node-tree-icon {
@@ -1759,12 +1767,63 @@ body.workspace-part.mode-3d .tool-group[data-group="ops"] {
   display: none;
 }
 
-/* In Part workspace 2D (sketch-on-plane) mode, re-enable sketch tools */
-body.workspace-part:not(.mode-3d) .tool-group[data-group="draw"],
-body.workspace-part:not(.mode-3d) .tool-group[data-group="edit"],
-body.workspace-part:not(.mode-3d) .tool-group[data-group="constrain"],
-body.workspace-part:not(.mode-3d) .tool-group[data-group="ops"] {
-  display: flex;
+/* In Part workspace, only re-enable sketch tools during sketch-on-plane */
+body.workspace-part.sketch-on-plane .tool-group[data-group="draw"],
+body.workspace-part.sketch-on-plane .tool-group[data-group="edit"],
+body.workspace-part.sketch-on-plane .tool-group[data-group="constrain"],
+body.workspace-part.sketch-on-plane .tool-group[data-group="ops"] {
+  display: flex !important;
+}
+
+/* In sketch-on-plane mode: hide Part-only tools and 3D group */
+body.sketch-on-plane .part-mode-only {
+  display: none !important;
+}
+body.sketch-on-plane .tool-group[data-group="part-tools"] {
+  display: none !important;
+}
+body.sketch-on-plane .tool-group[data-group="3d"] {
+  display: none !important;
+}
+body.sketch-on-plane .mode-3d-sep {
+  display: none !important;
+}
+body.sketch-on-plane #node-tree {
+  display: none;
+}
+body.sketch-on-plane #feature-panel,
+body.sketch-on-plane #parameters-panel {
+  display: none !important;
+}
+
+/* ── Exit Sketch Button ── */
+.exit-sketch-btn {
+  position: fixed;
+  top: 42px;
+  right: calc(var(--panel-width) + 12px);
+  z-index: 30;
+  display: none;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 18px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+  background: rgba(0, 122, 204, 0.85);
+  border: 1px solid rgba(0, 122, 204, 0.9);
+  border-radius: 6px;
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  transition: background 0.15s, box-shadow 0.15s;
+}
+.exit-sketch-btn:hover {
+  background: rgba(0, 150, 240, 0.95);
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.45);
+}
+.exit-sketch-btn svg {
+  flex-shrink: 0;
 }
 
 /* In Sketch workspace, hide Part-only tools (3D group and part-tools) */

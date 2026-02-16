@@ -36,7 +36,7 @@ export class PartManager {
    * @param {Scene} scene - The 2D scene to convert
    * @param {string} name - Sketch name
    */
-  addSketchFromScene(scene, name = 'Sketch') {
+  addSketchFromScene(scene, name = 'Sketch', plane = null) {
     if (!this.part) {
       this.createPart();
     }
@@ -80,7 +80,7 @@ export class PartManager {
       });
     }
 
-    const sketchFeature = this.part.addSketch(sketch);
+    const sketchFeature = this.part.addSketch(sketch, plane);
     this.activeFeature = sketchFeature;
     this.notifyListeners();
     return sketchFeature;

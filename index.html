@@ -113,22 +113,32 @@
     </div>
   </div>
 
-  <!-- Properties Panel -->
+  <!-- Properties Panel (unified right sidebar) -->
   <div id="properties-panel">
-    <h3>Properties</h3>
-    <div id="properties-content">
-      <p class="hint">Select an entity to view properties</p>
-    </div>
-    <hr />
-    <h3>Layers</h3>
-    <div id="layers-panel">
-      <div class="layer-row active-layer" data-layer="0">
-        <span class="layer-color" style="background:#fff"></span>
-        <span class="layer-name">0</span>
-        <button class="layer-visibility" title="Toggle visibility">&#128065;</button>
+    <!-- Feature Tree Section (shown in Part mode) -->
+    <div id="feature-panel" class="sidebar-section"></div>
+
+    <!-- Parameters Section (shown when feature selected) -->
+    <div id="parameters-panel" class="sidebar-section"></div>
+
+    <div class="sidebar-section" id="properties-section">
+      <h3>Properties</h3>
+      <div id="properties-content">
+        <p class="hint">Select an entity to view properties</p>
       </div>
     </div>
-    <button id="btn-add-layer" title="Add Layer">+ Layer</button>
+    <hr />
+    <div class="sidebar-section" id="layers-section">
+      <h3>Layers</h3>
+      <div id="layers-panel">
+        <div class="layer-row active-layer" data-layer="0">
+          <span class="layer-color" style="background:#fff"></span>
+          <span class="layer-name">0</span>
+          <button class="layer-visibility" title="Toggle visibility">&#128065;</button>
+        </div>
+      </div>
+      <button id="btn-add-layer" title="Add Layer">+ Layer</button>
+    </div>
   </div>
 
   <!-- Left Panel (Primitives & Constraints) -->
@@ -158,6 +168,12 @@
   <!-- Unified 3D View (replaces 2D canvas) -->
   <div id="view-3d"></div>
 
+  <!-- Exit Sketch floating button (visible only in sketch-on-plane mode) -->
+  <button id="btn-exit-sketch" class="exit-sketch-btn" style="display:none">
+    <svg viewBox="0 0 20 20" width="18" height="18"><polyline points="12,4 4,10 12,16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    Exit Sketch
+  </button>
+
   <!-- Node Tree Overlay (transparent, top-left of viewport) -->
   <div id="node-tree" class="node-tree">
     <div class="node-tree-header">Part</div>
@@ -167,15 +183,15 @@
         <span class="node-tree-label">Origin</span>
       </div>
       <div class="node-tree-children">
-        <div class="node-tree-item node-tree-plane">
+        <div class="node-tree-item node-tree-plane" data-plane="XY">
           <span class="node-tree-icon" style="color:#ff4444">▬</span>
           <span class="node-tree-label">XY Plane</span>
         </div>
-        <div class="node-tree-item node-tree-plane">
+        <div class="node-tree-item node-tree-plane" data-plane="XZ">
           <span class="node-tree-icon" style="color:#44ff44">▬</span>
           <span class="node-tree-label">XZ Plane</span>
         </div>
-        <div class="node-tree-item node-tree-plane">
+        <div class="node-tree-item node-tree-plane" data-plane="YZ">
           <span class="node-tree-icon" style="color:#4488ff">▬</span>
           <span class="node-tree-label">YZ Plane</span>
         </div>
@@ -188,12 +204,6 @@
 
   <!-- Legacy Canvas (hidden, kept for compatibility) -->
   <canvas id="cad-canvas" style="display:none;"></canvas>
-
-  <!-- Feature Tree Panel -->
-  <div id="feature-panel"></div>
-
-  <!-- Parameters Panel -->
-  <div id="parameters-panel"></div>
 
   <!-- Motion Analysis Panel -->
   <div id="motion-panel" class="motion-panel" style="display:none">

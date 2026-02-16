@@ -93,6 +93,9 @@ export class WasmRenderer {
     this._meshEdges = null;      // Float32Array: [x,y,z, x,y,z, ...] line pairs
     this._meshEdgeVertexCount = 0;
 
+    // Sketch plane reference (set when in sketch-on-plane mode)
+    this._sketchPlane = null; // 'XY', 'XZ', 'YZ', or null
+
     // Window resize handler
     this._resizeHandler = () => this.onWindowResize();
     window.addEventListener('resize', this._resizeHandler);
@@ -114,6 +117,8 @@ export class WasmRenderer {
       const height = this.canvas.height;
       this.wasm.init(width, height);
       this._ready = true;
+      // Apply deferred mode setup now that WASM is loaded
+      this.setMode(this.mode);
     } catch (err) {
       console.error('WasmRenderer: failed to load WASM module', err);
     }
@@ -246,6 +251,34 @@ export class WasmRenderer {
     this.wasm.setCameraTarget(t.x, t.y, t.z);
   }
 
+  /**
+   * Orient the orbit camera perpendicular to the given plane.
+   * @param {'XY'|'XZ'|'YZ'} plane - The reference plane
+   */
+  orientToPlane(plane) {
+    switch (plane) {
+      case 'XY':
+        // Look down the Z axis (top view): phi=0 means camera on +Z
+        this._orbitTheta = Math.PI / 2;
+        this._orbitPhi = 0.001; // near 0 to look straight down +Z
+        break;
+      case 'XZ':
+        // Look down the Y axis (front view): camera on +Y looking at origin
+        this._orbitTheta = Math.PI / 2;
+        this._orbitPhi = Math.PI / 2;
+        break;
+      case 'YZ':
+        // Look down the X axis (right view): camera on +X looking at origin
+        this._orbitTheta = 0;
+        this._orbitPhi = Math.PI / 2;
+        break;
+      default:
+        return;
+    }
+    this._orbitDirty = true;
+    this._applyOrbitCamera();
+  }
+
   /* ---------- mode switching ---------- */
   setMode(mode) {
     this.mode = mode;
@@ -270,10 +303,15 @@ export class WasmRenderer {
       );
       this.wasm.setCameraPosition(0, 0, 500);
       this.wasm.setCameraTarget(0, 0, 0);
+      // Up must be (0,1,0) when looking down the Z axis to avoid
+      // a degenerate lookAt matrix (up parallel to view direction).
+      this.wasm.setCameraUp(0, 1, 0);
       this.wasm.setGridVisible(1);
       this.wasm.setAxesVisible(1);
     } else {
       this.wasm.setCameraMode(1);
+      // Restore Z-up for 3D orbit camera
+      this.wasm.setCameraUp(0, 0, 1);
       // Set a reasonable default grid for 3D mode
       this.wasm.setGridSize(200, 20);
       this.wasm.setAxesSize(50);
@@ -330,6 +368,8 @@ export class WasmRenderer {
     this.wasm.setOrthoBounds(cx - halfW, cx + halfW, cy - halfH, cy + halfH);
     this.wasm.setCameraPosition(cx, cy, 500);
     this.wasm.setCameraTarget(cx, cy, 0);
+    // Ensure up vector stays Y-up for 2D top-down view
+    this.wasm.setCameraUp(0, 1, 0);
   }
 
   /**
@@ -571,6 +611,85 @@ export class WasmRenderer {
         ctx.fillText(text.text, 0, 0);
         ctx.restore();
       });
+    }
+
+    // --- Sketch plane reference axes (colored, from origin) ---
+    if (this._sketchPlane) {
+      const axisLen = Math.max(bounds.right - bounds.left, bounds.top - bounds.bottom) * 0.6;
+      const ox = worldToScreenX(0);
+      const oy = worldToScreenY(0);
+
+      // Determine axis labels and colors based on the sketch plane
+      let hLabel, vLabel, hColor, vColor;
+      switch (this._sketchPlane) {
+        case 'XY': hLabel = 'X'; vLabel = 'Y'; hColor = '#ff4444'; vColor = '#44ff44'; break;
+        case 'XZ': hLabel = 'X'; vLabel = 'Z'; hColor = '#ff4444'; vColor = '#4488ff'; break;
+        case 'YZ': hLabel = 'Y'; vLabel = 'Z'; hColor = '#44ff44'; vColor = '#4488ff'; break;
+        default:   hLabel = 'X'; vLabel = 'Y'; hColor = '#ff4444'; vColor = '#44ff44'; break;
+      }
+
+      // Horizontal axis (positive direction to the right)
+      const hEndX = worldToScreenX(axisLen);
+      ctx.save();
+      ctx.strokeStyle = hColor;
+      ctx.lineWidth = 1.5;
+      ctx.globalAlpha = 0.6;
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(ox, oy);
+      ctx.lineTo(hEndX, oy);
+      ctx.stroke();
+      // Arrow
+      ctx.beginPath();
+      ctx.moveTo(hEndX, oy);
+      ctx.lineTo(hEndX - 8, oy - 4);
+      ctx.moveTo(hEndX, oy);
+      ctx.lineTo(hEndX - 8, oy + 4);
+      ctx.stroke();
+      // Label
+      ctx.globalAlpha = 0.8;
+      ctx.fillStyle = hColor;
+      ctx.font = 'bold 13px Consolas, monospace';
+      ctx.textBaseline = 'middle';
+      ctx.textAlign = 'left';
+      ctx.fillText(hLabel, hEndX + 4, oy);
+      ctx.restore();
+
+      // Vertical axis (positive direction upward)
+      const vEndY = worldToScreenY(axisLen);
+      ctx.save();
+      ctx.strokeStyle = vColor;
+      ctx.lineWidth = 1.5;
+      ctx.globalAlpha = 0.6;
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(ox, oy);
+      ctx.lineTo(ox, vEndY);
+      ctx.stroke();
+      // Arrow
+      ctx.beginPath();
+      ctx.moveTo(ox, vEndY);
+      ctx.lineTo(ox - 4, vEndY + 8);
+      ctx.moveTo(ox, vEndY);
+      ctx.lineTo(ox + 4, vEndY + 8);
+      ctx.stroke();
+      // Label
+      ctx.globalAlpha = 0.8;
+      ctx.fillStyle = vColor;
+      ctx.font = 'bold 13px Consolas, monospace';
+      ctx.textBaseline = 'bottom';
+      ctx.textAlign = 'center';
+      ctx.fillText(vLabel, ox, vEndY - 4);
+      ctx.restore();
+
+      // Origin marker
+      ctx.save();
+      ctx.fillStyle = '#ffffff';
+      ctx.globalAlpha = 0.7;
+      ctx.beginPath();
+      ctx.arc(ox, oy, 3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
     }
 
     // --- Constraint icons ---

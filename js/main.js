@@ -40,6 +40,7 @@ class App {
     this._workspaceMode = null; // 'sketch' | 'part' | null (quick-start)
     this._sketchingOnPlane = false; // true when in sketch-on-plane mode inside Part workspace
     this._activeSketchPlane = null; // plane reference for current sketch
+    this._selectedPlane = null; // currently selected plane in Part mode ('XY', 'XZ', 'YZ', or null)
     
     // Initialize unified 3D renderer
     const view3dContainer = document.getElementById('view-3d');
@@ -124,6 +125,8 @@ class App {
     this._bind3DEvents();
     this._bindQuickStartEvents();
     this._bindPartToolEvents();
+    this._bindPlaneSelectionEvents();
+    this._bindExitSketchButton();
 
     // Register viewport for persistence and restore saved project
     setViewport(this.viewport);
@@ -3371,8 +3374,20 @@ class App {
     });
 
     // Add Sketch to Part
-    document.getElementById('btn-add-sketch').addEventListener('click', () => {
-      this._addSketchToPart();
+    document.getElementById('btn-add-sketch').addEventListener('click', (e) => {
+      if (this._selectedPlane) {
+        // Use pre-selected plane directly
+        this._addSketchToPart(this._selectedPlane);
+      } else {
+        // Show plane selector context menu near the button
+        const btn = e.currentTarget;
+        const rect = btn.getBoundingClientRect();
+        showContextMenu(rect.left, rect.bottom + 2, [
+          { type: 'item', label: 'XY Plane', icon: '▬', action: () => this._addSketchToPart('XY') },
+          { type: 'item', label: 'XZ Plane', icon: '▬', action: () => this._addSketchToPart('XZ') },
+          { type: 'item', label: 'YZ Plane', icon: '▬', action: () => this._addSketchToPart('YZ') },
+        ]);
+      }
     });
 
     // Extrude
@@ -3454,9 +3469,14 @@ class App {
       btn.classList.remove('active');
       document.body.classList.remove('mode-3d');
 
-      // Update mode indicator
-      modeIndicator.textContent = 'SKETCH';
-      modeIndicator.className = 'status-mode sketch-mode';
+      // Update mode indicator based on workspace
+      if (this._workspaceMode === 'part') {
+        modeIndicator.textContent = 'PART 2D';
+        modeIndicator.className = 'status-mode part-mode';
+      } else {
+        modeIndicator.textContent = 'SKETCH';
+        modeIndicator.className = 'status-mode sketch-mode';
+      }
       
       info('2D sketching mode activated');
     }
@@ -3465,13 +3485,19 @@ class App {
     this._updateOperationButtons();
   }
 
-  _addSketchToPart() {
+  _addSketchToPart(planeName = 'XY') {
     if (state.entities.length === 0) {
       this.setStatus('Draw something in 2D first before adding to part');
       return;
     }
 
-    const sketchFeature = this._partManager.addSketchFromScene(state.scene, `Sketch${this._partManager.getFeatures().length + 1}`);
+    // Build plane definition from plane name
+    const planeDef = this._getPlaneDefinition(planeName);
+    const sketchFeature = this._partManager.addSketchFromScene(
+      state.scene,
+      `Sketch${this._partManager.getFeatures().length + 1}`,
+      planeDef
+    );
     this._lastSketchFeatureId = sketchFeature.id;
     
     this._featurePanel.update();
@@ -3479,8 +3505,40 @@ class App {
     this._update3DView();
     this._updateOperationButtons();
     
-    this.setStatus(`Added sketch feature: ${sketchFeature.name}`);
-    info(`Created sketch feature: ${sketchFeature.id}`);
+    this.setStatus(`Added sketch feature: ${sketchFeature.name} on ${planeName} plane`);
+    info(`Created sketch feature: ${sketchFeature.id} on ${planeName} plane`);
+  }
+
+  /**
+   * Convert a plane name to a plane definition object.
+   * @param {'XY'|'XZ'|'YZ'} name
+   * @returns {Object} plane definition with origin, normal, xAxis, yAxis
+   */
+  _getPlaneDefinition(name) {
+    switch (name) {
+      case 'XZ':
+        return {
+          origin: { x: 0, y: 0, z: 0 },
+          normal: { x: 0, y: 1, z: 0 },
+          xAxis:  { x: 1, y: 0, z: 0 },
+          yAxis:  { x: 0, y: 0, z: 1 },
+        };
+      case 'YZ':
+        return {
+          origin: { x: 0, y: 0, z: 0 },
+          normal: { x: 1, y: 0, z: 0 },
+          xAxis:  { x: 0, y: 1, z: 0 },
+          yAxis:  { x: 0, y: 0, z: 1 },
+        };
+      case 'XY':
+      default:
+        return {
+          origin: { x: 0, y: 0, z: 0 },
+          normal: { x: 0, y: 0, z: 1 },
+          xAxis:  { x: 1, y: 0, z: 0 },
+          yAxis:  { x: 0, y: 1, z: 0 },
+        };
+    }
   }
 
   _extrudeSketch(distance) {
@@ -3689,6 +3747,99 @@ class App {
     this._scheduleRender();
   }
 
+  // --- Plane Selection Events ---
+
+  _bindPlaneSelectionEvents() {
+    const planeItems = document.querySelectorAll('.node-tree-plane[data-plane]');
+    planeItems.forEach((item) => {
+      item.addEventListener('click', () => {
+        if (this._workspaceMode !== 'part') return;
+        const plane = item.getAttribute('data-plane');
+        if (this._selectedPlane === plane) {
+          // Deselect
+          this._selectedPlane = null;
+          item.classList.remove('selected');
+        } else {
+          // Deselect previous
+          planeItems.forEach(p => p.classList.remove('selected'));
+          // Select new
+          this._selectedPlane = plane;
+          item.classList.add('selected');
+        }
+        info(`Plane selection: ${this._selectedPlane || 'none'}`);
+      });
+    });
+  }
+
+  // --- Exit Sketch Button ---
+
+  _bindExitSketchButton() {
+    const btn = document.getElementById('btn-exit-sketch');
+    if (!btn) return;
+    btn.addEventListener('click', async () => {
+      if (!this._sketchingOnPlane) return;
+
+      const hasEntities = state.entities.length > 0;
+      if (hasEntities) {
+        const save = await showConfirm({
+          title: 'Exit Sketch',
+          message: 'Save sketch changes to the part?',
+          okText: 'Save & Exit',
+          cancelText: 'Discard',
+        });
+        if (save) {
+          this._finishSketchOnPlane();
+        } else {
+          this._discardSketchOnPlane();
+        }
+      } else {
+        // Nothing drawn, just exit
+        this._discardSketchOnPlane();
+      }
+    });
+  }
+
+  /**
+   * Discard the current sketch-on-plane and return to Part 3D mode
+   * without saving anything.
+   */
+  _discardSketchOnPlane() {
+    if (!this._sketchingOnPlane) return;
+
+    // Clear the 2D scene (discard drawings)
+    state.scene.clear();
+    state.selectedEntities = [];
+
+    // Return to 3D Part mode
+    this._sketchingOnPlane = false;
+    this._activeSketchPlane = null;
+    this._3dMode = true;
+
+    document.body.classList.remove('sketch-on-plane');
+    const exitBtn = document.getElementById('btn-exit-sketch');
+    if (exitBtn) exitBtn.style.display = 'none';
+
+    if (this._renderer3d) {
+      this._renderer3d._sketchPlane = null;
+      this._renderer3d.setMode('3d');
+      this._renderer3d.setVisible(true);
+    }
+
+    document.body.classList.add('mode-3d');
+    document.getElementById('btn-3d-mode').classList.add('active');
+
+    const modeIndicator = document.getElementById('status-mode');
+    modeIndicator.textContent = 'PART';
+    modeIndicator.className = 'status-mode part-mode';
+
+    this.setActiveTool('select');
+    this._update3DView();
+    this._updateOperationButtons();
+    this.setStatus('Sketch discarded. Returned to Part 3D mode.');
+    info('Discarded sketch-on-plane, returned to Part 3D mode');
+    this._scheduleRender();
+  }
+
   // --- Part Mode Tool Events ---
 
   _bindPartToolEvents() {
@@ -3780,42 +3931,66 @@ class App {
     info(`Created custom plane: ${planeId}`);
   }
 
-  _startSketchOnPlane() {
+  _startSketchOnPlane(planeName) {
     if (this._workspaceMode !== 'part') {
       this.setStatus('Sketch on Plane is only available in Part workspace.');
       return;
     }
 
+    // If no plane specified and none pre-selected, show a picker
+    const plane = planeName || this._selectedPlane;
+    if (!plane) {
+      const btn = document.getElementById('btn-sketch-on-plane');
+      const rect = btn.getBoundingClientRect();
+      showContextMenu(rect.left, rect.bottom + 2, [
+        { type: 'item', label: 'XY Plane', icon: '▬', action: () => this._startSketchOnPlane('XY') },
+        { type: 'item', label: 'XZ Plane', icon: '▬', action: () => this._startSketchOnPlane('XZ') },
+        { type: 'item', label: 'YZ Plane', icon: '▬', action: () => this._startSketchOnPlane('YZ') },
+      ]);
+      return;
+    }
+
     // Switch to 2D sketch mode on the selected plane
     this._sketchingOnPlane = true;
-    this._activeSketchPlane = 'XY'; // default to XY for now
+    this._activeSketchPlane = plane;
     this._3dMode = false;
 
+    // Add sketch-on-plane body class to control UI visibility
+    document.body.classList.add('sketch-on-plane');
+
+    // Show Exit Sketch button
+    const exitBtn = document.getElementById('btn-exit-sketch');
+    if (exitBtn) exitBtn.style.display = 'flex';
+
     if (this._renderer3d) {
+      // Orient camera perpendicular to the selected plane before switching to 2D
+      this._renderer3d.orientToPlane(plane);
       this._renderer3d.setMode('2d');
       this._renderer3d.setVisible(true);
       this._renderer3d.sync2DView(this.viewport);
+      // Tell renderer which sketch plane we're on (for colored reference axes)
+      this._renderer3d._sketchPlane = plane;
     }
 
     document.body.classList.remove('mode-3d');
     document.getElementById('btn-3d-mode').classList.remove('active');
 
     const modeIndicator = document.getElementById('status-mode');
-    modeIndicator.textContent = 'SKETCH ON PLANE';
+    modeIndicator.textContent = `SKETCH ON ${plane}`;
     modeIndicator.className = 'status-mode sketch-mode';
 
     this.setActiveTool('select');
-    this.setStatus('Sketching on plane. Draw your profile, then return to 3D to extrude.');
-    info('Entered sketch-on-plane mode');
+    this.setStatus(`Sketching on ${plane} plane. Draw your profile, then return to 3D to extrude.`);
+    info(`Entered sketch-on-plane mode (${plane} plane)`);
     this._scheduleRender();
   }
 
   _finishSketchOnPlane() {
     if (!this._sketchingOnPlane) return;
 
-    // Add the current 2D scene as a sketch feature
+    // Add the current 2D scene as a sketch feature on the active plane
     if (state.entities.length > 0) {
-      this._addSketchToPart();
+      this._addSketchToPart(this._activeSketchPlane || 'XY');
     }
 
     // Return to 3D Part mode
@@ -3823,7 +3998,13 @@ class App {
     this._activeSketchPlane = null;
     this._3dMode = true;
 
+    // Remove sketch-on-plane body class, hide Exit Sketch button
+    document.body.classList.remove('sketch-on-plane');
+    const exitBtn = document.getElementById('btn-exit-sketch');
+    if (exitBtn) exitBtn.style.display = 'none';
+
     if (this._renderer3d) {
+      this._renderer3d._sketchPlane = null;
       this._renderer3d.setMode('3d');
       this._renderer3d.setVisible(true);
     }

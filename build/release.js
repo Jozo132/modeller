@@ -42,6 +42,7 @@ export const {
   setCameraMode,
   setCameraPosition,
   setCameraTarget,
+  setCameraUp,
   setOrthoBounds,
   clearScene,
   addBox,

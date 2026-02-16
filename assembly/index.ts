@@ -90,6 +90,10 @@ export function setCameraTarget(x: f32, y: f32, z: f32): void {
   scene.camera.target.set(x, y, z);
 }
 
+export function setCameraUp(x: f32, y: f32, z: f32): void {
+  scene.camera.up.set(x, y, z);
+}
+
 export function setOrthoBounds(left: f32, right: f32, bottom: f32, top: f32): void {
   scene.camera.setOrthographic(left, right, bottom, top, scene.camera.near, scene.camera.far);
 }

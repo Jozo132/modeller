@@ -288,6 +288,49 @@ export class Renderer3D {
   }
 
   /**
+   * Orient the camera perpendicular to the given plane.
+   * @param {'XY'|'XZ'|'YZ'} plane - The reference plane
+   */
+  orientToPlane(plane) {
+    const dist = 500;
+    const target = new THREE.Vector3(0, 0, 0);
+    let pos, up;
+
+    switch (plane) {
+      case 'XY':
+        // Look down +Z axis (top view)
+        pos = new THREE.Vector3(0, 0, dist);
+        up = new THREE.Vector3(0, 1, 0);
+        break;
+      case 'XZ':
+        // Look down +Y axis (front view)
+        pos = new THREE.Vector3(0, dist, 0);
+        up = new THREE.Vector3(0, 0, 1);
+        break;
+      case 'YZ':
+        // Look down +X axis (right view)
+        pos = new THREE.Vector3(dist, 0, 0);
+        up = new THREE.Vector3(0, 0, 1);
+        break;
+      default:
+        return;
+    }
+
+    this.perspectiveCamera.position.copy(pos);
+    this.perspectiveCamera.up.copy(up);
+    this.perspectiveCamera.lookAt(target);
+
+    this.orthographicCamera.position.copy(pos);
+    this.orthographicCamera.up.copy(up);
+    this.orthographicCamera.lookAt(target);
+
+    if (this.controls) {
+      this.controls.target.copy(target);
+      this.controls.update();
+    }
+  }
+
+  /**
    * Raycast to find which origin plane is under the mouse
    * @param {number} screenX - screen X
    * @param {number} screenY - screen Y
