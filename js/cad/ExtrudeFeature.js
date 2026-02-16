@@ -92,11 +92,23 @@ export class ExtrudeFeature extends Feature {
     
     // For each profile, create top and bottom faces and side faces
     for (const profile of profiles) {
+      // Ensure profile winding is CCW (positive signed area) so that
+      // extrusion normals point outward.
+      let pts = profile.points;
+      let signedArea = 0;
+      for (let i = 0; i < pts.length; i++) {
+        const j = (i + 1) % pts.length;
+        signedArea += pts[i].x * pts[j].y - pts[j].x * pts[i].y;
+      }
+      if (signedArea < 0) {
+        pts = [...pts].reverse();
+      }
+
       const bottomVertices = [];
       const topVertices = [];
       
       // Create vertices
-      for (const point of profile.points) {
+      for (const point of pts) {
         // Transform 2D sketch point to 3D world coordinates
         const bottom3D = this.sketchToWorld(point, plane);
         bottomVertices.push(bottom3D);
@@ -120,13 +132,13 @@ export class ExtrudeFeature extends Feature {
       
       // Create top face
       geometry.faces.push({
-        vertices: topVertices,
-        normal: plane.normal,
+        vertices: [...topVertices],
+        normal: { x: plane.normal.x, y: plane.normal.y, z: plane.normal.z },
       });
       
       // Create side faces
-      for (let i = 0; i < profile.points.length; i++) {
-        const nextI = (i + 1) % profile.points.length;
+      for (let i = 0; i < pts.length; i++) {
+        const nextI = (i + 1) % pts.length;
         const face = {
           vertices: [
             bottomVertices[i],
