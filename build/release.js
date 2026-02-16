@@ -54,6 +54,7 @@ export const {
   setAxesVisible,
   setGridSize,
   setAxesSize,
+  setOriginPlanesVisible,
   setMousePosition,
   mouseAction,
   setMouseButton,

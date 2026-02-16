@@ -18,11 +18,15 @@ export class Feature {
     this.name = name;
     this.type = 'base';
     this.suppressed = false;
+    this.visible = true; // Whether this feature is visible in the 3D view
     this.created = new Date();
     this.modified = new Date();
     
     // Dependencies - features this feature depends on
     this.dependencies = [];
+    
+    // Child features - features linked as children (e.g., sketch used by extrude)
+    this.children = [];
     
     // Result - the geometry or data produced by this feature
     this.result = null;
@@ -88,6 +92,36 @@ export class Feature {
   }
 
   /**
+   * Add a child feature reference.
+   * @param {string} featureId - ID of the child feature
+   */
+  addChild(featureId) {
+    if (!this.children.includes(featureId)) {
+      this.children.push(featureId);
+    }
+  }
+
+  /**
+   * Remove a child feature reference.
+   * @param {string} featureId - ID of the child feature
+   */
+  removeChild(featureId) {
+    const idx = this.children.indexOf(featureId);
+    if (idx >= 0) {
+      this.children.splice(idx, 1);
+    }
+  }
+
+  /**
+   * Set visibility of this feature.
+   * @param {boolean} visible - Whether the feature should be visible
+   */
+  setVisible(visible) {
+    this.visible = visible;
+    this.modified = new Date();
+  }
+
+  /**
    * Suppress this feature (disable it temporarily).
    */
   suppress() {
@@ -112,9 +146,11 @@ export class Feature {
       name: this.name,
       type: this.type,
       suppressed: this.suppressed,
+      visible: this.visible,
       created: this.created.toISOString(),
       modified: this.modified.toISOString(),
       dependencies: this.dependencies,
+      children: this.children,
     };
   }
 
@@ -130,9 +166,11 @@ export class Feature {
     feature.name = data.name || 'Feature';
     feature.type = data.type || 'base';
     feature.suppressed = data.suppressed || false;
+    feature.visible = data.visible !== undefined ? data.visible : true;
     feature.created = data.created ? new Date(data.created) : new Date();
     feature.modified = data.modified ? new Date(data.modified) : new Date();
     feature.dependencies = data.dependencies || [];
+    feature.children = data.children || [];
     
     return feature;
   }

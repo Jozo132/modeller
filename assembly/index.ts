@@ -162,6 +162,10 @@ export function setAxesSize(size: f32): void {
   scene.axesSize = size;
 }
 
+export function setOriginPlanesVisible(mask: i32): void {
+  originPlanesVisible = mask;
+}
+
 // === Mouse/Input ===
 
 export function setMousePosition(x: f32, y: f32): void {
@@ -265,6 +269,9 @@ export function getSolverMaxError(): f32 {
   return solver.maxError;
 }
 
+// Origin planes visibility bitmask (bit 0=XY, bit 1=XZ, bit 2=YZ)
+let originPlanesVisible: i32 = 7; // all visible by default
+
 // === Render ===
 
 export function render(): void {
@@ -289,7 +296,7 @@ export function render(): void {
 
   // Origin planes (visible in both modes, subtle)
   if (renderMode == 1) {
-    renderOriginPlanes(cmd, vp);
+    renderOriginPlanes(cmd, vp, originPlanesVisible);
   }
 
   // 3D scene nodes (boxes, geometry)

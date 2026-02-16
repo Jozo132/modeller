@@ -115,6 +115,11 @@ export declare function setGridSize(size: number, divisions: number): void;
  */
 export declare function setAxesSize(size: number): void;
 /**
+ * assembly/index/setOriginPlanesVisible
+ * @param mask `i32`
+ */
+export declare function setOriginPlanesVisible(mask: number): void;
+/**
  * assembly/index/setMousePosition
  * @param x `f32`
  * @param y `f32`
