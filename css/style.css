@@ -1599,6 +1599,26 @@ body.motion-active #view-3d {
   outline-offset: -1px;
 }
 
+.node-tree-eye {
+  flex-shrink: 0;
+  width: 20px;
+  text-align: center;
+  font-size: 11px;
+  cursor: pointer;
+  opacity: 0.6;
+  margin-right: 2px;
+}
+
+.node-tree-eye:hover {
+  opacity: 1.0;
+}
+
+.node-tree-hidden-indicator {
+  font-size: 10px;
+  opacity: 0.5;
+  margin-left: 4px;
+}
+
 .node-tree-icon {
   flex-shrink: 0;
   width: 16px;
