@@ -37,6 +37,7 @@ export class WasmRenderer {
 
     const width = container.clientWidth || 800;
     const height = container.clientHeight || 600;
+    const dpr = window.devicePixelRatio || 1;
     this.canvas.width = width;
     this.canvas.height = height;
 
@@ -51,10 +52,15 @@ export class WasmRenderer {
     this.overlayCanvas.style.width = '100%';
     this.overlayCanvas.style.height = '100%';
     this.overlayCanvas.style.pointerEvents = 'none';
-    this.overlayCanvas.width = width;
-    this.overlayCanvas.height = height;
+    this.overlayCanvas.width = Math.round(width * dpr);
+    this.overlayCanvas.height = Math.round(height * dpr);
     container.appendChild(this.overlayCanvas);
     this.overlayCtx = this.overlayCanvas.getContext('2d');
+    this.overlayCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    // CSS pixel dimensions (used for coordinate mapping)
+    this._cssWidth = width;
+    this._cssHeight = height;
 
     // Compatibility shim: renderer.domElement
     this.renderer = { domElement: this.canvas };
@@ -538,10 +544,20 @@ export class WasmRenderer {
     const h = this.container.clientHeight;
     if (w <= 0 || h <= 0) return;
 
+    const dpr = window.devicePixelRatio || 1;
+
     this.canvas.width = w;
     this.canvas.height = h;
-    this.overlayCanvas.width = w;
-    this.overlayCanvas.height = h;
+
+    // DPR-scale overlay canvas for crisp text on HiDPI displays
+    this.overlayCanvas.width = Math.round(w * dpr);
+    this.overlayCanvas.height = Math.round(h * dpr);
+    this.overlayCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    // Store CSS pixel dimensions for coordinate mapping
+    this._cssWidth = w;
+    this._cssHeight = h;
+
     this.executor.resize(w, h);
 
     if (this._ready) {
@@ -720,8 +736,9 @@ export class WasmRenderer {
 
     // --- Overlay canvas for text-based elements (dimensions, constraint icons) ---
     const ctx = this.overlayCtx;
-    const w = this.overlayCanvas.width;
-    const h = this.overlayCanvas.height;
+    // Use CSS pixel dimensions for coordinate mapping (overlay canvas is DPR-scaled via setTransform)
+    const w = this._cssWidth || this.container.clientWidth;
+    const h = this._cssHeight || this.container.clientHeight;
     ctx.clearRect(0, 0, w, h);
 
     const bounds = this._orthoBounds;

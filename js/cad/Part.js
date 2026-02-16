@@ -125,6 +125,16 @@ export class Part {
   }
 
   /**
+   * Remove any feature from the part by ID.
+   * @param {string} featureId - Feature ID to remove
+   * @returns {boolean} True if removed
+   */
+  removeFeature(featureId) {
+    this.modified = new Date();
+    return this.featureTree.removeFeature(featureId);
+  }
+
+  /**
    * Get all sketch features in the part.
    * @returns {SketchFeature[]} Array of sketch features
    */

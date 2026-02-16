@@ -871,54 +871,94 @@ export class Renderer3D {
   renderSolid(geometry, id = 'default') {
     const threeGeometry = new THREE.BufferGeometry();
 
-    // Convert vertices to Three.js format
-    const vertices = [];
+    // Convert faces to triangulated Three.js format
+    // Supports both face.vertices (direct coords) and face.indices (indexed) formats
+    const positions = [];
     const normals = [];
-    
+
     geometry.faces.forEach(face => {
-      // Get vertices for this face
-      const v0 = geometry.vertices[face.indices[0]];
-      const v1 = geometry.vertices[face.indices[1]];
-      const v2 = geometry.vertices[face.indices[2]];
+      // Resolve face vertices
+      let faceVerts;
+      if (face.vertices && face.vertices.length >= 3) {
+        faceVerts = face.vertices;
+      } else if (face.indices && face.indices.length >= 3) {
+        faceVerts = face.indices.map(i => geometry.vertices[i]);
+      } else {
+        return; // skip degenerate face
+      }
 
-      // Add vertices
-      vertices.push(v0.x, v0.y, v0.z);
-      vertices.push(v1.x, v1.y, v1.z);
-      vertices.push(v2.x, v2.y, v2.z);
+      // Determine face normal: use provided or compute from first triangle
+      let faceNormal;
+      if (face.normal) {
+        faceNormal = new THREE.Vector3(face.normal.x, face.normal.y, face.normal.z);
+        if (faceNormal.lengthSq() < 1e-12) faceNormal = null;
+      }
+      if (!faceNormal) {
+        const e1 = new THREE.Vector3(
+          faceVerts[1].x - faceVerts[0].x,
+          faceVerts[1].y - faceVerts[0].y,
+          faceVerts[1].z - faceVerts[0].z
+        );
+        const e2 = new THREE.Vector3(
+          faceVerts[2].x - faceVerts[0].x,
+          faceVerts[2].y - faceVerts[0].y,
+          faceVerts[2].z - faceVerts[0].z
+        );
+        faceNormal = new THREE.Vector3().crossVectors(e1, e2).normalize();
+      }
 
-      // Calculate face normal
-      const vec0 = new THREE.Vector3(v0.x, v0.y, v0.z);
-      const vec1 = new THREE.Vector3(v1.x, v1.y, v1.z);
-      const vec2 = new THREE.Vector3(v2.x, v2.y, v2.z);
-      
-      const edge1 = new THREE.Vector3().subVectors(vec1, vec0);
-      const edge2 = new THREE.Vector3().subVectors(vec2, vec0);
-      const normal = new THREE.Vector3().crossVectors(edge1, edge2).normalize();
+      // Fan-triangulate the polygon from vertex 0
+      for (let i = 1; i < faceVerts.length - 1; i++) {
+        const a = faceVerts[0];
+        const b = faceVerts[i];
+        const c = faceVerts[i + 1];
 
-      // Add normals for each vertex
-      normals.push(normal.x, normal.y, normal.z);
-      normals.push(normal.x, normal.y, normal.z);
-      normals.push(normal.x, normal.y, normal.z);
+        // Check if triangle winding agrees with the face normal;
+        // if not, swap b and c so front-face culling works correctly.
+        const e1 = new THREE.Vector3(b.x - a.x, b.y - a.y, b.z - a.z);
+        const e2 = new THREE.Vector3(c.x - a.x, c.y - a.y, c.z - a.z);
+        const triNormal = new THREE.Vector3().crossVectors(e1, e2);
+
+        let p0 = a, p1 = b, p2 = c;
+        if (triNormal.dot(faceNormal) < 0) {
+          // Winding disagrees with intended outward normal — flip
+          p1 = c;
+          p2 = b;
+        }
+
+        positions.push(
+          p0.x, p0.y, p0.z,
+          p1.x, p1.y, p1.z,
+          p2.x, p2.y, p2.z
+        );
+        normals.push(
+          faceNormal.x, faceNormal.y, faceNormal.z,
+          faceNormal.x, faceNormal.y, faceNormal.z,
+          faceNormal.x, faceNormal.y, faceNormal.z
+        );
+      }
     });
 
-    threeGeometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+    if (positions.length === 0) return;
+
+    threeGeometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
     threeGeometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
     threeGeometry.computeBoundingSphere();
 
-    // Create mesh with material
+    // Create mesh — FrontSide only so internal faces are naturally hidden
     const material = new THREE.MeshPhongMaterial({
-      color: 0x4CAF50,
-      side: THREE.DoubleSide,
-      flatShading: false,
-      shininess: 30
+      color: 0x4a90d9,
+      side: THREE.FrontSide,
+      flatShading: true,
+      shininess: 40,
     });
     const mesh = new THREE.Mesh(threeGeometry, material);
     this.scene.add(mesh);
     this.meshes.set(id, mesh);
 
-    // Create edges
+    // Create feature edges
     const edgesGeometry = new THREE.EdgesGeometry(threeGeometry, 15);
-    const edgesMaterial = new THREE.LineBasicMaterial({ color: 0x000000, linewidth: 1 });
+    const edgesMaterial = new THREE.LineBasicMaterial({ color: 0x222222, linewidth: 1 });
     const edges = new THREE.LineSegments(edgesGeometry, edgesMaterial);
     this.scene.add(edges);
     this.edges.set(id, edges);

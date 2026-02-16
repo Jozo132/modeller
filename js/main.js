@@ -196,16 +196,13 @@ class App {
   }
 
   _syncViewportSize() {
-    const compact = window.matchMedia('(max-width: 1000px)').matches;
-    const mobile = window.matchMedia('(max-width: 780px)').matches;
-    const panelWidth = mobile ? 0 : (compact ? 180 : 220);
-    const bottomBars = 56;
-    const topBar = 34;
-    const panelBottomHeight = mobile ? Math.floor(window.innerHeight * 0.36) : 0;
+    // Read the actual container dimensions to ensure viewport, WebGL canvas,
+    // and overlay canvas all agree on the exact same pixel dimensions.
+    const container = this._renderer3d?.container || document.getElementById('view-3d');
+    if (!container) return;
 
-    // Subtract both left and right panel widths from available canvas width
-    const width = Math.max(1, window.innerWidth - panelWidth * 2);
-    const height = Math.max(1, window.innerHeight - topBar - bottomBars - panelBottomHeight);
+    const width = Math.max(1, container.clientWidth);
+    const height = Math.max(1, container.clientHeight);
 
     if (width !== this.viewport.width || height !== this.viewport.height) {
       this.viewport.resize(width, height);
@@ -4008,6 +4005,10 @@ class App {
       return;
     }
 
+    // Clear the 2D scene so each sketch starts fresh
+    state.scene.clear();
+    state.selectedEntities = [];
+
     // Switch to 2D sketch mode on the selected plane
     this._sketchingOnPlane = true;
     this._activeSketchPlane = plane;
@@ -4021,8 +4022,8 @@ class App {
     if (exitBtn) exitBtn.style.display = 'flex';
 
     if (this._renderer3d) {
-      // Set 2D orthographic mode for sketch drawing
-      // The 2D mode camera is already perpendicular to the drawing plane (looking down Z)
+      // Orient camera perpendicular to the selected plane
+      this._renderer3d.orientToPlane(plane);
       this._renderer3d.setMode('2d');
       this._renderer3d.setVisible(true);
       this._renderer3d.sync2DView(this.viewport);
@@ -4053,6 +4054,10 @@ class App {
 
     const planeDef = this._getPlaneFromFace(faceHit);
     if (!planeDef) return;
+
+    // Clear the 2D scene so each sketch starts fresh
+    state.scene.clear();
+    state.selectedEntities = [];
 
     // Store the face-derived plane definition for later use
     this._activeSketchPlaneDef = planeDef;
@@ -4146,6 +4151,10 @@ class App {
         this._addSketchToPart(this._activeSketchPlane || 'XY');
       }
     }
+
+    // Clear the 2D scene after saving so the next sketch starts fresh
+    state.scene.clear();
+    state.selectedEntities = [];
 
     // Return to 3D Part mode
     this._sketchingOnPlane = false;
