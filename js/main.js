@@ -3504,7 +3504,7 @@ class App {
         div.setAttribute('data-plane', planeName);
         if (this._selectedPlane === planeName) div.classList.add('selected');
         
-        const eyeIcon = planeState.visible ? '👁️' : '👁️‍🗨️';
+        const eyeIcon = planeState.visible ? '◉' : '○';
         div.innerHTML = `<span class="node-tree-eye" data-plane-toggle="${planeName}" title="Toggle ${planeName} plane visibility">${eyeIcon}</span><span class="node-tree-icon" style="color:#87CEEB">▬</span><span class="node-tree-label">${planeName} Plane</span>`;
         
         // Toggle visibility on eye icon click
@@ -3564,7 +3564,7 @@ class App {
       }
       
       const icon = featureIcons[feature.type] || '📦';
-      const visIcon = feature.visible ? '' : ' <span class="node-tree-hidden-indicator" title="Hidden">🔇</span>';
+      const visIcon = feature.visible ? '' : ' <span class="node-tree-hidden-indicator" title="Hidden">[hidden]</span>';
       div.innerHTML = `<span class="node-tree-icon">${icon}</span><span class="node-tree-label">${feature.name}${visIcon}</span>`;
       
       div.addEventListener('click', () => {

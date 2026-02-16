@@ -1475,7 +1475,6 @@ export class WasmRenderer {
     }
 
     // Draw inactive sketch wireframes in grey (non-active sketches when editing one)
-    const hasInactiveEdges = this._sketchInactiveEdges && this._sketchInactiveEdgeVertexCount > 0;
     if (hasInactiveEdges) {
       gl.disable(gl.CULL_FACE);
       gl.useProgram(exec.programs[1]);
