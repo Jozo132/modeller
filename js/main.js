@@ -41,6 +41,7 @@ class App {
     this._sketchingOnPlane = false; // true when in sketch-on-plane mode inside Part workspace
     this._activeSketchPlane = null; // plane reference for current sketch
     this._selectedPlane = null; // currently selected plane in Part mode ('XY', 'XZ', 'YZ', or null)
+    this._selectedFace = null; // currently selected 3D face in Part mode
     
     // Initialize unified 3D renderer
     const view3dContainer = document.getElementById('view-3d');
@@ -1050,6 +1051,21 @@ class App {
       const sx = e.clientX - rect.left;
       const sy = e.clientY - rect.top;
       const world = this._renderer3d.screenToWorld(sx, sy);
+
+      // In Part mode 3D view: handle face/geometry picking
+      if (this._workspaceMode === 'part' && this._renderer3d) {
+        const hit = this._renderer3d.pickFace(e.clientX, e.clientY);
+        if (hit) {
+          this._selectedFace = hit;
+          this._renderer3d.selectFace(hit.faceIndex);
+          this.setStatus(`Selected face ${hit.faceIndex} (normal: ${hit.face.normal.x.toFixed(2)}, ${hit.face.normal.y.toFixed(2)}, ${hit.face.normal.z.toFixed(2)})`);
+          info(`Face selected: ${hit.faceIndex}`);
+        } else {
+          this._selectedFace = null;
+          this._renderer3d.selectFace(-1);
+        }
+        this._updateOperationButtons();
+      }
 
       if (this.activeTool.onClick) {
         this.activeTool.onClick(world.x, world.y, e);
@@ -3375,6 +3391,16 @@ class App {
 
     // Add Sketch to Part
     document.getElementById('btn-add-sketch').addEventListener('click', (e) => {
+      if (this._selectedFace && this._selectedFace.face) {
+        // Use selected face's plane
+        const planeDef = this._getPlaneFromFace(this._selectedFace);
+        if (planeDef) {
+          this._addSketchToPartWithPlane(planeDef);
+          this._selectedFace = null;
+          if (this._renderer3d) this._renderer3d.selectFace(-1);
+          return;
+        }
+      }
       if (this._selectedPlane) {
         // Use pre-selected plane directly
         this._addSketchToPart(this._selectedPlane);
@@ -3507,6 +3533,32 @@ class App {
     
     this.setStatus(`Added sketch feature: ${sketchFeature.name} on ${planeName} plane`);
     info(`Created sketch feature: ${sketchFeature.id} on ${planeName} plane`);
+  }
+
+  /**
+   * Add a sketch to the part using an explicit plane definition (e.g., from a face).
+   * @param {Object} planeDef - Plane definition with origin, normal, xAxis, yAxis
+   */
+  _addSketchToPartWithPlane(planeDef) {
+    if (state.entities.length === 0) {
+      this.setStatus('Draw something in 2D first before adding to part');
+      return;
+    }
+
+    const sketchFeature = this._partManager.addSketchFromScene(
+      state.scene,
+      `Sketch${this._partManager.getFeatures().length + 1}`,
+      planeDef
+    );
+    this._lastSketchFeatureId = sketchFeature.id;
+
+    this._featurePanel.update();
+    this._updateNodeTree();
+    this._update3DView();
+    this._updateOperationButtons();
+
+    this.setStatus(`Added sketch feature: ${sketchFeature.name} on face plane`);
+    info(`Created sketch feature: ${sketchFeature.id} on face plane`);
   }
 
   /**
@@ -3813,6 +3865,7 @@ class App {
     // Return to 3D Part mode
     this._sketchingOnPlane = false;
     this._activeSketchPlane = null;
+    this._activeSketchPlaneDef = null;
     this._3dMode = true;
 
     document.body.classList.remove('sketch-on-plane');
@@ -3856,7 +3909,12 @@ class App {
 
     if (btnSketchOnPlane) {
       btnSketchOnPlane.addEventListener('click', () => {
-        this._startSketchOnPlane();
+        // If a face is selected, use its plane
+        if (this._selectedFace && this._selectedFace.face) {
+          this._startSketchOnFace(this._selectedFace);
+        } else {
+          this._startSketchOnPlane();
+        }
       });
     }
 
@@ -3963,8 +4021,8 @@ class App {
     if (exitBtn) exitBtn.style.display = 'flex';
 
     if (this._renderer3d) {
-      // Orient camera perpendicular to the selected plane before switching to 2D
-      this._renderer3d.orientToPlane(plane);
+      // Set 2D orthographic mode for sketch drawing
+      // The 2D mode camera is already perpendicular to the drawing plane (looking down Z)
       this._renderer3d.setMode('2d');
       this._renderer3d.setVisible(true);
       this._renderer3d.sync2DView(this.viewport);
@@ -3985,17 +4043,114 @@ class App {
     this._scheduleRender();
   }
 
+  /**
+   * Start sketching on a selected 3D face. Derives the plane from the face normal.
+   * @param {Object} faceHit - Face hit from pickFace() with face and point
+   */
+  _startSketchOnFace(faceHit) {
+    if (this._workspaceMode !== 'part') return;
+    if (!faceHit || !faceHit.face) return;
+
+    const planeDef = this._getPlaneFromFace(faceHit);
+    if (!planeDef) return;
+
+    // Store the face-derived plane definition for later use
+    this._activeSketchPlaneDef = planeDef;
+
+    // Orient camera perpendicular to the face normal before entering 2D sketch mode
+    if (this._renderer3d) {
+      this._renderer3d.orientToPlaneNormal(faceHit.face.normal, faceHit.point);
+    }
+
+    // Switch to 2D sketch mode
+    this._sketchingOnPlane = true;
+    this._activeSketchPlane = 'FACE';
+    this._3dMode = false;
+
+    document.body.classList.add('sketch-on-plane');
+
+    const exitBtn = document.getElementById('btn-exit-sketch');
+    if (exitBtn) exitBtn.style.display = 'flex';
+
+    if (this._renderer3d) {
+      this._renderer3d.setMode('2d');
+      this._renderer3d.setVisible(true);
+      this._renderer3d.sync2DView(this.viewport);
+      this._renderer3d._sketchPlane = 'XY'; // 2D always draws on XY
+    }
+
+    // Clear face selection
+    this._selectedFace = null;
+    if (this._renderer3d) this._renderer3d.selectFace(-1);
+
+    document.body.classList.remove('mode-3d');
+    document.getElementById('btn-3d-mode').classList.remove('active');
+
+    const modeIndicator = document.getElementById('status-mode');
+    modeIndicator.textContent = 'SKETCH ON FACE';
+    modeIndicator.className = 'status-mode sketch-mode';
+
+    this.setActiveTool('select');
+    this.setStatus('Sketching on face. Draw your profile, then return to 3D to extrude.');
+    info('Entered sketch-on-face mode');
+    this._scheduleRender();
+  }
+
+  /**
+   * Derive a plane definition from a face hit result.
+   * @param {Object} faceHit - Result from pickFace()
+   * @returns {Object} Plane definition with origin, normal, xAxis, yAxis
+   */
+  _getPlaneFromFace(faceHit) {
+    const normal = faceHit.face.normal;
+    const origin = faceHit.point;
+
+    // Build xAxis perpendicular to normal
+    // Choose a reference vector that's not parallel to normal
+    let ref = { x: 0, y: 0, z: 1 };
+    const dot = Math.abs(normal.x * ref.x + normal.y * ref.y + normal.z * ref.z);
+    if (dot > 0.9) ref = { x: 1, y: 0, z: 0 };
+
+    // xAxis = normalize(ref × normal)
+    const xAxis = {
+      x: ref.y * normal.z - ref.z * normal.y,
+      y: ref.z * normal.x - ref.x * normal.z,
+      z: ref.x * normal.y - ref.y * normal.x,
+    };
+    const xLen = Math.sqrt(xAxis.x * xAxis.x + xAxis.y * xAxis.y + xAxis.z * xAxis.z);
+    if (xLen < 1e-10) return null;
+    xAxis.x /= xLen; xAxis.y /= xLen; xAxis.z /= xLen;
+
+    // yAxis = normalize(normal × xAxis)
+    const yAxis = {
+      x: normal.y * xAxis.z - normal.z * xAxis.y,
+      y: normal.z * xAxis.x - normal.x * xAxis.z,
+      z: normal.x * xAxis.y - normal.y * xAxis.x,
+    };
+    const yLen = Math.sqrt(yAxis.x * yAxis.x + yAxis.y * yAxis.y + yAxis.z * yAxis.z);
+    if (yLen < 1e-10) return null;
+    yAxis.x /= yLen; yAxis.y /= yLen; yAxis.z /= yLen;
+
+    return { origin, normal, xAxis, yAxis };
+  }
+
   _finishSketchOnPlane() {
     if (!this._sketchingOnPlane) return;
 
     // Add the current 2D scene as a sketch feature on the active plane
     if (state.entities.length > 0) {
-      this._addSketchToPart(this._activeSketchPlane || 'XY');
+      if (this._activeSketchPlane === 'FACE' && this._activeSketchPlaneDef) {
+        // Use the face-derived plane definition
+        this._addSketchToPartWithPlane(this._activeSketchPlaneDef);
+      } else {
+        this._addSketchToPart(this._activeSketchPlane || 'XY');
+      }
     }
 
     // Return to 3D Part mode
     this._sketchingOnPlane = false;
     this._activeSketchPlane = null;
+    this._activeSketchPlaneDef = null;
     this._3dMode = true;
 
     // Remove sketch-on-plane body class, hide Exit Sketch button
@@ -4057,6 +4212,22 @@ class App {
         // Extrude cut: reverse direction and set subtract operation
         feature.direction = -1;
         feature.operation = 'subtract';
+      }
+
+      // If a face is selected, override the extrusion direction to be perpendicular to it
+      if (this._selectedFace && this._selectedFace.face) {
+        const faceNormal = this._selectedFace.face.normal;
+        // Update the sketch feature's plane normal to match the face
+        const sketchFeature = this._partManager.getPart().getFeature(this._lastSketchFeatureId);
+        if (sketchFeature && sketchFeature.type === 'sketch') {
+          const planeDef = this._getPlaneFromFace(this._selectedFace);
+          if (planeDef) {
+            sketchFeature.setPlane(planeDef);
+          }
+        }
+        // Clear face selection after use
+        this._selectedFace = null;
+        if (this._renderer3d) this._renderer3d.selectFace(-1);
       }
     }
 

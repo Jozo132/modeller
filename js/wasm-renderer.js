@@ -93,6 +93,13 @@ export class WasmRenderer {
     this._meshEdges = null;      // Float32Array: [x,y,z, x,y,z, ...] line pairs
     this._meshEdgeVertexCount = 0;
 
+    // Sketch wireframe data for rendering sketch primitives in 3D
+    this._sketchEdges = null;     // Float32Array: [x,y,z, x,y,z, ...] line pairs
+    this._sketchEdgeVertexCount = 0;
+
+    // Selected face in 3D mode
+    this._selectedFaceIndex = -1;
+
     // Sketch plane reference (set when in sketch-on-plane mode)
     this._sketchPlane = null; // 'XY', 'XZ', 'YZ', or null
 
@@ -277,6 +284,204 @@ export class WasmRenderer {
     }
     this._orbitDirty = true;
     this._applyOrbitCamera();
+  }
+
+  /**
+   * Orient the orbit camera perpendicular to a plane defined by a normal vector.
+   * @param {{x:number, y:number, z:number}} normal - The plane normal
+   * @param {{x:number, y:number, z:number}} [center] - Optional center point to look at
+   */
+  orientToPlaneNormal(normal, center) {
+    // Convert normal direction to spherical coordinates (theta, phi)
+    const nx = normal.x, ny = normal.y, nz = normal.z;
+    const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+    if (len < 1e-10) return;
+    const dnx = nx / len, dny = ny / len, dnz = nz / len;
+
+    // phi is angle from Z axis: acos(nz)
+    this._orbitPhi = Math.acos(Math.max(-1, Math.min(1, dnz)));
+    // theta is angle in XY plane: atan2(ny, nx)
+    this._orbitTheta = Math.atan2(dny, dnx);
+
+    // Clamp phi to avoid degeneracies
+    if (this._orbitPhi < 0.001) this._orbitPhi = 0.001;
+    if (this._orbitPhi > Math.PI - 0.001) this._orbitPhi = Math.PI - 0.001;
+
+    if (center) {
+      this._orbitTarget = { x: center.x, y: center.y, z: center.z };
+    }
+
+    this._orbitDirty = true;
+    this._applyOrbitCamera();
+  }
+
+  /**
+   * Pick a face at the given screen coordinates using ray-triangle intersection.
+   * @param {number} screenX - Screen X coordinate
+   * @param {number} screenY - Screen Y coordinate
+   * @returns {{faceIndex: number, face: Object, point: {x:number,y:number,z:number}}|null}
+   */
+  pickFace(screenX, screenY) {
+    if (!this._meshTriangles || this._meshTriangleCount === 0 || !this._meshFaces) return null;
+
+    const rect = this.canvas.getBoundingClientRect();
+    const ndcX = ((screenX - rect.left) / rect.width) * 2 - 1;
+    const ndcY = -((screenY - rect.top) / rect.height) * 2 + 1;
+
+    // Compute camera ray in world space
+    const mvp = this._computeMVP();
+    if (!mvp) return null;
+
+    // Invert MVP to get ray
+    const invMVP = this._mat4Invert(mvp);
+    if (!invMVP) return null;
+
+    // Near point (NDC z = -1) and far point (NDC z = 1)
+    const nearW = this._mat4TransformVec4(invMVP, ndcX, ndcY, -1, 1);
+    const farW = this._mat4TransformVec4(invMVP, ndcX, ndcY, 1, 1);
+    if (Math.abs(nearW.w) < 1e-10 || Math.abs(farW.w) < 1e-10) return null;
+
+    const origin = { x: nearW.x / nearW.w, y: nearW.y / nearW.w, z: nearW.z / nearW.w };
+    const farPt = { x: farW.x / farW.w, y: farW.y / farW.w, z: farW.z / farW.w };
+    const dir = {
+      x: farPt.x - origin.x,
+      y: farPt.y - origin.y,
+      z: farPt.z - origin.z,
+    };
+    const dirLen = Math.sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+    if (dirLen < 1e-10) return null;
+    dir.x /= dirLen; dir.y /= dirLen; dir.z /= dirLen;
+
+    // Test ray against all triangles
+    let closestT = Infinity;
+    let closestFaceIndex = -1;
+    let closestPoint = null;
+
+    const triData = this._meshTriangles;
+    const triCount = this._meshTriangleCount / 3; // number of triangles
+    for (let ti = 0; ti < triCount; ti++) {
+      const base = ti * 3 * 6; // 3 vertices * 6 floats each
+      const v0 = { x: triData[base], y: triData[base + 1], z: triData[base + 2] };
+      const v1 = { x: triData[base + 6], y: triData[base + 7], z: triData[base + 8] };
+      const v2 = { x: triData[base + 12], y: triData[base + 13], z: triData[base + 14] };
+
+      const t = this._rayTriangleIntersect(origin, dir, v0, v1, v2);
+      if (t !== null && t > 0 && t < closestT) {
+        closestT = t;
+        closestFaceIndex = this._triFaceMap ? this._triFaceMap[ti] : -1;
+        closestPoint = {
+          x: origin.x + dir.x * t,
+          y: origin.y + dir.y * t,
+          z: origin.z + dir.z * t,
+        };
+      }
+    }
+
+    if (closestFaceIndex >= 0 && closestPoint) {
+      return {
+        faceIndex: closestFaceIndex,
+        face: this._meshFaces[closestFaceIndex],
+        point: closestPoint,
+      };
+    }
+    return null;
+  }
+
+  /**
+   * Select a face by index for highlighting. Pass -1 to clear selection.
+   * @param {number} faceIndex
+   */
+  selectFace(faceIndex) {
+    this._selectedFaceIndex = faceIndex;
+  }
+
+  /**
+   * Get the currently selected face index.
+   * @returns {number} face index or -1 if none
+   */
+  getSelectedFaceIndex() {
+    return this._selectedFaceIndex;
+  }
+
+  /** Möller–Trumbore ray-triangle intersection */
+  _rayTriangleIntersect(origin, dir, v0, v1, v2) {
+    const EPSILON = 1e-8;
+    const e1 = { x: v1.x - v0.x, y: v1.y - v0.y, z: v1.z - v0.z };
+    const e2 = { x: v2.x - v0.x, y: v2.y - v0.y, z: v2.z - v0.z };
+    const h = {
+      x: dir.y * e2.z - dir.z * e2.y,
+      y: dir.z * e2.x - dir.x * e2.z,
+      z: dir.x * e2.y - dir.y * e2.x,
+    };
+    const a = e1.x * h.x + e1.y * h.y + e1.z * h.z;
+    if (a > -EPSILON && a < EPSILON) return null;
+    const f = 1.0 / a;
+    const s = { x: origin.x - v0.x, y: origin.y - v0.y, z: origin.z - v0.z };
+    const u = f * (s.x * h.x + s.y * h.y + s.z * h.z);
+    if (u < 0 || u > 1) return null;
+    const q = {
+      x: s.y * e1.z - s.z * e1.y,
+      y: s.z * e1.x - s.x * e1.z,
+      z: s.x * e1.y - s.y * e1.x,
+    };
+    const v = f * (dir.x * q.x + dir.y * q.y + dir.z * q.z);
+    if (v < 0 || u + v > 1) return null;
+    const t = f * (e2.x * q.x + e2.y * q.y + e2.z * q.z);
+    return t > EPSILON ? t : null;
+  }
+
+  /** Invert a 4x4 column-major matrix */
+  _mat4Invert(m) {
+    const out = new Float32Array(16);
+    const m00 = m[0], m01 = m[1], m02 = m[2], m03 = m[3];
+    const m10 = m[4], m11 = m[5], m12 = m[6], m13 = m[7];
+    const m20 = m[8], m21 = m[9], m22 = m[10], m23 = m[11];
+    const m30 = m[12], m31 = m[13], m32 = m[14], m33 = m[15];
+
+    const b00 = m00 * m11 - m01 * m10;
+    const b01 = m00 * m12 - m02 * m10;
+    const b02 = m00 * m13 - m03 * m10;
+    const b03 = m01 * m12 - m02 * m11;
+    const b04 = m01 * m13 - m03 * m11;
+    const b05 = m02 * m13 - m03 * m12;
+    const b06 = m20 * m31 - m21 * m30;
+    const b07 = m20 * m32 - m22 * m30;
+    const b08 = m20 * m33 - m23 * m30;
+    const b09 = m21 * m32 - m22 * m31;
+    const b10 = m21 * m33 - m23 * m31;
+    const b11 = m22 * m33 - m23 * m32;
+
+    let det = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
+    if (Math.abs(det) < 1e-10) return null;
+    det = 1.0 / det;
+
+    out[0]  = ( m11 * b11 - m12 * b10 + m13 * b09) * det;
+    out[1]  = (-m01 * b11 + m02 * b10 - m03 * b09) * det;
+    out[2]  = ( m31 * b05 - m32 * b04 + m33 * b03) * det;
+    out[3]  = (-m21 * b05 + m22 * b04 - m23 * b03) * det;
+    out[4]  = (-m10 * b11 + m12 * b08 - m13 * b07) * det;
+    out[5]  = ( m00 * b11 - m02 * b08 + m03 * b07) * det;
+    out[6]  = (-m30 * b05 + m32 * b02 - m33 * b01) * det;
+    out[7]  = ( m20 * b05 - m22 * b02 + m23 * b01) * det;
+    out[8]  = ( m10 * b10 - m11 * b08 + m13 * b06) * det;
+    out[9]  = (-m00 * b10 + m01 * b08 - m03 * b06) * det;
+    out[10] = ( m30 * b04 - m31 * b02 + m33 * b00) * det;
+    out[11] = (-m20 * b04 + m21 * b02 - m23 * b00) * det;
+    out[12] = (-m10 * b09 + m11 * b07 - m12 * b06) * det;
+    out[13] = ( m00 * b09 - m01 * b07 + m02 * b06) * det;
+    out[14] = (-m30 * b03 + m31 * b01 - m32 * b00) * det;
+    out[15] = ( m20 * b03 - m21 * b01 + m22 * b00) * det;
+    return out;
+  }
+
+  /** Transform a vec4 by a 4x4 column-major matrix */
+  _mat4TransformVec4(m, x, y, z, w) {
+    return {
+      x: m[0] * x + m[4] * y + m[8]  * z + m[12] * w,
+      y: m[1] * x + m[5] * y + m[9]  * z + m[13] * w,
+      z: m[2] * x + m[6] * y + m[10] * z + m[14] * w,
+      w: m[3] * x + m[7] * y + m[11] * z + m[15] * w,
+    };
   }
 
   /* ---------- mode switching ---------- */
@@ -733,6 +938,9 @@ export class WasmRenderer {
       // Build actual mesh from geometry faces
       this._buildMeshFromGeometry(geo.geometry);
     }
+
+    // Build sketch wireframes for all sketch features (visible in 3D mode)
+    this._buildSketchWireframes(part);
   }
 
   /**
@@ -846,13 +1054,103 @@ export class WasmRenderer {
   }
 
   /**
+   * Build wireframe data for sketch features so they are visible in 3D Part mode.
+   * Transforms 2D sketch primitives to 3D world coordinates using their plane definitions.
+   * @param {Object} part - The Part object containing sketch features
+   */
+  _buildSketchWireframes(part) {
+    this._sketchEdges = null;
+    this._sketchEdgeVertexCount = 0;
+
+    const sketches = part.getSketches();
+    if (!sketches || sketches.length === 0) return;
+
+    const lines = [];
+
+    for (const sketchFeature of sketches) {
+      if (sketchFeature.suppressed) continue;
+      const sketch = sketchFeature.sketch;
+      const plane = sketchFeature.plane;
+      if (!sketch || !plane) continue;
+
+      const toWorld = (px, py) => ({
+        x: plane.origin.x + px * plane.xAxis.x + py * plane.yAxis.x,
+        y: plane.origin.y + px * plane.xAxis.y + py * plane.yAxis.y,
+        z: plane.origin.z + px * plane.xAxis.z + py * plane.yAxis.z,
+      });
+
+      // Segments
+      if (sketch.segments) {
+        for (const seg of sketch.segments) {
+          if (!seg.visible || !seg.p1 || !seg.p2) continue;
+          const a = toWorld(seg.p1.x, seg.p1.y);
+          const b = toWorld(seg.p2.x, seg.p2.y);
+          lines.push(a.x, a.y, a.z, b.x, b.y, b.z);
+        }
+      }
+
+      // Circles (approximate with line segments)
+      if (sketch.circles) {
+        for (const circle of sketch.circles) {
+          if (!circle.visible || !circle.center) continue;
+          const numSegs = 32;
+          for (let i = 0; i < numSegs; i++) {
+            const a1 = (i / numSegs) * Math.PI * 2;
+            const a2 = ((i + 1) / numSegs) * Math.PI * 2;
+            const p1 = toWorld(
+              circle.center.x + Math.cos(a1) * circle.radius,
+              circle.center.y + Math.sin(a1) * circle.radius
+            );
+            const p2 = toWorld(
+              circle.center.x + Math.cos(a2) * circle.radius,
+              circle.center.y + Math.sin(a2) * circle.radius
+            );
+            lines.push(p1.x, p1.y, p1.z, p2.x, p2.y, p2.z);
+          }
+        }
+      }
+
+      // Arcs (approximate with line segments)
+      if (sketch.arcs) {
+        for (const arc of sketch.arcs) {
+          if (!arc.visible || !arc.center) continue;
+          const numSegs = 16;
+          let startA = arc.startAngle || 0;
+          let endA = arc.endAngle || Math.PI;
+          let sweep = endA - startA;
+          if (sweep < 0) sweep += Math.PI * 2;
+          for (let i = 0; i < numSegs; i++) {
+            const a1 = startA + (i / numSegs) * sweep;
+            const a2 = startA + ((i + 1) / numSegs) * sweep;
+            const p1 = toWorld(
+              arc.center.x + Math.cos(a1) * arc.radius,
+              arc.center.y + Math.sin(a1) * arc.radius
+            );
+            const p2 = toWorld(
+              arc.center.x + Math.cos(a2) * arc.radius,
+              arc.center.y + Math.sin(a2) * arc.radius
+            );
+            lines.push(p1.x, p1.y, p1.z, p2.x, p2.y, p2.z);
+          }
+        }
+      }
+    }
+
+    if (lines.length > 0) {
+      this._sketchEdges = new Float32Array(lines);
+      this._sketchEdgeVertexCount = lines.length / 3;
+    }
+  }
+
+  /**
    * Render pre-built mesh data directly via WebGL (called after WASM render pass).
    */
   _renderMeshOverlay() {
-    if (!this._meshTriangles || this._meshTriangleCount === 0) return;
-
     const gl = this.executor.gl;
     const exec = this.executor;
+    const hasMesh = this._meshTriangles && this._meshTriangleCount > 0;
+    const hasSketchEdges = this._sketchEdges && this._sketchEdgeVertexCount > 0;
+    if (!hasMesh && !hasSketchEdges) return;
 
     // Compute the same MVP as the WASM camera
     const mvp = this._computeMVP();
@@ -864,33 +1162,90 @@ export class WasmRenderer {
     gl.enable(gl.CULL_FACE);
     gl.cullFace(gl.BACK);
 
-    // Draw solid triangles with polygon offset to avoid z-fighting with edges
-    gl.enable(gl.POLYGON_OFFSET_FILL);
-    gl.polygonOffset(1.0, 1.0);
+    if (hasMesh) {
+      // Draw solid triangles with polygon offset to avoid z-fighting with edges
+      gl.enable(gl.POLYGON_OFFSET_FILL);
+      gl.polygonOffset(1.0, 1.0);
 
-    gl.useProgram(exec.programs[0]);
-    gl.uniformMatrix4fv(exec.uniforms[0].uMVP, false, mvp);
-    gl.uniform4f(exec.uniforms[0].uColor, 0.65, 0.75, 0.65, 1.0);
+      gl.useProgram(exec.programs[0]);
+      gl.uniformMatrix4fv(exec.uniforms[0].uMVP, false, mvp);
+      gl.uniform4f(exec.uniforms[0].uColor, 0.65, 0.75, 0.65, 1.0);
 
-    gl.bindVertexArray(exec.vaoSolid);
-    gl.bindBuffer(gl.ARRAY_BUFFER, exec.vbo);
-    gl.bufferData(gl.ARRAY_BUFFER, this._meshTriangles, gl.DYNAMIC_DRAW);
-    gl.drawArrays(gl.TRIANGLES, 0, this._meshTriangleCount);
-    gl.bindVertexArray(null);
+      gl.bindVertexArray(exec.vaoSolid);
+      gl.bindBuffer(gl.ARRAY_BUFFER, exec.vbo);
+      gl.bufferData(gl.ARRAY_BUFFER, this._meshTriangles, gl.DYNAMIC_DRAW);
+      gl.drawArrays(gl.TRIANGLES, 0, this._meshTriangleCount);
+      gl.bindVertexArray(null);
 
-    gl.disable(gl.POLYGON_OFFSET_FILL);
+      gl.disable(gl.POLYGON_OFFSET_FILL);
 
-    // Draw feature wireframe edges
-    if (this._meshEdges && this._meshEdgeVertexCount > 0) {
+      // Draw selected face highlight
+      if (this._selectedFaceIndex >= 0 && this._meshFaces && this._triFaceMap) {
+        // Build highlight triangles for the selected face
+        const highlightVerts = [];
+        const triCount = this._meshTriangleCount / 3;
+        for (let ti = 0; ti < triCount; ti++) {
+          if (this._triFaceMap[ti] === this._selectedFaceIndex) {
+            const base = ti * 3 * 6;
+            for (let vi = 0; vi < 3; vi++) {
+              const vbase = base + vi * 6;
+              highlightVerts.push(
+                this._meshTriangles[vbase], this._meshTriangles[vbase + 1], this._meshTriangles[vbase + 2],
+                this._meshTriangles[vbase + 3], this._meshTriangles[vbase + 4], this._meshTriangles[vbase + 5]
+              );
+            }
+          }
+        }
+        if (highlightVerts.length > 0) {
+          gl.enable(gl.BLEND);
+          gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+          gl.depthFunc(gl.LEQUAL);
+          gl.disable(gl.CULL_FACE);
+
+          const highlightData = new Float32Array(highlightVerts);
+          gl.useProgram(exec.programs[0]);
+          gl.uniformMatrix4fv(exec.uniforms[0].uMVP, false, mvp);
+          gl.uniform4f(exec.uniforms[0].uColor, 0.2, 0.6, 1.0, 0.35);
+
+          gl.bindVertexArray(exec.vaoSolid);
+          gl.bindBuffer(gl.ARRAY_BUFFER, exec.vbo);
+          gl.bufferData(gl.ARRAY_BUFFER, highlightData, gl.DYNAMIC_DRAW);
+          gl.drawArrays(gl.TRIANGLES, 0, highlightVerts.length / 6);
+          gl.bindVertexArray(null);
+
+          gl.disable(gl.BLEND);
+          gl.enable(gl.CULL_FACE);
+          gl.cullFace(gl.BACK);
+        }
+      }
+
+      // Draw feature wireframe edges
+      if (this._meshEdges && this._meshEdgeVertexCount > 0) {
+        gl.useProgram(exec.programs[1]);
+        gl.uniformMatrix4fv(exec.uniforms[1].uMVP, false, mvp);
+        gl.uniform4f(exec.uniforms[1].uColor, 0.1, 0.1, 0.1, 1.0);
+        gl.lineWidth(1.0);
+
+        gl.bindVertexArray(exec.vaoLine);
+        gl.bindBuffer(gl.ARRAY_BUFFER, exec.vbo);
+        gl.bufferData(gl.ARRAY_BUFFER, this._meshEdges, gl.DYNAMIC_DRAW);
+        gl.drawArrays(gl.LINES, 0, this._meshEdgeVertexCount);
+        gl.bindVertexArray(null);
+      }
+    }
+
+    // Draw sketch wireframes (visible sketch primitives in 3D)
+    if (hasSketchEdges) {
+      gl.disable(gl.CULL_FACE);
       gl.useProgram(exec.programs[1]);
       gl.uniformMatrix4fv(exec.uniforms[1].uMVP, false, mvp);
-      gl.uniform4f(exec.uniforms[1].uColor, 0.1, 0.1, 0.1, 1.0);
+      gl.uniform4f(exec.uniforms[1].uColor, 0.4, 0.7, 1.0, 1.0);
       gl.lineWidth(1.0);
 
       gl.bindVertexArray(exec.vaoLine);
       gl.bindBuffer(gl.ARRAY_BUFFER, exec.vbo);
-      gl.bufferData(gl.ARRAY_BUFFER, this._meshEdges, gl.DYNAMIC_DRAW);
-      gl.drawArrays(gl.LINES, 0, this._meshEdgeVertexCount);
+      gl.bufferData(gl.ARRAY_BUFFER, this._sketchEdges, gl.DYNAMIC_DRAW);
+      gl.drawArrays(gl.LINES, 0, this._sketchEdgeVertexCount);
       gl.bindVertexArray(null);
     }
 
@@ -997,6 +1352,9 @@ export class WasmRenderer {
     this._meshEdgeVertexCount = 0;
     this._meshFaces = null;
     this._triFaceMap = null;
+    this._sketchEdges = null;
+    this._sketchEdgeVertexCount = 0;
+    this._selectedFaceIndex = -1;
   }
 
   /**
