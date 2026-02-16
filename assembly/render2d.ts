@@ -211,29 +211,121 @@ export function render2DEntities(cmd: CommandBuffer, vp: Mat4, entities: EntityS
 
 /**
  * Render origin planes as semi-transparent quads visible in 3D mode.
+ * Draws XY, XZ, and YZ plane boxes centered at the origin with light blue clickable faces.
+ * @param planesVisible - bitmask: bit 0 = XY, bit 1 = XZ, bit 2 = YZ
  */
-export function renderOriginPlanes(cmd: CommandBuffer, vp: Mat4): void {
+export function renderOriginPlanes(cmd: CommandBuffer, vp: Mat4, planesVisible: i32 = 7): void {
   const planeSize: f32 = 5.0;
+  const planeColor = new Color(0.53, 0.81, 0.92, 0.12); // light blue, semi-transparent
 
-  // XY plane (blue, semi-transparent)
-  const xyVerts = new StaticArray<f32>(18);
-  const xyNorms = new StaticArray<f32>(18);
-  // Triangle 1
-  unchecked(xyVerts[0]  = -planeSize); unchecked(xyVerts[1]  = -planeSize); unchecked(xyVerts[2]  = 0);
-  unchecked(xyVerts[3]  =  planeSize); unchecked(xyVerts[4]  = -planeSize); unchecked(xyVerts[5]  = 0);
-  unchecked(xyVerts[6]  =  planeSize); unchecked(xyVerts[7]  =  planeSize); unchecked(xyVerts[8]  = 0);
-  // Triangle 2
-  unchecked(xyVerts[9]  = -planeSize); unchecked(xyVerts[10] = -planeSize); unchecked(xyVerts[11] = 0);
-  unchecked(xyVerts[12] =  planeSize); unchecked(xyVerts[13] =  planeSize); unchecked(xyVerts[14] = 0);
-  unchecked(xyVerts[15] = -planeSize); unchecked(xyVerts[16] =  planeSize); unchecked(xyVerts[17] = 0);
-  for (let i: i32 = 0; i < 6; i++) {
-    unchecked(xyNorms[i * 3]     = 0);
-    unchecked(xyNorms[i * 3 + 1] = 0);
-    unchecked(xyNorms[i * 3 + 2] = 1);
+  // XY plane (z=0) — visible when bit 0 is set
+  if (planesVisible & 1) {
+    const xyVerts = new StaticArray<f32>(18);
+    const xyNorms = new StaticArray<f32>(18);
+    unchecked(xyVerts[0]  = -planeSize); unchecked(xyVerts[1]  = -planeSize); unchecked(xyVerts[2]  = 0);
+    unchecked(xyVerts[3]  =  planeSize); unchecked(xyVerts[4]  = -planeSize); unchecked(xyVerts[5]  = 0);
+    unchecked(xyVerts[6]  =  planeSize); unchecked(xyVerts[7]  =  planeSize); unchecked(xyVerts[8]  = 0);
+    unchecked(xyVerts[9]  = -planeSize); unchecked(xyVerts[10] = -planeSize); unchecked(xyVerts[11] = 0);
+    unchecked(xyVerts[12] =  planeSize); unchecked(xyVerts[13] =  planeSize); unchecked(xyVerts[14] = 0);
+    unchecked(xyVerts[15] = -planeSize); unchecked(xyVerts[16] =  planeSize); unchecked(xyVerts[17] = 0);
+    for (let i: i32 = 0; i < 6; i++) {
+      unchecked(xyNorms[i * 3]     = 0);
+      unchecked(xyNorms[i * 3 + 1] = 0);
+      unchecked(xyNorms[i * 3 + 2] = 1);
+    }
+    cmd.emitSetProgram(0);
+    cmd.emitSetMatrix(vp);
+    cmd.emitSetColor(planeColor.r, planeColor.g, planeColor.b, planeColor.a);
+    cmd.emitDrawTriangles(xyVerts, xyNorms, 6);
+
+    // XY plane border
+    const xyBorder = new StaticArray<f32>(24);
+    unchecked(xyBorder[0]  = -planeSize); unchecked(xyBorder[1]  = -planeSize); unchecked(xyBorder[2]  = 0);
+    unchecked(xyBorder[3]  =  planeSize); unchecked(xyBorder[4]  = -planeSize); unchecked(xyBorder[5]  = 0);
+    unchecked(xyBorder[6]  =  planeSize); unchecked(xyBorder[7]  = -planeSize); unchecked(xyBorder[8]  = 0);
+    unchecked(xyBorder[9]  =  planeSize); unchecked(xyBorder[10] =  planeSize); unchecked(xyBorder[11] = 0);
+    unchecked(xyBorder[12] =  planeSize); unchecked(xyBorder[13] =  planeSize); unchecked(xyBorder[14] = 0);
+    unchecked(xyBorder[15] = -planeSize); unchecked(xyBorder[16] =  planeSize); unchecked(xyBorder[17] = 0);
+    unchecked(xyBorder[18] = -planeSize); unchecked(xyBorder[19] =  planeSize); unchecked(xyBorder[20] = 0);
+    unchecked(xyBorder[21] = -planeSize); unchecked(xyBorder[22] = -planeSize); unchecked(xyBorder[23] = 0);
+    cmd.emitSetProgram(1);
+    cmd.emitSetMatrix(vp);
+    cmd.emitSetColor(0.53, 0.81, 0.92, 0.4);
+    cmd.emitSetLineWidth(1.0);
+    cmd.emitDrawLines(xyBorder, 8);
   }
 
-  cmd.emitSetProgram(0);
-  cmd.emitSetMatrix(vp);
-  cmd.emitSetColor(0.2, 0.2, 0.8, 0.08);
-  cmd.emitDrawTriangles(xyVerts, xyNorms, 6);
+  // XZ plane (y=0) — visible when bit 1 is set
+  if (planesVisible & 2) {
+    const xzVerts = new StaticArray<f32>(18);
+    const xzNorms = new StaticArray<f32>(18);
+    unchecked(xzVerts[0]  = -planeSize); unchecked(xzVerts[1]  = 0); unchecked(xzVerts[2]  = -planeSize);
+    unchecked(xzVerts[3]  =  planeSize); unchecked(xzVerts[4]  = 0); unchecked(xzVerts[5]  = -planeSize);
+    unchecked(xzVerts[6]  =  planeSize); unchecked(xzVerts[7]  = 0); unchecked(xzVerts[8]  =  planeSize);
+    unchecked(xzVerts[9]  = -planeSize); unchecked(xzVerts[10] = 0); unchecked(xzVerts[11] = -planeSize);
+    unchecked(xzVerts[12] =  planeSize); unchecked(xzVerts[13] = 0); unchecked(xzVerts[14] =  planeSize);
+    unchecked(xzVerts[15] = -planeSize); unchecked(xzVerts[16] = 0); unchecked(xzVerts[17] =  planeSize);
+    for (let i: i32 = 0; i < 6; i++) {
+      unchecked(xzNorms[i * 3]     = 0);
+      unchecked(xzNorms[i * 3 + 1] = 1);
+      unchecked(xzNorms[i * 3 + 2] = 0);
+    }
+    cmd.emitSetProgram(0);
+    cmd.emitSetMatrix(vp);
+    cmd.emitSetColor(planeColor.r, planeColor.g, planeColor.b, planeColor.a);
+    cmd.emitDrawTriangles(xzVerts, xzNorms, 6);
+
+    // XZ plane border
+    const xzBorder = new StaticArray<f32>(24);
+    unchecked(xzBorder[0]  = -planeSize); unchecked(xzBorder[1]  = 0); unchecked(xzBorder[2]  = -planeSize);
+    unchecked(xzBorder[3]  =  planeSize); unchecked(xzBorder[4]  = 0); unchecked(xzBorder[5]  = -planeSize);
+    unchecked(xzBorder[6]  =  planeSize); unchecked(xzBorder[7]  = 0); unchecked(xzBorder[8]  = -planeSize);
+    unchecked(xzBorder[9]  =  planeSize); unchecked(xzBorder[10] = 0); unchecked(xzBorder[11] =  planeSize);
+    unchecked(xzBorder[12] =  planeSize); unchecked(xzBorder[13] = 0); unchecked(xzBorder[14] =  planeSize);
+    unchecked(xzBorder[15] = -planeSize); unchecked(xzBorder[16] = 0); unchecked(xzBorder[17] =  planeSize);
+    unchecked(xzBorder[18] = -planeSize); unchecked(xzBorder[19] = 0); unchecked(xzBorder[20] =  planeSize);
+    unchecked(xzBorder[21] = -planeSize); unchecked(xzBorder[22] = 0); unchecked(xzBorder[23] = -planeSize);
+    cmd.emitSetProgram(1);
+    cmd.emitSetMatrix(vp);
+    cmd.emitSetColor(0.53, 0.81, 0.92, 0.4);
+    cmd.emitSetLineWidth(1.0);
+    cmd.emitDrawLines(xzBorder, 8);
+  }
+
+  // YZ plane (x=0) — visible when bit 2 is set
+  if (planesVisible & 4) {
+    const yzVerts = new StaticArray<f32>(18);
+    const yzNorms = new StaticArray<f32>(18);
+    unchecked(yzVerts[0]  = 0); unchecked(yzVerts[1]  = -planeSize); unchecked(yzVerts[2]  = -planeSize);
+    unchecked(yzVerts[3]  = 0); unchecked(yzVerts[4]  =  planeSize); unchecked(yzVerts[5]  = -planeSize);
+    unchecked(yzVerts[6]  = 0); unchecked(yzVerts[7]  =  planeSize); unchecked(yzVerts[8]  =  planeSize);
+    unchecked(yzVerts[9]  = 0); unchecked(yzVerts[10] = -planeSize); unchecked(yzVerts[11] = -planeSize);
+    unchecked(yzVerts[12] = 0); unchecked(yzVerts[13] =  planeSize); unchecked(yzVerts[14] =  planeSize);
+    unchecked(yzVerts[15] = 0); unchecked(yzVerts[16] = -planeSize); unchecked(yzVerts[17] =  planeSize);
+    for (let i: i32 = 0; i < 6; i++) {
+      unchecked(yzNorms[i * 3]     = 1);
+      unchecked(yzNorms[i * 3 + 1] = 0);
+      unchecked(yzNorms[i * 3 + 2] = 0);
+    }
+    cmd.emitSetProgram(0);
+    cmd.emitSetMatrix(vp);
+    cmd.emitSetColor(planeColor.r, planeColor.g, planeColor.b, planeColor.a);
+    cmd.emitDrawTriangles(yzVerts, yzNorms, 6);
+
+    // YZ plane border
+    const yzBorder = new StaticArray<f32>(24);
+    unchecked(yzBorder[0]  = 0); unchecked(yzBorder[1]  = -planeSize); unchecked(yzBorder[2]  = -planeSize);
+    unchecked(yzBorder[3]  = 0); unchecked(yzBorder[4]  =  planeSize); unchecked(yzBorder[5]  = -planeSize);
+    unchecked(yzBorder[6]  = 0); unchecked(yzBorder[7]  =  planeSize); unchecked(yzBorder[8]  = -planeSize);
+    unchecked(yzBorder[9]  = 0); unchecked(yzBorder[10] =  planeSize); unchecked(yzBorder[11] =  planeSize);
+    unchecked(yzBorder[12] = 0); unchecked(yzBorder[13] =  planeSize); unchecked(yzBorder[14] =  planeSize);
+    unchecked(yzBorder[15] = 0); unchecked(yzBorder[16] = -planeSize); unchecked(yzBorder[17] =  planeSize);
+    unchecked(yzBorder[18] = 0); unchecked(yzBorder[19] = -planeSize); unchecked(yzBorder[20] =  planeSize);
+    unchecked(yzBorder[21] = 0); unchecked(yzBorder[22] = -planeSize); unchecked(yzBorder[23] = -planeSize);
+    cmd.emitSetProgram(1);
+    cmd.emitSetMatrix(vp);
+    cmd.emitSetColor(0.53, 0.81, 0.92, 0.4);
+    cmd.emitSetLineWidth(1.0);
+    cmd.emitDrawLines(yzBorder, 8);
+  }
 }

@@ -101,8 +101,10 @@ export class WasmRenderer {
     this._meshEdgeVertexCount = 0;
 
     // Sketch wireframe data for rendering sketch primitives in 3D
-    this._sketchEdges = null;     // Float32Array: [x,y,z, x,y,z, ...] line pairs
+    this._sketchEdges = null;     // Float32Array: [x,y,z, x,y,z, ...] line pairs (active sketch)
     this._sketchEdgeVertexCount = 0;
+    this._sketchInactiveEdges = null;     // Float32Array: inactive sketch edges (grey)
+    this._sketchInactiveEdgeVertexCount = 0;
 
     // Selected face in 3D mode
     this._selectedFaceIndex = -1;
@@ -1120,8 +1122,22 @@ export class WasmRenderer {
     this.clearPartGeometry();
     if (!part || !this._ready) return;
 
+    // Update origin plane visibility in WASM
+    if (this.wasm && this.wasm.setOriginPlanesVisible) {
+      const planes = part.getOriginPlanes ? part.getOriginPlanes() : {};
+      let mask = 0;
+      if (!planes.XY || planes.XY.visible) mask |= 1;
+      if (!planes.XZ || planes.XZ.visible) mask |= 2;
+      if (!planes.YZ || planes.YZ.visible) mask |= 4;
+      this.wasm.setOriginPlanesVisible(mask);
+    }
+
     const geo = part.getFinalGeometry();
-    if (!geo) return;
+    if (!geo) {
+      // Still build sketch wireframes even without solid geometry
+      this._buildSketchWireframes(part);
+      return;
+    }
 
     if (geo.type === 'solid' && geo.geometry) {
       const bb = geo.boundingBox;
@@ -1248,22 +1264,33 @@ export class WasmRenderer {
   /**
    * Build wireframe data for sketch features so they are visible in 3D Part mode.
    * Transforms 2D sketch primitives to 3D world coordinates using their plane definitions.
+   * Supports active sketch highlighting: active sketch uses normal colors, others use grey.
    * @param {Object} part - The Part object containing sketch features
    */
   _buildSketchWireframes(part) {
     this._sketchEdges = null;
     this._sketchEdgeVertexCount = 0;
+    this._sketchInactiveEdges = null;
+    this._sketchInactiveEdgeVertexCount = 0;
 
     const sketches = part.getSketches();
     if (!sketches || sketches.length === 0) return;
 
-    const lines = [];
+    const activeSketchId = part.getActiveSketchId ? part.getActiveSketchId() : null;
+    const activeLines = [];
+    const inactiveLines = [];
 
     for (const sketchFeature of sketches) {
       if (sketchFeature.suppressed) continue;
+      // Skip sketches that are hidden (linked as child of a feature) unless they're selected/active
+      if (!sketchFeature.visible && sketchFeature.id !== activeSketchId) continue;
+
       const sketch = sketchFeature.sketch;
       const plane = sketchFeature.plane;
       if (!sketch || !plane) continue;
+
+      const isActive = sketchFeature.id === activeSketchId;
+      const lines = isActive ? activeLines : inactiveLines;
 
       const toWorld = (px, py) => ({
         x: plane.origin.x + px * plane.xAxis.x + py * plane.yAxis.x,
@@ -1328,9 +1355,14 @@ export class WasmRenderer {
       }
     }
 
-    if (lines.length > 0) {
-      this._sketchEdges = new Float32Array(lines);
-      this._sketchEdgeVertexCount = lines.length / 3;
+    if (activeLines.length > 0) {
+      this._sketchEdges = new Float32Array(activeLines);
+      this._sketchEdgeVertexCount = activeLines.length / 3;
+    }
+
+    if (inactiveLines.length > 0) {
+      this._sketchInactiveEdges = new Float32Array(inactiveLines);
+      this._sketchInactiveEdgeVertexCount = inactiveLines.length / 3;
     }
   }
 
@@ -1342,7 +1374,8 @@ export class WasmRenderer {
     const exec = this.executor;
     const hasMesh = this._meshTriangles && this._meshTriangleCount > 0;
     const hasSketchEdges = this._sketchEdges && this._sketchEdgeVertexCount > 0;
-    if (!hasMesh && !hasSketchEdges) return;
+    const hasInactiveEdges = this._sketchInactiveEdges && this._sketchInactiveEdgeVertexCount > 0;
+    if (!hasMesh && !hasSketchEdges && !hasInactiveEdges) return;
 
     // Compute the same MVP as the WASM camera
     const mvp = this._computeMVP();
@@ -1438,6 +1471,21 @@ export class WasmRenderer {
       gl.bindBuffer(gl.ARRAY_BUFFER, exec.vbo);
       gl.bufferData(gl.ARRAY_BUFFER, this._sketchEdges, gl.DYNAMIC_DRAW);
       gl.drawArrays(gl.LINES, 0, this._sketchEdgeVertexCount);
+      gl.bindVertexArray(null);
+    }
+
+    // Draw inactive sketch wireframes in grey (non-active sketches when editing one)
+    if (hasInactiveEdges) {
+      gl.disable(gl.CULL_FACE);
+      gl.useProgram(exec.programs[1]);
+      gl.uniformMatrix4fv(exec.uniforms[1].uMVP, false, mvp);
+      gl.uniform4f(exec.uniforms[1].uColor, 0.45, 0.45, 0.45, 0.6);
+      gl.lineWidth(1.0);
+
+      gl.bindVertexArray(exec.vaoLine);
+      gl.bindBuffer(gl.ARRAY_BUFFER, exec.vbo);
+      gl.bufferData(gl.ARRAY_BUFFER, this._sketchInactiveEdges, gl.DYNAMIC_DRAW);
+      gl.drawArrays(gl.LINES, 0, this._sketchInactiveEdgeVertexCount);
       gl.bindVertexArray(null);
     }
 
@@ -1546,6 +1594,8 @@ export class WasmRenderer {
     this._triFaceMap = null;
     this._sketchEdges = null;
     this._sketchEdgeVertexCount = 0;
+    this._sketchInactiveEdges = null;
+    this._sketchInactiveEdgeVertexCount = 0;
     this._selectedFaceIndex = -1;
   }
 

@@ -143,7 +143,10 @@ export function generateGridLines(
   mvp: Mat4,
   size: f32,
   divisions: i32,
-  color: Color
+  color: Color,
+  centerX: f32 = 0,
+  centerY: f32 = 0,
+  centerZ: f32 = 0
 ): void {
   const half: f32 = size * 0.5;
   const step: f32 = size / <f32>divisions;
@@ -155,14 +158,14 @@ export function generateGridLines(
 
   // Lines parallel to Y axis
   for (let i: i32 = 0; i <= divisions; i++) {
-    const x: f32 = -half + <f32>i * step;
-    vi = addEdge(verts, vi, x, -half, 0, x, half, 0);
+    const x: f32 = centerX - half + <f32>i * step;
+    vi = addEdge(verts, vi, x, centerY - half, centerZ, x, centerY + half, centerZ);
   }
 
   // Lines parallel to X axis
   for (let i: i32 = 0; i <= divisions; i++) {
-    const y: f32 = -half + <f32>i * step;
-    vi = addEdge(verts, vi, -half, y, 0, half, y, 0);
+    const y: f32 = centerY - half + <f32>i * step;
+    vi = addEdge(verts, vi, centerX - half, y, centerZ, centerX + half, y, centerZ);
   }
 
   cmd.emitSetProgram(1);

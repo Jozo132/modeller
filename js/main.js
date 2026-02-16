@@ -3493,8 +3493,48 @@ class App {
     const features = this._partManager.getFeatures();
     container.innerHTML = '';
 
-    // Show custom planes if any
+    // Show origin planes with visibility toggles
     const part = this._partManager.getPart();
+    if (part) {
+      const originPlanes = part.getOriginPlanes();
+      ['XY', 'XZ', 'YZ'].forEach((planeName) => {
+        const planeState = originPlanes[planeName];
+        const div = document.createElement('div');
+        div.className = 'node-tree-item node-tree-plane';
+        div.setAttribute('data-plane', planeName);
+        if (this._selectedPlane === planeName) div.classList.add('selected');
+        
+        const eyeIcon = planeState.visible ? '◉' : '○';
+        div.innerHTML = `<span class="node-tree-eye" data-plane-toggle="${planeName}" title="Toggle ${planeName} plane visibility">${eyeIcon}</span><span class="node-tree-icon" style="color:#87CEEB">▬</span><span class="node-tree-label">${planeName} Plane</span>`;
+        
+        // Toggle visibility on eye icon click
+        const eyeEl = div.querySelector('.node-tree-eye');
+        eyeEl.addEventListener('click', (e) => {
+          e.stopPropagation();
+          part.setOriginPlaneVisible(planeName, !planeState.visible);
+          this._updateNodeTree();
+          this._update3DView();
+          this._scheduleRender();
+        });
+
+        // Select plane on row click
+        div.addEventListener('click', () => {
+          if (this._workspaceMode !== 'part') return;
+          if (this._selectedPlane === planeName) {
+            this._selectedPlane = null;
+            div.classList.remove('selected');
+          } else {
+            container.querySelectorAll('.node-tree-plane').forEach(p => p.classList.remove('selected'));
+            this._selectedPlane = planeName;
+            div.classList.add('selected');
+          }
+        });
+        
+        container.appendChild(div);
+      });
+    }
+
+    // Show custom planes if any
     const customPlanes = part ? part.getCustomPlanes() : [];
     if (customPlanes.length > 0) {
       customPlanes.forEach((plane) => {
@@ -3524,7 +3564,8 @@ class App {
       }
       
       const icon = featureIcons[feature.type] || '📦';
-      div.innerHTML = `<span class="node-tree-icon">${icon}</span><span class="node-tree-label">${feature.name}</span>`;
+      const visIcon = feature.visible ? '' : ' <span class="node-tree-hidden-indicator" title="Hidden">[hidden]</span>';
+      div.innerHTML = `<span class="node-tree-icon">${icon}</span><span class="node-tree-label">${feature.name}${visIcon}</span>`;
       
       div.addEventListener('click', () => {
         if (this._featurePanel) {
@@ -3649,6 +3690,8 @@ class App {
           item.classList.add('selected');
         }
         info(`Plane selection: ${this._selectedPlane || 'none'}`);
+        this._update3DView();
+        this._scheduleRender();
       });
     });
   }
@@ -3687,6 +3730,10 @@ class App {
    */
   _discardSketchOnPlane() {
     if (!this._sketchingOnPlane) return;
+
+    // Clear the active sketch on the part
+    const part = this._partManager.getPart();
+    if (part) part.setActiveSketch(null);
 
     // Clear the 2D scene (discard drawings)
     state.scene.clear();
@@ -3982,6 +4029,10 @@ class App {
 
   _finishSketchOnPlane() {
     if (!this._sketchingOnPlane) return;
+
+    // Clear the active sketch on the part
+    const part = this._partManager.getPart();
+    if (part) part.setActiveSketch(null);
 
     // Add the current 2D scene as a sketch feature on the active plane
     if (state.entities.length > 0) {

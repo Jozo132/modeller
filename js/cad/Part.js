@@ -29,6 +29,16 @@ export class Part {
     // Custom reference planes
     this.customPlanes = [];
     
+    // Default origin planes (XY, XZ, YZ)
+    this.originPlanes = {
+      XY: { visible: true, size: 5.0 },
+      XZ: { visible: true, size: 5.0 },
+      YZ: { visible: true, size: 5.0 },
+    };
+    
+    // Currently active sketch feature ID (being edited)
+    this.activeSketchId = null;
+    
     // Material properties
     this.material = null;
     
@@ -59,6 +69,42 @@ export class Part {
    */
   getCustomPlanes() {
     return this.customPlanes;
+  }
+
+  /**
+   * Set visibility of an origin plane.
+   * @param {'XY'|'XZ'|'YZ'} planeName - Name of the origin plane
+   * @param {boolean} visible - Whether the plane is visible
+   */
+  setOriginPlaneVisible(planeName, visible) {
+    if (this.originPlanes[planeName]) {
+      this.originPlanes[planeName].visible = visible;
+      this.modified = new Date();
+    }
+  }
+
+  /**
+   * Get the visibility state of origin planes.
+   * @returns {Object} Origin plane visibility states
+   */
+  getOriginPlanes() {
+    return this.originPlanes;
+  }
+
+  /**
+   * Set the active sketch being edited.
+   * @param {string|null} sketchFeatureId - ID of the sketch feature being edited, or null
+   */
+  setActiveSketch(sketchFeatureId) {
+    this.activeSketchId = sketchFeatureId;
+  }
+
+  /**
+   * Get the currently active sketch feature ID.
+   * @returns {string|null} Active sketch feature ID or null
+   */
+  getActiveSketchId() {
+    return this.activeSketchId;
   }
   
   // -----------------------------------------------------------------------
@@ -178,6 +224,10 @@ export class Part {
     if (options.direction) extrudeFeature.direction = options.direction;
     if (options.symmetric !== undefined) extrudeFeature.symmetric = options.symmetric;
     
+    // Link the sketch as a child of the extrude feature and hide it
+    extrudeFeature.addChild(sketchId);
+    sketchFeature.setVisible(false);
+    
     this.featureTree.addFeature(extrudeFeature);
     // Note: Physical properties are computed lazily when requested
     
@@ -205,6 +255,10 @@ export class Part {
     
     if (options.operation) revolveFeature.operation = options.operation;
     if (options.axis) revolveFeature.setAxis(options.axis.origin, options.axis.direction);
+    
+    // Link the sketch as a child of the revolve feature and hide it
+    revolveFeature.addChild(sketchId);
+    sketchFeature.setVisible(false);
     
     this.featureTree.addFeature(revolveFeature);
     // Note: Physical properties are computed lazily when requested
@@ -342,6 +396,7 @@ export class Part {
       created: this.created.toISOString(),
       modified: this.modified.toISOString(),
       featureTree: this.featureTree.serialize(),
+      originPlanes: this.originPlanes,
       material: this.material,
       mass: this.mass,
       volume: this.volume,
@@ -381,6 +436,15 @@ export class Part {
     part.mass = data.mass || 0;
     part.volume = data.volume || 0;
     part.centerOfMass = data.centerOfMass || { x: 0, y: 0, z: 0 };
+
+    // Deserialize origin planes
+    if (data.originPlanes) {
+      part.originPlanes = {
+        XY: { ...part.originPlanes.XY, ...data.originPlanes.XY },
+        XZ: { ...part.originPlanes.XZ, ...data.originPlanes.XZ },
+        YZ: { ...part.originPlanes.YZ, ...data.originPlanes.YZ },
+      };
+    }
 
     return part;
   }
