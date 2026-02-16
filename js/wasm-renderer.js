@@ -1,13 +1,13 @@
-// wasm-renderer.js — WASM-backed renderer replacing Three.js Renderer3D
+// wasm-renderer.js — WASM-backed renderer for 2D sketching and 3D viewing
 // Loads the AssemblyScript WASM module, manages scene state via WASM exports,
 // and uses WebGLExecutor to process batched WebGL commands.
 
 import { WebGLExecutor } from './webgl-executor.js';
 
 /**
- * WasmRenderer — drop-in replacement for Renderer3D.
+ * WasmRenderer — WASM-backed renderer for 2D and 3D views.
  *
- * Public surface kept compatible with main.js usage:
+ * Public surface used by main.js:
  *   - constructor(container)
  *   - setMode(mode)           '2d' | '3d'
  *   - setVisible(visible)
@@ -552,7 +552,7 @@ export class WasmRenderer {
   /* ---------- 2D Sketch Rendering ---------- */
 
   /**
-   * Sync orthographic camera to legacy viewport pan/zoom.
+   * Sync orthographic camera to viewport pan/zoom.
    */
   sync2DView(viewport) {
     if (!viewport || !this._ready || this.mode !== '2d') return;

@@ -1,7 +1,6 @@
 // js/main.js — Application entry point
 import { state } from './state.js';
 import { Viewport } from './viewport.js';
-import { Renderer } from './renderer.js';
 import { WasmRenderer } from './wasm-renderer.js';
 import { PartManager } from './part-manager.js';
 import { FeaturePanel } from './ui/featurePanel.js';
@@ -36,7 +35,6 @@ class App {
   constructor() {
     info('App initialization started');
     this._renderer3d = null;
-    this._webglFallback = false;
     this._workspaceMode = null; // 'sketch' | 'part' | null (quick-start)
     this._sketchingOnPlane = false; // true when in sketch-on-plane mode inside Part workspace
     this._activeSketchPlane = null; // plane reference for current sketch
@@ -45,26 +43,20 @@ class App {
     
     // Initialize unified 3D renderer
     const view3dContainer = document.getElementById('view-3d');
-    try {
-      this._renderer3d = new WasmRenderer(view3dContainer);
-      this._renderer3d.setMode('2d'); // Start in 2D sketching mode
-      this._renderer3d.setVisible(true);
-    } catch (err) {
-      warn('WasmRenderer unavailable; falling back to legacy 2D canvas renderer', err);
-      this._renderer3d = null;
-      this._webglFallback = true;
-      if (view3dContainer) {
-        view3dContainer.style.display = 'none';
-      }
-    }
+    this._renderer3d = new WasmRenderer(view3dContainer);
+    this._renderer3d.setMode('2d'); // Start in 2D sketching mode
+    this._renderer3d.setVisible(true);
     
-    // Keep legacy canvas hidden for compatibility
     this.canvas = document.getElementById('cad-canvas');
     this.viewport = new Viewport(this.canvas);
-    this.renderer = new Renderer(this.viewport); // Keep for legacy code
-    if (this._webglFallback) {
-      this.canvas.style.setProperty('display', 'block', 'important');
-    }
+
+    // Render state used by tools to communicate hover/preview/snap/cursor info
+    this.renderer = {
+      hoverEntity: null,
+      previewEntities: [],
+      snapPoint: null,
+      cursorWorld: null,
+    };
     
     this._pointerFramePending = false;
     this._lastPointer = null;
@@ -145,9 +137,6 @@ class App {
 
     // Initial render
     this._scheduleRender();
-    if (this._webglFallback) {
-      this.setStatus('WebGL2 unavailable here. Running in 2D fallback mode.');
-    }
     info('App initialization completed');
   }
 
@@ -166,22 +155,18 @@ class App {
       this._syncViewportSize();
       try {
         if (!this._3dMode) {
-          if (this._renderer3d) {
-            this._renderer3d.sync2DView(this.viewport);
-            this._renderer3d.render2DScene(state.scene, {
-              sceneVersion: this._sceneVersion,
-              hoverEntity: this.renderer.hoverEntity,
-              previewEntities: this.renderer.previewEntities,
-              snapPoint: this.renderer.snapPoint,
-              cursorWorld: this.renderer.cursorWorld,
-              isLayerVisible: (layer) => state.isLayerVisible(layer),
-              getLayerColor: (layer) => state.getLayerColor(layer),
-              allDimensionsVisible: state.allDimensionsVisible,
-              constraintIconsVisible: state.constraintIconsVisible,
-            });
-          } else {
-            this.renderer.render();
-          }
+          this._renderer3d.sync2DView(this.viewport);
+          this._renderer3d.render2DScene(state.scene, {
+            sceneVersion: this._sceneVersion,
+            hoverEntity: this.renderer.hoverEntity,
+            previewEntities: this.renderer.previewEntities,
+            snapPoint: this.renderer.snapPoint,
+            cursorWorld: this.renderer.cursorWorld,
+            isLayerVisible: (layer) => state.isLayerVisible(layer),
+            getLayerColor: (layer) => state.getLayerColor(layer),
+            allDimensionsVisible: state.allDimensionsVisible,
+            constraintIconsVisible: state.constraintIconsVisible,
+          });
         }
       } catch (err) {
         error('Render loop failed', err);
@@ -681,230 +666,9 @@ class App {
     showContextMenu(x, y, items);
   }
 
-  // --- Canvas events ---
-  _bindCanvasEvents() {
-    const canvas = this.canvas;
-    let movedSinceDown = false;
-    let mouseDown = false;
-
-    // Mouse down
-    canvas.addEventListener('mousedown', (e) => {
-      const rect = canvas.getBoundingClientRect();
-      const sx = e.clientX - rect.left;
-      const sy = e.clientY - rect.top;
-      movedSinceDown = false;
-      mouseDown = true;
-
-      // Middle button = pan
-      if (e.button === 1) {
-        e.preventDefault();
-        this.viewport.startPan(sx, sy);
-        return;
-      }
-
-      if (e.button === 0) {
-        if (this.activeTool.onMouseDown) {
-          let wx, wy;
-          if (this.activeTool.freehand) {
-            const raw = this.viewport.screenToWorld(sx, sy);
-            wx = raw.x; wy = raw.y;
-          } else {
-            const basePoint = this.activeTool._startX !== undefined
-              ? { x: this.activeTool._startX, y: this.activeTool._startY }
-              : null;
-            const { world } = getSnappedPosition(
-              sx, sy, this.viewport,
-              this.activeTool.step > 0 ? basePoint : null,
-              { ignoreGridSnap: !!e.ctrlKey }
-            );
-            wx = world.x; wy = world.y;
-          }
-          this.activeTool.onMouseDown(wx, wy, sx, sy, e);
-        }
-      }
-    });
-
-    // Mouse move
-    canvas.addEventListener('mousemove', (e) => {
-      const rect = canvas.getBoundingClientRect();
-      const sx = e.clientX - rect.left;
-      const sy = e.clientY - rect.top;
-      if (mouseDown) movedSinceDown = true;
-
-      // Pan
-      if (this.viewport.isPanning) {
-        this.viewport.updatePan(sx, sy);
-        this._scheduleRender();
-        return;
-      }
-
-      this._lastPointer = { sx, sy, ctrlKey: e.ctrlKey };
-      this._schedulePointerProcessing();
-
-      this._moveEventCount += 1;
-      if (this._moveEventCount % 200 === 0) {
-        debug('Pointer move activity', { count: this._moveEventCount, tool: this.activeTool.name });
-      }
-    });
-
-    // Mouse up
-    canvas.addEventListener('mouseup', (e) => {
-      const rect = canvas.getBoundingClientRect();
-      const sx = e.clientX - rect.left;
-      const sy = e.clientY - rect.top;
-      mouseDown = false;
-
-      if (e.button === 1) {
-        this.viewport.endPan();
-        debouncedSave();
-        return;
-      }
-
-      const world = this.viewport.screenToWorld(sx, sy);
-
-      if (this.activeTool.onMouseUp) {
-        this.activeTool.onMouseUp(world.x, world.y, e);
-      }
-
-      this._scheduleRender();
-    });
-
-    // Click
-    canvas.addEventListener('click', (e) => {
-      if (this.viewport.isPanning) return;
-      if (movedSinceDown && this.activeTool.name === 'select') {
-        movedSinceDown = false;
-        return;
-      }
-      const rect = canvas.getBoundingClientRect();
-      const sx = e.clientX - rect.left;
-      const sy = e.clientY - rect.top;
-
-      const basePoint = this.activeTool._startX !== undefined && this.activeTool.step > 0
-        ? { x: this.activeTool._startX, y: this.activeTool._startY }
-        : null;
-      const { world } = getSnappedPosition(
-        sx,
-        sy,
-        this.viewport,
-        basePoint,
-        { ignoreGridSnap: !!e.ctrlKey }
-      );
-
-      // Only fire onClick if not coming from a drag (select tool)
-      if (this.activeTool.name === 'select' && this.activeTool._isDragging) return;
-
-      this.activeTool.onClick(world.x, world.y, e);
-      movedSinceDown = false;
-      this._scheduleRender();
-    });
-
-    // Wheel zoom
-    canvas.addEventListener('wheel', (e) => {
-      e.preventDefault();
-      const rect = canvas.getBoundingClientRect();
-      const sx = e.clientX - rect.left;
-      const sy = e.clientY - rect.top;
-      const factor = e.deltaY > 0 ? 0.9 : 1.1;
-      this.viewport.zoomAt(sx, sy, factor);
-      debug('Wheel zoom', { factor, zoom: this.viewport.zoom.toFixed(4) });
-      debouncedSave();
-      this._scheduleRender();
-    }, { passive: false });
-
-    // Context menu — right-click menu with entity-specific options
-    canvas.addEventListener('contextmenu', (e) => {
-      e.preventDefault();
-
-      // If a multi-step tool is active, cancel it and return to select
-      if (this.activeTool.name !== 'select') {
-        this.activeTool.onCancel();
-        this.setActiveTool('select');
-        this._scheduleRender();
-        return;
-      }
-
-      const rect = canvas.getBoundingClientRect();
-      const sx = e.clientX - rect.left;
-      const sy = e.clientY - rect.top;
-      const world = this.viewport.screenToWorld(sx, sy);
-      const tol = 18 / this.viewport.zoom;
-
-      // Hit-test for entity under cursor
-      let hitEntity = null;
-      let minDist = Infinity;
-      for (const entity of state.entities) {
-        if (!entity.visible || !state.isLayerVisible(entity.layer)) continue;
-        const d = entity.distanceTo(world.x, world.y);
-        if (d <= tol && d < minDist) { minDist = d; hitEntity = entity; }
-      }
-
-      this._showContextMenu(e.clientX, e.clientY, hitEntity);
-    });
-
-    // Double-click on canvas to edit dimensions inline
-    canvas.addEventListener('dblclick', (e) => {
-      const rect = canvas.getBoundingClientRect();
-      const sx = e.clientX - rect.left;
-      const sy = e.clientY - rect.top;
-      const world = this.viewport.screenToWorld(sx, sy);
-      const tol = 12 / this.viewport.zoom;
-
-      // Find the closest dimension near the double-click position
-      let closestDim = null;
-      let closestDist = Infinity;
-      for (const dim of state.scene.dimensions) {
-        if (!dim.visible) continue;
-        const d = dim.distanceTo(world.x, world.y);
-        if (d < tol && d < closestDist) {
-          closestDist = d;
-          closestDim = dim;
-        }
-      }
-
-      if (closestDim) {
-        e.preventDefault();
-        e.stopPropagation();
-        this._editDimensionConstraint(closestDim, { x: sx, y: sy });
-      }
-    });
-
-    canvas.addEventListener('touchstart', (e) => {
-      if (e.touches.length !== 1) return;
-      e.preventDefault();
-      const rect = canvas.getBoundingClientRect();
-      const touch = e.touches[0];
-      const sx = touch.clientX - rect.left;
-      const sy = touch.clientY - rect.top;
-      const basePoint = this.activeTool._startX !== undefined && this.activeTool.step > 0
-        ? { x: this.activeTool._startX, y: this.activeTool._startY }
-        : null;
-      const { world } = getSnappedPosition(sx, sy, this.viewport, basePoint);
-      this.activeTool.onClick(world.x, world.y, e);
-      this._scheduleRender();
-    }, { passive: false });
-
-    canvas.addEventListener('touchmove', (e) => {
-      if (e.touches.length !== 1) return;
-      e.preventDefault();
-      const rect = canvas.getBoundingClientRect();
-      const touch = e.touches[0];
-      const sx = touch.clientX - rect.left;
-      const sy = touch.clientY - rect.top;
-      const basePoint = this.activeTool._startX !== undefined && this.activeTool.step > 0
-        ? { x: this.activeTool._startX, y: this.activeTool._startY }
-        : null;
-      const { world, snap } = getSnappedPosition(sx, sy, this.viewport, basePoint);
-      this.renderer.cursorWorld = world;
-      this.renderer.snapPoint = snap;
-      this.activeTool.onMouseMove(world.x, world.y, sx, sy);
-      this._scheduleRender();
-    }, { passive: false });
-  }
-
   // --- 3D Canvas Events ---
   _bind3DCanvasEvents() {
-    const canvas = this._renderer3d?.renderer?.domElement || this.canvas;
+    const canvas = this._renderer3d.renderer?.domElement;
     if (!canvas) return;
     let movedSinceDown = false;
     let mouseDown = false;

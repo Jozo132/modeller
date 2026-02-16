@@ -140,7 +140,7 @@ export class Sketch {
   }
 
   // -----------------------------------------------------------------------
-  // Direct access to scene collections (for compatibility)
+  // Direct access to scene collections
   // -----------------------------------------------------------------------
   
   get points() { return this.scene.points; }
