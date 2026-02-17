@@ -63,6 +63,7 @@ export const {
   addEntityCircle,
   addEntityArc,
   addEntityPoint,
+  addEntityDimension,
   setSnapPosition,
   setCursorPosition,
   clearSolver,

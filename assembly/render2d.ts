@@ -3,13 +3,26 @@
 
 import { Mat4, Color } from "./math";
 import { CommandBuffer } from "./commands";
-import { EntityStore, FLAG_VISIBLE, FLAG_SELECTED, FLAG_CONSTRUCTION, FLAG_HOVER, FLAG_FIXED, FLAG_PREVIEW } from "./entities";
+import { EntityStore, Dimension2D, DIM_LINEAR, DIM_HORIZONTAL, DIM_VERTICAL, DIM_ANGLE, FLAG_VISIBLE, FLAG_SELECTED, FLAG_CONSTRUCTION, FLAG_HOVER, FLAG_FIXED, FLAG_PREVIEW } from "./entities";
 
 const CIRCLE_SEGMENTS: i32 = 64;
 const CROSSHAIR_EXTENT: f32 = 10000.0;
 
+// Dashed line parameters for construction geometry
+const DASH_LENGTH: f32 = 6.0;
+const GAP_LENGTH: f32 = 4.0;
+// Skip step for dashed circles/arcs (every N tessellation segments)
+const DASH_STEP: i32 = 4;  // draw 2 segments, skip 2 → ~50% duty cycle
+
+// Dimension arrowhead parameters
+const ARROW_SIZE_RATIO: f32 = 0.15;  // fraction of dimension line length
+const MAX_ARROW_SIZE: f32 = 3.0;     // world-unit cap
+const ARROW_HALF_WIDTH: f32 = 0.3;   // width-to-length ratio of arrowhead
+
 // Model matrix for entity plane (transforms local 2D to world 3D)
 let entityModelMatrix: Mat4 = Mat4.identity();
+// Whether we're rendering on a 3D sketch plane (requires depth testing)
+let entityModelMatrixIs3D: bool = false;
 
 export function setEntityModelMatrix(
   m00: f32, m01: f32, m02: f32, m03: f32,
@@ -23,10 +36,12 @@ export function setEntityModelMatrix(
     m20, m21, m22, m23,
     m30, m31, m32, m33
   );
+  entityModelMatrixIs3D = true;
 }
 
 export function resetEntityModelMatrix(): void {
   entityModelMatrix = Mat4.identity();
+  entityModelMatrixIs3D = false;
 }
 
 /**
@@ -35,7 +50,9 @@ export function resetEntityModelMatrix(): void {
  */
 export function render2DEntities(cmd: CommandBuffer, vp: Mat4, entities: EntityStore): void {
   cmd.emitSetProgram(1); // line/point shader
-  cmd.emitSetDepthTest(false);
+  // In 3D sketch mode, enable depth testing so entities interact properly
+  // with solid geometry. In pure 2D mode, disable for flat overlay.
+  cmd.emitSetDepthTest(entityModelMatrixIs3D);
 
   // Multiply model matrix with view-projection to get final MVP
   const mvp = vp.multiply(entityModelMatrix);
@@ -65,10 +82,45 @@ export function render2DEntities(cmd: CommandBuffer, vp: Mat4, entities: EntityS
     cmd.emitSetMatrix(mvp);
     cmd.emitSetLineWidth(selected ? 2.0 : 1.0);
 
-    const verts = new StaticArray<f32>(6);
-    unchecked(verts[0] = seg.x1); unchecked(verts[1] = seg.y1); unchecked(verts[2] = 0);
-    unchecked(verts[3] = seg.x2); unchecked(verts[4] = seg.y2); unchecked(verts[5] = 0);
-    cmd.emitDrawLines(verts, 2);
+    if (construction) {
+      // Subdivide line into dashed segments for construction geometry.
+      // WebGL doesn't support line dash natively, so we create geometry.
+      const totalLen: f32 = <f32>Math.sqrt(<f64>((seg.x2 - seg.x1) * (seg.x2 - seg.x1) + (seg.y2 - seg.y1) * (seg.y2 - seg.y1)));
+      if (totalLen > 0) {
+        const ux: f32 = (seg.x2 - seg.x1) / totalLen;
+        const uy: f32 = (seg.y2 - seg.y1) / totalLen;
+        const period: f32 = DASH_LENGTH + GAP_LENGTH;
+        const dashCount: i32 = <i32>(totalLen / period) + 1;
+        const dashVerts = new StaticArray<f32>(dashCount * 6);
+        let vi: i32 = 0;
+        let t: f32 = 0;
+        for (let d: i32 = 0; d < dashCount; d++) {
+          const t0 = t;
+          let t1 = t + DASH_LENGTH;
+          if (t1 > totalLen) t1 = totalLen;
+          if (t0 < totalLen) {
+            unchecked(dashVerts[vi++] = seg.x1 + ux * t0);
+            unchecked(dashVerts[vi++] = seg.y1 + uy * t0);
+            unchecked(dashVerts[vi++] = 0);
+            unchecked(dashVerts[vi++] = seg.x1 + ux * t1);
+            unchecked(dashVerts[vi++] = seg.y1 + uy * t1);
+            unchecked(dashVerts[vi++] = 0);
+          }
+          t += period;
+          if (t >= totalLen) break;
+        }
+        if (vi > 0) {
+          const trimmed = new StaticArray<f32>(vi);
+          for (let k: i32 = 0; k < vi; k++) unchecked(trimmed[k] = dashVerts[k]);
+          cmd.emitDrawLines(trimmed, vi / 3);
+        }
+      }
+    } else {
+      const verts = new StaticArray<f32>(6);
+      unchecked(verts[0] = seg.x1); unchecked(verts[1] = seg.y1); unchecked(verts[2] = 0);
+      unchecked(verts[3] = seg.x2); unchecked(verts[4] = seg.y2); unchecked(verts[5] = 0);
+      cmd.emitDrawLines(verts, 2);
+    }
   }
 
   // --- Circles ---
@@ -94,6 +146,7 @@ export function render2DEntities(cmd: CommandBuffer, vp: Mat4, entities: EntityS
     cmd.emitSetLineWidth(selected ? 2.0 : 1.0);
 
     // Tessellate circle as line segments
+    // For construction, emit every other segment pair to create a dashed appearance
     const vertCount = CIRCLE_SEGMENTS * 2;
     const verts = new StaticArray<f32>(vertCount * 3);
     for (let s: i32 = 0; s < CIRCLE_SEGMENTS; s++) {
@@ -107,7 +160,22 @@ export function render2DEntities(cmd: CommandBuffer, vp: Mat4, entities: EntityS
       unchecked(verts[idx + 4] = circle.cy + circle.radius * <f32>Math.sin(<f64>a1));
       unchecked(verts[idx + 5] = 0);
     }
-    cmd.emitDrawLines(verts, vertCount);
+    if (construction) {
+      // Dashed circle: draw DASH_STEP/2 segments, skip DASH_STEP/2 → ~50% duty
+      for (let s: i32 = 0; s < CIRCLE_SEGMENTS; s += DASH_STEP) {
+        const drawCount: i32 = DASH_STEP / 2;
+        const count: i32 = s + drawCount <= CIRCLE_SEGMENTS ? drawCount : CIRCLE_SEGMENTS - s;
+        const dashVerts = new StaticArray<f32>(count * 6);
+        for (let k: i32 = 0; k < count; k++) {
+          const srcIdx = (s + k) * 6;
+          const dstIdx = k * 6;
+          for (let j: i32 = 0; j < 6; j++) unchecked(dashVerts[dstIdx + j] = verts[srcIdx + j]);
+        }
+        cmd.emitDrawLines(dashVerts, count * 2);
+      }
+    } else {
+      cmd.emitDrawLines(verts, vertCount);
+    }
   }
 
   // --- Arcs ---
@@ -150,7 +218,22 @@ export function render2DEntities(cmd: CommandBuffer, vp: Mat4, entities: EntityS
       unchecked(verts[idx + 4] = arc.cy + arc.radius * <f32>Math.sin(<f64>t1));
       unchecked(verts[idx + 5] = 0);
     }
-    cmd.emitDrawLines(verts, vertCount);
+    if (construction) {
+      // Dashed arc: draw DASH_STEP/2 segments, skip DASH_STEP/2
+      for (let s: i32 = 0; s < steps; s += DASH_STEP) {
+        const drawCount: i32 = DASH_STEP / 2;
+        const count: i32 = s + drawCount <= steps ? drawCount : steps - s;
+        const dashVerts = new StaticArray<f32>(count * 6);
+        for (let k: i32 = 0; k < count; k++) {
+          const srcIdx = (s + k) * 6;
+          const dstIdx = k * 6;
+          for (let j: i32 = 0; j < 6; j++) unchecked(dashVerts[dstIdx + j] = verts[srcIdx + j]);
+        }
+        cmd.emitDrawLines(dashVerts, count * 2);
+      }
+    } else {
+      cmd.emitDrawLines(verts, vertCount);
+    }
   }
 
   // --- Points ---
@@ -177,6 +260,116 @@ export function render2DEntities(cmd: CommandBuffer, vp: Mat4, entities: EntityS
     const verts = new StaticArray<f32>(3);
     unchecked(verts[0] = pt.x); unchecked(verts[1] = pt.y); unchecked(verts[2] = 0);
     cmd.emitDrawPoints(verts, 1, pt.size);
+  }
+
+  // --- Dimensions (extension + dimension lines with arrowheads) ---
+  for (let i: i32 = 0; i < entities.dimensions.length; i++) {
+    const dim = unchecked(entities.dimensions[i]);
+    if (!(dim.flags & FLAG_VISIBLE)) continue;
+
+    const selected = (dim.flags & FLAG_SELECTED) != 0;
+    const hover = (dim.flags & FLAG_HOVER) != 0;
+
+    if (selected) {
+      cmd.emitSetColor(0.0, 0.749, 1.0, 1.0);
+    } else if (hover) {
+      cmd.emitSetColor(0.498, 0.847, 1.0, 1.0);
+    } else {
+      cmd.emitSetColor(dim.r, dim.g, dim.b, dim.a);
+    }
+
+    cmd.emitSetMatrix(mvp);
+    cmd.emitSetLineWidth(1.0);
+
+    if (dim.dimType == DIM_ANGLE) {
+      // Angle dimension: arc from angleStart spanning angleSweep
+      const arcR: f32 = <f32>Math.abs(<f64>dim.offset);
+      const steps: i32 = <i32>Math.max(16.0, 64.0 * <f64>Math.abs(<f64>dim.angleSweep) / (Math.PI * 2.0));
+      const arcVerts = new StaticArray<f32>(steps * 2 * 3);
+      for (let s: i32 = 0; s < steps; s++) {
+        const t0 = dim.angleStart + dim.angleSweep * <f32>s / <f32>steps;
+        const t1 = dim.angleStart + dim.angleSweep * <f32>(s + 1) / <f32>steps;
+        const idx = s * 6;
+        unchecked(arcVerts[idx]     = dim.x1 + arcR * <f32>Math.cos(<f64>t0));
+        unchecked(arcVerts[idx + 1] = dim.y1 + arcR * <f32>Math.sin(<f64>t0));
+        unchecked(arcVerts[idx + 2] = 0);
+        unchecked(arcVerts[idx + 3] = dim.x1 + arcR * <f32>Math.cos(<f64>t1));
+        unchecked(arcVerts[idx + 4] = dim.y1 + arcR * <f32>Math.sin(<f64>t1));
+        unchecked(arcVerts[idx + 5] = 0);
+      }
+      cmd.emitDrawLines(arcVerts, steps * 2);
+    } else {
+      // Linear dimension: extension lines + dimension line
+      const dx: f32 = dim.x2 - dim.x1;
+      const dy: f32 = dim.y2 - dim.y1;
+      const len: f32 = <f32>Math.sqrt(<f64>(dx * dx + dy * dy));
+      const safeLen: f32 = len > 1e-9 ? len : 1.0;
+
+      let d1x: f32, d1y: f32, d2x: f32, d2y: f32;
+      if (dim.dimType == DIM_HORIZONTAL) {
+        const dimY = dim.y1 + dim.offset;
+        d1x = dim.x1; d1y = dimY;
+        d2x = dim.x2; d2y = dimY;
+      } else if (dim.dimType == DIM_VERTICAL) {
+        const dimX = dim.x1 + dim.offset;
+        d1x = dimX; d1y = dim.y1;
+        d2x = dimX; d2y = dim.y2;
+      } else {
+        const nx: f32 = -dy / safeLen;
+        const ny: f32 = dx / safeLen;
+        d1x = dim.x1 + nx * dim.offset;
+        d1y = dim.y1 + ny * dim.offset;
+        d2x = dim.x2 + nx * dim.offset;
+        d2y = dim.y2 + ny * dim.offset;
+      }
+
+      // Extension lines (from measurement points to dimension line)
+      const extVerts = new StaticArray<f32>(12);
+      unchecked(extVerts[0]  = dim.x1); unchecked(extVerts[1]  = dim.y1); unchecked(extVerts[2]  = 0);
+      unchecked(extVerts[3]  = d1x);    unchecked(extVerts[4]  = d1y);    unchecked(extVerts[5]  = 0);
+      unchecked(extVerts[6]  = dim.x2); unchecked(extVerts[7]  = dim.y2); unchecked(extVerts[8]  = 0);
+      unchecked(extVerts[9]  = d2x);    unchecked(extVerts[10] = d2y);    unchecked(extVerts[11] = 0);
+      cmd.emitDrawLines(extVerts, 4);
+
+      // Dimension line
+      const dimLineVerts = new StaticArray<f32>(6);
+      unchecked(dimLineVerts[0] = d1x); unchecked(dimLineVerts[1] = d1y); unchecked(dimLineVerts[2] = 0);
+      unchecked(dimLineVerts[3] = d2x); unchecked(dimLineVerts[4] = d2y); unchecked(dimLineVerts[5] = 0);
+      cmd.emitDrawLines(dimLineVerts, 2);
+
+      // Arrowheads (small triangles at each end)
+      const adx: f32 = d2x - d1x;
+      const ady: f32 = d2y - d1y;
+      const alen: f32 = <f32>Math.sqrt(<f64>(adx * adx + ady * ady));
+      if (alen > 1e-6) {
+        const ux: f32 = adx / alen;
+        const uy: f32 = ady / alen;
+        const arrowSize: f32 = <f32>Math.min(<f64>alen * <f64>ARROW_SIZE_RATIO, <f64>MAX_ARROW_SIZE);
+        // Arrow at d1 (pointing toward d1 from inside)
+        const arrowVerts = new StaticArray<f32>(12);
+        unchecked(arrowVerts[0]  = d1x); unchecked(arrowVerts[1]  = d1y); unchecked(arrowVerts[2]  = 0);
+        unchecked(arrowVerts[3]  = d1x + ux * arrowSize + uy * arrowSize * ARROW_HALF_WIDTH);
+        unchecked(arrowVerts[4]  = d1y + uy * arrowSize - ux * arrowSize * ARROW_HALF_WIDTH);
+        unchecked(arrowVerts[5]  = 0);
+        // Arrow at d2 (pointing toward d2 from inside)
+        unchecked(arrowVerts[6]  = d2x); unchecked(arrowVerts[7]  = d2y); unchecked(arrowVerts[8]  = 0);
+        unchecked(arrowVerts[9]  = d2x - ux * arrowSize - uy * arrowSize * ARROW_HALF_WIDTH);
+        unchecked(arrowVerts[10] = d2y - uy * arrowSize + ux * arrowSize * ARROW_HALF_WIDTH);
+        unchecked(arrowVerts[11] = 0);
+        cmd.emitDrawLines(arrowVerts, 4);
+        // Mirror arrowheads
+        const arrowVerts2 = new StaticArray<f32>(12);
+        unchecked(arrowVerts2[0]  = d1x); unchecked(arrowVerts2[1]  = d1y); unchecked(arrowVerts2[2]  = 0);
+        unchecked(arrowVerts2[3]  = d1x + ux * arrowSize - uy * arrowSize * ARROW_HALF_WIDTH);
+        unchecked(arrowVerts2[4]  = d1y + uy * arrowSize + ux * arrowSize * ARROW_HALF_WIDTH);
+        unchecked(arrowVerts2[5]  = 0);
+        unchecked(arrowVerts2[6]  = d2x); unchecked(arrowVerts2[7]  = d2y); unchecked(arrowVerts2[8]  = 0);
+        unchecked(arrowVerts2[9]  = d2x - ux * arrowSize + uy * arrowSize * ARROW_HALF_WIDTH);
+        unchecked(arrowVerts2[10] = d2y - uy * arrowSize - ux * arrowSize * ARROW_HALF_WIDTH);
+        unchecked(arrowVerts2[11] = 0);
+        cmd.emitDrawLines(arrowVerts2, 4);
+      }
+    }
   }
 
   // --- Snap indicator ---

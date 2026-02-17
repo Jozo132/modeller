@@ -195,6 +195,24 @@ export declare function addEntityArc(cx: number, cy: number, radius: number, sta
  */
 export declare function addEntityPoint(x: number, y: number, size: number, flags: number, r: number, g: number, b: number, a: number): number;
 /**
+ * assembly/index/addEntityDimension
+ * @param x1 `f32`
+ * @param y1 `f32`
+ * @param x2 `f32`
+ * @param y2 `f32`
+ * @param offset `f32`
+ * @param dimType `i32`
+ * @param angleStart `f32`
+ * @param angleSweep `f32`
+ * @param flags `i32`
+ * @param r `f32`
+ * @param g `f32`
+ * @param b `f32`
+ * @param a `f32`
+ * @returns `i32`
+ */
+export declare function addEntityDimension(x1: number, y1: number, x2: number, y2: number, offset: number, dimType: number, angleStart: number, angleSweep: number, flags: number, r: number, g: number, b: number, a: number): number;
+/**
  * assembly/index/setSnapPosition
  * @param x `f32`
  * @param y `f32`

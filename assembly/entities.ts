@@ -74,6 +74,44 @@ export class Point2D {
   }
 }
 
+// Dimension types
+export const DIM_LINEAR: i32 = 0;
+export const DIM_HORIZONTAL: i32 = 1;
+export const DIM_VERTICAL: i32 = 2;
+export const DIM_ANGLE: i32 = 3;
+
+/**
+ * Dimension2D — stores dimension line geometry for WASM rendering.
+ * Comprises extension lines, a dimension line with arrowheads, and an anchor
+ * position for the label text (rendered on overlay canvas in JS).
+ */
+export class Dimension2D {
+  // Measured points
+  x1: f32; y1: f32;
+  x2: f32; y2: f32;
+  // Offset distance (perpendicular or radial)
+  offset: f32;
+  // Dimension type
+  dimType: i32;
+  // Angle-specific fields
+  angleStart: f32;
+  angleSweep: f32;
+  // Visual flags/color
+  flags: i32;
+  r: f32; g: f32; b: f32; a: f32;
+
+  constructor() {
+    this.x1 = 0; this.y1 = 0;
+    this.x2 = 0; this.y2 = 0;
+    this.offset = 20;
+    this.dimType = DIM_LINEAR;
+    this.angleStart = 0;
+    this.angleSweep = 0;
+    this.flags = FLAG_VISIBLE;
+    this.r = 1.0; this.g = 0.706; this.b = 0.196; this.a = 1.0; // #ffb432
+  }
+}
+
 /**
  * EntityStore — flat arrays of 2D entities managed from JS side.
  * JS pushes entity data, WASM renders them each frame.
@@ -83,6 +121,7 @@ export class EntityStore {
   circles: Array<Circle2D>;
   arcs: Array<Arc2D>;
   points: Array<Point2D>;
+  dimensions: Array<Dimension2D>;
 
   // Snap point
   snapX: f32;
@@ -99,6 +138,7 @@ export class EntityStore {
     this.circles = new Array<Circle2D>();
     this.arcs = new Array<Arc2D>();
     this.points = new Array<Point2D>();
+    this.dimensions = new Array<Dimension2D>();
     this.snapX = 0;
     this.snapY = 0;
     this.snapVisible = false;
@@ -112,6 +152,7 @@ export class EntityStore {
     this.circles = new Array<Circle2D>();
     this.arcs = new Array<Arc2D>();
     this.points = new Array<Point2D>();
+    this.dimensions = new Array<Dimension2D>();
     this.snapVisible = false;
     this.cursorVisible = false;
   }
@@ -157,5 +198,22 @@ export class EntityStore {
     p.r = r; p.g = g; p.b = b; p.a = a;
     this.points.push(p);
     return this.points.length - 1;
+  }
+
+  addDimension(x1: f32, y1: f32, x2: f32, y2: f32,
+               offset: f32, dimType: i32,
+               angleStart: f32, angleSweep: f32,
+               flags: i32, r: f32, g: f32, b: f32, a: f32): i32 {
+    const d = new Dimension2D();
+    d.x1 = x1; d.y1 = y1;
+    d.x2 = x2; d.y2 = y2;
+    d.offset = offset;
+    d.dimType = dimType;
+    d.angleStart = angleStart;
+    d.angleSweep = angleSweep;
+    d.flags = flags;
+    d.r = r; d.g = g; d.b = b; d.a = a;
+    this.dimensions.push(d);
+    return this.dimensions.length - 1;
   }
 }
