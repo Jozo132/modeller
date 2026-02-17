@@ -3507,7 +3507,7 @@ class App {
     const tip = document.createElement('div');
     tip.id = 'plane-select-tooltip';
     tip.className = 'plane-select-tooltip';
-    tip.textContent = 'Tip: Select a plane or face first, or choose one below';
+    tip.textContent = 'Select a plane or face first, or choose one below';
     document.body.appendChild(tip);
 
     const rect = anchor.getBoundingClientRect();
