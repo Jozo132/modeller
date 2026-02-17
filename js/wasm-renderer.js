@@ -2049,7 +2049,7 @@ function _computeFullyConstrained(scene) {
   };
 
   let changed = true;
-  let safety = 100;
+  let safety = 100; // Max iterations to prevent infinite loops in cyclic constraint graphs
   while (changed && safety-- > 0) {
     changed = false;
 
