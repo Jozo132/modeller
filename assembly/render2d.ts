@@ -8,6 +8,17 @@ import { EntityStore, Dimension2D, DIM_LINEAR, DIM_HORIZONTAL, DIM_VERTICAL, DIM
 const CIRCLE_SEGMENTS: i32 = 64;
 const CROSSHAIR_EXTENT: f32 = 10000.0;
 
+// Dashed line parameters for construction geometry
+const DASH_LENGTH: f32 = 6.0;
+const GAP_LENGTH: f32 = 4.0;
+// Skip step for dashed circles/arcs (every N tessellation segments)
+const DASH_STEP: i32 = 4;  // draw 2 segments, skip 2 → ~50% duty cycle
+
+// Dimension arrowhead parameters
+const ARROW_SIZE_RATIO: f32 = 0.15;  // fraction of dimension line length
+const MAX_ARROW_SIZE: f32 = 3.0;     // world-unit cap
+const ARROW_HALF_WIDTH: f32 = 0.3;   // width-to-length ratio of arrowhead
+
 // Model matrix for entity plane (transforms local 2D to world 3D)
 let entityModelMatrix: Mat4 = Mat4.identity();
 // Whether we're rendering on a 3D sketch plane (requires depth testing)
@@ -74,20 +85,18 @@ export function render2DEntities(cmd: CommandBuffer, vp: Mat4, entities: EntityS
     if (construction) {
       // Subdivide line into dashed segments for construction geometry.
       // WebGL doesn't support line dash natively, so we create geometry.
-      const dashLen: f32 = 6.0;
-      const gapLen: f32 = 4.0;
       const totalLen: f32 = <f32>Math.sqrt(<f64>((seg.x2 - seg.x1) * (seg.x2 - seg.x1) + (seg.y2 - seg.y1) * (seg.y2 - seg.y1)));
       if (totalLen > 0) {
         const ux: f32 = (seg.x2 - seg.x1) / totalLen;
         const uy: f32 = (seg.y2 - seg.y1) / totalLen;
-        const period: f32 = dashLen + gapLen;
+        const period: f32 = DASH_LENGTH + GAP_LENGTH;
         const dashCount: i32 = <i32>(totalLen / period) + 1;
         const dashVerts = new StaticArray<f32>(dashCount * 6);
         let vi: i32 = 0;
         let t: f32 = 0;
         for (let d: i32 = 0; d < dashCount; d++) {
           const t0 = t;
-          let t1 = t + dashLen;
+          let t1 = t + DASH_LENGTH;
           if (t1 > totalLen) t1 = totalLen;
           if (t0 < totalLen) {
             unchecked(dashVerts[vi++] = seg.x1 + ux * t0);
@@ -152,9 +161,10 @@ export function render2DEntities(cmd: CommandBuffer, vp: Mat4, entities: EntityS
       unchecked(verts[idx + 5] = 0);
     }
     if (construction) {
-      // Emit dashed circle: every other pair of segments
-      for (let s: i32 = 0; s < CIRCLE_SEGMENTS; s += 4) {
-        const count: i32 = s + 2 <= CIRCLE_SEGMENTS ? 2 : CIRCLE_SEGMENTS - s;
+      // Dashed circle: draw DASH_STEP/2 segments, skip DASH_STEP/2 → ~50% duty
+      for (let s: i32 = 0; s < CIRCLE_SEGMENTS; s += DASH_STEP) {
+        const drawCount: i32 = DASH_STEP / 2;
+        const count: i32 = s + drawCount <= CIRCLE_SEGMENTS ? drawCount : CIRCLE_SEGMENTS - s;
         const dashVerts = new StaticArray<f32>(count * 6);
         for (let k: i32 = 0; k < count; k++) {
           const srcIdx = (s + k) * 6;
@@ -209,9 +219,10 @@ export function render2DEntities(cmd: CommandBuffer, vp: Mat4, entities: EntityS
       unchecked(verts[idx + 5] = 0);
     }
     if (construction) {
-      // Dashed arc: emit every other pair
-      for (let s: i32 = 0; s < steps; s += 4) {
-        const count: i32 = s + 2 <= steps ? 2 : steps - s;
+      // Dashed arc: draw DASH_STEP/2 segments, skip DASH_STEP/2
+      for (let s: i32 = 0; s < steps; s += DASH_STEP) {
+        const drawCount: i32 = DASH_STEP / 2;
+        const count: i32 = s + drawCount <= steps ? drawCount : steps - s;
         const dashVerts = new StaticArray<f32>(count * 6);
         for (let k: i32 = 0; k < count; k++) {
           const srcIdx = (s + k) * 6;
@@ -333,28 +344,28 @@ export function render2DEntities(cmd: CommandBuffer, vp: Mat4, entities: EntityS
       if (alen > 1e-6) {
         const ux: f32 = adx / alen;
         const uy: f32 = ady / alen;
-        const arrowSize: f32 = <f32>Math.min(<f64>alen * 0.15, 3.0);
+        const arrowSize: f32 = <f32>Math.min(<f64>alen * <f64>ARROW_SIZE_RATIO, <f64>MAX_ARROW_SIZE);
         // Arrow at d1 (pointing toward d1 from inside)
         const arrowVerts = new StaticArray<f32>(12);
         unchecked(arrowVerts[0]  = d1x); unchecked(arrowVerts[1]  = d1y); unchecked(arrowVerts[2]  = 0);
-        unchecked(arrowVerts[3]  = d1x + ux * arrowSize + uy * arrowSize * 0.3);
-        unchecked(arrowVerts[4]  = d1y + uy * arrowSize - ux * arrowSize * 0.3);
+        unchecked(arrowVerts[3]  = d1x + ux * arrowSize + uy * arrowSize * ARROW_HALF_WIDTH);
+        unchecked(arrowVerts[4]  = d1y + uy * arrowSize - ux * arrowSize * ARROW_HALF_WIDTH);
         unchecked(arrowVerts[5]  = 0);
         // Arrow at d2 (pointing toward d2 from inside)
         unchecked(arrowVerts[6]  = d2x); unchecked(arrowVerts[7]  = d2y); unchecked(arrowVerts[8]  = 0);
-        unchecked(arrowVerts[9]  = d2x - ux * arrowSize - uy * arrowSize * 0.3);
-        unchecked(arrowVerts[10] = d2y - uy * arrowSize + ux * arrowSize * 0.3);
+        unchecked(arrowVerts[9]  = d2x - ux * arrowSize - uy * arrowSize * ARROW_HALF_WIDTH);
+        unchecked(arrowVerts[10] = d2y - uy * arrowSize + ux * arrowSize * ARROW_HALF_WIDTH);
         unchecked(arrowVerts[11] = 0);
         cmd.emitDrawLines(arrowVerts, 4);
         // Mirror arrowheads
         const arrowVerts2 = new StaticArray<f32>(12);
         unchecked(arrowVerts2[0]  = d1x); unchecked(arrowVerts2[1]  = d1y); unchecked(arrowVerts2[2]  = 0);
-        unchecked(arrowVerts2[3]  = d1x + ux * arrowSize - uy * arrowSize * 0.3);
-        unchecked(arrowVerts2[4]  = d1y + uy * arrowSize + ux * arrowSize * 0.3);
+        unchecked(arrowVerts2[3]  = d1x + ux * arrowSize - uy * arrowSize * ARROW_HALF_WIDTH);
+        unchecked(arrowVerts2[4]  = d1y + uy * arrowSize + ux * arrowSize * ARROW_HALF_WIDTH);
         unchecked(arrowVerts2[5]  = 0);
         unchecked(arrowVerts2[6]  = d2x); unchecked(arrowVerts2[7]  = d2y); unchecked(arrowVerts2[8]  = 0);
-        unchecked(arrowVerts2[9]  = d2x - ux * arrowSize + uy * arrowSize * 0.3);
-        unchecked(arrowVerts2[10] = d2y - uy * arrowSize - ux * arrowSize * 0.3);
+        unchecked(arrowVerts2[9]  = d2x - ux * arrowSize + uy * arrowSize * ARROW_HALF_WIDTH);
+        unchecked(arrowVerts2[10] = d2y - uy * arrowSize - ux * arrowSize * ARROW_HALF_WIDTH);
         unchecked(arrowVerts2[11] = 0);
         cmd.emitDrawLines(arrowVerts2, 4);
       }

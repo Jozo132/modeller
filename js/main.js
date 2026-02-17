@@ -3487,11 +3487,11 @@ class App {
     }
 
     try {
-      const hadGeometry = this._renderer3d._meshTriangles != null;
+      const hadGeometry = this._renderer3d.hasGeometry();
       this._renderer3d.renderPart(part);
       // Only auto-fit the camera when geometry first appears; subsequent
       // updates preserve the user's camera orientation and zoom.
-      if (!hadGeometry && this._renderer3d._meshTriangles) {
+      if (!hadGeometry && this._renderer3d.hasGeometry()) {
         this._renderer3d.fitToView();
       }
     } catch (err) {

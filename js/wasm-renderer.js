@@ -644,7 +644,7 @@ export class WasmRenderer {
       this.wasm.setAxesSize(50);
       // Clear stale 2D entities so they don't render in pure 3D mode
       this.wasm.clearEntities();
-      if (this.wasm.resetEntityModelMatrix) this.wasm.resetEntityModelMatrix();
+      this.wasm.resetEntityModelMatrix();
       // Apply orbit camera state
       this._orbitDirty = true;
       this._applyOrbitCamera();
@@ -1670,6 +1670,14 @@ export class WasmRenderer {
    */
   getAllFaces() {
     return this._meshFaces || null;
+  }
+
+  /**
+   * Check whether part mesh geometry has been built.
+   * @returns {boolean} True if mesh triangles exist
+   */
+  hasGeometry() {
+    return this._meshTriangles != null && this._meshTriangleCount > 0;
   }
 
   clearGeometry() {
