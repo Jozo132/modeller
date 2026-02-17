@@ -6,7 +6,7 @@ import { PartManager } from './part-manager.js';
 import { FeaturePanel } from './ui/featurePanel.js';
 import { ParametersPanel } from './ui/parametersPanel.js';
 import { getSnappedPosition } from './snap.js';
-import { undo, redo, takeSnapshot } from './history.js';
+import { undo, redo, takeSnapshot, setPartManager } from './history.js';
 import { downloadDXF } from './dxf/export.js';
 import { openDXFFile } from './dxf/import.js';
 import { debug, info, warn, error } from './logger.js';
@@ -103,6 +103,7 @@ class App {
     // 3D Part management
     this._3dMode = false;
     this._partManager = new PartManager();
+    setPartManager(this._partManager);
     this._featurePanel = null;
     this._parametersPanel = null;
     this._lastSketchFeatureId = null;
@@ -180,6 +181,11 @@ class App {
             allDimensionsVisible: state.allDimensionsVisible,
             constraintIconsVisible: state.constraintIconsVisible,
           });
+        } else {
+          // Pure 3D mode (no sketching): clear the overlay canvas so
+          // stale 2D overlays (axes, dimensions, constraint icons) don't
+          // persist from a previous sketch session.
+          this._renderer3d.clearOverlay();
         }
       } catch (err) {
         error('Render loop failed', err);
@@ -3297,6 +3303,9 @@ class App {
       // Enter 3D viewing mode (perspective camera)
       this._renderer3d.setMode('3d');
       this._renderer3d.setVisible(true);
+      // Clear any leftover sketch plane reference so axes don't persist
+      this._renderer3d._sketchPlane = null;
+      this._renderer3d._sketchPlaneDef = null;
       featurePanel.classList.add('active');
       parametersPanel.classList.add('active');
       btn.classList.add('active');
@@ -3478,8 +3487,13 @@ class App {
     }
 
     try {
+      const hadGeometry = this._renderer3d._meshTriangles != null;
       this._renderer3d.renderPart(part);
-      this._renderer3d.fitToView();
+      // Only auto-fit the camera when geometry first appears; subsequent
+      // updates preserve the user's camera orientation and zoom.
+      if (!hadGeometry && this._renderer3d._meshTriangles) {
+        this._renderer3d.fitToView();
+      }
     } catch (err) {
       error('Failed to render 3D part:', err);
       this.setStatus('Error rendering 3D part');

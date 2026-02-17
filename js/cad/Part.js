@@ -220,7 +220,16 @@ export class Part {
     
     const extrudeFeature = new ExtrudeFeature(`Extrude${this.featureTree.features.length + 1}`, sketchId, distance);
     
-    if (options.operation) extrudeFeature.operation = options.operation;
+    // If there is already a solid body in the feature tree, default to 'add'
+    // so subsequent features are combined (union) rather than replacing the body.
+    if (!options.operation) {
+      const existingSolid = this.featureTree.getFinalResult();
+      if (existingSolid && existingSolid.type === 'solid') {
+        extrudeFeature.operation = 'add';
+      }
+    } else {
+      extrudeFeature.operation = options.operation;
+    }
     if (options.direction) extrudeFeature.direction = options.direction;
     if (options.symmetric !== undefined) extrudeFeature.symmetric = options.symmetric;
     
@@ -253,7 +262,14 @@ export class Part {
     
     const revolveFeature = new RevolveFeature(`Revolve${this.featureTree.features.length + 1}`, sketchId, angle);
     
-    if (options.operation) revolveFeature.operation = options.operation;
+    if (!options.operation) {
+      const existingSolid = this.featureTree.getFinalResult();
+      if (existingSolid && existingSolid.type === 'solid') {
+        revolveFeature.operation = 'add';
+      }
+    } else {
+      revolveFeature.operation = options.operation;
+    }
     if (options.axis) revolveFeature.setAxis(options.axis.origin, options.axis.direction);
     
     // Link the sketch as a child of the revolve feature and hide it

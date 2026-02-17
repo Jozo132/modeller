@@ -217,6 +217,15 @@ export function addEntityPoint(
   return entities.addPoint(x, y, size, flags, r, g, b, a);
 }
 
+export function addEntityDimension(
+  x1: f32, y1: f32, x2: f32, y2: f32,
+  offset: f32, dimType: i32,
+  angleStart: f32, angleSweep: f32,
+  flags: i32, r: f32, g: f32, b: f32, a: f32
+): i32 {
+  return entities.addDimension(x1, y1, x2, y2, offset, dimType, angleStart, angleSweep, flags, r, g, b, a);
+}
+
 export function setSnapPosition(x: f32, y: f32, visible: i32): void {
   entities.snapX = x;
   entities.snapY = y;

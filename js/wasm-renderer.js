@@ -655,6 +655,15 @@ export class WasmRenderer {
     this.overlayCanvas.style.display = visible ? 'block' : 'none';
   }
 
+  /**
+   * Clear the overlay canvas (removes stale 2D text/axis overlays).
+   */
+  clearOverlay() {
+    const w = this._cssWidth || this.container.clientWidth;
+    const h = this._cssHeight || this.container.clientHeight;
+    this.overlayCtx.clearRect(0, 0, w, h);
+  }
+
   onWindowResize() {
     const w = this.container.clientWidth;
     const h = this.container.clientHeight;
@@ -724,13 +733,19 @@ export class WasmRenderer {
     // Set up entity model matrix for the sketch plane
     const pd = this._sketchPlaneDef;
     if (this.mode === '3d' && pd && wasm.setEntityModelMatrix) {
-      // Build column-major 4x4 matrix that transforms local (x, y, 0) to world
+      // Build column-major 4x4 matrix that transforms local (x, y, 0) to world.
+      // Add a small offset along the plane normal to prevent z-fighting when
+      // the sketch plane coincides with a feature face.
+      const SKETCH_Z_OFFSET = 0.02;
+      const ox = pd.origin.x + pd.normal.x * SKETCH_Z_OFFSET;
+      const oy = pd.origin.y + pd.normal.y * SKETCH_Z_OFFSET;
+      const oz = pd.origin.z + pd.normal.z * SKETCH_Z_OFFSET;
       // Column 0: xAxis, Column 1: yAxis, Column 2: normal (z), Column 3: origin (translation)
       wasm.setEntityModelMatrix(
         pd.xAxis.x, pd.xAxis.y, pd.xAxis.z, 0,
         pd.yAxis.x, pd.yAxis.y, pd.yAxis.z, 0,
         pd.normal.x, pd.normal.y, pd.normal.z, 0,
-        pd.origin.x, pd.origin.y, pd.origin.z, 1
+        ox, oy, oz, 1
       );
     } else if (wasm.resetEntityModelMatrix) {
       wasm.resetEntityModelMatrix();
@@ -844,6 +859,43 @@ export class WasmRenderer {
             : (point.fixed ? [1, 0.4, 0.267, 1]
               : [1, 1, 0.4, 1]));
         wasm.addEntityPoint(point.x, point.y, size, flags, r, g, b, a);
+      });
+    }
+
+    // --- Push dimensions to WASM (line geometry: extension + dimension lines + arrowheads) ---
+    if (allDimensionsVisible && scene.dimensions && wasm.addEntityDimension) {
+      // Dimension type constants (must match DIM_* in entities.ts)
+      const DIM_LINEAR = 0;
+      const DIM_HORIZONTAL = 1;
+      const DIM_VERTICAL = 2;
+      const DIM_ANGLE = 3;
+
+      scene.dimensions.forEach((dim) => {
+        if (!dim.visible || !isLayerVisible(dim.layer)) return;
+        let flags = F_VISIBLE;
+        if (dim.selected) flags |= F_SELECTED;
+        if (hoverEntity && hoverEntity.id === dim.id) flags |= F_HOVER;
+
+        const dimColor = dim.selected ? [0, 0.749, 1, 1]
+          : (hoverEntity && hoverEntity.id === dim.id ? [0.498, 0.847, 1, 1]
+            : (!dim.isConstraint ? [1, 0.706, 0.196, 1]
+              : parseColor(dim.color || getLayerColor(dim.layer))));
+        const [r, g, b, a] = dimColor;
+
+        let dimType = DIM_LINEAR;
+        if (dim.dimType === 'dx') dimType = DIM_HORIZONTAL;
+        else if (dim.dimType === 'dy') dimType = DIM_VERTICAL;
+        else if (dim.dimType === 'angle') dimType = DIM_ANGLE;
+
+        const angleStart = dim._angleStart != null ? dim._angleStart : 0;
+        const angleSweep = dim._angleSweep != null ? dim._angleSweep : 0;
+
+        wasm.addEntityDimension(
+          dim.x1, dim.y1, dim.x2, dim.y2,
+          dim.offset || 20, dimType,
+          angleStart, angleSweep,
+          flags, r, g, b, a
+        );
       });
     }
 
