@@ -166,6 +166,14 @@ export function setOriginPlanesVisible(mask: i32): void {
   originPlanesVisible = mask;
 }
 
+export function setOriginPlaneHovered(mask: i32): void {
+  originPlaneHovered = mask;
+}
+
+export function setOriginPlaneSelected(mask: i32): void {
+  originPlaneSelected = mask;
+}
+
 // === Mouse/Input ===
 
 export function setMousePosition(x: f32, y: f32): void {
@@ -280,6 +288,8 @@ export function getSolverMaxError(): f32 {
 
 // Origin planes visibility bitmask (bit 0=XY, bit 1=XZ, bit 2=YZ)
 let originPlanesVisible: i32 = 7; // all visible by default
+let originPlaneHovered: i32 = 0;  // hover highlight mask
+let originPlaneSelected: i32 = 0; // selection highlight mask
 
 // === Render ===
 
@@ -309,7 +319,7 @@ export function render(): void {
   // Origin planes overlay (visible in 3D mode).
   // Draw after solids so they don't clip or cut into body geometry.
   if (renderMode == 1) {
-    renderOriginPlanes(cmd, vp, originPlanesVisible);
+    renderOriginPlanes(cmd, vp, originPlanesVisible, originPlaneHovered, originPlaneSelected);
   }
 
   // 2D entities on XY plane

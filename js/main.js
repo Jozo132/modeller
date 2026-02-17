@@ -39,6 +39,7 @@ class App {
     this._sketchingOnPlane = false; // true when in sketch-on-plane mode inside Part workspace
     this._activeSketchPlane = null; // plane reference for current sketch
     this._selectedPlane = null; // currently selected plane in Part mode ('XY', 'XZ', 'YZ', or null)
+    this._hoveredPlane = null;  // currently hovered plane in 3D viewport
     this._selectedFace = null; // currently selected 3D face in Part mode
     
     // Initialize unified 3D renderer
@@ -814,6 +815,19 @@ class App {
         return;
       }
 
+      // Plane hover highlight in Part mode 3D view
+      if (this._workspaceMode === 'part' && this._renderer3d) {
+        const hitPlane = this._renderer3d.pickPlane(e.clientX, e.clientY);
+        if (hitPlane !== this._hoveredPlane) {
+          this._hoveredPlane = hitPlane;
+          this._renderer3d.setHoveredPlane(hitPlane);
+          // Update feature tree hover styling
+          const planeItems = document.querySelectorAll('.node-tree-plane[data-plane]');
+          planeItems.forEach(p => p.classList.toggle('hovered', p.getAttribute('data-plane') === hitPlane));
+          this.canvas.style.cursor = hitPlane ? 'pointer' : '';
+        }
+      }
+
       this._scheduleRender();
     });
 
@@ -910,18 +924,39 @@ class App {
 
       const world = this._renderer3d.screenToWorld(sx, sy);
 
-      // In Part mode 3D view: handle face/geometry picking
+      // In Part mode 3D view: handle face/geometry picking and plane clicking
       if (this._workspaceMode === 'part' && this._renderer3d) {
         const hit = this._renderer3d.pickFace(e.clientX, e.clientY);
         if (hit) {
           this._selectedFace = hit;
           this._renderer3d.selectFace(hit.faceIndex);
+          // Clear plane selection when a face is selected
+          this._selectedPlane = null;
+          this._renderer3d.setSelectedPlane(null);
           this.setStatus(`Selected face ${hit.faceIndex} (normal: ${hit.face.normal.x.toFixed(2)}, ${hit.face.normal.y.toFixed(2)}, ${hit.face.normal.z.toFixed(2)})`);
           info(`Face selected: ${hit.faceIndex}`);
         } else {
           this._selectedFace = null;
           this._renderer3d.selectFace(-1);
+
+          // Try plane picking
+          const hitPlane = this._renderer3d.pickPlane(e.clientX, e.clientY);
+          if (hitPlane) {
+            if (this._selectedPlane === hitPlane) {
+              this._selectedPlane = null; // toggle off
+            } else {
+              this._selectedPlane = hitPlane;
+            }
+          } else {
+            this._selectedPlane = null;
+          }
+          this._renderer3d.setSelectedPlane(this._selectedPlane);
+          if (this._selectedPlane) {
+            this.setStatus(`Selected ${this._selectedPlane} plane`);
+            info(`Plane selected in 3D: ${this._selectedPlane}`);
+          }
         }
+        this._updateNodeTree();
         this._updateOperationButtons();
       }
 
@@ -963,6 +998,32 @@ class App {
       const rect = canvas.getBoundingClientRect();
       const sx = e.clientX - rect.left;
       const sy = e.clientY - rect.top;
+
+      // In sketch-on-plane mode: support double-click editing of dimensions
+      if (this._sketchingOnPlane) {
+        const world = this._screenToSketchWorld(sx, sy);
+        if (world) {
+          const wpp = (this._renderer3d._orbitRadius || 100) / Math.max(rect.width, 1);
+          const tol = 12 * wpp;
+          let closestDim = null;
+          let closestDist = Infinity;
+          for (const dim of state.scene.dimensions) {
+            if (!dim.visible) continue;
+            const d = dim.distanceTo(world.x, world.y);
+            if (d < tol && d < closestDist) {
+              closestDist = d;
+              closestDim = dim;
+            }
+          }
+          if (closestDim) {
+            e.preventDefault();
+            e.stopPropagation();
+            this._editDimensionConstraint(closestDim, { x: sx, y: sy });
+            return;
+          }
+        }
+      }
+
       const world = this._renderer3d.screenToWorld(sx, sy);
 
       if (this.activeTool.onDoubleClick) {
@@ -3236,7 +3297,8 @@ class App {
         // Use pre-selected plane directly
         this._addSketchToPart(this._selectedPlane);
       } else {
-        // Show plane selector context menu near the button
+        // Show tooltip hint then plane selector context menu
+        this._showPlaneSelectionTooltip(e.currentTarget);
         const btn = e.currentTarget;
         const rect = btn.getBoundingClientRect();
         showContextMenu(rect.left, rect.bottom + 2, [
@@ -3432,6 +3494,30 @@ class App {
     }
   }
 
+  /**
+   * Show a tooltip near the given element prompting the user to select a plane or face.
+   * The tooltip auto-dismisses after a few seconds.
+   * @param {HTMLElement} anchor - Element to position near
+   */
+  _showPlaneSelectionTooltip(anchor) {
+    // Remove any existing tooltip
+    const existing = document.getElementById('plane-select-tooltip');
+    if (existing) existing.remove();
+
+    const tip = document.createElement('div');
+    tip.id = 'plane-select-tooltip';
+    tip.className = 'plane-select-tooltip';
+    tip.textContent = 'Tip: Select a plane or face first, or choose one below';
+    document.body.appendChild(tip);
+
+    const rect = anchor.getBoundingClientRect();
+    tip.style.left = `${rect.left}px`;
+    tip.style.top = `${rect.bottom + 6}px`;
+
+    // Auto-dismiss after 4 seconds
+    setTimeout(() => { if (tip.parentNode) tip.remove(); }, 4000);
+  }
+
   _extrudeSketch(distance) {
     if (!this._lastSketchFeatureId) {
       this.setStatus('Add a sketch to the part first');
@@ -3546,7 +3632,12 @@ class App {
           } else {
             this._selectedPlane = planeName;
           }
+          // Sync highlight to 3D renderer
+          if (this._renderer3d) {
+            this._renderer3d.setSelectedPlane(this._selectedPlane);
+          }
           this._updateNodeTree();
+          this._scheduleRender();
         };
       });
     }
@@ -3719,8 +3810,26 @@ class App {
           this._selectedPlane = plane;
           item.classList.add('selected');
         }
+        // Sync highlight to 3D renderer
+        if (this._renderer3d) {
+          this._renderer3d.setSelectedPlane(this._selectedPlane);
+        }
         info(`Plane selection: ${this._selectedPlane || 'none'}`);
         this._update3DView();
+        this._scheduleRender();
+      });
+
+      // Hover sync from feature tree to 3D viewport
+      item.addEventListener('mouseenter', () => {
+        if (this._workspaceMode !== 'part') return;
+        const plane = item.getAttribute('data-plane');
+        this._hoveredPlane = plane;
+        if (this._renderer3d) this._renderer3d.setHoveredPlane(plane);
+        this._scheduleRender();
+      });
+      item.addEventListener('mouseleave', () => {
+        this._hoveredPlane = null;
+        if (this._renderer3d) this._renderer3d.setHoveredPlane(null);
         this._scheduleRender();
       });
     });

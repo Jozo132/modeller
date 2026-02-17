@@ -76,7 +76,7 @@ export class WasmRenderer {
     // 3D orbit camera state (spherical coordinates around target)
     this._orbitTheta = Math.PI / 4;   // azimuthal angle (around Z axis)
     this._orbitPhi = Math.PI / 3;     // polar angle (from Z axis)
-    this._orbitRadius = 500;
+    this._orbitRadius = 25;
     this._orbitTarget = { x: 0, y: 0, z: 0 };
     this._orbitDirty = true;
 
@@ -465,6 +465,103 @@ export class WasmRenderer {
    */
   getSelectedFaceIndex() {
     return this._selectedFaceIndex;
+  }
+
+  /**
+   * Pick an origin plane by raycasting from screen coordinates.
+   * Tests the XY, XZ, YZ planes (5×5 unit squares at origin) and returns
+   * the closest hit plane name, or null if none hit.
+   * @param {number} screenX - client X
+   * @param {number} screenY - client Y
+   * @returns {string|null} 'XY', 'XZ', 'YZ', or null
+   */
+  pickPlane(screenX, screenY) {
+    const mvp = this._computeMVP();
+    if (!mvp) return null;
+
+    const invMVP = this._mat4Invert(mvp);
+    if (!invMVP) return null;
+
+    const rect = this.canvas.getBoundingClientRect();
+    const ndcX = ((screenX - rect.left) / rect.width) * 2 - 1;
+    const ndcY = -((screenY - rect.top) / rect.height) * 2 + 1;
+
+    const nearW = this._mat4TransformVec4(invMVP, ndcX, ndcY, -1, 1);
+    const farW = this._mat4TransformVec4(invMVP, ndcX, ndcY, 1, 1);
+    if (Math.abs(nearW.w) < 1e-10 || Math.abs(farW.w) < 1e-10) return null;
+
+    const origin = { x: nearW.x / nearW.w, y: nearW.y / nearW.w, z: nearW.z / nearW.w };
+    const farPt = { x: farW.x / farW.w, y: farW.y / farW.w, z: farW.z / farW.w };
+    const dir = {
+      x: farPt.x - origin.x,
+      y: farPt.y - origin.y,
+      z: farPt.z - origin.z,
+    };
+    const dirLen = Math.sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+    if (dirLen < 1e-10) return null;
+    dir.x /= dirLen; dir.y /= dirLen; dir.z /= dirLen;
+
+    const planeSize = 5.0;
+    const planes = [
+      { name: 'XY', normal: { x: 0, y: 0, z: 1 }, uAxis: 'x', vAxis: 'y', constAxis: 'z', constVal: 0 },
+      { name: 'XZ', normal: { x: 0, y: 1, z: 0 }, uAxis: 'x', vAxis: 'z', constAxis: 'y', constVal: 0 },
+      { name: 'YZ', normal: { x: 1, y: 0, z: 0 }, uAxis: 'y', vAxis: 'z', constAxis: 'x', constVal: 0 },
+    ];
+
+    let closestT = Infinity;
+    let closestPlane = null;
+
+    for (const p of planes) {
+      const denom = dir.x * p.normal.x + dir.y * p.normal.y + dir.z * p.normal.z;
+      if (Math.abs(denom) < 1e-10) continue;
+
+      const diff = { x: -origin.x, y: -origin.y, z: -origin.z };
+      diff[p.constAxis] = p.constVal - origin[p.constAxis];
+      const t = (diff.x * p.normal.x + diff.y * p.normal.y + diff.z * p.normal.z) / denom;
+      if (t < 0) continue;
+
+      const hit = {
+        x: origin.x + dir.x * t,
+        y: origin.y + dir.y * t,
+        z: origin.z + dir.z * t,
+      };
+
+      // Check if hit point is within the plane quad
+      if (Math.abs(hit[p.uAxis]) <= planeSize && Math.abs(hit[p.vAxis]) <= planeSize) {
+        if (t < closestT) {
+          closestT = t;
+          closestPlane = p.name;
+        }
+      }
+    }
+
+    return closestPlane;
+  }
+
+  /**
+   * Set hovered plane highlight in WASM renderer.
+   * @param {string|null} planeName - 'XY', 'XZ', 'YZ', or null
+   */
+  setHoveredPlane(planeName) {
+    if (!this._ready || !this.wasm || !this.wasm.setOriginPlaneHovered) return;
+    let mask = 0;
+    if (planeName === 'XY') mask = 1;
+    else if (planeName === 'XZ') mask = 2;
+    else if (planeName === 'YZ') mask = 4;
+    this.wasm.setOriginPlaneHovered(mask);
+  }
+
+  /**
+   * Set selected plane highlight in WASM renderer.
+   * @param {string|null} planeName - 'XY', 'XZ', 'YZ', or null
+   */
+  setSelectedPlane(planeName) {
+    if (!this._ready || !this.wasm || !this.wasm.setOriginPlaneSelected) return;
+    let mask = 0;
+    if (planeName === 'XY') mask = 1;
+    else if (planeName === 'XZ') mask = 2;
+    else if (planeName === 'YZ') mask = 4;
+    this.wasm.setOriginPlaneSelected(mask);
   }
 
   /**
@@ -969,10 +1066,14 @@ export class WasmRenderer {
       scene.dimensions.forEach((dim) => {
         if (!dim.visible || !isLayerVisible(dim.layer)) return;
         const isHover = hoverEntity && hoverEntity.id === dim.id;
-        const dimColor = dim.selected ? '#00bfff' : (isHover ? '#7fd8ff' : (!dim.isConstraint ? '#ffb432' : (dim.color || getLayerColor(dim.layer))));
+        // Legacy-style colors: selected=cyan, hover=light cyan, driven=orange, constraint=green
+        const dimColor = dim.selected ? '#00bfff'
+          : (isHover ? '#7fd8ff'
+            : (!dim.isConstraint ? '#ffb432'
+              : (dim.color || getLayerColor(dim.layer))));
         ctx.strokeStyle = dimColor;
         ctx.fillStyle = dimColor;
-        ctx.lineWidth = 1;
+        ctx.lineWidth = isHover ? 1.5 : 1;
         ctx.setLineDash([]);
 
         if (dim.dimType === 'angle') {
@@ -988,9 +1089,19 @@ export class WasmRenderer {
             dim.x1 + (Math.abs(dim.offset) + 14 * wpp) * Math.cos(midA),
             dim.y1 + (Math.abs(dim.offset) + 14 * wpp) * Math.sin(midA)
           );
+          const label = dim.displayLabel || '';
           ctx.font = '12px Consolas, monospace';
           ctx.textBaseline = 'middle';
-          ctx.fillText(dim.displayLabel || '', lpt.x, lpt.y);
+          // Draw label background for readability
+          const tm = ctx.measureText(label);
+          ctx.save();
+          ctx.fillStyle = 'rgba(30, 30, 30, 0.75)';
+          ctx.fillRect(lpt.x - tm.width / 2 - 3, lpt.y - 8, tm.width + 6, 16);
+          ctx.restore();
+          ctx.fillStyle = dimColor;
+          ctx.textAlign = 'center';
+          ctx.fillText(label, lpt.x, lpt.y);
+          ctx.textAlign = 'left';
           return;
         }
 
@@ -1034,10 +1145,18 @@ export class WasmRenderer {
         const mx = (d1.x + d2.x) / 2;
         const my = (d1.y + d2.y) / 2 + 12 * wpp;
         const mpt = sketchPtToScreen(mx, my);
+        const label = dim.displayLabel || '';
         ctx.font = '12px Consolas, monospace';
         ctx.textBaseline = 'middle';
         ctx.textAlign = 'center';
-        ctx.fillText(dim.displayLabel || '', mpt.x, mpt.y);
+        // Draw label background for readability
+        const tm = ctx.measureText(label);
+        ctx.save();
+        ctx.fillStyle = 'rgba(30, 30, 30, 0.75)';
+        ctx.fillRect(mpt.x - tm.width / 2 - 3, mpt.y - 8, tm.width + 6, 16);
+        ctx.restore();
+        ctx.fillStyle = dimColor;
+        ctx.fillText(label, mpt.x, mpt.y);
         ctx.textAlign = 'left';
       });
     }
@@ -1734,7 +1853,7 @@ export class WasmRenderer {
         this.wasm.setAxesSize(maxDim * 0.5);
       } else {
         this._orbitTarget = { x: 0, y: 0, z: 0 };
-        this._orbitRadius = 500;
+        this._orbitRadius = 25;
       }
       this._orbitTheta = Math.PI / 4;
       this._orbitPhi = Math.PI / 3;

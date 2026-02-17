@@ -1592,6 +1592,11 @@ body.motion-active #view-3d {
   cursor: pointer;
 }
 
+.node-tree-plane.hovered {
+  background: rgba(135, 206, 235, 0.15);
+  color: var(--text-primary);
+}
+
 .node-tree-plane.selected {
   background: rgba(0, 122, 204, 0.35);
   color: var(--text-primary);
@@ -1855,4 +1860,26 @@ body.workspace-sketch .tool-group[data-group="3d"] {
 }
 body.workspace-sketch .mode-3d-sep {
   display: none;
+}
+
+/* ── Plane Selection Tooltip ── */
+.plane-select-tooltip {
+  position: fixed;
+  z-index: 1000;
+  background: rgba(40, 40, 40, 0.95);
+  color: #87CEEB;
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: 4px;
+  border: 1px solid rgba(135, 206, 235, 0.3);
+  pointer-events: none;
+  white-space: nowrap;
+  animation: tooltip-fade 4s ease-in-out;
+}
+
+@keyframes tooltip-fade {
+  0% { opacity: 0; transform: translateY(-4px); }
+  10% { opacity: 1; transform: translateY(0); }
+  80% { opacity: 1; }
+  100% { opacity: 0; }
 }
