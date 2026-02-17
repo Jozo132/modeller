@@ -76,7 +76,7 @@ export class WasmRenderer {
     // 3D orbit camera state (spherical coordinates around target)
     this._orbitTheta = Math.PI / 4;   // azimuthal angle (around Z axis)
     this._orbitPhi = Math.PI / 3;     // polar angle (from Z axis)
-    this._orbitRadius = 500;
+    this._orbitRadius = 25;
     this._orbitTarget = { x: 0, y: 0, z: 0 };
     this._orbitDirty = true;
 
@@ -468,6 +468,103 @@ export class WasmRenderer {
   }
 
   /**
+   * Pick an origin plane by raycasting from screen coordinates.
+   * Tests the XY, XZ, YZ planes (5×5 unit squares at origin) and returns
+   * the closest hit plane name, or null if none hit.
+   * @param {number} screenX - client X
+   * @param {number} screenY - client Y
+   * @returns {string|null} 'XY', 'XZ', 'YZ', or null
+   */
+  pickPlane(screenX, screenY) {
+    const mvp = this._computeMVP();
+    if (!mvp) return null;
+
+    const invMVP = this._mat4Invert(mvp);
+    if (!invMVP) return null;
+
+    const rect = this.canvas.getBoundingClientRect();
+    const ndcX = ((screenX - rect.left) / rect.width) * 2 - 1;
+    const ndcY = -((screenY - rect.top) / rect.height) * 2 + 1;
+
+    const nearW = this._mat4TransformVec4(invMVP, ndcX, ndcY, -1, 1);
+    const farW = this._mat4TransformVec4(invMVP, ndcX, ndcY, 1, 1);
+    if (Math.abs(nearW.w) < 1e-10 || Math.abs(farW.w) < 1e-10) return null;
+
+    const origin = { x: nearW.x / nearW.w, y: nearW.y / nearW.w, z: nearW.z / nearW.w };
+    const farPt = { x: farW.x / farW.w, y: farW.y / farW.w, z: farW.z / farW.w };
+    const dir = {
+      x: farPt.x - origin.x,
+      y: farPt.y - origin.y,
+      z: farPt.z - origin.z,
+    };
+    const dirLen = Math.sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+    if (dirLen < 1e-10) return null;
+    dir.x /= dirLen; dir.y /= dirLen; dir.z /= dirLen;
+
+    const planeSize = 5.0;
+    const planes = [
+      { name: 'XY', normal: { x: 0, y: 0, z: 1 }, uAxis: 'x', vAxis: 'y', constAxis: 'z', constVal: 0 },
+      { name: 'XZ', normal: { x: 0, y: 1, z: 0 }, uAxis: 'x', vAxis: 'z', constAxis: 'y', constVal: 0 },
+      { name: 'YZ', normal: { x: 1, y: 0, z: 0 }, uAxis: 'y', vAxis: 'z', constAxis: 'x', constVal: 0 },
+    ];
+
+    let closestT = Infinity;
+    let closestPlane = null;
+
+    for (const p of planes) {
+      const denom = dir.x * p.normal.x + dir.y * p.normal.y + dir.z * p.normal.z;
+      if (Math.abs(denom) < 1e-10) continue;
+
+      const diff = { x: -origin.x, y: -origin.y, z: -origin.z };
+      diff[p.constAxis] = p.constVal - origin[p.constAxis];
+      const t = (diff.x * p.normal.x + diff.y * p.normal.y + diff.z * p.normal.z) / denom;
+      if (t < 0) continue;
+
+      const hit = {
+        x: origin.x + dir.x * t,
+        y: origin.y + dir.y * t,
+        z: origin.z + dir.z * t,
+      };
+
+      // Check if hit point is within the plane quad
+      if (Math.abs(hit[p.uAxis]) <= planeSize && Math.abs(hit[p.vAxis]) <= planeSize) {
+        if (t < closestT) {
+          closestT = t;
+          closestPlane = p.name;
+        }
+      }
+    }
+
+    return closestPlane;
+  }
+
+  /**
+   * Set hovered plane highlight in WASM renderer.
+   * @param {string|null} planeName - 'XY', 'XZ', 'YZ', or null
+   */
+  setHoveredPlane(planeName) {
+    if (!this._ready || !this.wasm || !this.wasm.setOriginPlaneHovered) return;
+    let mask = 0;
+    if (planeName === 'XY') mask = 1;
+    else if (planeName === 'XZ') mask = 2;
+    else if (planeName === 'YZ') mask = 4;
+    this.wasm.setOriginPlaneHovered(mask);
+  }
+
+  /**
+   * Set selected plane highlight in WASM renderer.
+   * @param {string|null} planeName - 'XY', 'XZ', 'YZ', or null
+   */
+  setSelectedPlane(planeName) {
+    if (!this._ready || !this.wasm || !this.wasm.setOriginPlaneSelected) return;
+    let mask = 0;
+    if (planeName === 'XY') mask = 1;
+    else if (planeName === 'XZ') mask = 2;
+    else if (planeName === 'YZ') mask = 4;
+    this.wasm.setOriginPlaneSelected(mask);
+  }
+
+  /**
    * Cast a ray from screen coordinates onto a plane in 3D world space.
    * Returns the 2D coordinates in the plane's local frame (xAxis, yAxis).
    * @param {number} screenX - screen X (relative to canvas left)
@@ -800,9 +897,13 @@ export class WasmRenderer {
       return DEFAULT_COLOR;
     };
 
+    // Compute fully-constrained sets for this frame
+    const fc = _computeFullyConstrained(scene);
+
     const entityColor = (entity) => {
       if (entity.selected) return [0, 0.749, 1, 1];
       if (entity.construction) return [0.565, 0.933, 0.565, 1];
+      if (fc.entities.has(entity)) return FULLY_CONSTRAINED_COLOR;
       const c = entity.color || getLayerColor(entity.layer);
       return parseColor(c);
     };
@@ -851,14 +952,16 @@ export class WasmRenderer {
       scene.points.forEach((point) => {
         const refs = scene.shapesUsingPoint ? scene.shapesUsingPoint(point).length : 1;
         const isHover = hoverEntity && hoverEntity.id === point.id;
-        if (refs <= 1 && !point.selected && !point.fixed && !isHover) return;
+        const isFCPt = fc.points.has(point);
+        if (refs <= 1 && !point.selected && !point.fixed && !isHover && !isFCPt) return;
         let flags = F_VISIBLE;
         if (point.selected) flags |= F_SELECTED;
         if (isHover) flags |= F_HOVER;
         if (point.fixed) flags |= F_FIXED;
-        const size = point.selected ? 7 : (isHover ? 6 : (point.fixed ? 5 : 4));
+        const size = point.selected ? 7 : (isHover ? 6 : ((point.fixed || isFCPt) ? 5 : 4));
         const [r, g, b, a] = point.selected ? [0, 0.749, 1, 1]
           : (isHover ? [0.498, 0.847, 1, 1]
+            : isFCPt ? FULLY_CONSTRAINED_COLOR
             : (point.fixed ? [1, 0.4, 0.267, 1]
               : [1, 1, 0.4, 1]));
         wasm.addEntityPoint(point.x, point.y, size, flags, r, g, b, a);
@@ -969,10 +1072,14 @@ export class WasmRenderer {
       scene.dimensions.forEach((dim) => {
         if (!dim.visible || !isLayerVisible(dim.layer)) return;
         const isHover = hoverEntity && hoverEntity.id === dim.id;
-        const dimColor = dim.selected ? '#00bfff' : (isHover ? '#7fd8ff' : (!dim.isConstraint ? '#ffb432' : (dim.color || getLayerColor(dim.layer))));
+        // Legacy-style colors: selected=cyan, hover=light cyan, driven=orange, constraint=green
+        const dimColor = dim.selected ? '#00bfff'
+          : (isHover ? '#7fd8ff'
+            : (!dim.isConstraint ? '#ffb432'
+              : (dim.color || getLayerColor(dim.layer))));
         ctx.strokeStyle = dimColor;
         ctx.fillStyle = dimColor;
-        ctx.lineWidth = 1;
+        ctx.lineWidth = isHover ? 1.5 : 1;
         ctx.setLineDash([]);
 
         if (dim.dimType === 'angle') {
@@ -988,9 +1095,19 @@ export class WasmRenderer {
             dim.x1 + (Math.abs(dim.offset) + 14 * wpp) * Math.cos(midA),
             dim.y1 + (Math.abs(dim.offset) + 14 * wpp) * Math.sin(midA)
           );
+          const label = dim.displayLabel || '';
           ctx.font = '12px Consolas, monospace';
           ctx.textBaseline = 'middle';
-          ctx.fillText(dim.displayLabel || '', lpt.x, lpt.y);
+          // Draw label background for readability
+          const tm = ctx.measureText(label);
+          ctx.save();
+          ctx.fillStyle = 'rgba(30, 30, 30, 0.75)';
+          ctx.fillRect(lpt.x - tm.width / 2 - 3, lpt.y - 8, tm.width + 6, 16);
+          ctx.restore();
+          ctx.fillStyle = dimColor;
+          ctx.textAlign = 'center';
+          ctx.fillText(label, lpt.x, lpt.y);
+          ctx.textAlign = 'left';
           return;
         }
 
@@ -1034,10 +1151,18 @@ export class WasmRenderer {
         const mx = (d1.x + d2.x) / 2;
         const my = (d1.y + d2.y) / 2 + 12 * wpp;
         const mpt = sketchPtToScreen(mx, my);
+        const label = dim.displayLabel || '';
         ctx.font = '12px Consolas, monospace';
         ctx.textBaseline = 'middle';
         ctx.textAlign = 'center';
-        ctx.fillText(dim.displayLabel || '', mpt.x, mpt.y);
+        // Draw label background for readability
+        const tm = ctx.measureText(label);
+        ctx.save();
+        ctx.fillStyle = 'rgba(30, 30, 30, 0.75)';
+        ctx.fillRect(mpt.x - tm.width / 2 - 3, mpt.y - 8, tm.width + 6, 16);
+        ctx.restore();
+        ctx.fillStyle = dimColor;
+        ctx.fillText(label, mpt.x, mpt.y);
         ctx.textAlign = 'left';
       });
     }
@@ -1168,6 +1293,113 @@ export class WasmRenderer {
         const cpt = sketchPtToScreen(cx + 12 * wpp, cy + 10 * wpp);
         ctx.fillText(icon, cpt.x, cpt.y);
       });
+    }
+
+    // --- Closed-region fills (subtle white fill for closed polygon/circle loops) ---
+    if (scene.circles) {
+      scene.circles.forEach((circ) => {
+        if (!circ.visible || circ.construction || !isLayerVisible(circ.layer)) return;
+        const c = sketchPtToScreen(circ.center.x, circ.center.y);
+        const edgePt = sketchPtToScreen(circ.center.x + circ.radius, circ.center.y);
+        const r = Math.abs(edgePt.x - c.x);
+        ctx.beginPath();
+        ctx.arc(c.x, c.y, r, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255,255,255,0.035)';
+        ctx.fill();
+      });
+    }
+
+    const closedLoops = _findClosedLoops(scene);
+    for (const loop of closedLoops) {
+      if (loop.edges.some(e => !isLayerVisible(e.layer))) continue;
+      ctx.beginPath();
+      const fp = sketchPtToScreen(loop.points[0].x, loop.points[0].y);
+      ctx.moveTo(fp.x, fp.y);
+      for (let i = 0; i < loop.edges.length; i++) {
+        const edge = loop.edges[i];
+        const nextPt = loop.points[(i + 1) % loop.points.length];
+        if (edge.type === 'segment') {
+          const np = sketchPtToScreen(nextPt.x, nextPt.y);
+          ctx.lineTo(np.x, np.y);
+        } else if (edge.type === 'arc') {
+          const c = sketchPtToScreen(edge.center.x, edge.center.y);
+          const edgePt = sketchPtToScreen(edge.center.x + edge.radius, edge.center.y);
+          const r = Math.abs(edgePt.x - c.x);
+          const curPt = loop.points[i];
+          const sp = edge.startPt;
+          const isForward = Math.hypot(curPt.x - sp.x, curPt.y - sp.y) < 1e-4;
+          if (isForward) {
+            ctx.arc(c.x, c.y, r, -edge.startAngle, -edge.endAngle, true);
+          } else {
+            ctx.arc(c.x, c.y, r, -edge.endAngle, -edge.startAngle, false);
+          }
+        }
+      }
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(255,255,255,0.035)';
+      ctx.fill();
+    }
+
+    // --- Selection grips (blue squares at snap points of selected entities) ---
+    ctx.fillStyle = '#00bfff';
+    const allEntities = [
+      ...(scene.segments || []),
+      ...(scene.circles || []),
+      ...(scene.arcs || []),
+      ...(scene.dimensions || []),
+    ];
+    for (const entity of allEntities) {
+      if (!entity.selected || !entity.visible) continue;
+      const snaps = entity.getSnapPoints ? entity.getSnapPoints().filter(s => s.type === 'endpoint' || s.type === 'center') : [];
+      for (const snap of snaps) {
+        const s = sketchPtToScreen(snap.x, snap.y);
+        ctx.fillRect(s.x - 3, s.y - 3, 6, 6);
+      }
+    }
+
+    // --- Point rings (circles around selected and hovered points for clarity) ---
+    if (scene.points) {
+      scene.points.forEach((point) => {
+        const isHover = hoverEntity && hoverEntity.id === point.id;
+        if (!point.selected && !isHover) return;
+        const s = sketchPtToScreen(point.x, point.y);
+        const isFCPt = fc.points.has(point);
+        const r = point.selected ? 5.5 : (isHover ? 5 : ((point.fixed || isFCPt) ? 4.5 : 3.5));
+        ctx.strokeStyle = point.selected ? '#00bfff' : '#7fd8ff';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, r + 2.5, 0, Math.PI * 2);
+        ctx.stroke();
+      });
+    }
+
+    // --- Snap indicator shapes (different shapes per snap type) ---
+    if (snapPoint) {
+      const snapScreen = sketchPtToScreen(snapPoint.x, snapPoint.y);
+      _drawSnapIndicator(ctx, snapScreen, snapPoint.type || 'endpoint');
+    }
+
+    // --- Crosshair with gap around cursor ---
+    if (cursorWorld && (this.mode === '2d' || this._sketchPlane)) {
+      const cs = sketchPtToScreen(cursorWorld.x, cursorWorld.y);
+      const gap = 10;
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+      ctx.lineWidth = 0.5;
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      // Horizontal line with gap
+      ctx.moveTo(0, cs.y);
+      ctx.lineTo(cs.x - gap, cs.y);
+      ctx.moveTo(cs.x + gap, cs.y);
+      ctx.lineTo(w, cs.y);
+      // Vertical line with gap
+      ctx.moveTo(cs.x, 0);
+      ctx.lineTo(cs.x, cs.y - gap);
+      ctx.moveTo(cs.x, cs.y + gap);
+      ctx.lineTo(cs.x, h);
+      ctx.stroke();
+      ctx.restore();
     }
   }
 
@@ -1734,7 +1966,7 @@ export class WasmRenderer {
         this.wasm.setAxesSize(maxDim * 0.5);
       } else {
         this._orbitTarget = { x: 0, y: 0, z: 0 };
-        this._orbitRadius = 500;
+        this._orbitRadius = 25;
       }
       this._orbitTheta = Math.PI / 4;
       this._orbitPhi = Math.PI / 3;
@@ -1773,4 +2005,354 @@ export class WasmRenderer {
       this.overlayCanvas.parentNode.removeChild(this.overlayCanvas);
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Fully-constrained DOF analysis (ported from legacy renderer.js)
+// Propagates constraints from fixed points to determine which points and
+// entities are fully constrained (colored blue #569CD6 in the legacy UI).
+// ---------------------------------------------------------------------------
+
+const FULLY_CONSTRAINED_COLOR = [0.337, 0.612, 0.839, 1.0]; // #569CD6
+
+function _computeFullyConstrained(scene) {
+  const ps = new Map();
+  for (const pt of scene.points) {
+    ps.set(pt, {
+      xLock: !!pt.fixed,
+      yLock: !!pt.fixed,
+      radials: new Set(),
+      onFCLine: false,
+    });
+  }
+
+  const ss = new Map();
+  for (const seg of scene.segments) {
+    ss.set(seg, { dirKnown: false, lenKnown: false });
+  }
+
+  const isFC = (s) => {
+    if (!s) return false;
+    if (s.xLock && s.yLock) return true;
+    const axes = (s.xLock ? 1 : 0) + (s.yLock ? 1 : 0);
+    if (axes >= 1 && (s.radials.size >= 1 || s.onFCLine)) return true;
+    if (s.radials.size >= 2) return true;
+    if (s.onFCLine && s.radials.size >= 1) return true;
+    return false;
+  };
+  const markFC = (s) => {
+    if (!s) return false;
+    let ch = false;
+    if (!s.xLock) { s.xLock = true; ch = true; }
+    if (!s.yLock) { s.yLock = true; ch = true; }
+    return ch;
+  };
+
+  let changed = true;
+  let safety = 100; // Max iterations to prevent infinite loops in cyclic constraint graphs
+  while (changed && safety-- > 0) {
+    changed = false;
+
+    for (const c of scene.constraints) {
+      switch (c.type) {
+        case 'fixed': {
+          const s = ps.get(c.pt);
+          if (s && markFC(s)) changed = true;
+          break;
+        }
+        case 'coincident': {
+          const sa = ps.get(c.ptA), sb = ps.get(c.ptB);
+          if (sa && sb) {
+            if (sa.xLock && !sb.xLock) { sb.xLock = true; changed = true; }
+            if (sb.xLock && !sa.xLock) { sa.xLock = true; changed = true; }
+            if (sa.yLock && !sb.yLock) { sb.yLock = true; changed = true; }
+            if (sb.yLock && !sa.yLock) { sa.yLock = true; changed = true; }
+            if (isFC(sa) && !isFC(sb) && markFC(sb)) changed = true;
+            if (isFC(sb) && !isFC(sa) && markFC(sa)) changed = true;
+          }
+          break;
+        }
+        case 'horizontal': {
+          const si = ss.get(c.seg);
+          if (si && !si.dirKnown) { si.dirKnown = true; changed = true; }
+          const s1 = ps.get(c.seg.p1), s2 = ps.get(c.seg.p2);
+          if (s1 && s2) {
+            if (s1.yLock && !s2.yLock) { s2.yLock = true; changed = true; }
+            if (s2.yLock && !s1.yLock) { s1.yLock = true; changed = true; }
+          }
+          break;
+        }
+        case 'vertical': {
+          const si = ss.get(c.seg);
+          if (si && !si.dirKnown) { si.dirKnown = true; changed = true; }
+          const s1 = ps.get(c.seg.p1), s2 = ps.get(c.seg.p2);
+          if (s1 && s2) {
+            if (s1.xLock && !s2.xLock) { s2.xLock = true; changed = true; }
+            if (s2.xLock && !s1.xLock) { s1.xLock = true; changed = true; }
+          }
+          break;
+        }
+        case 'parallel':
+        case 'perpendicular':
+        case 'angle': {
+          const siA = ss.get(c.segA), siB = ss.get(c.segB);
+          if (siA && siB) {
+            if (siA.dirKnown && !siB.dirKnown) { siB.dirKnown = true; changed = true; }
+            if (siB.dirKnown && !siA.dirKnown) { siA.dirKnown = true; changed = true; }
+          }
+          break;
+        }
+        case 'length': {
+          const si = ss.get(c.seg);
+          if (si && !si.lenKnown) { si.lenKnown = true; changed = true; }
+          break;
+        }
+        case 'equal_length': {
+          const siA = ss.get(c.segA), siB = ss.get(c.segB);
+          if (siA && siB) {
+            if (siA.lenKnown && !siB.lenKnown) { siB.lenKnown = true; changed = true; }
+            if (siB.lenKnown && !siA.lenKnown) { siA.lenKnown = true; changed = true; }
+          }
+          break;
+        }
+        case 'distance': {
+          const sa = ps.get(c.ptA), sb = ps.get(c.ptB);
+          if (sa && sb) {
+            if (isFC(sa) && !sb.radials.has(c.ptA)) { sb.radials.add(c.ptA); changed = true; }
+            if (isFC(sb) && !sa.radials.has(c.ptB)) { sa.radials.add(c.ptB); changed = true; }
+          }
+          for (const seg of scene.segments) {
+            const si = ss.get(seg);
+            if (!si || si.lenKnown) continue;
+            if ((seg.p1 === c.ptA && seg.p2 === c.ptB) || (seg.p1 === c.ptB && seg.p2 === c.ptA)) {
+              si.lenKnown = true; changed = true;
+            }
+          }
+          break;
+        }
+        case 'on_line': {
+          const sp = ps.get(c.pt);
+          const s1 = ps.get(c.seg.p1), s2 = ps.get(c.seg.p2);
+          if (sp && s1 && s2 && isFC(s1) && isFC(s2) && !sp.onFCLine) {
+            sp.onFCLine = true; changed = true;
+          }
+          break;
+        }
+        case 'on_circle': {
+          const sp = ps.get(c.pt), sc = ps.get(c.circle.center);
+          if (sp && sc && isFC(sc) && !sp.radials.has(c.circle.center)) {
+            sp.radials.add(c.circle.center); changed = true;
+          }
+          break;
+        }
+        case 'midpoint': {
+          const sp = ps.get(c.pt);
+          const s1 = ps.get(c.seg.p1), s2 = ps.get(c.seg.p2);
+          if (sp && s1 && s2) {
+            if (isFC(s1) && isFC(s2) && !isFC(sp) && markFC(sp)) changed = true;
+            if (isFC(sp) && isFC(s1) && !isFC(s2) && markFC(s2)) changed = true;
+            if (isFC(sp) && isFC(s2) && !isFC(s1) && markFC(s1)) changed = true;
+          }
+          break;
+        }
+        default: break;
+      }
+
+      // Handle dimension constraints (duck-typed)
+      if (c.type === 'dimension' && c.isConstraint && c.sourceA) {
+        if (c.dimType === 'distance' && c.sourceA.type === 'point' && c.sourceB && c.sourceB.type === 'point') {
+          const sa = ps.get(c.sourceA), sb = ps.get(c.sourceB);
+          if (sa && sb) {
+            if (isFC(sa) && !sb.radials.has(c.sourceA)) { sb.radials.add(c.sourceA); changed = true; }
+            if (isFC(sb) && !sa.radials.has(c.sourceB)) { sa.radials.add(c.sourceB); changed = true; }
+          }
+        } else if (c.dimType === 'distance' && c.sourceA.type === 'segment' && !c.sourceB) {
+          const si = ss.get(c.sourceA);
+          if (si && !si.lenKnown) { si.lenKnown = true; changed = true; }
+        } else if (c.dimType === 'angle' && c.sourceA.type === 'segment' && c.sourceB && c.sourceB.type === 'segment') {
+          const siA = ss.get(c.sourceA), siB = ss.get(c.sourceB);
+          if (siA && siB) {
+            if (siA.dirKnown && !siB.dirKnown) { siB.dirKnown = true; changed = true; }
+            if (siB.dirKnown && !siA.dirKnown) { siA.dirKnown = true; changed = true; }
+          }
+        }
+      }
+    }
+
+    // Derived segment rules
+    for (const seg of scene.segments) {
+      const si = ss.get(seg);
+      if (!si) continue;
+      const s1 = ps.get(seg.p1), s2 = ps.get(seg.p2);
+      if (!s1 || !s2) continue;
+      if (si.dirKnown && si.lenKnown) {
+        if (isFC(s1) && !isFC(s2) && markFC(s2)) changed = true;
+        if (isFC(s2) && !isFC(s1) && markFC(s1)) changed = true;
+      }
+      if (si.lenKnown && !si.dirKnown) {
+        if (isFC(s1) && !s2.radials.has(seg.p1)) { s2.radials.add(seg.p1); changed = true; }
+        if (isFC(s2) && !s1.radials.has(seg.p2)) { s1.radials.add(seg.p2); changed = true; }
+      }
+    }
+  }
+
+  const fcPoints = new Set();
+  for (const [pt, s] of ps) { if (isFC(s)) fcPoints.add(pt); }
+  const fcEntities = new Set();
+  for (const seg of scene.segments) {
+    if (fcPoints.has(seg.p1) && fcPoints.has(seg.p2)) fcEntities.add(seg);
+  }
+  for (const circ of scene.circles) {
+    if (fcPoints.has(circ.center)) fcEntities.add(circ);
+  }
+  for (const arc of scene.arcs) {
+    if (fcPoints.has(arc.center)) fcEntities.add(arc);
+  }
+
+  return { points: fcPoints, entities: fcEntities };
+}
+
+// ---------------------------------------------------------------------------
+// Closed-loop detection for segment/arc fill (ported from legacy renderer.js)
+// Builds a point-adjacency graph and returns simple loops for subtle fills.
+// ---------------------------------------------------------------------------
+
+function _findClosedLoops(scene) {
+  const TOL = 1e-4;
+  const adj = new Map();
+  const ensure = (pt) => { if (!adj.has(pt)) adj.set(pt, []); };
+
+  for (const seg of scene.segments) {
+    if (!seg.visible || seg.construction) continue;
+    ensure(seg.p1);
+    ensure(seg.p2);
+    adj.get(seg.p1).push({ edge: seg, other: seg.p2 });
+    adj.get(seg.p2).push({ edge: seg, other: seg.p1 });
+  }
+
+  for (const arc of scene.arcs) {
+    if (!arc.visible || arc.construction) continue;
+    const sp = arc.startPt, ep = arc.endPt;
+    let pStart = null, pEnd = null;
+    for (const pt of scene.points) {
+      if (!pStart && Math.hypot(pt.x - sp.x, pt.y - sp.y) < TOL) pStart = pt;
+      if (!pEnd && Math.hypot(pt.x - ep.x, pt.y - ep.y) < TOL) pEnd = pt;
+    }
+    if (pStart && pEnd && pStart !== pEnd) {
+      ensure(pStart);
+      ensure(pEnd);
+      adj.get(pStart).push({ edge: arc, other: pEnd });
+      adj.get(pEnd).push({ edge: arc, other: pStart });
+    }
+  }
+
+  const visited = new Set();
+  const loops = [];
+
+  for (const [pt] of adj) {
+    if (visited.has(pt)) continue;
+    const component = [];
+    const queue = [pt];
+    const seen = new Set();
+    while (queue.length > 0) {
+      const cur = queue.shift();
+      if (seen.has(cur)) continue;
+      seen.add(cur);
+      component.push(cur);
+      for (const { other } of adj.get(cur)) {
+        if (!seen.has(other)) queue.push(other);
+      }
+    }
+    for (const p of component) visited.add(p);
+    if (component.length < 3) continue;
+    if (component.some(p => (adj.get(p) || []).length !== 2)) continue;
+
+    const orderedPts = [];
+    const orderedEdges = [];
+    let current = component[0];
+    let prevEdge = null;
+    for (let i = 0; i < component.length; i++) {
+      orderedPts.push(current);
+      const neighbors = adj.get(current);
+      const next = prevEdge
+        ? neighbors.find(n => n.edge !== prevEdge)
+        : neighbors[0];
+      orderedEdges.push(next.edge);
+      prevEdge = next.edge;
+      current = next.other;
+    }
+    loops.push({ points: orderedPts, edges: orderedEdges });
+  }
+
+  return loops;
+}
+
+// ---------------------------------------------------------------------------
+// Draw snap indicator shape on overlay canvas (legacy style)
+// Different shapes for each snap type.
+// ---------------------------------------------------------------------------
+
+function _drawSnapIndicator(ctx, screenPt, snapType) {
+  const sz = 6;
+  const sx = screenPt.x;
+  const sy = screenPt.y;
+
+  ctx.save();
+  ctx.strokeStyle = '#ffff00';
+  ctx.lineWidth = 1.5;
+
+  switch (snapType) {
+    case 'endpoint':
+      ctx.strokeRect(sx - sz, sy - sz, sz * 2, sz * 2);
+      break;
+    case 'midpoint':
+      ctx.beginPath();
+      ctx.moveTo(sx, sy - sz);
+      ctx.lineTo(sx + sz, sy + sz);
+      ctx.lineTo(sx - sz, sy + sz);
+      ctx.closePath();
+      ctx.stroke();
+      break;
+    case 'center':
+      ctx.beginPath();
+      ctx.arc(sx, sy, sz, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(sx - sz, sy); ctx.lineTo(sx + sz, sy);
+      ctx.moveTo(sx, sy - sz); ctx.lineTo(sx, sy + sz);
+      ctx.stroke();
+      break;
+    case 'quadrant':
+      ctx.beginPath();
+      ctx.moveTo(sx, sy - sz);
+      ctx.lineTo(sx + sz, sy);
+      ctx.lineTo(sx, sy + sz);
+      ctx.lineTo(sx - sz, sy);
+      ctx.closePath();
+      ctx.stroke();
+      break;
+    case 'origin':
+      ctx.beginPath();
+      ctx.arc(sx, sy, sz + 1, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(sx - sz - 1, sy); ctx.lineTo(sx + sz + 1, sy);
+      ctx.moveTo(sx, sy - sz - 1); ctx.lineTo(sx, sy + sz + 1);
+      ctx.stroke();
+      break;
+    case 'grid':
+      ctx.beginPath();
+      ctx.moveTo(sx - sz, sy); ctx.lineTo(sx + sz, sy);
+      ctx.moveTo(sx, sy - sz); ctx.lineTo(sx, sy + sz);
+      ctx.stroke();
+      break;
+    default:
+      // Fallback: small filled circle
+      ctx.fillStyle = '#ffff00';
+      ctx.beginPath();
+      ctx.arc(sx, sy, 3, 0, Math.PI * 2);
+      ctx.fill();
+      break;
+  }
+  ctx.restore();
 }

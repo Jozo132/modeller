@@ -120,6 +120,16 @@ export declare function setAxesSize(size: number): void;
  */
 export declare function setOriginPlanesVisible(mask: number): void;
 /**
+ * assembly/index/setOriginPlaneHovered
+ * @param mask `i32`
+ */
+export declare function setOriginPlaneHovered(mask: number): void;
+/**
+ * assembly/index/setOriginPlaneSelected
+ * @param mask `i32`
+ */
+export declare function setOriginPlaneSelected(mask: number): void;
+/**
  * assembly/index/setMousePosition
  * @param x `f32`
  * @param y `f32`

@@ -383,20 +383,27 @@ export function render2DEntities(cmd: CommandBuffer, vp: Mat4, entities: EntityS
     cmd.emitDrawPoints(snapVerts, 1, 10.0);
   }
 
-  // --- Cursor crosshair ---
+  // --- Cursor crosshair with gap ---
   if (entities.cursorVisible) {
     cmd.emitSetColor(0.165, 0.165, 0.165, 1.0); // #2a2a2a
     cmd.emitSetLineWidth(1.0);
     cmd.emitSetMatrix(mvp);
-    // Draw very long crosshair lines through cursor position
-    const chVerts = new StaticArray<f32>(12);
-    // Horizontal line
+    // Draw crosshair lines with a gap around cursor position
+    const GAP: f32 = 0.8; // gap in world units
+    const chVerts = new StaticArray<f32>(24);
+    // Horizontal left
     unchecked(chVerts[0] = entities.cursorX - CROSSHAIR_EXTENT); unchecked(chVerts[1] = entities.cursorY); unchecked(chVerts[2] = 0);
-    unchecked(chVerts[3] = entities.cursorX + CROSSHAIR_EXTENT); unchecked(chVerts[4] = entities.cursorY); unchecked(chVerts[5] = 0);
-    // Vertical line
-    unchecked(chVerts[6] = entities.cursorX); unchecked(chVerts[7] = entities.cursorY - CROSSHAIR_EXTENT); unchecked(chVerts[8] = 0);
-    unchecked(chVerts[9] = entities.cursorX); unchecked(chVerts[10] = entities.cursorY + CROSSHAIR_EXTENT); unchecked(chVerts[11] = 0);
-    cmd.emitDrawLines(chVerts, 4);
+    unchecked(chVerts[3] = entities.cursorX - GAP); unchecked(chVerts[4] = entities.cursorY); unchecked(chVerts[5] = 0);
+    // Horizontal right
+    unchecked(chVerts[6] = entities.cursorX + GAP); unchecked(chVerts[7] = entities.cursorY); unchecked(chVerts[8] = 0);
+    unchecked(chVerts[9] = entities.cursorX + CROSSHAIR_EXTENT); unchecked(chVerts[10] = entities.cursorY); unchecked(chVerts[11] = 0);
+    // Vertical top
+    unchecked(chVerts[12] = entities.cursorX); unchecked(chVerts[13] = entities.cursorY - CROSSHAIR_EXTENT); unchecked(chVerts[14] = 0);
+    unchecked(chVerts[15] = entities.cursorX); unchecked(chVerts[16] = entities.cursorY - GAP); unchecked(chVerts[17] = 0);
+    // Vertical bottom
+    unchecked(chVerts[18] = entities.cursorX); unchecked(chVerts[19] = entities.cursorY + GAP); unchecked(chVerts[20] = 0);
+    unchecked(chVerts[21] = entities.cursorX); unchecked(chVerts[22] = entities.cursorY + CROSSHAIR_EXTENT); unchecked(chVerts[23] = 0);
+    cmd.emitDrawLines(chVerts, 8);
   }
 
   cmd.emitSetDepthTest(true);
@@ -407,15 +414,22 @@ export function render2DEntities(cmd: CommandBuffer, vp: Mat4, entities: EntityS
  * Draws XY, XZ, and YZ plane boxes centered at the origin with light blue clickable faces.
  * @param planesVisible - bitmask: bit 0 = XY, bit 1 = XZ, bit 2 = YZ
  */
-export function renderOriginPlanes(cmd: CommandBuffer, vp: Mat4, planesVisible: i32 = 7): void {
+export function renderOriginPlanes(cmd: CommandBuffer, vp: Mat4, planesVisible: i32 = 7, planesHovered: i32 = 0, planesSelected: i32 = 0): void {
   const planeSize: f32 = 5.0;
-  const planeColor = new Color(0.53, 0.81, 0.92, 0.12); // light blue, semi-transparent
 
   // Draw as non-depth-tested overlay to avoid clipping body geometry.
   cmd.emitSetDepthTest(false);
 
   // XY plane (z=0) — visible when bit 0 is set
   if (planesVisible & 1) {
+    const isHovered: bool = (planesHovered & 1) != 0;
+    const isSelected: bool = (planesSelected & 1) != 0;
+    // Fill: brighter on hover, even brighter on selected
+    const fillAlpha: f32 = isSelected ? <f32>0.30 : (isHovered ? <f32>0.22 : <f32>0.12);
+    const fillR: f32 = isSelected ? <f32>0.2 : <f32>0.53;
+    const fillG: f32 = isSelected ? <f32>0.6 : <f32>0.81;
+    const fillB: f32 = isSelected ? <f32>1.0 : <f32>0.92;
+
     const xyVerts = new StaticArray<f32>(18);
     const xyNorms = new StaticArray<f32>(18);
     unchecked(xyVerts[0]  = -planeSize); unchecked(xyVerts[1]  = -planeSize); unchecked(xyVerts[2]  = 0);
@@ -431,10 +445,12 @@ export function renderOriginPlanes(cmd: CommandBuffer, vp: Mat4, planesVisible: 
     }
     cmd.emitSetProgram(0);
     cmd.emitSetMatrix(vp);
-    cmd.emitSetColor(planeColor.r, planeColor.g, planeColor.b, planeColor.a);
+    cmd.emitSetColor(fillR, fillG, fillB, fillAlpha);
     cmd.emitDrawTriangles(xyVerts, xyNorms, 6);
 
     // XY plane border
+    const borderAlpha: f32 = isSelected ? <f32>0.9 : (isHovered ? <f32>0.7 : <f32>0.4);
+    const borderWidth: f32 = isSelected ? <f32>2.5 : (isHovered ? <f32>2.0 : <f32>1.0);
     const xyBorder = new StaticArray<f32>(24);
     unchecked(xyBorder[0]  = -planeSize); unchecked(xyBorder[1]  = -planeSize); unchecked(xyBorder[2]  = 0);
     unchecked(xyBorder[3]  =  planeSize); unchecked(xyBorder[4]  = -planeSize); unchecked(xyBorder[5]  = 0);
@@ -446,13 +462,20 @@ export function renderOriginPlanes(cmd: CommandBuffer, vp: Mat4, planesVisible: 
     unchecked(xyBorder[21] = -planeSize); unchecked(xyBorder[22] = -planeSize); unchecked(xyBorder[23] = 0);
     cmd.emitSetProgram(1);
     cmd.emitSetMatrix(vp);
-    cmd.emitSetColor(0.53, 0.81, 0.92, 0.4);
-    cmd.emitSetLineWidth(1.0);
+    cmd.emitSetColor(fillR, fillG, fillB, borderAlpha);
+    cmd.emitSetLineWidth(borderWidth);
     cmd.emitDrawLines(xyBorder, 8);
   }
 
   // XZ plane (y=0) — visible when bit 1 is set
   if (planesVisible & 2) {
+    const isHovered: bool = (planesHovered & 2) != 0;
+    const isSelected: bool = (planesSelected & 2) != 0;
+    const fillAlpha: f32 = isSelected ? <f32>0.30 : (isHovered ? <f32>0.22 : <f32>0.12);
+    const fillR: f32 = isSelected ? <f32>0.2 : <f32>0.53;
+    const fillG: f32 = isSelected ? <f32>0.6 : <f32>0.81;
+    const fillB: f32 = isSelected ? <f32>1.0 : <f32>0.92;
+
     const xzVerts = new StaticArray<f32>(18);
     const xzNorms = new StaticArray<f32>(18);
     unchecked(xzVerts[0]  = -planeSize); unchecked(xzVerts[1]  = 0); unchecked(xzVerts[2]  = -planeSize);
@@ -468,10 +491,12 @@ export function renderOriginPlanes(cmd: CommandBuffer, vp: Mat4, planesVisible: 
     }
     cmd.emitSetProgram(0);
     cmd.emitSetMatrix(vp);
-    cmd.emitSetColor(planeColor.r, planeColor.g, planeColor.b, planeColor.a);
+    cmd.emitSetColor(fillR, fillG, fillB, fillAlpha);
     cmd.emitDrawTriangles(xzVerts, xzNorms, 6);
 
     // XZ plane border
+    const borderAlpha: f32 = isSelected ? <f32>0.9 : (isHovered ? <f32>0.7 : <f32>0.4);
+    const borderWidth: f32 = isSelected ? <f32>2.5 : (isHovered ? <f32>2.0 : <f32>1.0);
     const xzBorder = new StaticArray<f32>(24);
     unchecked(xzBorder[0]  = -planeSize); unchecked(xzBorder[1]  = 0); unchecked(xzBorder[2]  = -planeSize);
     unchecked(xzBorder[3]  =  planeSize); unchecked(xzBorder[4]  = 0); unchecked(xzBorder[5]  = -planeSize);
@@ -483,13 +508,20 @@ export function renderOriginPlanes(cmd: CommandBuffer, vp: Mat4, planesVisible: 
     unchecked(xzBorder[21] = -planeSize); unchecked(xzBorder[22] = 0); unchecked(xzBorder[23] = -planeSize);
     cmd.emitSetProgram(1);
     cmd.emitSetMatrix(vp);
-    cmd.emitSetColor(0.53, 0.81, 0.92, 0.4);
-    cmd.emitSetLineWidth(1.0);
+    cmd.emitSetColor(fillR, fillG, fillB, borderAlpha);
+    cmd.emitSetLineWidth(borderWidth);
     cmd.emitDrawLines(xzBorder, 8);
   }
 
   // YZ plane (x=0) — visible when bit 2 is set
   if (planesVisible & 4) {
+    const isHovered: bool = (planesHovered & 4) != 0;
+    const isSelected: bool = (planesSelected & 4) != 0;
+    const fillAlpha: f32 = isSelected ? <f32>0.30 : (isHovered ? <f32>0.22 : <f32>0.12);
+    const fillR: f32 = isSelected ? <f32>0.2 : <f32>0.53;
+    const fillG: f32 = isSelected ? <f32>0.6 : <f32>0.81;
+    const fillB: f32 = isSelected ? <f32>1.0 : <f32>0.92;
+
     const yzVerts = new StaticArray<f32>(18);
     const yzNorms = new StaticArray<f32>(18);
     unchecked(yzVerts[0]  = 0); unchecked(yzVerts[1]  = -planeSize); unchecked(yzVerts[2]  = -planeSize);
@@ -505,10 +537,12 @@ export function renderOriginPlanes(cmd: CommandBuffer, vp: Mat4, planesVisible: 
     }
     cmd.emitSetProgram(0);
     cmd.emitSetMatrix(vp);
-    cmd.emitSetColor(planeColor.r, planeColor.g, planeColor.b, planeColor.a);
+    cmd.emitSetColor(fillR, fillG, fillB, fillAlpha);
     cmd.emitDrawTriangles(yzVerts, yzNorms, 6);
 
     // YZ plane border
+    const borderAlpha: f32 = isSelected ? <f32>0.9 : (isHovered ? <f32>0.7 : <f32>0.4);
+    const borderWidth: f32 = isSelected ? <f32>2.5 : (isHovered ? <f32>2.0 : <f32>1.0);
     const yzBorder = new StaticArray<f32>(24);
     unchecked(yzBorder[0]  = 0); unchecked(yzBorder[1]  = -planeSize); unchecked(yzBorder[2]  = -planeSize);
     unchecked(yzBorder[3]  = 0); unchecked(yzBorder[4]  =  planeSize); unchecked(yzBorder[5]  = -planeSize);
@@ -520,8 +554,8 @@ export function renderOriginPlanes(cmd: CommandBuffer, vp: Mat4, planesVisible: 
     unchecked(yzBorder[21] = 0); unchecked(yzBorder[22] = -planeSize); unchecked(yzBorder[23] = -planeSize);
     cmd.emitSetProgram(1);
     cmd.emitSetMatrix(vp);
-    cmd.emitSetColor(0.53, 0.81, 0.92, 0.4);
-    cmd.emitSetLineWidth(1.0);
+    cmd.emitSetColor(fillR, fillG, fillB, borderAlpha);
+    cmd.emitSetLineWidth(borderWidth);
     cmd.emitDrawLines(yzBorder, 8);
   }
 
