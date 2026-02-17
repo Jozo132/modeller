@@ -642,6 +642,9 @@ export class WasmRenderer {
       // Set a reasonable default grid for 3D mode
       this.wasm.setGridSize(200, 20);
       this.wasm.setAxesSize(50);
+      // Clear stale 2D entities so they don't render in pure 3D mode
+      this.wasm.clearEntities();
+      if (this.wasm.resetEntityModelMatrix) this.wasm.resetEntityModelMatrix();
       // Apply orbit camera state
       this._orbitDirty = true;
       this._applyOrbitCamera();
