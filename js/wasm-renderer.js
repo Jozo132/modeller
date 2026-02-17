@@ -1571,8 +1571,17 @@ export class WasmRenderer {
     // View matrix (lookAt with Z-up)
     const view = this._mat4LookAt(camX, camY, camZ, t.x, t.y, t.z, 0, 0, 1);
     if (!view) return null;
-    // Projection matrix (perspective)
-    const proj = this._mat4Perspective(fov, aspect, near, far);
+
+    // Projection matrix must match the active WASM camera mode.
+    // Otherwise ray picking / sketch mapping drifts (especially in ORTH mode).
+    let proj;
+    if (this._ortho3D && this._orthoBounds) {
+      const b = this._orthoBounds;
+      proj = this._mat4Ortho(b.left, b.right, b.bottom, b.top, near, far);
+    } else {
+      proj = this._mat4Perspective(fov, aspect, near, far);
+    }
+
     // MVP = proj * view (column-major multiplication)
     return this._mat4Multiply(proj, view);
   }
@@ -1585,6 +1594,21 @@ export class WasmRenderer {
       0, f, 0, 0,
       0, 0, (far + near) * nf, -1,
       0, 0, 2 * far * near * nf, 0,
+    ]);
+  }
+
+  _mat4Ortho(left, right, bottom, top, near, far) {
+    const lr = 1 / (left - right);
+    const bt = 1 / (bottom - top);
+    const nf = 1 / (near - far);
+    return new Float32Array([
+      -2 * lr, 0, 0, 0,
+      0, -2 * bt, 0, 0,
+      0, 0, 2 * nf, 0,
+      (left + right) * lr,
+      (top + bottom) * bt,
+      (far + near) * nf,
+      1,
     ]);
   }
 

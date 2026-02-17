@@ -3507,44 +3507,47 @@ class App {
     const features = this._partManager.getFeatures();
     container.innerHTML = '';
 
-    // Show origin planes with visibility toggles
+    // Update origin plane rows (predefined in index.html) with visibility toggles
     const part = this._partManager.getPart();
     if (part) {
       const originPlanes = part.getOriginPlanes();
       ['XY', 'XZ', 'YZ'].forEach((planeName) => {
         const planeState = originPlanes[planeName];
-        const div = document.createElement('div');
-        div.className = 'node-tree-item node-tree-plane';
-        div.setAttribute('data-plane', planeName);
-        if (this._selectedPlane === planeName) div.classList.add('selected');
-        
-        const eyeIcon = planeState.visible ? '◉' : '○';
-        div.innerHTML = `<span class="node-tree-eye" data-plane-toggle="${planeName}" title="Toggle ${planeName} plane visibility">${eyeIcon}</span><span class="node-tree-icon" style="color:#87CEEB">▬</span><span class="node-tree-label">${planeName} Plane</span>`;
-        
-        // Toggle visibility on eye icon click
-        const eyeEl = div.querySelector('.node-tree-eye');
-        eyeEl.addEventListener('click', (e) => {
+        const planeEl = document.querySelector(`#node-tree-origin-planes .node-tree-plane[data-plane="${planeName}"]`);
+        if (!planeEl) return;
+
+        planeEl.classList.toggle('selected', this._selectedPlane === planeName);
+
+        let eyeEl = planeEl.querySelector('.node-tree-eye');
+        if (!eyeEl) {
+          eyeEl = document.createElement('span');
+          eyeEl.className = 'node-tree-eye';
+          const iconEl = planeEl.querySelector('.node-tree-icon');
+          if (iconEl) planeEl.insertBefore(eyeEl, iconEl);
+          else planeEl.insertBefore(eyeEl, planeEl.firstChild);
+        }
+
+        eyeEl.textContent = planeState.visible ? '◉' : '○';
+        eyeEl.setAttribute('data-plane-toggle', planeName);
+        eyeEl.title = `Toggle ${planeName} plane visibility`;
+        eyeEl.onclick = (e) => {
           e.stopPropagation();
           part.setOriginPlaneVisible(planeName, !planeState.visible);
           this._updateNodeTree();
           this._update3DView();
           this._scheduleRender();
-        });
+        };
 
-        // Select plane on row click
-        div.addEventListener('click', () => {
+        planeEl.onclick = (e) => {
+          if (e.target && e.target.classList && e.target.classList.contains('node-tree-eye')) return;
           if (this._workspaceMode !== 'part') return;
           if (this._selectedPlane === planeName) {
             this._selectedPlane = null;
-            div.classList.remove('selected');
           } else {
-            container.querySelectorAll('.node-tree-plane').forEach(p => p.classList.remove('selected'));
             this._selectedPlane = planeName;
-            div.classList.add('selected');
           }
-        });
-        
-        container.appendChild(div);
+          this._updateNodeTree();
+        };
       });
     }
 
@@ -3578,8 +3581,21 @@ class App {
       }
       
       const icon = featureIcons[feature.type] || '📦';
-      const visIcon = feature.visible ? '' : ' <span class="node-tree-hidden-indicator" title="Hidden">[hidden]</span>';
-      div.innerHTML = `<span class="node-tree-icon">${icon}</span><span class="node-tree-label">${feature.name}${visIcon}</span>`;
+      const eyeIcon = feature.visible ? '◉' : '○';
+      const hiddenTag = feature.visible ? '' : ' <span class="node-tree-hidden-indicator" title="Hidden">[hidden]</span>';
+      div.innerHTML = `<span class="node-tree-eye" title="Toggle feature visibility">${eyeIcon}</span><span class="node-tree-icon">${icon}</span><span class="node-tree-label">${feature.name}${hiddenTag}</span>`;
+
+      const eyeEl = div.querySelector('.node-tree-eye');
+      if (eyeEl) {
+        eyeEl.addEventListener('click', (e) => {
+          e.stopPropagation();
+          feature.setVisible(!feature.visible);
+          this._featurePanel.update();
+          this._updateNodeTree();
+          this._update3DView();
+          this._scheduleRender();
+        });
+      }
       
       div.addEventListener('click', () => {
         if (this._featurePanel) {

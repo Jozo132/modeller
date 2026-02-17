@@ -303,13 +303,14 @@ export function render(): void {
     scene.renderAxes(cmd, vp);
   }
 
-  // Origin planes (visible in both modes, subtle)
+  // 3D scene nodes (boxes, geometry)
+  scene.renderNodes(cmd, vp);
+
+  // Origin planes overlay (visible in 3D mode).
+  // Draw after solids so they don't clip or cut into body geometry.
   if (renderMode == 1) {
     renderOriginPlanes(cmd, vp, originPlanesVisible);
   }
-
-  // 3D scene nodes (boxes, geometry)
-  scene.renderNodes(cmd, vp);
 
   // 2D entities on XY plane
   render2DEntities(cmd, vp, entities);

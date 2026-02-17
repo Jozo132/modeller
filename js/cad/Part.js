@@ -177,7 +177,32 @@ export class Part {
    */
   removeFeature(featureId) {
     this.modified = new Date();
-    return this.featureTree.removeFeature(featureId);
+    const feature = this.featureTree.getFeature(featureId);
+    if (!feature) return false;
+
+    const childSketchIds = (feature.children || []).filter((childId) => {
+      const child = this.featureTree.getFeature(childId);
+      return child && child.type === 'sketch';
+    });
+
+    const removed = this.featureTree.removeFeature(featureId);
+    if (!removed) return false;
+
+    // If a removed feature was hiding linked sketch(es), restore visibility
+    // when no other remaining feature references those sketches.
+    for (const sketchId of childSketchIds) {
+      const stillReferenced = this.featureTree.features.some((f) =>
+        Array.isArray(f.children) && f.children.includes(sketchId)
+      );
+      if (!stillReferenced) {
+        const sketchFeature = this.featureTree.getFeature(sketchId);
+        if (sketchFeature && sketchFeature.type === 'sketch') {
+          sketchFeature.setVisible(true);
+        }
+      }
+    }
+
+    return true;
   }
 
   /**

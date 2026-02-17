@@ -411,6 +411,9 @@ export function renderOriginPlanes(cmd: CommandBuffer, vp: Mat4, planesVisible: 
   const planeSize: f32 = 5.0;
   const planeColor = new Color(0.53, 0.81, 0.92, 0.12); // light blue, semi-transparent
 
+  // Draw as non-depth-tested overlay to avoid clipping body geometry.
+  cmd.emitSetDepthTest(false);
+
   // XY plane (z=0) — visible when bit 0 is set
   if (planesVisible & 1) {
     const xyVerts = new StaticArray<f32>(18);
@@ -521,4 +524,6 @@ export function renderOriginPlanes(cmd: CommandBuffer, vp: Mat4, planesVisible: 
     cmd.emitSetLineWidth(1.0);
     cmd.emitDrawLines(yzBorder, 8);
   }
+
+  cmd.emitSetDepthTest(true);
 }
