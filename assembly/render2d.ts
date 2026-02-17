@@ -383,20 +383,27 @@ export function render2DEntities(cmd: CommandBuffer, vp: Mat4, entities: EntityS
     cmd.emitDrawPoints(snapVerts, 1, 10.0);
   }
 
-  // --- Cursor crosshair ---
+  // --- Cursor crosshair with gap ---
   if (entities.cursorVisible) {
     cmd.emitSetColor(0.165, 0.165, 0.165, 1.0); // #2a2a2a
     cmd.emitSetLineWidth(1.0);
     cmd.emitSetMatrix(mvp);
-    // Draw very long crosshair lines through cursor position
-    const chVerts = new StaticArray<f32>(12);
-    // Horizontal line
+    // Draw crosshair lines with a gap around cursor position
+    const GAP: f32 = 0.8; // gap in world units
+    const chVerts = new StaticArray<f32>(24);
+    // Horizontal left
     unchecked(chVerts[0] = entities.cursorX - CROSSHAIR_EXTENT); unchecked(chVerts[1] = entities.cursorY); unchecked(chVerts[2] = 0);
-    unchecked(chVerts[3] = entities.cursorX + CROSSHAIR_EXTENT); unchecked(chVerts[4] = entities.cursorY); unchecked(chVerts[5] = 0);
-    // Vertical line
-    unchecked(chVerts[6] = entities.cursorX); unchecked(chVerts[7] = entities.cursorY - CROSSHAIR_EXTENT); unchecked(chVerts[8] = 0);
-    unchecked(chVerts[9] = entities.cursorX); unchecked(chVerts[10] = entities.cursorY + CROSSHAIR_EXTENT); unchecked(chVerts[11] = 0);
-    cmd.emitDrawLines(chVerts, 4);
+    unchecked(chVerts[3] = entities.cursorX - GAP); unchecked(chVerts[4] = entities.cursorY); unchecked(chVerts[5] = 0);
+    // Horizontal right
+    unchecked(chVerts[6] = entities.cursorX + GAP); unchecked(chVerts[7] = entities.cursorY); unchecked(chVerts[8] = 0);
+    unchecked(chVerts[9] = entities.cursorX + CROSSHAIR_EXTENT); unchecked(chVerts[10] = entities.cursorY); unchecked(chVerts[11] = 0);
+    // Vertical top
+    unchecked(chVerts[12] = entities.cursorX); unchecked(chVerts[13] = entities.cursorY - CROSSHAIR_EXTENT); unchecked(chVerts[14] = 0);
+    unchecked(chVerts[15] = entities.cursorX); unchecked(chVerts[16] = entities.cursorY - GAP); unchecked(chVerts[17] = 0);
+    // Vertical bottom
+    unchecked(chVerts[18] = entities.cursorX); unchecked(chVerts[19] = entities.cursorY + GAP); unchecked(chVerts[20] = 0);
+    unchecked(chVerts[21] = entities.cursorX); unchecked(chVerts[22] = entities.cursorY + CROSSHAIR_EXTENT); unchecked(chVerts[23] = 0);
+    cmd.emitDrawLines(chVerts, 8);
   }
 
   cmd.emitSetDepthTest(true);
