@@ -787,12 +787,11 @@ class App {
           } else {
             const sketchVP = this._getSketchViewport();
             if (sketchVP) {
-              const basePoint = this.activeTool._startX !== undefined
+              const basePoint = this.activeTool._startX !== undefined && this.activeTool.step > 0
                 ? { x: this.activeTool._startX, y: this.activeTool._startY }
                 : null;
               const { world } = getSnappedPosition(
-                sx, sy, sketchVP,
-                this.activeTool.step > 0 ? basePoint : null,
+                sx, sy, sketchVP, basePoint,
                 { ignoreGridSnap: !!e.ctrlKey }
               );
               if (!world) return;
