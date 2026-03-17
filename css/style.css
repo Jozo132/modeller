@@ -1841,7 +1841,7 @@ body.sketch-on-plane #parameters-panel {
 /* ── Exit Sketch Button ── */
 .exit-sketch-btn {
   position: fixed;
-  bottom: 72px;
+  bottom: 72px; /* status-bar(26px) + command-line(30px) + margin(16px) */
   left: 50%;
   transform: translateX(-50%);
   z-index: 200;
@@ -1877,6 +1877,11 @@ body.sketch-on-plane #parameters-panel {
 @keyframes exit-sketch-pulse {
   0%, 100% { box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.08); }
   50% { box-shadow: 0 4px 16px rgba(220, 60, 60, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.08); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .exit-sketch-btn {
+    animation: none;
+  }
 }
 
 /* In Sketch workspace, hide Part-only tools (3D group and part-tools) */
