@@ -417,8 +417,8 @@ export function render2DEntities(cmd: CommandBuffer, vp: Mat4, entities: EntityS
 export function renderOriginPlanes(cmd: CommandBuffer, vp: Mat4, planesVisible: i32 = 7, planesHovered: i32 = 0, planesSelected: i32 = 0): void {
   const planeSize: f32 = 5.0;
 
-  // Draw as non-depth-tested overlay to avoid clipping body geometry.
-  cmd.emitSetDepthTest(false);
+  // Enable depth testing so planes properly intersect with 3D geometry.
+  cmd.emitSetDepthTest(true);
 
   // XY plane (z=0) — visible when bit 0 is set
   if (planesVisible & 1) {

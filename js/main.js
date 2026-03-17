@@ -102,7 +102,7 @@ class App {
     this._lpSelectedConstraintId = null; // constraint selected in left panel
 
     // 3D Part management
-    this._3dMode = false;
+    this._3dMode = true; // Always in unified 3D+sketch mode
     this._partManager = new PartManager();
     setPartManager(this._partManager);
     this._featurePanel = null;
@@ -156,21 +156,9 @@ class App {
 
       this._syncViewportSize();
       try {
-        if (this._sketchingOnPlane) {
-          // Sketching on a plane in 3D: render both mesh and sketch entities
-          this._renderer3d.render2DScene(state.scene, {
-            sceneVersion: this._sceneVersion,
-            hoverEntity: this.renderer.hoverEntity,
-            previewEntities: this.renderer.previewEntities,
-            snapPoint: this.renderer.snapPoint,
-            cursorWorld: this.renderer.cursorWorld,
-            isLayerVisible: (layer) => state.isLayerVisible(layer),
-            getLayerColor: (layer) => state.getLayerColor(layer),
-            allDimensionsVisible: state.allDimensionsVisible,
-            constraintIconsVisible: state.constraintIconsVisible,
-          });
-        } else if (!this._3dMode) {
-          this._renderer3d.sync2DView(this.viewport);
+        // Unified rendering: always render both 2D sketch entities and 3D part geometry together
+        if (this._sketchingOnPlane || state.entities.length > 0) {
+          // Render 2D sketch content overlaid on 3D
           this._renderer3d.render2DScene(state.scene, {
             sceneVersion: this._sceneVersion,
             hoverEntity: this.renderer.hoverEntity,
@@ -183,9 +171,7 @@ class App {
             constraintIconsVisible: state.constraintIconsVisible,
           });
         } else {
-          // Pure 3D mode (no sketching): clear the overlay canvas so
-          // stale 2D overlays (axes, dimensions, constraint icons) don't
-          // persist from a previous sketch session.
+          // No sketch entities: clear stale 2D overlays
           this._renderer3d.clearOverlay();
         }
       } catch (err) {
@@ -465,9 +451,12 @@ class App {
   setActiveTool(name) {
     // Block tool changes during motion playback (except select)
     if (motionAnalysis.isRunning && name !== 'select') return;
-    // Block drawing/editing tools in 3D view mode (only select allowed)
-    // but allow them during sketch-on-plane mode in Part workspace
-    if (this._3dMode && !this._sketchingOnPlane && name !== 'select') return;
+    // Block drawing/editing tools when not in sketch-on-plane mode
+    // (user must enter a sketch on a plane first to use drawing tools)
+    if (this._workspaceMode === 'part' && !this._sketchingOnPlane && name !== 'select') {
+      this.setStatus('Enter a sketch on a plane first to use drawing tools.');
+      return;
+    }
     if (this.activeTool) this.activeTool.deactivate();
     this.activeTool = this.tools[name] || this.tools.select;
     this.activeTool.activate();
@@ -1312,12 +1301,6 @@ class App {
             this._renderer3d.setOrtho3D(state.orthoEnabled);
           }
           this._scheduleRender();
-          break;
-        case '2':
-          if (this._3dMode) this._toggle3DMode();
-          break;
-        case '3':
-          if (!this._3dMode) this._toggle3DMode();
           break;
         case 'q': case 'Q': {
           // If primitives are selected, toggle their construction flag
@@ -3271,16 +3254,6 @@ class App {
       this._updateOperationButtons();
     });
 
-    // 3D Mode Toggle
-    const btn3DMode = document.getElementById('btn-3d-mode');
-    if (!this._renderer3d) {
-      btn3DMode.disabled = true;
-      btn3DMode.title = '3D unavailable: WebGL2 is not supported in this browser context';
-    }
-    btn3DMode.addEventListener('click', () => {
-      this._toggle3DMode();
-    });
-
     // Add Sketch to Part
     document.getElementById('btn-add-sketch').addEventListener('click', (e) => {
       if (this._selectedFace && this._selectedFace.face) {
@@ -3335,81 +3308,6 @@ class App {
         this._revolveSketch(radians);
       }
     });
-  }
-
-  _toggle3DMode() {
-    if (!this._renderer3d) {
-      this._3dMode = false;
-      this.setStatus('3D mode unavailable in this browser context (WebGL2 missing).');
-      return;
-    }
-
-    // If currently sketching on a plane, toggle only affects camera projection
-    // (perspective ↔ ortho) without leaving sketch mode
-    if (this._sketchingOnPlane) {
-      state.orthoEnabled = !state.orthoEnabled;
-      this._renderer3d.setOrtho3D(state.orthoEnabled);
-      const orthoBtn = document.getElementById('btn-ortho');
-      if (orthoBtn) orthoBtn.classList.toggle('active', state.orthoEnabled);
-      this._scheduleRender();
-      return;
-    }
-
-    this._3dMode = !this._3dMode;
-    const featurePanel = document.getElementById('feature-panel');
-    const parametersPanel = document.getElementById('parameters-panel');
-    const btn = document.getElementById('btn-3d-mode');
-    const modeIndicator = document.getElementById('status-mode');
-
-    if (this._3dMode) {
-      // Enter 3D viewing mode (perspective camera)
-      this._renderer3d.setMode('3d');
-      this._renderer3d.setVisible(true);
-      // Clear any leftover sketch plane reference so axes don't persist
-      this._renderer3d._sketchPlane = null;
-      this._renderer3d._sketchPlaneDef = null;
-      featurePanel.classList.add('active');
-      parametersPanel.classList.add('active');
-      btn.classList.add('active');
-      document.body.classList.add('mode-3d');
-
-      // Update mode indicator based on workspace
-      if (this._workspaceMode === 'part') {
-        modeIndicator.textContent = 'PART DESIGN';
-        modeIndicator.className = 'status-mode part-mode';
-      } else {
-        modeIndicator.textContent = '3D VIEW';
-        modeIndicator.className = 'status-mode view-3d-mode';
-      }
-
-      // Switch to select tool (drawing tools are hidden in 3D)
-      this.setActiveTool('select');
-      
-      info('3D viewing mode activated');
-    } else {
-      // Return to 2D sketching mode (orthographic camera)
-      this._renderer3d.setMode('2d');
-      this._renderer3d.setVisible(true);
-      this._renderer3d.sync2DView(this.viewport);
-      featurePanel.classList.remove('active');
-      parametersPanel.classList.remove('active');
-      btn.classList.remove('active');
-      document.body.classList.remove('mode-3d');
-
-      // Update mode indicator based on workspace
-      if (this._workspaceMode === 'part') {
-        modeIndicator.textContent = 'PART 2D';
-        modeIndicator.className = 'status-mode part-mode';
-      } else {
-        modeIndicator.textContent = 'SKETCH';
-        modeIndicator.className = 'status-mode sketch-mode';
-      }
-      
-      info('2D sketching mode activated');
-    }
-    
-    this._update3DView();
-    this._updateOperationButtons();
   }
 
   _addSketchToPart(planeName = 'XY') {
@@ -3552,7 +3450,7 @@ class App {
   }
 
   _update3DView() {
-    if (!this._renderer3d || !this._3dMode) return;
+    if (!this._renderer3d) return;
 
     const part = this._partManager.getPart();
     if (!part) {
@@ -3703,9 +3601,9 @@ class App {
     const hasSketch = this._lastSketchFeatureId !== null;
     const hasEntities = state.entities.length > 0;
     
-    document.getElementById('btn-add-sketch').disabled = !hasEntities || !this._3dMode;
-    document.getElementById('btn-extrude').disabled = !hasSketch || !this._3dMode;
-    document.getElementById('btn-revolve').disabled = !hasSketch || !this._3dMode;
+    document.getElementById('btn-add-sketch').disabled = !hasEntities;
+    document.getElementById('btn-extrude').disabled = !hasSketch;
+    document.getElementById('btn-revolve').disabled = !hasSketch;
   }
 
   // --- Quick-Start Page ---
@@ -3749,19 +3647,17 @@ class App {
     const modeIndicator = document.getElementById('status-mode');
 
     if (mode === 'part') {
-      // Part Design workspace: Start in 3D mode with Part tools
+      // Part Design workspace: unified 3D+sketch view
       this._partManager.createPart('Part1');
       this._3dMode = true;
       if (this._renderer3d) {
         this._renderer3d.setMode('3d');
         this._renderer3d.setVisible(true);
       }
-      document.body.classList.add('mode-3d');
       const featurePanel = document.getElementById('feature-panel');
       const parametersPanel = document.getElementById('parameters-panel');
       featurePanel.classList.add('active');
       parametersPanel.classList.add('active');
-      document.getElementById('btn-3d-mode').classList.add('active');
       modeIndicator.textContent = 'PART DESIGN';
       modeIndicator.className = 'status-mode part-mode';
       this.setActiveTool('select');
@@ -3859,7 +3755,7 @@ class App {
     state.scene.clear();
     state.selectedEntities = [];
 
-    // Return to 3D Part mode
+    // Return to Part Design mode
     this._sketchingOnPlane = false;
     this._activeSketchPlane = null;
     this._activeSketchPlaneDef = null;
@@ -3875,9 +3771,6 @@ class App {
       this._renderer3d.setMode('3d');
       this._renderer3d.setVisible(true);
     }
-
-    document.body.classList.add('mode-3d');
-    document.getElementById('btn-3d-mode').classList.add('active');
 
     const modeIndicator = document.getElementById('status-mode');
     modeIndicator.textContent = 'PART DESIGN';
@@ -4035,10 +3928,6 @@ class App {
       this._renderer3d._sketchPlaneDef = this._activeSketchPlaneDef;
     }
 
-    // Keep mode-3d class since we're in 3D
-    document.body.classList.add('mode-3d');
-    document.getElementById('btn-3d-mode').classList.add('active');
-
     const modeIndicator = document.getElementById('status-mode');
     modeIndicator.textContent = `SKETCH ON ${plane}`;
     modeIndicator.className = 'status-mode sketch-mode';
@@ -4094,10 +3983,6 @@ class App {
     // Clear face selection
     this._selectedFace = null;
     if (this._renderer3d) this._renderer3d.selectFace(-1);
-
-    // Keep mode-3d class since we're in 3D
-    document.body.classList.add('mode-3d');
-    document.getElementById('btn-3d-mode').classList.add('active');
 
     const modeIndicator = document.getElementById('status-mode');
     modeIndicator.textContent = 'SKETCH ON FACE';
@@ -4185,9 +4070,6 @@ class App {
       this._renderer3d.setMode('3d');
       this._renderer3d.setVisible(true);
     }
-
-    document.body.classList.add('mode-3d');
-    document.getElementById('btn-3d-mode').classList.add('active');
 
     const modeIndicator = document.getElementById('status-mode');
     modeIndicator.textContent = 'PART DESIGN';

@@ -603,12 +603,6 @@ html, body {
 .tool-group[data-group="ops"] {
   transition: opacity 0.2s, pointer-events 0s;
 }
-body.mode-3d .tool-group[data-group="draw"],
-body.mode-3d .tool-group[data-group="edit"],
-body.mode-3d .tool-group[data-group="constrain"],
-body.mode-3d .tool-group[data-group="ops"] {
-  display: none;
-}
 #status-coords { font-family: 'Consolas', monospace; }
 #status-snap, #status-ortho {
   padding: 1px 6px;
@@ -1549,11 +1543,6 @@ body.motion-active #view-3d {
   margin-bottom: 6px;
 }
 
-/* 3D Mode Toggle Button */
-#btn-3d-mode {
-  margin-left: auto;
-}
-
 /* Node Tree Overlay — transparent panel in top-left of viewport */
 .node-tree {
   position: fixed;
@@ -1801,15 +1790,7 @@ body.workspace-part .part-mode-only {
   border: 1px solid rgba(255, 152, 0, 0.4);
 }
 
-/* In Part workspace 3D mode, hide sketch-only tool groups */
-body.workspace-part.mode-3d .tool-group[data-group="draw"],
-body.workspace-part.mode-3d .tool-group[data-group="edit"],
-body.workspace-part.mode-3d .tool-group[data-group="constrain"],
-body.workspace-part.mode-3d .tool-group[data-group="ops"] {
-  display: none;
-}
-
-/* In Part workspace, only re-enable sketch tools during sketch-on-plane */
+/* In Part workspace, re-enable sketch tools during sketch-on-plane */
 body.workspace-part.sketch-on-plane .tool-group[data-group="draw"],
 body.workspace-part.sketch-on-plane .tool-group[data-group="edit"],
 body.workspace-part.sketch-on-plane .tool-group[data-group="constrain"],
@@ -1822,12 +1803,6 @@ body.sketch-on-plane .part-mode-only {
   display: none !important;
 }
 body.sketch-on-plane .tool-group[data-group="part-tools"] {
-  display: none !important;
-}
-body.sketch-on-plane .tool-group[data-group="3d"] {
-  display: none !important;
-}
-body.sketch-on-plane .mode-3d-sep {
   display: none !important;
 }
 body.sketch-on-plane #node-tree {
@@ -1884,14 +1859,8 @@ body.sketch-on-plane #parameters-panel {
   }
 }
 
-/* In Sketch workspace, hide Part-only tools (3D group and part-tools) */
+/* In Sketch workspace, hide Part-only tools */
 body.workspace-sketch .part-mode-only {
-  display: none;
-}
-body.workspace-sketch .tool-group[data-group="3d"] {
-  display: none;
-}
-body.workspace-sketch .mode-3d-sep {
   display: none;
 }
 
