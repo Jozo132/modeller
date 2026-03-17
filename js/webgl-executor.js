@@ -11,6 +11,7 @@ const CMD_DRAW_POINTS = 7;
 const CMD_SET_LINE_DASH = 8;
 const CMD_SET_DEPTH_TEST = 9;
 const CMD_SET_LINE_WIDTH = 10;
+const CMD_SET_DEPTH_WRITE = 11;
 
 // Program 0: solid/triangle shader with lighting
 const SOLID_VS = `#version 300 es
@@ -270,6 +271,13 @@ export class WebGLExecutor {
           const w = commandBuffer[pos];
           pos++;
           gl.lineWidth(w);
+          break;
+        }
+
+        case CMD_SET_DEPTH_WRITE: {
+          const enabled = i32View[pos];
+          pos++;
+          gl.depthMask(!!enabled);
           break;
         }
 

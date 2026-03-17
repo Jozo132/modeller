@@ -417,8 +417,11 @@ export function render2DEntities(cmd: CommandBuffer, vp: Mat4, entities: EntityS
 export function renderOriginPlanes(cmd: CommandBuffer, vp: Mat4, planesVisible: i32 = 7, planesHovered: i32 = 0, planesSelected: i32 = 0): void {
   const planeSize: f32 = 5.0;
 
-  // Enable depth testing so planes properly intersect with 3D geometry.
+  // Enable depth testing so planes are properly occluded by 3D geometry
+  // drawn before them, but disable depth writing so planes don't clip
+  // sketches and parts drawn after them.
   cmd.emitSetDepthTest(true);
+  cmd.emitSetDepthWrite(false);
 
   // XY plane (z=0) — visible when bit 0 is set
   if (planesVisible & 1) {
@@ -560,4 +563,5 @@ export function renderOriginPlanes(cmd: CommandBuffer, vp: Mat4, planesVisible: 
   }
 
   cmd.emitSetDepthTest(true);
+  cmd.emitSetDepthWrite(true);
 }

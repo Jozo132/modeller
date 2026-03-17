@@ -380,6 +380,33 @@ export class WasmRenderer {
   }
 
   /**
+   * Save the current orbit camera state so it can be restored later.
+   * @returns {{theta: number, phi: number, radius: number, target: {x:number,y:number,z:number}}}
+   */
+  saveOrbitState() {
+    return {
+      theta: this._orbitTheta,
+      phi: this._orbitPhi,
+      radius: this._orbitRadius,
+      target: { ...this._orbitTarget },
+    };
+  }
+
+  /**
+   * Restore a previously saved orbit camera state.
+   * @param {{theta: number, phi: number, radius: number, target: {x:number,y:number,z:number}}} state
+   */
+  restoreOrbitState(state) {
+    if (!state) return;
+    this._orbitTheta = state.theta;
+    this._orbitPhi = state.phi;
+    this._orbitRadius = state.radius;
+    this._orbitTarget = { ...state.target };
+    this._orbitDirty = true;
+    this._applyOrbitCamera();
+  }
+
+  /**
    * Pick a face at the given screen coordinates using ray-triangle intersection.
    * @param {number} screenX - Screen X coordinate
    * @param {number} screenY - Screen Y coordinate

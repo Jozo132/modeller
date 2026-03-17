@@ -12,6 +12,7 @@ export const CMD_DRAW_POINTS: i32     = 7;
 export const CMD_SET_LINE_DASH: i32   = 8;
 export const CMD_SET_DEPTH_TEST: i32  = 9;
 export const CMD_SET_LINE_WIDTH: i32  = 10;
+export const CMD_SET_DEPTH_WRITE: i32 = 11;
 
 // 4MB buffer = 1048576 f32 values
 const BUFFER_SIZE: i32 = 1048576;
@@ -136,6 +137,12 @@ export class CommandBuffer {
   emitSetLineWidth(width: f32): void {
     this.writeI32AsF32(CMD_SET_LINE_WIDTH);
     this.writeF32(width);
+  }
+
+  // CMD_SET_DEPTH_WRITE: cmdId, enabled (1 or 0)
+  emitSetDepthWrite(enabled: bool): void {
+    this.writeI32AsF32(CMD_SET_DEPTH_WRITE);
+    this.writeI32AsF32(enabled ? 1 : 0);
   }
 
   // CMD_END

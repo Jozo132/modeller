@@ -41,6 +41,7 @@ class App {
     this._selectedPlane = null; // currently selected plane in Part mode ('XY', 'XZ', 'YZ', or null)
     this._hoveredPlane = null;  // currently hovered plane in 3D viewport
     this._selectedFace = null; // currently selected 3D face in Part mode
+    this._savedOrbitState = null; // saved camera state before entering sketch mode
     
     // Initialize unified 3D renderer
     const view3dContainer = document.getElementById('view-3d');
@@ -3745,6 +3746,11 @@ class App {
       this._renderer3d._sketchPlaneDef = null;
       this._renderer3d.setMode('3d');
       this._renderer3d.setVisible(true);
+      // Restore camera orientation from before entering sketch mode
+      if (this._savedOrbitState) {
+        this._renderer3d.restoreOrbitState(this._savedOrbitState);
+        this._savedOrbitState = null;
+      }
     }
 
     const modeIndicator = document.getElementById('status-mode');
@@ -3892,6 +3898,8 @@ class App {
     if (exitBtn) exitBtn.style.display = 'flex';
 
     if (this._renderer3d) {
+      // Save camera state before reorienting so we can restore on exit
+      this._savedOrbitState = this._renderer3d.saveOrbitState();
       // Orient camera perpendicular to the selected plane
       this._renderer3d.orientToPlane(plane);
       // Stay in 3D mode so the mesh remains visible
@@ -3902,6 +3910,10 @@ class App {
       // Store plane definition for screen projection of sketch entities
       this._renderer3d._sketchPlaneDef = this._activeSketchPlaneDef;
     }
+
+    // Deselect the plane now that we've entered sketch mode on it
+    this._selectedPlane = null;
+    if (this._renderer3d) this._renderer3d.setSelectedPlane(null);
 
     const modeIndicator = document.getElementById('status-mode');
     modeIndicator.textContent = `SKETCH ON ${plane}`;
@@ -3933,6 +3945,8 @@ class App {
 
     // Orient camera perpendicular to the face normal
     if (this._renderer3d) {
+      // Save camera state before reorienting so we can restore on exit
+      this._savedOrbitState = this._renderer3d.saveOrbitState();
       this._renderer3d.orientToPlaneNormal(faceHit.face.normal, faceHit.point);
     }
 
@@ -4044,6 +4058,11 @@ class App {
       this._renderer3d._sketchPlaneDef = null;
       this._renderer3d.setMode('3d');
       this._renderer3d.setVisible(true);
+      // Restore camera orientation from before entering sketch mode
+      if (this._savedOrbitState) {
+        this._renderer3d.restoreOrbitState(this._savedOrbitState);
+        this._savedOrbitState = null;
+      }
     }
 
     const modeIndicator = document.getElementById('status-mode');
