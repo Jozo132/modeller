@@ -729,35 +729,6 @@ class App {
       movedSinceDown = false;
       mouseDown = true;
 
-      if (!this._3dMode) {
-        // 2D sketch interaction
-        if (e.button === 2) {
-          // Right button = pan
-          e.preventDefault();
-          this.viewport.startPan(sx, sy);
-          return;
-        }
-        if (e.button === 0 && this.activeTool.onMouseDown) {
-          let wx, wy;
-          if (this.activeTool.freehand) {
-            const raw = this.viewport.screenToWorld(sx, sy);
-            wx = raw.x; wy = raw.y;
-          } else {
-            const basePoint = this.activeTool._startX !== undefined
-              ? { x: this.activeTool._startX, y: this.activeTool._startY }
-              : null;
-            const { world } = getSnappedPosition(
-              sx, sy, this.viewport,
-              this.activeTool.step > 0 ? basePoint : null,
-              { ignoreGridSnap: !!e.ctrlKey }
-            );
-            wx = world.x; wy = world.y;
-          }
-          this.activeTool.onMouseDown(wx, wy, sx, sy, e);
-        }
-        return;
-      }
-
       // Middle button = orbit, Right button = pan (handled by WasmRenderer controls)
       if (e.button === 1 || e.button === 2) {
         return; // Let WASM renderer controls handle
@@ -781,20 +752,6 @@ class App {
       const sx = e.clientX - rect.left;
       const sy = e.clientY - rect.top;
       if (mouseDown) movedSinceDown = true;
-
-      if (!this._3dMode) {
-        if (this.viewport.isPanning) {
-          this.viewport.updatePan(sx, sy);
-          // Update cursor world position so the crosshair tracks the mouse during pan
-          const world = this.viewport.screenToWorld(sx, sy);
-          this.renderer.cursorWorld = world;
-          this._scheduleRender();
-          return;
-        }
-        this._lastPointer = { sx, sy, ctrlKey: e.ctrlKey };
-        this._schedulePointerProcessing();
-        return;
-      }
 
       if (this._sketchingOnPlane) {
         // Sketching on plane in 3D: process pointer for sketch tools
@@ -827,21 +784,6 @@ class App {
       const sy = e.clientY - rect.top;
       mouseDown = false;
 
-      if (!this._3dMode) {
-        if (e.button === 2) {
-          // Right button = end pan
-          this.viewport.endPan();
-          debouncedSave();
-          return;
-        }
-        const world = this.viewport.screenToWorld(sx, sy);
-        if (this.activeTool.onMouseUp) {
-          this.activeTool.onMouseUp(world.x, world.y, e);
-        }
-        this._scheduleRender();
-        return;
-      }
-
       if (e.button === 1 || e.button === 2) {
         debouncedSave();
         return;
@@ -862,35 +804,6 @@ class App {
 
     // Click
     canvas.addEventListener('click', (e) => {
-      if (!this._3dMode) {
-        if (this.viewport.isPanning) return;
-        if (movedSinceDown && this.activeTool.name === 'select') {
-          movedSinceDown = false;
-          return;
-        }
-        const rect = canvas.getBoundingClientRect();
-        const sx = e.clientX - rect.left;
-        const sy = e.clientY - rect.top;
-
-        const basePoint = this.activeTool._startX !== undefined && this.activeTool.step > 0
-          ? { x: this.activeTool._startX, y: this.activeTool._startY }
-          : null;
-        const { world } = getSnappedPosition(
-          sx,
-          sy,
-          this.viewport,
-          basePoint,
-          { ignoreGridSnap: !!e.ctrlKey }
-        );
-
-        if (this.activeTool.name === 'select' && this.activeTool._isDragging) return;
-
-        this.activeTool.onClick(world.x, world.y, e);
-        movedSinceDown = false;
-        this._scheduleRender();
-        return;
-      }
-
       if (movedSinceDown && this.activeTool.name === 'select') {
         movedSinceDown = false;
         return;
@@ -958,32 +871,6 @@ class App {
 
     // Double click
     canvas.addEventListener('dblclick', (e) => {
-      if (!this._3dMode) {
-        const rect = canvas.getBoundingClientRect();
-        const sx = e.clientX - rect.left;
-        const sy = e.clientY - rect.top;
-        const world = this.viewport.screenToWorld(sx, sy);
-        const tol = 12 / this.viewport.zoom;
-
-        let closestDim = null;
-        let closestDist = Infinity;
-        for (const dim of state.scene.dimensions) {
-          if (!dim.visible) continue;
-          const d = dim.distanceTo(world.x, world.y);
-          if (d < tol && d < closestDist) {
-            closestDist = d;
-            closestDim = dim;
-          }
-        }
-
-        if (closestDim) {
-          e.preventDefault();
-          e.stopPropagation();
-          this._editDimensionConstraint(closestDim, { x: sx, y: sy });
-        }
-        return;
-      }
-
       const rect = canvas.getBoundingClientRect();
       const sx = e.clientX - rect.left;
       const sy = e.clientY - rect.top;
@@ -1029,54 +916,9 @@ class App {
     });
 
     // Wheel for zooming (trigger render)
+    // WasmRenderer handles orbit zoom via its own wheel handler
     canvas.addEventListener('wheel', (e) => {
-      if (!this._3dMode) {
-        e.preventDefault();
-        const rect = canvas.getBoundingClientRect();
-        const sx = e.clientX - rect.left;
-        const sy = e.clientY - rect.top;
-        const factor = e.deltaY > 0 ? 0.9 : 1.1;
-        this.viewport.zoomAt(sx, sy, factor);
-        debouncedSave();
-        this._scheduleRender();
-        return;
-      }
-      // In 3D mode, WasmRenderer handles orbit zoom via its own wheel handler
       e.preventDefault();
-      this._scheduleRender();
-    }, { passive: false });
-
-    canvas.addEventListener('touchstart', (e) => {
-      if (this._3dMode) return;
-      if (e.touches.length !== 1) return;
-      e.preventDefault();
-      const rect = canvas.getBoundingClientRect();
-      const touch = e.touches[0];
-      const sx = touch.clientX - rect.left;
-      const sy = touch.clientY - rect.top;
-      const basePoint = this.activeTool._startX !== undefined && this.activeTool.step > 0
-        ? { x: this.activeTool._startX, y: this.activeTool._startY }
-        : null;
-      const { world } = getSnappedPosition(sx, sy, this.viewport, basePoint);
-      this.activeTool.onClick(world.x, world.y, e);
-      this._scheduleRender();
-    }, { passive: false });
-
-    canvas.addEventListener('touchmove', (e) => {
-      if (this._3dMode) return;
-      if (e.touches.length !== 1) return;
-      e.preventDefault();
-      const rect = canvas.getBoundingClientRect();
-      const touch = e.touches[0];
-      const sx = touch.clientX - rect.left;
-      const sy = touch.clientY - rect.top;
-      const basePoint = this.activeTool._startX !== undefined && this.activeTool.step > 0
-        ? { x: this.activeTool._startX, y: this.activeTool._startY }
-        : null;
-      const { world, snap } = getSnappedPosition(sx, sy, this.viewport, basePoint);
-      this.renderer.cursorWorld = world;
-      this.renderer.snapPoint = snap;
-      this.activeTool.onMouseMove(world.x, world.y, sx, sy);
       this._scheduleRender();
     }, { passive: false });
   }
