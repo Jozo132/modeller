@@ -35,7 +35,7 @@ class App {
   constructor() {
     info('App initialization started');
     this._renderer3d = null;
-    this._workspaceMode = null; // 'sketch' | 'part' | null (quick-start)
+    this._workspaceMode = null; // 'part' | null (quick-start)
     this._sketchingOnPlane = false; // true when in sketch-on-plane mode inside Part workspace
     this._activeSketchPlane = null; // plane reference for current sketch
     this._selectedPlane = null; // currently selected plane in Part mode ('XY', 'XZ', 'YZ', or null)
@@ -3375,7 +3375,7 @@ class App {
 
       // Update mode indicator based on workspace
       if (this._workspaceMode === 'part') {
-        modeIndicator.textContent = 'PART';
+        modeIndicator.textContent = 'PART DESIGN';
         modeIndicator.className = 'status-mode part-mode';
       } else {
         modeIndicator.textContent = '3D VIEW';
@@ -3721,15 +3721,8 @@ class App {
   }
 
   _bindQuickStartEvents() {
-    const qsSketch = document.getElementById('qs-sketch');
     const qsPart = document.getElementById('qs-part');
     const qsAssembly = document.getElementById('qs-assembly');
-
-    if (qsSketch) {
-      qsSketch.addEventListener('click', () => {
-        this._enterWorkspace('sketch');
-      });
-    }
 
     if (qsPart) {
       qsPart.addEventListener('click', () => {
@@ -3740,7 +3733,7 @@ class App {
     if (qsAssembly) {
       qsAssembly.addEventListener('click', () => {
         // Assembly is a stub - show message
-        this.setStatus('Assembly workspace is coming soon.');
+        this.setStatus('Assembly Design workspace is coming soon.');
       });
     }
   }
@@ -3755,20 +3748,8 @@ class App {
 
     const modeIndicator = document.getElementById('status-mode');
 
-    if (mode === 'sketch') {
-      // Sketch workspace: 2D mode, all sketch tools available
-      this._3dMode = false;
-      if (this._renderer3d) {
-        this._renderer3d.setMode('2d');
-        this._renderer3d.setVisible(true);
-      }
-      document.body.classList.remove('mode-3d');
-      modeIndicator.textContent = 'SKETCH';
-      modeIndicator.className = 'status-mode sketch-mode';
-      this.setActiveTool('select');
-      info('Entered Sketch workspace');
-    } else if (mode === 'part') {
-      // Part workspace: Start in 3D mode with Part tools
+    if (mode === 'part') {
+      // Part Design workspace: Start in 3D mode with Part tools
       this._partManager.createPart('Part1');
       this._3dMode = true;
       if (this._renderer3d) {
@@ -3781,12 +3762,12 @@ class App {
       featurePanel.classList.add('active');
       parametersPanel.classList.add('active');
       document.getElementById('btn-3d-mode').classList.add('active');
-      modeIndicator.textContent = 'PART';
+      modeIndicator.textContent = 'PART DESIGN';
       modeIndicator.className = 'status-mode part-mode';
       this.setActiveTool('select');
       this._updateOperationButtons();
       this._updateNodeTree();
-      info('Entered Part workspace');
+      info('Entered Part Design workspace');
     }
     this._scheduleRender();
   }
@@ -3899,14 +3880,14 @@ class App {
     document.getElementById('btn-3d-mode').classList.add('active');
 
     const modeIndicator = document.getElementById('status-mode');
-    modeIndicator.textContent = 'PART';
+    modeIndicator.textContent = 'PART DESIGN';
     modeIndicator.className = 'status-mode part-mode';
 
     this.setActiveTool('select');
     this._update3DView();
     this._updateOperationButtons();
-    this.setStatus('Sketch discarded. Returned to Part 3D mode.');
-    info('Discarded sketch-on-plane, returned to Part 3D mode');
+    this.setStatus('Sketch discarded. Returned to Part Design mode.');
+    info('Discarded sketch-on-plane, returned to Part Design mode');
     this._scheduleRender();
   }
 
@@ -4209,14 +4190,14 @@ class App {
     document.getElementById('btn-3d-mode').classList.add('active');
 
     const modeIndicator = document.getElementById('status-mode');
-    modeIndicator.textContent = 'PART';
+    modeIndicator.textContent = 'PART DESIGN';
     modeIndicator.className = 'status-mode part-mode';
 
     this.setActiveTool('select');
     this._update3DView();
     this._updateOperationButtons();
-    this.setStatus('Returned to Part 3D mode.');
-    info('Finished sketch-on-plane, returned to Part 3D mode');
+    this.setStatus('Returned to Part Design mode.');
+    info('Finished sketch-on-plane, returned to Part Design mode');
     this._scheduleRender();
   }
 
