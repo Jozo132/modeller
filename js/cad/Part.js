@@ -100,8 +100,7 @@ export class Part {
    * Once triggered, it is never called again (the user controls visibility).
    */
   _checkAutoHidePlanes() {
-    if (this._originPlanesAutoHidden) return;
-    if (this.featureTree.features.length === 0) return;
+    if (this._originPlanesAutoHidden || this.featureTree.features.length === 0) return;
     this._originPlanesAutoHidden = true;
     this.setOriginPlaneVisible('XY', false);
     this.setOriginPlaneVisible('XZ', false);
