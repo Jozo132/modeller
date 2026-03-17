@@ -35,6 +35,10 @@ export class Part {
       XZ: { visible: true, size: 5.0 },
       YZ: { visible: true, size: 5.0 },
     };
+
+    // Flag: once the first feature is added, auto-hide origin planes.
+    // After that the user controls visibility manually.
+    this._originPlanesAutoHidden = false;
     
     // Currently active sketch feature ID (being edited)
     this.activeSketchId = null;
@@ -89,6 +93,19 @@ export class Part {
    */
   getOriginPlanes() {
     return this.originPlanes;
+  }
+
+  /**
+   * Auto-hide origin planes on the first feature added to the part.
+   * Once triggered, it is never called again (the user controls visibility).
+   */
+  _checkAutoHidePlanes() {
+    if (this._originPlanesAutoHidden) return;
+    if (this.featureTree.features.length === 0) return;
+    this._originPlanesAutoHidden = true;
+    this.setOriginPlaneVisible('XY', false);
+    this.setOriginPlaneVisible('XZ', false);
+    this.setOriginPlaneVisible('YZ', false);
   }
 
   /**
@@ -157,6 +174,7 @@ export class Part {
     }
     
     this.featureTree.addFeature(sketchFeature, index);
+    this._checkAutoHidePlanes();
     return sketchFeature;
   }
 
@@ -263,6 +281,7 @@ export class Part {
     sketchFeature.setVisible(false);
     
     this.featureTree.addFeature(extrudeFeature);
+    this._checkAutoHidePlanes();
     // Note: Physical properties are computed lazily when requested
     
     return extrudeFeature;
@@ -302,6 +321,7 @@ export class Part {
     sketchFeature.setVisible(false);
     
     this.featureTree.addFeature(revolveFeature);
+    this._checkAutoHidePlanes();
     // Note: Physical properties are computed lazily when requested
     
     return revolveFeature;
@@ -438,6 +458,7 @@ export class Part {
       modified: this.modified.toISOString(),
       featureTree: this.featureTree.serialize(),
       originPlanes: this.originPlanes,
+      originPlanesAutoHidden: this._originPlanesAutoHidden,
       material: this.material,
       mass: this.mass,
       volume: this.volume,
@@ -486,6 +507,12 @@ export class Part {
         YZ: { ...part.originPlanes.YZ, ...data.originPlanes.YZ },
       };
     }
+
+    // Restore auto-hide flag; for old data without the flag, infer from
+    // whether the part already has features (auto-hide already fired).
+    part._originPlanesAutoHidden = data.originPlanesAutoHidden !== undefined
+      ? data.originPlanesAutoHidden
+      : (part.featureTree.features.length > 0);
 
     return part;
   }

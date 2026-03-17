@@ -1803,6 +1803,11 @@ export class WasmRenderer {
       gl.bindVertexArray(null);
     }
 
+    // Restore WebGL state expected by the WASM executor on the next frame
+    // (origin planes depend on blending for transparency).
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.depthFunc(gl.LESS);
     gl.disable(gl.CULL_FACE);
   }
 
