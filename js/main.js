@@ -250,7 +250,8 @@ class App {
 
   /**
    * Pointer processing for sketch-on-plane in 3D mode.
-   * Uses rayToPlane instead of 2D viewport screenToWorld.
+   * Uses rayToPlane instead of 2D viewport screenToWorld, with full
+   * snap, freehand, and ortho constraint support matching 2D behaviour.
    */
   _scheduleSketchPointerProcessing() {
     if (this._pointerFramePending || !this._lastPointer) return;
@@ -259,18 +260,43 @@ class App {
       this._pointerFramePending = false;
       if (!this._lastPointer) return;
       const { sx, sy, ctrlKey } = this._lastPointer;
+      const t0 = performance.now();
 
-      const world = this._screenToSketchWorld(sx, sy);
+      let world, snap;
+      const sketchVP = this._getSketchViewport();
+      if (this.activeTool.freehand) {
+        world = this._screenToSketchWorld(sx, sy);
+        snap = null;
+      } else if (sketchVP) {
+        const basePoint = this.activeTool._startX !== undefined && this.activeTool.step > 0
+          ? { x: this.activeTool._startX, y: this.activeTool._startY }
+          : null;
+        const result = getSnappedPosition(
+          sx, sy, sketchVP, basePoint,
+          { ignoreGridSnap: !!ctrlKey }
+        );
+        world = result.world;
+        snap = result.snap;
+      } else {
+        world = this._screenToSketchWorld(sx, sy);
+        snap = null;
+      }
       if (!world) return;
 
       this.renderer.cursorWorld = world;
-      this.renderer.snapPoint = null; // TODO: snap support in 3D sketch mode
+      this.renderer.snapPoint = snap;
 
+      const display = snap || world;
       document.getElementById('status-coords').textContent =
-        `X: ${world.x.toFixed(2)}  Y: ${world.y.toFixed(2)}`;
+        `X: ${display.x.toFixed(2)}  Y: ${display.y.toFixed(2)}`;
 
       this.activeTool.onMouseMove(world.x, world.y, sx, sy);
       this._updateLeftPanelHighlights();
+
+      const dt = performance.now() - t0;
+      if (dt > 12) {
+        warn('Sketch pointer processing frame is slow', { ms: dt.toFixed(2), tool: this.activeTool.name });
+      }
       this._scheduleRender();
     });
   }
@@ -715,6 +741,23 @@ class App {
     return this.viewport.screenToWorld(sx, sy);
   }
 
+  /**
+   * Create a viewport adapter for the snap system when sketching on a plane
+   * in 3D mode. This bridges the 3D renderer's rayToPlane/sketchToScreen
+   * with the 2D snap infrastructure so that grid snap, entity snap, origin
+   * snap and ortho constraints work seamlessly during 3D sketch operations.
+   * @returns {{screenToWorld: Function, worldToScreen: Function}|null}
+   */
+  _getSketchViewport() {
+    if (!this._sketchingOnPlane || !this._activeSketchPlaneDef || !this._renderer3d) return null;
+    const renderer = this._renderer3d;
+    const planeDef = this._activeSketchPlaneDef;
+    return {
+      screenToWorld: (sx, sy) => renderer.rayToPlane(sx, sy, planeDef),
+      worldToScreen: (wx, wy) => renderer.sketchToScreen(wx, wy),
+    };
+  }
+
   _bind3DCanvasEvents() {
     const canvas = this._renderer3d.renderer?.domElement;
     if (!canvas) return;
@@ -736,9 +779,31 @@ class App {
 
       if (e.button === 0 && this.activeTool.onMouseDown) {
         if (this._sketchingOnPlane) {
-          // Raycast to sketch plane for 2D coords
-          const world = this._screenToSketchWorld(sx, sy);
-          if (world) this.activeTool.onMouseDown(world.x, world.y, sx, sy, e);
+          let wx, wy;
+          if (this.activeTool.freehand) {
+            const raw = this._screenToSketchWorld(sx, sy);
+            if (!raw) return;
+            wx = raw.x; wy = raw.y;
+          } else {
+            const sketchVP = this._getSketchViewport();
+            if (sketchVP) {
+              const basePoint = this.activeTool._startX !== undefined
+                ? { x: this.activeTool._startX, y: this.activeTool._startY }
+                : null;
+              const { world } = getSnappedPosition(
+                sx, sy, sketchVP,
+                this.activeTool.step > 0 ? basePoint : null,
+                { ignoreGridSnap: !!e.ctrlKey }
+              );
+              if (!world) return;
+              wx = world.x; wy = world.y;
+            } else {
+              const raw = this._screenToSketchWorld(sx, sy);
+              if (!raw) return;
+              wx = raw.x; wy = raw.y;
+            }
+          }
+          this.activeTool.onMouseDown(wx, wy, sx, sy, e);
         } else {
           const world = this._renderer3d.screenToWorld(sx, sy);
           this.activeTool.onMouseDown(world.x, world.y, sx, sy, e);
@@ -814,8 +879,22 @@ class App {
       const sy = e.clientY - rect.top;
 
       if (this._sketchingOnPlane) {
-        // Sketching on plane in 3D: raycast to plane for click coords
-        const world = this._screenToSketchWorld(sx, sy);
+        if (this.activeTool.name === 'select' && this.activeTool._isDragging) return;
+        // Sketching on plane in 3D: raycast to plane with snap support
+        const sketchVP = this._getSketchViewport();
+        let world;
+        if (sketchVP) {
+          const basePoint = this.activeTool._startX !== undefined && this.activeTool.step > 0
+            ? { x: this.activeTool._startX, y: this.activeTool._startY }
+            : null;
+          const result = getSnappedPosition(
+            sx, sy, sketchVP, basePoint,
+            { ignoreGridSnap: !!e.ctrlKey }
+          );
+          world = result.world;
+        } else {
+          world = this._screenToSketchWorld(sx, sy);
+        }
         if (world && this.activeTool.onClick) {
           this.activeTool.onClick(world.x, world.y, e);
         }
@@ -920,6 +999,61 @@ class App {
     canvas.addEventListener('wheel', (e) => {
       e.preventDefault();
       this._scheduleRender();
+    }, { passive: false });
+
+    // Touch events for sketch-on-plane interaction
+    canvas.addEventListener('touchstart', (e) => {
+      if (!this._sketchingOnPlane) return;
+      if (e.touches.length !== 1) return;
+      e.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const touch = e.touches[0];
+      const sx = touch.clientX - rect.left;
+      const sy = touch.clientY - rect.top;
+      const sketchVP = this._getSketchViewport();
+      let world;
+      if (sketchVP) {
+        const basePoint = this.activeTool._startX !== undefined && this.activeTool.step > 0
+          ? { x: this.activeTool._startX, y: this.activeTool._startY }
+          : null;
+        const result = getSnappedPosition(sx, sy, sketchVP, basePoint);
+        world = result.world;
+      } else {
+        world = this._screenToSketchWorld(sx, sy);
+      }
+      if (world && this.activeTool.onClick) {
+        this.activeTool.onClick(world.x, world.y, e);
+      }
+      this._scheduleRender();
+    }, { passive: false });
+
+    canvas.addEventListener('touchmove', (e) => {
+      if (!this._sketchingOnPlane) return;
+      if (e.touches.length !== 1) return;
+      e.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const touch = e.touches[0];
+      const sx = touch.clientX - rect.left;
+      const sy = touch.clientY - rect.top;
+      const sketchVP = this._getSketchViewport();
+      let world, snap;
+      if (sketchVP) {
+        const basePoint = this.activeTool._startX !== undefined && this.activeTool.step > 0
+          ? { x: this.activeTool._startX, y: this.activeTool._startY }
+          : null;
+        const result = getSnappedPosition(sx, sy, sketchVP, basePoint);
+        world = result.world;
+        snap = result.snap;
+      } else {
+        world = this._screenToSketchWorld(sx, sy);
+        snap = null;
+      }
+      if (world) {
+        this.renderer.cursorWorld = world;
+        this.renderer.snapPoint = snap;
+        this.activeTool.onMouseMove(world.x, world.y, sx, sy);
+        this._scheduleRender();
+      }
     }, { passive: false });
   }
 
