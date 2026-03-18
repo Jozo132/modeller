@@ -43,6 +43,7 @@ class App {
     this._selectedFace = null; // currently selected 3D face in Part mode
     this._savedOrbitState = null; // saved camera state before entering sketch mode
     this._expandedFolders = new Set(); // track expanded feature tree folders
+    this._editingSketchFeatureId = null; // ID of sketch being edited (null = creating new)
     
     // Initialize unified 3D renderer
     const view3dContainer = document.getElementById('view-3d');
@@ -3618,6 +3619,13 @@ class App {
         this._scheduleRender();
       });
 
+      // Double-click on sketch features to enter edit mode
+      div.addEventListener('dblclick', () => {
+        if (feature.type === 'sketch' && !this._sketchingOnPlane) {
+          this._editExistingSketch(feature);
+        }
+      });
+
       return div;
     };
 
@@ -4124,6 +4132,64 @@ class App {
     return { origin, normal, xAxis, yAxis };
   }
 
+  /**
+   * Compute the outer boundary of a group of coplanar polygon faces.
+   * Edges used by exactly 1 face in the group are boundary edges;
+   * they are chained into a closed loop and the loop vertices are returned.
+   * @param {Array<Array<{x,y,z}>>} faceVertArrays - Array of vertex arrays (one per face)
+   * @returns {Array<{x,y,z}>} Ordered boundary vertices
+   */
+  _computeGroupBoundary(faceVertArrays) {
+    const prec = 5;
+    const vk = (v) => `${v.x.toFixed(prec)},${v.y.toFixed(prec)},${v.z.toFixed(prec)}`;
+    const ek = (a, b) => { const ka = vk(a), kb = vk(b); return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`; };
+
+    // Count how many faces use each edge
+    const edgeCount = new Map();
+    const edgeVerts = new Map(); // edgeKey → {a, b}
+    for (const verts of faceVertArrays) {
+      for (let i = 0; i < verts.length; i++) {
+        const a = verts[i], b = verts[(i + 1) % verts.length];
+        const key = ek(a, b);
+        edgeCount.set(key, (edgeCount.get(key) || 0) + 1);
+        if (!edgeVerts.has(key)) edgeVerts.set(key, { a, b });
+      }
+    }
+
+    // Boundary edges are those used by exactly 1 face
+    const adj = new Map();
+    for (const [key, count] of edgeCount) {
+      if (count !== 1) continue;
+      const { a, b } = edgeVerts.get(key);
+      const ka = vk(a), kb = vk(b);
+      if (!adj.has(ka)) adj.set(ka, []);
+      if (!adj.has(kb)) adj.set(kb, []);
+      adj.get(ka).push({ key: kb, vertex: b });
+      adj.get(kb).push({ key: ka, vertex: a });
+    }
+
+    // Walk the boundary
+    const visited = new Set();
+    const loop = [];
+    const startKey = adj.keys().next().value;
+    if (!startKey) return [];
+    let currentKey = startKey;
+    let safety = adj.size + 1;
+    while (!visited.has(currentKey) && safety-- > 0) {
+      visited.add(currentKey);
+      const neighbors = adj.get(currentKey);
+      if (!neighbors) break;
+      let next = null;
+      for (const n of neighbors) {
+        if (!visited.has(n.key)) { next = n; break; }
+      }
+      if (!next) break;
+      loop.push(next.vertex);
+      currentKey = next.key;
+    }
+    return loop;
+  }
+
   _finishSketchOnPlane() {
     if (!this._sketchingOnPlane) return;
 
@@ -4131,13 +4197,36 @@ class App {
     const part = this._partManager.getPart();
     if (part) part.setActiveSketch(null);
 
-    // Add the current 2D scene as a sketch feature on the active plane
-    if (state.entities.length > 0) {
-      if (this._activeSketchPlane === 'FACE' && this._activeSketchPlaneDef) {
-        // Use the face-derived plane definition
-        this._addSketchToPartWithPlane(this._activeSketchPlaneDef);
-      } else {
-        this._addSketchToPart(this._activeSketchPlane || 'XY');
+    // If editing an existing sketch, update it in-place
+    if (this._editingSketchFeatureId && part) {
+      const sketchFeature = part.getFeature(this._editingSketchFeatureId);
+      if (sketchFeature && sketchFeature.type === 'sketch' && state.entities.length > 0) {
+        // Rebuild the sketch from the current 2D scene
+        const sketch = new (sketchFeature.sketch.constructor)();
+        sketch.name = sketchFeature.sketch.name;
+        for (const seg of state.scene.segments) {
+          const s = seg.p1 || seg.start;
+          const e = seg.p2 || seg.end;
+          if (s && e) sketch.addSegment(s.x, s.y, e.x, e.y);
+        }
+        for (const circle of state.scene.circles) {
+          sketch.addCircle(circle.center.x, circle.center.y, circle.radius);
+        }
+        sketchFeature.sketch = sketch;
+        sketchFeature.modified = new Date();
+        // Recalculate the feature tree from this sketch forward
+        part.featureTree.recalculateFrom(this._editingSketchFeatureId);
+        info(`Updated sketch feature: ${this._editingSketchFeatureId}`);
+      }
+      this._editingSketchFeatureId = null;
+    } else {
+      // Add the current 2D scene as a NEW sketch feature on the active plane
+      if (state.entities.length > 0) {
+        if (this._activeSketchPlane === 'FACE' && this._activeSketchPlaneDef) {
+          this._addSketchToPartWithPlane(this._activeSketchPlaneDef);
+        } else {
+          this._addSketchToPart(this._activeSketchPlane || 'XY');
+        }
       }
     }
 
@@ -4180,10 +4269,137 @@ class App {
     this._scheduleRender();
   }
 
+  /**
+   * Enter edit mode for an existing sketch feature.
+   * Loads the sketch geometry back into the 2D scene, enters sketch-on-plane
+   * mode, and marks the sketch for in-place update on exit.
+   */
+  _editExistingSketch(sketchFeature) {
+    if (this._sketchingOnPlane) return;
+    if (!sketchFeature || sketchFeature.type !== 'sketch') return;
+
+    const sketch = sketchFeature.sketch;
+    if (!sketch) return;
+
+    // Clear the 2D scene and load sketch geometry into it
+    state.scene.clear();
+    state.selectedEntities = [];
+
+    for (const seg of sketch.segments) {
+      state.scene.addSegment(seg.p1.x, seg.p1.y, seg.p2.x, seg.p2.y);
+    }
+    for (const circle of sketch.circles) {
+      state.scene.addCircle(circle.center.x, circle.center.y, circle.radius);
+    }
+
+    // Determine plane name from the sketch feature's plane
+    const plane = sketchFeature.plane;
+    let planeName = 'FACE';
+    if (plane) {
+      // Check if it matches a standard plane
+      const n = plane.normal;
+      if (n && Math.abs(n.z) > 0.99 && Math.abs(n.x) < 0.01 && Math.abs(n.y) < 0.01) planeName = 'XY';
+      else if (n && Math.abs(n.y) > 0.99 && Math.abs(n.x) < 0.01 && Math.abs(n.z) < 0.01) planeName = 'XZ';
+      else if (n && Math.abs(n.x) > 0.99 && Math.abs(n.y) < 0.01 && Math.abs(n.z) < 0.01) planeName = 'YZ';
+    }
+
+    // Track that we're editing an existing sketch (not creating a new one)
+    this._editingSketchFeatureId = sketchFeature.id;
+    this._lastSketchFeatureId = sketchFeature.id;
+
+    // Enter sketch-on-plane mode
+    this._sketchingOnPlane = true;
+    this._activeSketchPlane = planeName;
+    this._activeSketchPlaneDef = plane;
+    this._3dMode = true;
+
+    document.body.classList.add('sketch-on-plane');
+    const exitBtn = document.getElementById('btn-exit-sketch');
+    if (exitBtn) exitBtn.style.display = 'flex';
+
+    if (this._renderer3d) {
+      this._savedOrbitState = this._renderer3d.saveOrbitState();
+      if (planeName !== 'FACE') {
+        this._renderer3d.orientToPlane(planeName);
+      }
+      this._renderer3d.setMode('3d');
+      this._renderer3d.setVisible(true);
+      this._renderer3d._sketchPlane = planeName;
+      this._renderer3d._sketchPlaneDef = plane;
+    }
+
+    this._selectedPlane = null;
+    if (this._renderer3d) this._renderer3d.setSelectedPlane(null);
+
+    const modeIndicator = document.getElementById('status-mode');
+    modeIndicator.textContent = `EDIT SKETCH: ${sketchFeature.name}`;
+    modeIndicator.className = 'status-mode sketch-mode';
+
+    this.setActiveTool('select');
+    this.setStatus(`Editing ${sketchFeature.name}. Modify, then Exit Sketch to apply changes.`);
+    info(`Entered edit mode for sketch: ${sketchFeature.id}`);
+    this._scheduleRender();
+  }
+
   async _startExtrude(isCut = false) {
     if (this._workspaceMode !== 'part') {
       this.setStatus('Extrude is only available in Part workspace.');
       return;
+    }
+
+    // If a face is selected but no sketch was created for it, auto-create
+    // a new sketch from the face outline instead of reusing an old sketch.
+    if (this._selectedFace && this._selectedFace.face) {
+      const face = this._selectedFace.face;
+      const planeDef = this._getPlaneFromFace(this._selectedFace);
+      if (planeDef) {
+        // Collect all face vertices — if this face belongs to a faceGroup,
+        // gather vertices from all faces in that group
+        let allFaceVerts = [];
+        const faceGroup = face.faceGroup;
+        const allMeshFaces = this._renderer3d ? this._renderer3d.getAllFaces() : null;
+        if (faceGroup != null && allMeshFaces) {
+          const groupFaces = allMeshFaces.filter(f => f.faceGroup === faceGroup);
+          for (const gf of groupFaces) {
+            allFaceVerts.push(gf.vertices || []);
+          }
+        } else {
+          allFaceVerts.push(face.vertices || []);
+        }
+
+        // Build the combined outline from all faces in the group
+        const faceVerts = allFaceVerts.length === 1
+          ? allFaceVerts[0]
+          : this._computeGroupBoundary(allFaceVerts);
+
+        if (faceVerts.length >= 3) {
+          const { Sketch } = await import('./cad/Sketch.js');
+          const sketch = new Sketch();
+          sketch.name = `Sketch${this._partManager.getFeatures().length + 1}`;
+          // Project 3D face vertices to 2D sketch coordinates
+          const origin = planeDef.origin;
+          const xAxis = planeDef.xAxis;
+          const yAxis = planeDef.yAxis;
+          const proj2D = faceVerts.map(v => ({
+            x: (v.x - origin.x) * xAxis.x + (v.y - origin.y) * xAxis.y + (v.z - origin.z) * xAxis.z,
+            y: (v.x - origin.x) * yAxis.x + (v.y - origin.y) * yAxis.y + (v.z - origin.z) * yAxis.z,
+          }));
+          // Create segments forming the closed profile
+          for (let i = 0; i < proj2D.length; i++) {
+            const a = proj2D[i];
+            const b = proj2D[(i + 1) % proj2D.length];
+            sketch.addSegment(a.x, a.y, b.x, b.y);
+          }
+          // Add as a new sketch feature on the face plane
+          const part = this._partManager.getPart();
+          if (part) {
+            const sketchFeature = part.addSketch(sketch, planeDef);
+            this._lastSketchFeatureId = sketchFeature.id;
+          }
+        }
+      }
+      this._selectedFace = null;
+      if (this._renderer3d) this._renderer3d.selectFace(-1);
     }
 
     if (!this._lastSketchFeatureId) {
@@ -4213,22 +4429,6 @@ class App {
         // Extrude cut: reverse direction and set subtract operation
         feature.direction = -1;
         feature.operation = 'subtract';
-      }
-
-      // If a face is selected, override the extrusion direction to be perpendicular to it
-      if (this._selectedFace && this._selectedFace.face) {
-        const faceNormal = this._selectedFace.face.normal;
-        // Update the sketch feature's plane normal to match the face
-        const sketchFeature = this._partManager.getPart().getFeature(this._lastSketchFeatureId);
-        if (sketchFeature && sketchFeature.type === 'sketch') {
-          const planeDef = this._getPlaneFromFace(this._selectedFace);
-          if (planeDef) {
-            sketchFeature.setPlane(planeDef);
-          }
-        }
-        // Clear face selection after use
-        this._selectedFace = null;
-        if (this._renderer3d) this._renderer3d.selectFace(-1);
       }
     }
 

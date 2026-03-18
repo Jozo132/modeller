@@ -1521,6 +1521,7 @@ export class WasmRenderer {
       faceType: face.faceType || 'unknown',
       normal: face.normal || { x: 0, y: 0, z: 1 },
       shared: face.shared || null,
+      vertices: face.vertices || [],
       vertexCount: face.vertices.length,
     }));
 

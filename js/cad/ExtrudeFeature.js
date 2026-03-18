@@ -239,6 +239,12 @@ export class ExtrudeFeature extends Feature {
    */
   applyOperation(solid, geometry) {
     if (this.operation === 'new' || !solid) {
+      // Tag new faces with this feature's id so selection can link back
+      if (geometry && geometry.faces) {
+        for (const f of geometry.faces) {
+          if (!f.shared) f.shared = { sourceFeatureId: this.id };
+        }
+      }
       return { geometry };
     }
 
@@ -249,7 +255,10 @@ export class ExtrudeFeature extends Feature {
     }
 
     try {
-      const resultGeom = booleanOp(prevGeom, geometry, this.operation);
+      // Pass feature ids as shared metadata so faces track their source feature
+      const resultGeom = booleanOp(prevGeom, geometry, this.operation,
+        null, // keep existing shared on prevGeom faces
+        { sourceFeatureId: this.id });
       return { geometry: resultGeom };
     } catch (err) {
       console.warn(`Boolean operation '${this.operation}' failed:`, err.message);
