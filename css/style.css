@@ -1678,6 +1678,26 @@ body.motion-active #view-3d {
   text-decoration: line-through;
 }
 
+.node-tree-folder-arrow {
+  flex-shrink: 0;
+  width: 12px;
+  text-align: center;
+  font-size: 10px;
+  cursor: pointer;
+  opacity: 0.6;
+  user-select: none;
+}
+
+.node-tree-folder-arrow:hover {
+  opacity: 1.0;
+}
+
+.node-tree-child-feature {
+  padding-left: 26px;
+  font-size: 11px;
+  opacity: 0.8;
+}
+
 /* ── Quick-Start Page ── */
 .quick-start-overlay {
   position: fixed;
@@ -1783,6 +1803,17 @@ body.workspace-part .part-mode-only {
   display: flex;
 }
 
+/* In Part workspace (not sketching): hide sketch-specific tool groups */
+body.workspace-part .tool-group[data-group="draw"],
+body.workspace-part .tool-group[data-group="constrain"],
+body.workspace-part .tool-group[data-group="ops"] {
+  display: none;
+}
+/* In Part workspace (not sketching): hide sketch-only edit buttons */
+body.workspace-part .sketch-tool-only {
+  display: none;
+}
+
 /* Part mode status indicator */
 .status-mode.part-mode {
   background: rgba(255, 152, 0, 0.25);
@@ -1796,6 +1827,9 @@ body.workspace-part.sketch-on-plane .tool-group[data-group="edit"],
 body.workspace-part.sketch-on-plane .tool-group[data-group="constrain"],
 body.workspace-part.sketch-on-plane .tool-group[data-group="ops"] {
   display: flex !important;
+}
+body.workspace-part.sketch-on-plane .sketch-tool-only {
+  display: inline-flex !important;
 }
 
 /* In sketch-on-plane mode: hide Part-only tools and 3D group */

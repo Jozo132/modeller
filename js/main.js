@@ -42,6 +42,7 @@ class App {
     this._hoveredPlane = null;  // currently hovered plane in 3D viewport
     this._selectedFace = null; // currently selected 3D face in Part mode
     this._savedOrbitState = null; // saved camera state before entering sketch mode
+    this._expandedFolders = new Set(); // track expanded feature tree folders
     
     // Initialize unified 3D renderer
     const view3dContainer = document.getElementById('view-3d');
@@ -1227,6 +1228,19 @@ class App {
           this.activeTool.onCancel();
           if (this.activeTool.name !== 'select') this.setActiveTool('select');
           state.clearSelection();
+          // Deselect plane, face, and feature in 3D view
+          if (this._selectedPlane) {
+            this._selectedPlane = null;
+            if (this._renderer3d) this._renderer3d.setSelectedPlane(null);
+          }
+          if (this._selectedFace) {
+            this._selectedFace = null;
+            if (this._renderer3d) this._renderer3d.selectFace(-1);
+          }
+          if (this._featurePanel && this._featurePanel.selectedFeatureId) {
+            this._featurePanel.selectFeature(null);
+          }
+          this._updateNodeTree();
           this._scheduleRender();
           break;
         case 'Delete':
@@ -3260,15 +3274,7 @@ class App {
 
     // Extrude
     document.getElementById('btn-extrude').addEventListener('click', async () => {
-      const distance = await showPrompt({
-        title: 'Extrude',
-        message: 'Enter extrusion distance:',
-        defaultValue: '10',
-      });
-      
-      if (distance && !isNaN(parseFloat(distance))) {
-        this._extrudeSketch(parseFloat(distance));
-      }
+      await this._startExtrude(false);
     });
 
     // Revolve
@@ -3537,14 +3543,23 @@ class App {
       'chamfer': '📐'
     };
 
-    features.forEach((feature) => {
+    // Build a set of feature IDs that are consumed as children of other features
+    const consumedIds = new Set();
+    features.forEach((f) => {
+      if (f.children && f.children.length > 0) {
+        f.children.forEach((childId) => consumedIds.add(childId));
+      }
+    });
+
+    // Helper: build a feature row element
+    const buildFeatureRow = (feature, isChild) => {
       const div = document.createElement('div');
-      div.className = 'node-tree-feature';
+      div.className = isChild ? 'node-tree-feature node-tree-child-feature' : 'node-tree-feature';
       if (feature.suppressed) div.classList.add('suppressed');
       if (this._featurePanel && this._featurePanel.selectedFeatureId === feature.id) {
         div.classList.add('active');
       }
-      
+
       const icon = featureIcons[feature.type] || '📦';
       const eyeIcon = feature.visible ? '◉' : '○';
       const hiddenTag = feature.visible ? '' : ' <span class="node-tree-hidden-indicator" title="Hidden">[hidden]</span>';
@@ -3561,15 +3576,69 @@ class App {
           this._scheduleRender();
         });
       }
-      
+
       div.addEventListener('click', () => {
         if (this._featurePanel) {
           this._featurePanel.selectFeature(feature.id);
         }
         this._updateNodeTree();
       });
-      
-      container.appendChild(div);
+
+      return div;
+    };
+
+    features.forEach((feature) => {
+      // Skip features that are consumed as children (shown nested under parent)
+      if (consumedIds.has(feature.id)) return;
+
+      const hasChildren = feature.children && feature.children.length > 0;
+
+      if (hasChildren) {
+        // Create a collapsible folder wrapper
+        const wrapper = document.createElement('div');
+        wrapper.className = 'node-tree-folder';
+
+        // Check if folder is expanded (default collapsed)
+        const folderId = `folder-${feature.id}`;
+        const isExpanded = this._expandedFolders && this._expandedFolders.has(folderId);
+
+        // Parent feature row with toggle arrow
+        const div = buildFeatureRow(feature, false);
+        // Prepend a toggle arrow before the eye icon
+        const arrow = document.createElement('span');
+        arrow.className = 'node-tree-folder-arrow';
+        arrow.textContent = isExpanded ? '▾' : '▸';
+        arrow.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (!this._expandedFolders) this._expandedFolders = new Set();
+          if (this._expandedFolders.has(folderId)) {
+            this._expandedFolders.delete(folderId);
+          } else {
+            this._expandedFolders.add(folderId);
+          }
+          this._updateNodeTree();
+        });
+        div.insertBefore(arrow, div.firstChild);
+
+        wrapper.appendChild(div);
+
+        // Children container (only visible when expanded)
+        if (isExpanded) {
+          const childContainer = document.createElement('div');
+          childContainer.className = 'node-tree-children';
+          feature.children.forEach((childId) => {
+            const childFeature = features.find((f) => f.id === childId);
+            if (childFeature) {
+              childContainer.appendChild(buildFeatureRow(childFeature, true));
+            }
+          });
+          wrapper.appendChild(childContainer);
+        }
+
+        container.appendChild(wrapper);
+      } else {
+        container.appendChild(buildFeatureRow(feature, false));
+      }
     });
   }
 
@@ -3577,9 +3646,14 @@ class App {
     const hasSketch = this._lastSketchFeatureId !== null;
     const hasEntities = state.entities.length > 0;
     
-    document.getElementById('btn-add-sketch').disabled = !hasEntities;
-    document.getElementById('btn-extrude').disabled = !hasSketch;
-    document.getElementById('btn-revolve').disabled = !hasSketch;
+    const btnAddSketch = document.getElementById('btn-add-sketch');
+    if (btnAddSketch) btnAddSketch.disabled = !hasEntities;
+    const btnExtrude = document.getElementById('btn-extrude');
+    if (btnExtrude) btnExtrude.disabled = !hasSketch;
+    const btnRevolve = document.getElementById('btn-revolve');
+    if (btnRevolve) btnRevolve.disabled = !hasSketch;
+    const btnExtrudeCut = document.getElementById('btn-extrude-cut');
+    if (btnExtrudeCut) btnExtrudeCut.disabled = !hasSketch;
   }
 
   // --- Quick-Start Page ---
@@ -3770,7 +3844,6 @@ class App {
   _bindPartToolEvents() {
     const btnCreatePlane = document.getElementById('btn-create-plane');
     const btnSketchOnPlane = document.getElementById('btn-sketch-on-plane');
-    const btnExtrudePart = document.getElementById('btn-extrude-part');
     const btnExtrudeCut = document.getElementById('btn-extrude-cut');
 
     if (btnCreatePlane) {
@@ -3787,12 +3860,6 @@ class App {
         } else {
           this._startSketchOnPlane();
         }
-      });
-    }
-
-    if (btnExtrudePart) {
-      btnExtrudePart.addEventListener('click', async () => {
-        await this._startExtrude(false);
       });
     }
 
