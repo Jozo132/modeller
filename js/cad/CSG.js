@@ -335,7 +335,7 @@ class CSGSolid {
    */
   toGeometry() {
     const vertices = [];
-    let faces = [];
+    const faces = [];
 
     // Build face list and collect per-edge normal info for feature edge detection
     // Key: edgeKey → array of face normals touching that edge
@@ -360,11 +360,13 @@ class CSGSolid {
       }
     }
 
-    // Merge coplanar adjacent faces into larger polygons so that flat
-    // surfaces created by CSG unions appear as single selectable faces.
-    faces = mergeCoplanarFaces(faces);
+    // Group coplanar adjacent faces so they can be selected as one logical face.
+    // Unlike the old mergeCoplanarFaces(), this preserves the original convex
+    // polygons (so fan triangulation remains correct) and only assigns a shared
+    // faceGroup ID to coplanar neighbours.
+    assignCoplanarFaceGroups(faces);
 
-    // Rebuild edge normal tracking from the (possibly merged) face list
+    // Build edge normal tracking
     for (const face of faces) {
       const faceVerts = face.vertices;
       const normal = face.normal;
@@ -410,31 +412,22 @@ class CSGSolid {
 }
 
 // -----------------------------------------------------------------------
-// Coplanar face merging
+// Coplanar face grouping
 // -----------------------------------------------------------------------
 
 /**
- * Vertex key for position-based deduplication (6 decimal places).
- */
-function vtxKey(v) {
-  return `${v.x.toFixed(6)},${v.y.toFixed(6)},${v.z.toFixed(6)}`;
-}
-
-/**
- * Merge coplanar adjacent faces into larger polygons.
- * Groups faces by plane (same normal direction + same signed distance from origin),
- * finds the outer boundary of each connected group, and replaces the group with
- * a single merged face whose vertices trace the outer boundary.
+ * Assign a faceGroup ID to coplanar adjacent faces so they can be selected
+ * as a single logical face.  Unlike the old mergeCoplanarFaces(), this
+ * preserves the original convex CSG polygons (so fan triangulation stays
+ * correct) and only annotates each face with a shared group number.
  *
- * Non-planar faces (cylindrical, freeform) and groups with only one face are kept as-is.
+ * Non-planar faces (cylindrical, freeform) and singletons get their own
+ * unique group ID (equal to their face index).
  *
  * @param {Array} faces - Array of face objects {vertices, normal, faceType, shared}
- * @returns {Array} Merged face array
+ *                        Modified in-place: each face gets a `faceGroup` property.
  */
-function mergeCoplanarFaces(faces) {
-  const COPLANAR_NORMAL_THRESHOLD = 0.9999; // ~0.8° tolerance for same normal
-  const COPLANAR_DIST_THRESHOLD = 1e-4;     // distance tolerance for same plane
-
+function assignCoplanarFaceGroups(faces) {
   // Build a plane key for grouping: quantized normal + plane distance
   function planeKey(normal, vertices) {
     const n = Vec3.from(normal).unit();
@@ -450,19 +443,20 @@ function mergeCoplanarFaces(faces) {
     const nx = (n.x * sign).toFixed(4);
     const ny = (n.y * sign).toFixed(4);
     const nz = (n.z * sign).toFixed(4);
-    // Plane distance from origin
     const d = (Vec3.from(vertices[0]).dot(n) * sign).toFixed(4);
     return `${nx},${ny},${nz}|${d}`;
+  }
+
+  // Default: every face is its own group
+  for (let fi = 0; fi < faces.length; fi++) {
+    faces[fi].faceGroup = fi;
   }
 
   // Group faces by their plane
   const planeGroups = new Map();
   for (let fi = 0; fi < faces.length; fi++) {
     const face = faces[fi];
-    // Only merge planar faces (not cylindrical/freeform)
-    if (face.faceType && !face.faceType.startsWith('planar')) {
-      continue; // will be added to result directly
-    }
+    if (face.faceType && !face.faceType.startsWith('planar')) continue;
     if (face.vertices.length < 3) continue;
 
     const key = planeKey(face.normal, face.vertices);
@@ -472,32 +466,23 @@ function mergeCoplanarFaces(faces) {
     planeGroups.get(key).push(fi);
   }
 
-  // Track which faces are consumed by merging
-  const consumed = new Set();
-  const result = [];
-
   for (const [, group] of planeGroups) {
-    if (group.length <= 1) continue; // nothing to merge
+    if (group.length <= 1) continue;
 
-    // Find connected components within this plane group using shared edges.
-    // An edge shared by exactly 2 faces in the group is an internal edge;
-    // edges shared by only 1 face are boundary edges.
-    const edgeFaceCount = new Map(); // edgeKey → count of faces using it
-    const edgeFaces = new Map();     // edgeKey → [faceIndex, ...]
-
+    // Build edge → face adjacency for this plane group
+    const edgeFaces = new Map();
     for (const fi of group) {
       const verts = faces[fi].vertices;
       for (let i = 0; i < verts.length; i++) {
         const a = verts[i];
         const b = verts[(i + 1) % verts.length];
         const key = edgeKey(a, b);
-        edgeFaceCount.set(key, (edgeFaceCount.get(key) || 0) + 1);
         if (!edgeFaces.has(key)) edgeFaces.set(key, []);
         edgeFaces.get(key).push(fi);
       }
     }
 
-    // Find connected components using union-find on faces via shared edges
+    // Union-find to merge faces sharing an edge
     const parent = {};
     for (const fi of group) parent[fi] = fi;
     function find(x) {
@@ -515,118 +500,11 @@ function mergeCoplanarFaces(faces) {
       }
     }
 
-    // Group faces into connected components
-    const components = new Map();
+    // Assign the same faceGroup to all faces in each connected component
     for (const fi of group) {
-      const root = find(fi);
-      if (!components.has(root)) components.set(root, []);
-      components.get(root).push(fi);
-    }
-
-    for (const [, component] of components) {
-      if (component.length <= 1) continue;
-
-      // Collect boundary edges (edges used by exactly 1 face in this component)
-      const compSet = new Set(component);
-      const boundaryEdges = []; // [{start, end}, ...]
-
-      for (const fi of component) {
-        const verts = faces[fi].vertices;
-        for (let i = 0; i < verts.length; i++) {
-          const a = verts[i];
-          const b = verts[(i + 1) % verts.length];
-          const key = edgeKey(a, b);
-          // Boundary: edge used by only 1 face in this component
-          const facesOnEdge = edgeFaces.get(key) || [];
-          const compFaces = facesOnEdge.filter(f => compSet.has(f));
-          if (compFaces.length === 1) {
-            boundaryEdges.push({ start: a, end: b });
-          }
-        }
-      }
-
-      if (boundaryEdges.length === 0) continue;
-
-      // Chain boundary edges into an ordered loop
-      const adjMap = new Map(); // vtxKey → [{to, vertex}, ...]
-      for (const edge of boundaryEdges) {
-        const ka = vtxKey(edge.start);
-        const kb = vtxKey(edge.end);
-        if (!adjMap.has(ka)) adjMap.set(ka, []);
-        if (!adjMap.has(kb)) adjMap.set(kb, []);
-        adjMap.get(ka).push({ key: kb, vertex: edge.end });
-        adjMap.get(kb).push({ key: ka, vertex: edge.start });
-      }
-
-      // Walk the boundary to build the merged polygon
-      const visited = new Set();
-      const loops = [];
-
-      for (const [startKey] of adjMap) {
-        if (visited.has(startKey)) continue;
-        const loop = [];
-        let currentKey = startKey;
-        // Safety limit: a boundary loop can visit at most all boundary vertices.
-        // Each boundary edge contributes 2 vertex entries, so the loop length
-        // is bounded by the total number of boundary edge endpoints + 1.
-        let safety = boundaryEdges.length * 2 + 1;
-
-        while (!visited.has(currentKey) && safety-- > 0) {
-          visited.add(currentKey);
-          const neighbors = adjMap.get(currentKey);
-          if (!neighbors || neighbors.length === 0) break;
-
-          // Pick the first unvisited neighbor
-          let next = null;
-          for (const n of neighbors) {
-            if (!visited.has(n.key)) {
-              next = n;
-              break;
-            }
-          }
-          if (!next) break;
-
-          loop.push(next.vertex);
-          currentKey = next.key;
-        }
-
-        if (loop.length >= 3) {
-          loops.push(loop);
-        }
-      }
-
-      if (loops.length > 0) {
-        // Use the longest loop as the main outer boundary
-        loops.sort((a, b) => b.length - a.length);
-        const mergedVerts = loops[0];
-
-        // Use the normal from the first face in the component
-        const refFace = faces[component[0]];
-        const faceType = classifyFaceType(refFace.normal, mergedVerts);
-
-        result.push({
-          vertices: mergedVerts,
-          normal: refFace.normal,
-          faceType,
-          shared: refFace.shared,
-        });
-
-        // Mark all component faces as consumed
-        for (const fi of component) {
-          consumed.add(fi);
-        }
-      }
+      faces[fi].faceGroup = find(fi);
     }
   }
-
-  // Add all non-consumed faces to the result
-  for (let fi = 0; fi < faces.length; fi++) {
-    if (!consumed.has(fi)) {
-      result.push(faces[fi]);
-    }
-  }
-
-  return result;
 }
 
 // -----------------------------------------------------------------------

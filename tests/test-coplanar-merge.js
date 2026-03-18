@@ -1,12 +1,13 @@
-// tests/test-coplanar-merge.js -- Test that coplanar faces are merged after CSG union
+// tests/test-coplanar-merge.js -- Test that coplanar faces are grouped after CSG union
 // Verifies that when two boxes are unioned and share a coplanar face,
-// the result has merged faces instead of fragmented triangles.
+// the result groups coplanar faces so they can be selected as one.
+// Original convex CSG polygons are preserved (no concavity from merging).
 
 import assert from 'assert';
 import { Part } from '../js/cad/Part.js';
 import { Sketch } from '../js/cad/Sketch.js';
 
-console.log('=== Coplanar Face Merge Test ===\n');
+console.log('=== Coplanar Face Group Test ===\n');
 
 // ---------------------------------------------------------------------------
 // Step 1: Create two overlapping boxes via extrude + union
@@ -51,48 +52,40 @@ const geo2 = part.getFinalGeometry();
 assert.ok(geo2, 'Combined geometry should exist');
 assert.strictEqual(geo2.type, 'solid', 'Should be solid');
 
-const faceCount2 = geo2.geometry.faces.length;
+const faces = geo2.geometry.faces;
+const faceCount2 = faces.length;
 console.log('  ✓ Combined shape has', faceCount2, 'faces');
 
-// After merging coplanar faces, the combined L-shape should have:
-// - Top face: 1 merged face (was 2 coplanar faces at z=50)
-// - Bottom face: 1 merged face (was 2 coplanar faces at z=0)
-// - 6 side faces (the L-shape perimeter)
-// Total: ~8 faces (instead of many small triangulated faces)
-// Be generous: the merged result should have fewer faces than 2x individual
-assert.ok(faceCount2 < faceCount1 * 2,
-  `Merged face count (${faceCount2}) should be less than 2x single box faces (${faceCount1 * 2})`);
-console.log('  ✓ Face count reduced by merging:', faceCount1, '→', faceCount2);
+// ---------------------------------------------------------------------------
+// Step 3: Verify that top-facing faces share the same faceGroup
+// ---------------------------------------------------------------------------
+console.log('\n--- Step 3: Verify coplanar top faces share a faceGroup ---');
+const topFaces = faces.filter(f => f.normal.z > 0.99);
+console.log('  Top-facing sub-faces:', topFaces.length);
+assert.ok(topFaces.length >= 1, 'Should have at least 1 top face');
+
+// All top-facing faces should have the same faceGroup
+const topGroups = new Set(topFaces.map(f => f.faceGroup));
+console.log('  Top-facing face groups:', [...topGroups]);
+assert.strictEqual(topGroups.size, 1,
+  `All top faces should share 1 faceGroup, got ${topGroups.size} groups`);
+console.log('  ✓ All top faces grouped as one');
 
 // ---------------------------------------------------------------------------
-// Step 3: Verify the top face is merged (one face at z=50 with normal z=1)
+// Step 4: Verify that bottom-facing faces share the same faceGroup
 // ---------------------------------------------------------------------------
-console.log('\n--- Step 3: Verify coplanar top faces are merged ---');
-const topFaces = geo2.geometry.faces.filter(f => {
-  const n = f.normal;
-  return n.z > 0.99; // top-facing
-});
+console.log('\n--- Step 4: Verify coplanar bottom faces share a faceGroup ---');
+const bottomFaces = faces.filter(f => f.normal.z < -0.99);
+console.log('  Bottom-facing sub-faces:', bottomFaces.length);
+assert.ok(bottomFaces.length >= 1, 'Should have at least 1 bottom face');
 
-console.log('  Top-facing faces:', topFaces.length);
-// After merging, there should be exactly 1 top face (merged from 2 coplanar faces)
-assert.strictEqual(topFaces.length, 1,
-  `Should have exactly 1 top face after merge, got ${topFaces.length}`);
-
-// ---------------------------------------------------------------------------
-// Step 4: Verify bottom face is merged
-// ---------------------------------------------------------------------------
-console.log('\n--- Step 4: Verify coplanar bottom faces are merged ---');
-const bottomFaces = geo2.geometry.faces.filter(f => {
-  const n = f.normal;
-  return n.z < -0.99; // bottom-facing
-});
-
-console.log('  Bottom-facing faces:', bottomFaces.length);
-assert.strictEqual(bottomFaces.length, 1,
-  `Should have exactly 1 bottom face after merge, got ${bottomFaces.length}`);
+const bottomGroups = new Set(bottomFaces.map(f => f.faceGroup));
+assert.strictEqual(bottomGroups.size, 1,
+  `All bottom faces should share 1 faceGroup, got ${bottomGroups.size} groups`);
+console.log('  ✓ All bottom faces grouped as one');
 
 // ---------------------------------------------------------------------------
-// Step 5: Verify bounding box is correct after merge
+// Step 5: Verify bounding box is correct
 // ---------------------------------------------------------------------------
 console.log('\n--- Step 5: Verify bounding box ---');
 const bb = geo2.boundingBox;
@@ -110,9 +103,20 @@ console.log('  ✓ Bounding box correct');
 console.log('\n--- Step 6: Verify edge count ---');
 const edgeCount = geo2.geometry.edges.length;
 console.log('  Edge count:', edgeCount);
-// The L-shape should have ~12 edges (3 edges on each of the 4 long sides)
-// without internal coplanar boundaries
 assert.ok(edgeCount > 0, 'Should have edges');
 console.log('  ✓ Edge count reasonable');
 
-console.log('\n=== All coplanar face merge tests passed! ===');
+// ---------------------------------------------------------------------------
+// Step 7: Verify all faces have a faceGroup property
+// ---------------------------------------------------------------------------
+console.log('\n--- Step 7: Verify all faces have faceGroup ---');
+for (let i = 0; i < faces.length; i++) {
+  assert.ok(faces[i].faceGroup != null, `Face ${i} should have a faceGroup`);
+}
+console.log('  ✓ All', faces.length, 'faces have faceGroup');
+
+// Count distinct face groups
+const allGroups = new Set(faces.map(f => f.faceGroup));
+console.log('  Distinct face groups:', allGroups.size, '(from', faces.length, 'faces)');
+
+console.log('\n=== All coplanar face group tests passed! ===');

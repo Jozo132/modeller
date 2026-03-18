@@ -1497,6 +1497,7 @@ export class WasmRenderer {
     // Store face metadata for selection
     this._meshFaces = faces.map((face, idx) => ({
       index: idx,
+      faceGroup: face.faceGroup != null ? face.faceGroup : idx,
       faceType: face.faceType || 'unknown',
       normal: face.normal || { x: 0, y: 0, z: 1 },
       shared: face.shared || null,
@@ -1884,13 +1885,19 @@ export class WasmRenderer {
 
       gl.disable(gl.POLYGON_OFFSET_FILL);
 
-      // Draw selected face highlight
+      // Draw selected face highlight (highlights entire face group)
       if (this._selectedFaceIndex >= 0 && this._meshFaces && this._triFaceMap) {
-        // Build highlight triangles for the selected face
+        // Find the faceGroup of the selected face
+        const selMeta = this._meshFaces[this._selectedFaceIndex];
+        const selGroup = selMeta ? selMeta.faceGroup : this._selectedFaceIndex;
+        // Build highlight triangles for all faces in the same group
         const highlightVerts = [];
         const triCount = this._meshTriangleCount / 3;
         for (let ti = 0; ti < triCount; ti++) {
-          if (this._triFaceMap[ti] === this._selectedFaceIndex) {
+          const faceIdx = this._triFaceMap[ti];
+          const faceMeta = this._meshFaces[faceIdx];
+          const group = faceMeta ? faceMeta.faceGroup : faceIdx;
+          if (group === selGroup) {
             const base = ti * 3 * 6;
             for (let vi = 0; vi < 3; vi++) {
               const vbase = base + vi * 6;
