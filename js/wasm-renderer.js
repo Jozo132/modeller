@@ -891,8 +891,10 @@ export class WasmRenderer {
     // When sketching on a face, WASM draws 2D entities first, then the mesh overlay
     // covers them. We capture the wireframe here so _renderMeshOverlay can re-draw
     // the sketch entities on top with depth test disabled.
+    // Include preview entities (lines being drawn but not yet committed) so they
+    // are also visible on top of the mesh during interactive drawing.
     if (this.mode === '3d' && pd && this._sketchPlane) {
-      this._buildActiveSceneWireframes(scene, pd);
+      this._buildActiveSceneWireframes(scene, pd, overlays.previewEntities);
     } else {
       this._activeSceneEdges = null;
       this._activeSceneEdgeVertexCount = 0;
@@ -1602,7 +1604,7 @@ export class WasmRenderer {
    * @param {Object} scene - The 2D scene with entities
    * @param {Object} plane - Sketch plane definition with origin, xAxis, yAxis
    */
-  _buildActiveSceneWireframes(scene, plane) {
+  _buildActiveSceneWireframes(scene, plane, previewEntities = []) {
     const lines = [];
     const toWorld = (px, py) => ({
       x: plane.origin.x + px * plane.xAxis.x + py * plane.yAxis.x,
@@ -1663,6 +1665,52 @@ export class WasmRenderer {
       }
     }
 
+    // Include preview entities (lines being drawn interactively but not yet committed)
+    if (previewEntities && previewEntities.length > 0) {
+      for (const entity of previewEntities) {
+        if (!entity) continue;
+        if (entity.type === 'segment' && entity.p1 && entity.p2) {
+          const a = toWorld(entity.p1.x, entity.p1.y);
+          const b = toWorld(entity.p2.x, entity.p2.y);
+          lines.push(a.x, a.y, a.z, b.x, b.y, b.z);
+        } else if (entity.type === 'circle' && entity.center) {
+          const numSegs = 32;
+          for (let i = 0; i < numSegs; i++) {
+            const a1 = (i / numSegs) * Math.PI * 2;
+            const a2 = ((i + 1) / numSegs) * Math.PI * 2;
+            const p1 = toWorld(
+              entity.center.x + Math.cos(a1) * entity.radius,
+              entity.center.y + Math.sin(a1) * entity.radius
+            );
+            const p2 = toWorld(
+              entity.center.x + Math.cos(a2) * entity.radius,
+              entity.center.y + Math.sin(a2) * entity.radius
+            );
+            lines.push(p1.x, p1.y, p1.z, p2.x, p2.y, p2.z);
+          }
+        } else if (entity.type === 'arc' && entity.center) {
+          const numSegs = 16;
+          let startA = entity.startAngle || 0;
+          let endA = entity.endAngle || Math.PI;
+          let sweep = endA - startA;
+          if (sweep < 0) sweep += Math.PI * 2;
+          for (let i = 0; i < numSegs; i++) {
+            const a1 = startA + (i / numSegs) * sweep;
+            const a2 = startA + ((i + 1) / numSegs) * sweep;
+            const p1 = toWorld(
+              entity.center.x + Math.cos(a1) * entity.radius,
+              entity.center.y + Math.sin(a1) * entity.radius
+            );
+            const p2 = toWorld(
+              entity.center.x + Math.cos(a2) * entity.radius,
+              entity.center.y + Math.sin(a2) * entity.radius
+            );
+            lines.push(p1.x, p1.y, p1.z, p2.x, p2.y, p2.z);
+          }
+        }
+      }
+    }
+
     if (lines.length > 0) {
       this._activeSceneEdges = new Float32Array(lines);
       this._activeSceneEdgeVertexCount = lines.length / 3;
@@ -1710,10 +1758,17 @@ export class WasmRenderer {
 
       const lines = isSelected ? selectedLines : (isActive ? activeLines : inactiveLines);
 
+      // Compute plane normal for z-offset (prevents z-fighting with face geometry).
+      // Offset wireframes slightly along the normal so they render on top of the face.
+      const nx = plane.normal ? plane.normal.x : (plane.xAxis.y * plane.yAxis.z - plane.xAxis.z * plane.yAxis.y);
+      const ny = plane.normal ? plane.normal.y : (plane.xAxis.z * plane.yAxis.x - plane.xAxis.x * plane.yAxis.z);
+      const nz = plane.normal ? plane.normal.z : (plane.xAxis.x * plane.yAxis.y - plane.xAxis.y * plane.yAxis.x);
+      const SKETCH_WIRE_OFFSET = 0.01;
+
       const toWorld = (px, py) => ({
-        x: plane.origin.x + px * plane.xAxis.x + py * plane.yAxis.x,
-        y: plane.origin.y + px * plane.xAxis.y + py * plane.yAxis.y,
-        z: plane.origin.z + px * plane.xAxis.z + py * plane.yAxis.z,
+        x: plane.origin.x + px * plane.xAxis.x + py * plane.yAxis.x + nx * SKETCH_WIRE_OFFSET,
+        y: plane.origin.y + px * plane.xAxis.y + py * plane.yAxis.y + ny * SKETCH_WIRE_OFFSET,
+        z: plane.origin.z + px * plane.xAxis.z + py * plane.yAxis.z + nz * SKETCH_WIRE_OFFSET,
       });
 
       // Segments
@@ -1885,9 +1940,12 @@ export class WasmRenderer {
     }
 
     // Draw sketch wireframes (visible sketch primitives in 3D)
-    // Render with depth test disabled so sketches always appear on top of solid faces
+    // Wireframe vertices are offset slightly along the sketch plane normal to prevent
+    // z-fighting. Keep depth test enabled so sketches are properly occluded when
+    // viewed from behind the face they lie on.
     if (hasSketchEdges) {
-      gl.disable(gl.DEPTH_TEST);
+      gl.enable(gl.DEPTH_TEST);
+      gl.depthFunc(gl.LEQUAL);
       gl.disable(gl.CULL_FACE);
       gl.useProgram(exec.programs[1]);
       gl.uniformMatrix4fv(exec.uniforms[1].uMVP, false, mvp);
@@ -1899,12 +1957,12 @@ export class WasmRenderer {
       gl.bufferData(gl.ARRAY_BUFFER, this._sketchEdges, gl.DYNAMIC_DRAW);
       gl.drawArrays(gl.LINES, 0, this._sketchEdgeVertexCount);
       gl.bindVertexArray(null);
-      gl.enable(gl.DEPTH_TEST);
     }
 
     // Draw inactive sketch wireframes in grey (non-active sketches when editing one)
     if (hasInactiveEdges) {
-      gl.disable(gl.DEPTH_TEST);
+      gl.enable(gl.DEPTH_TEST);
+      gl.depthFunc(gl.LEQUAL);
       gl.disable(gl.CULL_FACE);
       gl.useProgram(exec.programs[1]);
       gl.uniformMatrix4fv(exec.uniforms[1].uMVP, false, mvp);
@@ -1916,12 +1974,12 @@ export class WasmRenderer {
       gl.bufferData(gl.ARRAY_BUFFER, this._sketchInactiveEdges, gl.DYNAMIC_DRAW);
       gl.drawArrays(gl.LINES, 0, this._sketchInactiveEdgeVertexCount);
       gl.bindVertexArray(null);
-      gl.enable(gl.DEPTH_TEST);
     }
 
     // Draw selected sketch wireframes in highlight color (when sketch selected in tree)
     if (hasSelectedEdges) {
-      gl.disable(gl.DEPTH_TEST);
+      gl.enable(gl.DEPTH_TEST);
+      gl.depthFunc(gl.LEQUAL);
       gl.disable(gl.CULL_FACE);
       gl.useProgram(exec.programs[1]);
       gl.uniformMatrix4fv(exec.uniforms[1].uMVP, false, mvp);
@@ -1933,7 +1991,6 @@ export class WasmRenderer {
       gl.bufferData(gl.ARRAY_BUFFER, this._sketchSelectedEdges, gl.DYNAMIC_DRAW);
       gl.drawArrays(gl.LINES, 0, this._sketchSelectedEdgeVertexCount);
       gl.bindVertexArray(null);
-      gl.enable(gl.DEPTH_TEST);
     }
 
     // Draw active scene wireframes on top of mesh (for sketch-on-face editing mode)
