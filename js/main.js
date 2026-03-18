@@ -1240,7 +1240,11 @@ class App {
           if (this._featurePanel && this._featurePanel.selectedFeatureId) {
             this._featurePanel.selectFeature(null);
           }
+          if (this._renderer3d) {
+            this._renderer3d.setSelectedFeature(null);
+          }
           this._updateNodeTree();
+          this._update3DView();
           this._scheduleRender();
           break;
         case 'Delete':
@@ -3581,7 +3585,13 @@ class App {
         if (this._featurePanel) {
           this._featurePanel.selectFeature(feature.id);
         }
+        // Highlight selected feature in 3D view
+        if (this._renderer3d) {
+          this._renderer3d.setSelectedFeature(feature.id);
+        }
         this._updateNodeTree();
+        this._update3DView();
+        this._scheduleRender();
       });
 
       return div;

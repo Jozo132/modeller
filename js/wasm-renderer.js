@@ -592,6 +592,15 @@ export class WasmRenderer {
   }
 
   /**
+   * Set the selected feature ID for highlighting in the 3D view.
+   * When a sketch is selected, its wireframes are highlighted.
+   * @param {string|null} featureId - Feature ID or null to clear selection
+   */
+  setSelectedFeature(featureId) {
+    this._selectedFeatureId = featureId || null;
+  }
+
+  /**
    * Cast a ray from screen coordinates onto a plane in 3D world space.
    * Returns the 2D coordinates in the plane's local frame (xAxis, yAxis).
    * @param {number} screenX - screen X (relative to canvas left)
@@ -1674,25 +1683,32 @@ export class WasmRenderer {
     this._sketchEdgeVertexCount = 0;
     this._sketchInactiveEdges = null;
     this._sketchInactiveEdgeVertexCount = 0;
+    this._sketchSelectedEdges = null;
+    this._sketchSelectedEdgeVertexCount = 0;
 
     const sketches = part.getSketches();
     if (!sketches || sketches.length === 0) return;
 
     const activeSketchId = part.getActiveSketchId ? part.getActiveSketchId() : null;
+    const selectedId = this._selectedFeatureId || null;
     const activeLines = [];
     const inactiveLines = [];
+    const selectedLines = [];
 
     for (const sketchFeature of sketches) {
       if (sketchFeature.suppressed) continue;
-      // Skip sketches that are hidden (linked as child of a feature) unless they're selected/active
-      if (!sketchFeature.visible && sketchFeature.id !== activeSketchId) continue;
+
+      const isActive = sketchFeature.id === activeSketchId;
+      const isSelected = sketchFeature.id === selectedId;
+
+      // Show sketch wireframes if: visible, active, or selected in the tree
+      if (!sketchFeature.visible && !isActive && !isSelected) continue;
 
       const sketch = sketchFeature.sketch;
       const plane = sketchFeature.plane;
       if (!sketch || !plane) continue;
 
-      const isActive = sketchFeature.id === activeSketchId;
-      const lines = isActive ? activeLines : inactiveLines;
+      const lines = isSelected ? selectedLines : (isActive ? activeLines : inactiveLines);
 
       const toWorld = (px, py) => ({
         x: plane.origin.x + px * plane.xAxis.x + py * plane.yAxis.x,
@@ -1766,6 +1782,11 @@ export class WasmRenderer {
       this._sketchInactiveEdges = new Float32Array(inactiveLines);
       this._sketchInactiveEdgeVertexCount = inactiveLines.length / 3;
     }
+
+    if (selectedLines.length > 0) {
+      this._sketchSelectedEdges = new Float32Array(selectedLines);
+      this._sketchSelectedEdgeVertexCount = selectedLines.length / 3;
+    }
   }
 
   /**
@@ -1777,8 +1798,9 @@ export class WasmRenderer {
     const hasMesh = this._meshTriangles && this._meshTriangleCount > 0;
     const hasSketchEdges = this._sketchEdges && this._sketchEdgeVertexCount > 0;
     const hasInactiveEdges = this._sketchInactiveEdges && this._sketchInactiveEdgeVertexCount > 0;
+    const hasSelectedEdges = this._sketchSelectedEdges && this._sketchSelectedEdgeVertexCount > 0;
     const hasActiveScene = this._activeSceneEdges && this._activeSceneEdgeVertexCount > 0;
-    if (!hasMesh && !hasSketchEdges && !hasInactiveEdges && !hasActiveScene) return;
+    if (!hasMesh && !hasSketchEdges && !hasInactiveEdges && !hasSelectedEdges && !hasActiveScene) return;
 
     // Compute the same MVP as the WASM camera
     const mvp = this._computeMVP();
@@ -1897,11 +1919,27 @@ export class WasmRenderer {
       gl.enable(gl.DEPTH_TEST);
     }
 
+    // Draw selected sketch wireframes in highlight color (when sketch selected in tree)
+    if (hasSelectedEdges) {
+      gl.disable(gl.DEPTH_TEST);
+      gl.disable(gl.CULL_FACE);
+      gl.useProgram(exec.programs[1]);
+      gl.uniformMatrix4fv(exec.uniforms[1].uMVP, false, mvp);
+      gl.uniform4f(exec.uniforms[1].uColor, 0.2, 0.6, 1.0, 1.0); // bright blue highlight
+      gl.lineWidth(1.0);
+
+      gl.bindVertexArray(exec.vaoLine);
+      gl.bindBuffer(gl.ARRAY_BUFFER, exec.vbo);
+      gl.bufferData(gl.ARRAY_BUFFER, this._sketchSelectedEdges, gl.DYNAMIC_DRAW);
+      gl.drawArrays(gl.LINES, 0, this._sketchSelectedEdgeVertexCount);
+      gl.bindVertexArray(null);
+      gl.enable(gl.DEPTH_TEST);
+    }
+
     // Draw active scene wireframes on top of mesh (for sketch-on-face editing mode)
     // These are the live 2D entities being drawn/edited. The WASM render pass draws
     // them first, but the mesh overlay covers them. Re-render here with depth test
     // disabled so they always appear on top of the solid face.
-    const hasActiveScene = this._activeSceneEdges && this._activeSceneEdgeVertexCount > 0;
     if (hasActiveScene) {
       gl.disable(gl.DEPTH_TEST);
       gl.disable(gl.CULL_FACE);
@@ -2054,6 +2092,8 @@ export class WasmRenderer {
     this._sketchEdgeVertexCount = 0;
     this._sketchInactiveEdges = null;
     this._sketchInactiveEdgeVertexCount = 0;
+    this._sketchSelectedEdges = null;
+    this._sketchSelectedEdgeVertexCount = 0;
     this._activeSceneEdges = null;
     this._activeSceneEdgeVertexCount = 0;
     this._selectedFaceIndex = -1;
