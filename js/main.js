@@ -10,7 +10,7 @@ import { undo, redo, takeSnapshot, setPartManager } from './history.js';
 import { downloadDXF } from './dxf/export.js';
 import { openDXFFile } from './dxf/import.js';
 import { debug, info, warn, error } from './logger.js';
-import { loadProject, debouncedSave, clearSavedProject, setViewport } from './persist.js';
+import { loadProject, debouncedSave, clearSavedProject, setViewport, setPartManagerForPersist, setRendererForPersist, setWorkspaceModeGetter } from './persist.js';
 import { showConfirm, showPrompt, showDimensionInput } from './ui/popup.js';
 import { showContextMenu, closeContextMenu, isContextMenuOpen } from './ui/contextMenu.js';
 import {
@@ -125,14 +125,33 @@ class App {
     this._bindPlaneSelectionEvents();
     this._bindExitSketchButton();
 
-    // Register viewport for persistence and restore saved project
+    // Register viewport, part manager, renderer, and workspace mode for persistence
     setViewport(this.viewport);
+    setPartManagerForPersist(this._partManager);
+    setRendererForPersist(this._renderer3d);
+    setWorkspaceModeGetter(() => this._workspaceMode);
+
     const loaded = loadProject();
-    if (loaded.ok) {
+    if (loaded && loaded.ok) {
       this._rebuildLayersPanel();
       this._rebuildLeftPanel();
       if (!loaded.hasViewport && state.entities.length > 0) {
         this.viewport.fitEntities(state.entities);
+      }
+
+      // Restore Part state if saved
+      if (loaded.part && loaded.workspaceMode === 'part') {
+        this._partManager.deserialize(loaded.part);
+        this._enterWorkspace('part');
+        // Restore orbit camera
+        if (loaded.orbit && this._renderer3d) {
+          this._renderer3d.setOrbitState(loaded.orbit);
+        }
+        this._update3DView();
+        this._updateNodeTree();
+        this._scheduleRender();
+        info('App initialization completed (restored Part workspace)');
+        return;
       }
     }
 
@@ -3438,6 +3457,11 @@ class App {
   _update3DView() {
     if (!this._renderer3d) return;
 
+    // Trigger debounced save whenever the 3D view updates in Part mode
+    if (this._workspaceMode === 'part') {
+      debouncedSave();
+    }
+
     const part = this._partManager.getPart();
     if (!part) {
       this._renderer3d.clearPartGeometry();
@@ -3707,7 +3731,10 @@ class App {
 
     if (mode === 'part') {
       // Part Design workspace: unified 3D+sketch view
-      this._partManager.createPart('Part1');
+      // Only create a new Part if none exists (e.g. from deserialization)
+      if (!this._partManager.getPart()) {
+        this._partManager.createPart('Part1');
+      }
       this._3dMode = true;
       if (this._renderer3d) {
         this._renderer3d.setMode('3d');

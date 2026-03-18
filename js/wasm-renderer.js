@@ -494,6 +494,26 @@ export class WasmRenderer {
     return this._selectedFaceIndex;
   }
 
+  /** Return the current 3D orbit camera state for persistence. */
+  getOrbitState() {
+    return {
+      theta: this._orbitTheta,
+      phi: this._orbitPhi,
+      radius: this._orbitRadius,
+      target: { ...this._orbitTarget },
+    };
+  }
+
+  /** Restore 3D orbit camera state from a previously saved object. */
+  setOrbitState(s) {
+    if (!s) return;
+    if (s.theta != null) this._orbitTheta = s.theta;
+    if (s.phi != null) this._orbitPhi = s.phi;
+    if (s.radius != null) this._orbitRadius = s.radius;
+    if (s.target) this._orbitTarget = { x: s.target.x || 0, y: s.target.y || 0, z: s.target.z || 0 };
+    this._orbitDirty = true;
+  }
+
   /**
    * Pick an origin plane by raycasting from screen coordinates.
    * Tests the XY, XZ, YZ planes (5×5 unit squares at origin) and returns
