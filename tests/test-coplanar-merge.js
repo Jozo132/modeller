@@ -74,9 +74,9 @@ const topFaces = geo2.geometry.faces.filter(f => {
 });
 
 console.log('  Top-facing faces:', topFaces.length);
-// After merging, there should be exactly 1 top face (instead of multiple)
-assert.ok(topFaces.length <= 2,
-  `Should have at most 2 top faces after merge, got ${topFaces.length}`);
+// After merging, there should be exactly 1 top face (merged from 2 coplanar faces)
+assert.strictEqual(topFaces.length, 1,
+  `Should have exactly 1 top face after merge, got ${topFaces.length}`);
 
 // ---------------------------------------------------------------------------
 // Step 4: Verify bottom face is merged
@@ -88,8 +88,8 @@ const bottomFaces = geo2.geometry.faces.filter(f => {
 });
 
 console.log('  Bottom-facing faces:', bottomFaces.length);
-assert.ok(bottomFaces.length <= 2,
-  `Should have at most 2 bottom faces after merge, got ${bottomFaces.length}`);
+assert.strictEqual(bottomFaces.length, 1,
+  `Should have exactly 1 bottom face after merge, got ${bottomFaces.length}`);
 
 // ---------------------------------------------------------------------------
 // Step 5: Verify bounding box is correct after merge

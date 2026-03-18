@@ -566,6 +566,9 @@ function mergeCoplanarFaces(faces) {
         if (visited.has(startKey)) continue;
         const loop = [];
         let currentKey = startKey;
+        // Safety limit: a boundary loop can visit at most all boundary vertices.
+        // Each boundary edge contributes 2 vertex entries, so the loop length
+        // is bounded by the total number of boundary edge endpoints + 1.
         let safety = boundaryEdges.length * 2 + 1;
 
         while (!visited.has(currentKey) && safety-- > 0) {
