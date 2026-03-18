@@ -4190,7 +4190,7 @@ class App {
     return loop;
   }
 
-  _finishSketchOnPlane() {
+  async _finishSketchOnPlane() {
     if (!this._sketchingOnPlane) return;
 
     // Clear the active sketch on the part
@@ -4202,7 +4202,8 @@ class App {
       const sketchFeature = part.getFeature(this._editingSketchFeatureId);
       if (sketchFeature && sketchFeature.type === 'sketch' && state.entities.length > 0) {
         // Rebuild the sketch from the current 2D scene
-        const sketch = new (sketchFeature.sketch.constructor)();
+        const { Sketch } = await import('./cad/Sketch.js');
+        const sketch = new Sketch();
         sketch.name = sketchFeature.sketch.name;
         for (const seg of state.scene.segments) {
           const s = seg.p1 || seg.start;
@@ -4215,7 +4216,9 @@ class App {
         sketchFeature.sketch = sketch;
         sketchFeature.modified = new Date();
         // Recalculate the feature tree from this sketch forward
-        part.featureTree.recalculateFrom(this._editingSketchFeatureId);
+        if (part.featureTree) {
+          part.featureTree.recalculateFrom(this._editingSketchFeatureId);
+        }
         info(`Updated sketch feature: ${this._editingSketchFeatureId}`);
       }
       this._editingSketchFeatureId = null;

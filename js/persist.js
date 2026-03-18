@@ -68,6 +68,9 @@ function projectToJSON() {
 function projectFromJSON(data) {
   if (!data || data.version == null) return { ok: false, hasViewport: false };
 
+  // Backward compatible: v2 projects lack part/orbit/workspaceMode fields,
+  // which will be null in the returned object. The caller handles this gracefully.
+
   // Restore scene
   if (data.scene) {
     state.scene = Scene.deserialize(data.scene);
