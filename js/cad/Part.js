@@ -149,7 +149,7 @@ export class Part {
    * @returns {Object|null} The final result or null
    */
   getFinalGeometry() {
-    return this.featureTree.getFinalResult();
+    return this.featureTree.getLastSolidResult() || this.featureTree.getFinalResult();
   }
 
   // -----------------------------------------------------------------------
@@ -265,7 +265,7 @@ export class Part {
     // If there is already a solid body in the feature tree, default to 'add'
     // so subsequent features are combined (union) rather than replacing the body.
     if (!options.operation) {
-      const existingSolid = this.featureTree.getFinalResult();
+      const existingSolid = this.featureTree.getLastSolidResult();
       if (existingSolid && existingSolid.type === 'solid') {
         extrudeFeature.operation = 'add';
       }
@@ -306,7 +306,7 @@ export class Part {
     const revolveFeature = new RevolveFeature(`Revolve${this.featureTree.features.length + 1}`, sketchId, angle);
     
     if (!options.operation) {
-      const existingSolid = this.featureTree.getFinalResult();
+      const existingSolid = this.featureTree.getLastSolidResult();
       if (existingSolid && existingSolid.type === 'solid') {
         revolveFeature.operation = 'add';
       }
