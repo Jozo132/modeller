@@ -3610,7 +3610,6 @@ class App {
         arrow.textContent = isExpanded ? '▾' : '▸';
         arrow.addEventListener('click', (e) => {
           e.stopPropagation();
-          if (!this._expandedFolders) this._expandedFolders = new Set();
           if (this._expandedFolders.has(folderId)) {
             this._expandedFolders.delete(folderId);
           } else {
