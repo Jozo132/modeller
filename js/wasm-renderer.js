@@ -514,6 +514,113 @@ export class WasmRenderer {
   }
 
   /**
+   * Pick a sketch feature at the given screen coordinates using ray-line distance testing.
+   * Tests against all sketch wireframe segments built by _buildSketchWireframes().
+   * @param {number} screenX - Screen X coordinate
+   * @param {number} screenY - Screen Y coordinate
+   * @returns {{featureId: string}|null}
+   */
+  pickSketch(screenX, screenY) {
+    if (!this._sketchPickSegments || this._sketchPickSegments.length === 0) return null;
+
+    const mvp = this._computeMVP();
+    if (!mvp) return null;
+    const invMVP = this._mat4Invert(mvp);
+    if (!invMVP) return null;
+
+    const rect = this.canvas.getBoundingClientRect();
+    const ndcX = ((screenX - rect.left) / rect.width) * 2 - 1;
+    const ndcY = -((screenY - rect.top) / rect.height) * 2 + 1;
+
+    const nearW = this._mat4TransformVec4(invMVP, ndcX, ndcY, -1, 1);
+    const farW = this._mat4TransformVec4(invMVP, ndcX, ndcY, 1, 1);
+    if (Math.abs(nearW.w) < 1e-10 || Math.abs(farW.w) < 1e-10) return null;
+
+    const origin = { x: nearW.x / nearW.w, y: nearW.y / nearW.w, z: nearW.z / nearW.w };
+    const farPt = { x: farW.x / farW.w, y: farW.y / farW.w, z: farW.z / farW.w };
+    const dir = {
+      x: farPt.x - origin.x,
+      y: farPt.y - origin.y,
+      z: farPt.z - origin.z,
+    };
+    const dirLen = Math.sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+    if (dirLen < 1e-10) return null;
+    dir.x /= dirLen; dir.y /= dirLen; dir.z /= dirLen;
+
+    // Screen-space pixel threshold for picking (in NDC units, ~8 pixels)
+    const pixelThreshold = 8 / Math.max(rect.width, rect.height) * 2;
+
+    let closestDist = Infinity;
+    let closestFeatureId = null;
+
+    for (const entry of this._sketchPickSegments) {
+      for (const seg of entry.segments) {
+        const dist = this._rayLineDistance(origin, dir, seg.a, seg.b);
+        if (dist < closestDist) {
+          closestDist = dist;
+          closestFeatureId = entry.featureId;
+        }
+      }
+    }
+
+    // Convert world-space distance to approximate screen-space distance
+    // Use orbit radius as a scale factor
+    const viewDist = this._orbitRadius || 10;
+    const ndcDist = closestDist / viewDist;
+
+    if (closestFeatureId !== null && ndcDist < pixelThreshold) {
+      return { featureId: closestFeatureId };
+    }
+    return null;
+  }
+
+  /**
+   * Compute the minimum distance between a ray and a line segment in 3D.
+   * @param {{x:number,y:number,z:number}} rayOrigin
+   * @param {{x:number,y:number,z:number}} rayDir - Normalized ray direction
+   * @param {{x:number,y:number,z:number}} segA - Segment start
+   * @param {{x:number,y:number,z:number}} segB - Segment end
+   * @returns {number} Minimum distance
+   */
+  _rayLineDistance(rayOrigin, rayDir, segA, segB) {
+    // Line segment direction
+    const dx = segB.x - segA.x, dy = segB.y - segA.y, dz = segB.z - segA.z;
+    const wx = rayOrigin.x - segA.x, wy = rayOrigin.y - segA.y, wz = rayOrigin.z - segA.z;
+
+    const a = rayDir.x * rayDir.x + rayDir.y * rayDir.y + rayDir.z * rayDir.z; // = 1 (normalized)
+    const b = rayDir.x * dx + rayDir.y * dy + rayDir.z * dz;
+    const c = dx * dx + dy * dy + dz * dz;
+    const d = rayDir.x * wx + rayDir.y * wy + rayDir.z * wz;
+    const e = dx * wx + dy * wy + dz * wz;
+
+    const denom = a * c - b * b;
+    let sN, sD = denom, tN, tD = denom;
+
+    if (denom < 1e-10) {
+      // Lines are parallel
+      sN = 0; sD = 1; tN = e; tD = c;
+    } else {
+      sN = b * e - c * d;
+      tN = a * e - b * d;
+    }
+
+    // Clamp t (segment parameter) to [0, 1]
+    if (tN < 0) { tN = 0; sN = -d; sD = a; }
+    else if (tN > tD) { tN = tD; sN = b - d; sD = a; }
+
+    // Clamp s (ray parameter) to >= 0
+    const sc = Math.abs(sN) < 1e-10 ? 0 : Math.max(0, sN / sD);
+    const tc = Math.abs(tN) < 1e-10 ? 0 : tN / tD;
+
+    // Closest points
+    const px = wx + sc * rayDir.x - tc * dx;
+    const py = wy + sc * rayDir.y - tc * dy;
+    const pz = wz + sc * rayDir.z - tc * dz;
+
+    return Math.sqrt(px * px + py * py + pz * pz);
+  }
+
+  /**
    * Select a face by index for highlighting. Pass -1 to clear selection.
    * @param {number} faceIndex
    */
@@ -1790,6 +1897,7 @@ export class WasmRenderer {
     this._sketchInactiveEdgeVertexCount = 0;
     this._sketchSelectedEdges = null;
     this._sketchSelectedEdgeVertexCount = 0;
+    this._sketchPickSegments = []; // per-feature line segments for picking
 
     const sketches = part.getSketches();
     if (!sketches || sketches.length === 0) return;
@@ -1814,6 +1922,7 @@ export class WasmRenderer {
       if (!sketch || !plane) continue;
 
       const lines = isSelected ? selectedLines : (isActive ? activeLines : inactiveLines);
+      const featureSegments = []; // collect world-space line segments for this feature
 
       // Compute plane normal for z-offset (prevents z-fighting with face geometry).
       // Offset wireframes slightly along the normal so they render on top of the face.
@@ -1831,10 +1940,11 @@ export class WasmRenderer {
       // Segments
       if (sketch.segments) {
         for (const seg of sketch.segments) {
-          if (!seg.visible || !seg.p1 || !seg.p2) continue;
+          if (!seg.visible || seg.construction || !seg.p1 || !seg.p2) continue;
           const a = toWorld(seg.p1.x, seg.p1.y);
           const b = toWorld(seg.p2.x, seg.p2.y);
           lines.push(a.x, a.y, a.z, b.x, b.y, b.z);
+          featureSegments.push({ a, b });
         }
       }
 
@@ -1855,6 +1965,7 @@ export class WasmRenderer {
               circle.center.y + Math.sin(a2) * circle.radius
             );
             lines.push(p1.x, p1.y, p1.z, p2.x, p2.y, p2.z);
+            featureSegments.push({ a: p1, b: p2 });
           }
         }
       }
@@ -1880,8 +1991,16 @@ export class WasmRenderer {
               arc.center.y + Math.sin(a2) * arc.radius
             );
             lines.push(p1.x, p1.y, p1.z, p2.x, p2.y, p2.z);
+            featureSegments.push({ a: p1, b: p2 });
           }
         }
+      }
+
+      if (featureSegments.length > 0) {
+        this._sketchPickSegments.push({
+          featureId: sketchFeature.id,
+          segments: featureSegments,
+        });
       }
     }
 
@@ -2029,7 +2148,7 @@ export class WasmRenderer {
       gl.disable(gl.CULL_FACE);
       gl.useProgram(exec.programs[1]);
       gl.uniformMatrix4fv(exec.uniforms[1].uMVP, false, mvp);
-      gl.uniform4f(exec.uniforms[1].uColor, 0.45, 0.45, 0.45, 0.6);
+      gl.uniform4f(exec.uniforms[1].uColor, 0, 0, 0, 1.0);
       gl.lineWidth(1.0);
 
       gl.bindVertexArray(exec.vaoLine);
