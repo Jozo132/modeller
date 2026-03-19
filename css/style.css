@@ -1919,3 +1919,16 @@ body.workspace-sketch .part-mode-only {
   80% { opacity: 1; }
   100% { opacity: 0; }
 }
+
+/* --- Recording button --- */
+#btn-record.recording {
+  color: #e53935;
+  animation: record-pulse 1s ease-in-out infinite;
+}
+#btn-record.recording svg circle:last-child {
+  fill: #e53935;
+}
+@keyframes record-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}

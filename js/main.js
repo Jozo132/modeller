@@ -30,7 +30,7 @@ import {
   ParallelTool, PerpendicularTool, DistanceConstraintTool,
   LockTool, EqualTool, TangentTool, AngleTool,
 } from './tools/index.js';
-import { InteractionRecorder } from './interaction-recorder.js';
+import { InteractionRecorder, PlaybackEngine } from './interaction-recorder.js';
 
 class App {
   constructor() {
@@ -1345,8 +1345,225 @@ class App {
   // --- Command line ---
   _handleCommand(cmd) {
     if (!cmd) return;
-    const parts = cmd.toLowerCase().split(/\s+/);
-    const command = parts[0];
+    // Split preserving original case for dotted commands, lowercase for legacy tool names
+    const raw = cmd.trim().split(/\s+/);
+    const command = raw[0].toLowerCase();
+    const args = raw.slice(1);
+
+    // ---- Dotted navigation / interaction commands (from recorder) ----
+
+    if (command === 'camera.set') {
+      // camera.set <theta> <phi> <radius> <tx> <ty> <tz>
+      if (args.length >= 6 && this._renderer3d) {
+        this._renderer3d.setOrbitState({
+          theta: parseFloat(args[0]),
+          phi: parseFloat(args[1]),
+          radius: parseFloat(args[2]),
+          target: { x: parseFloat(args[3]), y: parseFloat(args[4]), z: parseFloat(args[5]) },
+        });
+        this._scheduleRender();
+      }
+      return;
+    }
+
+    if (command === 'workspace') {
+      // workspace part
+      if (args[0]) this._enterWorkspace(args[0]);
+      return;
+    }
+
+    if (command === 'tool') {
+      // tool <name>
+      if (args[0]) this.setActiveTool(args[0]);
+      return;
+    }
+
+    if (command === 'select.face') {
+      // select.face <faceIndex> [faceGroup] [nx ny nz] [sourceFeatureId]
+      if (args.length >= 1 && this._renderer3d) {
+        const faceIndex = parseInt(args[0], 10);
+        const faceMeta = this._renderer3d.getFaceInfo(faceIndex);
+        if (faceMeta) {
+          this._selectedFace = { faceIndex, face: faceMeta };
+          this._renderer3d.selectFace(faceIndex);
+          this._selectedPlane = null;
+          this._renderer3d.setSelectedPlane(null);
+        }
+        this._updateNodeTree();
+        this._updateOperationButtons();
+      }
+      return;
+    }
+
+    if (command === 'deselect.face') {
+      this._selectedFace = null;
+      if (this._renderer3d) this._renderer3d.selectFace(-1);
+      this._updateNodeTree();
+      this._updateOperationButtons();
+      return;
+    }
+
+    if (command === 'select.plane') {
+      // select.plane XY|XZ|YZ
+      if (args[0]) {
+        this._selectedPlane = args[0].toUpperCase();
+        if (this._renderer3d) this._renderer3d.setSelectedPlane(this._selectedPlane);
+        this._selectedFace = null;
+        if (this._renderer3d) this._renderer3d.selectFace(-1);
+        this._updateNodeTree();
+        this._updateOperationButtons();
+      }
+      return;
+    }
+
+    if (command === 'select.feature') {
+      // select.feature <featureId>
+      if (args[0]) {
+        const featureId = args[0];
+        if (this._featurePanel) this._featurePanel.selectFeature(featureId);
+        if (this._renderer3d) this._renderer3d.setSelectedFeature(featureId);
+        this._updateNodeTree();
+        this._update3DView();
+        this._scheduleRender();
+      }
+      return;
+    }
+
+    if (command === 'sketch.start') {
+      // sketch.start XY|XZ|YZ  OR  sketch.start FACE ox oy oz nx ny nz xax xay xaz yax yay yaz
+      if (args[0] && args[0].toUpperCase() === 'FACE' && args.length >= 13) {
+        const planeDef = {
+          origin: { x: parseFloat(args[1]), y: parseFloat(args[2]), z: parseFloat(args[3]) },
+          normal: { x: parseFloat(args[4]), y: parseFloat(args[5]), z: parseFloat(args[6]) },
+          xAxis: { x: parseFloat(args[7]), y: parseFloat(args[8]), z: parseFloat(args[9]) },
+          yAxis: { x: parseFloat(args[10]), y: parseFloat(args[11]), z: parseFloat(args[12]) },
+        };
+        this._startSketchOnFaceWithPlane(planeDef);
+      } else if (args[0]) {
+        this._startSketchOnPlane(args[0].toUpperCase());
+      }
+      return;
+    }
+
+    if (command === 'sketch.finish') {
+      this._finishSketchOnPlane();
+      return;
+    }
+
+    if (command === 'sketch.edit') {
+      // sketch.edit <featureId>
+      if (args[0]) {
+        const part = this._partManager.getPart();
+        if (part) {
+          const feature = part.getFeature(args[0]);
+          if (feature && feature.type === 'sketch') {
+            this._editExistingSketch(feature);
+          }
+        }
+      }
+      return;
+    }
+
+    if (command === 'sketch.from-face') {
+      // sketch.from-face <faceIndex> — handled by extrude auto-creation flow
+      return;
+    }
+
+    if (command === 'extrude') {
+      // extrude <distance> [cut]
+      if (args.length >= 1) {
+        const dist = parseFloat(args[0]);
+        const isCut = args[1] === 'cut';
+        this._executeExtrude(dist, isCut);
+      }
+      return;
+    }
+
+    if (command === 'revolve') {
+      // revolve <angleDeg>
+      if (args.length >= 1) {
+        const angle = parseFloat(args[0]);
+        this._executeRevolve(angle);
+      }
+      return;
+    }
+
+    if (command === 'draw.line') {
+      // draw.line <x1> <y1> <x2> <y2>
+      if (args.length >= 4) {
+        state.scene.addSegment(
+          parseFloat(args[0]), parseFloat(args[1]),
+          parseFloat(args[2]), parseFloat(args[3])
+        );
+        this._scheduleRender();
+      }
+      return;
+    }
+
+    if (command === 'draw.rect') {
+      // draw.rect <x1> <y1> <x2> <y2>
+      if (args.length >= 4) {
+        const x1 = parseFloat(args[0]), y1 = parseFloat(args[1]);
+        const x2 = parseFloat(args[2]), y2 = parseFloat(args[3]);
+        state.scene.addSegment(x1, y1, x2, y1);
+        state.scene.addSegment(x2, y1, x2, y2);
+        state.scene.addSegment(x2, y2, x1, y2);
+        state.scene.addSegment(x1, y2, x1, y1);
+        this._scheduleRender();
+      }
+      return;
+    }
+
+    if (command === 'draw.circle') {
+      // draw.circle <cx> <cy> <radius>
+      if (args.length >= 3) {
+        state.scene.addCircle(parseFloat(args[0]), parseFloat(args[1]), parseFloat(args[2]));
+        this._scheduleRender();
+      }
+      return;
+    }
+
+    if (command === 'draw.arc') {
+      // draw.arc <cx> <cy> <radius> <startAngle> <endAngle>
+      if (args.length >= 5) {
+        state.scene.addArc(
+          parseFloat(args[0]), parseFloat(args[1]), parseFloat(args[2]),
+          parseFloat(args[3]), parseFloat(args[4])
+        );
+        this._scheduleRender();
+      }
+      return;
+    }
+
+    if (command === 'click') {
+      // click <x> <y> — simulate a tool click at world coordinates
+      if (args.length >= 2 && this.activeTool && this.activeTool.onClick) {
+        const x = parseFloat(args[0]), y = parseFloat(args[1]);
+        this.activeTool.onClick(x, y, {});
+        this._scheduleRender();
+      }
+      return;
+    }
+
+    if (command === 'setting') {
+      // setting <name> <value>
+      if (args[0] === 'grid') { state.gridVisible = args[1] !== 'false'; }
+      else if (args[0] === 'snap') { state.snapEnabled = args[1] !== 'false'; }
+      else if (args[0] === 'ortho') { state.orthoEnabled = args[1] !== 'false'; }
+      this._scheduleRender();
+      return;
+    }
+
+    if (command === 'record.start') { this._startRecording(); return; }
+    if (command === 'record.stop') { this._stopRecording(); return; }
+    if (command === 'record.export') { this._exportRecording(); return; }
+    if (command === 'record.play') {
+      const speed = args[0] ? parseInt(args[0], 10) : 300;
+      this._playbackRecording(speed);
+      return;
+    }
+
+    // ---- Legacy tool / action commands (case-insensitive) ----
 
     switch (command) {
       case 'line': case 'l': this.setActiveTool('line'); break;
@@ -1387,8 +1604,8 @@ class App {
         this._scheduleRender();
         break;
       case 'grid':
-        if (parts[1]) {
-          const size = parseFloat(parts[1]);
+        if (args[0]) {
+          const size = parseFloat(args[0]);
           if (size > 0) state.gridSize = size;
         } else {
           state.gridVisible = !state.gridVisible;
@@ -1409,6 +1626,70 @@ class App {
       default:
         this.setStatus(`Unknown command: ${command}`);
     }
+  }
+
+  // --- Extrude/Revolve helpers for command execution (no prompts) ---
+
+  _executeExtrude(distance, isCut = false) {
+    if (!this._lastSketchFeatureId) return;
+    const absDistance = Math.abs(distance);
+    if (absDistance === 0) return;
+    const feature = this._partManager.extrude(this._lastSketchFeatureId, absDistance);
+    if (feature && isCut) {
+      feature.direction = -1;
+      feature.operation = 'subtract';
+    }
+    if (this._featurePanel) this._featurePanel.update();
+    this._updateNodeTree();
+    this._update3DView();
+    this._updateOperationButtons();
+    this._scheduleRender();
+  }
+
+  _executeRevolve(angleDeg) {
+    if (!this._lastSketchFeatureId) return;
+    const radians = (angleDeg * Math.PI) / 180;
+    const feature = this._partManager.revolve(this._lastSketchFeatureId, radians);
+    if (this._featurePanel) this._featurePanel.update();
+    this._updateNodeTree();
+    this._update3DView();
+    this._updateOperationButtons();
+    this._scheduleRender();
+  }
+
+  /** Start sketch on face using an explicit plane definition (for command replay). */
+  _startSketchOnFaceWithPlane(planeDef) {
+    if (this._workspaceMode !== 'part') return;
+
+    state.scene.clear();
+    state.selectedEntities = [];
+    this._sketchingOnPlane = true;
+    this._activeSketchPlane = 'FACE';
+    this._activeSketchPlaneDef = planeDef;
+    this._3dMode = true;
+
+    document.body.classList.add('sketch-on-plane');
+    const exitBtn = document.getElementById('btn-exit-sketch');
+    if (exitBtn) exitBtn.style.display = 'flex';
+
+    if (this._renderer3d) {
+      this._savedOrbitState = this._renderer3d.saveOrbitState();
+      this._renderer3d.setMode('3d');
+      this._renderer3d.setVisible(true);
+      this._renderer3d._sketchPlane = 'FACE';
+      this._renderer3d._sketchPlaneDef = planeDef;
+    }
+
+    this._selectedPlane = null;
+    if (this._renderer3d) this._renderer3d.setSelectedPlane(null);
+
+    const modeIndicator = document.getElementById('status-mode');
+    modeIndicator.textContent = 'SKETCH ON FACE';
+    modeIndicator.className = 'status-mode sketch-mode';
+    this.setActiveTool('select');
+    this.setStatus('Sketching on face plane. Draw your profile, then Exit Sketch.');
+    info('Entered sketch-on-face mode (command)');
+    this._scheduleRender();
   }
 
   // --- Resize ---
@@ -3766,6 +4047,7 @@ class App {
       this.setActiveTool('select');
       this._updateOperationButtons();
       this._updateNodeTree();
+      this._recorder.workspaceChanged(mode);
       info('Entered Part Design workspace');
     }
     this._scheduleRender();
@@ -3893,6 +4175,117 @@ class App {
   }
 
   // --- Part Mode Tool Events ---
+
+  // --- Recording Controls ---
+
+  _bindRecordingControls() {
+    const btnRecord = document.getElementById('btn-record');
+    const btnExport = document.getElementById('btn-record-export');
+    if (!btnRecord) return;
+
+    btnRecord.addEventListener('click', () => {
+      if (this._recorder.recording) {
+        this._stopRecording();
+      } else {
+        this._startRecording();
+      }
+    });
+
+    if (btnExport) {
+      btnExport.addEventListener('click', () => {
+        this._exportRecording();
+      });
+    }
+
+    // Wire camera events from the 3D renderer to the recorder
+    if (this._renderer3d) {
+      this._renderer3d.onCameraInteraction = (type, orbitState) => {
+        if (!this._recorder.recording) return;
+        const { theta, phi, radius, target } = orbitState;
+        if (type === 'orbit_start') {
+          this._recorder.orbitStart(theta, phi, radius, target);
+        } else if (type === 'pan_start') {
+          this._recorder.panStart(target);
+        } else if (type === 'orbit_end') {
+          this._recorder.orbitEnd(theta, phi, radius, target);
+        } else if (type === 'zoom') {
+          this._recorder.cameraSnapshot(theta, phi, radius, target);
+        }
+      };
+    }
+  }
+
+  _startRecording() {
+    this._recorder.start();
+    const btnRecord = document.getElementById('btn-record');
+    const btnExport = document.getElementById('btn-record-export');
+    if (btnRecord) btnRecord.classList.add('recording');
+    if (btnExport) btnExport.style.display = 'none';
+    // Record initial workspace state
+    if (this._workspaceMode) this._recorder.workspaceChanged(this._workspaceMode);
+    // Record initial camera state
+    if (this._renderer3d) {
+      const orb = this._renderer3d.getOrbitState();
+      this._recorder.cameraSnapshot(orb.theta, orb.phi, orb.radius, orb.target);
+    }
+    this.setStatus('Recording started — interact normally, then stop to export.');
+    info('Interaction recording started');
+  }
+
+  _stopRecording() {
+    const steps = this._recorder.stop();
+    const btnRecord = document.getElementById('btn-record');
+    const btnExport = document.getElementById('btn-record-export');
+    if (btnRecord) btnRecord.classList.remove('recording');
+    if (btnExport) btnExport.style.display = '';
+    this._lastRecordedSteps = steps;
+    this.setStatus(`Recording stopped — ${steps.length} action(s) captured.`);
+    info(`Interaction recording stopped: ${steps.length} steps`);
+  }
+
+  _exportRecording() {
+    const json = this._recorder.exportJSON();
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `recording-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    this.setStatus('Recording exported.');
+    info('Recording exported as JSON');
+  }
+
+  async _playbackRecording(stepDelay = 300) {
+    const steps = this._lastRecordedSteps;
+    if (!steps || steps.length === 0) {
+      this.setStatus('No recording to play back.');
+      return;
+    }
+    const commands = steps.map(s => s.command);
+    const cmdInput = document.getElementById('cmd-input');
+    this.setStatus(`Playing back ${commands.length} action(s)…`);
+    info(`Playback started: ${commands.length} steps, ${stepDelay}ms delay`);
+
+    const engine = new PlaybackEngine(this, {
+      stepDelay,
+      onStep: (seq, cmd) => {
+        // Show current command in the input for visual feedback
+        if (cmdInput) cmdInput.value = cmd;
+        this.setStatus(`▶ Step ${seq + 1}/${commands.length}: ${cmd}`);
+      },
+      onComplete: () => {
+        if (cmdInput) cmdInput.value = '';
+        this.setStatus('Playback complete.');
+        info('Playback finished');
+      },
+      onError: (seq, cmd, err) => {
+        warn(`Playback error at step ${seq}: ${cmd}`, err);
+      },
+    });
+
+    await engine.run(commands);
+  }
 
   _bindPartToolEvents() {
     const btnCreatePlane = document.getElementById('btn-create-plane');
@@ -4041,6 +4434,7 @@ class App {
 
     this.setActiveTool('select');
     this.setStatus(`Sketching on ${plane} plane. Draw your profile, then Exit Sketch to extrude.`);
+    this._recorder.sketchStarted(plane, null);
     info(`Entered sketch-on-plane mode (${plane} plane)`);
     this._scheduleRender();
   }
@@ -4099,6 +4493,7 @@ class App {
 
     this.setActiveTool('select');
     this.setStatus('Sketching on face. Draw your profile, then Exit Sketch to extrude.');
+    this._recorder.sketchStarted('FACE', planeDef);
     info('Entered sketch-on-face mode');
     this._scheduleRender();
   }
@@ -4277,6 +4672,7 @@ class App {
     this._update3DView();
     this._updateOperationButtons();
     this.setStatus('Returned to Part Design mode.');
+    this._recorder.sketchFinished(this._lastSketchFeatureId, 0);
     info('Finished sketch-on-plane, returned to Part Design mode');
     this._scheduleRender();
   }
@@ -4450,6 +4846,7 @@ class App {
     this._updateOperationButtons();
 
     this.setStatus(`${opName}: ${absDistance} units`);
+    this._recorder.extrudeCreated(feature ? feature.id : null, absDistance, isCut);
     info(`Created ${opName.toLowerCase()} feature: ${feature ? feature.id : 'failed'}`);
   }
 }
