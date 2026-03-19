@@ -30,6 +30,7 @@ import {
   ParallelTool, PerpendicularTool, DistanceConstraintTool,
   LockTool, EqualTool, TangentTool, AngleTool,
 } from './tools/index.js';
+import { InteractionRecorder } from './interaction-recorder.js';
 
 class App {
   constructor() {
@@ -44,6 +45,7 @@ class App {
     this._savedOrbitState = null; // saved camera state before entering sketch mode
     this._expandedFolders = new Set(); // track expanded feature tree folders
     this._editingSketchFeatureId = null; // ID of sketch being edited (null = creating new)
+    this._recorder = new InteractionRecorder(); // interaction recorder for workflow debugging
     
     // Initialize unified 3D renderer
     const view3dContainer = document.getElementById('view-3d');
@@ -125,6 +127,7 @@ class App {
     this._bindPartToolEvents();
     this._bindPlaneSelectionEvents();
     this._bindExitSketchButton();
+    this._bindRecordingControls();
 
     // Register viewport, part manager, renderer, and workspace mode for persistence
     setViewport(this.viewport);
@@ -510,6 +513,7 @@ class App {
     this.activeTool.activate();
     state.setTool(name);
     info('Tool changed', name);
+    this._recorder.toolActivated(name);
     this._updateToolbarHighlight(name);
     this._scheduleRender();
   }
@@ -937,9 +941,11 @@ class App {
           this._renderer3d.setSelectedPlane(null);
           this.setStatus(`Selected face ${hit.faceIndex} (normal: ${hit.face.normal.x.toFixed(2)}, ${hit.face.normal.y.toFixed(2)}, ${hit.face.normal.z.toFixed(2)})`);
           info(`Face selected: ${hit.faceIndex}`);
+          this._recorder.faceSelected(hit.faceIndex, hit.face.faceGroup, hit.face.normal, hit.face.shared && hit.face.shared.sourceFeatureId);
         } else {
           this._selectedFace = null;
           this._renderer3d.selectFace(-1);
+          this._recorder.faceDeselected();
 
           // Try plane picking
           const hitPlane = this._renderer3d.pickPlane(e.clientX, e.clientY);
@@ -956,6 +962,7 @@ class App {
           if (this._selectedPlane) {
             this.setStatus(`Selected ${this._selectedPlane} plane`);
             info(`Plane selected in 3D: ${this._selectedPlane}`);
+            this._recorder.planeSelected(this._selectedPlane);
           }
         }
         this._updateNodeTree();
@@ -3614,6 +3621,7 @@ class App {
         if (this._renderer3d) {
           this._renderer3d.setSelectedFeature(feature.id);
         }
+        this._recorder.featureSelected(feature.id, feature.type, feature.name);
         this._updateNodeTree();
         this._update3DView();
         this._scheduleRender();
@@ -3622,6 +3630,7 @@ class App {
       // Double-click on sketch features to enter edit mode
       div.addEventListener('dblclick', () => {
         if (feature.type === 'sketch' && !this._sketchingOnPlane) {
+          this._recorder.sketchEditStarted(feature.id, feature.name);
           this._editExistingSketch(feature);
         }
       });

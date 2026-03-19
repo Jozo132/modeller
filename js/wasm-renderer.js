@@ -87,6 +87,9 @@ export class WasmRenderer {
     this._lastMouseY = 0;
     this._ortho3D = false; // orthographic projection in 3D mode
 
+    // Callback for camera change events (used by interaction recorder)
+    this.onCameraInteraction = null; // (type: 'orbit_start'|'pan_start'|'orbit_end'|'zoom', state) => void
+
     // Bind 3D mouse controls
     this._bind3DControls();
 
@@ -186,10 +189,12 @@ export class WasmRenderer {
         e.preventDefault();
         this._isDragging = true;
         this._isPanning3D = false;
+        if (this.onCameraInteraction) this.onCameraInteraction('orbit_start', this.getOrbitState());
       } else if (e.button === 2) {
         e.preventDefault();
         this._isPanning3D = true;
         this._isDragging = false;
+        if (this.onCameraInteraction) this.onCameraInteraction('pan_start', this.getOrbitState());
       }
       this._lastMouseX = e.clientX;
       this._lastMouseY = e.clientY;
@@ -231,8 +236,10 @@ export class WasmRenderer {
     });
 
     canvas.addEventListener('mouseup', () => {
+      const wasDragging = this._isDragging || this._isPanning3D;
       this._isDragging = false;
       this._isPanning3D = false;
+      if (wasDragging && this.onCameraInteraction) this.onCameraInteraction('orbit_end', this.getOrbitState());
     });
 
     canvas.addEventListener('mouseleave', () => {
@@ -247,6 +254,7 @@ export class WasmRenderer {
       this._orbitRadius *= factor;
       this._orbitRadius = Math.max(10, Math.min(5000, this._orbitRadius));
       this._orbitDirty = true;
+      if (this.onCameraInteraction) this.onCameraInteraction('zoom', this.getOrbitState());
     }, { passive: false });
   }
 
