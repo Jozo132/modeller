@@ -607,7 +607,7 @@ export class WasmRenderer {
       if (Math.abs(hit[p.uAxis]) <= planeSize && Math.abs(hit[p.vAxis]) <= planeSize) {
         if (t < closestT) {
           closestT = t;
-          closestPlane = p.name;
+          closestPlane = { name: p.name, point: hit };
         }
       }
     }

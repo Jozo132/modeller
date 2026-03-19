@@ -853,7 +853,8 @@ class App {
 
       // Plane hover highlight in Part mode 3D view
       if (this._workspaceMode === 'part' && this._renderer3d) {
-        const hitPlane = this._renderer3d.pickPlane(e.clientX, e.clientY);
+        const hitPlaneResult = this._renderer3d.pickPlane(e.clientX, e.clientY);
+        const hitPlane = hitPlaneResult ? hitPlaneResult.name : null;
         if (hitPlane !== this._hoveredPlane) {
           this._hoveredPlane = hitPlane;
           this._renderer3d.setHoveredPlane(hitPlane);
@@ -921,10 +922,8 @@ class App {
           world = this._screenToSketchWorld(sx, sy);
         }
         if (world && this.activeTool.onClick) {
-          // Record the click for interaction replay (captures drawing actions)
-          if (this.activeTool.name !== 'select') {
-            this._recorder.clickAt(world.x, world.y);
-          }
+          // Record every click in model space for interaction replay
+          this._recorder.clickAt(world.x, world.y);
           this.activeTool.onClick(world.x, world.y, e);
         }
         movedSinceDown = false;
@@ -952,21 +951,21 @@ class App {
           this._recorder.faceDeselected();
 
           // Try plane picking
-          const hitPlane = this._renderer3d.pickPlane(e.clientX, e.clientY);
-          if (hitPlane) {
-            if (this._selectedPlane === hitPlane) {
+          const hitPlaneResult = this._renderer3d.pickPlane(e.clientX, e.clientY);
+          if (hitPlaneResult) {
+            if (this._selectedPlane === hitPlaneResult.name) {
               this._selectedPlane = null; // toggle off
             } else {
-              this._selectedPlane = hitPlane;
+              this._selectedPlane = hitPlaneResult.name;
             }
           } else {
             this._selectedPlane = null;
           }
           this._renderer3d.setSelectedPlane(this._selectedPlane);
-          if (this._selectedPlane) {
+          if (this._selectedPlane && hitPlaneResult) {
             this.setStatus(`Selected ${this._selectedPlane} plane`);
             info(`Plane selected in 3D: ${this._selectedPlane}`);
-            this._recorder.planeSelected(this._selectedPlane);
+            this._recorder.planeSelected(this._selectedPlane, hitPlaneResult.point);
           }
         }
         this._updateNodeTree();
@@ -4337,6 +4336,7 @@ class App {
         this.setStatus('Playback stopped.');
         const cmdInput = document.getElementById('cmd-input');
         if (cmdInput) cmdInput.value = '';
+        this._hidePlaybackIndicator();
         updatePlaybackUI();
       });
     }
@@ -4457,74 +4457,63 @@ class App {
     let screenPos = null;
     let labelText = '';
 
+    // Extract @px py pz point annotation if present (appended by recorder for 3D actions)
+    const atIdx = command.indexOf(' @');
+    let atPoint = null;
+    if (atIdx >= 0) {
+      const atParts = command.substring(atIdx + 2).trim().split(/\s+/);
+      if (atParts.length >= 3) {
+        atPoint = {
+          x: parseFloat(atParts[0]),
+          y: parseFloat(atParts[1]),
+          z: parseFloat(atParts[2]),
+        };
+      }
+    }
+
+    // Helper: project sketch-plane 2D coords to screen
+    const sketchToScreen = (mx, my) => {
+      if (this._renderer3d && this._renderer3d._sketchPlaneDef) {
+        return this._renderer3d.sketchToScreen(mx, my);
+      } else if (this._renderer3d) {
+        return this._renderer3d.worldToScreen(mx, my, 0);
+      }
+      return null;
+    };
+
     if (cmd === 'click' && tokens.length >= 3) {
-      // click <x> <y> — sketch-plane model coordinates
       const mx = parseFloat(tokens[1]);
       const my = parseFloat(tokens[2]);
       labelText = `click (${mx.toFixed(2)}, ${my.toFixed(2)})`;
-
-      // Project from sketch plane to screen
-      if (this._renderer3d && this._renderer3d._sketchPlaneDef) {
-        screenPos = this._renderer3d.sketchToScreen(mx, my);
-      } else if (this._renderer3d) {
-        // Fallback: treat as XY plane at z=0
-        screenPos = this._renderer3d.worldToScreen(mx, my, 0);
-      }
+      screenPos = sketchToScreen(mx, my);
     } else if (cmd === 'draw.line' && tokens.length >= 5) {
-      // draw.line <x1> <y1> <x2> <y2> — show midpoint
       const x1 = parseFloat(tokens[1]), y1 = parseFloat(tokens[2]);
       const x2 = parseFloat(tokens[3]), y2 = parseFloat(tokens[4]);
-      const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
       labelText = `line (${x1.toFixed(1)},${y1.toFixed(1)})→(${x2.toFixed(1)},${y2.toFixed(1)})`;
-      if (this._renderer3d && this._renderer3d._sketchPlaneDef) {
-        screenPos = this._renderer3d.sketchToScreen(mx, my);
-      } else if (this._renderer3d) {
-        screenPos = this._renderer3d.worldToScreen(mx, my, 0);
-      }
+      screenPos = sketchToScreen((x1 + x2) / 2, (y1 + y2) / 2);
     } else if (cmd === 'draw.rect' && tokens.length >= 5) {
-      // draw.rect <x1> <y1> <x2> <y2> — show center
       const x1 = parseFloat(tokens[1]), y1 = parseFloat(tokens[2]);
       const x2 = parseFloat(tokens[3]), y2 = parseFloat(tokens[4]);
-      const cx = (x1 + x2) / 2, cy = (y1 + y2) / 2;
       labelText = `rect (${x1.toFixed(1)},${y1.toFixed(1)})→(${x2.toFixed(1)},${y2.toFixed(1)})`;
-      if (this._renderer3d && this._renderer3d._sketchPlaneDef) {
-        screenPos = this._renderer3d.sketchToScreen(cx, cy);
-      } else if (this._renderer3d) {
-        screenPos = this._renderer3d.worldToScreen(cx, cy, 0);
-      }
+      screenPos = sketchToScreen((x1 + x2) / 2, (y1 + y2) / 2);
     } else if (cmd === 'draw.circle' && tokens.length >= 4) {
-      // draw.circle <cx> <cy> <r> — show center
       const cx = parseFloat(tokens[1]), cy = parseFloat(tokens[2]);
       const r = parseFloat(tokens[3]);
       labelText = `circle c=(${cx.toFixed(1)},${cy.toFixed(1)}) r=${r.toFixed(1)}`;
-      if (this._renderer3d && this._renderer3d._sketchPlaneDef) {
-        screenPos = this._renderer3d.sketchToScreen(cx, cy);
-      } else if (this._renderer3d) {
-        screenPos = this._renderer3d.worldToScreen(cx, cy, 0);
+      screenPos = sketchToScreen(cx, cy);
+    } else if (atPoint && this._renderer3d) {
+      // Any command with @point — use the recorded 3D click coordinates
+      const p = atPoint;
+      if (cmd === 'select.face') {
+        labelText = `face ${tokens[1]} @(${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)})`;
+      } else if (cmd === 'select.plane') {
+        labelText = `plane ${tokens[1]} @(${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)})`;
+      } else if (cmd === 'deselect.face') {
+        labelText = `deselect @(${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)})`;
+      } else {
+        labelText = `@(${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)})`;
       }
-    } else if (cmd === 'select.face' && tokens.length >= 2) {
-      // select.face <idx> ... — show face centroid
-      const faceIdx = parseInt(tokens[1], 10);
-      if (this._renderer3d) {
-        const faceInfo = this._renderer3d.getFaceInfo(faceIdx);
-        if (faceInfo && faceInfo.vertices && faceInfo.vertices.length > 0) {
-          let cx = 0, cy = 0, cz = 0;
-          for (const v of faceInfo.vertices) {
-            cx += v.x; cy += v.y; cz += v.z;
-          }
-          cx /= faceInfo.vertices.length;
-          cy /= faceInfo.vertices.length;
-          cz /= faceInfo.vertices.length;
-          labelText = `face ${faceIdx} (${cx.toFixed(2)}, ${cy.toFixed(2)}, ${cz.toFixed(2)})`;
-          screenPos = this._renderer3d.worldToScreen(cx, cy, cz);
-        }
-      }
-    } else if (cmd === 'select.plane' && tokens.length >= 2) {
-      // select.plane XY|XZ|YZ — show at origin
-      labelText = `plane ${tokens[1]}`;
-      if (this._renderer3d) {
-        screenPos = this._renderer3d.worldToScreen(0, 0, 0);
-      }
+      screenPos = this._renderer3d.worldToScreen(p.x, p.y, p.z);
     }
 
     if (screenPos) {

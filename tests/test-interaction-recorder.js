@@ -200,5 +200,45 @@ function assert(cond, msg) {
   rec.stop();
 }
 
+// ---- Test 13: faceSelected records @point when provided ----
+{
+  const rec = new InteractionRecorder();
+  rec.start();
+  rec.faceSelected(2, 2, { x: 0, y: 1, z: 0 }, 'feature_2', { x: 1.5, y: 3.0, z: -0.5 });
+  const steps = rec.stop();
+  assert(steps[0].command.includes('@1.5 3 -0.5'), `Face has @point: ${steps[0].command}`);
+  assert(steps[0].command.startsWith('select.face 2 2'), `Face idx/group correct: ${steps[0].command}`);
+}
+
+// ---- Test 14: planeSelected records @point when provided ----
+{
+  const rec = new InteractionRecorder();
+  rec.start();
+  rec.planeSelected('XY', { x: 2.5, y: -1.0, z: 0 });
+  const steps = rec.stop();
+  assert(steps[0].command.includes('@2.5 -1 0'), `Plane has @point: ${steps[0].command}`);
+  assert(steps[0].command.startsWith('select.plane XY'), `Plane name correct: ${steps[0].command}`);
+}
+
+// ---- Test 15: faceDeselected records @point when provided ----
+{
+  const rec = new InteractionRecorder();
+  rec.start();
+  rec.faceDeselected({ x: 0, y: 0, z: 5.0 });
+  const steps = rec.stop();
+  assert(steps[0].command.includes('@0 0 5'), `Deselect has @point: ${steps[0].command}`);
+  assert(steps[0].command.startsWith('deselect.face'), `Starts with deselect: ${steps[0].command}`);
+}
+
+// ---- Test 16: faceSelected without point still works ----
+{
+  const rec = new InteractionRecorder();
+  rec.start();
+  rec.faceSelected(5, 5, { x: 0, y: 0, z: 1 }, null);
+  const steps = rec.stop();
+  assert(!steps[0].command.includes('@'), `No @point when not provided: ${steps[0].command}`);
+  assert(steps[0].command.startsWith('select.face 5 5'), `Face still correct: ${steps[0].command}`);
+}
+
 console.log(`\nInteraction Recorder Tests: ${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

@@ -151,12 +151,14 @@ export class InteractionRecorder {
     this._push(`select.face ${faceIndex} ${faceGroup != null ? faceGroup : faceIndex} ${nStr}${srcStr}${ptStr}`);
   }
 
-  faceDeselected() {
-    this._push('deselect.face');
+  faceDeselected(point) {
+    const ptStr = point ? ` @${n4(point.x)} ${n4(point.y)} ${n4(point.z)}` : '';
+    this._push(`deselect.face${ptStr}`);
   }
 
-  planeSelected(planeName) {
-    this._push(`select.plane ${planeName}`);
+  planeSelected(planeName, point) {
+    const ptStr = point ? ` @${n4(point.x)} ${n4(point.y)} ${n4(point.z)}` : '';
+    this._push(`select.plane ${planeName}${ptStr}`);
   }
 
   featureSelected(featureId, featureType, featureName) {
