@@ -704,6 +704,34 @@ html, body {
   padding: 1px 2px;
 }
 
+.rec-preview {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 340px;
+  font-family: 'Consolas', monospace;
+  font-size: 11px;
+  color: var(--accent);
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 2px 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.rec-preview.active {
+  opacity: 1;
+}
+.rec-preview.flash {
+  animation: rec-flash 0.4s ease-out;
+}
+@keyframes rec-flash {
+  0% { background: rgba(33,150,243,0.3); }
+  100% { background: rgba(255,255,255,0.04); }
+}
+
 /* Command Line */
 #command-line {
   position: fixed;

@@ -4200,12 +4200,25 @@ class App {
     const slider = document.getElementById('play-slider');
     const stepLabel = document.getElementById('play-step-label');
     const speedInput = document.getElementById('play-speed');
+    const recPreview = document.getElementById('rec-preview');
 
     // Playback state
     this._playbackSteps = null;
     this._playbackIndex = -1;
     this._playbackTimer = null;
     this._playbackPlaying = false;
+
+    // Live preview: show last recorded action while recording
+    this._recorder.onStep = (step) => {
+      if (!recPreview) return;
+      recPreview.textContent = `#${step.seq} ${step.command}`;
+      recPreview.classList.add('active');
+      // Flash animation
+      recPreview.classList.remove('flash');
+      // Force reflow so removing+re-adding 'flash' restarts the CSS animation
+      void recPreview.offsetWidth;
+      recPreview.classList.add('flash');
+    };
 
     const updatePlaybackUI = () => {
       const hasRec = !!this._playbackSteps;
@@ -4352,7 +4365,8 @@ class App {
   _startAutoplay(executeStep, updatePlaybackUI) {
     if (!this._playbackSteps) return;
     this._playbackPlaying = true;
-    const speed = parseFloat(document.getElementById('play-speed')?.value) || 1;
+    const speedEl = document.getElementById('play-speed');
+    const speed = parseFloat(speedEl?.value) || 1;
 
     const advance = () => {
       if (!this._playbackPlaying || !this._playbackSteps) return;
@@ -4393,7 +4407,10 @@ class App {
       try {
         this._handleCommand(this._playbackSteps[i].command);
       } catch (err) {
-        // Skip errors during bulk replay
+        // Errors are expected during state reconstruction when scrubbing —
+        // e.g. selecting a face that doesn't exist yet at that point in time.
+        // Log at debug level so devs can inspect but slider stays responsive.
+        debug(`Replay scrub skip at step ${i}: ${err.message}`);
       }
     }
     this._playbackIndex = targetIdx;
@@ -4488,7 +4505,7 @@ class App {
         this._loadRecording(data);
         dismiss();
       } catch (err) {
-        alert('Invalid JSON: ' + err.message);
+        this.setStatus('Invalid JSON: ' + err.message);
       }
     });
   }
@@ -4500,8 +4517,10 @@ class App {
     this._recorder.start();
     const btnRecord = document.getElementById('btn-record');
     const btnExport = document.getElementById('btn-record-export');
+    const recPreview = document.getElementById('rec-preview');
     if (btnRecord) btnRecord.classList.add('recording');
     if (btnExport) btnExport.style.display = 'none';
+    if (recPreview) { recPreview.textContent = ''; recPreview.classList.remove('active'); }
     // Record initial workspace state
     if (this._workspaceMode) this._recorder.workspaceChanged(this._workspaceMode);
     // Record initial camera state
@@ -4524,6 +4543,9 @@ class App {
     // Auto-load for playback
     this._playbackSteps = steps;
     this._playbackIndex = -1;
+    // Keep preview visible with final step count
+    const recPreview = document.getElementById('rec-preview');
+    if (recPreview) { recPreview.textContent = `${steps.length} step(s) recorded`; }
     this.setStatus(`Recording stopped — ${steps.length} action(s) captured. Use playback controls or export.`);
     info(`Interaction recording stopped: ${steps.length} steps`);
     if (this._updatePlaybackUI) this._updatePlaybackUI();

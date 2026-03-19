@@ -32,6 +32,8 @@ export class InteractionRecorder {
     // Buffered camera command — consecutive camera actions consolidate here
     // and only get flushed when a non-camera action arrives.
     this._pendingCamera = null;
+    /** Optional callback invoked with (step) every time a step is committed. */
+    this.onStep = null;
   }
 
   // ---- Control ----
@@ -75,11 +77,13 @@ export class InteractionRecorder {
   _push(command) {
     if (!this._recording) return;
     this._flushCamera();
-    this._steps.push({
+    const step = {
       seq: this._seq++,
       ts: Math.round(performance.now() - this._startTime),
       command,
-    });
+    };
+    this._steps.push(step);
+    if (this.onStep) this.onStep(step);
   }
 
   /** Buffer a camera command — replaces any previous buffered camera. */
@@ -92,12 +96,14 @@ export class InteractionRecorder {
   /** Write the pending camera command to the step list (if any). */
   _flushCamera() {
     if (!this._pendingCamera) return;
-    this._steps.push({
+    const step = {
       seq: this._seq++,
       ts: Math.round(performance.now() - this._startTime),
       command: this._pendingCamera,
-    });
+    };
+    this._steps.push(step);
     this._pendingCamera = null;
+    if (this.onStep) this.onStep(step);
   }
 
   // ---- Camera (settled: only start→end, consolidated across sequences) ----

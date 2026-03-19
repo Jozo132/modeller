@@ -166,5 +166,39 @@ function assert(cond, msg) {
   assert(steps[0].command.includes('1 2 3'), `Has origin: ${steps[0].command}`);
 }
 
+// ---- Test 11: onStep callback fires for each committed step ----
+{
+  const rec = new InteractionRecorder();
+  const fired = [];
+  rec.onStep = (step) => fired.push(step);
+  rec.start();
+  rec.toolActivated('line');
+  rec.clickAt(1, 2);
+  rec.clickAt(3, 4);
+  rec.stop();
+  // 3 action steps expected: tool, click, click
+  assert(fired.length === 3, `onStep fired 3 times, got ${fired.length}`);
+  assert(fired[0].command === 'tool line', `First callback: ${fired[0].command}`);
+  assert(fired[1].command === 'click 1 2', `Second callback: ${fired[1].command}`);
+  assert(fired[2].command === 'click 3 4', `Third callback: ${fired[2].command}`);
+}
+
+// ---- Test 12: onStep fires for flushed camera before non-camera step ----
+{
+  const rec = new InteractionRecorder();
+  const fired = [];
+  rec.onStep = (step) => fired.push(step);
+  rec.start();
+  rec.cameraSnapshot(1, 1, 25, { x: 0, y: 0, z: 0 });
+  // Camera is pending, not yet fired
+  assert(fired.length === 0, `Camera buffered, not fired yet: ${fired.length}`);
+  rec.toolActivated('select');
+  // Now camera should have flushed + tool
+  assert(fired.length === 2, `Camera flush + tool = 2: ${fired.length}`);
+  assert(fired[0].command.startsWith('camera.set'), `First is camera: ${fired[0].command}`);
+  assert(fired[1].command === 'tool select', `Second is tool: ${fired[1].command}`);
+  rec.stop();
+}
+
 console.log(`\nInteraction Recorder Tests: ${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
