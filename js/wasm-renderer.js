@@ -352,6 +352,11 @@ export class WasmRenderer {
     };
   }
 
+  /** Returns true if there is an active sketch plane definition set. */
+  hasSketchPlane() {
+    return !!this._sketchPlaneDef;
+  }
+
   /**
    * Orient the orbit camera perpendicular to the given plane.
    * @param {'XY'|'XZ'|'YZ'} plane - The reference plane

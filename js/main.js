@@ -948,10 +948,14 @@ class App {
         } else {
           this._selectedFace = null;
           this._renderer3d.selectFace(-1);
-          this._recorder.faceDeselected();
 
           // Try plane picking
           const hitPlaneResult = this._renderer3d.pickPlane(e.clientX, e.clientY);
+          const clickPoint3D = hitPlaneResult ? hitPlaneResult.point : null;
+
+          // Record deselect with best-available 3D position
+          this._recorder.faceDeselected(clickPoint3D);
+
           if (hitPlaneResult) {
             if (this._selectedPlane === hitPlaneResult.name) {
               this._selectedPlane = null; // toggle off
@@ -1493,6 +1497,7 @@ class App {
 
     if (command === 'draw.line') {
       // draw.line <x1> <y1> <x2> <y2>
+      // merge: true enables auto-coincidence so shared endpoints form proper constraints
       if (args.length >= 4) {
         state.scene.addSegment(
           parseFloat(args[0]), parseFloat(args[1]),
@@ -4473,7 +4478,7 @@ class App {
 
     // Helper: project sketch-plane 2D coords to screen
     const sketchToScreen = (mx, my) => {
-      if (this._renderer3d && this._renderer3d._sketchPlaneDef) {
+      if (this._renderer3d && this._renderer3d.hasSketchPlane()) {
         return this._renderer3d.sketchToScreen(mx, my);
       } else if (this._renderer3d) {
         return this._renderer3d.worldToScreen(mx, my, 0);
