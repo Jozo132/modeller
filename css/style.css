@@ -732,6 +732,39 @@ html, body {
   100% { background: rgba(255,255,255,0.04); }
 }
 
+/* Playback position indicator */
+.playback-indicator {
+  position: fixed;
+  z-index: 200;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  transition: left 0.15s ease-out, top 0.15s ease-out;
+}
+.playback-indicator-dot {
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: rgba(255, 82, 82, 0.7);
+  border: 2px solid #fff;
+  box-shadow: 0 0 8px rgba(255, 82, 82, 0.6), 0 0 2px rgba(0,0,0,0.4);
+  animation: indicator-pulse 1.2s ease-in-out infinite;
+}
+.playback-indicator-label {
+  position: absolute;
+  top: 22px; left: 50%;
+  transform: translateX(-50%);
+  font-size: 10px;
+  font-family: 'Consolas', monospace;
+  color: #fff;
+  background: rgba(0,0,0,0.7);
+  padding: 1px 6px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+@keyframes indicator-pulse {
+  0%, 100% { transform: scale(1); opacity: 0.9; }
+  50% { transform: scale(1.3); opacity: 1; }
+}
+
 /* Command Line */
 #command-line {
   position: fixed;

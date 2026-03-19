@@ -144,9 +144,11 @@ export class InteractionRecorder {
 
   // ---- Selection ----
 
-  faceSelected(faceIndex, faceGroup, normal, sourceFeatureId) {
+  faceSelected(faceIndex, faceGroup, normal, sourceFeatureId, point) {
     const nStr = normal ? `${n4(normal.x)} ${n4(normal.y)} ${n4(normal.z)}` : '0 0 0';
-    this._push(`select.face ${faceIndex} ${faceGroup != null ? faceGroup : faceIndex} ${nStr}${sourceFeatureId ? ` ${sourceFeatureId}` : ''}`);
+    const srcStr = sourceFeatureId ? ` ${sourceFeatureId}` : '';
+    const ptStr = point ? ` @${n4(point.x)} ${n4(point.y)} ${n4(point.z)}` : '';
+    this._push(`select.face ${faceIndex} ${faceGroup != null ? faceGroup : faceIndex} ${nStr}${srcStr}${ptStr}`);
   }
 
   faceDeselected() {

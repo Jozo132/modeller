@@ -331,6 +331,28 @@ export class WasmRenderer {
   }
 
   /**
+   * Project a 3D world-space point to screen pixel coordinates.
+   * @param {number} wx - World X
+   * @param {number} wy - World Y
+   * @param {number} wz - World Z
+   * @returns {{x:number, y:number}|null} Screen pixel position or null
+   */
+  worldToScreen(wx, wy, wz) {
+    const mvp = this._computeMVP();
+    if (!mvp) return null;
+    const clip = this._mat4TransformVec4(mvp, wx, wy, wz, 1);
+    if (Math.abs(clip.w) < 1e-10) return null;
+    const ndcX = clip.x / clip.w;
+    const ndcY = clip.y / clip.w;
+    const w = this._cssWidth || this.container.clientWidth;
+    const h = this._cssHeight || this.container.clientHeight;
+    return {
+      x: (ndcX * 0.5 + 0.5) * w,
+      y: (1 - (ndcY * 0.5 + 0.5)) * h,
+    };
+  }
+
+  /**
    * Orient the orbit camera perpendicular to the given plane.
    * @param {'XY'|'XZ'|'YZ'} plane - The reference plane
    */

@@ -945,7 +945,7 @@ class App {
           this._renderer3d.setSelectedPlane(null);
           this.setStatus(`Selected face ${hit.faceIndex} (normal: ${hit.face.normal.x.toFixed(2)}, ${hit.face.normal.y.toFixed(2)}, ${hit.face.normal.z.toFixed(2)})`);
           info(`Face selected: ${hit.faceIndex}`);
-          this._recorder.faceSelected(hit.faceIndex, hit.face.faceGroup, hit.face.normal, hit.face.shared && hit.face.shared.sourceFeatureId);
+          this._recorder.faceSelected(hit.faceIndex, hit.face.faceGroup, hit.face.normal, hit.face.shared && hit.face.shared.sourceFeatureId, hit.point);
         } else {
           this._selectedFace = null;
           this._renderer3d.selectFace(-1);
@@ -4280,6 +4280,8 @@ class App {
       }
       this._playbackIndex = idx;
       updatePlaybackUI();
+      // Show position indicator for spatial commands
+      this._showPlaybackIndicator(step.command);
     };
 
     // Slider scrub
@@ -4419,6 +4421,7 @@ class App {
       const cmdInput = document.getElementById('cmd-input');
       if (cmdInput) cmdInput.value = step.command;
       this.setStatus(`▶ Step ${targetIdx + 1}/${this._playbackSteps.length}: ${step.command}`);
+      this._showPlaybackIndicator(step.command);
     }
   }
 
@@ -4435,6 +4438,111 @@ class App {
       this.setStatus('Invalid recording data.');
     }
     if (this._updatePlaybackUI) this._updatePlaybackUI();
+  }
+
+  /**
+   * Show a visual position indicator on the canvas for spatial playback commands.
+   * Extracts model coordinates from the command, projects to screen, and
+   * positions the indicator overlay. Hides for non-spatial commands.
+   * @param {string} command - The command string being played
+   */
+  _showPlaybackIndicator(command) {
+    const el = document.getElementById('playback-indicator');
+    if (!el) return;
+    const dot = el.querySelector('.playback-indicator-dot');
+    const label = el.querySelector('.playback-indicator-label');
+
+    const tokens = command.trim().split(/\s+/);
+    const cmd = tokens[0];
+    let screenPos = null;
+    let labelText = '';
+
+    if (cmd === 'click' && tokens.length >= 3) {
+      // click <x> <y> — sketch-plane model coordinates
+      const mx = parseFloat(tokens[1]);
+      const my = parseFloat(tokens[2]);
+      labelText = `click (${mx.toFixed(2)}, ${my.toFixed(2)})`;
+
+      // Project from sketch plane to screen
+      if (this._renderer3d && this._renderer3d._sketchPlaneDef) {
+        screenPos = this._renderer3d.sketchToScreen(mx, my);
+      } else if (this._renderer3d) {
+        // Fallback: treat as XY plane at z=0
+        screenPos = this._renderer3d.worldToScreen(mx, my, 0);
+      }
+    } else if (cmd === 'draw.line' && tokens.length >= 5) {
+      // draw.line <x1> <y1> <x2> <y2> — show midpoint
+      const x1 = parseFloat(tokens[1]), y1 = parseFloat(tokens[2]);
+      const x2 = parseFloat(tokens[3]), y2 = parseFloat(tokens[4]);
+      const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+      labelText = `line (${x1.toFixed(1)},${y1.toFixed(1)})→(${x2.toFixed(1)},${y2.toFixed(1)})`;
+      if (this._renderer3d && this._renderer3d._sketchPlaneDef) {
+        screenPos = this._renderer3d.sketchToScreen(mx, my);
+      } else if (this._renderer3d) {
+        screenPos = this._renderer3d.worldToScreen(mx, my, 0);
+      }
+    } else if (cmd === 'draw.rect' && tokens.length >= 5) {
+      // draw.rect <x1> <y1> <x2> <y2> — show center
+      const x1 = parseFloat(tokens[1]), y1 = parseFloat(tokens[2]);
+      const x2 = parseFloat(tokens[3]), y2 = parseFloat(tokens[4]);
+      const cx = (x1 + x2) / 2, cy = (y1 + y2) / 2;
+      labelText = `rect (${x1.toFixed(1)},${y1.toFixed(1)})→(${x2.toFixed(1)},${y2.toFixed(1)})`;
+      if (this._renderer3d && this._renderer3d._sketchPlaneDef) {
+        screenPos = this._renderer3d.sketchToScreen(cx, cy);
+      } else if (this._renderer3d) {
+        screenPos = this._renderer3d.worldToScreen(cx, cy, 0);
+      }
+    } else if (cmd === 'draw.circle' && tokens.length >= 4) {
+      // draw.circle <cx> <cy> <r> — show center
+      const cx = parseFloat(tokens[1]), cy = parseFloat(tokens[2]);
+      const r = parseFloat(tokens[3]);
+      labelText = `circle c=(${cx.toFixed(1)},${cy.toFixed(1)}) r=${r.toFixed(1)}`;
+      if (this._renderer3d && this._renderer3d._sketchPlaneDef) {
+        screenPos = this._renderer3d.sketchToScreen(cx, cy);
+      } else if (this._renderer3d) {
+        screenPos = this._renderer3d.worldToScreen(cx, cy, 0);
+      }
+    } else if (cmd === 'select.face' && tokens.length >= 2) {
+      // select.face <idx> ... — show face centroid
+      const faceIdx = parseInt(tokens[1], 10);
+      if (this._renderer3d) {
+        const faceInfo = this._renderer3d.getFaceInfo(faceIdx);
+        if (faceInfo && faceInfo.vertices && faceInfo.vertices.length > 0) {
+          let cx = 0, cy = 0, cz = 0;
+          for (const v of faceInfo.vertices) {
+            cx += v.x; cy += v.y; cz += v.z;
+          }
+          cx /= faceInfo.vertices.length;
+          cy /= faceInfo.vertices.length;
+          cz /= faceInfo.vertices.length;
+          labelText = `face ${faceIdx} (${cx.toFixed(2)}, ${cy.toFixed(2)}, ${cz.toFixed(2)})`;
+          screenPos = this._renderer3d.worldToScreen(cx, cy, cz);
+        }
+      }
+    } else if (cmd === 'select.plane' && tokens.length >= 2) {
+      // select.plane XY|XZ|YZ — show at origin
+      labelText = `plane ${tokens[1]}`;
+      if (this._renderer3d) {
+        screenPos = this._renderer3d.worldToScreen(0, 0, 0);
+      }
+    }
+
+    if (screenPos) {
+      // Offset for the canvas container position
+      const container = document.getElementById('view-3d');
+      const rect = container ? container.getBoundingClientRect() : { left: 0, top: 0 };
+      el.style.left = `${rect.left + screenPos.x}px`;
+      el.style.top = `${rect.top + screenPos.y}px`;
+      el.style.display = '';
+      if (label) label.textContent = labelText;
+    } else {
+      el.style.display = 'none';
+    }
+  }
+
+  _hidePlaybackIndicator() {
+    const el = document.getElementById('playback-indicator');
+    if (el) el.style.display = 'none';
   }
 
   _openRecordingModal() {
