@@ -145,7 +145,7 @@ html, body {
   top: 34px;
   right: 0;
   width: var(--panel-width);
-  bottom: 56px;
+  bottom: 88px;
   background: var(--bg-panel);
   border-left: 1px solid var(--border);
   overflow-y: auto;
@@ -286,7 +286,7 @@ html, body {
   top: 34px;
   left: 0;
   width: var(--panel-width);
-  bottom: 56px;
+  bottom: 88px;
   background: var(--bg-panel);
   border-right: 1px solid var(--border);
   padding: 10px;
@@ -552,7 +552,7 @@ html, body {
   top: 34px;
   left: var(--panel-width);
   right: var(--panel-width);
-  bottom: 56px;
+  bottom: 88px;
   background: var(--canvas-bg);
   cursor: crosshair;
   touch-action: none;
@@ -561,7 +561,7 @@ html, body {
 /* Status Bar */
 #status-bar {
   position: fixed;
-  bottom: 28px; left: 0; right: 0;
+  bottom: 60px; left: 0; right: 0;
   height: 28px;
   background: var(--bg-toolbar);
   border-top: 1px solid var(--border);
@@ -624,6 +624,84 @@ html, body {
   flex: 1;
   text-align: right;
   color: var(--text-secondary);
+}
+
+/* Recording / Playback Bar */
+#recording-bar {
+  position: fixed;
+  bottom: 28px; left: 0; right: 0;
+  height: 32px;
+  background: var(--bg-toolbar);
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  gap: 4px;
+  z-index: 100;
+  user-select: none;
+}
+
+.rec-btn {
+  width: 26px; height: 26px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  line-height: 1;
+}
+.rec-btn:hover { background: rgba(255,255,255,0.08); }
+.rec-btn:disabled { opacity: 0.3; cursor: default; }
+.rec-btn:disabled:hover { background: transparent; }
+
+#btn-record.recording { color: #e53935; border-color: #e53935; animation: record-pulse 1s ease-in-out infinite; }
+
+.rec-sep {
+  width: 1px; height: 20px;
+  background: var(--border);
+  margin: 0 4px;
+}
+
+#play-slider {
+  flex: 1;
+  min-width: 80px;
+  height: 4px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+#play-slider:disabled { opacity: 0.3; cursor: default; }
+
+.rec-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  min-width: 60px;
+  text-align: center;
+  font-family: 'Consolas', monospace;
+}
+
+.rec-speed-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+#play-speed {
+  width: 42px;
+  background: var(--bg-dark);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  font-size: 11px;
+  text-align: center;
+  padding: 1px 2px;
 }
 
 /* Command Line */
@@ -1074,7 +1152,7 @@ html, body {
     right: 0;
     left: 0;
     top: auto;
-    bottom: 56px;
+    bottom: 88px;
     height: 36vh;
     width: auto;
     border-left: none;
@@ -1084,20 +1162,20 @@ html, body {
   #cad-canvas {
     left: 0;
     right: 0;
-    bottom: calc(56px + 36vh);
+    bottom: calc(88px + 36vh);
   }
 
   #view-3d {
     left: 0;
     right: 0;
-    bottom: calc(56px + 36vh);
+    bottom: calc(88px + 36vh);
   }
 }
 
 /* ── Motion Analysis Panel ── */
 .motion-panel {
   position: fixed;
-  bottom: 56px;
+  bottom: 88px;
   left: var(--panel-width);
   right: var(--panel-width);
   background: var(--bg-panel);
@@ -1372,7 +1450,7 @@ html, body {
 
 /* Viewport adjusts when motion panel is open */
 body.motion-active #view-3d {
-  bottom: calc(56px + var(--motion-panel-h, 0px));
+  bottom: calc(88px + var(--motion-panel-h, 0px));
 }
 
 /* Unified 3D View - Full Screen */
@@ -1381,7 +1459,7 @@ body.motion-active #view-3d {
   top: 34px;
   left: var(--panel-width);
   right: var(--panel-width);
-  bottom: 56px;
+  bottom: 88px;
   background: #1e1e1e;
   z-index: 10;
   display: block;
@@ -1549,7 +1627,7 @@ body.motion-active #view-3d {
   top: 42px;
   left: calc(var(--panel-width) + 8px);
   width: 200px;
-  max-height: calc(100vh - 110px);
+  max-height: calc(100vh - 142px);
   background: rgba(30, 30, 30, 0.75);
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 6px;
@@ -1920,14 +1998,7 @@ body.workspace-sketch .part-mode-only {
   100% { opacity: 0; }
 }
 
-/* --- Recording button --- */
-#btn-record.recording {
-  color: #e53935;
-  animation: record-pulse 1s ease-in-out infinite;
-}
-#btn-record.recording svg circle:last-child {
-  fill: #e53935;
-}
+/* --- Recording button pulse (defined in recording-bar section above) --- */
 @keyframes record-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }

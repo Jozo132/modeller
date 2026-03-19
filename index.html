@@ -100,11 +100,6 @@
       <button id="btn-revolve" title="Revolve" disabled><svg viewBox="0 0 20 20"><ellipse cx="10" cy="10" rx="7" ry="3" fill="none"/><path d="M3 10 Q3 6 10 6" fill="none" opacity="0.5"/><path d="M17 10 Q17 14 10 14" fill="none" opacity="0.5"/><line x1="2" y1="4" x2="2" y2="16" stroke-dasharray="2,2"/></svg></button>
       <button id="btn-extrude-cut" title="Extrude Cut" disabled><svg viewBox="0 0 20 20"><rect x="5" y="4" width="10" height="5" rx="0.5" fill="none"/><rect x="7" y="9" width="6" height="8" rx="0.5" fill="none"/><line x1="7" y1="9" x2="5" y2="9"/><line x1="13" y1="9" x2="15" y2="9"/><polyline points="8,18 10,20 12,18" fill="none"/></svg></button>
     </div>
-    <div class="toolbar-sep"></div>
-    <div class="tool-group" data-group="record">
-      <button id="btn-record" title="Start/Stop Recording"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="6" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="10" cy="10" r="3" fill="currentColor" stroke="none"/></svg></button>
-      <button id="btn-record-export" title="Export Recording" style="display:none"><svg viewBox="0 0 20 20"><polyline points="4,12 10,18 16,12" fill="none"/><line x1="10" y1="2" x2="10" y2="16" fill="none"/></svg></button>
-    </div>
   </div>
 
   <!-- Properties Panel (unified right sidebar) -->
@@ -276,6 +271,23 @@
     <span id="status-autocoincidence">AUTO</span>
     <span id="status-ortho">ORTHO</span>
     <span id="status-message"></span>
+  </div>
+
+  <!-- Recording / Playback Bar -->
+  <div id="recording-bar">
+    <button id="btn-record" class="rec-btn" title="Start/Stop Recording">⏺</button>
+    <button id="btn-record-export" class="rec-btn" title="Export Recording" style="display:none">⬇</button>
+    <button id="btn-record-open" class="rec-btn" title="Open Recording">📂</button>
+    <span class="rec-sep"></span>
+    <button id="btn-play-prev" class="rec-btn" title="Previous Step" disabled>◀</button>
+    <button id="btn-play-toggle" class="rec-btn" title="Play/Pause" disabled>▶</button>
+    <button id="btn-play-next" class="rec-btn" title="Next Step" disabled>▶|</button>
+    <button id="btn-play-stop" class="rec-btn" title="Stop Playback" disabled>⏹</button>
+    <input type="range" id="play-slider" min="0" max="0" value="0" disabled title="Playback position" />
+    <span id="play-step-label" class="rec-label">—</span>
+    <label class="rec-speed-label" title="Playback speed multiplier">Speed:
+      <input type="number" id="play-speed" value="1" min="0.1" max="10" step="0.1" />
+    </label>
   </div>
 
   <!-- Command Line -->

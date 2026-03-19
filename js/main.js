@@ -921,6 +921,10 @@ class App {
           world = this._screenToSketchWorld(sx, sy);
         }
         if (world && this.activeTool.onClick) {
+          // Record the click for interaction replay (captures drawing actions)
+          if (this.activeTool.name !== 'select') {
+            this._recorder.clickAt(world.x, world.y);
+          }
           this.activeTool.onClick(world.x, world.y, e);
         }
         movedSinceDown = false;
@@ -1493,8 +1497,10 @@ class App {
       if (args.length >= 4) {
         state.scene.addSegment(
           parseFloat(args[0]), parseFloat(args[1]),
-          parseFloat(args[2]), parseFloat(args[3])
+          parseFloat(args[2]), parseFloat(args[3]),
+          { merge: true }
         );
+        state.emit('change');
         this._scheduleRender();
       }
       return;
@@ -1505,10 +1511,11 @@ class App {
       if (args.length >= 4) {
         const x1 = parseFloat(args[0]), y1 = parseFloat(args[1]);
         const x2 = parseFloat(args[2]), y2 = parseFloat(args[3]);
-        state.scene.addSegment(x1, y1, x2, y1);
-        state.scene.addSegment(x2, y1, x2, y2);
-        state.scene.addSegment(x2, y2, x1, y2);
-        state.scene.addSegment(x1, y2, x1, y1);
+        state.scene.addSegment(x1, y1, x2, y1, { merge: true });
+        state.scene.addSegment(x2, y1, x2, y2, { merge: true });
+        state.scene.addSegment(x2, y2, x1, y2, { merge: true });
+        state.scene.addSegment(x1, y2, x1, y1, { merge: true });
+        state.emit('change');
         this._scheduleRender();
       }
       return;
@@ -1517,7 +1524,9 @@ class App {
     if (command === 'draw.circle') {
       // draw.circle <cx> <cy> <radius>
       if (args.length >= 3) {
-        state.scene.addCircle(parseFloat(args[0]), parseFloat(args[1]), parseFloat(args[2]));
+        state.scene.addCircle(parseFloat(args[0]), parseFloat(args[1]), parseFloat(args[2]),
+          { merge: true });
+        state.emit('change');
         this._scheduleRender();
       }
       return;
@@ -1528,8 +1537,10 @@ class App {
       if (args.length >= 5) {
         state.scene.addArc(
           parseFloat(args[0]), parseFloat(args[1]), parseFloat(args[2]),
-          parseFloat(args[3]), parseFloat(args[4])
+          parseFloat(args[3]), parseFloat(args[4]),
+          { merge: true }
         );
+        state.emit('change');
         this._scheduleRender();
       }
       return;
@@ -4181,21 +4192,142 @@ class App {
   _bindRecordingControls() {
     const btnRecord = document.getElementById('btn-record');
     const btnExport = document.getElementById('btn-record-export');
-    if (!btnRecord) return;
+    const btnOpen = document.getElementById('btn-record-open');
+    const btnPrev = document.getElementById('btn-play-prev');
+    const btnToggle = document.getElementById('btn-play-toggle');
+    const btnNext = document.getElementById('btn-play-next');
+    const btnStop = document.getElementById('btn-play-stop');
+    const slider = document.getElementById('play-slider');
+    const stepLabel = document.getElementById('play-step-label');
+    const speedInput = document.getElementById('play-speed');
 
-    btnRecord.addEventListener('click', () => {
-      if (this._recorder.recording) {
-        this._stopRecording();
+    // Playback state
+    this._playbackSteps = null;
+    this._playbackIndex = -1;
+    this._playbackTimer = null;
+    this._playbackPlaying = false;
+
+    const updatePlaybackUI = () => {
+      const hasRec = !!this._playbackSteps;
+      const count = hasRec ? this._playbackSteps.length : 0;
+      const idx = this._playbackIndex;
+
+      btnPrev.disabled = !hasRec || idx <= 0;
+      btnToggle.disabled = !hasRec;
+      btnNext.disabled = !hasRec || idx >= count - 1;
+      btnStop.disabled = !hasRec;
+      slider.disabled = !hasRec;
+      slider.max = Math.max(0, count - 1);
+      slider.value = Math.max(0, idx);
+
+      if (hasRec && idx >= 0) {
+        stepLabel.textContent = `${idx + 1} / ${count}`;
+      } else if (hasRec) {
+        stepLabel.textContent = `0 / ${count}`;
       } else {
-        this._startRecording();
+        stepLabel.textContent = '—';
       }
-    });
 
-    if (btnExport) {
-      btnExport.addEventListener('click', () => {
-        this._exportRecording();
+      btnToggle.textContent = this._playbackPlaying ? '⏸' : '▶';
+      btnToggle.title = this._playbackPlaying ? 'Pause' : 'Play';
+    };
+
+    // Record start/stop
+    if (btnRecord) {
+      btnRecord.addEventListener('click', () => {
+        if (this._recorder.recording) {
+          this._stopRecording();
+        } else {
+          this._startRecording();
+        }
       });
     }
+
+    // Export
+    if (btnExport) {
+      btnExport.addEventListener('click', () => this._exportRecording());
+    }
+
+    // Open recording (modal)
+    if (btnOpen) {
+      btnOpen.addEventListener('click', () => this._openRecordingModal());
+    }
+
+    // Playback step execution
+    const executeStep = (idx) => {
+      if (!this._playbackSteps || idx < 0 || idx >= this._playbackSteps.length) return;
+      const step = this._playbackSteps[idx];
+      const cmdInput = document.getElementById('cmd-input');
+      if (cmdInput) cmdInput.value = step.command;
+      this.setStatus(`▶ Step ${idx + 1}/${this._playbackSteps.length}: ${step.command}`);
+      try {
+        this._handleCommand(step.command);
+      } catch (err) {
+        warn(`Playback error at step ${idx}: ${step.command}`, err);
+      }
+      this._playbackIndex = idx;
+      updatePlaybackUI();
+    };
+
+    // Slider scrub
+    if (slider) {
+      slider.addEventListener('input', () => {
+        this._stopAutoplay();
+        const target = parseInt(slider.value, 10);
+        // Replay from beginning up to target for consistent state
+        this._replayUpTo(target);
+        updatePlaybackUI();
+      });
+    }
+
+    // Step prev
+    if (btnPrev) {
+      btnPrev.addEventListener('click', () => {
+        this._stopAutoplay();
+        if (this._playbackIndex > 0) {
+          this._replayUpTo(this._playbackIndex - 1);
+          updatePlaybackUI();
+        }
+      });
+    }
+
+    // Step next
+    if (btnNext) {
+      btnNext.addEventListener('click', () => {
+        this._stopAutoplay();
+        if (this._playbackSteps && this._playbackIndex < this._playbackSteps.length - 1) {
+          executeStep(this._playbackIndex + 1);
+        }
+      });
+    }
+
+    // Play/Pause toggle
+    if (btnToggle) {
+      btnToggle.addEventListener('click', () => {
+        if (this._playbackPlaying) {
+          this._stopAutoplay();
+        } else {
+          this._startAutoplay(executeStep, updatePlaybackUI);
+        }
+        updatePlaybackUI();
+      });
+    }
+
+    // Stop — reset
+    if (btnStop) {
+      btnStop.addEventListener('click', () => {
+        this._stopAutoplay();
+        this._playbackSteps = null;
+        this._playbackIndex = -1;
+        this.setStatus('Playback stopped.');
+        const cmdInput = document.getElementById('cmd-input');
+        if (cmdInput) cmdInput.value = '';
+        updatePlaybackUI();
+      });
+    }
+
+    this._updatePlaybackUI = updatePlaybackUI;
+    this._executePlaybackStep = executeStep;
 
     // Wire camera events from the 3D renderer to the recorder
     if (this._renderer3d) {
@@ -4213,9 +4345,158 @@ class App {
         }
       };
     }
+
+    updatePlaybackUI();
+  }
+
+  _startAutoplay(executeStep, updatePlaybackUI) {
+    if (!this._playbackSteps) return;
+    this._playbackPlaying = true;
+    const speed = parseFloat(document.getElementById('play-speed')?.value) || 1;
+
+    const advance = () => {
+      if (!this._playbackPlaying || !this._playbackSteps) return;
+      const nextIdx = this._playbackIndex + 1;
+      if (nextIdx >= this._playbackSteps.length) {
+        this._playbackPlaying = false;
+        this.setStatus('Playback complete.');
+        updatePlaybackUI();
+        return;
+      }
+      executeStep(nextIdx);
+
+      // Compute delay from timestamps if available
+      let delay = 300;
+      if (nextIdx + 1 < this._playbackSteps.length) {
+        const dt = this._playbackSteps[nextIdx + 1].ts - this._playbackSteps[nextIdx].ts;
+        delay = Math.max(50, dt / speed);
+      }
+      this._playbackTimer = setTimeout(advance, delay);
+    };
+
+    advance();
+  }
+
+  _stopAutoplay() {
+    this._playbackPlaying = false;
+    if (this._playbackTimer) {
+      clearTimeout(this._playbackTimer);
+      this._playbackTimer = null;
+    }
+  }
+
+  /** Replay all steps from 0..targetIdx to get consistent state */
+  _replayUpTo(targetIdx) {
+    if (!this._playbackSteps) return;
+    // Reset state by replaying from start
+    for (let i = 0; i <= targetIdx && i < this._playbackSteps.length; i++) {
+      try {
+        this._handleCommand(this._playbackSteps[i].command);
+      } catch (err) {
+        // Skip errors during bulk replay
+      }
+    }
+    this._playbackIndex = targetIdx;
+    const step = this._playbackSteps[targetIdx];
+    if (step) {
+      const cmdInput = document.getElementById('cmd-input');
+      if (cmdInput) cmdInput.value = step.command;
+      this.setStatus(`▶ Step ${targetIdx + 1}/${this._playbackSteps.length}: ${step.command}`);
+    }
+  }
+
+  /** Load a recording for playback */
+  _loadRecording(recording) {
+    this._stopAutoplay();
+    if (recording && recording.steps && recording.steps.length > 0) {
+      this._playbackSteps = recording.steps;
+      this._playbackIndex = -1;
+      this._lastRecordedSteps = recording.steps;
+      this.setStatus(`Recording loaded: ${recording.steps.length} step(s). Use playback controls.`);
+      info(`Recording loaded: ${recording.steps.length} steps`);
+    } else {
+      this.setStatus('Invalid recording data.');
+    }
+    if (this._updatePlaybackUI) this._updatePlaybackUI();
+  }
+
+  _openRecordingModal() {
+    const root = document.getElementById('app-modal-root');
+    if (!root) return;
+
+    root.innerHTML = `
+      <div class="app-modal-backdrop" data-dismiss></div>
+      <div class="app-modal" style="width:500px">
+        <div class="app-modal-header">Open Recording</div>
+        <div class="app-modal-body">
+          <div id="rec-drop-zone" style="border:2px dashed var(--border);border-radius:6px;padding:24px;text-align:center;color:var(--text-secondary);margin-bottom:12px;cursor:pointer">
+            Drop a recording JSON file here, or click to browse
+            <input type="file" id="rec-file-input" accept=".json" style="display:none" />
+          </div>
+          <div style="color:var(--text-secondary);font-size:12px;margin-bottom:6px">Or paste raw JSON:</div>
+          <textarea id="rec-json-input" rows="8" style="width:100%;background:var(--bg-dark);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;font-family:Consolas,monospace;font-size:12px;padding:8px;resize:vertical" placeholder='{ "version": 1, "steps": [...] }'></textarea>
+        </div>
+        <div class="app-modal-footer">
+          <button class="modal-btn" data-dismiss>Cancel</button>
+          <button class="modal-btn modal-btn-primary" id="rec-load-btn">Load</button>
+        </div>
+      </div>
+    `;
+    root.setAttribute('aria-hidden', 'false');
+
+    const dismiss = () => {
+      root.setAttribute('aria-hidden', 'true');
+      root.innerHTML = '';
+    };
+
+    root.querySelectorAll('[data-dismiss]').forEach(el => el.addEventListener('click', dismiss));
+
+    // File input
+    const dropZone = root.querySelector('#rec-drop-zone');
+    const fileInput = root.querySelector('#rec-file-input');
+    const jsonInput = root.querySelector('#rec-json-input');
+
+    dropZone.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', () => {
+      const file = fileInput.files[0];
+      if (file) {
+        const reader = new FileReader();
+        reader.onload = (ev) => { jsonInput.value = ev.target.result; };
+        reader.readAsText(file);
+      }
+    });
+
+    dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.style.borderColor = 'var(--accent)'; });
+    dropZone.addEventListener('dragleave', () => { dropZone.style.borderColor = 'var(--border)'; });
+    dropZone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropZone.style.borderColor = 'var(--border)';
+      const file = e.dataTransfer.files[0];
+      if (file) {
+        const reader = new FileReader();
+        reader.onload = (ev) => { jsonInput.value = ev.target.result; };
+        reader.readAsText(file);
+      }
+    });
+
+    // Load button
+    root.querySelector('#rec-load-btn').addEventListener('click', () => {
+      const text = jsonInput.value.trim();
+      if (!text) return;
+      try {
+        const data = JSON.parse(text);
+        this._loadRecording(data);
+        dismiss();
+      } catch (err) {
+        alert('Invalid JSON: ' + err.message);
+      }
+    });
   }
 
   _startRecording() {
+    this._stopAutoplay();
+    this._playbackSteps = null;
+    this._playbackIndex = -1;
     this._recorder.start();
     const btnRecord = document.getElementById('btn-record');
     const btnExport = document.getElementById('btn-record-export');
@@ -4230,6 +4511,7 @@ class App {
     }
     this.setStatus('Recording started — interact normally, then stop to export.');
     info('Interaction recording started');
+    if (this._updatePlaybackUI) this._updatePlaybackUI();
   }
 
   _stopRecording() {
@@ -4239,8 +4521,12 @@ class App {
     if (btnRecord) btnRecord.classList.remove('recording');
     if (btnExport) btnExport.style.display = '';
     this._lastRecordedSteps = steps;
-    this.setStatus(`Recording stopped — ${steps.length} action(s) captured.`);
+    // Auto-load for playback
+    this._playbackSteps = steps;
+    this._playbackIndex = -1;
+    this.setStatus(`Recording stopped — ${steps.length} action(s) captured. Use playback controls or export.`);
     info(`Interaction recording stopped: ${steps.length} steps`);
+    if (this._updatePlaybackUI) this._updatePlaybackUI();
   }
 
   _exportRecording() {
@@ -4257,34 +4543,20 @@ class App {
   }
 
   async _playbackRecording(stepDelay = 300) {
-    const steps = this._lastRecordedSteps;
-    if (!steps || steps.length === 0) {
-      this.setStatus('No recording to play back.');
-      return;
+    if (!this._playbackSteps || this._playbackSteps.length === 0) {
+      if (this._lastRecordedSteps) {
+        this._playbackSteps = this._lastRecordedSteps;
+        this._playbackIndex = -1;
+      } else {
+        this.setStatus('No recording to play back.');
+        return;
+      }
     }
-    const commands = steps.map(s => s.command);
-    const cmdInput = document.getElementById('cmd-input');
-    this.setStatus(`Playing back ${commands.length} action(s)…`);
-    info(`Playback started: ${commands.length} steps, ${stepDelay}ms delay`);
-
-    const engine = new PlaybackEngine(this, {
-      stepDelay,
-      onStep: (seq, cmd) => {
-        // Show current command in the input for visual feedback
-        if (cmdInput) cmdInput.value = cmd;
-        this.setStatus(`▶ Step ${seq + 1}/${commands.length}: ${cmd}`);
-      },
-      onComplete: () => {
-        if (cmdInput) cmdInput.value = '';
-        this.setStatus('Playback complete.');
-        info('Playback finished');
-      },
-      onError: (seq, cmd, err) => {
-        warn(`Playback error at step ${seq}: ${cmd}`, err);
-      },
-    });
-
-    await engine.run(commands);
+    if (this._updatePlaybackUI) this._updatePlaybackUI();
+    // Start autoplay via the playback controls
+    if (this._executePlaybackStep && this._updatePlaybackUI) {
+      this._startAutoplay(this._executePlaybackStep, this._updatePlaybackUI);
+    }
   }
 
   _bindPartToolEvents() {
