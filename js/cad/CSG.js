@@ -469,20 +469,22 @@ function assignCoplanarFaceGroups(faces) {
   for (const [, group] of planeGroups) {
     if (group.length <= 1) continue;
 
-    // Build edge → face adjacency for this plane group
-    const edgeFaces = new Map();
+    // Build vertex → face adjacency for this plane group.
+    // Using vertex adjacency (not just edge) ensures coplanar faces
+    // connected through T-junction vertices (sharing only a point,
+    // not a full edge) are still grouped together.
+    const vertexFaces = new Map();
     for (const fi of group) {
       const verts = faces[fi].vertices;
       for (let i = 0; i < verts.length; i++) {
-        const a = verts[i];
-        const b = verts[(i + 1) % verts.length];
-        const key = edgeKey(a, b);
-        if (!edgeFaces.has(key)) edgeFaces.set(key, []);
-        edgeFaces.get(key).push(fi);
+        const v = verts[i];
+        const key = `${v.x.toFixed(6)},${v.y.toFixed(6)},${v.z.toFixed(6)}`;
+        if (!vertexFaces.has(key)) vertexFaces.set(key, []);
+        vertexFaces.get(key).push(fi);
       }
     }
 
-    // Union-find to merge faces sharing an edge
+    // Union-find to merge faces sharing a vertex
     const parent = {};
     for (const fi of group) parent[fi] = fi;
     function find(x) {
@@ -494,9 +496,9 @@ function assignCoplanarFaceGroups(faces) {
       if (ra !== rb) parent[ra] = rb;
     }
 
-    for (const [, faceIds] of edgeFaces) {
-      if (faceIds.length === 2) {
-        unite(faceIds[0], faceIds[1]);
+    for (const [, faceIds] of vertexFaces) {
+      for (let i = 1; i < faceIds.length; i++) {
+        unite(faceIds[0], faceIds[i]);
       }
     }
 
