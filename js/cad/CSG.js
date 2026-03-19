@@ -358,8 +358,18 @@ class CSGSolid {
       for (const v of faceVerts) {
         vertices.push(v);
       }
+    }
 
-      // Track which normals are adjacent to each edge
+    // Group coplanar adjacent faces so they can be selected as one logical face.
+    // Unlike the old mergeCoplanarFaces(), this preserves the original convex
+    // polygons (so fan triangulation remains correct) and only assigns a shared
+    // faceGroup ID to coplanar neighbours.
+    assignCoplanarFaceGroups(faces);
+
+    // Build edge normal tracking
+    for (const face of faces) {
+      const faceVerts = face.vertices;
+      const normal = face.normal;
       for (let i = 0; i < faceVerts.length; i++) {
         const a = faceVerts[i];
         const b = faceVerts[(i + 1) % faceVerts.length];
@@ -398,6 +408,104 @@ class CSGSolid {
     }
 
     return { vertices, faces, edges };
+  }
+}
+
+// -----------------------------------------------------------------------
+// Coplanar face grouping
+// -----------------------------------------------------------------------
+
+/**
+ * Assign a faceGroup ID to coplanar adjacent faces so they can be selected
+ * as a single logical face.  Unlike the old mergeCoplanarFaces(), this
+ * preserves the original convex CSG polygons (so fan triangulation stays
+ * correct) and only annotates each face with a shared group number.
+ *
+ * Non-planar faces (cylindrical, freeform) and singletons get their own
+ * unique group ID (equal to their face index).
+ *
+ * @param {Array} faces - Array of face objects {vertices, normal, faceType, shared}
+ *                        Modified in-place: each face gets a `faceGroup` property.
+ */
+function assignCoplanarFaceGroups(faces) {
+  // Build a plane key for grouping: quantized normal + plane distance
+  function planeKey(normal, vertices) {
+    const n = Vec3.from(normal).unit();
+    // Ensure consistent normal direction (flip so largest component is positive)
+    let sign = 1;
+    if (Math.abs(n.z) > Math.abs(n.x) && Math.abs(n.z) > Math.abs(n.y)) {
+      sign = n.z < 0 ? -1 : 1;
+    } else if (Math.abs(n.y) > Math.abs(n.x)) {
+      sign = n.y < 0 ? -1 : 1;
+    } else {
+      sign = n.x < 0 ? -1 : 1;
+    }
+    const nx = (n.x * sign).toFixed(4);
+    const ny = (n.y * sign).toFixed(4);
+    const nz = (n.z * sign).toFixed(4);
+    const d = (Vec3.from(vertices[0]).dot(n) * sign).toFixed(4);
+    return `${nx},${ny},${nz}|${d}`;
+  }
+
+  // Default: every face is its own group
+  for (let fi = 0; fi < faces.length; fi++) {
+    faces[fi].faceGroup = fi;
+  }
+
+  // Group faces by their plane
+  const planeGroups = new Map();
+  for (let fi = 0; fi < faces.length; fi++) {
+    const face = faces[fi];
+    if (face.faceType && !face.faceType.startsWith('planar')) continue;
+    if (face.vertices.length < 3) continue;
+
+    const key = planeKey(face.normal, face.vertices);
+    if (!planeGroups.has(key)) {
+      planeGroups.set(key, []);
+    }
+    planeGroups.get(key).push(fi);
+  }
+
+  for (const [, group] of planeGroups) {
+    if (group.length <= 1) continue;
+
+    // Build vertex → face adjacency for this plane group.
+    // Using vertex adjacency (not just edge) ensures coplanar faces
+    // connected through T-junction vertices (sharing only a point,
+    // not a full edge) are still grouped together.
+    const vertexFaces = new Map();
+    for (const fi of group) {
+      const verts = faces[fi].vertices;
+      for (let i = 0; i < verts.length; i++) {
+        const v = verts[i];
+        const key = `${v.x.toFixed(6)},${v.y.toFixed(6)},${v.z.toFixed(6)}`;
+        if (!vertexFaces.has(key)) vertexFaces.set(key, []);
+        vertexFaces.get(key).push(fi);
+      }
+    }
+
+    // Union-find to merge faces sharing a vertex
+    const parent = {};
+    for (const fi of group) parent[fi] = fi;
+    function find(x) {
+      while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+      return x;
+    }
+    function unite(a, b) {
+      const ra = find(a), rb = find(b);
+      if (ra !== rb) parent[ra] = rb;
+    }
+
+    for (const [, faceIds] of vertexFaces) {
+      for (let i = 1; i < faceIds.length; i++) {
+        unite(faceIds[0], faceIds[i]);
+      }
+    }
+
+    // Assign the same faceGroup to all faces in each connected component
+    for (const fi of group) {
+      faces[fi].faceGroup = find(fi);
+    }
   }
 }
 

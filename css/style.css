@@ -122,13 +122,30 @@ html, body {
   color: #90EE90;
 }
 
+/* Sketch accent button - stands out in toolbar */
+#toolbar button.sketch-accent {
+  background: rgba(46, 204, 113, 0.18);
+  border-color: rgba(46, 204, 113, 0.5);
+  color: #2ecc71;
+}
+#toolbar button.sketch-accent:hover {
+  background: rgba(46, 204, 113, 0.3);
+  border-color: #2ecc71;
+  color: #2ecc71;
+}
+#toolbar button.sketch-accent.active {
+  background: #2ecc71;
+  border-color: #2ecc71;
+  color: #fff;
+}
+
 /* Properties Panel (unified right sidebar) */
 #properties-panel {
   position: fixed;
   top: 34px;
   right: 0;
   width: var(--panel-width);
-  bottom: 56px;
+  bottom: 88px;
   background: var(--bg-panel);
   border-left: 1px solid var(--border);
   overflow-y: auto;
@@ -269,7 +286,7 @@ html, body {
   top: 34px;
   left: 0;
   width: var(--panel-width);
-  bottom: 56px;
+  bottom: 88px;
   background: var(--bg-panel);
   border-right: 1px solid var(--border);
   padding: 10px;
@@ -535,7 +552,7 @@ html, body {
   top: 34px;
   left: var(--panel-width);
   right: var(--panel-width);
-  bottom: 56px;
+  bottom: 88px;
   background: var(--canvas-bg);
   cursor: crosshair;
   touch-action: none;
@@ -544,7 +561,7 @@ html, body {
 /* Status Bar */
 #status-bar {
   position: fixed;
-  bottom: 28px; left: 0; right: 0;
+  bottom: 60px; left: 0; right: 0;
   height: 28px;
   background: var(--bg-toolbar);
   border-top: 1px solid var(--border);
@@ -586,12 +603,6 @@ html, body {
 .tool-group[data-group="ops"] {
   transition: opacity 0.2s, pointer-events 0s;
 }
-body.mode-3d .tool-group[data-group="draw"],
-body.mode-3d .tool-group[data-group="edit"],
-body.mode-3d .tool-group[data-group="constrain"],
-body.mode-3d .tool-group[data-group="ops"] {
-  display: none;
-}
 #status-coords { font-family: 'Consolas', monospace; }
 #status-snap, #status-ortho {
   padding: 1px 6px;
@@ -613,6 +624,145 @@ body.mode-3d .tool-group[data-group="ops"] {
   flex: 1;
   text-align: right;
   color: var(--text-secondary);
+}
+
+/* Recording / Playback Bar */
+#recording-bar {
+  position: fixed;
+  bottom: 28px; left: 0; right: 0;
+  height: 32px;
+  background: var(--bg-toolbar);
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  gap: 4px;
+  z-index: 100;
+  user-select: none;
+}
+
+.rec-btn {
+  width: 26px; height: 26px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  line-height: 1;
+}
+.rec-btn:hover { background: rgba(255,255,255,0.08); }
+.rec-btn:disabled { opacity: 0.3; cursor: default; }
+.rec-btn:disabled:hover { background: transparent; }
+
+#btn-record.recording { color: #e53935; border-color: #e53935; animation: record-pulse 1s ease-in-out infinite; }
+
+.rec-sep {
+  width: 1px; height: 20px;
+  background: var(--border);
+  margin: 0 4px;
+}
+
+#play-slider {
+  flex: 1;
+  min-width: 80px;
+  height: 4px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+#play-slider:disabled { opacity: 0.3; cursor: default; }
+
+.rec-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  min-width: 60px;
+  text-align: center;
+  font-family: 'Consolas', monospace;
+}
+
+.rec-speed-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+#play-speed {
+  width: 42px;
+  background: var(--bg-dark);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  font-size: 11px;
+  text-align: center;
+  padding: 1px 2px;
+}
+
+.rec-preview {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 340px;
+  font-family: 'Consolas', monospace;
+  font-size: 11px;
+  color: var(--accent);
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 2px 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.rec-preview.active {
+  opacity: 1;
+}
+.rec-preview.flash {
+  animation: rec-flash 0.4s ease-out;
+}
+@keyframes rec-flash {
+  0% { background: rgba(33,150,243,0.3); }
+  100% { background: rgba(255,255,255,0.04); }
+}
+
+/* Playback position indicator */
+.playback-indicator {
+  position: fixed;
+  z-index: 200;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  transition: left 0.15s ease-out, top 0.15s ease-out;
+}
+.playback-indicator-dot {
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: rgba(255, 82, 82, 0.7);
+  border: 2px solid #fff;
+  box-shadow: 0 0 8px rgba(255, 82, 82, 0.6), 0 0 2px rgba(0,0,0,0.4);
+  animation: indicator-pulse 1.2s ease-in-out infinite;
+}
+.playback-indicator-label {
+  position: absolute;
+  top: 22px; left: 50%;
+  transform: translateX(-50%);
+  font-size: 10px;
+  font-family: 'Consolas', monospace;
+  color: #fff;
+  background: rgba(0,0,0,0.7);
+  padding: 1px 6px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+@keyframes indicator-pulse {
+  0%, 100% { transform: scale(1); opacity: 0.9; }
+  50% { transform: scale(1.3); opacity: 1; }
 }
 
 /* Command Line */
@@ -1063,7 +1213,7 @@ body.mode-3d .tool-group[data-group="ops"] {
     right: 0;
     left: 0;
     top: auto;
-    bottom: 56px;
+    bottom: 88px;
     height: 36vh;
     width: auto;
     border-left: none;
@@ -1073,20 +1223,20 @@ body.mode-3d .tool-group[data-group="ops"] {
   #cad-canvas {
     left: 0;
     right: 0;
-    bottom: calc(56px + 36vh);
+    bottom: calc(88px + 36vh);
   }
 
   #view-3d {
     left: 0;
     right: 0;
-    bottom: calc(56px + 36vh);
+    bottom: calc(88px + 36vh);
   }
 }
 
 /* ── Motion Analysis Panel ── */
 .motion-panel {
   position: fixed;
-  bottom: 56px;
+  bottom: 88px;
   left: var(--panel-width);
   right: var(--panel-width);
   background: var(--bg-panel);
@@ -1361,7 +1511,7 @@ body.mode-3d .tool-group[data-group="ops"] {
 
 /* Viewport adjusts when motion panel is open */
 body.motion-active #view-3d {
-  bottom: calc(56px + var(--motion-panel-h, 0px));
+  bottom: calc(88px + var(--motion-panel-h, 0px));
 }
 
 /* Unified 3D View - Full Screen */
@@ -1370,7 +1520,7 @@ body.motion-active #view-3d {
   top: 34px;
   left: var(--panel-width);
   right: var(--panel-width);
-  bottom: 56px;
+  bottom: 88px;
   background: #1e1e1e;
   z-index: 10;
   display: block;
@@ -1532,18 +1682,13 @@ body.motion-active #view-3d {
   margin-bottom: 6px;
 }
 
-/* 3D Mode Toggle Button */
-#btn-3d-mode {
-  margin-left: auto;
-}
-
 /* Node Tree Overlay — transparent panel in top-left of viewport */
 .node-tree {
   position: fixed;
   top: 42px;
   left: calc(var(--panel-width) + 8px);
   width: 200px;
-  max-height: calc(100vh - 110px);
+  max-height: calc(100vh - 142px);
   background: rgba(30, 30, 30, 0.75);
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 6px;
@@ -1672,6 +1817,26 @@ body.motion-active #view-3d {
   text-decoration: line-through;
 }
 
+.node-tree-folder-arrow {
+  flex-shrink: 0;
+  width: 12px;
+  text-align: center;
+  font-size: 10px;
+  cursor: pointer;
+  opacity: 0.6;
+  user-select: none;
+}
+
+.node-tree-folder-arrow:hover {
+  opacity: 1.0;
+}
+
+.node-tree-child-feature {
+  padding-left: 26px;
+  font-size: 11px;
+  opacity: 0.8;
+}
+
 /* ── Quick-Start Page ── */
 .quick-start-overlay {
   position: fixed;
@@ -1777,6 +1942,17 @@ body.workspace-part .part-mode-only {
   display: flex;
 }
 
+/* In Part workspace (not sketching): hide sketch-specific tool groups */
+body.workspace-part .tool-group[data-group="draw"],
+body.workspace-part .tool-group[data-group="constrain"],
+body.workspace-part .tool-group[data-group="ops"] {
+  display: none;
+}
+/* In Part workspace (not sketching): hide sketch-only edit buttons */
+body.workspace-part .sketch-tool-only {
+  display: none;
+}
+
 /* Part mode status indicator */
 .status-mode.part-mode {
   background: rgba(255, 152, 0, 0.25);
@@ -1784,20 +1960,15 @@ body.workspace-part .part-mode-only {
   border: 1px solid rgba(255, 152, 0, 0.4);
 }
 
-/* In Part workspace 3D mode, hide sketch-only tool groups */
-body.workspace-part.mode-3d .tool-group[data-group="draw"],
-body.workspace-part.mode-3d .tool-group[data-group="edit"],
-body.workspace-part.mode-3d .tool-group[data-group="constrain"],
-body.workspace-part.mode-3d .tool-group[data-group="ops"] {
-  display: none;
-}
-
-/* In Part workspace, only re-enable sketch tools during sketch-on-plane */
+/* In Part workspace, re-enable sketch tools during sketch-on-plane */
 body.workspace-part.sketch-on-plane .tool-group[data-group="draw"],
 body.workspace-part.sketch-on-plane .tool-group[data-group="edit"],
 body.workspace-part.sketch-on-plane .tool-group[data-group="constrain"],
 body.workspace-part.sketch-on-plane .tool-group[data-group="ops"] {
   display: flex !important;
+}
+body.workspace-part.sketch-on-plane .sketch-tool-only {
+  display: inline-flex !important;
 }
 
 /* In sketch-on-plane mode: hide Part-only tools and 3D group */
@@ -1805,12 +1976,6 @@ body.sketch-on-plane .part-mode-only {
   display: none !important;
 }
 body.sketch-on-plane .tool-group[data-group="part-tools"] {
-  display: none !important;
-}
-body.sketch-on-plane .tool-group[data-group="3d"] {
-  display: none !important;
-}
-body.sketch-on-plane .mode-3d-sep {
   display: none !important;
 }
 body.sketch-on-plane #node-tree {
@@ -1824,41 +1989,51 @@ body.sketch-on-plane #parameters-panel {
 /* ── Exit Sketch Button ── */
 .exit-sketch-btn {
   position: fixed;
-  top: 42px;
-  right: calc(var(--panel-width) + 12px);
-  z-index: 30;
+  bottom: 72px; /* status-bar(26px) + command-line(30px) + margin(16px) */
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 200;
   display: none;
   align-items: center;
-  gap: 6px;
-  padding: 8px 18px;
-  font-size: 14px;
-  font-weight: 600;
+  gap: 8px;
+  padding: 10px 28px;
+  font-size: 15px;
+  font-weight: 700;
   color: #fff;
-  background: rgba(0, 122, 204, 0.85);
-  border: 1px solid rgba(0, 122, 204, 0.9);
-  border-radius: 6px;
+  background: rgba(220, 60, 60, 0.9);
+  border: 2px solid rgba(240, 80, 80, 0.95);
+  border-radius: 8px;
   cursor: pointer;
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
-  transition: background 0.15s, box-shadow 0.15s;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  transition: background 0.15s, box-shadow 0.15s, transform 0.15s;
+  letter-spacing: 0.3px;
+  animation: exit-sketch-pulse 2s ease-in-out infinite;
 }
 .exit-sketch-btn:hover {
-  background: rgba(0, 150, 240, 0.95);
-  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.45);
+  background: rgba(240, 70, 70, 1);
+  box-shadow: 0 6px 20px rgba(220, 60, 60, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.12);
+  transform: translateX(-50%) scale(1.04);
+}
+.exit-sketch-btn:active {
+  transform: translateX(-50%) scale(0.98);
 }
 .exit-sketch-btn svg {
   flex-shrink: 0;
 }
+@keyframes exit-sketch-pulse {
+  0%, 100% { box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.08); }
+  50% { box-shadow: 0 4px 16px rgba(220, 60, 60, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.08); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .exit-sketch-btn {
+    animation: none;
+  }
+}
 
-/* In Sketch workspace, hide Part-only tools (3D group and part-tools) */
+/* In Sketch workspace, hide Part-only tools */
 body.workspace-sketch .part-mode-only {
-  display: none;
-}
-body.workspace-sketch .tool-group[data-group="3d"] {
-  display: none;
-}
-body.workspace-sketch .mode-3d-sep {
   display: none;
 }
 
@@ -1882,4 +2057,10 @@ body.workspace-sketch .mode-3d-sep {
   10% { opacity: 1; transform: translateY(0); }
   80% { opacity: 1; }
   100% { opacity: 0; }
+}
+
+/* --- Recording button pulse (defined in recording-bar section above) --- */
+@keyframes record-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
 }

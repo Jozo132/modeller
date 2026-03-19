@@ -87,6 +87,9 @@ export class WasmRenderer {
     this._lastMouseY = 0;
     this._ortho3D = false; // orthographic projection in 3D mode
 
+    // Callback for camera change events (used by interaction recorder)
+    this.onCameraInteraction = null; // (type: 'orbit_start'|'pan_start'|'orbit_end'|'zoom', state) => void
+
     // Bind 3D mouse controls
     this._bind3DControls();
 
@@ -186,10 +189,12 @@ export class WasmRenderer {
         e.preventDefault();
         this._isDragging = true;
         this._isPanning3D = false;
+        if (this.onCameraInteraction) this.onCameraInteraction('orbit_start', this.getOrbitState());
       } else if (e.button === 2) {
         e.preventDefault();
         this._isPanning3D = true;
         this._isDragging = false;
+        if (this.onCameraInteraction) this.onCameraInteraction('pan_start', this.getOrbitState());
       }
       this._lastMouseX = e.clientX;
       this._lastMouseY = e.clientY;
@@ -231,8 +236,10 @@ export class WasmRenderer {
     });
 
     canvas.addEventListener('mouseup', () => {
+      const wasDragging = this._isDragging || this._isPanning3D;
       this._isDragging = false;
       this._isPanning3D = false;
+      if (wasDragging && this.onCameraInteraction) this.onCameraInteraction('orbit_end', this.getOrbitState());
     });
 
     canvas.addEventListener('mouseleave', () => {
@@ -247,6 +254,7 @@ export class WasmRenderer {
       this._orbitRadius *= factor;
       this._orbitRadius = Math.max(10, Math.min(5000, this._orbitRadius));
       this._orbitDirty = true;
+      if (this.onCameraInteraction) this.onCameraInteraction('zoom', this.getOrbitState());
     }, { passive: false });
   }
 
@@ -323,6 +331,33 @@ export class WasmRenderer {
   }
 
   /**
+   * Project a 3D world-space point to screen pixel coordinates.
+   * @param {number} wx - World X
+   * @param {number} wy - World Y
+   * @param {number} wz - World Z
+   * @returns {{x:number, y:number}|null} Screen pixel position or null
+   */
+  worldToScreen(wx, wy, wz) {
+    const mvp = this._computeMVP();
+    if (!mvp) return null;
+    const clip = this._mat4TransformVec4(mvp, wx, wy, wz, 1);
+    if (Math.abs(clip.w) < 1e-10) return null;
+    const ndcX = clip.x / clip.w;
+    const ndcY = clip.y / clip.w;
+    const w = this._cssWidth || this.container.clientWidth;
+    const h = this._cssHeight || this.container.clientHeight;
+    return {
+      x: (ndcX * 0.5 + 0.5) * w,
+      y: (1 - (ndcY * 0.5 + 0.5)) * h,
+    };
+  }
+
+  /** Returns true if there is an active sketch plane definition set. */
+  hasSketchPlane() {
+    return !!this._sketchPlaneDef;
+  }
+
+  /**
    * Orient the orbit camera perpendicular to the given plane.
    * @param {'XY'|'XZ'|'YZ'} plane - The reference plane
    */
@@ -375,6 +410,33 @@ export class WasmRenderer {
       this._orbitTarget = { x: center.x, y: center.y, z: center.z };
     }
 
+    this._orbitDirty = true;
+    this._applyOrbitCamera();
+  }
+
+  /**
+   * Save the current orbit camera state so it can be restored later.
+   * @returns {{theta: number, phi: number, radius: number, target: {x:number,y:number,z:number}}}
+   */
+  saveOrbitState() {
+    return {
+      theta: this._orbitTheta,
+      phi: this._orbitPhi,
+      radius: this._orbitRadius,
+      target: { ...this._orbitTarget },
+    };
+  }
+
+  /**
+   * Restore a previously saved orbit camera state.
+   * @param {{theta: number, phi: number, radius: number, target: {x:number,y:number,z:number}}} state
+   */
+  restoreOrbitState(state) {
+    if (!state) return;
+    this._orbitTheta = state.theta;
+    this._orbitPhi = state.phi;
+    this._orbitRadius = state.radius;
+    this._orbitTarget = { ...state.target };
     this._orbitDirty = true;
     this._applyOrbitCamera();
   }
@@ -467,6 +529,26 @@ export class WasmRenderer {
     return this._selectedFaceIndex;
   }
 
+  /** Return the current 3D orbit camera state for persistence. */
+  getOrbitState() {
+    return {
+      theta: this._orbitTheta,
+      phi: this._orbitPhi,
+      radius: this._orbitRadius,
+      target: { ...this._orbitTarget },
+    };
+  }
+
+  /** Restore 3D orbit camera state from a previously saved object. */
+  setOrbitState(s) {
+    if (!s) return;
+    if (s.theta != null) this._orbitTheta = s.theta;
+    if (s.phi != null) this._orbitPhi = s.phi;
+    if (s.radius != null) this._orbitRadius = s.radius;
+    if (s.target) this._orbitTarget = { x: s.target.x || 0, y: s.target.y || 0, z: s.target.z || 0 };
+    this._orbitDirty = true;
+  }
+
   /**
    * Pick an origin plane by raycasting from screen coordinates.
    * Tests the XY, XZ, YZ planes (5×5 unit squares at origin) and returns
@@ -530,7 +612,7 @@ export class WasmRenderer {
       if (Math.abs(hit[p.uAxis]) <= planeSize && Math.abs(hit[p.vAxis]) <= planeSize) {
         if (t < closestT) {
           closestT = t;
-          closestPlane = p.name;
+          closestPlane = { name: p.name, point: hit };
         }
       }
     }
@@ -562,6 +644,15 @@ export class WasmRenderer {
     else if (planeName === 'XZ') mask = 2;
     else if (planeName === 'YZ') mask = 4;
     this.wasm.setOriginPlaneSelected(mask);
+  }
+
+  /**
+   * Set the selected feature ID for highlighting in the 3D view.
+   * When a sketch is selected, its wireframes are highlighted.
+   * @param {string|null} featureId - Feature ID or null to clear selection
+   */
+  setSelectedFeature(featureId) {
+    this._selectedFeatureId = featureId || null;
   }
 
   /**
@@ -849,6 +940,19 @@ export class WasmRenderer {
       );
     } else if (wasm.resetEntityModelMatrix) {
       wasm.resetEntityModelMatrix();
+    }
+
+    // Build active sketch wireframe data for re-rendering on top of mesh overlay.
+    // When sketching on a face, WASM draws 2D entities first, then the mesh overlay
+    // covers them. We capture the wireframe here so _renderMeshOverlay can re-draw
+    // the sketch entities on top with depth test disabled.
+    // Include preview entities (lines being drawn but not yet committed) so they
+    // are also visible on top of the mesh during interactive drawing.
+    if (this.mode === '3d' && pd && this._sketchPlane) {
+      this._buildActiveSceneWireframes(scene, pd, overlays.previewEntities);
+    } else {
+      this._activeSceneEdges = null;
+      this._activeSceneEdgeVertexCount = 0;
     }
 
     const isLayerVisible = overlays.isLayerVisible || (() => true);
@@ -1448,9 +1552,11 @@ export class WasmRenderer {
     // Store face metadata for selection
     this._meshFaces = faces.map((face, idx) => ({
       index: idx,
+      faceGroup: face.faceGroup != null ? face.faceGroup : idx,
       faceType: face.faceType || 'unknown',
       normal: face.normal || { x: 0, y: 0, z: 1 },
       shared: face.shared || null,
+      vertices: face.vertices || [],
       vertexCount: face.vertices.length,
     }));
 
@@ -1549,6 +1655,129 @@ export class WasmRenderer {
   }
 
   /**
+   * Build wireframe data from the active editing scene (2D entities) for re-rendering
+   * on top of the mesh overlay. This captures segments, circles, and arcs from the
+   * current scene and transforms them to world coordinates using the sketch plane.
+   * @param {Object} scene - The 2D scene with entities
+   * @param {Object} plane - Sketch plane definition with origin, xAxis, yAxis
+   */
+  _buildActiveSceneWireframes(scene, plane, previewEntities = []) {
+    const lines = [];
+    const toWorld = (px, py) => ({
+      x: plane.origin.x + px * plane.xAxis.x + py * plane.yAxis.x,
+      y: plane.origin.y + px * plane.xAxis.y + py * plane.yAxis.y,
+      z: plane.origin.z + px * plane.xAxis.z + py * plane.yAxis.z,
+    });
+
+    if (scene.segments) {
+      for (const seg of scene.segments) {
+        if (!seg.visible || !seg.p1 || !seg.p2) continue;
+        const a = toWorld(seg.p1.x, seg.p1.y);
+        const b = toWorld(seg.p2.x, seg.p2.y);
+        lines.push(a.x, a.y, a.z, b.x, b.y, b.z);
+      }
+    }
+
+    if (scene.circles) {
+      for (const circle of scene.circles) {
+        if (!circle.visible || !circle.center) continue;
+        const numSegs = 32;
+        for (let i = 0; i < numSegs; i++) {
+          const a1 = (i / numSegs) * Math.PI * 2;
+          const a2 = ((i + 1) / numSegs) * Math.PI * 2;
+          const p1 = toWorld(
+            circle.center.x + Math.cos(a1) * circle.radius,
+            circle.center.y + Math.sin(a1) * circle.radius
+          );
+          const p2 = toWorld(
+            circle.center.x + Math.cos(a2) * circle.radius,
+            circle.center.y + Math.sin(a2) * circle.radius
+          );
+          lines.push(p1.x, p1.y, p1.z, p2.x, p2.y, p2.z);
+        }
+      }
+    }
+
+    if (scene.arcs) {
+      for (const arc of scene.arcs) {
+        if (!arc.visible || !arc.center) continue;
+        const numSegs = 16;
+        let startA = arc.startAngle || 0;
+        let endA = arc.endAngle || Math.PI;
+        let sweep = endA - startA;
+        if (sweep < 0) sweep += Math.PI * 2;
+        for (let i = 0; i < numSegs; i++) {
+          const a1 = startA + (i / numSegs) * sweep;
+          const a2 = startA + ((i + 1) / numSegs) * sweep;
+          const p1 = toWorld(
+            arc.center.x + Math.cos(a1) * arc.radius,
+            arc.center.y + Math.sin(a1) * arc.radius
+          );
+          const p2 = toWorld(
+            arc.center.x + Math.cos(a2) * arc.radius,
+            arc.center.y + Math.sin(a2) * arc.radius
+          );
+          lines.push(p1.x, p1.y, p1.z, p2.x, p2.y, p2.z);
+        }
+      }
+    }
+
+    // Include preview entities (lines being drawn interactively but not yet committed)
+    if (previewEntities && previewEntities.length > 0) {
+      for (const entity of previewEntities) {
+        if (!entity) continue;
+        if (entity.type === 'segment' && entity.p1 && entity.p2) {
+          const a = toWorld(entity.p1.x, entity.p1.y);
+          const b = toWorld(entity.p2.x, entity.p2.y);
+          lines.push(a.x, a.y, a.z, b.x, b.y, b.z);
+        } else if (entity.type === 'circle' && entity.center) {
+          const numSegs = 32;
+          for (let i = 0; i < numSegs; i++) {
+            const a1 = (i / numSegs) * Math.PI * 2;
+            const a2 = ((i + 1) / numSegs) * Math.PI * 2;
+            const p1 = toWorld(
+              entity.center.x + Math.cos(a1) * entity.radius,
+              entity.center.y + Math.sin(a1) * entity.radius
+            );
+            const p2 = toWorld(
+              entity.center.x + Math.cos(a2) * entity.radius,
+              entity.center.y + Math.sin(a2) * entity.radius
+            );
+            lines.push(p1.x, p1.y, p1.z, p2.x, p2.y, p2.z);
+          }
+        } else if (entity.type === 'arc' && entity.center) {
+          const numSegs = 16;
+          let startA = entity.startAngle || 0;
+          let endA = entity.endAngle || Math.PI;
+          let sweep = endA - startA;
+          if (sweep < 0) sweep += Math.PI * 2;
+          for (let i = 0; i < numSegs; i++) {
+            const a1 = startA + (i / numSegs) * sweep;
+            const a2 = startA + ((i + 1) / numSegs) * sweep;
+            const p1 = toWorld(
+              entity.center.x + Math.cos(a1) * entity.radius,
+              entity.center.y + Math.sin(a1) * entity.radius
+            );
+            const p2 = toWorld(
+              entity.center.x + Math.cos(a2) * entity.radius,
+              entity.center.y + Math.sin(a2) * entity.radius
+            );
+            lines.push(p1.x, p1.y, p1.z, p2.x, p2.y, p2.z);
+          }
+        }
+      }
+    }
+
+    if (lines.length > 0) {
+      this._activeSceneEdges = new Float32Array(lines);
+      this._activeSceneEdgeVertexCount = lines.length / 3;
+    } else {
+      this._activeSceneEdges = null;
+      this._activeSceneEdgeVertexCount = 0;
+    }
+  }
+
+  /**
    * Build wireframe data for sketch features so they are visible in 3D Part mode.
    * Transforms 2D sketch primitives to 3D world coordinates using their plane definitions.
    * Supports active sketch highlighting: active sketch uses normal colors, others use grey.
@@ -1559,30 +1788,44 @@ export class WasmRenderer {
     this._sketchEdgeVertexCount = 0;
     this._sketchInactiveEdges = null;
     this._sketchInactiveEdgeVertexCount = 0;
+    this._sketchSelectedEdges = null;
+    this._sketchSelectedEdgeVertexCount = 0;
 
     const sketches = part.getSketches();
     if (!sketches || sketches.length === 0) return;
 
     const activeSketchId = part.getActiveSketchId ? part.getActiveSketchId() : null;
+    const selectedId = this._selectedFeatureId || null;
     const activeLines = [];
     const inactiveLines = [];
+    const selectedLines = [];
 
     for (const sketchFeature of sketches) {
       if (sketchFeature.suppressed) continue;
-      // Skip sketches that are hidden (linked as child of a feature) unless they're selected/active
-      if (!sketchFeature.visible && sketchFeature.id !== activeSketchId) continue;
+
+      const isActive = sketchFeature.id === activeSketchId;
+      const isSelected = sketchFeature.id === selectedId;
+
+      // Show sketch wireframes if: visible, active, or selected in the tree
+      if (!sketchFeature.visible && !isActive && !isSelected) continue;
 
       const sketch = sketchFeature.sketch;
       const plane = sketchFeature.plane;
       if (!sketch || !plane) continue;
 
-      const isActive = sketchFeature.id === activeSketchId;
-      const lines = isActive ? activeLines : inactiveLines;
+      const lines = isSelected ? selectedLines : (isActive ? activeLines : inactiveLines);
+
+      // Compute plane normal for z-offset (prevents z-fighting with face geometry).
+      // Offset wireframes slightly along the normal so they render on top of the face.
+      const nx = plane.normal ? plane.normal.x : (plane.xAxis.y * plane.yAxis.z - plane.xAxis.z * plane.yAxis.y);
+      const ny = plane.normal ? plane.normal.y : (plane.xAxis.z * plane.yAxis.x - plane.xAxis.x * plane.yAxis.z);
+      const nz = plane.normal ? plane.normal.z : (plane.xAxis.x * plane.yAxis.y - plane.xAxis.y * plane.yAxis.x);
+      const SKETCH_WIRE_OFFSET = 0.01;
 
       const toWorld = (px, py) => ({
-        x: plane.origin.x + px * plane.xAxis.x + py * plane.yAxis.x,
-        y: plane.origin.y + px * plane.xAxis.y + py * plane.yAxis.y,
-        z: plane.origin.z + px * plane.xAxis.z + py * plane.yAxis.z,
+        x: plane.origin.x + px * plane.xAxis.x + py * plane.yAxis.x + nx * SKETCH_WIRE_OFFSET,
+        y: plane.origin.y + px * plane.xAxis.y + py * plane.yAxis.y + ny * SKETCH_WIRE_OFFSET,
+        z: plane.origin.z + px * plane.xAxis.z + py * plane.yAxis.z + nz * SKETCH_WIRE_OFFSET,
       });
 
       // Segments
@@ -1651,6 +1894,11 @@ export class WasmRenderer {
       this._sketchInactiveEdges = new Float32Array(inactiveLines);
       this._sketchInactiveEdgeVertexCount = inactiveLines.length / 3;
     }
+
+    if (selectedLines.length > 0) {
+      this._sketchSelectedEdges = new Float32Array(selectedLines);
+      this._sketchSelectedEdgeVertexCount = selectedLines.length / 3;
+    }
   }
 
   /**
@@ -1662,7 +1910,9 @@ export class WasmRenderer {
     const hasMesh = this._meshTriangles && this._meshTriangleCount > 0;
     const hasSketchEdges = this._sketchEdges && this._sketchEdgeVertexCount > 0;
     const hasInactiveEdges = this._sketchInactiveEdges && this._sketchInactiveEdgeVertexCount > 0;
-    if (!hasMesh && !hasSketchEdges && !hasInactiveEdges) return;
+    const hasSelectedEdges = this._sketchSelectedEdges && this._sketchSelectedEdgeVertexCount > 0;
+    const hasActiveScene = this._activeSceneEdges && this._activeSceneEdgeVertexCount > 0;
+    if (!hasMesh && !hasSketchEdges && !hasInactiveEdges && !hasSelectedEdges && !hasActiveScene) return;
 
     // Compute the same MVP as the WASM camera
     const mvp = this._computeMVP();
@@ -1691,13 +1941,19 @@ export class WasmRenderer {
 
       gl.disable(gl.POLYGON_OFFSET_FILL);
 
-      // Draw selected face highlight
+      // Draw selected face highlight (highlights entire face group)
       if (this._selectedFaceIndex >= 0 && this._meshFaces && this._triFaceMap) {
-        // Build highlight triangles for the selected face
+        // Find the faceGroup of the selected face
+        const selMeta = this._meshFaces[this._selectedFaceIndex];
+        const selGroup = selMeta ? selMeta.faceGroup : this._selectedFaceIndex;
+        // Build highlight triangles for all faces in the same group
         const highlightVerts = [];
         const triCount = this._meshTriangleCount / 3;
         for (let ti = 0; ti < triCount; ti++) {
-          if (this._triFaceMap[ti] === this._selectedFaceIndex) {
+          const faceIdx = this._triFaceMap[ti];
+          const faceMeta = this._meshFaces[faceIdx];
+          const group = faceMeta ? faceMeta.faceGroup : faceIdx;
+          if (group === selGroup) {
             const base = ti * 3 * 6;
             for (let vi = 0; vi < 3; vi++) {
               const vbase = base + vi * 6;
@@ -1747,7 +2003,12 @@ export class WasmRenderer {
     }
 
     // Draw sketch wireframes (visible sketch primitives in 3D)
+    // Wireframe vertices are offset slightly along the sketch plane normal to prevent
+    // z-fighting. Keep depth test enabled so sketches are properly occluded when
+    // viewed from behind the face they lie on.
     if (hasSketchEdges) {
+      gl.enable(gl.DEPTH_TEST);
+      gl.depthFunc(gl.LEQUAL);
       gl.disable(gl.CULL_FACE);
       gl.useProgram(exec.programs[1]);
       gl.uniformMatrix4fv(exec.uniforms[1].uMVP, false, mvp);
@@ -1763,6 +2024,8 @@ export class WasmRenderer {
 
     // Draw inactive sketch wireframes in grey (non-active sketches when editing one)
     if (hasInactiveEdges) {
+      gl.enable(gl.DEPTH_TEST);
+      gl.depthFunc(gl.LEQUAL);
       gl.disable(gl.CULL_FACE);
       gl.useProgram(exec.programs[1]);
       gl.uniformMatrix4fv(exec.uniforms[1].uMVP, false, mvp);
@@ -1776,6 +2039,48 @@ export class WasmRenderer {
       gl.bindVertexArray(null);
     }
 
+    // Draw selected sketch wireframes in highlight color (when sketch selected in tree)
+    if (hasSelectedEdges) {
+      gl.enable(gl.DEPTH_TEST);
+      gl.depthFunc(gl.LEQUAL);
+      gl.disable(gl.CULL_FACE);
+      gl.useProgram(exec.programs[1]);
+      gl.uniformMatrix4fv(exec.uniforms[1].uMVP, false, mvp);
+      gl.uniform4f(exec.uniforms[1].uColor, 0.2, 0.6, 1.0, 1.0); // bright blue highlight
+      gl.lineWidth(1.0);
+
+      gl.bindVertexArray(exec.vaoLine);
+      gl.bindBuffer(gl.ARRAY_BUFFER, exec.vbo);
+      gl.bufferData(gl.ARRAY_BUFFER, this._sketchSelectedEdges, gl.DYNAMIC_DRAW);
+      gl.drawArrays(gl.LINES, 0, this._sketchSelectedEdgeVertexCount);
+      gl.bindVertexArray(null);
+    }
+
+    // Draw active scene wireframes on top of mesh (for sketch-on-face editing mode)
+    // These are the live 2D entities being drawn/edited. The WASM render pass draws
+    // them first, but the mesh overlay covers them. Re-render here with depth test
+    // disabled so they always appear on top of the solid face.
+    if (hasActiveScene) {
+      gl.disable(gl.DEPTH_TEST);
+      gl.disable(gl.CULL_FACE);
+      gl.useProgram(exec.programs[1]);
+      gl.uniformMatrix4fv(exec.uniforms[1].uMVP, false, mvp);
+      gl.uniform4f(exec.uniforms[1].uColor, 0.612, 0.863, 0.996, 1.0); // #9CDCFE sketch color
+      gl.lineWidth(1.0);
+
+      gl.bindVertexArray(exec.vaoLine);
+      gl.bindBuffer(gl.ARRAY_BUFFER, exec.vbo);
+      gl.bufferData(gl.ARRAY_BUFFER, this._activeSceneEdges, gl.DYNAMIC_DRAW);
+      gl.drawArrays(gl.LINES, 0, this._activeSceneEdgeVertexCount);
+      gl.bindVertexArray(null);
+      gl.enable(gl.DEPTH_TEST);
+    }
+
+    // Restore WebGL state expected by the WASM executor on the next frame
+    // (origin planes depend on blending for transparency).
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.depthFunc(gl.LESS);
     gl.disable(gl.CULL_FACE);
   }
 
@@ -1907,6 +2212,10 @@ export class WasmRenderer {
     this._sketchEdgeVertexCount = 0;
     this._sketchInactiveEdges = null;
     this._sketchInactiveEdgeVertexCount = 0;
+    this._sketchSelectedEdges = null;
+    this._sketchSelectedEdgeVertexCount = 0;
+    this._activeSceneEdges = null;
+    this._activeSceneEdgeVertexCount = 0;
     this._selectedFaceIndex = -1;
   }
 

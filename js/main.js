@@ -10,7 +10,7 @@ import { undo, redo, takeSnapshot, setPartManager } from './history.js';
 import { downloadDXF } from './dxf/export.js';
 import { openDXFFile } from './dxf/import.js';
 import { debug, info, warn, error } from './logger.js';
-import { loadProject, debouncedSave, clearSavedProject, setViewport } from './persist.js';
+import { loadProject, debouncedSave, clearSavedProject, setViewport, setPartManagerForPersist, setRendererForPersist, setWorkspaceModeGetter } from './persist.js';
 import { showConfirm, showPrompt, showDimensionInput } from './ui/popup.js';
 import { showContextMenu, closeContextMenu, isContextMenuOpen } from './ui/contextMenu.js';
 import {
@@ -30,17 +30,22 @@ import {
   ParallelTool, PerpendicularTool, DistanceConstraintTool,
   LockTool, EqualTool, TangentTool, AngleTool,
 } from './tools/index.js';
+import { InteractionRecorder, PlaybackEngine } from './interaction-recorder.js';
 
 class App {
   constructor() {
     info('App initialization started');
     this._renderer3d = null;
-    this._workspaceMode = null; // 'sketch' | 'part' | null (quick-start)
+    this._workspaceMode = null; // 'part' | null (quick-start)
     this._sketchingOnPlane = false; // true when in sketch-on-plane mode inside Part workspace
     this._activeSketchPlane = null; // plane reference for current sketch
     this._selectedPlane = null; // currently selected plane in Part mode ('XY', 'XZ', 'YZ', or null)
     this._hoveredPlane = null;  // currently hovered plane in 3D viewport
     this._selectedFace = null; // currently selected 3D face in Part mode
+    this._savedOrbitState = null; // saved camera state before entering sketch mode
+    this._expandedFolders = new Set(); // track expanded feature tree folders
+    this._editingSketchFeatureId = null; // ID of sketch being edited (null = creating new)
+    this._recorder = new InteractionRecorder(); // interaction recorder for workflow debugging
     
     // Initialize unified 3D renderer
     const view3dContainer = document.getElementById('view-3d');
@@ -102,7 +107,7 @@ class App {
     this._lpSelectedConstraintId = null; // constraint selected in left panel
 
     // 3D Part management
-    this._3dMode = false;
+    this._3dMode = true; // Always in unified 3D+sketch mode
     this._partManager = new PartManager();
     setPartManager(this._partManager);
     this._featurePanel = null;
@@ -122,15 +127,35 @@ class App {
     this._bindPartToolEvents();
     this._bindPlaneSelectionEvents();
     this._bindExitSketchButton();
+    this._bindRecordingControls();
 
-    // Register viewport for persistence and restore saved project
+    // Register viewport, part manager, renderer, and workspace mode for persistence
     setViewport(this.viewport);
+    setPartManagerForPersist(this._partManager);
+    setRendererForPersist(this._renderer3d);
+    setWorkspaceModeGetter(() => this._workspaceMode);
+
     const loaded = loadProject();
-    if (loaded.ok) {
+    if (loaded && loaded.ok) {
       this._rebuildLayersPanel();
       this._rebuildLeftPanel();
       if (!loaded.hasViewport && state.entities.length > 0) {
         this.viewport.fitEntities(state.entities);
+      }
+
+      // Restore Part state if saved
+      if (loaded.part && loaded.workspaceMode === 'part') {
+        this._partManager.deserialize(loaded.part);
+        this._enterWorkspace('part');
+        // Restore orbit camera
+        if (loaded.orbit && this._renderer3d) {
+          this._renderer3d.setOrbitState(loaded.orbit);
+        }
+        this._update3DView();
+        this._updateNodeTree();
+        this._scheduleRender();
+        info('App initialization completed (restored Part workspace)');
+        return;
       }
     }
 
@@ -156,21 +181,9 @@ class App {
 
       this._syncViewportSize();
       try {
-        if (this._sketchingOnPlane) {
-          // Sketching on a plane in 3D: render both mesh and sketch entities
-          this._renderer3d.render2DScene(state.scene, {
-            sceneVersion: this._sceneVersion,
-            hoverEntity: this.renderer.hoverEntity,
-            previewEntities: this.renderer.previewEntities,
-            snapPoint: this.renderer.snapPoint,
-            cursorWorld: this.renderer.cursorWorld,
-            isLayerVisible: (layer) => state.isLayerVisible(layer),
-            getLayerColor: (layer) => state.getLayerColor(layer),
-            allDimensionsVisible: state.allDimensionsVisible,
-            constraintIconsVisible: state.constraintIconsVisible,
-          });
-        } else if (!this._3dMode) {
-          this._renderer3d.sync2DView(this.viewport);
+        // Unified rendering: always render both 2D sketch entities and 3D part geometry together
+        if (this._sketchingOnPlane || state.entities.length > 0) {
+          // Render 2D sketch content overlaid on 3D
           this._renderer3d.render2DScene(state.scene, {
             sceneVersion: this._sceneVersion,
             hoverEntity: this.renderer.hoverEntity,
@@ -183,9 +196,7 @@ class App {
             constraintIconsVisible: state.constraintIconsVisible,
           });
         } else {
-          // Pure 3D mode (no sketching): clear the overlay canvas so
-          // stale 2D overlays (axes, dimensions, constraint icons) don't
-          // persist from a previous sketch session.
+          // No sketch entities: clear stale 2D overlays
           this._renderer3d.clearOverlay();
         }
       } catch (err) {
@@ -264,7 +275,8 @@ class App {
 
   /**
    * Pointer processing for sketch-on-plane in 3D mode.
-   * Uses rayToPlane instead of 2D viewport screenToWorld.
+   * Uses rayToPlane instead of 2D viewport screenToWorld, with full
+   * snap, freehand, and ortho constraint support matching 2D behaviour.
    */
   _scheduleSketchPointerProcessing() {
     if (this._pointerFramePending || !this._lastPointer) return;
@@ -273,18 +285,43 @@ class App {
       this._pointerFramePending = false;
       if (!this._lastPointer) return;
       const { sx, sy, ctrlKey } = this._lastPointer;
+      const t0 = performance.now();
 
-      const world = this._screenToSketchWorld(sx, sy);
+      let world, snap;
+      const sketchVP = this._getSketchViewport();
+      if (this.activeTool.freehand) {
+        world = this._screenToSketchWorld(sx, sy);
+        snap = null;
+      } else if (sketchVP) {
+        const basePoint = this.activeTool._startX !== undefined && this.activeTool.step > 0
+          ? { x: this.activeTool._startX, y: this.activeTool._startY }
+          : null;
+        const result = getSnappedPosition(
+          sx, sy, sketchVP, basePoint,
+          { ignoreGridSnap: !!ctrlKey }
+        );
+        world = result.world;
+        snap = result.snap;
+      } else {
+        world = this._screenToSketchWorld(sx, sy);
+        snap = null;
+      }
       if (!world) return;
 
       this.renderer.cursorWorld = world;
-      this.renderer.snapPoint = null; // TODO: snap support in 3D sketch mode
+      this.renderer.snapPoint = snap;
 
+      const display = snap || world;
       document.getElementById('status-coords').textContent =
-        `X: ${world.x.toFixed(2)}  Y: ${world.y.toFixed(2)}`;
+        `X: ${display.x.toFixed(2)}  Y: ${display.y.toFixed(2)}`;
 
       this.activeTool.onMouseMove(world.x, world.y, sx, sy);
       this._updateLeftPanelHighlights();
+
+      const dt = performance.now() - t0;
+      if (dt > 12) {
+        warn('Sketch pointer processing frame is slow', { ms: dt.toFixed(2), tool: this.activeTool.name });
+      }
       this._scheduleRender();
     });
   }
@@ -465,14 +502,18 @@ class App {
   setActiveTool(name) {
     // Block tool changes during motion playback (except select)
     if (motionAnalysis.isRunning && name !== 'select') return;
-    // Block drawing/editing tools in 3D view mode (only select allowed)
-    // but allow them during sketch-on-plane mode in Part workspace
-    if (this._3dMode && !this._sketchingOnPlane && name !== 'select') return;
+    // Block drawing/editing tools when not in sketch-on-plane mode
+    // (user must enter a sketch on a plane first to use drawing tools)
+    if (this._workspaceMode === 'part' && !this._sketchingOnPlane && name !== 'select') {
+      this.setStatus('Enter a sketch on a plane first to use drawing tools.');
+      return;
+    }
     if (this.activeTool) this.activeTool.deactivate();
     this.activeTool = this.tools[name] || this.tools.select;
     this.activeTool.activate();
     state.setTool(name);
     info('Tool changed', name);
+    this._recorder.toolActivated(name);
     this._updateToolbarHighlight(name);
     this._scheduleRender();
   }
@@ -726,6 +767,23 @@ class App {
     return this.viewport.screenToWorld(sx, sy);
   }
 
+  /**
+   * Create a viewport adapter for the snap system when sketching on a plane
+   * in 3D mode. This bridges the 3D renderer's rayToPlane/sketchToScreen
+   * with the 2D snap infrastructure so that grid snap, entity snap, origin
+   * snap and ortho constraints work seamlessly during 3D sketch operations.
+   * @returns {{screenToWorld: Function, worldToScreen: Function}|null}
+   */
+  _getSketchViewport() {
+    if (!this._sketchingOnPlane || !this._activeSketchPlaneDef || !this._renderer3d) return null;
+    const renderer = this._renderer3d;
+    const planeDef = this._activeSketchPlaneDef;
+    return {
+      screenToWorld: (sx, sy) => renderer.rayToPlane(sx, sy, planeDef),
+      worldToScreen: (wx, wy) => renderer.sketchToScreen(wx, wy),
+    };
+  }
+
   _bind3DCanvasEvents() {
     const canvas = this._renderer3d.renderer?.domElement;
     if (!canvas) return;
@@ -740,35 +798,6 @@ class App {
       movedSinceDown = false;
       mouseDown = true;
 
-      if (!this._3dMode) {
-        // 2D sketch interaction
-        if (e.button === 2) {
-          // Right button = pan
-          e.preventDefault();
-          this.viewport.startPan(sx, sy);
-          return;
-        }
-        if (e.button === 0 && this.activeTool.onMouseDown) {
-          let wx, wy;
-          if (this.activeTool.freehand) {
-            const raw = this.viewport.screenToWorld(sx, sy);
-            wx = raw.x; wy = raw.y;
-          } else {
-            const basePoint = this.activeTool._startX !== undefined
-              ? { x: this.activeTool._startX, y: this.activeTool._startY }
-              : null;
-            const { world } = getSnappedPosition(
-              sx, sy, this.viewport,
-              this.activeTool.step > 0 ? basePoint : null,
-              { ignoreGridSnap: !!e.ctrlKey }
-            );
-            wx = world.x; wy = world.y;
-          }
-          this.activeTool.onMouseDown(wx, wy, sx, sy, e);
-        }
-        return;
-      }
-
       // Middle button = orbit, Right button = pan (handled by WasmRenderer controls)
       if (e.button === 1 || e.button === 2) {
         return; // Let WASM renderer controls handle
@@ -776,9 +805,30 @@ class App {
 
       if (e.button === 0 && this.activeTool.onMouseDown) {
         if (this._sketchingOnPlane) {
-          // Raycast to sketch plane for 2D coords
-          const world = this._screenToSketchWorld(sx, sy);
-          if (world) this.activeTool.onMouseDown(world.x, world.y, sx, sy, e);
+          let wx, wy;
+          if (this.activeTool.freehand) {
+            const raw = this._screenToSketchWorld(sx, sy);
+            if (!raw) return;
+            wx = raw.x; wy = raw.y;
+          } else {
+            const sketchVP = this._getSketchViewport();
+            if (sketchVP) {
+              const basePoint = this.activeTool._startX !== undefined && this.activeTool.step > 0
+                ? { x: this.activeTool._startX, y: this.activeTool._startY }
+                : null;
+              const { world } = getSnappedPosition(
+                sx, sy, sketchVP, basePoint,
+                { ignoreGridSnap: !!e.ctrlKey }
+              );
+              if (!world) return;
+              wx = world.x; wy = world.y;
+            } else {
+              const raw = this._screenToSketchWorld(sx, sy);
+              if (!raw) return;
+              wx = raw.x; wy = raw.y;
+            }
+          }
+          this.activeTool.onMouseDown(wx, wy, sx, sy, e);
         } else {
           const world = this._renderer3d.screenToWorld(sx, sy);
           this.activeTool.onMouseDown(world.x, world.y, sx, sy, e);
@@ -793,20 +843,6 @@ class App {
       const sy = e.clientY - rect.top;
       if (mouseDown) movedSinceDown = true;
 
-      if (!this._3dMode) {
-        if (this.viewport.isPanning) {
-          this.viewport.updatePan(sx, sy);
-          // Update cursor world position so the crosshair tracks the mouse during pan
-          const world = this.viewport.screenToWorld(sx, sy);
-          this.renderer.cursorWorld = world;
-          this._scheduleRender();
-          return;
-        }
-        this._lastPointer = { sx, sy, ctrlKey: e.ctrlKey };
-        this._schedulePointerProcessing();
-        return;
-      }
-
       if (this._sketchingOnPlane) {
         // Sketching on plane in 3D: process pointer for sketch tools
         this._lastPointer = { sx, sy, ctrlKey: e.ctrlKey };
@@ -817,7 +853,8 @@ class App {
 
       // Plane hover highlight in Part mode 3D view
       if (this._workspaceMode === 'part' && this._renderer3d) {
-        const hitPlane = this._renderer3d.pickPlane(e.clientX, e.clientY);
+        const hitPlaneResult = this._renderer3d.pickPlane(e.clientX, e.clientY);
+        const hitPlane = hitPlaneResult ? hitPlaneResult.name : null;
         if (hitPlane !== this._hoveredPlane) {
           this._hoveredPlane = hitPlane;
           this._renderer3d.setHoveredPlane(hitPlane);
@@ -837,21 +874,6 @@ class App {
       const sx = e.clientX - rect.left;
       const sy = e.clientY - rect.top;
       mouseDown = false;
-
-      if (!this._3dMode) {
-        if (e.button === 2) {
-          // Right button = end pan
-          this.viewport.endPan();
-          debouncedSave();
-          return;
-        }
-        const world = this.viewport.screenToWorld(sx, sy);
-        if (this.activeTool.onMouseUp) {
-          this.activeTool.onMouseUp(world.x, world.y, e);
-        }
-        this._scheduleRender();
-        return;
-      }
 
       if (e.button === 1 || e.button === 2) {
         debouncedSave();
@@ -873,35 +895,6 @@ class App {
 
     // Click
     canvas.addEventListener('click', (e) => {
-      if (!this._3dMode) {
-        if (this.viewport.isPanning) return;
-        if (movedSinceDown && this.activeTool.name === 'select') {
-          movedSinceDown = false;
-          return;
-        }
-        const rect = canvas.getBoundingClientRect();
-        const sx = e.clientX - rect.left;
-        const sy = e.clientY - rect.top;
-
-        const basePoint = this.activeTool._startX !== undefined && this.activeTool.step > 0
-          ? { x: this.activeTool._startX, y: this.activeTool._startY }
-          : null;
-        const { world } = getSnappedPosition(
-          sx,
-          sy,
-          this.viewport,
-          basePoint,
-          { ignoreGridSnap: !!e.ctrlKey }
-        );
-
-        if (this.activeTool.name === 'select' && this.activeTool._isDragging) return;
-
-        this.activeTool.onClick(world.x, world.y, e);
-        movedSinceDown = false;
-        this._scheduleRender();
-        return;
-      }
-
       if (movedSinceDown && this.activeTool.name === 'select') {
         movedSinceDown = false;
         return;
@@ -912,9 +905,25 @@ class App {
       const sy = e.clientY - rect.top;
 
       if (this._sketchingOnPlane) {
-        // Sketching on plane in 3D: raycast to plane for click coords
-        const world = this._screenToSketchWorld(sx, sy);
+        if (this.activeTool.name === 'select' && this.activeTool._isDragging) return;
+        // Sketching on plane in 3D: raycast to plane with snap support
+        const sketchVP = this._getSketchViewport();
+        let world;
+        if (sketchVP) {
+          const basePoint = this.activeTool._startX !== undefined && this.activeTool.step > 0
+            ? { x: this.activeTool._startX, y: this.activeTool._startY }
+            : null;
+          const result = getSnappedPosition(
+            sx, sy, sketchVP, basePoint,
+            { ignoreGridSnap: !!e.ctrlKey }
+          );
+          world = result.world;
+        } else {
+          world = this._screenToSketchWorld(sx, sy);
+        }
         if (world && this.activeTool.onClick) {
+          // Record every click in model space for interaction replay
+          this._recorder.clickAt(world.x, world.y);
           this.activeTool.onClick(world.x, world.y, e);
         }
         movedSinceDown = false;
@@ -935,25 +944,32 @@ class App {
           this._renderer3d.setSelectedPlane(null);
           this.setStatus(`Selected face ${hit.faceIndex} (normal: ${hit.face.normal.x.toFixed(2)}, ${hit.face.normal.y.toFixed(2)}, ${hit.face.normal.z.toFixed(2)})`);
           info(`Face selected: ${hit.faceIndex}`);
+          this._recorder.faceSelected(hit.faceIndex, hit.face.faceGroup, hit.face.normal, hit.face.shared && hit.face.shared.sourceFeatureId, hit.point);
         } else {
           this._selectedFace = null;
           this._renderer3d.selectFace(-1);
 
           // Try plane picking
-          const hitPlane = this._renderer3d.pickPlane(e.clientX, e.clientY);
-          if (hitPlane) {
-            if (this._selectedPlane === hitPlane) {
+          const hitPlaneResult = this._renderer3d.pickPlane(e.clientX, e.clientY);
+          const clickPoint3D = hitPlaneResult ? hitPlaneResult.point : null;
+
+          // Record deselect with best-available 3D position
+          this._recorder.faceDeselected(clickPoint3D);
+
+          if (hitPlaneResult) {
+            if (this._selectedPlane === hitPlaneResult.name) {
               this._selectedPlane = null; // toggle off
             } else {
-              this._selectedPlane = hitPlane;
+              this._selectedPlane = hitPlaneResult.name;
             }
           } else {
             this._selectedPlane = null;
           }
           this._renderer3d.setSelectedPlane(this._selectedPlane);
-          if (this._selectedPlane) {
+          if (this._selectedPlane && hitPlaneResult) {
             this.setStatus(`Selected ${this._selectedPlane} plane`);
             info(`Plane selected in 3D: ${this._selectedPlane}`);
+            this._recorder.planeSelected(this._selectedPlane, hitPlaneResult.point);
           }
         }
         this._updateNodeTree();
@@ -969,32 +985,6 @@ class App {
 
     // Double click
     canvas.addEventListener('dblclick', (e) => {
-      if (!this._3dMode) {
-        const rect = canvas.getBoundingClientRect();
-        const sx = e.clientX - rect.left;
-        const sy = e.clientY - rect.top;
-        const world = this.viewport.screenToWorld(sx, sy);
-        const tol = 12 / this.viewport.zoom;
-
-        let closestDim = null;
-        let closestDist = Infinity;
-        for (const dim of state.scene.dimensions) {
-          if (!dim.visible) continue;
-          const d = dim.distanceTo(world.x, world.y);
-          if (d < tol && d < closestDist) {
-            closestDist = d;
-            closestDim = dim;
-          }
-        }
-
-        if (closestDim) {
-          e.preventDefault();
-          e.stopPropagation();
-          this._editDimensionConstraint(closestDim, { x: sx, y: sy });
-        }
-        return;
-      }
-
       const rect = canvas.getBoundingClientRect();
       const sx = e.clientX - rect.left;
       const sy = e.clientY - rect.top;
@@ -1040,55 +1030,65 @@ class App {
     });
 
     // Wheel for zooming (trigger render)
+    // WasmRenderer handles orbit zoom via its own wheel handler
     canvas.addEventListener('wheel', (e) => {
-      if (!this._3dMode) {
-        e.preventDefault();
-        const rect = canvas.getBoundingClientRect();
-        const sx = e.clientX - rect.left;
-        const sy = e.clientY - rect.top;
-        const factor = e.deltaY > 0 ? 0.9 : 1.1;
-        this.viewport.zoomAt(sx, sy, factor);
-        debouncedSave();
-        this._scheduleRender();
-        return;
-      }
-      // In 3D mode, WasmRenderer handles orbit zoom via its own wheel handler
       e.preventDefault();
       this._scheduleRender();
     }, { passive: false });
 
+    // Touch events for sketch-on-plane interaction
     canvas.addEventListener('touchstart', (e) => {
-      if (this._3dMode) return;
+      if (!this._sketchingOnPlane) return;
       if (e.touches.length !== 1) return;
       e.preventDefault();
       const rect = canvas.getBoundingClientRect();
       const touch = e.touches[0];
       const sx = touch.clientX - rect.left;
       const sy = touch.clientY - rect.top;
-      const basePoint = this.activeTool._startX !== undefined && this.activeTool.step > 0
-        ? { x: this.activeTool._startX, y: this.activeTool._startY }
-        : null;
-      const { world } = getSnappedPosition(sx, sy, this.viewport, basePoint);
-      this.activeTool.onClick(world.x, world.y, e);
+      const sketchVP = this._getSketchViewport();
+      let world;
+      if (sketchVP) {
+        const basePoint = this.activeTool._startX !== undefined && this.activeTool.step > 0
+          ? { x: this.activeTool._startX, y: this.activeTool._startY }
+          : null;
+        const result = getSnappedPosition(sx, sy, sketchVP, basePoint);
+        world = result.world;
+      } else {
+        world = this._screenToSketchWorld(sx, sy);
+      }
+      if (world && this.activeTool.onClick) {
+        this.activeTool.onClick(world.x, world.y, e);
+      }
       this._scheduleRender();
     }, { passive: false });
 
     canvas.addEventListener('touchmove', (e) => {
-      if (this._3dMode) return;
+      if (!this._sketchingOnPlane) return;
       if (e.touches.length !== 1) return;
       e.preventDefault();
       const rect = canvas.getBoundingClientRect();
       const touch = e.touches[0];
       const sx = touch.clientX - rect.left;
       const sy = touch.clientY - rect.top;
-      const basePoint = this.activeTool._startX !== undefined && this.activeTool.step > 0
-        ? { x: this.activeTool._startX, y: this.activeTool._startY }
-        : null;
-      const { world, snap } = getSnappedPosition(sx, sy, this.viewport, basePoint);
-      this.renderer.cursorWorld = world;
-      this.renderer.snapPoint = snap;
-      this.activeTool.onMouseMove(world.x, world.y, sx, sy);
-      this._scheduleRender();
+      const sketchVP = this._getSketchViewport();
+      let world, snap;
+      if (sketchVP) {
+        const basePoint = this.activeTool._startX !== undefined && this.activeTool.step > 0
+          ? { x: this.activeTool._startX, y: this.activeTool._startY }
+          : null;
+        const result = getSnappedPosition(sx, sy, sketchVP, basePoint);
+        world = result.world;
+        snap = result.snap;
+      } else {
+        world = this._screenToSketchWorld(sx, sy);
+        snap = null;
+      }
+      if (world) {
+        this.renderer.cursorWorld = world;
+        this.renderer.snapPoint = snap;
+        this.activeTool.onMouseMove(world.x, world.y, sx, sy);
+        this._scheduleRender();
+      }
     }, { passive: false });
   }
 
@@ -1262,6 +1262,23 @@ class App {
           this.activeTool.onCancel();
           if (this.activeTool.name !== 'select') this.setActiveTool('select');
           state.clearSelection();
+          // Deselect plane, face, and feature in 3D view
+          if (this._selectedPlane) {
+            this._selectedPlane = null;
+            if (this._renderer3d) this._renderer3d.setSelectedPlane(null);
+          }
+          if (this._selectedFace) {
+            this._selectedFace = null;
+            if (this._renderer3d) this._renderer3d.selectFace(-1);
+          }
+          if (this._featurePanel && this._featurePanel.selectedFeatureId) {
+            this._featurePanel.selectFeature(null);
+          }
+          if (this._renderer3d) {
+            this._renderer3d.setSelectedFeature(null);
+          }
+          this._updateNodeTree();
+          this._update3DView();
           this._scheduleRender();
           break;
         case 'Delete':
@@ -1313,12 +1330,6 @@ class App {
           }
           this._scheduleRender();
           break;
-        case '2':
-          if (this._3dMode) this._toggle3DMode();
-          break;
-        case '3':
-          if (!this._3dMode) this._toggle3DMode();
-          break;
         case 'q': case 'Q': {
           // If primitives are selected, toggle their construction flag
           const sel = state.selectedEntities.filter(e => e.type === 'segment' || e.type === 'circle' || e.type === 'arc');
@@ -1341,8 +1352,233 @@ class App {
   // --- Command line ---
   _handleCommand(cmd) {
     if (!cmd) return;
-    const parts = cmd.toLowerCase().split(/\s+/);
-    const command = parts[0];
+    // Lowercase first token for matching; preserve case in arguments for replay fidelity
+    const raw = cmd.trim().split(/\s+/);
+    const command = raw[0].toLowerCase();
+    const args = raw.slice(1);
+
+    // ---- Dotted navigation / interaction commands (from recorder) ----
+
+    if (command === 'camera.set') {
+      // camera.set <theta> <phi> <radius> <tx> <ty> <tz>
+      if (args.length >= 6 && this._renderer3d) {
+        this._renderer3d.setOrbitState({
+          theta: parseFloat(args[0]),
+          phi: parseFloat(args[1]),
+          radius: parseFloat(args[2]),
+          target: { x: parseFloat(args[3]), y: parseFloat(args[4]), z: parseFloat(args[5]) },
+        });
+        this._scheduleRender();
+      }
+      return;
+    }
+
+    if (command === 'workspace') {
+      // workspace part
+      if (args[0]) this._enterWorkspace(args[0]);
+      return;
+    }
+
+    if (command === 'tool') {
+      // tool <name>
+      if (args[0]) this.setActiveTool(args[0]);
+      return;
+    }
+
+    if (command === 'select.face') {
+      // select.face <faceIndex> [faceGroup] [nx ny nz] [sourceFeatureId]
+      if (args.length >= 1 && this._renderer3d) {
+        const faceIndex = parseInt(args[0], 10);
+        const faceMeta = this._renderer3d.getFaceInfo(faceIndex);
+        if (faceMeta) {
+          this._selectedFace = { faceIndex, face: faceMeta };
+          this._renderer3d.selectFace(faceIndex);
+          this._selectedPlane = null;
+          this._renderer3d.setSelectedPlane(null);
+        }
+        this._updateNodeTree();
+        this._updateOperationButtons();
+      }
+      return;
+    }
+
+    if (command === 'deselect.face') {
+      this._selectedFace = null;
+      if (this._renderer3d) this._renderer3d.selectFace(-1);
+      this._updateNodeTree();
+      this._updateOperationButtons();
+      return;
+    }
+
+    if (command === 'select.plane') {
+      // select.plane XY|XZ|YZ
+      if (args[0]) {
+        this._selectedPlane = args[0].toUpperCase();
+        if (this._renderer3d) this._renderer3d.setSelectedPlane(this._selectedPlane);
+        this._selectedFace = null;
+        if (this._renderer3d) this._renderer3d.selectFace(-1);
+        this._updateNodeTree();
+        this._updateOperationButtons();
+      }
+      return;
+    }
+
+    if (command === 'select.feature') {
+      // select.feature <featureId>
+      if (args[0]) {
+        const featureId = args[0];
+        if (this._featurePanel) this._featurePanel.selectFeature(featureId);
+        if (this._renderer3d) this._renderer3d.setSelectedFeature(featureId);
+        this._updateNodeTree();
+        this._update3DView();
+        this._scheduleRender();
+      }
+      return;
+    }
+
+    if (command === 'sketch.start') {
+      // sketch.start XY|XZ|YZ  OR  sketch.start FACE ox oy oz nx ny nz xax xay xaz yax yay yaz
+      if (args[0] && args[0].toUpperCase() === 'FACE' && args.length >= 13) {
+        const planeDef = {
+          origin: { x: parseFloat(args[1]), y: parseFloat(args[2]), z: parseFloat(args[3]) },
+          normal: { x: parseFloat(args[4]), y: parseFloat(args[5]), z: parseFloat(args[6]) },
+          xAxis: { x: parseFloat(args[7]), y: parseFloat(args[8]), z: parseFloat(args[9]) },
+          yAxis: { x: parseFloat(args[10]), y: parseFloat(args[11]), z: parseFloat(args[12]) },
+        };
+        this._startSketchOnFaceWithPlane(planeDef);
+      } else if (args[0]) {
+        this._startSketchOnPlane(args[0].toUpperCase());
+      }
+      return;
+    }
+
+    if (command === 'sketch.finish') {
+      this._finishSketchOnPlane();
+      return;
+    }
+
+    if (command === 'sketch.edit') {
+      // sketch.edit <featureId>
+      if (args[0]) {
+        const part = this._partManager.getPart();
+        if (part) {
+          const feature = part.getFeature(args[0]);
+          if (feature && feature.type === 'sketch') {
+            this._editExistingSketch(feature);
+          }
+        }
+      }
+      return;
+    }
+
+    if (command === 'sketch.from-face') {
+      // sketch.from-face <faceIndex> — handled by extrude auto-creation flow
+      return;
+    }
+
+    if (command === 'extrude') {
+      // extrude <distance> [cut]
+      if (args.length >= 1) {
+        const dist = parseFloat(args[0]);
+        const isCut = args[1] === 'cut';
+        this._executeExtrude(dist, isCut);
+      }
+      return;
+    }
+
+    if (command === 'revolve') {
+      // revolve <angleDeg>
+      if (args.length >= 1) {
+        const angle = parseFloat(args[0]);
+        this._executeRevolve(angle);
+      }
+      return;
+    }
+
+    if (command === 'draw.line') {
+      // draw.line <x1> <y1> <x2> <y2>
+      // merge: true enables auto-coincidence so shared endpoints form proper constraints
+      if (args.length >= 4) {
+        state.scene.addSegment(
+          parseFloat(args[0]), parseFloat(args[1]),
+          parseFloat(args[2]), parseFloat(args[3]),
+          { merge: true }
+        );
+        state.emit('change');
+        this._scheduleRender();
+      }
+      return;
+    }
+
+    if (command === 'draw.rect') {
+      // draw.rect <x1> <y1> <x2> <y2>
+      if (args.length >= 4) {
+        const x1 = parseFloat(args[0]), y1 = parseFloat(args[1]);
+        const x2 = parseFloat(args[2]), y2 = parseFloat(args[3]);
+        state.scene.addSegment(x1, y1, x2, y1, { merge: true });
+        state.scene.addSegment(x2, y1, x2, y2, { merge: true });
+        state.scene.addSegment(x2, y2, x1, y2, { merge: true });
+        state.scene.addSegment(x1, y2, x1, y1, { merge: true });
+        state.emit('change');
+        this._scheduleRender();
+      }
+      return;
+    }
+
+    if (command === 'draw.circle') {
+      // draw.circle <cx> <cy> <radius>
+      if (args.length >= 3) {
+        state.scene.addCircle(parseFloat(args[0]), parseFloat(args[1]), parseFloat(args[2]),
+          { merge: true });
+        state.emit('change');
+        this._scheduleRender();
+      }
+      return;
+    }
+
+    if (command === 'draw.arc') {
+      // draw.arc <cx> <cy> <radius> <startAngle> <endAngle>
+      if (args.length >= 5) {
+        state.scene.addArc(
+          parseFloat(args[0]), parseFloat(args[1]), parseFloat(args[2]),
+          parseFloat(args[3]), parseFloat(args[4]),
+          { merge: true }
+        );
+        state.emit('change');
+        this._scheduleRender();
+      }
+      return;
+    }
+
+    if (command === 'click') {
+      // click <x> <y> — simulate a tool click at world coordinates
+      if (args.length >= 2 && this.activeTool && this.activeTool.onClick) {
+        const x = parseFloat(args[0]), y = parseFloat(args[1]);
+        this.activeTool.onClick(x, y, {});
+        this._scheduleRender();
+      }
+      return;
+    }
+
+    if (command === 'setting') {
+      // setting <name> <value>
+      if (args[0] === 'grid') { state.gridVisible = args[1] !== 'false'; }
+      else if (args[0] === 'snap') { state.snapEnabled = args[1] !== 'false'; }
+      else if (args[0] === 'ortho') { state.orthoEnabled = args[1] !== 'false'; }
+      this._scheduleRender();
+      return;
+    }
+
+    if (command === 'record.start') { this._startRecording(); return; }
+    if (command === 'record.stop') { this._stopRecording(); return; }
+    if (command === 'record.export') { this._exportRecording(); return; }
+    if (command === 'record.play') {
+      const speed = args[0] ? parseInt(args[0], 10) : 300;
+      this._playbackRecording(speed);
+      return;
+    }
+
+    // ---- Legacy tool / action commands (case-insensitive) ----
 
     switch (command) {
       case 'line': case 'l': this.setActiveTool('line'); break;
@@ -1383,8 +1619,8 @@ class App {
         this._scheduleRender();
         break;
       case 'grid':
-        if (parts[1]) {
-          const size = parseFloat(parts[1]);
+        if (args[0]) {
+          const size = parseFloat(args[0]);
           if (size > 0) state.gridSize = size;
         } else {
           state.gridVisible = !state.gridVisible;
@@ -1405,6 +1641,70 @@ class App {
       default:
         this.setStatus(`Unknown command: ${command}`);
     }
+  }
+
+  // --- Extrude/Revolve helpers for command execution (no prompts) ---
+
+  _executeExtrude(distance, isCut = false) {
+    if (!this._lastSketchFeatureId) return;
+    const absDistance = Math.abs(distance);
+    if (absDistance === 0) return;
+    const feature = this._partManager.extrude(this._lastSketchFeatureId, absDistance);
+    if (feature && isCut) {
+      feature.direction = -1;
+      feature.operation = 'subtract';
+    }
+    if (this._featurePanel) this._featurePanel.update();
+    this._updateNodeTree();
+    this._update3DView();
+    this._updateOperationButtons();
+    this._scheduleRender();
+  }
+
+  _executeRevolve(angleDeg) {
+    if (!this._lastSketchFeatureId) return;
+    const radians = (angleDeg * Math.PI) / 180;
+    const feature = this._partManager.revolve(this._lastSketchFeatureId, radians);
+    if (this._featurePanel) this._featurePanel.update();
+    this._updateNodeTree();
+    this._update3DView();
+    this._updateOperationButtons();
+    this._scheduleRender();
+  }
+
+  /** Start sketch on face using an explicit plane definition (for command replay). */
+  _startSketchOnFaceWithPlane(planeDef) {
+    if (this._workspaceMode !== 'part') return;
+
+    state.scene.clear();
+    state.selectedEntities = [];
+    this._sketchingOnPlane = true;
+    this._activeSketchPlane = 'FACE';
+    this._activeSketchPlaneDef = planeDef;
+    this._3dMode = true;
+
+    document.body.classList.add('sketch-on-plane');
+    const exitBtn = document.getElementById('btn-exit-sketch');
+    if (exitBtn) exitBtn.style.display = 'flex';
+
+    if (this._renderer3d) {
+      this._savedOrbitState = this._renderer3d.saveOrbitState();
+      this._renderer3d.setMode('3d');
+      this._renderer3d.setVisible(true);
+      this._renderer3d._sketchPlane = 'FACE';
+      this._renderer3d._sketchPlaneDef = planeDef;
+    }
+
+    this._selectedPlane = null;
+    if (this._renderer3d) this._renderer3d.setSelectedPlane(null);
+
+    const modeIndicator = document.getElementById('status-mode');
+    modeIndicator.textContent = 'SKETCH ON FACE';
+    modeIndicator.className = 'status-mode sketch-mode';
+    this.setActiveTool('select');
+    this.setStatus('Sketching on face plane. Draw your profile, then Exit Sketch.');
+    info('Entered sketch-on-face mode (command)');
+    this._scheduleRender();
   }
 
   // --- Resize ---
@@ -3271,16 +3571,6 @@ class App {
       this._updateOperationButtons();
     });
 
-    // 3D Mode Toggle
-    const btn3DMode = document.getElementById('btn-3d-mode');
-    if (!this._renderer3d) {
-      btn3DMode.disabled = true;
-      btn3DMode.title = '3D unavailable: WebGL2 is not supported in this browser context';
-    }
-    btn3DMode.addEventListener('click', () => {
-      this._toggle3DMode();
-    });
-
     // Add Sketch to Part
     document.getElementById('btn-add-sketch').addEventListener('click', (e) => {
       if (this._selectedFace && this._selectedFace.face) {
@@ -3311,15 +3601,7 @@ class App {
 
     // Extrude
     document.getElementById('btn-extrude').addEventListener('click', async () => {
-      const distance = await showPrompt({
-        title: 'Extrude',
-        message: 'Enter extrusion distance:',
-        defaultValue: '10',
-      });
-      
-      if (distance && !isNaN(parseFloat(distance))) {
-        this._extrudeSketch(parseFloat(distance));
-      }
+      await this._startExtrude(false);
     });
 
     // Revolve
@@ -3335,81 +3617,6 @@ class App {
         this._revolveSketch(radians);
       }
     });
-  }
-
-  _toggle3DMode() {
-    if (!this._renderer3d) {
-      this._3dMode = false;
-      this.setStatus('3D mode unavailable in this browser context (WebGL2 missing).');
-      return;
-    }
-
-    // If currently sketching on a plane, toggle only affects camera projection
-    // (perspective ↔ ortho) without leaving sketch mode
-    if (this._sketchingOnPlane) {
-      state.orthoEnabled = !state.orthoEnabled;
-      this._renderer3d.setOrtho3D(state.orthoEnabled);
-      const orthoBtn = document.getElementById('btn-ortho');
-      if (orthoBtn) orthoBtn.classList.toggle('active', state.orthoEnabled);
-      this._scheduleRender();
-      return;
-    }
-
-    this._3dMode = !this._3dMode;
-    const featurePanel = document.getElementById('feature-panel');
-    const parametersPanel = document.getElementById('parameters-panel');
-    const btn = document.getElementById('btn-3d-mode');
-    const modeIndicator = document.getElementById('status-mode');
-
-    if (this._3dMode) {
-      // Enter 3D viewing mode (perspective camera)
-      this._renderer3d.setMode('3d');
-      this._renderer3d.setVisible(true);
-      // Clear any leftover sketch plane reference so axes don't persist
-      this._renderer3d._sketchPlane = null;
-      this._renderer3d._sketchPlaneDef = null;
-      featurePanel.classList.add('active');
-      parametersPanel.classList.add('active');
-      btn.classList.add('active');
-      document.body.classList.add('mode-3d');
-
-      // Update mode indicator based on workspace
-      if (this._workspaceMode === 'part') {
-        modeIndicator.textContent = 'PART';
-        modeIndicator.className = 'status-mode part-mode';
-      } else {
-        modeIndicator.textContent = '3D VIEW';
-        modeIndicator.className = 'status-mode view-3d-mode';
-      }
-
-      // Switch to select tool (drawing tools are hidden in 3D)
-      this.setActiveTool('select');
-      
-      info('3D viewing mode activated');
-    } else {
-      // Return to 2D sketching mode (orthographic camera)
-      this._renderer3d.setMode('2d');
-      this._renderer3d.setVisible(true);
-      this._renderer3d.sync2DView(this.viewport);
-      featurePanel.classList.remove('active');
-      parametersPanel.classList.remove('active');
-      btn.classList.remove('active');
-      document.body.classList.remove('mode-3d');
-
-      // Update mode indicator based on workspace
-      if (this._workspaceMode === 'part') {
-        modeIndicator.textContent = 'PART 2D';
-        modeIndicator.className = 'status-mode part-mode';
-      } else {
-        modeIndicator.textContent = 'SKETCH';
-        modeIndicator.className = 'status-mode sketch-mode';
-      }
-      
-      info('2D sketching mode activated');
-    }
-    
-    this._update3DView();
-    this._updateOperationButtons();
   }
 
   _addSketchToPart(planeName = 'XY') {
@@ -3552,7 +3759,12 @@ class App {
   }
 
   _update3DView() {
-    if (!this._renderer3d || !this._3dMode) return;
+    if (!this._renderer3d) return;
+
+    // Trigger debounced save whenever the 3D view updates in Part mode
+    if (this._workspaceMode === 'part') {
+      debouncedSave();
+    }
 
     const part = this._partManager.getPart();
     if (!part) {
@@ -3663,14 +3875,23 @@ class App {
       'chamfer': '📐'
     };
 
-    features.forEach((feature) => {
+    // Build a set of feature IDs that are consumed as children of other features
+    const consumedIds = new Set();
+    features.forEach((f) => {
+      if (f.children && f.children.length > 0) {
+        f.children.forEach((childId) => consumedIds.add(childId));
+      }
+    });
+
+    // Helper: build a feature row element
+    const buildFeatureRow = (feature, isChild) => {
       const div = document.createElement('div');
-      div.className = 'node-tree-feature';
+      div.className = isChild ? 'node-tree-feature node-tree-child-feature' : 'node-tree-feature';
       if (feature.suppressed) div.classList.add('suppressed');
       if (this._featurePanel && this._featurePanel.selectedFeatureId === feature.id) {
         div.classList.add('active');
       }
-      
+
       const icon = featureIcons[feature.type] || '📦';
       const eyeIcon = feature.visible ? '◉' : '○';
       const hiddenTag = feature.visible ? '' : ' <span class="node-tree-hidden-indicator" title="Hidden">[hidden]</span>';
@@ -3687,15 +3908,83 @@ class App {
           this._scheduleRender();
         });
       }
-      
+
       div.addEventListener('click', () => {
         if (this._featurePanel) {
           this._featurePanel.selectFeature(feature.id);
         }
+        // Highlight selected feature in 3D view
+        if (this._renderer3d) {
+          this._renderer3d.setSelectedFeature(feature.id);
+        }
+        this._recorder.featureSelected(feature.id, feature.type, feature.name);
         this._updateNodeTree();
+        this._update3DView();
+        this._scheduleRender();
       });
-      
-      container.appendChild(div);
+
+      // Double-click on sketch features to enter edit mode
+      div.addEventListener('dblclick', () => {
+        if (feature.type === 'sketch' && !this._sketchingOnPlane) {
+          this._recorder.sketchEditStarted(feature.id, feature.name);
+          this._editExistingSketch(feature);
+        }
+      });
+
+      return div;
+    };
+
+    features.forEach((feature) => {
+      // Skip features that are consumed as children (shown nested under parent)
+      if (consumedIds.has(feature.id)) return;
+
+      const hasChildren = feature.children && feature.children.length > 0;
+
+      if (hasChildren) {
+        // Create a collapsible folder wrapper
+        const wrapper = document.createElement('div');
+        wrapper.className = 'node-tree-folder';
+
+        // Check if folder is expanded (default collapsed)
+        const folderId = `folder-${feature.id}`;
+        const isExpanded = this._expandedFolders && this._expandedFolders.has(folderId);
+
+        // Parent feature row with toggle arrow
+        const div = buildFeatureRow(feature, false);
+        // Prepend a toggle arrow before the eye icon
+        const arrow = document.createElement('span');
+        arrow.className = 'node-tree-folder-arrow';
+        arrow.textContent = isExpanded ? '▾' : '▸';
+        arrow.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (this._expandedFolders.has(folderId)) {
+            this._expandedFolders.delete(folderId);
+          } else {
+            this._expandedFolders.add(folderId);
+          }
+          this._updateNodeTree();
+        });
+        div.insertBefore(arrow, div.firstChild);
+
+        wrapper.appendChild(div);
+
+        // Children container (only visible when expanded)
+        if (isExpanded) {
+          const childContainer = document.createElement('div');
+          childContainer.className = 'node-tree-children';
+          feature.children.forEach((childId) => {
+            const childFeature = features.find((f) => f.id === childId);
+            if (childFeature) {
+              childContainer.appendChild(buildFeatureRow(childFeature, true));
+            }
+          });
+          wrapper.appendChild(childContainer);
+        }
+
+        container.appendChild(wrapper);
+      } else {
+        container.appendChild(buildFeatureRow(feature, false));
+      }
     });
   }
 
@@ -3703,9 +3992,14 @@ class App {
     const hasSketch = this._lastSketchFeatureId !== null;
     const hasEntities = state.entities.length > 0;
     
-    document.getElementById('btn-add-sketch').disabled = !hasEntities || !this._3dMode;
-    document.getElementById('btn-extrude').disabled = !hasSketch || !this._3dMode;
-    document.getElementById('btn-revolve').disabled = !hasSketch || !this._3dMode;
+    const btnAddSketch = document.getElementById('btn-add-sketch');
+    if (btnAddSketch) btnAddSketch.disabled = !hasEntities;
+    const btnExtrude = document.getElementById('btn-extrude');
+    if (btnExtrude) btnExtrude.disabled = !hasSketch;
+    const btnRevolve = document.getElementById('btn-revolve');
+    if (btnRevolve) btnRevolve.disabled = !hasSketch;
+    const btnExtrudeCut = document.getElementById('btn-extrude-cut');
+    if (btnExtrudeCut) btnExtrudeCut.disabled = !hasSketch;
   }
 
   // --- Quick-Start Page ---
@@ -3721,15 +4015,8 @@ class App {
   }
 
   _bindQuickStartEvents() {
-    const qsSketch = document.getElementById('qs-sketch');
     const qsPart = document.getElementById('qs-part');
     const qsAssembly = document.getElementById('qs-assembly');
-
-    if (qsSketch) {
-      qsSketch.addEventListener('click', () => {
-        this._enterWorkspace('sketch');
-      });
-    }
 
     if (qsPart) {
       qsPart.addEventListener('click', () => {
@@ -3740,7 +4027,7 @@ class App {
     if (qsAssembly) {
       qsAssembly.addEventListener('click', () => {
         // Assembly is a stub - show message
-        this.setStatus('Assembly workspace is coming soon.');
+        this.setStatus('Assembly Design workspace is coming soon.');
       });
     }
   }
@@ -3755,38 +4042,28 @@ class App {
 
     const modeIndicator = document.getElementById('status-mode');
 
-    if (mode === 'sketch') {
-      // Sketch workspace: 2D mode, all sketch tools available
-      this._3dMode = false;
-      if (this._renderer3d) {
-        this._renderer3d.setMode('2d');
-        this._renderer3d.setVisible(true);
+    if (mode === 'part') {
+      // Part Design workspace: unified 3D+sketch view
+      // Only create a new Part if none exists (e.g. from deserialization)
+      if (!this._partManager.getPart()) {
+        this._partManager.createPart('Part1');
       }
-      document.body.classList.remove('mode-3d');
-      modeIndicator.textContent = 'SKETCH';
-      modeIndicator.className = 'status-mode sketch-mode';
-      this.setActiveTool('select');
-      info('Entered Sketch workspace');
-    } else if (mode === 'part') {
-      // Part workspace: Start in 3D mode with Part tools
-      this._partManager.createPart('Part1');
       this._3dMode = true;
       if (this._renderer3d) {
         this._renderer3d.setMode('3d');
         this._renderer3d.setVisible(true);
       }
-      document.body.classList.add('mode-3d');
       const featurePanel = document.getElementById('feature-panel');
       const parametersPanel = document.getElementById('parameters-panel');
       featurePanel.classList.add('active');
       parametersPanel.classList.add('active');
-      document.getElementById('btn-3d-mode').classList.add('active');
-      modeIndicator.textContent = 'PART';
+      modeIndicator.textContent = 'PART DESIGN';
       modeIndicator.className = 'status-mode part-mode';
       this.setActiveTool('select');
       this._updateOperationButtons();
       this._updateNodeTree();
-      info('Entered Part workspace');
+      this._recorder.workspaceChanged(mode);
+      info('Entered Part Design workspace');
     }
     this._scheduleRender();
   }
@@ -3878,7 +4155,7 @@ class App {
     state.scene.clear();
     state.selectedEntities = [];
 
-    // Return to 3D Part mode
+    // Return to Part Design mode
     this._sketchingOnPlane = false;
     this._activeSketchPlane = null;
     this._activeSketchPlaneDef = null;
@@ -3893,29 +4170,522 @@ class App {
       this._renderer3d._sketchPlaneDef = null;
       this._renderer3d.setMode('3d');
       this._renderer3d.setVisible(true);
+      // Restore camera orientation from before entering sketch mode
+      if (this._savedOrbitState) {
+        this._renderer3d.restoreOrbitState(this._savedOrbitState);
+        this._savedOrbitState = null;
+      }
     }
 
-    document.body.classList.add('mode-3d');
-    document.getElementById('btn-3d-mode').classList.add('active');
-
     const modeIndicator = document.getElementById('status-mode');
-    modeIndicator.textContent = 'PART';
+    modeIndicator.textContent = 'PART DESIGN';
     modeIndicator.className = 'status-mode part-mode';
 
     this.setActiveTool('select');
     this._update3DView();
     this._updateOperationButtons();
-    this.setStatus('Sketch discarded. Returned to Part 3D mode.');
-    info('Discarded sketch-on-plane, returned to Part 3D mode');
+    this.setStatus('Sketch discarded. Returned to Part Design mode.');
+    info('Discarded sketch-on-plane, returned to Part Design mode');
     this._scheduleRender();
   }
 
   // --- Part Mode Tool Events ---
 
+  // --- Recording Controls ---
+
+  _bindRecordingControls() {
+    const btnRecord = document.getElementById('btn-record');
+    const btnExport = document.getElementById('btn-record-export');
+    const btnOpen = document.getElementById('btn-record-open');
+    const btnPrev = document.getElementById('btn-play-prev');
+    const btnToggle = document.getElementById('btn-play-toggle');
+    const btnNext = document.getElementById('btn-play-next');
+    const btnStop = document.getElementById('btn-play-stop');
+    const slider = document.getElementById('play-slider');
+    const stepLabel = document.getElementById('play-step-label');
+    const speedInput = document.getElementById('play-speed');
+    const recPreview = document.getElementById('rec-preview');
+
+    // Playback state
+    this._playbackSteps = null;
+    this._playbackIndex = -1;
+    this._playbackTimer = null;
+    this._playbackPlaying = false;
+
+    // Live preview: show last recorded action while recording
+    this._recorder.onStep = (step) => {
+      if (!recPreview) return;
+      recPreview.textContent = `#${step.seq} ${step.command}`;
+      recPreview.classList.add('active');
+      // Flash animation
+      recPreview.classList.remove('flash');
+      // Force reflow so removing+re-adding 'flash' restarts the CSS animation
+      void recPreview.offsetWidth;
+      recPreview.classList.add('flash');
+    };
+
+    const updatePlaybackUI = () => {
+      const hasRec = !!this._playbackSteps;
+      const count = hasRec ? this._playbackSteps.length : 0;
+      const idx = this._playbackIndex;
+
+      btnPrev.disabled = !hasRec || idx <= 0;
+      btnToggle.disabled = !hasRec;
+      btnNext.disabled = !hasRec || idx >= count - 1;
+      btnStop.disabled = !hasRec;
+      slider.disabled = !hasRec;
+      slider.max = Math.max(0, count - 1);
+      slider.value = Math.max(0, idx);
+
+      if (hasRec && idx >= 0) {
+        stepLabel.textContent = `${idx + 1} / ${count}`;
+      } else if (hasRec) {
+        stepLabel.textContent = `0 / ${count}`;
+      } else {
+        stepLabel.textContent = '—';
+      }
+
+      btnToggle.textContent = this._playbackPlaying ? '⏸' : '▶';
+      btnToggle.title = this._playbackPlaying ? 'Pause' : 'Play';
+    };
+
+    // Record start/stop
+    if (btnRecord) {
+      btnRecord.addEventListener('click', () => {
+        if (this._recorder.recording) {
+          this._stopRecording();
+        } else {
+          this._startRecording();
+        }
+      });
+    }
+
+    // Export
+    if (btnExport) {
+      btnExport.addEventListener('click', () => this._exportRecording());
+    }
+
+    // Open recording (modal)
+    if (btnOpen) {
+      btnOpen.addEventListener('click', () => this._openRecordingModal());
+    }
+
+    // Playback step execution
+    const executeStep = (idx) => {
+      if (!this._playbackSteps || idx < 0 || idx >= this._playbackSteps.length) return;
+      const step = this._playbackSteps[idx];
+      const cmdInput = document.getElementById('cmd-input');
+      if (cmdInput) cmdInput.value = step.command;
+      this.setStatus(`▶ Step ${idx + 1}/${this._playbackSteps.length}: ${step.command}`);
+      try {
+        this._handleCommand(step.command);
+      } catch (err) {
+        warn(`Playback error at step ${idx}: ${step.command}`, err);
+      }
+      this._playbackIndex = idx;
+      updatePlaybackUI();
+      // Show position indicator for spatial commands
+      this._showPlaybackIndicator(step.command);
+    };
+
+    // Slider scrub
+    if (slider) {
+      slider.addEventListener('input', () => {
+        this._stopAutoplay();
+        const target = parseInt(slider.value, 10);
+        // Replay from beginning up to target for consistent state
+        this._replayUpTo(target);
+        updatePlaybackUI();
+      });
+    }
+
+    // Step prev
+    if (btnPrev) {
+      btnPrev.addEventListener('click', () => {
+        this._stopAutoplay();
+        if (this._playbackIndex > 0) {
+          this._replayUpTo(this._playbackIndex - 1);
+          updatePlaybackUI();
+        }
+      });
+    }
+
+    // Step next
+    if (btnNext) {
+      btnNext.addEventListener('click', () => {
+        this._stopAutoplay();
+        if (this._playbackSteps && this._playbackIndex < this._playbackSteps.length - 1) {
+          executeStep(this._playbackIndex + 1);
+        }
+      });
+    }
+
+    // Play/Pause toggle
+    if (btnToggle) {
+      btnToggle.addEventListener('click', () => {
+        if (this._playbackPlaying) {
+          this._stopAutoplay();
+        } else {
+          this._startAutoplay(executeStep, updatePlaybackUI);
+        }
+        updatePlaybackUI();
+      });
+    }
+
+    // Stop — reset
+    if (btnStop) {
+      btnStop.addEventListener('click', () => {
+        this._stopAutoplay();
+        this._playbackSteps = null;
+        this._playbackIndex = -1;
+        this.setStatus('Playback stopped.');
+        const cmdInput = document.getElementById('cmd-input');
+        if (cmdInput) cmdInput.value = '';
+        this._hidePlaybackIndicator();
+        updatePlaybackUI();
+      });
+    }
+
+    this._updatePlaybackUI = updatePlaybackUI;
+    this._executePlaybackStep = executeStep;
+
+    // Wire camera events from the 3D renderer to the recorder
+    if (this._renderer3d) {
+      this._renderer3d.onCameraInteraction = (type, orbitState) => {
+        if (!this._recorder.recording) return;
+        const { theta, phi, radius, target } = orbitState;
+        if (type === 'orbit_start') {
+          this._recorder.orbitStart(theta, phi, radius, target);
+        } else if (type === 'pan_start') {
+          this._recorder.panStart(target);
+        } else if (type === 'orbit_end') {
+          this._recorder.orbitEnd(theta, phi, radius, target);
+        } else if (type === 'zoom') {
+          this._recorder.cameraSnapshot(theta, phi, radius, target);
+        }
+      };
+    }
+
+    updatePlaybackUI();
+  }
+
+  _startAutoplay(executeStep, updatePlaybackUI) {
+    if (!this._playbackSteps) return;
+    this._playbackPlaying = true;
+    const speedEl = document.getElementById('play-speed');
+    const speed = parseFloat(speedEl?.value) || 1;
+
+    const advance = () => {
+      if (!this._playbackPlaying || !this._playbackSteps) return;
+      const nextIdx = this._playbackIndex + 1;
+      if (nextIdx >= this._playbackSteps.length) {
+        this._playbackPlaying = false;
+        this.setStatus('Playback complete.');
+        updatePlaybackUI();
+        return;
+      }
+      executeStep(nextIdx);
+
+      // Compute delay from timestamps if available
+      let delay = 300;
+      if (nextIdx + 1 < this._playbackSteps.length) {
+        const dt = this._playbackSteps[nextIdx + 1].ts - this._playbackSteps[nextIdx].ts;
+        delay = Math.max(50, dt / speed);
+      }
+      this._playbackTimer = setTimeout(advance, delay);
+    };
+
+    advance();
+  }
+
+  _stopAutoplay() {
+    this._playbackPlaying = false;
+    if (this._playbackTimer) {
+      clearTimeout(this._playbackTimer);
+      this._playbackTimer = null;
+    }
+  }
+
+  /** Replay all steps from 0..targetIdx to get consistent state */
+  _replayUpTo(targetIdx) {
+    if (!this._playbackSteps) return;
+    // Reset state by replaying from start
+    for (let i = 0; i <= targetIdx && i < this._playbackSteps.length; i++) {
+      try {
+        this._handleCommand(this._playbackSteps[i].command);
+      } catch (err) {
+        // Errors are expected during state reconstruction when scrubbing —
+        // e.g. selecting a face that doesn't exist yet at that point in time.
+        // Log at debug level so devs can inspect but slider stays responsive.
+        debug(`Replay scrub skip at step ${i}: ${err.message}`);
+      }
+    }
+    this._playbackIndex = targetIdx;
+    const step = this._playbackSteps[targetIdx];
+    if (step) {
+      const cmdInput = document.getElementById('cmd-input');
+      if (cmdInput) cmdInput.value = step.command;
+      this.setStatus(`▶ Step ${targetIdx + 1}/${this._playbackSteps.length}: ${step.command}`);
+      this._showPlaybackIndicator(step.command);
+    }
+  }
+
+  /** Load a recording for playback */
+  _loadRecording(recording) {
+    this._stopAutoplay();
+    if (recording && recording.steps && recording.steps.length > 0) {
+      this._playbackSteps = recording.steps;
+      this._playbackIndex = -1;
+      this._lastRecordedSteps = recording.steps;
+      this.setStatus(`Recording loaded: ${recording.steps.length} step(s). Use playback controls.`);
+      info(`Recording loaded: ${recording.steps.length} steps`);
+    } else {
+      this.setStatus('Invalid recording data.');
+    }
+    if (this._updatePlaybackUI) this._updatePlaybackUI();
+  }
+
+  /**
+   * Show a visual position indicator on the canvas for spatial playback commands.
+   * Extracts model coordinates from the command, projects to screen, and
+   * positions the indicator overlay. Hides for non-spatial commands.
+   * @param {string} command - The command string being played
+   */
+  _showPlaybackIndicator(command) {
+    const el = document.getElementById('playback-indicator');
+    if (!el) return;
+    const dot = el.querySelector('.playback-indicator-dot');
+    const label = el.querySelector('.playback-indicator-label');
+
+    const tokens = command.trim().split(/\s+/);
+    const cmd = tokens[0];
+    let screenPos = null;
+    let labelText = '';
+
+    // Extract @px py pz point annotation if present (appended by recorder for 3D actions)
+    const atIdx = command.indexOf(' @');
+    let atPoint = null;
+    if (atIdx >= 0) {
+      const atParts = command.substring(atIdx + 2).trim().split(/\s+/);
+      if (atParts.length >= 3) {
+        atPoint = {
+          x: parseFloat(atParts[0]),
+          y: parseFloat(atParts[1]),
+          z: parseFloat(atParts[2]),
+        };
+      }
+    }
+
+    // Helper: project sketch-plane 2D coords to screen
+    const sketchToScreen = (mx, my) => {
+      if (this._renderer3d && this._renderer3d.hasSketchPlane()) {
+        return this._renderer3d.sketchToScreen(mx, my);
+      } else if (this._renderer3d) {
+        return this._renderer3d.worldToScreen(mx, my, 0);
+      }
+      return null;
+    };
+
+    if (cmd === 'click' && tokens.length >= 3) {
+      const mx = parseFloat(tokens[1]);
+      const my = parseFloat(tokens[2]);
+      labelText = `click (${mx.toFixed(2)}, ${my.toFixed(2)})`;
+      screenPos = sketchToScreen(mx, my);
+    } else if (cmd === 'draw.line' && tokens.length >= 5) {
+      const x1 = parseFloat(tokens[1]), y1 = parseFloat(tokens[2]);
+      const x2 = parseFloat(tokens[3]), y2 = parseFloat(tokens[4]);
+      labelText = `line (${x1.toFixed(1)},${y1.toFixed(1)})→(${x2.toFixed(1)},${y2.toFixed(1)})`;
+      screenPos = sketchToScreen((x1 + x2) / 2, (y1 + y2) / 2);
+    } else if (cmd === 'draw.rect' && tokens.length >= 5) {
+      const x1 = parseFloat(tokens[1]), y1 = parseFloat(tokens[2]);
+      const x2 = parseFloat(tokens[3]), y2 = parseFloat(tokens[4]);
+      labelText = `rect (${x1.toFixed(1)},${y1.toFixed(1)})→(${x2.toFixed(1)},${y2.toFixed(1)})`;
+      screenPos = sketchToScreen((x1 + x2) / 2, (y1 + y2) / 2);
+    } else if (cmd === 'draw.circle' && tokens.length >= 4) {
+      const cx = parseFloat(tokens[1]), cy = parseFloat(tokens[2]);
+      const r = parseFloat(tokens[3]);
+      labelText = `circle c=(${cx.toFixed(1)},${cy.toFixed(1)}) r=${r.toFixed(1)}`;
+      screenPos = sketchToScreen(cx, cy);
+    } else if (atPoint && this._renderer3d) {
+      // Any command with @point — use the recorded 3D click coordinates
+      const p = atPoint;
+      if (cmd === 'select.face') {
+        labelText = `face ${tokens[1]} @(${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)})`;
+      } else if (cmd === 'select.plane') {
+        labelText = `plane ${tokens[1]} @(${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)})`;
+      } else if (cmd === 'deselect.face') {
+        labelText = `deselect @(${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)})`;
+      } else {
+        labelText = `@(${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)})`;
+      }
+      screenPos = this._renderer3d.worldToScreen(p.x, p.y, p.z);
+    }
+
+    if (screenPos) {
+      // Offset for the canvas container position
+      const container = document.getElementById('view-3d');
+      const rect = container ? container.getBoundingClientRect() : { left: 0, top: 0 };
+      el.style.left = `${rect.left + screenPos.x}px`;
+      el.style.top = `${rect.top + screenPos.y}px`;
+      el.style.display = '';
+      if (label) label.textContent = labelText;
+    } else {
+      el.style.display = 'none';
+    }
+  }
+
+  _hidePlaybackIndicator() {
+    const el = document.getElementById('playback-indicator');
+    if (el) el.style.display = 'none';
+  }
+
+  _openRecordingModal() {
+    const root = document.getElementById('app-modal-root');
+    if (!root) return;
+
+    root.innerHTML = `
+      <div class="app-modal-backdrop" data-dismiss></div>
+      <div class="app-modal" style="width:500px">
+        <div class="app-modal-header">Open Recording</div>
+        <div class="app-modal-body">
+          <div id="rec-drop-zone" style="border:2px dashed var(--border);border-radius:6px;padding:24px;text-align:center;color:var(--text-secondary);margin-bottom:12px;cursor:pointer">
+            Drop a recording JSON file here, or click to browse
+            <input type="file" id="rec-file-input" accept=".json" style="display:none" />
+          </div>
+          <div style="color:var(--text-secondary);font-size:12px;margin-bottom:6px">Or paste raw JSON:</div>
+          <textarea id="rec-json-input" rows="8" style="width:100%;background:var(--bg-dark);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;font-family:Consolas,monospace;font-size:12px;padding:8px;resize:vertical" placeholder='{ "version": 1, "steps": [...] }'></textarea>
+        </div>
+        <div class="app-modal-footer">
+          <button class="modal-btn" data-dismiss>Cancel</button>
+          <button class="modal-btn modal-btn-primary" id="rec-load-btn">Load</button>
+        </div>
+      </div>
+    `;
+    root.setAttribute('aria-hidden', 'false');
+
+    const dismiss = () => {
+      root.setAttribute('aria-hidden', 'true');
+      root.innerHTML = '';
+    };
+
+    root.querySelectorAll('[data-dismiss]').forEach(el => el.addEventListener('click', dismiss));
+
+    // File input
+    const dropZone = root.querySelector('#rec-drop-zone');
+    const fileInput = root.querySelector('#rec-file-input');
+    const jsonInput = root.querySelector('#rec-json-input');
+
+    dropZone.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', () => {
+      const file = fileInput.files[0];
+      if (file) {
+        const reader = new FileReader();
+        reader.onload = (ev) => { jsonInput.value = ev.target.result; };
+        reader.readAsText(file);
+      }
+    });
+
+    dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.style.borderColor = 'var(--accent)'; });
+    dropZone.addEventListener('dragleave', () => { dropZone.style.borderColor = 'var(--border)'; });
+    dropZone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropZone.style.borderColor = 'var(--border)';
+      const file = e.dataTransfer.files[0];
+      if (file) {
+        const reader = new FileReader();
+        reader.onload = (ev) => { jsonInput.value = ev.target.result; };
+        reader.readAsText(file);
+      }
+    });
+
+    // Load button
+    root.querySelector('#rec-load-btn').addEventListener('click', () => {
+      const text = jsonInput.value.trim();
+      if (!text) return;
+      try {
+        const data = JSON.parse(text);
+        this._loadRecording(data);
+        dismiss();
+      } catch (err) {
+        this.setStatus('Invalid JSON: ' + err.message);
+      }
+    });
+  }
+
+  _startRecording() {
+    this._stopAutoplay();
+    this._playbackSteps = null;
+    this._playbackIndex = -1;
+    this._recorder.start();
+    const btnRecord = document.getElementById('btn-record');
+    const btnExport = document.getElementById('btn-record-export');
+    const recPreview = document.getElementById('rec-preview');
+    if (btnRecord) btnRecord.classList.add('recording');
+    if (btnExport) btnExport.style.display = 'none';
+    if (recPreview) { recPreview.textContent = ''; recPreview.classList.remove('active'); }
+    // Record initial workspace state
+    if (this._workspaceMode) this._recorder.workspaceChanged(this._workspaceMode);
+    // Record initial camera state
+    if (this._renderer3d) {
+      const orb = this._renderer3d.getOrbitState();
+      this._recorder.cameraSnapshot(orb.theta, orb.phi, orb.radius, orb.target);
+    }
+    this.setStatus('Recording started — interact normally, then stop to export.');
+    info('Interaction recording started');
+    if (this._updatePlaybackUI) this._updatePlaybackUI();
+  }
+
+  _stopRecording() {
+    const steps = this._recorder.stop();
+    const btnRecord = document.getElementById('btn-record');
+    const btnExport = document.getElementById('btn-record-export');
+    if (btnRecord) btnRecord.classList.remove('recording');
+    if (btnExport) btnExport.style.display = '';
+    this._lastRecordedSteps = steps;
+    // Auto-load for playback
+    this._playbackSteps = steps;
+    this._playbackIndex = -1;
+    // Keep preview visible with final step count
+    const recPreview = document.getElementById('rec-preview');
+    if (recPreview) { recPreview.textContent = `${steps.length} step(s) recorded`; }
+    this.setStatus(`Recording stopped — ${steps.length} action(s) captured. Use playback controls or export.`);
+    info(`Interaction recording stopped: ${steps.length} steps`);
+    if (this._updatePlaybackUI) this._updatePlaybackUI();
+  }
+
+  _exportRecording() {
+    const json = this._recorder.exportJSON();
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `recording-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    this.setStatus('Recording exported.');
+    info('Recording exported as JSON');
+  }
+
+  async _playbackRecording(stepDelay = 300) {
+    if (!this._playbackSteps || this._playbackSteps.length === 0) {
+      if (this._lastRecordedSteps) {
+        this._playbackSteps = this._lastRecordedSteps;
+        this._playbackIndex = -1;
+      } else {
+        this.setStatus('No recording to play back.');
+        return;
+      }
+    }
+    if (this._updatePlaybackUI) this._updatePlaybackUI();
+    // Start autoplay via the playback controls
+    if (this._executePlaybackStep && this._updatePlaybackUI) {
+      this._startAutoplay(this._executePlaybackStep, this._updatePlaybackUI);
+    }
+  }
+
   _bindPartToolEvents() {
     const btnCreatePlane = document.getElementById('btn-create-plane');
     const btnSketchOnPlane = document.getElementById('btn-sketch-on-plane');
-    const btnExtrudePart = document.getElementById('btn-extrude-part');
     const btnExtrudeCut = document.getElementById('btn-extrude-cut');
 
     if (btnCreatePlane) {
@@ -3932,12 +4702,6 @@ class App {
         } else {
           this._startSketchOnPlane();
         }
-      });
-    }
-
-    if (btnExtrudePart) {
-      btnExtrudePart.addEventListener('click', async () => {
-        await this._startExtrude(false);
       });
     }
 
@@ -4043,6 +4807,8 @@ class App {
     if (exitBtn) exitBtn.style.display = 'flex';
 
     if (this._renderer3d) {
+      // Save camera state before reorienting so we can restore on exit
+      this._savedOrbitState = this._renderer3d.saveOrbitState();
       // Orient camera perpendicular to the selected plane
       this._renderer3d.orientToPlane(plane);
       // Stay in 3D mode so the mesh remains visible
@@ -4054,9 +4820,9 @@ class App {
       this._renderer3d._sketchPlaneDef = this._activeSketchPlaneDef;
     }
 
-    // Keep mode-3d class since we're in 3D
-    document.body.classList.add('mode-3d');
-    document.getElementById('btn-3d-mode').classList.add('active');
+    // Deselect the plane now that we've entered sketch mode on it
+    this._selectedPlane = null;
+    if (this._renderer3d) this._renderer3d.setSelectedPlane(null);
 
     const modeIndicator = document.getElementById('status-mode');
     modeIndicator.textContent = `SKETCH ON ${plane}`;
@@ -4064,6 +4830,7 @@ class App {
 
     this.setActiveTool('select');
     this.setStatus(`Sketching on ${plane} plane. Draw your profile, then Exit Sketch to extrude.`);
+    this._recorder.sketchStarted(plane, null);
     info(`Entered sketch-on-plane mode (${plane} plane)`);
     this._scheduleRender();
   }
@@ -4088,6 +4855,8 @@ class App {
 
     // Orient camera perpendicular to the face normal
     if (this._renderer3d) {
+      // Save camera state before reorienting so we can restore on exit
+      this._savedOrbitState = this._renderer3d.saveOrbitState();
       this._renderer3d.orientToPlaneNormal(faceHit.face.normal, faceHit.point);
     }
 
@@ -4114,16 +4883,13 @@ class App {
     this._selectedFace = null;
     if (this._renderer3d) this._renderer3d.selectFace(-1);
 
-    // Keep mode-3d class since we're in 3D
-    document.body.classList.add('mode-3d');
-    document.getElementById('btn-3d-mode').classList.add('active');
-
     const modeIndicator = document.getElementById('status-mode');
     modeIndicator.textContent = 'SKETCH ON FACE';
     modeIndicator.className = 'status-mode sketch-mode';
 
     this.setActiveTool('select');
     this.setStatus('Sketching on face. Draw your profile, then Exit Sketch to extrude.');
+    this._recorder.sketchStarted('FACE', planeDef);
     info('Entered sketch-on-face mode');
     this._scheduleRender();
   }
@@ -4166,20 +4932,104 @@ class App {
     return { origin, normal, xAxis, yAxis };
   }
 
-  _finishSketchOnPlane() {
+  /**
+   * Compute the outer boundary of a group of coplanar polygon faces.
+   * Edges used by exactly 1 face in the group are boundary edges;
+   * they are chained into a closed loop and the loop vertices are returned.
+   * @param {Array<Array<{x,y,z}>>} faceVertArrays - Array of vertex arrays (one per face)
+   * @returns {Array<{x,y,z}>} Ordered boundary vertices
+   */
+  _computeGroupBoundary(faceVertArrays) {
+    const prec = 5;
+    const vk = (v) => `${v.x.toFixed(prec)},${v.y.toFixed(prec)},${v.z.toFixed(prec)}`;
+    const ek = (a, b) => { const ka = vk(a), kb = vk(b); return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`; };
+
+    // Count how many faces use each edge
+    const edgeCount = new Map();
+    const edgeVerts = new Map(); // edgeKey → {a, b}
+    for (const verts of faceVertArrays) {
+      for (let i = 0; i < verts.length; i++) {
+        const a = verts[i], b = verts[(i + 1) % verts.length];
+        const key = ek(a, b);
+        edgeCount.set(key, (edgeCount.get(key) || 0) + 1);
+        if (!edgeVerts.has(key)) edgeVerts.set(key, { a, b });
+      }
+    }
+
+    // Boundary edges are those used by exactly 1 face
+    const adj = new Map();
+    for (const [key, count] of edgeCount) {
+      if (count !== 1) continue;
+      const { a, b } = edgeVerts.get(key);
+      const ka = vk(a), kb = vk(b);
+      if (!adj.has(ka)) adj.set(ka, []);
+      if (!adj.has(kb)) adj.set(kb, []);
+      adj.get(ka).push({ key: kb, vertex: b });
+      adj.get(kb).push({ key: ka, vertex: a });
+    }
+
+    // Walk the boundary
+    const visited = new Set();
+    const loop = [];
+    const startKey = adj.keys().next().value;
+    if (!startKey) return [];
+    let currentKey = startKey;
+    let safety = adj.size + 1;
+    while (!visited.has(currentKey) && safety-- > 0) {
+      visited.add(currentKey);
+      const neighbors = adj.get(currentKey);
+      if (!neighbors) break;
+      let next = null;
+      for (const n of neighbors) {
+        if (!visited.has(n.key)) { next = n; break; }
+      }
+      if (!next) break;
+      loop.push(next.vertex);
+      currentKey = next.key;
+    }
+    return loop;
+  }
+
+  async _finishSketchOnPlane() {
     if (!this._sketchingOnPlane) return;
 
     // Clear the active sketch on the part
     const part = this._partManager.getPart();
     if (part) part.setActiveSketch(null);
 
-    // Add the current 2D scene as a sketch feature on the active plane
-    if (state.entities.length > 0) {
-      if (this._activeSketchPlane === 'FACE' && this._activeSketchPlaneDef) {
-        // Use the face-derived plane definition
-        this._addSketchToPartWithPlane(this._activeSketchPlaneDef);
-      } else {
-        this._addSketchToPart(this._activeSketchPlane || 'XY');
+    // If editing an existing sketch, update it in-place
+    if (this._editingSketchFeatureId && part) {
+      const sketchFeature = part.getFeature(this._editingSketchFeatureId);
+      if (sketchFeature && sketchFeature.type === 'sketch' && state.entities.length > 0) {
+        // Rebuild the sketch from the current 2D scene
+        const { Sketch } = await import('./cad/Sketch.js');
+        const sketch = new Sketch();
+        sketch.name = sketchFeature.sketch.name;
+        for (const seg of state.scene.segments) {
+          const s = seg.p1 || seg.start;
+          const e = seg.p2 || seg.end;
+          if (s && e) sketch.addSegment(s.x, s.y, e.x, e.y);
+        }
+        for (const circle of state.scene.circles) {
+          sketch.addCircle(circle.center.x, circle.center.y, circle.radius);
+        }
+        sketchFeature.sketch = sketch;
+        sketchFeature.modified = new Date();
+        // Recalculate the feature tree from this sketch forward
+        if (part.featureTree) {
+          part.featureTree.recalculateFrom(this._editingSketchFeatureId);
+        }
+        info(`Updated sketch feature: ${this._editingSketchFeatureId}`);
+      }
+      this._editingSketchFeatureId = null;
+    } else {
+      // Add the current 2D scene as a NEW sketch feature on the active plane
+      if (state.entities.length > 0) {
+        if (this._activeSketchPlane === 'FACE' && this._activeSketchPlaneDef) {
+          this._addSketchToPartWithPlane(this._activeSketchPlaneDef);
+        } else {
+          this._addSketchToPart(this._activeSketchPlane || 'XY');
+        }
       }
     }
 
@@ -4203,20 +5053,95 @@ class App {
       this._renderer3d._sketchPlaneDef = null;
       this._renderer3d.setMode('3d');
       this._renderer3d.setVisible(true);
+      // Restore camera orientation from before entering sketch mode
+      if (this._savedOrbitState) {
+        this._renderer3d.restoreOrbitState(this._savedOrbitState);
+        this._savedOrbitState = null;
+      }
     }
 
-    document.body.classList.add('mode-3d');
-    document.getElementById('btn-3d-mode').classList.add('active');
-
     const modeIndicator = document.getElementById('status-mode');
-    modeIndicator.textContent = 'PART';
+    modeIndicator.textContent = 'PART DESIGN';
     modeIndicator.className = 'status-mode part-mode';
 
     this.setActiveTool('select');
     this._update3DView();
     this._updateOperationButtons();
-    this.setStatus('Returned to Part 3D mode.');
-    info('Finished sketch-on-plane, returned to Part 3D mode');
+    this.setStatus('Returned to Part Design mode.');
+    this._recorder.sketchFinished(this._lastSketchFeatureId, 0);
+    info('Finished sketch-on-plane, returned to Part Design mode');
+    this._scheduleRender();
+  }
+
+  /**
+   * Enter edit mode for an existing sketch feature.
+   * Loads the sketch geometry back into the 2D scene, enters sketch-on-plane
+   * mode, and marks the sketch for in-place update on exit.
+   */
+  _editExistingSketch(sketchFeature) {
+    if (this._sketchingOnPlane) return;
+    if (!sketchFeature || sketchFeature.type !== 'sketch') return;
+
+    const sketch = sketchFeature.sketch;
+    if (!sketch) return;
+
+    // Clear the 2D scene and load sketch geometry into it
+    state.scene.clear();
+    state.selectedEntities = [];
+
+    for (const seg of sketch.segments) {
+      state.scene.addSegment(seg.p1.x, seg.p1.y, seg.p2.x, seg.p2.y);
+    }
+    for (const circle of sketch.circles) {
+      state.scene.addCircle(circle.center.x, circle.center.y, circle.radius);
+    }
+
+    // Determine plane name from the sketch feature's plane
+    const plane = sketchFeature.plane;
+    let planeName = 'FACE';
+    if (plane) {
+      // Check if it matches a standard plane
+      const n = plane.normal;
+      if (n && Math.abs(n.z) > 0.99 && Math.abs(n.x) < 0.01 && Math.abs(n.y) < 0.01) planeName = 'XY';
+      else if (n && Math.abs(n.y) > 0.99 && Math.abs(n.x) < 0.01 && Math.abs(n.z) < 0.01) planeName = 'XZ';
+      else if (n && Math.abs(n.x) > 0.99 && Math.abs(n.y) < 0.01 && Math.abs(n.z) < 0.01) planeName = 'YZ';
+    }
+
+    // Track that we're editing an existing sketch (not creating a new one)
+    this._editingSketchFeatureId = sketchFeature.id;
+    this._lastSketchFeatureId = sketchFeature.id;
+
+    // Enter sketch-on-plane mode
+    this._sketchingOnPlane = true;
+    this._activeSketchPlane = planeName;
+    this._activeSketchPlaneDef = plane;
+    this._3dMode = true;
+
+    document.body.classList.add('sketch-on-plane');
+    const exitBtn = document.getElementById('btn-exit-sketch');
+    if (exitBtn) exitBtn.style.display = 'flex';
+
+    if (this._renderer3d) {
+      this._savedOrbitState = this._renderer3d.saveOrbitState();
+      if (planeName !== 'FACE') {
+        this._renderer3d.orientToPlane(planeName);
+      }
+      this._renderer3d.setMode('3d');
+      this._renderer3d.setVisible(true);
+      this._renderer3d._sketchPlane = planeName;
+      this._renderer3d._sketchPlaneDef = plane;
+    }
+
+    this._selectedPlane = null;
+    if (this._renderer3d) this._renderer3d.setSelectedPlane(null);
+
+    const modeIndicator = document.getElementById('status-mode');
+    modeIndicator.textContent = `EDIT SKETCH: ${sketchFeature.name}`;
+    modeIndicator.className = 'status-mode sketch-mode';
+
+    this.setActiveTool('select');
+    this.setStatus(`Editing ${sketchFeature.name}. Modify, then Exit Sketch to apply changes.`);
+    info(`Entered edit mode for sketch: ${sketchFeature.id}`);
     this._scheduleRender();
   }
 
@@ -4224,6 +5149,61 @@ class App {
     if (this._workspaceMode !== 'part') {
       this.setStatus('Extrude is only available in Part workspace.');
       return;
+    }
+
+    // If a face is selected but no sketch was created for it, auto-create
+    // a new sketch from the face outline instead of reusing an old sketch.
+    if (this._selectedFace && this._selectedFace.face) {
+      const face = this._selectedFace.face;
+      const planeDef = this._getPlaneFromFace(this._selectedFace);
+      if (planeDef) {
+        // Collect all face vertices — if this face belongs to a faceGroup,
+        // gather vertices from all faces in that group
+        let allFaceVerts = [];
+        const faceGroup = face.faceGroup;
+        const allMeshFaces = this._renderer3d ? this._renderer3d.getAllFaces() : null;
+        if (faceGroup != null && allMeshFaces) {
+          const groupFaces = allMeshFaces.filter(f => f.faceGroup === faceGroup);
+          for (const gf of groupFaces) {
+            allFaceVerts.push(gf.vertices || []);
+          }
+        } else {
+          allFaceVerts.push(face.vertices || []);
+        }
+
+        // Build the combined outline from all faces in the group
+        const faceVerts = allFaceVerts.length === 1
+          ? allFaceVerts[0]
+          : this._computeGroupBoundary(allFaceVerts);
+
+        if (faceVerts.length >= 3) {
+          const { Sketch } = await import('./cad/Sketch.js');
+          const sketch = new Sketch();
+          sketch.name = `Sketch${this._partManager.getFeatures().length + 1}`;
+          // Project 3D face vertices to 2D sketch coordinates
+          const origin = planeDef.origin;
+          const xAxis = planeDef.xAxis;
+          const yAxis = planeDef.yAxis;
+          const proj2D = faceVerts.map(v => ({
+            x: (v.x - origin.x) * xAxis.x + (v.y - origin.y) * xAxis.y + (v.z - origin.z) * xAxis.z,
+            y: (v.x - origin.x) * yAxis.x + (v.y - origin.y) * yAxis.y + (v.z - origin.z) * yAxis.z,
+          }));
+          // Create segments forming the closed profile
+          for (let i = 0; i < proj2D.length; i++) {
+            const a = proj2D[i];
+            const b = proj2D[(i + 1) % proj2D.length];
+            sketch.addSegment(a.x, a.y, b.x, b.y);
+          }
+          // Add as a new sketch feature on the face plane
+          const part = this._partManager.getPart();
+          if (part) {
+            const sketchFeature = part.addSketch(sketch, planeDef);
+            this._lastSketchFeatureId = sketchFeature.id;
+          }
+        }
+      }
+      this._selectedFace = null;
+      if (this._renderer3d) this._renderer3d.selectFace(-1);
     }
 
     if (!this._lastSketchFeatureId) {
@@ -4254,22 +5234,6 @@ class App {
         feature.direction = -1;
         feature.operation = 'subtract';
       }
-
-      // If a face is selected, override the extrusion direction to be perpendicular to it
-      if (this._selectedFace && this._selectedFace.face) {
-        const faceNormal = this._selectedFace.face.normal;
-        // Update the sketch feature's plane normal to match the face
-        const sketchFeature = this._partManager.getPart().getFeature(this._lastSketchFeatureId);
-        if (sketchFeature && sketchFeature.type === 'sketch') {
-          const planeDef = this._getPlaneFromFace(this._selectedFace);
-          if (planeDef) {
-            sketchFeature.setPlane(planeDef);
-          }
-        }
-        // Clear face selection after use
-        this._selectedFace = null;
-        if (this._renderer3d) this._renderer3d.selectFace(-1);
-      }
     }
 
     this._featurePanel.update();
@@ -4278,6 +5242,7 @@ class App {
     this._updateOperationButtons();
 
     this.setStatus(`${opName}: ${absDistance} units`);
+    this._recorder.extrudeCreated(feature ? feature.id : null, absDistance, isCut);
     info(`Created ${opName.toLowerCase()} feature: ${feature ? feature.id : 'failed'}`);
   }
 }

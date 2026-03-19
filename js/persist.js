@@ -8,16 +8,28 @@ const SAVE_DEBOUNCE_MS = 500;
 
 let _saveTimer = null;
 let _viewport = null;
+let _partManager = null;
+let _renderer3d = null;
+let _getWorkspaceMode = null;
 
 /** Register the viewport instance for persistence. */
 export function setViewport(vp) { _viewport = vp; }
 
+/** Register the PartManager instance for persistence. */
+export function setPartManagerForPersist(pm) { _partManager = pm; }
+
+/** Register the 3D renderer for orbit state persistence. */
+export function setRendererForPersist(r) { _renderer3d = r; }
+
+/** Register a callback that returns the current workspace mode string. */
+export function setWorkspaceModeGetter(fn) { _getWorkspaceMode = fn; }
+
 /**
- * Serialize the full project (scene, layers, settings) to a plain object.
+ * Serialize the full project (scene, layers, settings, part, orbit) to a plain object.
  */
 function projectToJSON() {
-  return {
-    version: 2,
+  const json = {
+    version: 3,
     scene: state.scene.serialize(),
     layers: state.layers.map(l => ({ ...l })),
     activeLayer: state.activeLayer,
@@ -28,6 +40,26 @@ function projectToJSON() {
     autoCoincidence: state.autoCoincidence,
     viewport: _viewport ? { zoom: _viewport.zoom, panX: _viewport.panX, panY: _viewport.panY } : null,
   };
+
+  // 3D Part state
+  if (_partManager) {
+    const part = _partManager.getPart();
+    if (part) {
+      json.part = part.serialize();
+    }
+  }
+
+  // 3D orbit camera state
+  if (_renderer3d && _renderer3d.getOrbitState) {
+    json.orbit = _renderer3d.getOrbitState();
+  }
+
+  // Workspace mode
+  if (_getWorkspaceMode) {
+    json.workspaceMode = _getWorkspaceMode();
+  }
+
+  return json;
 }
 
 /**
@@ -35,6 +67,9 @@ function projectToJSON() {
  */
 function projectFromJSON(data) {
   if (!data || data.version == null) return { ok: false, hasViewport: false };
+
+  // Backward compatible: v2 projects lack part/orbit/workspaceMode fields,
+  // which will be null in the returned object. The caller handles this gracefully.
 
   // Restore scene
   if (data.scene) {
@@ -68,7 +103,7 @@ function projectFromJSON(data) {
   state._undoStack = [];
   state._redoStack = [];
 
-  return { ok: true, hasViewport };
+  return { ok: true, hasViewport, part: data.part || null, orbit: data.orbit || null, workspaceMode: data.workspaceMode || null };
 }
 
 /**
@@ -102,11 +137,11 @@ export function loadProject() {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return false;
     const data = JSON.parse(raw);
-    const { ok, hasViewport } = projectFromJSON(data);
-    if (ok) {
-      info('Project restored from localStorage', { entities: state.entities.length, layers: state.layers.length, hasViewport });
+    const result = projectFromJSON(data);
+    if (result.ok) {
+      info('Project restored from localStorage', { entities: state.entities.length, layers: state.layers.length, hasViewport: result.hasViewport });
     }
-    return { ok, hasViewport };
+    return result;
   } catch (err) {
     error('Failed to load project from localStorage', err);
     return false;

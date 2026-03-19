@@ -35,6 +35,10 @@ export class Part {
       XZ: { visible: true, size: 5.0 },
       YZ: { visible: true, size: 5.0 },
     };
+
+    // Flag: once the first feature is added, auto-hide origin planes.
+    // After that the user controls visibility manually.
+    this._originPlanesAutoHidden = false;
     
     // Currently active sketch feature ID (being edited)
     this.activeSketchId = null;
@@ -92,6 +96,18 @@ export class Part {
   }
 
   /**
+   * Auto-hide origin planes on the first feature added to the part.
+   * Once triggered, it is never called again (the user controls visibility).
+   */
+  _checkAutoHidePlanes() {
+    if (this._originPlanesAutoHidden || this.featureTree.features.length === 0) return;
+    this._originPlanesAutoHidden = true;
+    this.setOriginPlaneVisible('XY', false);
+    this.setOriginPlaneVisible('XZ', false);
+    this.setOriginPlaneVisible('YZ', false);
+  }
+
+  /**
    * Set the active sketch being edited.
    * @param {string|null} sketchFeatureId - ID of the sketch feature being edited, or null
    */
@@ -133,7 +149,7 @@ export class Part {
    * @returns {Object|null} The final result or null
    */
   getFinalGeometry() {
-    return this.featureTree.getFinalResult();
+    return this.featureTree.getLastSolidResult() || this.featureTree.getFinalResult();
   }
 
   // -----------------------------------------------------------------------
@@ -157,6 +173,7 @@ export class Part {
     }
     
     this.featureTree.addFeature(sketchFeature, index);
+    this._checkAutoHidePlanes();
     return sketchFeature;
   }
 
@@ -248,7 +265,7 @@ export class Part {
     // If there is already a solid body in the feature tree, default to 'add'
     // so subsequent features are combined (union) rather than replacing the body.
     if (!options.operation) {
-      const existingSolid = this.featureTree.getFinalResult();
+      const existingSolid = this.featureTree.getLastSolidResult();
       if (existingSolid && existingSolid.type === 'solid') {
         extrudeFeature.operation = 'add';
       }
@@ -263,6 +280,7 @@ export class Part {
     sketchFeature.setVisible(false);
     
     this.featureTree.addFeature(extrudeFeature);
+    this._checkAutoHidePlanes();
     // Note: Physical properties are computed lazily when requested
     
     return extrudeFeature;
@@ -288,7 +306,7 @@ export class Part {
     const revolveFeature = new RevolveFeature(`Revolve${this.featureTree.features.length + 1}`, sketchId, angle);
     
     if (!options.operation) {
-      const existingSolid = this.featureTree.getFinalResult();
+      const existingSolid = this.featureTree.getLastSolidResult();
       if (existingSolid && existingSolid.type === 'solid') {
         revolveFeature.operation = 'add';
       }
@@ -302,6 +320,7 @@ export class Part {
     sketchFeature.setVisible(false);
     
     this.featureTree.addFeature(revolveFeature);
+    this._checkAutoHidePlanes();
     // Note: Physical properties are computed lazily when requested
     
     return revolveFeature;
@@ -438,6 +457,7 @@ export class Part {
       modified: this.modified.toISOString(),
       featureTree: this.featureTree.serialize(),
       originPlanes: this.originPlanes,
+      originPlanesAutoHidden: this._originPlanesAutoHidden,
       material: this.material,
       mass: this.mass,
       volume: this.volume,
@@ -486,6 +506,12 @@ export class Part {
         YZ: { ...part.originPlanes.YZ, ...data.originPlanes.YZ },
       };
     }
+
+    // Restore auto-hide flag; for old data without the flag, infer from
+    // whether the part already has features (auto-hide already fired).
+    part._originPlanesAutoHidden = data.originPlanesAutoHidden !== undefined
+      ? data.originPlanesAutoHidden
+      : (part.featureTree.features.length > 0);
 
     return part;
   }

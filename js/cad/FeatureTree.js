@@ -387,6 +387,24 @@ export class FeatureTree {
     return null;
   }
 
+  /**
+   * Get the last solid result in the feature tree.
+   * Skips sketch features and returns the most recent solid geometry result.
+   * @returns {Object|null} The last solid result or null
+   */
+  getLastSolidResult() {
+    for (let i = this.features.length - 1; i >= 0; i--) {
+      const feature = this.features[i];
+      if (!feature.suppressed && this.results[feature.id] && !this.results[feature.id].error) {
+        const result = this.results[feature.id];
+        if (result.type === 'solid') {
+          return result;
+        }
+      }
+    }
+    return null;
+  }
+
   // -----------------------------------------------------------------------
   // Serialization
   // -----------------------------------------------------------------------
