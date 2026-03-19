@@ -1345,7 +1345,7 @@ class App {
   // --- Command line ---
   _handleCommand(cmd) {
     if (!cmd) return;
-    // Split preserving original case for dotted commands, lowercase for legacy tool names
+    // Lowercase first token for matching; preserve case in arguments for replay fidelity
     const raw = cmd.trim().split(/\s+/);
     const command = raw[0].toLowerCase();
     const args = raw.slice(1);

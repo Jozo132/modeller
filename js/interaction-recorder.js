@@ -119,12 +119,7 @@ export class InteractionRecorder {
     this._pendingOrbit = null;
   }
 
-  zoom(theta, phi, radius, target) {
-    // Buffer — overwrites any pending camera
-    this._pushCamera(`camera.set ${n4(theta)} ${n4(phi)} ${n4(radius)} ${n4(target.x)} ${n4(target.y)} ${n4(target.z)}`);
-  }
-
-  /** Record a full camera snapshot (e.g. for zoom where we need the full state). */
+  /** Record a full camera snapshot (used for zoom and initial state capture). */
   cameraSnapshot(theta, phi, radius, target) {
     this._pushCamera(`camera.set ${n4(theta)} ${n4(phi)} ${n4(radius)} ${n4(target.x)} ${n4(target.y)} ${n4(target.z)}`);
   }
