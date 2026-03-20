@@ -8,6 +8,7 @@ export class ParametersPanel {
     this.container = container;
     this.partManager = partManager;
     this.currentFeature = null;
+    this.onParameterChange = null; // callback(featureId, paramName, value)
 
     this.init();
   }
@@ -23,6 +24,14 @@ export class ParametersPanel {
     `;
 
     this.contentElement = this.container.querySelector('#parameters-content');
+  }
+
+  /**
+   * Set callback for parameter changes (for recording)
+   * @param {Function} callback - (featureId, paramName, value) => void
+   */
+  setOnParameterChange(callback) {
+    this.onParameterChange = callback;
   }
 
   /**
@@ -63,17 +72,47 @@ export class ParametersPanel {
   showExtrudeParameters(feature) {
     // Distance
     const distanceDiv = this.createParameter('Distance', 'number', feature.distance, (value) => {
+      const parsed = parseFloat(value);
       this.partManager.modifyFeature(feature.id, (f) => {
-        f.setDistance(parseFloat(value));
+        f.setDistance(parsed);
       });
+      if (this.onParameterChange) this.onParameterChange(feature.id, 'distance', parsed);
     });
     this.contentElement.appendChild(distanceDiv);
+
+    // Direction
+    const directionDiv = this.createParameter('Direction', 'select', feature.direction, (value) => {
+      const dir = parseInt(value, 10);
+      this.partManager.modifyFeature(feature.id, (f) => {
+        f.direction = dir;
+      });
+      if (this.onParameterChange) this.onParameterChange(feature.id, 'direction', dir);
+    }, [
+      { value: '1', label: 'Normal' },
+      { value: '-1', label: 'Reverse' },
+    ]);
+    this.contentElement.appendChild(directionDiv);
+
+    // Operation
+    const operationDiv = this.createParameter('Operation', 'select', feature.operation, (value) => {
+      this.partManager.modifyFeature(feature.id, (f) => {
+        f.operation = value;
+      });
+      if (this.onParameterChange) this.onParameterChange(feature.id, 'operation', value);
+    }, [
+      { value: 'new', label: 'New Body' },
+      { value: 'add', label: 'Add (Union)' },
+      { value: 'subtract', label: 'Subtract (Cut)' },
+      { value: 'intersect', label: 'Intersect' },
+    ]);
+    this.contentElement.appendChild(operationDiv);
 
     // Symmetric option
     const symmetricDiv = this.createParameter('Symmetric', 'checkbox', feature.symmetric, (value) => {
       this.partManager.modifyFeature(feature.id, (f) => {
         f.symmetric = value;
       });
+      if (this.onParameterChange) this.onParameterChange(feature.id, 'symmetric', value);
     });
     this.contentElement.appendChild(symmetricDiv);
   }
@@ -90,14 +129,17 @@ export class ParametersPanel {
       this.partManager.modifyFeature(feature.id, (f) => {
         f.setAngle(radians);
       });
+      if (this.onParameterChange) this.onParameterChange(feature.id, 'angle', radians);
     });
     this.contentElement.appendChild(angleDiv);
 
     // Segments
     const segmentsDiv = this.createParameter('Segments', 'number', feature.segments, (value) => {
+      const parsed = parseInt(value);
       this.partManager.modifyFeature(feature.id, (f) => {
-        f.segments = parseInt(value);
+        f.segments = parsed;
       });
+      if (this.onParameterChange) this.onParameterChange(feature.id, 'segments', parsed);
     });
     this.contentElement.appendChild(segmentsDiv);
   }
@@ -120,11 +162,12 @@ export class ParametersPanel {
   /**
    * Create a parameter input element
    * @param {string} label - Parameter label
-   * @param {string} type - Input type (text, number, checkbox)
+   * @param {string} type - Input type (text, number, checkbox, select)
    * @param {*} value - Current value
    * @param {Function} onChange - Change callback
+   * @param {Array} [options] - Options for select type [{value, label}]
    */
-  createParameter(label, type, value, onChange) {
+  createParameter(label, type, value, onChange, options) {
     const div = document.createElement('div');
     div.className = 'parameter-row';
 
@@ -140,6 +183,19 @@ export class ParametersPanel {
       inputElement.checked = value;
       inputElement.addEventListener('change', (e) => {
         onChange(e.target.checked);
+      });
+    } else if (type === 'select') {
+      inputElement = document.createElement('select');
+      inputElement.className = 'parameter-input';
+      for (const opt of options) {
+        const optEl = document.createElement('option');
+        optEl.value = opt.value;
+        optEl.textContent = opt.label;
+        if (String(opt.value) === String(value)) optEl.selected = true;
+        inputElement.appendChild(optEl);
+      }
+      inputElement.addEventListener('change', (e) => {
+        onChange(e.target.value);
       });
     } else {
       inputElement = document.createElement('input');
