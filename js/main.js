@@ -1717,7 +1717,7 @@ class App {
           f.operation = value;
           break;
         case 'symmetric':
-          f.symmetric = value === 'true';
+          f.symmetric = value === 'true' || value === true;
           break;
         case 'angle':
           if (typeof f.setAngle === 'function') f.setAngle(parseFloat(value));
