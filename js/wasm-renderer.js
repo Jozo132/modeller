@@ -114,6 +114,7 @@ export class WasmRenderer {
 
     // Sketch plane reference (set when in sketch-on-plane mode)
     this._sketchPlane = null; // 'XY', 'XZ', 'YZ', or null
+    this._originPlaneVisibilityMask = 0b111;
 
     // Window resize handler
     this._resizeHandler = () => this.onWindowResize();
@@ -701,6 +702,9 @@ export class WasmRenderer {
     let closestPlane = null;
 
     for (const p of planes) {
+      const planeMask = p.name === 'XY' ? 1 : (p.name === 'XZ' ? 2 : 4);
+      if ((this._originPlaneVisibilityMask & planeMask) === 0) continue;
+
       const denom = dir.x * p.normal.x + dir.y * p.normal.y + dir.z * p.normal.z;
       if (Math.abs(denom) < 1e-10) continue;
 
@@ -737,6 +741,7 @@ export class WasmRenderer {
     if (planeName === 'XY') mask = 1;
     else if (planeName === 'XZ') mask = 2;
     else if (planeName === 'YZ') mask = 4;
+    if ((mask & this._originPlaneVisibilityMask) === 0) mask = 0;
     this.wasm.setOriginPlaneHovered(mask);
   }
 
@@ -750,6 +755,7 @@ export class WasmRenderer {
     if (planeName === 'XY') mask = 1;
     else if (planeName === 'XZ') mask = 2;
     else if (planeName === 'YZ') mask = 4;
+    if ((mask & this._originPlaneVisibilityMask) === 0) mask = 0;
     this.wasm.setOriginPlaneSelected(mask);
   }
 
@@ -1627,6 +1633,7 @@ export class WasmRenderer {
       if (!planes.XY || planes.XY.visible) mask |= 1;
       if (!planes.XZ || planes.XZ.visible) mask |= 2;
       if (!planes.YZ || planes.YZ.visible) mask |= 4;
+      this._originPlaneVisibilityMask = mask;
       this.wasm.setOriginPlanesVisible(mask);
     }
 

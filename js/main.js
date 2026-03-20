@@ -119,6 +119,7 @@ class App {
     this._featurePanel = null;
     this._parametersPanel = null;
     this._lastSketchFeatureId = null;
+    this._rollbackIndex = -1; // -1 means no rollback (all features active)
 
     // Bind events
     this._bind3DCanvasEvents(); // 3D-only interactions
@@ -1976,6 +1977,144 @@ class App {
     this._updateToggleAllButtons();
   }
 
+  /**
+   * Show feature properties in the left panel (Part mode)
+   * @param {Feature|null} feature
+   */
+  _showLeftFeatureParams(feature) {
+    const container = document.getElementById('left-feature-params-content');
+    if (!container) return;
+    if (!feature) {
+      container.innerHTML = '<p class="hint">Select a feature to view properties</p>';
+      return;
+    }
+    container.innerHTML = '';
+
+    // Name
+    const nameRow = this._createParamRow('Name', 'text', feature.name, (v) => {
+      feature.name = v;
+      this._partManager.notifyListeners();
+    });
+    container.appendChild(nameRow);
+
+    // Type badge
+    const typeRow = document.createElement('div');
+    typeRow.className = 'parameter-row';
+    typeRow.innerHTML = `<label class="parameter-label">Type</label><span class="parameter-value">${feature.type}</span>`;
+    container.appendChild(typeRow);
+
+    if (feature.type === 'extrude') {
+      container.appendChild(this._createParamRow('Distance', 'number', feature.distance, (v) => {
+        const parsed = parseFloat(v);
+        this._partManager.modifyFeature(feature.id, (f) => f.setDistance(parsed));
+        if (this._parametersPanel && this._parametersPanel.onParameterChange) this._parametersPanel.onParameterChange(feature.id, 'distance', parsed);
+      }));
+      container.appendChild(this._createParamRow('Direction', 'select', feature.direction, (v) => {
+        const dir = parseInt(v, 10);
+        this._partManager.modifyFeature(feature.id, (f) => { f.direction = dir; });
+        if (this._parametersPanel && this._parametersPanel.onParameterChange) this._parametersPanel.onParameterChange(feature.id, 'direction', dir);
+      }, [{ value: '1', label: 'Normal' }, { value: '-1', label: 'Reverse' }]));
+      container.appendChild(this._createParamRow('Operation', 'select', feature.operation, (v) => {
+        this._partManager.modifyFeature(feature.id, (f) => { f.operation = v; });
+        if (this._parametersPanel && this._parametersPanel.onParameterChange) this._parametersPanel.onParameterChange(feature.id, 'operation', v);
+      }, [
+        { value: 'new', label: 'New Body' },
+        { value: 'add', label: 'Add (Union)' },
+        { value: 'subtract', label: 'Subtract (Cut)' },
+        { value: 'intersect', label: 'Intersect' },
+      ]));
+      container.appendChild(this._createParamRow('Symmetric', 'checkbox', feature.symmetric, (v) => {
+        this._partManager.modifyFeature(feature.id, (f) => { f.symmetric = v; });
+        if (this._parametersPanel && this._parametersPanel.onParameterChange) this._parametersPanel.onParameterChange(feature.id, 'symmetric', v);
+      }));
+    } else if (feature.type === 'revolve') {
+      const angleDeg = (feature.angle * 180 / Math.PI).toFixed(1);
+      container.appendChild(this._createParamRow('Angle (°)', 'number', angleDeg, (v) => {
+        const rad = parseFloat(v) * Math.PI / 180;
+        this._partManager.modifyFeature(feature.id, (f) => f.setAngle(rad));
+        if (this._parametersPanel && this._parametersPanel.onParameterChange) this._parametersPanel.onParameterChange(feature.id, 'angle', rad);
+      }));
+      container.appendChild(this._createParamRow('Segments', 'number', feature.segments, (v) => {
+        const parsed = parseInt(v);
+        this._partManager.modifyFeature(feature.id, (f) => { f.segments = parsed; });
+        if (this._parametersPanel && this._parametersPanel.onParameterChange) this._parametersPanel.onParameterChange(feature.id, 'segments', parsed);
+      }));
+    } else if (feature.type === 'sketch') {
+      const info = document.createElement('div');
+      info.className = 'parameter-info';
+      info.innerHTML = `
+        <p><strong>Segments:</strong> ${feature.sketch ? feature.sketch.segments.length : 0}</p>
+        <p><strong>Points:</strong> ${feature.sketch ? feature.sketch.points.length : 0}</p>
+      `;
+      container.appendChild(info);
+    }
+
+    // Feature steps (children)
+    if (feature.children && feature.children.length > 0) {
+      const stepsHeader = document.createElement('div');
+      stepsHeader.className = 'parameter-row';
+      stepsHeader.innerHTML = '<label class="parameter-label" style="font-weight:600;margin-top:8px">Steps</label>';
+      container.appendChild(stepsHeader);
+      const allFeatures = this._partManager.getFeatures();
+      feature.children.forEach((childId) => {
+        const child = allFeatures.find(f => f.id === childId);
+        if (child) {
+          const stepRow = document.createElement('div');
+          stepRow.className = 'parameter-row lp-item';
+          stepRow.style.cursor = 'pointer';
+          stepRow.innerHTML = `<span style="opacity:0.6;margin-right:4px">${child.type === 'sketch' ? '📐' : child.type === 'extrude' ? '⬆️' : '🔄'}</span> ${child.name}`;
+          stepRow.addEventListener('click', () => {
+            if (this._featurePanel) this._featurePanel.selectFeature(child.id);
+            this._showLeftFeatureParams(child);
+            if (this._parametersPanel) this._parametersPanel.showFeature(child);
+            this._updateNodeTree();
+          });
+          container.appendChild(stepRow);
+        }
+      });
+    }
+  }
+
+  /**
+   * Create a parameter row element for the left panel
+   */
+  _createParamRow(label, type, value, onChange, options) {
+    const div = document.createElement('div');
+    div.className = 'parameter-row';
+    const lbl = document.createElement('label');
+    lbl.className = 'parameter-label';
+    lbl.textContent = label;
+    div.appendChild(lbl);
+
+    let input;
+    if (type === 'checkbox') {
+      input = document.createElement('input');
+      input.type = 'checkbox';
+      input.checked = value;
+      input.addEventListener('change', (e) => onChange(e.target.checked));
+    } else if (type === 'select') {
+      input = document.createElement('select');
+      input.className = 'parameter-input';
+      for (const opt of options) {
+        const o = document.createElement('option');
+        o.value = opt.value;
+        o.textContent = opt.label;
+        if (String(opt.value) === String(value)) o.selected = true;
+        input.appendChild(o);
+      }
+      input.addEventListener('change', (e) => onChange(e.target.value));
+    } else {
+      input = document.createElement('input');
+      input.type = type;
+      input.className = 'parameter-input';
+      input.value = value;
+      if (type === 'number') input.step = 'any';
+      input.addEventListener('change', (e) => onChange(e.target.value));
+    }
+    div.appendChild(input);
+    return div;
+  }
+
   /** Sync the toggle-all buttons' visual state with current flags */
   _updateToggleAllButtons() {
     const dimBtn = document.getElementById('btn-toggle-all-dims');
@@ -3641,6 +3780,7 @@ class App {
     // Setup callbacks
     this._featurePanel.setOnFeatureSelect((feature) => {
       this._parametersPanel.showFeature(feature);
+      this._showLeftFeatureParams(feature);
     });
 
     this._featurePanel.setOnFeatureToggle((feature) => {
@@ -3649,6 +3789,7 @@ class App {
 
     this._featurePanel.setOnFeatureDelete((featureId) => {
       this._parametersPanel.clear();
+      this._showLeftFeatureParams(null);
       this._update3DView();
     });
 
@@ -3887,6 +4028,13 @@ class App {
     }
   }
 
+  _isOriginPlaneVisible(planeName) {
+    const part = this._partManager.getPart();
+    if (!part || !planeName) return false;
+    const originPlanes = part.getOriginPlanes ? part.getOriginPlanes() : null;
+    return !!(originPlanes && originPlanes[planeName] && originPlanes[planeName].visible);
+  }
+
   _serializeSessionState() {
     return {
       sketchingOnPlane: this._sketchingOnPlane,
@@ -3896,6 +4044,7 @@ class App {
       lastSketchFeatureId: this._lastSketchFeatureId,
       savedOrbitState: this._savedOrbitState,
       expandedFolders: Array.from(this._expandedFolders || []),
+      rollbackIndex: this._rollbackIndex,
     };
   }
 
@@ -3903,6 +4052,9 @@ class App {
     if (!sessionState) return;
 
     this._expandedFolders = new Set(Array.isArray(sessionState.expandedFolders) ? sessionState.expandedFolders : []);
+    if (typeof sessionState.rollbackIndex === 'number') {
+      this._rollbackIndex = sessionState.rollbackIndex;
+    }
 
     if (!sessionState.sketchingOnPlane) return;
 
@@ -3975,6 +4127,7 @@ class App {
     this._savedOrbitState = null;
     this._sketchingOnPlane = false;
     this._expandedFolders.clear();
+    this._rollbackIndex = -1;
 
     document.body.classList.remove('sketch-on-plane');
     const exitBtn = document.getElementById('btn-exit-sketch');
@@ -4004,6 +4157,7 @@ class App {
       this._featurePanel.update();
     }
     if (this._parametersPanel) this._parametersPanel.clear();
+    this._showLeftFeatureParams(null);
 
     this._updateNodeTree();
     this._update3DView();
@@ -4027,7 +4181,19 @@ class App {
         const planeEl = document.querySelector(`#node-tree-origin-planes .node-tree-plane[data-plane="${planeName}"]`);
         if (!planeEl) return;
 
-        planeEl.classList.toggle('selected', this._selectedPlane === planeName);
+        const isVisible = !!planeState.visible;
+        if (!isVisible && this._selectedPlane === planeName) {
+          this._selectedPlane = null;
+          if (this._renderer3d) this._renderer3d.setSelectedPlane(null);
+        }
+        if (!isVisible && this._hoveredPlane === planeName) {
+          this._hoveredPlane = null;
+          if (this._renderer3d) this._renderer3d.setHoveredPlane(null);
+        }
+
+        planeEl.classList.toggle('selected', isVisible && this._selectedPlane === planeName);
+        planeEl.classList.toggle('inactive', !isVisible);
+        planeEl.classList.toggle('hovered', isVisible && this._hoveredPlane === planeName);
 
         let eyeEl = planeEl.querySelector('.node-tree-eye');
         if (!eyeEl) {
@@ -4038,7 +4204,7 @@ class App {
           else planeEl.insertBefore(eyeEl, planeEl.firstChild);
         }
 
-        eyeEl.textContent = planeState.visible ? '◉' : '○';
+        eyeEl.textContent = planeState.visible ? '👁' : '—';
         eyeEl.setAttribute('data-plane-toggle', planeName);
         eyeEl.title = `Toggle ${planeName} plane visibility`;
         eyeEl.onclick = (e) => {
@@ -4052,6 +4218,7 @@ class App {
         planeEl.onclick = (e) => {
           if (e.target && e.target.classList && e.target.classList.contains('node-tree-eye')) return;
           if (this._workspaceMode !== 'part') return;
+          if (!isVisible) return;
           if (this._selectedPlane === planeName) {
             this._selectedPlane = null;
           } else {
@@ -4096,17 +4263,23 @@ class App {
       }
     });
 
+    // Determine the rollback position (index of features that are active)
+    // _rollbackIndex === -1 means all features are active (bar is at bottom)
+    const rollbackPos = this._rollbackIndex < 0 ? features.length : this._rollbackIndex;
+
     // Helper: build a feature row element
-    const buildFeatureRow = (feature, isChild) => {
+    const buildFeatureRow = (feature, isChild, featureIndex) => {
+      const isBelowRollback = featureIndex >= rollbackPos;
       const div = document.createElement('div');
       div.className = isChild ? 'node-tree-feature node-tree-child-feature' : 'node-tree-feature';
-      if (feature.suppressed) div.classList.add('suppressed');
+      if (feature.suppressed || isBelowRollback) div.classList.add('suppressed');
+      if (isBelowRollback) div.classList.add('rolled-back');
       if (this._featurePanel && this._featurePanel.selectedFeatureId === feature.id) {
         div.classList.add('active');
       }
 
       const icon = featureIcons[feature.type] || '📦';
-      const eyeIcon = feature.visible ? '◉' : '○';
+      const eyeIcon = feature.visible ? '👁' : '—';
       const hiddenTag = feature.visible ? '' : ' <span class="node-tree-hidden-indicator" title="Hidden">[hidden]</span>';
       div.innerHTML = `<span class="node-tree-eye" title="Toggle feature visibility">${eyeIcon}</span><span class="node-tree-icon">${icon}</span><span class="node-tree-label">${feature.name}${hiddenTag}</span>`;
 
@@ -4115,7 +4288,7 @@ class App {
         eyeEl.addEventListener('click', (e) => {
           e.stopPropagation();
           feature.setVisible(!feature.visible);
-          this._featurePanel.update();
+          if (this._featurePanel) this._featurePanel.update();
           this._updateNodeTree();
           this._update3DView();
           this._scheduleRender();
@@ -4126,6 +4299,12 @@ class App {
         if (this._featurePanel) {
           this._featurePanel.selectFeature(feature.id);
         }
+        // Show parameters in the sidebar
+        if (this._parametersPanel) {
+          this._parametersPanel.showFeature(feature);
+        }
+        // Show parameters in the left panel (Part mode)
+        this._showLeftFeatureParams(feature);
         // Highlight selected feature in 3D view
         if (this._renderer3d) {
           this._renderer3d.setSelectedFeature(feature.id);
@@ -4144,13 +4323,89 @@ class App {
         }
       });
 
+      // Right-click context menu
+      div.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const ctxItems = [];
+
+        // Edit (sketch only)
+        if (feature.type === 'sketch') {
+          ctxItems.push({
+            type: 'item', label: 'Edit Sketch', icon: '✏️',
+            disabled: this._sketchingOnPlane,
+            action: () => {
+              this._recorder.sketchEditStarted(feature.id, feature.name);
+              this._editExistingSketch(feature);
+            }
+          });
+        }
+
+        // Rename
+        ctxItems.push({
+          type: 'item', label: 'Rename', icon: '📝',
+          action: () => {
+            const newName = prompt('Rename feature:', feature.name);
+            if (newName && newName.trim()) {
+              feature.name = newName.trim();
+              this._partManager.notifyListeners();
+            }
+          }
+        });
+
+        ctxItems.push({ type: 'separator' });
+
+        // Suppress / Unsuppress
+        if (feature.suppressed) {
+          ctxItems.push({
+            type: 'item', label: 'Unsuppress', icon: '👁',
+            action: () => {
+              this._partManager.unsuppressFeature(feature.id);
+              this._update3DView();
+            }
+          });
+        } else {
+          ctxItems.push({
+            type: 'item', label: 'Suppress', icon: '🚫',
+            action: () => {
+              this._partManager.suppressFeature(feature.id);
+              this._update3DView();
+            }
+          });
+        }
+
+        ctxItems.push({ type: 'separator' });
+
+        // Delete
+        ctxItems.push({
+          type: 'item', label: 'Delete', icon: '🗑️',
+          action: () => {
+            if (!confirm('Delete this feature? This cannot be undone.')) return;
+            this._partManager.removeFeature(feature.id);
+            if (this._featurePanel && this._featurePanel.selectedFeatureId === feature.id) {
+              this._featurePanel.selectedFeatureId = null;
+            }
+            if (this._parametersPanel) this._parametersPanel.clear();
+            this._showLeftFeatureParams(null);
+            this._update3DView();
+          }
+        });
+
+        showContextMenu(e.clientX, e.clientY, ctxItems);
+      });
+
       return div;
     };
+
+    // Track the flat visual index to place the rollback bar correctly
+    let flatIndex = 0;
+    const allRows = []; // {element, flatIdx}
 
     features.forEach((feature) => {
       // Skip features that are consumed as children (shown nested under parent)
       if (consumedIds.has(feature.id)) return;
 
+      const featureIndex = features.indexOf(feature);
       const hasChildren = feature.children && feature.children.length > 0;
 
       if (hasChildren) {
@@ -4163,7 +4418,7 @@ class App {
         const isExpanded = this._expandedFolders && this._expandedFolders.has(folderId);
 
         // Parent feature row with toggle arrow
-        const div = buildFeatureRow(feature, false);
+        const div = buildFeatureRow(feature, false, featureIndex);
         // Prepend a toggle arrow before the eye icon
         const arrow = document.createElement('span');
         arrow.className = 'node-tree-folder-arrow';
@@ -4188,17 +4443,135 @@ class App {
           feature.children.forEach((childId) => {
             const childFeature = features.find((f) => f.id === childId);
             if (childFeature) {
-              childContainer.appendChild(buildFeatureRow(childFeature, true));
+              childContainer.appendChild(buildFeatureRow(childFeature, true, features.indexOf(childFeature)));
             }
           });
           wrapper.appendChild(childContainer);
         }
 
-        container.appendChild(wrapper);
+        allRows.push({ element: wrapper, flatIdx: flatIndex });
+        flatIndex++;
       } else {
-        container.appendChild(buildFeatureRow(feature, false));
+        allRows.push({ element: buildFeatureRow(feature, false, featureIndex), flatIdx: flatIndex });
+        flatIndex++;
       }
     });
+
+    // Determine where to insert the rollback bar among the visible rows
+    // The rollback bar position maps to the feature index in the flat features array
+    // We need to map rollbackPos to the visual row index
+    let rollbackRowIdx = allRows.length; // default: at the bottom
+    if (rollbackPos < features.length) {
+      // Find the visual row that corresponds to the first rolled-back feature
+      const rolledBackFeature = features[rollbackPos];
+      if (rolledBackFeature) {
+        // If the rolled-back feature is consumed as a child, find its parent
+        const matchIdx = allRows.findIndex((r) => {
+          const el = r.element;
+          return el.querySelector(`[data-feature-id="${rolledBackFeature.id}"]`) !== null ||
+                 el.dataset?.featureId === rolledBackFeature.id;
+        });
+        // Fallback: use feature counting
+        if (matchIdx >= 0) {
+          rollbackRowIdx = matchIdx;
+        } else {
+          // Map by counting non-consumed features up to rollbackPos
+          let count = 0;
+          for (let i = 0; i < rollbackPos; i++) {
+            if (!consumedIds.has(features[i].id)) count++;
+          }
+          rollbackRowIdx = count;
+        }
+      }
+    }
+
+    // Build the rollback bar element
+    const rollbackBar = document.createElement('div');
+    rollbackBar.className = 'node-tree-rollback-bar';
+    rollbackBar.title = 'Drag to roll back / forward features';
+
+    // Drag handling for the rollback bar
+    let dragStartY = 0;
+    let dragStartIndex = rollbackPos;
+
+    const onDragMove = (e) => {
+      rollbackBar.classList.add('dragging');
+      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+      const deltaY = clientY - dragStartY;
+      // Each row is approximately 24px tall
+      const rowHeight = 24;
+      const indexDelta = Math.round(deltaY / rowHeight);
+      let newIndex = dragStartIndex + indexDelta;
+      newIndex = Math.max(0, Math.min(features.length, newIndex));
+      if (newIndex !== this._rollbackIndex && !(newIndex === features.length && this._rollbackIndex === -1)) {
+        this._rollbackIndex = newIndex >= features.length ? -1 : newIndex;
+        this._applyRollbackSuppression();
+        // notifyListeners in _applyRollbackSuppression triggers _updateNodeTree, _update3DView
+        this._scheduleRender();
+      }
+    };
+
+    const onDragEnd = () => {
+      rollbackBar.classList.remove('dragging');
+      document.removeEventListener('mousemove', onDragMove);
+      document.removeEventListener('mouseup', onDragEnd);
+      document.removeEventListener('touchmove', onDragMove);
+      document.removeEventListener('touchend', onDragEnd);
+    };
+
+    rollbackBar.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dragStartY = e.clientY;
+      dragStartIndex = this._rollbackIndex < 0 ? features.length : this._rollbackIndex;
+      document.addEventListener('mousemove', onDragMove);
+      document.addEventListener('mouseup', onDragEnd);
+    });
+
+    rollbackBar.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dragStartY = e.touches[0].clientY;
+      dragStartIndex = this._rollbackIndex < 0 ? features.length : this._rollbackIndex;
+      document.addEventListener('touchmove', onDragMove, { passive: false });
+      document.addEventListener('touchend', onDragEnd);
+    });
+
+    // Insert rows and the rollback bar into the container
+    for (let i = 0; i < allRows.length; i++) {
+      if (i === rollbackRowIdx) {
+        container.appendChild(rollbackBar);
+      }
+      container.appendChild(allRows[i].element);
+    }
+    // If bar is at the bottom (all features active)
+    if (rollbackRowIdx >= allRows.length) {
+      container.appendChild(rollbackBar);
+    }
+  }
+
+  /**
+   * Apply rollback suppression: suppress features at/after _rollbackIndex,
+   * unsuppress features before _rollbackIndex.
+   */
+  _applyRollbackSuppression() {
+    const features = this._partManager.getFeatures();
+    if (features.length === 0) return;
+    const pos = this._rollbackIndex < 0 ? features.length : this._rollbackIndex;
+    for (let i = 0; i < features.length; i++) {
+      if (i < pos) {
+        if (features[i].suppressed) features[i].unsuppress();
+      } else {
+        if (!features[i].suppressed) features[i].suppress();
+      }
+    }
+    // Re-execute the feature tree
+    const part = this._partManager.getPart();
+    if (part) {
+      part.featureTree.executeAll();
+      part.modified = new Date();
+    }
+    this._partManager.notifyListeners();
   }
 
   _updateOperationButtons() {
@@ -4288,7 +4661,7 @@ class App {
       }
       const featurePanel = document.getElementById('feature-panel');
       const parametersPanel = document.getElementById('parameters-panel');
-      featurePanel.classList.add('active');
+      // Feature panel stays hidden (node tree overlay handles feature tree now)
       parametersPanel.classList.add('active');
       modeIndicator.textContent = 'PART DESIGN';
       modeIndicator.className = 'status-mode part-mode';
@@ -4309,6 +4682,7 @@ class App {
       item.addEventListener('click', () => {
         if (this._workspaceMode !== 'part') return;
         const plane = item.getAttribute('data-plane');
+        if (!this._isOriginPlaneVisible(plane)) return;
         if (this._selectedPlane === plane) {
           // Deselect
           this._selectedPlane = null;
@@ -4333,11 +4707,14 @@ class App {
       item.addEventListener('mouseenter', () => {
         if (this._workspaceMode !== 'part') return;
         const plane = item.getAttribute('data-plane');
+        if (!this._isOriginPlaneVisible(plane)) return;
         this._hoveredPlane = plane;
         if (this._renderer3d) this._renderer3d.setHoveredPlane(plane);
         this._scheduleRender();
       });
       item.addEventListener('mouseleave', () => {
+        const plane = item.getAttribute('data-plane');
+        if (!this._isOriginPlaneVisible(plane) && this._hoveredPlane !== plane) return;
         this._hoveredPlane = null;
         if (this._renderer3d) this._renderer3d.setHoveredPlane(null);
         this._scheduleRender();
@@ -4666,6 +5043,7 @@ class App {
     this._savedOrbitState = null;
     this._workspaceMode = null;
     this._expandedFolders.clear();
+    this._rollbackIndex = -1;
 
     // Destroy the current part and create a blank slate
     this._partManager.part = null;
@@ -4674,6 +5052,7 @@ class App {
     // Reset UI
     if (this._featurePanel) this._featurePanel.update();
     if (this._parametersPanel) this._parametersPanel.clear();
+    this._showLeftFeatureParams(null);
     this._updateNodeTree();
     this._update3DView();
     this._scheduleRender();
@@ -5460,7 +5839,9 @@ class App {
 
     // If a face is selected but no sketch was created for it, auto-create
     // a new sketch from the face outline instead of reusing an old sketch.
-    if (this._selectedFace && this._selectedFace.face) {
+    // Skip this if we already have a sketch ready (e.g. user just finished
+    // sketching on a face and the face happens to still be selected).
+    if (this._selectedFace && this._selectedFace.face && !this._lastSketchFeatureId) {
       const face = this._selectedFace.face;
       const planeDef = this._getPlaneFromFace(this._selectedFace);
       if (planeDef) {
@@ -5509,6 +5890,12 @@ class App {
           }
         }
       }
+      this._selectedFace = null;
+      if (this._renderer3d) this._renderer3d.selectFace(-1);
+    }
+
+    // Always clear face selection before extruding so it doesn't interfere
+    if (this._selectedFace) {
       this._selectedFace = null;
       if (this._renderer3d) this._renderer3d.selectFace(-1);
     }

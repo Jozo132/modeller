@@ -1687,6 +1687,27 @@ select.parameter-input {
   margin-bottom: 6px;
 }
 
+/* Left feature-params section reuses parameter styles */
+#left-feature-params-content {
+  padding: 8px 0;
+}
+#left-feature-params-content .parameter-row {
+  margin-bottom: 10px;
+}
+#left-feature-params-content .hint {
+  padding: 4px 0;
+}
+.parameter-value {
+  font-size: 13px;
+  color: var(--text-primary);
+  text-transform: capitalize;
+}
+
+/* In Part mode, hide the right sidebar parameters panel (it lives in the left panel now) */
+body.workspace-part #parameters-panel {
+  display: none !important;
+}
+
 /* Node Tree Overlay — transparent panel in top-left of viewport */
 .node-tree {
   position: fixed;
@@ -1742,9 +1763,18 @@ select.parameter-input {
   cursor: pointer;
 }
 
+.node-tree-plane.inactive {
+  cursor: default;
+  opacity: 0.5;
+}
+
 .node-tree-plane.hovered {
   background: rgba(135, 206, 235, 0.15);
   color: var(--text-primary);
+}
+
+.node-tree-plane.inactive.hovered {
+  background: transparent;
 }
 
 .node-tree-plane.selected {
@@ -1752,6 +1782,11 @@ select.parameter-input {
   color: var(--text-primary);
   outline: 1px solid rgba(0, 122, 204, 0.6);
   outline-offset: -1px;
+}
+
+.node-tree-plane.inactive.selected {
+  background: transparent;
+  outline: none;
 }
 
 .node-tree-eye {
@@ -1840,6 +1875,55 @@ select.parameter-input {
   padding-left: 26px;
   font-size: 11px;
   opacity: 0.8;
+}
+
+/* ── Suppression / Rollback Bar ── */
+.node-tree-rollback-bar {
+  position: relative;
+  height: 6px;
+  cursor: ns-resize;
+  user-select: none;
+  margin: 0 6px;
+  display: flex;
+  align-items: center;
+}
+
+.node-tree-rollback-bar::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 2px;
+  background: #f59e0b;
+  border-radius: 1px;
+  transform: translateY(-50%);
+  box-shadow: 0 0 4px rgba(245, 158, 11, 0.4);
+}
+
+.node-tree-rollback-bar:hover::before,
+.node-tree-rollback-bar.dragging::before {
+  height: 3px;
+  background: #fbbf24;
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.6);
+}
+
+.node-tree-rollback-bar::after {
+  content: '▼';
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 7px;
+  color: #f59e0b;
+  line-height: 1;
+}
+
+/* Features below the rollback bar */
+.node-tree-feature.rolled-back {
+  opacity: 0.35;
+  text-decoration: line-through;
+  pointer-events: auto;
 }
 
 /* ── Quick-Start Page ── */
@@ -2002,6 +2086,49 @@ select.parameter-input {
 
 body.workspace-part .part-mode-only {
   display: flex;
+}
+
+/* In Part workspace (not sketching): hide layers section (sketch-specific) */
+body.workspace-part #layers-section,
+body.workspace-part #layers-separator {
+  display: none;
+}
+
+/* In Part workspace (not sketching): hide sketch-only left panel sections */
+body.workspace-part .sketch-only-section {
+  display: none !important;
+}
+/* Feature properties section (Part mode only, hidden by default) */
+#left-feature-params {
+  display: none;
+}
+body.workspace-part #left-feature-params {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 60px;
+  overflow-y: auto;
+}
+
+/* Show layers when sketching within Part workspace */
+body.workspace-part.sketch-on-plane #layers-section,
+body.workspace-part.sketch-on-plane #layers-separator {
+  display: block !important;
+}
+/* Restore sketch sections when sketching within Part workspace */
+body.workspace-part.sketch-on-plane #primitives-section,
+body.workspace-part.sketch-on-plane #constraints-section {
+  display: flex !important;
+}
+body.workspace-part.sketch-on-plane #dimensions-section {
+  display: block !important;
+}
+body.workspace-part.sketch-on-plane hr.sketch-only-section {
+  display: block !important;
+}
+/* Hide feature params when sketching */
+body.workspace-part.sketch-on-plane #left-feature-params {
+  display: none !important;
 }
 
 /* In Part workspace (not sketching): hide sketch-specific tool groups */

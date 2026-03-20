@@ -114,8 +114,8 @@
 
   <!-- Properties Panel (unified right sidebar) -->
   <div id="properties-panel">
-    <!-- Feature Tree Section (shown in Part mode) -->
-    <div id="feature-panel" class="sidebar-section"></div>
+    <!-- Feature Tree backing store (hidden, used for state tracking) -->
+    <div id="feature-panel" class="sidebar-section" style="display:none!important"></div>
 
     <!-- Parameters Section (shown when feature selected) -->
     <div id="parameters-panel" class="sidebar-section"></div>
@@ -126,7 +126,7 @@
         <p class="hint">Select an entity to view properties</p>
       </div>
     </div>
-    <hr />
+    <hr id="layers-separator" />
     <div class="sidebar-section" id="layers-section">
       <h3>Layers</h3>
       <div id="layers-panel">
@@ -140,23 +140,31 @@
     </div>
   </div>
 
-  <!-- Left Panel (Primitives & Constraints) -->
+  <!-- Left Panel (Primitives & Constraints / Feature Properties) -->
   <div id="left-panel">
-    <div id="primitives-section">
+    <div id="primitives-section" class="sketch-only-section">
       <h3>Primitives</h3>
       <div id="primitives-list"></div>
     </div>
-    <hr />
-    <div id="dimensions-section">
+    <hr class="sketch-only-section" />
+    <div id="dimensions-section" class="sketch-only-section">
       <h3>Dimensions <button id="btn-toggle-all-dims" class="lp-toggle-all" title="Toggle all dimensions visibility">👁</button></h3>
       <div id="dimensions-list"></div>
     </div>
-    <hr />
-    <div id="constraints-section">
+    <hr class="sketch-only-section" />
+    <div id="constraints-section" class="sketch-only-section">
       <h3>Constraints <button id="btn-toggle-all-constraints" class="lp-toggle-all" title="Toggle all constraint icons">👁</button> <span id="constraints-filter-badge" class="filter-badge" style="display:none" title="Filtered by selection">⊘</span></h3>
       <div id="constraints-list"></div>
     </div>
-    <hr />
+    <hr class="sketch-only-section" />
+    <!-- Feature properties section (Part mode only) -->
+    <div id="left-feature-params" class="part-only-section">
+      <h3>Feature Properties</h3>
+      <div id="left-feature-params-content">
+        <p class="hint">Select a feature to view properties</p>
+      </div>
+    </div>
+    <hr class="left-panel-vars-sep" />
     <div id="variables-section">
       <h3>Variables</h3>
       <div id="variables-list"></div>
