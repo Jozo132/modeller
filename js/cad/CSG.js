@@ -366,8 +366,9 @@ class CSGSolid {
     // faceGroup ID to coplanar neighbours.
     assignCoplanarFaceGroups(faces);
 
-    // Build edge normal tracking
-    for (const face of faces) {
+    // Build edge normal tracking (also store face indices for coplanar suppression)
+    for (let fi = 0; fi < faces.length; fi++) {
+      const face = faces[fi];
       const faceVerts = face.vertices;
       const normal = face.normal;
       for (let i = 0; i < faceVerts.length; i++) {
@@ -375,10 +376,18 @@ class CSGSolid {
         const b = faceVerts[(i + 1) % faceVerts.length];
         const key = edgeKey(a, b);
         if (!edgeNormals.has(key)) {
-          edgeNormals.set(key, { start: a, end: b, normals: [] });
+          edgeNormals.set(key, { start: a, end: b, normals: [], faceIndices: [] });
         }
         edgeNormals.get(key).normals.push(normal);
+        edgeNormals.get(key).faceIndices.push(fi);
       }
+    }
+
+    // Build a set of faceGroup IDs that contain more than one face
+    const groupSize = new Map();
+    for (const face of faces) {
+      const g = face.faceGroup;
+      groupSize.set(g, (groupSize.get(g) || 0) + 1);
     }
 
     // Only include feature edges: boundary edges (1 face) or sharp edges
@@ -387,8 +396,15 @@ class CSGSolid {
     const edges = [];
     for (const [, info] of edgeNormals) {
       if (info.normals.length === 1) {
-        // Boundary edge — always a feature edge
-        edges.push({ start: info.start, end: info.end });
+        // Boundary edge — suppress if the single face belongs to a coplanar
+        // group with adjacent faces on the same plane (T-junction internal edge)
+        const fi = info.faceIndices[0];
+        const group = faces[fi].faceGroup;
+        if (groupSize.get(group) <= 1) {
+          // Truly isolated face — keep edge as feature edge
+          edges.push({ start: info.start, end: info.end });
+        }
+        // else: face is part of a larger coplanar group, suppress this internal edge
       } else if (info.normals.length >= 2) {
         // Check if any pair of adjacent normals differs significantly
         const n0 = info.normals[0];

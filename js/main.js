@@ -933,43 +933,55 @@ class App {
 
       const world = this._renderer3d.screenToWorld(sx, sy);
 
-      // In Part mode 3D view: handle face/geometry picking and plane clicking
+      // In Part mode 3D view: handle sketch/face/geometry picking and plane clicking
       if (this._workspaceMode === 'part' && this._renderer3d) {
-        const hit = this._renderer3d.pickFace(e.clientX, e.clientY);
-        if (hit) {
-          this._selectedFace = hit;
-          this._renderer3d.selectFace(hit.faceIndex);
-          // Clear plane selection when a face is selected
-          this._selectedPlane = null;
-          this._renderer3d.setSelectedPlane(null);
-          this.setStatus(`Selected face ${hit.faceIndex} (normal: ${hit.face.normal.x.toFixed(2)}, ${hit.face.normal.y.toFixed(2)}, ${hit.face.normal.z.toFixed(2)})`);
-          info(`Face selected: ${hit.faceIndex}`);
-          this._recorder.faceSelected(hit.faceIndex, hit.face.faceGroup, hit.face.normal, hit.face.shared && hit.face.shared.sourceFeatureId, hit.point);
-        } else {
+        // Try sketch picking first (wireframes are visually on top)
+        const sketchHit = this._renderer3d.pickSketch(e.clientX, e.clientY);
+        if (sketchHit) {
           this._selectedFace = null;
           this._renderer3d.selectFace(-1);
-
-          // Try plane picking
-          const hitPlaneResult = this._renderer3d.pickPlane(e.clientX, e.clientY);
-          const clickPoint3D = hitPlaneResult ? hitPlaneResult.point : null;
-
-          // Record deselect with best-available 3D position
-          this._recorder.faceDeselected(clickPoint3D);
-
-          if (hitPlaneResult) {
-            if (this._selectedPlane === hitPlaneResult.name) {
-              this._selectedPlane = null; // toggle off
-            } else {
-              this._selectedPlane = hitPlaneResult.name;
-            }
-          } else {
+          this._selectedPlane = null;
+          this._renderer3d.setSelectedPlane(null);
+          this._renderer3d.setSelectedFeature(sketchHit.featureId);
+          this.setStatus(`Selected sketch ${sketchHit.featureId}`);
+          info(`Sketch selected: ${sketchHit.featureId}`);
+        } else {
+          const hit = this._renderer3d.pickFace(e.clientX, e.clientY);
+          if (hit) {
+            this._selectedFace = hit;
+            this._renderer3d.selectFace(hit.faceIndex);
+            // Clear plane selection when a face is selected
             this._selectedPlane = null;
-          }
-          this._renderer3d.setSelectedPlane(this._selectedPlane);
-          if (this._selectedPlane && hitPlaneResult) {
-            this.setStatus(`Selected ${this._selectedPlane} plane`);
-            info(`Plane selected in 3D: ${this._selectedPlane}`);
-            this._recorder.planeSelected(this._selectedPlane, hitPlaneResult.point);
+            this._renderer3d.setSelectedPlane(null);
+            this.setStatus(`Selected face ${hit.faceIndex} (normal: ${hit.face.normal.x.toFixed(2)}, ${hit.face.normal.y.toFixed(2)}, ${hit.face.normal.z.toFixed(2)})`);
+            info(`Face selected: ${hit.faceIndex}`);
+            this._recorder.faceSelected(hit.faceIndex, hit.face.faceGroup, hit.face.normal, hit.face.shared && hit.face.shared.sourceFeatureId, hit.point);
+          } else {
+            this._selectedFace = null;
+            this._renderer3d.selectFace(-1);
+
+            // Try plane picking
+            const hitPlaneResult = this._renderer3d.pickPlane(e.clientX, e.clientY);
+            const clickPoint3D = hitPlaneResult ? hitPlaneResult.point : null;
+
+            // Record deselect with best-available 3D position
+            this._recorder.faceDeselected(clickPoint3D);
+
+            if (hitPlaneResult) {
+              if (this._selectedPlane === hitPlaneResult.name) {
+                this._selectedPlane = null; // toggle off
+              } else {
+                this._selectedPlane = hitPlaneResult.name;
+              }
+            } else {
+              this._selectedPlane = null;
+            }
+            this._renderer3d.setSelectedPlane(this._selectedPlane);
+            if (this._selectedPlane && hitPlaneResult) {
+              this.setStatus(`Selected ${this._selectedPlane} plane`);
+              info(`Plane selected in 3D: ${this._selectedPlane}`);
+              this._recorder.planeSelected(this._selectedPlane, hitPlaneResult.point);
+            }
           }
         }
         this._updateNodeTree();
@@ -1689,6 +1701,7 @@ class App {
 
     if (this._renderer3d) {
       this._savedOrbitState = this._renderer3d.saveOrbitState();
+      this._renderer3d.orientToPlaneNormal(planeDef.normal, planeDef.origin);
       this._renderer3d.setMode('3d');
       this._renderer3d.setVisible(true);
       this._renderer3d._sketchPlane = 'FACE';
@@ -4561,9 +4574,11 @@ class App {
         </div>
       </div>
     `;
+    root.classList.add('open');
     root.setAttribute('aria-hidden', 'false');
 
     const dismiss = () => {
+      root.classList.remove('open');
       root.setAttribute('aria-hidden', 'true');
       root.innerHTML = '';
     };
