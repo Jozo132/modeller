@@ -8,8 +8,18 @@
   <!-- WASM-based rendering engine (no import map needed) -->
 </head>
 <body>
+  <div id="startup-loading" class="startup-loading-overlay" aria-live="polite">
+    <div class="startup-loading-card">
+      <div class="startup-loading-title">Restoring Workspace</div>
+      <div class="startup-loading-subtitle" id="startup-loading-label">Loading renderer and project state...</div>
+      <div class="startup-loading-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="20">
+        <div class="startup-loading-bar" id="startup-loading-bar"></div>
+      </div>
+    </div>
+  </div>
+
   <!-- Quick-Start Page -->
-  <div id="quick-start" class="quick-start-overlay">
+  <div id="quick-start" class="quick-start-overlay hidden">
     <div class="quick-start-content">
       <h1 class="quick-start-title">CAD Modeller</h1>
       <p class="quick-start-subtitle">Choose a workspace to get started</p>

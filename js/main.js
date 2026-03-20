@@ -142,8 +142,11 @@ class App {
     setWorkspaceModeGetter(() => this._workspaceMode);
     setSessionStateGetter(() => this._serializeSessionState());
 
+    this._setStartupLoading(true, 'Loading renderer and project state...', 20);
+
     const loaded = loadProject();
     if (loaded && loaded.ok) {
+      this._setStartupLoading(true, 'Restoring saved project...', 45);
       this._rebuildLayersPanel();
       this._rebuildLeftPanel();
       if (!loaded.hasViewport && state.entities.length > 0) {
@@ -161,15 +164,24 @@ class App {
         if (loaded.orbit && this._renderer3d) {
           this._renderer3d.setOrbitState(loaded.orbit);
         }
-        this._update3DView();
-        this._updateNodeTree();
-        this._scheduleRender();
-        info('App initialization completed (restored Part workspace)');
+        this._setStartupLoading(true, 'Preparing part workspace...', 72);
+        const readyPromise = this._renderer3d && this._renderer3d._loadPromise
+          ? this._renderer3d._loadPromise
+          : Promise.resolve();
+        readyPromise.then(() => {
+          this._update3DView();
+          this._updateNodeTree();
+          this._scheduleRender();
+          this._setStartupLoading(true, 'Workspace restored.', 100);
+          requestAnimationFrame(() => this._setStartupLoading(false));
+          info('App initialization completed (restored Part workspace)');
+        });
         return;
       }
     }
 
     // Show quick-start page on startup
+    this._setStartupLoading(false);
     this._showQuickStart();
 
     // Initial render
@@ -4213,6 +4225,26 @@ class App {
   _hideQuickStart() {
     const qs = document.getElementById('quick-start');
     if (qs) qs.classList.add('hidden');
+  }
+
+  _setStartupLoading(visible, label = null, progress = null) {
+    const overlay = document.getElementById('startup-loading');
+    if (!overlay) return;
+
+    overlay.classList.toggle('hidden', !visible);
+
+    const labelEl = document.getElementById('startup-loading-label');
+    if (labelEl && label !== null) {
+      labelEl.textContent = label;
+    }
+
+    const bar = document.getElementById('startup-loading-bar');
+    const track = overlay.querySelector('.startup-loading-track');
+    if (bar && progress !== null) {
+      const clamped = Math.max(0, Math.min(100, progress));
+      bar.style.width = `${clamped}%`;
+      if (track) track.setAttribute('aria-valuenow', String(clamped));
+    }
   }
 
   _bindQuickStartEvents() {
