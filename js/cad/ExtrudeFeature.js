@@ -2,7 +2,7 @@
 // Extrudes a 2D sketch profile to create a 3D solid
 
 import { Feature } from './Feature.js';
-import { booleanOp, calculateMeshVolume, calculateBoundingBox } from './CSG.js';
+import { booleanOp, calculateMeshVolume, calculateBoundingBox, computeFeatureEdges } from './CSG.js';
 
 /**
  * ExtrudeFeature extrudes a 2D sketch profile along its normal to create 3D geometry.
@@ -152,6 +152,20 @@ export class ExtrudeFeature extends Feature {
         geometry.faces.push(face);
       }
     }
+
+    // When direction is negative, the extrusion vector is reversed so vertex
+    // positions are correct, but face normals/winding assume positive direction.
+    // Flip all faces to correct the inside-out orientation.
+    if (this.direction < 0) {
+      for (const face of geometry.faces) {
+        face.vertices.reverse();
+        face.normal = {
+          x: -face.normal.x,
+          y: -face.normal.y,
+          z: -face.normal.z,
+        };
+      }
+    }
     
     return geometry;
   }
@@ -244,6 +258,8 @@ export class ExtrudeFeature extends Feature {
         for (const f of geometry.faces) {
           if (!f.shared) f.shared = { sourceFeatureId: this.id };
         }
+        // Compute feature edges and face groups for the initial geometry
+        geometry.edges = computeFeatureEdges(geometry.faces);
       }
       return { geometry };
     }
@@ -262,7 +278,8 @@ export class ExtrudeFeature extends Feature {
       return { geometry: resultGeom };
     } catch (err) {
       console.warn(`Boolean operation '${this.operation}' failed:`, err.message);
-      return { geometry };
+      // Preserve the previous solid rather than replacing it with the new geometry
+      return solid;
     }
   }
 

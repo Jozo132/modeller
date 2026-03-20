@@ -1661,11 +1661,8 @@ class App {
     if (!this._lastSketchFeatureId) return;
     const absDistance = Math.abs(distance);
     if (absDistance === 0) return;
-    const feature = this._partManager.extrude(this._lastSketchFeatureId, absDistance);
-    if (feature && isCut) {
-      feature.direction = -1;
-      feature.operation = 'subtract';
-    }
+    const extrudeOptions = isCut ? { operation: 'subtract', direction: -1 } : {};
+    const feature = this._partManager.extrude(this._lastSketchFeatureId, absDistance, extrudeOptions);
     if (this._featurePanel) this._featurePanel.update();
     this._updateNodeTree();
     this._update3DView();
@@ -5242,14 +5239,8 @@ class App {
     }
 
     const absDistance = Math.abs(distVal);
-    const feature = this._partManager.extrude(this._lastSketchFeatureId, absDistance);
-    if (feature) {
-      if (isCut) {
-        // Extrude cut: reverse direction and set subtract operation
-        feature.direction = -1;
-        feature.operation = 'subtract';
-      }
-    }
+    const extrudeOptions = isCut ? { operation: 'subtract', direction: -1 } : {};
+    const feature = this._partManager.extrude(this._lastSketchFeatureId, absDistance, extrudeOptions);
 
     this._featurePanel.update();
     this._updateNodeTree();

@@ -337,10 +337,6 @@ class CSGSolid {
     const vertices = [];
     const faces = [];
 
-    // Build face list and collect per-edge normal info for feature edge detection
-    // Key: edgeKey → array of face normals touching that edge
-    const edgeNormals = new Map();
-
     for (const poly of this.polygons) {
       const faceVerts = poly.vertices.map(v => v.pos.toObj());
       const normal = poly.plane.normal.toObj();
@@ -360,68 +356,8 @@ class CSGSolid {
       }
     }
 
-    // Group coplanar adjacent faces so they can be selected as one logical face.
-    // Unlike the old mergeCoplanarFaces(), this preserves the original convex
-    // polygons (so fan triangulation remains correct) and only assigns a shared
-    // faceGroup ID to coplanar neighbours.
-    assignCoplanarFaceGroups(faces);
-
-    // Build edge normal tracking (also store face indices for coplanar suppression)
-    for (let fi = 0; fi < faces.length; fi++) {
-      const face = faces[fi];
-      const faceVerts = face.vertices;
-      const normal = face.normal;
-      for (let i = 0; i < faceVerts.length; i++) {
-        const a = faceVerts[i];
-        const b = faceVerts[(i + 1) % faceVerts.length];
-        const key = edgeKey(a, b);
-        if (!edgeNormals.has(key)) {
-          edgeNormals.set(key, { start: a, end: b, normals: [], faceIndices: [] });
-        }
-        edgeNormals.get(key).normals.push(normal);
-        edgeNormals.get(key).faceIndices.push(fi);
-      }
-    }
-
-    // Build a set of faceGroup IDs that contain more than one face
-    const groupSize = new Map();
-    for (const face of faces) {
-      const g = face.faceGroup;
-      groupSize.set(g, (groupSize.get(g) || 0) + 1);
-    }
-
-    // Only include feature edges: boundary edges (1 face) or sharp edges
-    // (adjacent faces with normals differing by more than ~15 degrees)
-    const SHARP_THRESHOLD = Math.cos(15 * Math.PI / 180); // ~0.966
-    const edges = [];
-    for (const [, info] of edgeNormals) {
-      if (info.normals.length === 1) {
-        // Boundary edge — suppress if the single face belongs to a coplanar
-        // group with adjacent faces on the same plane (T-junction internal edge)
-        const fi = info.faceIndices[0];
-        const group = faces[fi].faceGroup;
-        if (groupSize.get(group) <= 1) {
-          // Truly isolated face — keep edge as feature edge
-          edges.push({ start: info.start, end: info.end });
-        }
-        // else: face is part of a larger coplanar group, suppress this internal edge
-      } else if (info.normals.length >= 2) {
-        // Check if any pair of adjacent normals differs significantly
-        const n0 = info.normals[0];
-        let isFeature = false;
-        for (let i = 1; i < info.normals.length; i++) {
-          const n1 = info.normals[i];
-          const dot = n0.x * n1.x + n0.y * n1.y + n0.z * n1.z;
-          if (dot < SHARP_THRESHOLD) {
-            isFeature = true;
-            break;
-          }
-        }
-        if (isFeature) {
-          edges.push({ start: info.start, end: info.end });
-        }
-      }
-    }
+    // Compute face groups and feature edges
+    const edges = computeFeatureEdges(faces);
 
     return { vertices, faces, edges };
   }
@@ -573,6 +509,147 @@ function edgeKey(a, b) {
   const ka = `${ax},${ay},${az}`;
   const kb = `${bx},${by},${bz}`;
   return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+}
+
+// -----------------------------------------------------------------------
+// Feature edge computation
+// -----------------------------------------------------------------------
+
+/**
+ * Check if point p lies strictly on segment [a, b] (not at endpoints).
+ */
+function pointOnSegmentStrict(p, a, b) {
+  const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
+  const px = p.x - a.x, py = p.y - a.y, pz = p.z - a.z;
+  const lenSq = dx * dx + dy * dy + dz * dz;
+  if (lenSq < EPSILON * EPSILON) return false; // degenerate edge
+  const t = (px * dx + py * dy + pz * dz) / lenSq;
+  if (t <= EPSILON || t >= 1 - EPSILON) return false; // at or beyond endpoints
+  const projX = px - t * dx, projY = py - t * dy, projZ = pz - t * dz;
+  return (projX * projX + projY * projY + projZ * projZ) < EPSILON * EPSILON;
+}
+
+/**
+ * Compute feature edges for a geometry's face list.
+ * Assigns coplanar face groups and returns the array of feature edges.
+ * Faces are modified in-place (faceGroup, faceType added).
+ *
+ * @param {Array} faces - Array of face objects {vertices, normal, ...}
+ * @returns {Array} Array of {start, end} edge objects
+ */
+export function computeFeatureEdges(faces) {
+  // Group coplanar adjacent faces so they can be selected as one logical face.
+  assignCoplanarFaceGroups(faces);
+
+  // Build edge → normal/face tracking
+  const edgeNormals = new Map();
+  for (let fi = 0; fi < faces.length; fi++) {
+    const face = faces[fi];
+    const faceVerts = face.vertices;
+    const normal = face.normal;
+    for (let i = 0; i < faceVerts.length; i++) {
+      const a = faceVerts[i];
+      const b = faceVerts[(i + 1) % faceVerts.length];
+      const key = edgeKey(a, b);
+      if (!edgeNormals.has(key)) {
+        edgeNormals.set(key, { start: a, end: b, normals: [], faceIndices: [] });
+      }
+      edgeNormals.get(key).normals.push(normal);
+      edgeNormals.get(key).faceIndices.push(fi);
+    }
+  }
+
+  // Collect faces per group (only groups with multiple faces need T-junction analysis)
+  const facesPerGroup = new Map();
+  for (let fi = 0; fi < faces.length; fi++) {
+    const g = faces[fi].faceGroup;
+    if (!facesPerGroup.has(g)) facesPerGroup.set(g, []);
+    facesPerGroup.get(g).push(fi);
+  }
+
+  // Pre-compute T-junction edge keys for each multi-face group.
+  // A boundary edge is a T-junction internal edge if:
+  //   (a) another face in the same group has a vertex that lies strictly on this edge, or
+  //   (b) one of this edge's endpoints lies strictly on an edge of another group face.
+  const tJunctionEdgeKeys = new Set();
+  for (const [, groupFaceIndices] of facesPerGroup) {
+    if (groupFaceIndices.length <= 1) continue;
+
+    // Collect all edges of the group
+    const groupEdges = [];
+    for (const fi of groupFaceIndices) {
+      const verts = faces[fi].vertices;
+      for (let i = 0; i < verts.length; i++) {
+        groupEdges.push({ a: verts[i], b: verts[(i + 1) % verts.length], fi });
+      }
+    }
+
+    // Check each edge against vertices/edges of other faces in the same group
+    for (const edge of groupEdges) {
+      const ek = edgeKey(edge.a, edge.b);
+      if (tJunctionEdgeKeys.has(ek)) continue; // already marked
+      // Only process boundary edges (we only suppress boundary edges)
+      const info = edgeNormals.get(ek);
+      if (!info || info.normals.length !== 1) continue;
+
+      let isTJunction = false;
+
+      // (a) Does any vertex of another group face lie on this edge?
+      for (const otherFi of groupFaceIndices) {
+        if (otherFi === edge.fi) continue;
+        for (const v of faces[otherFi].vertices) {
+          if (pointOnSegmentStrict(v, edge.a, edge.b)) {
+            isTJunction = true;
+            break;
+          }
+        }
+        if (isTJunction) break;
+      }
+
+      // (b) Does either endpoint lie on an edge of another group face?
+      if (!isTJunction) {
+        for (const other of groupEdges) {
+          if (other.fi === edge.fi) continue;
+          if (pointOnSegmentStrict(edge.a, other.a, other.b) ||
+              pointOnSegmentStrict(edge.b, other.a, other.b)) {
+            isTJunction = true;
+            break;
+          }
+        }
+      }
+
+      if (isTJunction) tJunctionEdgeKeys.add(ek);
+    }
+  }
+
+  // Build feature edges: boundary edges or sharp edges
+  const SHARP_THRESHOLD = Math.cos(15 * Math.PI / 180); // ~0.966
+  const edges = [];
+  for (const [key, info] of edgeNormals) {
+    if (info.normals.length === 1) {
+      // Boundary edge — only suppress if it's a confirmed T-junction
+      if (!tJunctionEdgeKeys.has(key)) {
+        edges.push({ start: info.start, end: info.end });
+      }
+    } else if (info.normals.length >= 2) {
+      // Check if any pair of adjacent normals differs significantly
+      const n0 = info.normals[0];
+      let isFeature = false;
+      for (let i = 1; i < info.normals.length; i++) {
+        const n1 = info.normals[i];
+        const dot = n0.x * n1.x + n0.y * n1.y + n0.z * n1.z;
+        if (dot < SHARP_THRESHOLD) {
+          isFeature = true;
+          break;
+        }
+      }
+      if (isFeature) {
+        edges.push({ start: info.start, end: info.end });
+      }
+    }
+  }
+
+  return edges;
 }
 
 // -----------------------------------------------------------------------

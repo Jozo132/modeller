@@ -2,7 +2,7 @@
 // Revolves a 2D sketch profile around an axis to create 3D geometry
 
 import { Feature } from './Feature.js';
-import { booleanOp, calculateMeshVolume, calculateBoundingBox } from './CSG.js';
+import { booleanOp, calculateMeshVolume, calculateBoundingBox, computeFeatureEdges } from './CSG.js';
 
 /**
  * RevolveFeature revolves a 2D sketch profile around an axis to create 3D geometry.
@@ -278,6 +278,10 @@ export class RevolveFeature extends Feature {
    */
   applyOperation(solid, geometry) {
     if (this.operation === 'new' || !solid) {
+      // Compute feature edges and face groups for the initial geometry
+      if (geometry && geometry.faces) {
+        geometry.edges = computeFeatureEdges(geometry.faces);
+      }
       return { geometry };
     }
 
@@ -291,7 +295,8 @@ export class RevolveFeature extends Feature {
       return { geometry: resultGeom };
     } catch (err) {
       console.warn(`Boolean operation '${this.operation}' failed:`, err.message);
-      return { geometry };
+      // Preserve the previous solid rather than replacing it with the new geometry
+      return solid;
     }
   }
 
