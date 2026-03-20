@@ -966,6 +966,16 @@ class App {
           this._selectedPlane = null;
           this._renderer3d.setSelectedPlane(null);
           this._renderer3d.setSelectedFeature(sketchHit.featureId);
+
+          // Select in feature tree and show parameters
+          const feature = this._partManager.getFeatures().find(f => f.id === sketchHit.featureId);
+          if (feature) {
+            if (this._featurePanel) this._featurePanel.selectFeature(feature.id);
+            if (this._parametersPanel) this._parametersPanel.showFeature(feature);
+            this._showLeftFeatureParams(feature);
+            this._recorder.featureSelected(feature.id, feature.type, feature.name);
+          }
+
           this.setStatus(`Selected sketch ${sketchHit.featureId}`);
           info(`Sketch selected: ${sketchHit.featureId}`);
         } else {
@@ -1044,6 +1054,19 @@ class App {
             e.preventDefault();
             e.stopPropagation();
             this._editDimensionConstraint(closestDim, { x: sx, y: sy });
+            return;
+          }
+        }
+      }
+
+      // In Part mode: double-click sketch wireframe to enter sketch edit mode
+      if (this._workspaceMode === 'part' && !this._sketchingOnPlane && this._renderer3d) {
+        const sketchHit = this._renderer3d.pickSketch(e.clientX, e.clientY);
+        if (sketchHit) {
+          const feature = this._partManager.getFeatures().find(f => f.id === sketchHit.featureId);
+          if (feature && feature.type === 'sketch') {
+            this._recorder.sketchEditStarted(feature.id, feature.name);
+            this._editExistingSketch(feature);
             return;
           }
         }
@@ -1290,29 +1313,56 @@ class App {
       }
 
       switch (e.key) {
-        case 'Escape':
-          this.activeTool.onCancel();
-          if (this.activeTool.name !== 'select') this.setActiveTool('select');
-          state.clearSelection();
-          // Deselect plane, face, and feature in 3D view
-          if (this._selectedPlane) {
-            this._selectedPlane = null;
-            if (this._renderer3d) this._renderer3d.setSelectedPlane(null);
+        case 'Escape': {
+          // Check if anything is currently selected
+          const hadSelection =
+            !!this._selectedPlane ||
+            !!this._selectedFace ||
+            (this._featurePanel && !!this._featurePanel.selectedFeatureId) ||
+            (this._renderer3d && this._renderer3d._selectedFeatureId) ||
+            state.selectedEntities.length > 0;
+
+          const hadActiveTool = this.activeTool && this.activeTool.name !== 'select';
+
+          if (hadSelection) {
+            // First ESC: deselect all selections
+            if (this._selectedPlane) {
+              this._selectedPlane = null;
+              if (this._renderer3d) this._renderer3d.setSelectedPlane(null);
+            }
+            if (this._selectedFace) {
+              this._selectedFace = null;
+              if (this._renderer3d) this._renderer3d.selectFace(-1);
+            }
+            if (this._featurePanel && this._featurePanel.selectedFeatureId) {
+              this._featurePanel.selectFeature(null);
+            }
+            if (this._renderer3d) {
+              this._renderer3d.setSelectedFeature(null);
+            }
+            if (this._parametersPanel) this._parametersPanel.clear();
+            this._showLeftFeatureParams(null);
+            state.clearSelection();
+            this._updateNodeTree();
+            this._update3DView();
+            this._scheduleRender();
+          } else if (hadActiveTool) {
+            // Cancel active tool (e.g. line drawing) and switch to select
+            this.activeTool.onCancel();
+            this.setActiveTool('select');
+            this._scheduleRender();
+          } else if (this._sketchingOnPlane) {
+            // Nothing selected, no active tool — trigger exit sketch
+            document.getElementById('btn-exit-sketch').click();
+          } else {
+            // Fallback: clear anything residual
+            state.clearSelection();
+            this._updateNodeTree();
+            this._update3DView();
+            this._scheduleRender();
           }
-          if (this._selectedFace) {
-            this._selectedFace = null;
-            if (this._renderer3d) this._renderer3d.selectFace(-1);
-          }
-          if (this._featurePanel && this._featurePanel.selectedFeatureId) {
-            this._featurePanel.selectFeature(null);
-          }
-          if (this._renderer3d) {
-            this._renderer3d.setSelectedFeature(null);
-          }
-          this._updateNodeTree();
-          this._update3DView();
-          this._scheduleRender();
           break;
+        }
         case 'Delete':
         case 'Backspace':
           if (state.selectedEntities.length > 0) {

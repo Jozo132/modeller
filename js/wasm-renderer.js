@@ -548,29 +548,37 @@ export class WasmRenderer {
     if (dirLen < 1e-10) return null;
     dir.x /= dirLen; dir.y /= dirLen; dir.z /= dirLen;
 
-    // Screen-space pixel threshold for picking (in NDC units, ~8 pixels)
-    const pixelThreshold = 8 / Math.max(rect.width, rect.height) * 2;
+    // Screen-space pixel threshold for picking (in pixels)
+    const pixelThreshold = 12;
 
     let closestDist = Infinity;
     let closestFeatureId = null;
+    let closestWorldPt = null;
 
     for (const entry of this._sketchPickSegments) {
       for (const seg of entry.segments) {
-        const dist = this._rayLineDistance(origin, dir, seg.a, seg.b);
-        if (dist < closestDist) {
-          closestDist = dist;
+        const result = this._rayLineClosest(origin, dir, seg.a, seg.b);
+        if (result.dist < closestDist) {
+          closestDist = result.dist;
           closestFeatureId = entry.featureId;
+          closestWorldPt = result.point;
         }
       }
     }
 
-    // Convert world-space distance to approximate screen-space distance
-    // Use orbit radius as a scale factor
-    const viewDist = this._orbitRadius || 10;
-    const ndcDist = closestDist / viewDist;
-
-    if (closestFeatureId !== null && ndcDist < pixelThreshold) {
-      return { featureId: closestFeatureId };
+    // Project the closest world point to screen and measure pixel distance
+    if (closestFeatureId !== null && closestWorldPt) {
+      const projected = this._mat4TransformVec4(mvp, closestWorldPt.x, closestWorldPt.y, closestWorldPt.z, 1);
+      if (Math.abs(projected.w) > 1e-10) {
+        const pNdcX = projected.x / projected.w;
+        const pNdcY = projected.y / projected.w;
+        const screenDistX = ((pNdcX - ndcX) / 2) * rect.width;
+        const screenDistY = ((pNdcY - ndcY) / 2) * rect.height;
+        const screenDist = Math.sqrt(screenDistX * screenDistX + screenDistY * screenDistY);
+        if (screenDist < pixelThreshold) {
+          return { featureId: closestFeatureId };
+        }
+      }
     }
     return null;
   }
@@ -584,6 +592,14 @@ export class WasmRenderer {
    * @returns {number} Minimum distance
    */
   _rayLineDistance(rayOrigin, rayDir, segA, segB) {
+    return this._rayLineClosest(rayOrigin, rayDir, segA, segB).dist;
+  }
+
+  /**
+   * Compute the minimum distance between a ray and a line segment in 3D,
+   * returning both the distance and the closest point on the segment.
+   */
+  _rayLineClosest(rayOrigin, rayDir, segA, segB) {
     // Line segment direction
     const dx = segB.x - segA.x, dy = segB.y - segA.y, dz = segB.z - segA.z;
     const wx = rayOrigin.x - segA.x, wy = rayOrigin.y - segA.y, wz = rayOrigin.z - segA.z;
@@ -618,7 +634,10 @@ export class WasmRenderer {
     const py = wy + sc * rayDir.y - tc * dy;
     const pz = wz + sc * rayDir.z - tc * dz;
 
-    return Math.sqrt(px * px + py * py + pz * pz);
+    return {
+      dist: Math.sqrt(px * px + py * py + pz * pz),
+      point: { x: segA.x + tc * dx, y: segA.y + tc * dy, z: segA.z + tc * dz },
+    };
   }
 
   /**
