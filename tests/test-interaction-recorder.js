@@ -240,5 +240,19 @@ function assert(cond, msg) {
   assert(steps[0].command.startsWith('select.face 5 5'), `Face still correct: ${steps[0].command}`);
 }
 
+// ---- Test 17: featureModified records feature.modify command ----
+{
+  const rec = new InteractionRecorder();
+  rec.start();
+  rec.featureModified('feature_3', 'distance', 5);
+  rec.featureModified('feature_3', 'operation', 'subtract');
+  rec.featureModified('feature_3', 'direction', -1);
+  const steps = rec.stop();
+  assert(steps.length === 3, `Expected 3 steps, got ${steps.length}`);
+  assert(steps[0].command === 'feature.modify feature_3 distance 5', `Distance modify: ${steps[0].command}`);
+  assert(steps[1].command === 'feature.modify feature_3 operation subtract', `Operation modify: ${steps[1].command}`);
+  assert(steps[2].command === 'feature.modify feature_3 direction -1', `Direction modify: ${steps[2].command}`);
+}
+
 console.log(`\nInteraction Recorder Tests: ${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

@@ -4477,10 +4477,50 @@ class App {
     }
   }
 
+  /**
+   * Reset application state to a clean slate for playback.
+   * Destroys the current part, clears sketch state, and resets internal flags
+   * so that replayed commands build from scratch.
+   */
+  _resetForPlayback() {
+    // Exit sketch mode if active
+    if (this._sketchingOnPlane) {
+      this._sketchingOnPlane = false;
+      document.body.classList.remove('sketch-on-plane');
+    }
+
+    // Clear sketch scene
+    state.scene.clear();
+    state.selectedEntities = [];
+
+    // Reset internal state
+    this._selectedFace = null;
+    this._selectedPlane = null;
+    this._hoveredPlane = null;
+    this._activeSketchPlane = null;
+    this._activeSketchPlaneDef = null;
+    this._editingSketchFeatureId = null;
+    this._lastSketchFeatureId = null;
+    this._savedOrbitState = null;
+    this._workspaceMode = null;
+
+    // Destroy the current part and create a blank slate
+    this._partManager.part = null;
+    this._partManager.activeFeature = null;
+
+    // Reset UI
+    if (this._featurePanel) this._featurePanel.update();
+    if (this._parametersPanel) this._parametersPanel.clear();
+    this._updateNodeTree();
+    this._update3DView();
+    this._scheduleRender();
+  }
+
   /** Replay all steps from 0..targetIdx to get consistent state */
   _replayUpTo(targetIdx) {
     if (!this._playbackSteps) return;
-    // Reset state by replaying from start
+    // Reset to clean state before replaying from the beginning
+    this._resetForPlayback();
     for (let i = 0; i <= targetIdx && i < this._playbackSteps.length; i++) {
       try {
         this._handleCommand(this._playbackSteps[i].command);
@@ -4502,9 +4542,19 @@ class App {
   }
 
   /** Load a recording for playback */
-  _loadRecording(recording) {
+  async _loadRecording(recording) {
     this._stopAutoplay();
     if (recording && recording.steps && recording.steps.length > 0) {
+      // Warn the user that current work will be lost
+      const ok = await showConfirm({
+        title: 'Load Recording',
+        message: 'Loading a recording will clear the current model. All unsaved changes will be lost.\n\nContinue?',
+        okText: 'Load',
+        cancelText: 'Cancel',
+      });
+      if (!ok) return;
+
+      this._resetForPlayback();
       this._playbackSteps = recording.steps;
       this._playbackIndex = -1;
       this._lastRecordedSteps = recording.steps;
@@ -4749,6 +4799,18 @@ class App {
         return;
       }
     }
+
+    // Warn the user that current work will be lost
+    const ok = await showConfirm({
+      title: 'Play Recording',
+      message: 'Playing back a recording will clear the current model. All unsaved changes will be lost.\n\nContinue?',
+      okText: 'Play',
+      cancelText: 'Cancel',
+    });
+    if (!ok) return;
+
+    this._resetForPlayback();
+    this._playbackIndex = -1;
     if (this._updatePlaybackUI) this._updatePlaybackUI();
     // Start autoplay via the playback controls
     if (this._executePlaybackStep && this._updatePlaybackUI) {
