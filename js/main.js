@@ -1488,6 +1488,17 @@ class App {
       return;
     }
 
+    if (command === 'feature.modify') {
+      // feature.modify <featureId> <paramName> <value>
+      if (args.length >= 3) {
+        const featureId = args[0];
+        const paramName = args[1];
+        const value = args[2];
+        this._applyFeatureModification(featureId, paramName, value);
+      }
+      return;
+    }
+
     if (command === 'extrude') {
       // extrude <distance> [cut]
       if (args.length >= 1) {
@@ -1674,6 +1685,51 @@ class App {
     if (!this._lastSketchFeatureId) return;
     const radians = (angleDeg * Math.PI) / 180;
     const feature = this._partManager.revolve(this._lastSketchFeatureId, radians);
+    if (this._featurePanel) this._featurePanel.update();
+    this._updateNodeTree();
+    this._update3DView();
+    this._updateOperationButtons();
+    this._scheduleRender();
+  }
+
+  /**
+   * Apply a parameter modification to an existing feature (used by command replay
+   * and sidebar editing).
+   * @param {string} featureId - Feature to modify
+   * @param {string} paramName - Parameter name (distance, direction, operation, symmetric, angle, segments)
+   * @param {string} value - New value (as string, will be parsed)
+   */
+  _applyFeatureModification(featureId, paramName, value) {
+    const part = this._partManager.getPart();
+    if (!part) return;
+    const feature = part.getFeature(featureId);
+    if (!feature) return;
+
+    this._partManager.modifyFeature(featureId, (f) => {
+      switch (paramName) {
+        case 'distance':
+          f.setDistance(parseFloat(value));
+          break;
+        case 'direction':
+          f.direction = parseInt(value, 10);
+          break;
+        case 'operation':
+          f.operation = value;
+          break;
+        case 'symmetric':
+          f.symmetric = value === 'true';
+          break;
+        case 'angle':
+          if (typeof f.setAngle === 'function') f.setAngle(parseFloat(value));
+          break;
+        case 'segments':
+          f.segments = parseInt(value, 10);
+          break;
+        default:
+          break;
+      }
+    });
+
     if (this._featurePanel) this._featurePanel.update();
     this._updateNodeTree();
     this._update3DView();
@@ -3558,6 +3614,11 @@ class App {
     
     this._featurePanel = new FeaturePanel(featurePanelContainer, this._partManager);
     this._parametersPanel = new ParametersPanel(parametersPanelContainer, this._partManager);
+
+    // Record sidebar parameter edits
+    this._parametersPanel.setOnParameterChange((featureId, paramName, value) => {
+      this._recorder.featureModified(featureId, paramName, value);
+    });
 
     // Setup callbacks
     this._featurePanel.setOnFeatureSelect((feature) => {

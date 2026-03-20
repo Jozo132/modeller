@@ -1672,6 +1672,11 @@ body.motion-active #view-3d {
   border-color: var(--accent);
 }
 
+select.parameter-input {
+  appearance: auto;
+  cursor: pointer;
+}
+
 .parameter-info {
   font-size: 12px;
   line-height: 1.6;

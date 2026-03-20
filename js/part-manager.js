@@ -90,11 +90,12 @@ export class PartManager {
    * Extrude the active sketch feature
    * @param {string} sketchFeatureId - ID of sketch feature to extrude
    * @param {number} distance - Extrusion distance
+   * @param {object} [options] - Extrude options (operation, direction, symmetric)
    */
-  extrude(sketchFeatureId, distance = 10) {
+  extrude(sketchFeatureId, distance = 10, options = {}) {
     if (!this.part) return null;
 
-    const feature = this.part.extrude(sketchFeatureId, distance);
+    const feature = this.part.extrude(sketchFeatureId, distance, options);
     this.activeFeature = feature;
     this.notifyListeners();
     return feature;

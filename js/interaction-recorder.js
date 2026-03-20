@@ -198,6 +198,10 @@ export class InteractionRecorder {
     this._push(`revolve ${n4(angle)}`);
   }
 
+  featureModified(featureId, paramName, value) {
+    this._push(`feature.modify ${featureId} ${paramName} ${value}`);
+  }
+
   autoSketchFromFace(sketchFeatureId, faceIndex, vertexCount) {
     this._push(`sketch.from-face ${faceIndex}`);
   }

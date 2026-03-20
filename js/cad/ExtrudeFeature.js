@@ -323,10 +323,16 @@ export class ExtrudeFeature extends Feature {
 
   /**
    * Set the extrusion distance.
+   * Negative values flip the direction instead of using a negative distance.
    * @param {number} distance - Extrusion distance
    */
   setDistance(distance) {
-    this.distance = distance;
+    if (distance < 0) {
+      this.distance = -distance;
+      this.direction = -this.direction;
+    } else {
+      this.distance = distance;
+    }
     this.modified = new Date();
   }
 
