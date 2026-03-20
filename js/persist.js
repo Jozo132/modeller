@@ -11,6 +11,7 @@ let _viewport = null;
 let _partManager = null;
 let _renderer3d = null;
 let _getWorkspaceMode = null;
+let _getSessionState = null;
 
 /** Register the viewport instance for persistence. */
 export function setViewport(vp) { _viewport = vp; }
@@ -23,6 +24,9 @@ export function setRendererForPersist(r) { _renderer3d = r; }
 
 /** Register a callback that returns the current workspace mode string. */
 export function setWorkspaceModeGetter(fn) { _getWorkspaceMode = fn; }
+
+/** Register a callback that returns transient session state needed for restore. */
+export function setSessionStateGetter(fn) { _getSessionState = fn; }
 
 /**
  * Serialize the full project (scene, layers, settings, part, orbit) to a plain object.
@@ -57,6 +61,11 @@ function projectToJSON() {
   // Workspace mode
   if (_getWorkspaceMode) {
     json.workspaceMode = _getWorkspaceMode();
+  }
+
+  // Transient UI/session state
+  if (_getSessionState) {
+    json.sessionState = _getSessionState();
   }
 
   return json;
@@ -103,7 +112,14 @@ function projectFromJSON(data) {
   state._undoStack = [];
   state._redoStack = [];
 
-  return { ok: true, hasViewport, part: data.part || null, orbit: data.orbit || null, workspaceMode: data.workspaceMode || null };
+  return {
+    ok: true,
+    hasViewport,
+    part: data.part || null,
+    orbit: data.orbit || null,
+    workspaceMode: data.workspaceMode || null,
+    sessionState: data.sessionState || null,
+  };
 }
 
 /**

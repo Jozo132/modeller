@@ -10,7 +10,7 @@ import { undo, redo, takeSnapshot, setPartManager } from './history.js';
 import { downloadDXF } from './dxf/export.js';
 import { openDXFFile } from './dxf/import.js';
 import { debug, info, warn, error } from './logger.js';
-import { loadProject, debouncedSave, clearSavedProject, setViewport, setPartManagerForPersist, setRendererForPersist, setWorkspaceModeGetter } from './persist.js';
+import { loadProject, debouncedSave, clearSavedProject, setViewport, setPartManagerForPersist, setRendererForPersist, setWorkspaceModeGetter, setSessionStateGetter } from './persist.js';
 import { showConfirm, showPrompt, showDimensionInput } from './ui/popup.js';
 import { showContextMenu, closeContextMenu, isContextMenuOpen } from './ui/contextMenu.js';
 import {
@@ -52,6 +52,12 @@ class App {
     this._renderer3d = new WasmRenderer(view3dContainer);
     this._renderer3d.setMode('2d'); // Start in 2D sketching mode
     this._renderer3d.setVisible(true);
+    if (this._renderer3d._loadPromise) {
+      this._renderer3d._loadPromise.then(() => {
+        this._update3DView();
+        this._scheduleRender();
+      });
+    }
     
     this.canvas = document.getElementById('cad-canvas');
     this.viewport = new Viewport(this.canvas);
@@ -134,6 +140,7 @@ class App {
     setPartManagerForPersist(this._partManager);
     setRendererForPersist(this._renderer3d);
     setWorkspaceModeGetter(() => this._workspaceMode);
+    setSessionStateGetter(() => this._serializeSessionState());
 
     const loaded = loadProject();
     if (loaded && loaded.ok) {
@@ -147,6 +154,9 @@ class App {
       if (loaded.part && loaded.workspaceMode === 'part') {
         this._partManager.deserialize(loaded.part);
         this._enterWorkspace('part');
+        if (loaded.sessionState) {
+          this._restoreSessionState(loaded.sessionState);
+        }
         // Restore orbit camera
         if (loaded.orbit && this._renderer3d) {
           this._renderer3d.setOrbitState(loaded.orbit);
@@ -1124,9 +1134,7 @@ class App {
         cancelText: 'Cancel',
       });
       if (ok) {
-        state.clearAll();
-        clearSavedProject();
-        this._scheduleRender();
+        this._createNewDrawing();
       }
     });
     document.getElementById('btn-save').addEventListener('click', () => downloadDXF());
@@ -1254,8 +1262,7 @@ class App {
             showConfirm({ title: 'New Drawing', message: 'Clear all?', okText: 'Clear', cancelText: 'Cancel' })
               .then((ok) => {
                 if (ok) {
-                  state.clearAll();
-                  this._scheduleRender();
+                  this._createNewDrawing();
                 }
               });
             break;
@@ -1656,8 +1663,7 @@ class App {
         showConfirm({ title: 'New Drawing', message: 'Clear all?', okText: 'Clear', cancelText: 'Cancel' })
           .then((ok) => {
             if (ok) {
-              state.clearAll();
-              this._scheduleRender();
+              this._createNewDrawing();
             }
           });
         break;
@@ -3869,6 +3875,130 @@ class App {
     }
   }
 
+  _serializeSessionState() {
+    return {
+      sketchingOnPlane: this._sketchingOnPlane,
+      activeSketchPlane: this._activeSketchPlane,
+      activeSketchPlaneDef: this._activeSketchPlaneDef,
+      editingSketchFeatureId: this._editingSketchFeatureId,
+      lastSketchFeatureId: this._lastSketchFeatureId,
+      savedOrbitState: this._savedOrbitState,
+      expandedFolders: Array.from(this._expandedFolders || []),
+    };
+  }
+
+  _restoreSessionState(sessionState) {
+    if (!sessionState) return;
+
+    this._expandedFolders = new Set(Array.isArray(sessionState.expandedFolders) ? sessionState.expandedFolders : []);
+
+    if (!sessionState.sketchingOnPlane) return;
+
+    this._sketchingOnPlane = true;
+    this._activeSketchPlane = sessionState.activeSketchPlane || null;
+    this._activeSketchPlaneDef = sessionState.activeSketchPlaneDef
+      || (this._activeSketchPlane && this._activeSketchPlane !== 'FACE'
+        ? this._getPlaneDefinition(this._activeSketchPlane)
+        : null);
+    this._editingSketchFeatureId = sessionState.editingSketchFeatureId || null;
+    this._lastSketchFeatureId = sessionState.lastSketchFeatureId || this._editingSketchFeatureId || null;
+    this._savedOrbitState = sessionState.savedOrbitState || null;
+    this._selectedPlane = null;
+    this._selectedFace = null;
+    this._hoveredPlane = null;
+    this._3dMode = true;
+
+    document.body.classList.add('sketch-on-plane');
+
+    const exitBtn = document.getElementById('btn-exit-sketch');
+    if (exitBtn) exitBtn.style.display = 'flex';
+
+    const part = this._partManager.getPart();
+    if (part) {
+      part.setActiveSketch(this._editingSketchFeatureId);
+    }
+
+    if (this._renderer3d) {
+      this._renderer3d.setMode('3d');
+      this._renderer3d.setVisible(true);
+      this._renderer3d._sketchPlane = this._activeSketchPlane;
+      this._renderer3d._sketchPlaneDef = this._activeSketchPlaneDef;
+      this._renderer3d.setSelectedPlane(null);
+      this._renderer3d.setHoveredPlane(null);
+    }
+
+    const modeIndicator = document.getElementById('status-mode');
+    if (this._editingSketchFeatureId && part) {
+      const sketchFeature = part.getFeature(this._editingSketchFeatureId);
+      const sketchName = sketchFeature ? sketchFeature.name : 'Sketch';
+      modeIndicator.textContent = `EDIT SKETCH: ${sketchName}`;
+      this.setStatus(`Editing ${sketchName}. Modify, then Exit Sketch to apply changes.`);
+    } else {
+      modeIndicator.textContent = this._activeSketchPlane === 'FACE'
+        ? 'SKETCH ON FACE'
+        : `SKETCH ON ${this._activeSketchPlane || 'PLANE'}`;
+      this.setStatus('Sketch session restored.');
+    }
+    modeIndicator.className = 'status-mode sketch-mode';
+
+    this.setActiveTool('select');
+  }
+
+  _createNewDrawing() {
+    state.clearAll();
+    clearSavedProject();
+
+    this.renderer.hoverEntity = null;
+    this.renderer.previewEntities = [];
+    this.renderer.snapPoint = null;
+    this.renderer.cursorWorld = null;
+
+    this._selectedFace = null;
+    this._selectedPlane = null;
+    this._hoveredPlane = null;
+    this._activeSketchPlane = null;
+    this._activeSketchPlaneDef = null;
+    this._editingSketchFeatureId = null;
+    this._lastSketchFeatureId = null;
+    this._savedOrbitState = null;
+    this._sketchingOnPlane = false;
+    this._expandedFolders.clear();
+
+    document.body.classList.remove('sketch-on-plane');
+    const exitBtn = document.getElementById('btn-exit-sketch');
+    if (exitBtn) exitBtn.style.display = 'none';
+
+    if (this._renderer3d) {
+      this._renderer3d._sketchPlane = null;
+      this._renderer3d._sketchPlaneDef = null;
+      this._renderer3d.setSelectedPlane(null);
+      this._renderer3d.setHoveredPlane(null);
+      this._renderer3d.setSelectedFeature(null);
+      this._renderer3d.selectFace(-1);
+    }
+
+    if (this._workspaceMode === 'part') {
+      this._partManager.createPart('Part1');
+      const modeIndicator = document.getElementById('status-mode');
+      modeIndicator.textContent = 'PART DESIGN';
+      modeIndicator.className = 'status-mode part-mode';
+    } else {
+      this._partManager.part = null;
+      this._partManager.activeFeature = null;
+    }
+
+    if (this._featurePanel) {
+      this._featurePanel.selectedFeatureId = null;
+      this._featurePanel.update();
+    }
+    if (this._parametersPanel) this._parametersPanel.clear();
+
+    this._updateNodeTree();
+    this._update3DView();
+    this._updateOperationButtons();
+    this._scheduleRender();
+  }
+
   _updateNodeTree() {
     const container = document.getElementById('node-tree-features');
     if (!container) return;
@@ -4503,6 +4633,7 @@ class App {
     this._lastSketchFeatureId = null;
     this._savedOrbitState = null;
     this._workspaceMode = null;
+    this._expandedFolders.clear();
 
     // Destroy the current part and create a blank slate
     this._partManager.part = null;
@@ -4934,6 +5065,9 @@ class App {
     this._activeSketchPlaneDef = this._getPlaneDefinition(plane);
     this._3dMode = true;
 
+    const part = this._partManager.getPart();
+    if (part) part.setActiveSketch(null);
+
     // Add sketch-on-plane body class to control UI visibility
     document.body.classList.add('sketch-on-plane');
 
@@ -4999,6 +5133,9 @@ class App {
     this._sketchingOnPlane = true;
     this._activeSketchPlane = 'FACE';
     this._3dMode = true;
+
+    const part = this._partManager.getPart();
+    if (part) part.setActiveSketch(null);
 
     document.body.classList.add('sketch-on-plane');
 
@@ -5245,6 +5382,9 @@ class App {
     // Track that we're editing an existing sketch (not creating a new one)
     this._editingSketchFeatureId = sketchFeature.id;
     this._lastSketchFeatureId = sketchFeature.id;
+
+    const part = this._partManager.getPart();
+    if (part) part.setActiveSketch(sketchFeature.id);
 
     // Enter sketch-on-plane mode
     this._sketchingOnPlane = true;
