@@ -1190,10 +1190,45 @@ export function applyChamfer(geometry, edgeKeys, distance) {
     shared: f.shared ? { ...f.shared } : null,
   }));
 
-  for (const ek of new Set(edgeKeys)) {
-    const result = _chamferOneEdge(faces, ek, distance);
-    if (result) faces = result;
+  // Save original face vertices for corner-face generation
+  const origFaces = faces.map(f => ({
+    vertices: f.vertices.map(v => ({ ...v })),
+    normal: { ...f.normal },
+  }));
+
+  // --- Phase 1: Pre-compute all edge data on the ORIGINAL geometry ---
+  const uniqueKeys = [...new Set(edgeKeys)];
+  const edgeDataList = [];
+  for (const ek of uniqueKeys) {
+    const data = _precomputeChamferEdge(faces, ek, distance);
+    if (data) edgeDataList.push(data);
   }
+
+  if (edgeDataList.length === 0) return geometry;
+
+  // --- Phase 2: Build vertex-sharing map ---
+  const vertexEdgeMap = _buildVertexEdgeMap(edgeDataList);
+
+  // --- Phase 3: Apply batch face trimming ---
+  _batchTrimFaces(faces, edgeDataList);
+
+  // --- Phase 4: Batch split vertices at endpoints ---
+  _batchSplitVertices(faces, edgeDataList, vertexEdgeMap);
+
+  // --- Phase 5: Generate all bevel faces ---
+  for (const data of edgeDataList) {
+    const chamferNormal = _vec3Normalize(_vec3Cross(
+      _vec3Sub(data.p1a, data.p0a), _vec3Sub(data.p1b, data.p0a)
+    ));
+    faces.push({
+      vertices: [{ ...data.p0a }, { ...data.p1a }, { ...data.p1b }, { ...data.p0b }],
+      normal: chamferNormal,
+      shared: data.shared,
+    });
+  }
+
+  // --- Phase 6: Generate corner faces at shared vertices ---
+  _generateCornerFaces(faces, origFaces, edgeDataList, vertexEdgeMap);
 
   _weldVertices(faces);
 
@@ -1205,16 +1240,19 @@ export function applyChamfer(geometry, edgeKeys, distance) {
   return newGeom;
 }
 
-function _chamferOneEdge(faces, edgeKey, dist) {
+/**
+ * Pre-compute chamfer data for one edge on the original (unmodified) geometry.
+ */
+function _precomputeChamferEdge(faces, edgeKey, dist) {
   const adj = _findAdjacentFaces(faces, edgeKey);
   if (adj.length < 2) return null;
 
-  const face0 = faces[adj[0].fi];
-  const face1 = faces[adj[1].fi];
+  const fi0 = adj[0].fi, fi1 = adj[1].fi;
+  const face0 = faces[fi0];
+  const face1 = faces[fi1];
   const edgeA = adj[0].a;
   const edgeB = adj[0].b;
 
-  // Pre-compute face edge keys before any modifications
   const face0Keys = _collectFaceEdgeKeys(face0);
   const face1Keys = _collectFaceEdgeKeys(face1);
 
@@ -1225,25 +1263,12 @@ function _chamferOneEdge(faces, edgeKey, dist) {
   const p1a = _vec3Add(edgeA, _vec3Scale(offsDir1, dist));
   const p1b = _vec3Add(edgeB, _vec3Scale(offsDir1, dist));
 
-  // Trim the two adjacent faces
-  _trimFaceEdge(face0, edgeA, edgeB, p0a, p0b);
-  _trimFaceEdge(face1, edgeA, edgeB, p1a, p1b);
-
-  // Split vertices at edge endpoints in all other faces
-  _splitVertexAtEndpoint(faces, adj[0].fi, adj[1].fi, edgeA, p0a, p1a, face0Keys, face1Keys);
-  _splitVertexAtEndpoint(faces, adj[0].fi, adj[1].fi, edgeB, p0b, p1b, face0Keys, face1Keys);
-
-  // Chamfer bevel face: [p0a, p1a, p1b, p0b] — correct CCW winding for outward normal
-  const chamferNormal = _vec3Normalize(_vec3Cross(
-    _vec3Sub(p1a, p0a), _vec3Sub(p1b, p0a)
-  ));
-  faces.push({
-    vertices: [{ ...p0a }, { ...p1a }, { ...p1b }, { ...p0b }],
-    normal: chamferNormal,
+  return {
+    edgeKey, fi0, fi1, edgeA, edgeB,
+    face0Keys, face1Keys,
+    p0a, p0b, p1a, p1b,
     shared: face0.shared ? { ...face0.shared } : null,
-  });
-
-  return faces;
+  };
 }
 
 // -----------------------------------------------------------------------
@@ -1261,10 +1286,89 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8) {
     shared: f.shared ? { ...f.shared } : null,
   }));
 
-  for (const ek of new Set(edgeKeys)) {
-    const result = _filletOneEdge(faces, ek, radius, segments);
-    if (result) faces = result;
+  // Save original face vertices for corner-face generation
+  const origFaces = faces.map(f => ({
+    vertices: f.vertices.map(v => ({ ...v })),
+    normal: { ...f.normal },
+  }));
+
+  // --- Phase 1: Pre-compute all edge data on the ORIGINAL geometry ---
+  const uniqueKeys = [...new Set(edgeKeys)];
+  const edgeDataList = [];
+  for (const ek of uniqueKeys) {
+    const data = _precomputeFilletEdge(faces, ek, radius, segments);
+    if (data) edgeDataList.push(data);
   }
+
+  if (edgeDataList.length === 0) return geometry;
+
+  // --- Phase 2: Build vertex-sharing map ---
+  const vertexEdgeMap = _buildVertexEdgeMap(edgeDataList);
+
+  // --- Phase 3: Apply batch face trimming ---
+  _batchTrimFaces(faces, edgeDataList);
+
+  _batchSplitVertices(faces, edgeDataList, vertexEdgeMap);
+
+  // --- Phase 4: Generate all fillet strip quads and endpoint fans ---
+  const sharedEndpoints = new Set();
+  for (const [vk, edgeIndices] of vertexEdgeMap) {
+    if (edgeIndices.length >= 2) sharedEndpoints.add(vk);
+  }
+
+  for (const data of edgeDataList) {
+    const shared = data.shared;
+    const arcA = data.arcA;
+    const arcB = data.arcB;
+
+    // Create fillet strip quads
+    for (let s = 0; s < segments; s++) {
+      const faceNormal = _vec3Normalize(_vec3Cross(
+        _vec3Sub(arcA[s + 1], arcA[s]),
+        _vec3Sub(arcB[s + 1], arcA[s])
+      ));
+      faces.push({
+        vertices: [{ ...arcA[s] }, { ...arcA[s + 1] }, { ...arcB[s + 1] }, { ...arcB[s] }],
+        normal: faceNormal,
+        shared,
+      });
+    }
+
+    // Fan triangles at endpoint A — only if NOT a shared internal vertex
+    const vkA = _edgeVKey(data.edgeA);
+    if (!sharedEndpoints.has(vkA)) {
+      for (let s = 1; s < segments; s++) {
+        const triNormal = _vec3Normalize(_vec3Cross(
+          _vec3Sub(arcA[s + 1], arcA[0]),
+          _vec3Sub(arcA[s], arcA[0])
+        ));
+        faces.push({
+          vertices: [{ ...arcA[0] }, { ...arcA[s + 1] }, { ...arcA[s] }],
+          normal: triNormal,
+          shared,
+        });
+      }
+    }
+
+    // Fan triangles at endpoint B — only if NOT a shared internal vertex
+    const vkB = _edgeVKey(data.edgeB);
+    if (!sharedEndpoints.has(vkB)) {
+      for (let s = 1; s < segments; s++) {
+        const triNormal = _vec3Normalize(_vec3Cross(
+          _vec3Sub(arcB[s], arcB[0]),
+          _vec3Sub(arcB[s + 1], arcB[0])
+        ));
+        faces.push({
+          vertices: [{ ...arcB[0] }, { ...arcB[s] }, { ...arcB[s + 1] }],
+          normal: triNormal,
+          shared,
+        });
+      }
+    }
+  }
+
+  // --- Phase 5: Generate corner/blending faces at shared vertices ---
+  _generateCornerFaces(faces, origFaces, edgeDataList, vertexEdgeMap);
 
   _weldVertices(faces);
 
@@ -1276,53 +1380,48 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8) {
   return newGeom;
 }
 
-function _filletOneEdge(faces, edgeKey, radius, segments) {
+/**
+ * Pre-compute fillet data for one edge on the original (unmodified) geometry.
+ */
+function _precomputeFilletEdge(faces, edgeKey, radius, segments) {
   const adj = _findAdjacentFaces(faces, edgeKey);
   if (adj.length < 2) return null;
 
-  const face0 = faces[adj[0].fi];
-  const face1 = faces[adj[1].fi];
+  const fi0 = adj[0].fi, fi1 = adj[1].fi;
+  const face0 = faces[fi0];
+  const face1 = faces[fi1];
   const edgeA = adj[0].a;
   const edgeB = adj[0].b;
 
-  // Pre-compute face edge keys before any modifications
   const face0Keys = _collectFaceEdgeKeys(face0);
   const face1Keys = _collectFaceEdgeKeys(face1);
 
   const { offsDir0, offsDir1 } = _computeOffsetDirs(face0, face1, edgeA, edgeB);
 
-  // Angle between offset directions determines arc geometry
   const alpha = Math.acos(Math.max(-1, Math.min(1, _vec3Dot(offsDir0, offsDir1))));
-  if (alpha < 1e-6) return null; // Faces nearly coplanar
+  if (alpha < 1e-6) return null;
 
   const tangentDist = radius / Math.tan(alpha / 2);
   const centerDist = radius / Math.sin(alpha / 2);
   const sweep = Math.PI - alpha;
-
-  // Bisector points into the interior angle between the two faces
   const bisector = _vec3Normalize(_vec3Add(offsDir0, offsDir1));
 
-  // Trim points on each face
   const t0a = _vec3Add(edgeA, _vec3Scale(offsDir0, tangentDist));
   const t0b = _vec3Add(edgeB, _vec3Scale(offsDir0, tangentDist));
   const t1a = _vec3Add(edgeA, _vec3Scale(offsDir1, tangentDist));
   const t1b = _vec3Add(edgeB, _vec3Scale(offsDir1, tangentDist));
 
-  // Compute arc points at each endpoint using proper circular arc
   function computeArc(vertex) {
     const center = _vec3Add(vertex, _vec3Scale(bisector, centerDist));
     const t0 = _vec3Add(vertex, _vec3Scale(offsDir0, tangentDist));
     const e0 = _vec3Normalize(_vec3Sub(t0, center));
     const t1 = _vec3Add(vertex, _vec3Scale(offsDir1, tangentDist));
     const e1 = _vec3Normalize(_vec3Sub(t1, center));
-
-    // Perpendicular in the arc plane: perp = (e1 - cos(sweep)*e0) / sin(sweep)
     const cosSweep = Math.cos(sweep);
     const sinSweep = Math.sin(sweep);
     const perp = sinSweep > 1e-10
       ? _vec3Scale(_vec3Sub(e1, _vec3Scale(e0, cosSweep)), 1 / sinSweep)
       : e1;
-
     const points = [];
     for (let s = 0; s <= segments; s++) {
       const theta = (s / segments) * sweep;
@@ -1337,55 +1436,504 @@ function _filletOneEdge(faces, edgeKey, radius, segments) {
   const arcA = computeArc(edgeA);
   const arcB = computeArc(edgeB);
 
-  // Trim the two adjacent faces
-  _trimFaceEdge(face0, edgeA, edgeB, t0a, t0b);
-  _trimFaceEdge(face1, edgeA, edgeB, t1a, t1b);
+  // p0a/p0b/p1a/p1b for trim compatibility with batch helpers
+  return {
+    edgeKey, fi0, fi1, edgeA, edgeB,
+    face0Keys, face1Keys,
+    p0a: t0a, p0b: t0b, p1a: t1a, p1b: t1b,
+    arcA, arcB,
+    shared: face0.shared ? { ...face0.shared } : null,
+  };
+}
 
-  // Split vertices at edge endpoints in all other faces
-  _splitVertexAtEndpoint(faces, adj[0].fi, adj[1].fi, edgeA, t0a, t1a, face0Keys, face1Keys);
-  _splitVertexAtEndpoint(faces, adj[0].fi, adj[1].fi, edgeB, t0b, t1b, face0Keys, face1Keys);
+// -----------------------------------------------------------------------
+// Batch chamfer/fillet helpers
+// -----------------------------------------------------------------------
 
-  // Create fillet strip quads: [arcA[s], arcA[s+1], arcB[s+1], arcB[s]]
-  const shared = face0.shared ? { ...face0.shared } : null;
-  for (let s = 0; s < segments; s++) {
-    const faceNormal = _vec3Normalize(_vec3Cross(
-      _vec3Sub(arcA[s + 1], arcA[s]),
-      _vec3Sub(arcB[s + 1], arcA[s])
-    ));
-    faces.push({
-      vertices: [{ ...arcA[s] }, { ...arcA[s + 1] }, { ...arcB[s + 1] }, { ...arcB[s] }],
-      normal: faceNormal,
-      shared,
-    });
+/**
+ * Build a map of vertex key → list of edge data indices that share that vertex.
+ */
+function _buildVertexEdgeMap(edgeDataList) {
+  const map = new Map();
+  for (let i = 0; i < edgeDataList.length; i++) {
+    const d = edgeDataList[i];
+    const vkA = _edgeVKey(d.edgeA);
+    const vkB = _edgeVKey(d.edgeB);
+    if (!map.has(vkA)) map.set(vkA, []);
+    if (!map.has(vkB)) map.set(vkB, []);
+    map.get(vkA).push(i);
+    map.get(vkB).push(i);
+  }
+  return map;
+}
+
+/**
+ * Batch trim faces for all edge data at once.
+ * Handles the case where a face has multiple edges being chamfered/filleted
+ * (e.g., the circular top face of a cylinder). At shared vertices between two
+ * edges on the same face, both replacement vertices are inserted.
+ */
+function _batchTrimFaces(faces, edgeDataList) {
+  // Build per-face maps:
+  // For each (face, original_vertex_key) → list of {edgeDataIndex, replacement position, role}
+  // role: 'a' means vertex is edgeA of this edge data, 'b' means it's edgeB
+  const faceTrimInfo = new Map(); // fi → Map(vk → [{di, pos, role}])
+
+  for (let di = 0; di < edgeDataList.length; di++) {
+    const d = edgeDataList[di];
+    const vkA = _edgeVKey(d.edgeA);
+    const vkB = _edgeVKey(d.edgeB);
+
+    // Face 0
+    if (!faceTrimInfo.has(d.fi0)) faceTrimInfo.set(d.fi0, new Map());
+    const m0 = faceTrimInfo.get(d.fi0);
+    if (!m0.has(vkA)) m0.set(vkA, []);
+    m0.get(vkA).push({ di, pos: d.p0a, role: 'a' });
+    if (!m0.has(vkB)) m0.set(vkB, []);
+    m0.get(vkB).push({ di, pos: d.p0b, role: 'b' });
+
+    // Face 1
+    if (!faceTrimInfo.has(d.fi1)) faceTrimInfo.set(d.fi1, new Map());
+    const m1 = faceTrimInfo.get(d.fi1);
+    if (!m1.has(vkA)) m1.set(vkA, []);
+    m1.get(vkA).push({ di, pos: d.p1a, role: 'a' });
+    if (!m1.has(vkB)) m1.set(vkB, []);
+    m1.get(vkB).push({ di, pos: d.p1b, role: 'b' });
   }
 
-  // Fan triangles at vertex A endpoint (fills crescent between arc and cap face)
-  for (let s = 1; s < segments; s++) {
+  // Now apply trims per face
+  for (const [fi, vertMap] of faceTrimInfo) {
+    const face = faces[fi];
+    const verts = face.vertices;
+    const newVerts = [];
+
+    for (let i = 0; i < verts.length; i++) {
+      const v = verts[i];
+      const vk = _edgeVKey(v);
+      const entries = vertMap.get(vk);
+
+      if (!entries || entries.length === 0) {
+        // Vertex not involved in any edge — keep as-is
+        newVerts.push(v);
+      } else if (entries.length === 1) {
+        // Vertex involved in exactly one edge — simple replacement
+        newVerts.push({ ...entries[0].pos });
+      } else {
+        // Vertex shared by multiple edges on this face.
+        // Insert replacement positions in face-winding order.
+        // The vertex is endpoint B of the previous edge and endpoint A of the next.
+        // We need: [p_b_of_prev_edge, p_a_of_next_edge]
+        const prevIdx = (i - 1 + verts.length) % verts.length;
+        const nextIdx = (i + 1) % verts.length;
+        const prevVk = _edgeVKey(verts[prevIdx]);
+        const nextVk = _edgeVKey(verts[nextIdx]);
+
+        // Determine which entry connects to the previous vertex (role 'b' of that edge,
+        // where edgeA matches prevVk) and which connects to the next (role 'a', edgeB matches nextVk)
+        let firstPos = null, secondPos = null;
+
+        for (const entry of entries) {
+          const d = edgeDataList[entry.di];
+          const otherA = _edgeVKey(d.edgeA);
+          const otherB = _edgeVKey(d.edgeB);
+
+          if (entry.role === 'b' && otherA === prevVk) {
+            // This edge goes from prev vertex to current vertex — it should come first
+            firstPos = entry.pos;
+          } else if (entry.role === 'a' && otherB === nextVk) {
+            // This edge goes from current vertex to next vertex — it should come second
+            secondPos = entry.pos;
+          } else if (entry.role === 'a' && otherB === prevVk) {
+            firstPos = entry.pos;
+          } else if (entry.role === 'b' && otherA === nextVk) {
+            secondPos = entry.pos;
+          }
+        }
+
+        if (firstPos && secondPos) {
+          // Check if positions are essentially the same (avoid duplicate vertices)
+          if (_edgeVKey(firstPos) === _edgeVKey(secondPos)) {
+            newVerts.push({ ...firstPos });
+          } else {
+            newVerts.push({ ...firstPos });
+            newVerts.push({ ...secondPos });
+          }
+        } else if (firstPos) {
+          newVerts.push({ ...firstPos });
+        } else if (secondPos) {
+          newVerts.push({ ...secondPos });
+        } else {
+          // Fallback: use first entry's position
+          newVerts.push({ ...entries[0].pos });
+        }
+      }
+    }
+
+    face.vertices = newVerts;
+  }
+}
+
+/**
+ * Batch-split vertices at all endpoints across all edges.
+ * For vertices shared by multiple edges (internal path vertices), we use
+ * the pre-computed replacement positions from the edge data rather than
+ * the original single-edge _splitVertexAtEndpoint approach.
+ */
+function _batchSplitVertices(faces, edgeDataList, vertexEdgeMap) {
+  // Collect all face indices that are directly involved in edges
+  const edgeFaceIndices = new Set();
+  for (const d of edgeDataList) {
+    edgeFaceIndices.add(d.fi0);
+    edgeFaceIndices.add(d.fi1);
+  }
+
+  // For each edge data, collect the endpoints that need splitting
+  // in "other" faces (not face0 or face1 of that edge or any other edge)
+  // Build a map: vertex key → { p0positions, p1positions } from all edges
+  const vertexReplacements = new Map();
+  for (const d of edgeDataList) {
+    for (const [origVert, p0, p1] of [
+      [d.edgeA, d.p0a, d.p1a],
+      [d.edgeB, d.p0b, d.p1b],
+    ]) {
+      const vk = _edgeVKey(origVert);
+      if (!vertexReplacements.has(vk)) {
+        vertexReplacements.set(vk, { edges: [], fi0Set: new Set(), fi1Set: new Set() });
+      }
+      const entry = vertexReplacements.get(vk);
+      entry.edges.push({ d, p0, p1 });
+      entry.fi0Set.add(d.fi0);
+      entry.fi1Set.add(d.fi1);
+    }
+  }
+
+  // For each "other" face (not in any edge's face0/face1), determine
+  // the correct replacement vertex at shared endpoints
+  for (const [vk, entry] of vertexReplacements) {
+    // Use the first edge's data for the actual split logic
+    // (all edges meeting at this vertex should produce compatible offsets)
+    const primary = entry.edges[0];
+
+    for (let fi = 0; fi < faces.length; fi++) {
+      if (entry.fi0Set.has(fi) || entry.fi1Set.has(fi)) continue;
+      const face = faces[fi];
+      const verts = face.vertices;
+
+      let vidx = -1;
+      for (let i = 0; i < verts.length; i++) {
+        if (_edgeVKey(verts[i]) === vk) { vidx = i; break; }
+      }
+      if (vidx < 0) continue;
+
+      const prevIdx = (vidx - 1 + verts.length) % verts.length;
+      const nextIdx = (vidx + 1) % verts.length;
+      const prevEdge = _edgeKeyFromVerts(verts[prevIdx], verts[vidx]);
+      const nextEdge = _edgeKeyFromVerts(verts[vidx], verts[nextIdx]);
+
+      // Check adjacency to ALL edges' face0Keys/face1Keys
+      let touchesAnyF0 = false, touchesAnyF1 = false;
+      let prevInAnyF0 = false, nextInAnyF0 = false;
+      let firstP0 = primary.p0, firstP1 = primary.p1;
+
+      for (const { d, p0, p1 } of entry.edges) {
+        const prevInF0 = d.face0Keys.has(prevEdge);
+        const prevInF1 = d.face1Keys.has(prevEdge);
+        const nextInF0 = d.face0Keys.has(nextEdge);
+        const nextInF1 = d.face1Keys.has(nextEdge);
+        if (prevInF0 || nextInF0) { touchesAnyF0 = true; firstP0 = p0; }
+        if (prevInF0) prevInAnyF0 = true;
+        if (nextInF0) nextInAnyF0 = true;
+        if (prevInF1 || nextInF1) { touchesAnyF1 = true; firstP1 = p1; }
+      }
+
+      let newPts;
+      if (touchesAnyF0 && touchesAnyF1) {
+        newPts = prevInAnyF0
+          ? [{ ...firstP0 }, { ...firstP1 }]
+          : [{ ...firstP1 }, { ...firstP0 }];
+      } else if (touchesAnyF0) {
+        newPts = nextInAnyF0
+          ? [{ ...firstP1 }, { ...firstP0 }]
+          : [{ ...firstP0 }, { ...firstP1 }];
+      } else if (touchesAnyF1) {
+        newPts = [{ ...firstP1 }];
+      } else {
+        // No direct edge connection — pick side by normal alignment
+        const fn = _vec3Normalize(face.normal);
+        const n0 = _vec3Normalize(faces[primary.d.fi0].normal);
+        const n1 = _vec3Normalize(faces[primary.d.fi1].normal);
+        const dot0 = Math.abs(_vec3Dot(fn, n0));
+        const dot1 = Math.abs(_vec3Dot(fn, n1));
+        newPts = [dot0 > dot1 ? { ...firstP0 } : { ...firstP1 }];
+      }
+
+      const newVerts = [];
+      for (let i = 0; i < verts.length; i++) {
+        if (i === vidx) {
+          newVerts.push(...newPts);
+        } else {
+          newVerts.push(verts[i]);
+        }
+      }
+      face.vertices = newVerts;
+    }
+  }
+}
+
+/**
+ * Generate corner (gap-filling) faces at shared vertices where 2+ edges meet.
+ *
+ * At each shared vertex, adjacent bevel/arc faces don't connect directly because
+ * the offset directions differ between edges. This creates a single gap around the
+ * vertex that needs one polygon to fill it.
+ *
+ * The corner polygon is constructed by walking around the vertex in two passes:
+ * 1. p0 positions (face0 side) in reverse sorted order
+ * 2. p1 positions (face1 side) in forward order, with "other vertices" between them
+ */
+function _generateCornerFaces(faces, origFaces, edgeDataList, vertexEdgeMap) {
+  for (const [vk, edgeIndices] of vertexEdgeMap) {
+    if (edgeIndices.length < 2) continue;
+
+    // Collect edge info at this shared vertex
+    const edgeInfos = [];
+    for (const ei of edgeIndices) {
+      const d = edgeDataList[ei];
+      const isA = _edgeVKey(d.edgeA) === vk;
+      edgeInfos.push({
+        di: ei,
+        data: d,
+        isA,
+        p0: isA ? d.p0a : d.p0b,
+        p1: isA ? d.p1a : d.p1b,
+        arc: d.arcA ? (isA ? d.arcA : d.arcB) : null,
+      });
+    }
+
+    // Find "other vertex" for each edge (the vertex adjacent to vk in face1
+    // that is NOT the other endpoint of the chamfered edge)
+    for (const info of edgeInfos) {
+      const d = info.data;
+      const origFace1 = origFaces[d.fi1];
+      const origVerts = origFace1.vertices;
+      const otherEndVk = info.isA ? _edgeVKey(d.edgeB) : _edgeVKey(d.edgeA);
+      info.otherVertex = null;
+      for (let i = 0; i < origVerts.length; i++) {
+        if (_edgeVKey(origVerts[i]) === vk) {
+          const prevIdx = (i - 1 + origVerts.length) % origVerts.length;
+          const nextIdx = (i + 1) % origVerts.length;
+          const prevVk = _edgeVKey(origVerts[prevIdx]);
+          const nextVk = _edgeVKey(origVerts[nextIdx]);
+          if (nextVk !== otherEndVk && nextVk !== vk) {
+            info.otherVertex = origVerts[nextIdx];
+          } else if (prevVk !== otherEndVk && prevVk !== vk) {
+            info.otherVertex = origVerts[prevIdx];
+          }
+          break;
+        }
+      }
+    }
+
+    // Sort edges around the vertex using face0 vertex ordering.
+    // Use the shared vertex's position in the top face to determine the
+    // correct angular order (handles wrap-around for circular faces).
+    const fi0 = edgeInfos[0].data.fi0;
+    const topFace = origFaces[fi0];
+    const topVerts = topFace.vertices;
+
+    // Find the shared vertex's index in the top face
+    let sharedIdx = -1;
+    for (let i = 0; i < topVerts.length; i++) {
+      if (_edgeVKey(topVerts[i]) === vk) {
+        sharedIdx = i;
+        break;
+      }
+    }
+
+    for (const info of edgeInfos) {
+      const d = info.data;
+      const otherVk = info.isA ? _edgeVKey(d.edgeB) : _edgeVKey(d.edgeA);
+      info.topIndex = -1;
+      for (let i = 0; i < topVerts.length; i++) {
+        if (_edgeVKey(topVerts[i]) === otherVk) {
+          info.topIndex = i;
+          break;
+        }
+      }
+      // Compute relative position: distance going BACKWARD from sharedIdx
+      // in the top face vertex list (matching the winding direction).
+      // Edge connecting to the PREVIOUS vertex should sort first.
+      if (sharedIdx >= 0 && info.topIndex >= 0) {
+        info.sortKey = (sharedIdx - info.topIndex + topVerts.length) % topVerts.length;
+      } else {
+        info.sortKey = 0;
+      }
+    }
+    edgeInfos.sort((a, b) => a.sortKey - b.sortKey);
+
+    const shared = edgeInfos[0].data.shared;
+    const hasFillet = edgeInfos.some(e => e.arc !== null);
+
+    if (hasFillet) {
+      // Fillet corner: generate triangle fan connecting arc arrays
+      _generateFilletCorner(faces, edgeInfos, shared);
+    } else {
+      // Chamfer corner: build one polygon
+      // Pass 1: p0 positions in reverse order (going backward around face0)
+      const cornerVerts = [];
+      for (let i = edgeInfos.length - 1; i >= 0; i--) {
+        cornerVerts.push({ ...edgeInfos[i].p0 });
+      }
+      // Pass 2: p1 positions in forward order with other vertices between them
+      for (let i = 0; i < edgeInfos.length; i++) {
+        cornerVerts.push({ ...edgeInfos[i].p1 });
+        if (i < edgeInfos.length - 1) {
+          const curr = edgeInfos[i];
+          const next = edgeInfos[i + 1];
+          if (curr.otherVertex && next.otherVertex &&
+              _edgeVKey(curr.otherVertex) === _edgeVKey(next.otherVertex)) {
+            cornerVerts.push({ ...curr.otherVertex });
+          }
+        }
+      }
+
+      // Remove duplicate vertices (both consecutive and non-consecutive).
+      // On curved surfaces, p1_curr and p1_next may be identical after rounding,
+      // creating degenerate edges. Collapse such duplicates.
+      const cleaned = _deduplicatePolygon(cornerVerts);
+      if (cleaned.length < 3) continue;
+
+      const cornerNormal = _vec3Normalize(_vec3Cross(
+        _vec3Sub(cleaned[1], cleaned[0]),
+        _vec3Sub(cleaned[cleaned.length - 1], cleaned[0])
+      ));
+      faces.push({ vertices: cleaned, normal: cornerNormal, shared });
+    }
+  }
+}
+
+/**
+ * Remove duplicate vertices from a polygon (both consecutive and non-consecutive).
+ * On curved surfaces like cylinders, offset positions at shared vertices may
+ * coincide after rounding, creating degenerate edges. This function collapses
+ * such duplicates by keeping only the first occurrence of each unique vertex key
+ * and removing the "loop" between duplicates.
+ */
+function _deduplicatePolygon(verts) {
+  // First pass: remove consecutive duplicates
+  const step1 = [verts[0]];
+  for (let i = 1; i < verts.length; i++) {
+    if (_edgeVKey(verts[i]) !== _edgeVKey(step1[step1.length - 1])) {
+      step1.push(verts[i]);
+    }
+  }
+  if (step1.length > 1 && _edgeVKey(step1[0]) === _edgeVKey(step1[step1.length - 1])) {
+    step1.pop();
+  }
+
+  // Second pass: remove non-consecutive duplicates by keeping the SHORTEST path
+  // between duplicate vertices (collapse the loop)
+  const seen = new Map();
+  const result = [];
+  for (let i = 0; i < step1.length; i++) {
+    const key = _edgeVKey(step1[i]);
+    if (seen.has(key)) {
+      // Found a duplicate — remove the vertices between the first occurrence
+      // and this one (the loop), keeping the first occurrence
+      const firstIdx = seen.get(key);
+      // Remove everything from firstIdx+1 to result.length (the loop)
+      result.length = firstIdx + 1;
+      // Update seen map
+      seen.clear();
+      for (let j = 0; j < result.length; j++) {
+        seen.set(_edgeVKey(result[j]), j);
+      }
+    } else {
+      result.push(step1[i]);
+      seen.set(key, result.length - 1);
+    }
+  }
+  return result;
+}
+
+/**
+ * Generate fillet corner faces at a shared vertex using triangle fans.
+ * The boundary of the gap consists of:
+ * 1. Top face edge: arcB_(i-1)[0] → arcA_i[0]
+ * 2. Arc from edge i going backward: arcA_i[0] → arcA_i[seg] (face1 side)
+ * 3. Gap through other vertex: arcA_i[seg] → vi_bot → arcB_(i-1)[seg]
+ * 4. Arc from edge (i-1) going forward: arcB_(i-1)[seg] → arcB_(i-1)[0] (face0 side)
+ *
+ * The polygon must traverse these in opposite direction to adjacent faces.
+ */
+function _generateFilletCorner(faces, edgeInfos, shared) {
+  // For M=2 edges, build the correct polygon:
+  // edgeInfos[0] = "curr" (edge where shared vertex is endpoint B, connects to PREVIOUS vertex)
+  // edgeInfos[1] = "next" (edge where shared vertex is endpoint A, connects to NEXT vertex)
+  const curr = edgeInfos[0]; // edge (i-1)
+  const next = edgeInfos[1]; // edge i
+  const arcCurr = curr.arc;  // arcB of edge (i-1)
+  const arcNext = next.arc;  // arcA of edge i
+
+  if (!arcCurr || !arcNext) return;
+
+  const segs = arcCurr.length - 1;
+
+  // Build polygon:
+  // [arcNext[0], arcCurr[0], arcCurr[1], ..., arcCurr[seg], vi_bot, arcNext[seg], arcNext[seg-1], ..., arcNext[1]]
+  const cornerVerts = [];
+
+  // Start: p0 of next edge (on face0/top side)
+  cornerVerts.push({ ...arcNext[0] });
+  // p0 of curr edge (on face0/top side)
+  cornerVerts.push({ ...arcCurr[0] });
+
+  // arcCurr forward (edge i-1's arc at endpoint B, going from face0 to face1)
+  for (let s = 1; s <= segs; s++) {
+    cornerVerts.push({ ...arcCurr[s] });
+  }
+
+  // Other vertex between the two arcs (if they don't meet at the same point)
+  const lastCurr = arcCurr[segs];
+  const lastNext = arcNext[segs];
+  const arcsMeet = _edgeVKey(lastCurr) === _edgeVKey(lastNext);
+
+  if (!arcsMeet && curr.otherVertex) {
+    cornerVerts.push({ ...curr.otherVertex });
+  }
+
+  // arcNext backward (edge i's arc at endpoint A, going from face1 back to face0)
+  const startS = arcsMeet ? segs - 1 : segs;
+  for (let s = startS; s >= 1; s--) {
+    cornerVerts.push({ ...arcNext[s] });
+  }
+
+  // Remove any remaining consecutive duplicates
+  const cleaned = [cornerVerts[0]];
+  for (let i = 1; i < cornerVerts.length; i++) {
+    if (_edgeVKey(cornerVerts[i]) !== _edgeVKey(cleaned[cleaned.length - 1])) {
+      cleaned.push(cornerVerts[i]);
+    }
+  }
+  if (cleaned.length > 1 && _edgeVKey(cleaned[0]) === _edgeVKey(cleaned[cleaned.length - 1])) {
+    cleaned.pop();
+  }
+  if (cleaned.length < 3) return;
+
+  // Triangulate the polygon as a fan from the first vertex
+  for (let i = 1; i < cleaned.length - 1; i++) {
     const triNormal = _vec3Normalize(_vec3Cross(
-      _vec3Sub(arcA[s + 1], arcA[0]),
-      _vec3Sub(arcA[s], arcA[0])
+      _vec3Sub(cleaned[i], cleaned[0]),
+      _vec3Sub(cleaned[i + 1], cleaned[0])
     ));
-    faces.push({
-      vertices: [{ ...arcA[0] }, { ...arcA[s + 1] }, { ...arcA[s] }],
-      normal: triNormal,
-      shared,
-    });
+    if (_vec3Len(triNormal) > 1e-10) {
+      faces.push({
+        vertices: [{ ...cleaned[0] }, { ...cleaned[i] }, { ...cleaned[i + 1] }],
+        normal: triNormal,
+        shared,
+      });
+    }
   }
-
-  // Fan triangles at vertex B endpoint (opposite winding)
-  for (let s = 1; s < segments; s++) {
-    const triNormal = _vec3Normalize(_vec3Cross(
-      _vec3Sub(arcB[s], arcB[0]),
-      _vec3Sub(arcB[s + 1], arcB[0])
-    ));
-    faces.push({
-      vertices: [{ ...arcB[0] }, { ...arcB[s] }, { ...arcB[s + 1] }],
-      normal: triNormal,
-      shared,
-    });
-  }
-
-  return faces;
 }
 
 /**
@@ -1398,8 +1946,9 @@ export function makeEdgeKey(a, b) {
 /**
  * Given a geometry (with .edges and .paths) and a set of edge keys from the
  * user's selection, expand each key to include ALL edges that belong to the
- * same path.  This allows selecting one segment of a circular edge to
- * automatically select the whole circle.
+ * same path AND any tangent-connected paths (paths sharing an endpoint with
+ * similar edge direction).  This allows selecting one segment of a circular
+ * edge to automatically select the whole circle and any tangent continuations.
  *
  * @param {Object} geometry - Geometry with .edges[] and .paths[]
  * @param {string[]} edgeKeys - Edge keys selected by the user
@@ -1432,6 +1981,74 @@ export function expandPathEdgeKeys(geometry, edgeKeys) {
     if (ei !== undefined) {
       const pi = edgeToPath.get(ei);
       if (pi !== undefined) touchedPaths.add(pi);
+    }
+  }
+
+  // --- Tangent path expansion ---
+  // Build path endpoint → path index map and endpoint edge directions
+  const vKey = (v) => _edgeVKey(v);
+  const pathEndpoints = new Map(); // vertexKey → [{pi, dir}]
+
+  for (let pi = 0; pi < geometry.paths.length; pi++) {
+    const path = geometry.paths[pi];
+    if (path.isClosed || path.edgeIndices.length === 0) continue;
+
+    // First edge start vertex
+    const firstEi = path.edgeIndices[0];
+    const firstEdge = geometry.edges[firstEi];
+    const startVk = vKey(firstEdge.start);
+    const startDir = _vec3Normalize(_vec3Sub(firstEdge.end, firstEdge.start));
+
+    // Last edge end vertex
+    const lastEi = path.edgeIndices[path.edgeIndices.length - 1];
+    const lastEdge = geometry.edges[lastEi];
+    const endVk = vKey(lastEdge.end);
+    const endDir = _vec3Normalize(_vec3Sub(lastEdge.end, lastEdge.start));
+
+    if (!pathEndpoints.has(startVk)) pathEndpoints.set(startVk, []);
+    pathEndpoints.get(startVk).push({ pi, dir: { x: -startDir.x, y: -startDir.y, z: -startDir.z } });
+
+    if (!pathEndpoints.has(endVk)) pathEndpoints.set(endVk, []);
+    pathEndpoints.get(endVk).push({ pi, dir: endDir });
+  }
+
+  // Expand tangent-connected paths: if a touched path endpoint meets
+  // another path's endpoint at the same vertex with similar direction,
+  // include that path too (and recurse)
+  const TANGENT_THRESHOLD = 0.9; // cos(~26°) — generous tangent tolerance
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const pi of touchedPaths) {
+      const path = geometry.paths[pi];
+      if (path.isClosed || path.edgeIndices.length === 0) continue;
+
+      const firstEi = path.edgeIndices[0];
+      const lastEi = path.edgeIndices[path.edgeIndices.length - 1];
+      const firstEdge = geometry.edges[firstEi];
+      const lastEdge = geometry.edges[lastEi];
+
+      for (const endpointVk of [vKey(firstEdge.start), vKey(lastEdge.end)]) {
+        const neighbors = pathEndpoints.get(endpointVk);
+        if (!neighbors) continue;
+        for (const neighbor of neighbors) {
+          if (neighbor.pi === pi || touchedPaths.has(neighbor.pi)) continue;
+
+          // Check tangency: find the direction at this endpoint for the current path
+          let curDir;
+          if (endpointVk === vKey(firstEdge.start)) {
+            curDir = _vec3Normalize(_vec3Sub(firstEdge.start, firstEdge.end)); // pointing outward
+          } else {
+            curDir = _vec3Normalize(_vec3Sub(lastEdge.end, lastEdge.start));
+          }
+
+          const dot = Math.abs(_vec3Dot(curDir, neighbor.dir));
+          if (dot >= TANGENT_THRESHOLD) {
+            touchedPaths.add(neighbor.pi);
+            changed = true;
+          }
+        }
+      }
     }
   }
 
