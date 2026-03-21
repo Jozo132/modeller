@@ -1307,6 +1307,134 @@ function _weldVertices(faces) {
   }
 }
 
+/**
+ * Recompute face normals using the Newell method for correctness after
+ * vertex modifications (trimming, splitting). The Newell method sums
+ * cross products of consecutive edge pairs and works correctly for both
+ * convex and concave polygons.
+ */
+function _recomputeFaceNormals(faces) {
+  for (const face of faces) {
+    const verts = face.vertices;
+    if (verts.length < 3) continue;
+    let nx = 0, ny = 0, nz = 0;
+    for (let i = 0; i < verts.length; i++) {
+      const curr = verts[i];
+      const next = verts[(i + 1) % verts.length];
+      nx += (curr.y - next.y) * (curr.z + next.z);
+      ny += (curr.z - next.z) * (curr.x + next.x);
+      nz += (curr.x - next.x) * (curr.y + next.y);
+    }
+    const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+    if (len > 1e-10) {
+      face.normal = { x: nx / len, y: ny / len, z: nz / len };
+    }
+  }
+}
+
+/**
+ * Fix winding consistency across all faces using BFS propagation from a seed
+ * face, then verify outward orientation via signed volume.  When 3+ chamfer/
+ * fillet edges meet at a vertex, the independently-generated bevel faces may
+ * have winding that conflicts with the trimmed original faces.  This function
+ * detects and corrects such conflicts.
+ */
+function _fixWindingConsistency(faces) {
+  if (faces.length === 0) return;
+
+  // Build edge → face adjacency (directed edge → face index + direction)
+  const edgeToFaces = new Map();
+  for (let fi = 0; fi < faces.length; fi++) {
+    const verts = faces[fi].vertices;
+    for (let i = 0; i < verts.length; i++) {
+      const a = verts[i], b = verts[(i + 1) % verts.length];
+      const ka = _edgeVKey(a), kb = _edgeVKey(b);
+      const ek = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+      const fwd = ka < kb;
+      if (!edgeToFaces.has(ek)) edgeToFaces.set(ek, []);
+      edgeToFaces.get(ek).push({ fi, fwd });
+    }
+  }
+
+  // Check if any winding errors exist
+  let hasErrors = false;
+  for (const [, entries] of edgeToFaces) {
+    if (entries.length === 2 && entries[0].fwd === entries[1].fwd) {
+      hasErrors = true;
+      break;
+    }
+  }
+  if (!hasErrors) return;
+
+  // BFS from face 0 to propagate consistent winding.
+  // flipped[fi] tracks whether face fi needs to be reversed.
+  // When checking a neighbor, we must account for the current face's flip
+  // state: if the current face is flipped, its effective edge direction is
+  // the opposite of the original stored direction.
+  const flipped = new Uint8Array(faces.length);
+  const visited = new Uint8Array(faces.length);
+  const queue = [0];
+  visited[0] = 1;
+
+  while (queue.length > 0) {
+    const fi = queue.shift();
+    const verts = faces[fi].vertices;
+    for (let i = 0; i < verts.length; i++) {
+      const a = verts[i], b = verts[(i + 1) % verts.length];
+      const ka = _edgeVKey(a), kb = _edgeVKey(b);
+      const ek = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+      const myOrigFwd = ka < kb;
+      const neighbors = edgeToFaces.get(ek);
+      if (!neighbors) continue;
+      // Effective direction of this edge for the current face
+      const myEffectiveFwd = flipped[fi] ? !myOrigFwd : myOrigFwd;
+      for (const nb of neighbors) {
+        if (nb.fi === fi || visited[nb.fi]) continue;
+        visited[nb.fi] = 1;
+        // Consistent winding: neighbor's effective direction must be OPPOSITE
+        // If neighbor's original fwd matches our effective fwd, it needs flipping
+        if (nb.fwd === myEffectiveFwd) {
+          flipped[nb.fi] = 1;
+        }
+        queue.push(nb.fi);
+      }
+    }
+  }
+
+  // Apply flips
+  for (let fi = 0; fi < faces.length; fi++) {
+    if (flipped[fi]) {
+      faces[fi].vertices.reverse();
+      const n = faces[fi].normal;
+      faces[fi].normal = { x: -n.x, y: -n.y, z: -n.z };
+    }
+  }
+
+  // Verify outward orientation via signed volume
+  let signedVol = 0;
+  for (const face of faces) {
+    const verts = face.vertices;
+    if (verts.length < 3) continue;
+    const v0 = verts[0];
+    for (let i = 1; i < verts.length - 1; i++) {
+      const v1 = verts[i], v2 = verts[i + 1];
+      signedVol += (
+        v0.x * (v1.y * v2.z - v2.y * v1.z) -
+        v1.x * (v0.y * v2.z - v2.y * v0.z) +
+        v2.x * (v0.y * v1.z - v1.y * v0.z)
+      );
+    }
+  }
+  if (signedVol < 0) {
+    // All normals point inward — flip everything
+    for (const face of faces) {
+      face.vertices.reverse();
+      const n = face.normal;
+      face.normal = { x: -n.x, y: -n.y, z: -n.z };
+    }
+  }
+}
+
 export function applyChamfer(geometry, edgeKeys, distance) {
   if (!geometry || !geometry.faces || edgeKeys.length === 0 || distance <= 0) {
     return geometry;
@@ -1359,6 +1487,7 @@ export function applyChamfer(geometry, edgeKeys, distance) {
   _generateCornerFaces(faces, origFaces, edgeDataList, vertexEdgeMap);
 
   _weldVertices(faces);
+  _recomputeFaceNormals(faces);
 
   const newGeom = { vertices: [], faces };
   const edgeResult = computeFeatureEdges(faces);
@@ -1499,6 +1628,7 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8) {
   _generateCornerFaces(faces, origFaces, edgeDataList, vertexEdgeMap);
 
   _weldVertices(faces);
+  _recomputeFaceNormals(faces);
 
   const newGeom = { vertices: [], faces };
   const edgeResult = computeFeatureEdges(faces);
@@ -1966,6 +2096,12 @@ function _generateCornerFaces(faces, origFaces, edgeDataList, vertexEdgeMap) {
       const cleaned = _deduplicatePolygon(cornerVerts);
       if (cleaned.length < 3) continue;
 
+      // Check if the corner polygon is redundant: when 3+ edges meet at a
+      // vertex and their bevel faces already close the gap, all edges of the
+      // corner polygon will already exist in exactly 2 faces.  Adding the
+      // polygon would create non-manifold edges, so skip it.
+      if (_isCornerRedundant(faces, cleaned)) continue;
+
       const cornerNormal = _vec3Normalize(_vec3Cross(
         _vec3Sub(cleaned[1], cleaned[0]),
         _vec3Sub(cleaned[cleaned.length - 1], cleaned[0])
@@ -1973,6 +2109,30 @@ function _generateCornerFaces(faces, origFaces, edgeDataList, vertexEdgeMap) {
       faces.push({ vertices: cleaned, normal: cornerNormal, shared });
     }
   }
+}
+
+/**
+ * Check whether a corner polygon is redundant — all its edges already exist
+ * in exactly 2 faces (meaning the gap is already closed by bevel/trimmed faces).
+ * This happens when 3+ chamfered edges meet at a single vertex and their bevel
+ * faces perfectly tile the corner without needing an extra polygon.
+ */
+function _isCornerRedundant(faces, cleanedVerts) {
+  // Build edge count map for existing faces
+  const edgeCounts = new Map();
+  for (const face of faces) {
+    const verts = face.vertices;
+    for (let i = 0; i < verts.length; i++) {
+      const ek = _edgeKeyFromVerts(verts[i], verts[(i + 1) % verts.length]);
+      edgeCounts.set(ek, (edgeCounts.get(ek) || 0) + 1);
+    }
+  }
+  // Check if every edge of the corner polygon already has 2 faces
+  for (let i = 0; i < cleanedVerts.length; i++) {
+    const ek = _edgeKeyFromVerts(cleanedVerts[i], cleanedVerts[(i + 1) % cleanedVerts.length]);
+    if ((edgeCounts.get(ek) || 0) < 2) return false;
+  }
+  return true;
 }
 
 /**
@@ -2031,73 +2191,82 @@ function _deduplicatePolygon(verts) {
  * The polygon must traverse these in opposite direction to adjacent faces.
  */
 function _generateFilletCorner(faces, edgeInfos, shared) {
-  // For M=2 edges, build the correct polygon:
-  // edgeInfos[0] = "curr" (edge where shared vertex is endpoint B, connects to PREVIOUS vertex)
-  // edgeInfos[1] = "next" (edge where shared vertex is endpoint A, connects to NEXT vertex)
-  const curr = edgeInfos[0]; // edge (i-1)
-  const next = edgeInfos[1]; // edge i
-  const arcCurr = curr.arc;  // arcB of edge (i-1)
-  const arcNext = next.arc;  // arcA of edge i
+  // Handle pairs of adjacent edges around the vertex.
+  // For M edges, process each consecutive pair (i, i+1).
+  // For M=2 this produces a single corner patch; for M>=3 it produces one
+  // patch per pair (some may be redundant and will be skipped).
+  for (let ei = 0; ei < edgeInfos.length; ei++) {
+    const curr = edgeInfos[ei];
+    const next = edgeInfos[(ei + 1) % edgeInfos.length];
+    const arcCurr = curr.arc;
+    const arcNext = next.arc;
 
-  if (!arcCurr || !arcNext) return;
+    if (!arcCurr || !arcNext) continue;
 
-  const segs = arcCurr.length - 1;
+    const segs = arcCurr.length - 1;
 
-  // Build polygon:
-  // [arcNext[0], arcCurr[0], arcCurr[1], ..., arcCurr[seg], vi_bot, arcNext[seg], arcNext[seg-1], ..., arcNext[1]]
-  const cornerVerts = [];
+    // Build polygon:
+    // [arcNext[0], arcCurr[0], arcCurr[1], ..., arcCurr[seg], vi_bot, arcNext[seg], arcNext[seg-1], ..., arcNext[1]]
+    const cornerVerts = [];
 
-  // Start: p0 of next edge (on face0/top side)
-  cornerVerts.push({ ...arcNext[0] });
+    // Start: p0 of next edge (on face0/top side)
+    cornerVerts.push({ ...arcNext[0] });
 
-  // p0 of curr edge (on face0/top side)
-  cornerVerts.push({ ...arcCurr[0] });
+    // p0 of curr edge (on face0/top side)
+    cornerVerts.push({ ...arcCurr[0] });
 
-  // arcCurr forward (edge i-1's arc at endpoint B, going from face0 to face1)
-  for (let s = 1; s <= segs; s++) {
-    cornerVerts.push({ ...arcCurr[s] });
-  }
-
-  // Other vertex between the two arcs (if they don't meet at the same point)
-  const lastCurr = arcCurr[segs];
-  const lastNext = arcNext[segs];
-  const arcsMeet = _edgeVKey(lastCurr) === _edgeVKey(lastNext);
-
-  if (!arcsMeet && curr.otherVertex) {
-    cornerVerts.push({ ...curr.otherVertex });
-  }
-
-  // arcNext backward (edge i's arc at endpoint A, going from face1 back to face0)
-  const startS = arcsMeet ? segs - 1 : segs;
-  for (let s = startS; s >= 1; s--) {
-    cornerVerts.push({ ...arcNext[s] });
-  }
-
-  // Remove any remaining consecutive duplicates
-  const cleaned = [cornerVerts[0]];
-  for (let i = 1; i < cornerVerts.length; i++) {
-    if (_edgeVKey(cornerVerts[i]) !== _edgeVKey(cleaned[cleaned.length - 1])) {
-      cleaned.push(cornerVerts[i]);
+    // arcCurr forward (edge i's arc, going from face0 to face1)
+    for (let s = 1; s <= segs; s++) {
+      cornerVerts.push({ ...arcCurr[s] });
     }
-  }
-  if (cleaned.length > 1 && _edgeVKey(cleaned[0]) === _edgeVKey(cleaned[cleaned.length - 1])) {
-    cleaned.pop();
-  }
-  if (cleaned.length < 3) return;
 
-  // Triangulate the polygon as a fan from the first vertex
-  for (let i = 1; i < cleaned.length - 1; i++) {
-    const triNormal = _vec3Normalize(_vec3Cross(
-      _vec3Sub(cleaned[i], cleaned[0]),
-      _vec3Sub(cleaned[i + 1], cleaned[0])
-    ));
-    if (_vec3Len(triNormal) > 1e-10) {
-      faces.push({
-        vertices: [{ ...cleaned[0] }, { ...cleaned[i] }, { ...cleaned[i + 1] }],
-        normal: triNormal,
-        shared,
-      });
+    // Other vertex between the two arcs (if they don't meet at the same point)
+    const lastCurr = arcCurr[segs];
+    const lastNext = arcNext[segs];
+    const arcsMeet = _edgeVKey(lastCurr) === _edgeVKey(lastNext);
+
+    if (!arcsMeet && curr.otherVertex) {
+      cornerVerts.push({ ...curr.otherVertex });
     }
+
+    // arcNext backward (next edge's arc, going from face1 back to face0)
+    const startS = arcsMeet ? segs - 1 : segs;
+    for (let s = startS; s >= 1; s--) {
+      cornerVerts.push({ ...arcNext[s] });
+    }
+
+    // Remove any remaining consecutive duplicates
+    const cleaned = [cornerVerts[0]];
+    for (let i = 1; i < cornerVerts.length; i++) {
+      if (_edgeVKey(cornerVerts[i]) !== _edgeVKey(cleaned[cleaned.length - 1])) {
+        cleaned.push(cornerVerts[i]);
+      }
+    }
+    if (cleaned.length > 1 && _edgeVKey(cleaned[0]) === _edgeVKey(cleaned[cleaned.length - 1])) {
+      cleaned.pop();
+    }
+    if (cleaned.length < 3) continue;
+
+    // Skip redundant corner faces (all edges already covered by existing faces)
+    if (_isCornerRedundant(faces, cleaned)) continue;
+
+    // Triangulate the polygon as a fan from the first vertex
+    for (let i = 1; i < cleaned.length - 1; i++) {
+      const triNormal = _vec3Normalize(_vec3Cross(
+        _vec3Sub(cleaned[i], cleaned[0]),
+        _vec3Sub(cleaned[i + 1], cleaned[0])
+      ));
+      if (_vec3Len(triNormal) > 1e-10) {
+        faces.push({
+          vertices: [{ ...cleaned[0] }, { ...cleaned[i] }, { ...cleaned[i + 1] }],
+          normal: triNormal,
+          shared,
+        });
+      }
+    }
+
+    // For M=2 edges, only one patch needed (don't wrap around)
+    if (edgeInfos.length === 2) break;
   }
 }
 
