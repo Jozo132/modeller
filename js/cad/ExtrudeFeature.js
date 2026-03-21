@@ -53,17 +53,19 @@ export class ExtrudeFeature extends Feature {
       throw new Error('No closed profiles found in sketch');
     }
     
-    // Generate 3D geometry by extruding profiles
-    const geometry = this.generateGeometry(profiles, plane);
-    
     // Get the current solid (if any)
     let solid = this.getPreviousSolid(context);
     
-    // Apply operation
-    solid = this.applyOperation(solid, geometry);
+    // Generate geometry per-profile and apply each body individually.
+    // This ensures multi-body sketches (e.g. two separate rectangles)
+    // each get a proper boolean operation against the accumulating solid.
+    for (const profile of profiles) {
+      const bodyGeom = this.generateGeometry([profile], plane);
+      solid = this.applyOperation(solid, bodyGeom);
+    }
 
-    // Use the result geometry (may have been modified by boolean operation)
-    const finalGeometry = solid.geometry || geometry;
+    // Use the result geometry
+    const finalGeometry = solid.geometry;
 
     return {
       type: 'solid',

@@ -54,16 +54,17 @@ export class RevolveFeature extends Feature {
       throw new Error('No closed profiles found in sketch');
     }
     
-    // Generate 3D geometry by revolving profiles
-    const geometry = this.generateGeometry(profiles, plane);
-    
     // Get the current solid (if any)
     let solid = this.getPreviousSolid(context);
     
-    // Apply operation
-    solid = this.applyOperation(solid, geometry);
+    // Process each profile individually so multi-body sketches each get
+    // a proper boolean operation against the accumulating solid.
+    for (const profile of profiles) {
+      const bodyGeom = this.generateGeometry([profile], plane);
+      solid = this.applyOperation(solid, bodyGeom);
+    }
 
-    const finalGeometry = solid.geometry || geometry;
+    const finalGeometry = solid.geometry;
 
     return {
       type: 'solid',
