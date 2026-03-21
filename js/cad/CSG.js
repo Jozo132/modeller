@@ -997,8 +997,11 @@ function _collectFaceEdgeKeys(face) {
 
 /**
  * At an edge endpoint, split the vertex in every face OTHER THAN face0/face1.
- * The single vertex is replaced by two vertices (p0, p1) in the correct winding order
- * so that the cap face connects seamlessly to both trimmed faces and the bevel/arc.
+ *
+ * Bridge faces (connecting face0-side to face1-side around the vertex ring) get
+ * TWO replacement vertices so they span the bevel/arc gap.  Faces that live
+ * entirely on one side get a SINGLE replacement vertex (p0 or p1) so the
+ * fan topology stays intact.
  */
 function _splitVertexAtEndpoint(faces, fi0, fi1, oldVertex, p0, p1, face0Keys, face1Keys) {
   const vk = _edgeVKey(oldVertex);
@@ -1024,17 +1027,27 @@ function _splitVertexAtEndpoint(faces, fi0, fi1, oldVertex, p0, p1, face0Keys, f
     const nextInF0 = face0Keys.has(nextEdge);
     const nextInF1 = face1Keys.has(nextEdge);
 
+    const touchesF0 = prevInF0 || nextInF0;
+    const touchesF1 = prevInF1 || nextInF1;
+
     let newPts;
-    if (prevInF0 && nextInF1) {
-      newPts = [{ ...p0 }, { ...p1 }];
-    } else if (prevInF1 && nextInF0) {
-      newPts = [{ ...p1 }, { ...p0 }];
-    } else if (prevInF0 || nextInF1) {
-      newPts = [{ ...p0 }, { ...p1 }];
-    } else if (prevInF1 || nextInF0) {
-      newPts = [{ ...p1 }, { ...p0 }];
+    if (touchesF0 && touchesF1) {
+      // Bridge / cap face — shares edges with both sides → two vertices
+      newPts = prevInF0 ? [{ ...p0 }, { ...p1 }] : [{ ...p1 }, { ...p0 }];
+    } else if (touchesF0) {
+      // Adjacent to face0 but not face1 — bridge into the chain → two vertices
+      newPts = nextInF0 ? [{ ...p1 }, { ...p0 }] : [{ ...p0 }, { ...p1 }];
+    } else if (touchesF1) {
+      // Adjacent to face1 only — entirely on face1 side → single vertex
+      newPts = [{ ...p1 }];
     } else {
-      newPts = [{ ...p0 }, { ...p1 }];
+      // No direct edge connection to either face — pick side by normal alignment
+      const fn = _vec3Normalize(face.normal);
+      const n0 = _vec3Normalize(faces[fi0].normal);
+      const n1 = _vec3Normalize(faces[fi1].normal);
+      const dot0 = Math.abs(_vec3Dot(fn, n0));
+      const dot1 = Math.abs(_vec3Dot(fn, n1));
+      newPts = [dot0 > dot1 ? { ...p0 } : { ...p1 }];
     }
 
     const newVerts = [];
