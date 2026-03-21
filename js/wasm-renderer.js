@@ -1687,11 +1687,37 @@ export class WasmRenderer {
       index: idx,
       faceGroup: face.faceGroup != null ? face.faceGroup : idx,
       faceType: face.faceType || 'unknown',
+      isCurved: !!face.isCurved,
       normal: face.normal || { x: 0, y: 0, z: 1 },
       shared: face.shared || null,
       vertices: face.vertices || [],
       vertexCount: face.vertices.length,
     }));
+
+    // Build per-vertex smooth normals for curved faces
+    // Key: vertex position string → {nx, ny, nz} accumulated normal
+    const smoothNormals = new Map();
+    const precision = 6;
+    const vKey = (v) => `${v.x.toFixed(precision)},${v.y.toFixed(precision)},${v.z.toFixed(precision)}`;
+
+    for (const face of faces) {
+      if (!face.isCurved) continue;
+      const n = face.normal || { x: 0, y: 0, z: 1 };
+      const g = face.faceGroup;
+      for (const v of face.vertices) {
+        const key = `${g}|${vKey(v)}`;
+        if (!smoothNormals.has(key)) {
+          smoothNormals.set(key, { x: 0, y: 0, z: 0 });
+        }
+        const sn = smoothNormals.get(key);
+        sn.x += n.x; sn.y += n.y; sn.z += n.z;
+      }
+    }
+    // Normalize accumulated normals
+    for (const sn of smoothNormals.values()) {
+      const len = Math.sqrt(sn.x * sn.x + sn.y * sn.y + sn.z * sn.z);
+      if (len > 1e-10) { sn.x /= len; sn.y /= len; sn.z /= len; }
+    }
 
     // Count triangles needed (fan triangulation: n-gon → n-2 triangles)
     let triCount = 0;
@@ -1713,17 +1739,22 @@ export class WasmRenderer {
       const face = faces[fi];
       const verts = face.vertices;
       const n = face.normal || { x: 0, y: 0, z: 1 };
+      const curved = face.isCurved;
+      const g = face.faceGroup;
       if (verts.length < 3) continue;
 
       // Fan triangulation from vertex 0
       for (let i = 1; i < verts.length - 1; i++) {
-        const v0 = verts[0], v1 = verts[i], v2 = verts[i + 1];
-        triData[ti++] = v0.x; triData[ti++] = v0.y; triData[ti++] = v0.z;
-        triData[ti++] = n.x;  triData[ti++] = n.y;  triData[ti++] = n.z;
-        triData[ti++] = v1.x; triData[ti++] = v1.y; triData[ti++] = v1.z;
-        triData[ti++] = n.x;  triData[ti++] = n.y;  triData[ti++] = n.z;
-        triData[ti++] = v2.x; triData[ti++] = v2.y; triData[ti++] = v2.z;
-        triData[ti++] = n.x;  triData[ti++] = n.y;  triData[ti++] = n.z;
+        const triVerts = [verts[0], verts[i], verts[i + 1]];
+        for (const v of triVerts) {
+          triData[ti++] = v.x; triData[ti++] = v.y; triData[ti++] = v.z;
+          if (curved) {
+            const sn = smoothNormals.get(`${g}|${vKey(v)}`);
+            triData[ti++] = sn.x; triData[ti++] = sn.y; triData[ti++] = sn.z;
+          } else {
+            triData[ti++] = n.x; triData[ti++] = n.y; triData[ti++] = n.z;
+          }
+        }
         this._triFaceMap[triIdx++] = fi;
       }
     }

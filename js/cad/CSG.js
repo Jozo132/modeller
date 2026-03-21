@@ -373,11 +373,13 @@ class CSGSolid {
  * preserves the original convex CSG polygons (so fan triangulation stays
  * correct) and only annotates each face with a shared group number.
  *
- * Non-planar faces (cylindrical, freeform) and singletons get their own
- * unique group ID (equal to their face index).
+ * Non-planar faces (cylindrical, freeform) are grouped by smooth-edge
+ * adjacency: adjacent faces whose normals differ by less than the feature
+ * edge threshold (15°) are merged into a single curved group.
+ * Each face also gets an `isCurved` boolean.
  *
  * @param {Array} faces - Array of face objects {vertices, normal, faceType, shared}
- *                        Modified in-place: each face gets a `faceGroup` property.
+ *                        Modified in-place: each face gets `faceGroup` and `isCurved` properties.
  */
 function assignCoplanarFaceGroups(faces) {
   // Build a plane key for grouping: quantized normal + plane distance
@@ -399,12 +401,15 @@ function assignCoplanarFaceGroups(faces) {
     return `${nx},${ny},${nz}|${d}`;
   }
 
-  // Default: every face is its own group
+  const SMOOTH_COS = Math.cos(15 * Math.PI / 180); // same as feature edge threshold
+
+  // Default: every face is its own group, not curved
   for (let fi = 0; fi < faces.length; fi++) {
     faces[fi].faceGroup = fi;
+    faces[fi].isCurved = false;
   }
 
-  // Group faces by their plane
+  // --- Planar face grouping (existing logic) ---
   const planeGroups = new Map();
   for (let fi = 0; fi < faces.length; fi++) {
     const face = faces[fi];
@@ -418,13 +423,21 @@ function assignCoplanarFaceGroups(faces) {
     planeGroups.get(key).push(fi);
   }
 
+  // Union-find helpers (shared for both planar and curved grouping)
+  const parent = {};
+  for (let fi = 0; fi < faces.length; fi++) parent[fi] = fi;
+  function find(x) {
+    while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+    return x;
+  }
+  function unite(a, b) {
+    const ra = find(a), rb = find(b);
+    if (ra !== rb) parent[ra] = rb;
+  }
+
   for (const [, group] of planeGroups) {
     if (group.length <= 1) continue;
 
-    // Build vertex → face adjacency for this plane group.
-    // Using vertex adjacency (not just edge) ensures coplanar faces
-    // connected through T-junction vertices (sharing only a point,
-    // not a full edge) are still grouped together.
     const vertexFaces = new Map();
     for (const fi of group) {
       const verts = faces[fi].vertices;
@@ -436,28 +449,71 @@ function assignCoplanarFaceGroups(faces) {
       }
     }
 
-    // Union-find to merge faces sharing a vertex
-    const parent = {};
-    for (const fi of group) parent[fi] = fi;
-    function find(x) {
-      while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; }
-      return x;
-    }
-    function unite(a, b) {
-      const ra = find(a), rb = find(b);
-      if (ra !== rb) parent[ra] = rb;
-    }
-
     for (const [, faceIds] of vertexFaces) {
       for (let i = 1; i < faceIds.length; i++) {
         unite(faceIds[0], faceIds[i]);
       }
     }
+  }
 
-    // Assign the same faceGroup to all faces in each connected component
-    for (const fi of group) {
-      faces[fi].faceGroup = find(fi);
+  // --- Curved face grouping: merge non-planar faces connected by smooth edges ---
+  const precision = 6;
+  function vKey(v) { return `${v.x.toFixed(precision)},${v.y.toFixed(precision)},${v.z.toFixed(precision)}`; }
+  function eKey(a, b) { const ka = vKey(a), kb = vKey(b); return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`; }
+
+  // Build edge → face indices map
+  const edgeFaces = new Map();
+  for (let fi = 0; fi < faces.length; fi++) {
+    const verts = faces[fi].vertices;
+    for (let i = 0; i < verts.length; i++) {
+      const key = eKey(verts[i], verts[(i + 1) % verts.length]);
+      if (!edgeFaces.has(key)) edgeFaces.set(key, []);
+      edgeFaces.get(key).push(fi);
     }
+  }
+
+  // For each shared edge, if adjacent face normals are smooth but NOT coplanar, unite them
+  // This catches cone/cylinder quads that are individually planar but collectively curved
+  for (const [, fis] of edgeFaces) {
+    if (fis.length < 2) continue;
+    for (let i = 0; i < fis.length - 1; i++) {
+      for (let j = i + 1; j < fis.length; j++) {
+        const fa = faces[fis[i]], fb = faces[fis[j]];
+        const na = fa.normal, nb = fb.normal;
+        const dot = na.x * nb.x + na.y * nb.y + na.z * nb.z;
+        // Smooth but not coplanar: normals within 15° but not identical
+        if (dot >= SMOOTH_COS && dot < 1 - 1e-6) {
+          unite(fis[i], fis[j]);
+        }
+      }
+    }
+  }
+
+  // Assign final faceGroup from union-find
+  for (let fi = 0; fi < faces.length; fi++) {
+    faces[fi].faceGroup = find(fi);
+  }
+
+  // Mark curved groups: a group is curved if it contains faces with different normals
+  const groupNormals = new Map();
+  for (let fi = 0; fi < faces.length; fi++) {
+    const g = faces[fi].faceGroup;
+    const n = faces[fi].normal;
+    if (!groupNormals.has(g)) {
+      groupNormals.set(g, n);
+    } else {
+      const ref = groupNormals.get(g);
+      // If any face in the group has a different normal, mark it as curved
+      if (ref !== 'curved') {
+        const dot = ref.x * n.x + ref.y * n.y + ref.z * n.z;
+        if (dot < 1 - 1e-6) {
+          groupNormals.set(g, 'curved');
+        }
+      }
+    }
+  }
+  for (let fi = 0; fi < faces.length; fi++) {
+    faces[fi].isCurved = groupNormals.get(faces[fi].faceGroup) === 'curved';
   }
 }
 

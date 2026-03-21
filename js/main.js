@@ -5739,6 +5739,12 @@ class App {
     if (this._workspaceMode !== 'part') return;
     if (!faceHit || !faceHit.face) return;
 
+    // Block sketching on curved (non-planar) surfaces
+    if (faceHit.face.isCurved) {
+      info('Cannot create sketch on a curved surface');
+      return;
+    }
+
     const planeDef = this._getPlaneFromFace(faceHit);
     if (!planeDef) return;
 
@@ -6060,6 +6066,10 @@ class App {
     // a new sketch from the face outline instead of reusing an old sketch.
     if (this._selectedFace && this._selectedFace.face && !this._lastSketchFeatureId) {
       const face = this._selectedFace.face;
+      if (face.isCurved) {
+        this.setStatus('Cannot extrude from a curved surface. Select a flat face.');
+        return;
+      }
       const planeDef = this._getPlaneFromFace(this._selectedFace);
       if (planeDef) {
         let allFaceVerts = [];
