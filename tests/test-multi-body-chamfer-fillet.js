@@ -289,5 +289,102 @@ test('Two chamfers on adjacent edges', () => {
   assert.strictEqual(m.nonManifoldEdges, 0, `nonManifold=${m.nonManifoldEdges}`);
 });
 
+// --- Fillet + Fillet on adjacent edges ---
+
+test('Fillet + Fillet on adjacent edges sharing a vertex', () => {
+  const part = new Part('T14');
+  const sf = part.addSketch(makeRectSketch(0, 0, 10, 5));
+  part.extrude(sf.id, 8);
+
+  const ek1 = makeEdgeKey({ x: 0, y: 0, z: 8 }, { x: 10, y: 0, z: 8 });
+  part.fillet([ek1], 1, { segments: 4 });
+
+  const ek2 = makeEdgeKey({ x: 10, y: 0, z: 8 }, { x: 10, y: 5, z: 8 });
+  part.fillet([ek2], 1, { segments: 4 });
+
+  const r = part.getFinalGeometry();
+  assert.ok(r && r.type === 'solid', 'Should produce valid solid');
+  const vol = calculateMeshVolume(r.geometry);
+  assert.ok(vol > 0, `Volume should be positive: ${vol}`);
+  assert.ok(vol < 400, `Volume should be less than original: ${vol}`);
+});
+
+test('Fillet + Fillet on adjacent edges: manifold', () => {
+  const part = new Part('T15');
+  const sf = part.addSketch(makeRectSketch(0, 0, 10, 5));
+  part.extrude(sf.id, 8);
+
+  const ek1 = makeEdgeKey({ x: 0, y: 0, z: 8 }, { x: 10, y: 0, z: 8 });
+  part.fillet([ek1], 1, { segments: 4 });
+
+  const ek2 = makeEdgeKey({ x: 10, y: 0, z: 8 }, { x: 10, y: 5, z: 8 });
+  part.fillet([ek2], 1, { segments: 4 });
+
+  const r = part.getFinalGeometry();
+  const m = checkManifold(r.geometry);
+  assert.strictEqual(m.boundaryEdges, 0, `boundary=${m.boundaryEdges}`);
+  assert.strictEqual(m.nonManifoldEdges, 0, `nonManifold=${m.nonManifoldEdges}`);
+  assert.strictEqual(m.windingErrors, 0, `winding=${m.windingErrors}`);
+});
+
+// --- Cylinder (circle extrude) chamfer / fillet on round edge ---
+
+function makeCircleSketch(cx, cy, radius) {
+  const s = new Sketch();
+  s.addCircle(cx, cy, radius);
+  return s;
+}
+
+test('Cylinder extrude + chamfer on round top edge: volume reduced, manifold', () => {
+  const part = new Part('T16');
+  const sf = part.addSketch(makeCircleSketch(0, 0, 5));
+  part.extrude(sf.id, 10);
+
+  const before = part.getFinalGeometry();
+  const volBefore = calculateMeshVolume(before.geometry);
+
+  // Collect all top-circle edge keys (z=10 ring)
+  const topEdgeKeys = before.geometry.edges
+    .filter(e => Math.abs(e.start.z - 10) < 0.1 && Math.abs(e.end.z - 10) < 0.1)
+    .map(e => makeEdgeKey(e.start, e.end));
+  assert.ok(topEdgeKeys.length > 0, 'Should find top-circle edges');
+
+  part.chamfer(topEdgeKeys, 0.5);
+  const after = part.getFinalGeometry();
+  assert.ok(after && after.type === 'solid', 'Should produce valid solid');
+  const volAfter = calculateMeshVolume(after.geometry);
+  assert.ok(volAfter < volBefore, `Chamfer should reduce volume: ${volBefore.toFixed(2)} → ${volAfter.toFixed(2)}`);
+
+  const m = checkManifold(after.geometry);
+  assert.strictEqual(m.boundaryEdges, 0, `boundary=${m.boundaryEdges}`);
+  assert.strictEqual(m.nonManifoldEdges, 0, `nonManifold=${m.nonManifoldEdges}`);
+  assert.strictEqual(m.windingErrors, 0, `winding=${m.windingErrors}`);
+});
+
+test('Cylinder extrude + fillet on round top edge: volume reduced, manifold', () => {
+  const part = new Part('T17');
+  const sf = part.addSketch(makeCircleSketch(0, 0, 5));
+  part.extrude(sf.id, 10);
+
+  const before = part.getFinalGeometry();
+  const volBefore = calculateMeshVolume(before.geometry);
+
+  const topEdgeKeys = before.geometry.edges
+    .filter(e => Math.abs(e.start.z - 10) < 0.1 && Math.abs(e.end.z - 10) < 0.1)
+    .map(e => makeEdgeKey(e.start, e.end));
+  assert.ok(topEdgeKeys.length > 0, 'Should find top-circle edges');
+
+  part.fillet(topEdgeKeys, 0.5, { segments: 4 });
+  const after = part.getFinalGeometry();
+  assert.ok(after && after.type === 'solid', 'Should produce valid solid');
+  const volAfter = calculateMeshVolume(after.geometry);
+  assert.ok(volAfter < volBefore, `Fillet should reduce volume: ${volBefore.toFixed(2)} → ${volAfter.toFixed(2)}`);
+
+  const m = checkManifold(after.geometry);
+  assert.strictEqual(m.boundaryEdges, 0, `boundary=${m.boundaryEdges}`);
+  assert.strictEqual(m.nonManifoldEdges, 0, `nonManifold=${m.nonManifoldEdges}`);
+  assert.strictEqual(m.windingErrors, 0, `winding=${m.windingErrors}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
