@@ -350,8 +350,14 @@ class CSGSolid {
         faceType,
         shared: poly.shared || null,
       });
+    }
 
-      for (const v of faceVerts) {
+    // Fix T-junctions left by BSP splitting: insert missing vertices into
+    // face edges so that adjacent faces share all boundary vertices.
+    _fixTJunctions(faces);
+
+    for (const face of faces) {
+      for (const v of face.vertices) {
         vertices.push(v);
       }
     }
@@ -565,6 +571,128 @@ function edgeKey(a, b) {
   const ka = `${ax},${ay},${az}`;
   const kb = `${bx},${by},${bz}`;
   return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+}
+
+// -----------------------------------------------------------------------
+// T-junction repair
+// -----------------------------------------------------------------------
+
+/**
+ * Fix T-junctions left by BSP splitting.
+ * When the BSP tree splits polygon A along a plane, new vertices are created
+ * on A's edges.  Adjacent polygon B, which shares those edges, may NOT be
+ * split by the same plane, leaving a vertex from A sitting on B's edge
+ * without being part of B's vertex list (a T-junction).
+ *
+ * This function detects such vertices and inserts them into the affected
+ * face edges so that adjacent faces properly share all boundary vertices,
+ * producing a manifold mesh.
+ */
+function _fixTJunctions(faces) {
+  const precision = 6;
+  function vKey(v) {
+    return `${v.x.toFixed(precision)},${v.y.toFixed(precision)},${v.z.toFixed(precision)}`;
+  }
+
+  // Collect all unique vertex positions
+  const uniqueVerts = [];
+  const seen = new Set();
+  for (const face of faces) {
+    for (const v of face.vertices) {
+      const k = vKey(v);
+      if (!seen.has(k)) {
+        seen.add(k);
+        uniqueVerts.push(v);
+      }
+    }
+  }
+
+  // Iterate until no more T-junctions are found (usually 1 pass)
+  for (let iter = 0; iter < 5; iter++) {
+    let changed = false;
+
+    for (let fi = 0; fi < faces.length; fi++) {
+      const verts = faces[fi].vertices;
+      const newVerts = [];
+
+      for (let i = 0; i < verts.length; i++) {
+        const a = verts[i];
+        const b = verts[(i + 1) % verts.length];
+        newVerts.push(a);
+
+        const aKey = vKey(a);
+        const bKey = vKey(b);
+
+        // Find all vertices that lie strictly on edge [a, b]
+        const onEdge = [];
+        const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
+        const lenSq = dx * dx + dy * dy + dz * dz;
+        if (lenSq < EPSILON * EPSILON) continue; // degenerate edge
+
+        for (const v of uniqueVerts) {
+          const k = vKey(v);
+          if (k === aKey || k === bKey) continue;
+          const px = v.x - a.x, py = v.y - a.y, pz = v.z - a.z;
+          const t = (px * dx + py * dy + pz * dz) / lenSq;
+          if (t <= EPSILON || t >= 1 - EPSILON) continue;
+          const projX = px - t * dx, projY = py - t * dy, projZ = pz - t * dz;
+          if (projX * projX + projY * projY + projZ * projZ < EPSILON * EPSILON) {
+            onEdge.push({ v, t });
+          }
+        }
+
+        if (onEdge.length > 0) {
+          changed = true;
+          onEdge.sort((x, y) => x.t - y.t);
+          for (const { v } of onEdge) {
+            newVerts.push({ ...v });
+          }
+        }
+      }
+
+      if (newVerts.length > verts.length) {
+        faces[fi].vertices = newVerts;
+      }
+    }
+
+    // Remove consecutive duplicate vertices that may appear when a T-junction
+    // vertex coincides with an existing endpoint at the joining precision.
+    const dedupPrec = 5;
+    function dvKey(v) {
+      return `${(Math.abs(v.x) < 5e-6 ? 0 : v.x).toFixed(dedupPrec)},${(Math.abs(v.y) < 5e-6 ? 0 : v.y).toFixed(dedupPrec)},${(Math.abs(v.z) < 5e-6 ? 0 : v.z).toFixed(dedupPrec)}`;
+    }
+    for (let fi = 0; fi < faces.length; fi++) {
+      const verts = faces[fi].vertices;
+      if (verts.length <= 3) continue;
+      const cleaned = [verts[0]];
+      for (let i = 1; i < verts.length; i++) {
+        if (dvKey(verts[i]) !== dvKey(cleaned[cleaned.length - 1])) {
+          cleaned.push(verts[i]);
+        }
+      }
+      // Also check wrap-around (last vs first)
+      if (cleaned.length > 1 && dvKey(cleaned[cleaned.length - 1]) === dvKey(cleaned[0])) {
+        cleaned.pop();
+      }
+      if (cleaned.length < verts.length) {
+        faces[fi].vertices = cleaned;
+      }
+    }
+
+    if (!changed) break;
+
+    // Update unique vertices in case new positions appeared (shouldn't happen
+    // since we only insert existing vertices, but be safe)
+    for (const face of faces) {
+      for (const v of face.vertices) {
+        const k = vKey(v);
+        if (!seen.has(k)) {
+          seen.add(k);
+          uniqueVerts.push(v);
+        }
+      }
+    }
+  }
 }
 
 // -----------------------------------------------------------------------
@@ -1750,6 +1878,7 @@ function _generateCornerFaces(faces, origFaces, edgeDataList, vertexEdgeMap) {
       }
     }
 
+    let allTopIndicesFound = true;
     for (const info of edgeInfos) {
       const d = info.data;
       const otherVk = info.isA ? _edgeVKey(d.edgeB) : _edgeVKey(d.edgeA);
@@ -1766,9 +1895,43 @@ function _generateCornerFaces(faces, origFaces, edgeDataList, vertexEdgeMap) {
       if (sharedIdx >= 0 && info.topIndex >= 0) {
         info.sortKey = (sharedIdx - info.topIndex + topVerts.length) % topVerts.length;
       } else {
+        allTopIndicesFound = false;
         info.sortKey = 0;
       }
     }
+
+    // Fallback: when edges at this shared vertex have DIFFERENT face0s
+    // (common after CSG boolean operations where large faces are triangulated),
+    // the other endpoint may not be found in the first edge's face0.
+    // Recompute sort keys using each edge's OWN face0 to determine whether
+    // the shared vertex is the "incoming" end (endpoint B, isA=false) or
+    // "outgoing" end (endpoint A, isA=true) of the edge in face0 winding.
+    if (!allTopIndicesFound) {
+      for (const info of edgeInfos) {
+        if (info.topIndex >= 0) continue;
+
+        const d = info.data;
+        const otherVk = info.isA ? _edgeVKey(d.edgeB) : _edgeVKey(d.edgeA);
+        const ownVerts = origFaces[d.fi0].vertices;
+
+        let ownSharedIdx = -1;
+        for (let i = 0; i < ownVerts.length; i++) {
+          if (_edgeVKey(ownVerts[i]) === vk) { ownSharedIdx = i; break; }
+        }
+
+        if (ownSharedIdx >= 0) {
+          const prevInOwn = (ownSharedIdx - 1 + ownVerts.length) % ownVerts.length;
+          if (_edgeVKey(ownVerts[prevInOwn]) === otherVk) {
+            // Other endpoint is the PREVIOUS vertex in face0 → incoming edge → sort first
+            info.sortKey = 1;
+          } else {
+            // Other endpoint is the NEXT (or further) vertex → outgoing edge → sort last
+            info.sortKey = Math.max(topVerts.length, edgeInfos.length + 1) - 1;
+          }
+        }
+      }
+    }
+
     edgeInfos.sort((a, b) => a.sortKey - b.sortKey);
 
     const shared = edgeInfos[0].data.shared;
@@ -1886,6 +2049,7 @@ function _generateFilletCorner(faces, edgeInfos, shared) {
 
   // Start: p0 of next edge (on face0/top side)
   cornerVerts.push({ ...arcNext[0] });
+
   // p0 of curr edge (on face0/top side)
   cornerVerts.push({ ...arcCurr[0] });
 
