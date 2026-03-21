@@ -6615,7 +6615,7 @@ class App {
       const orig = this._extrudeMode.editOriginal;
       const fId = this._extrudeMode.editingFeatureId;
       this._partManager.modifyFeature(fId, (f) => {
-        f.setDistance(orig.distance);
+        f.distance = orig.distance;
         f.direction = orig.direction;
         f.symmetric = orig.symmetric;
         f.operation = orig.operation;
