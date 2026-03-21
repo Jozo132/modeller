@@ -116,6 +116,8 @@ export class WasmRenderer {
 
     // Edge selection for chamfer/fillet
     this._meshEdgeSegments = null; // Array of {start, end, faceIndices, normals} from CSG
+    this._meshEdgePaths = null;    // Array of {edgeIndices, isClosed} from CSG paths
+    this._edgeToPath = null;       // Map<edgeIndex, pathIndex>
     this._selectedEdgeIndices = new Set(); // indices into _meshEdgeSegments
     this._edgeSelectionMode = false; // true when picking edges for chamfer/fillet
 
@@ -700,13 +702,27 @@ export class WasmRenderer {
   }
 
   /**
-   * Toggle edge selection. Returns the current set of selected edge indices.
+   * Toggle edge selection. Selects/deselects the entire path containing the edge.
    */
   toggleEdgeSelection(edgeIndex) {
-    if (this._selectedEdgeIndices.has(edgeIndex)) {
-      this._selectedEdgeIndices.delete(edgeIndex);
+    // Find the path this edge belongs to
+    const pathIdx = this._edgeToPath ? this._edgeToPath.get(edgeIndex) : undefined;
+    if (pathIdx !== undefined && this._meshEdgePaths) {
+      const path = this._meshEdgePaths[pathIdx];
+      // Check if any edge in the path is already selected → deselect all
+      const anySelected = path.edgeIndices.some(i => this._selectedEdgeIndices.has(i));
+      if (anySelected) {
+        for (const i of path.edgeIndices) this._selectedEdgeIndices.delete(i);
+      } else {
+        for (const i of path.edgeIndices) this._selectedEdgeIndices.add(i);
+      }
     } else {
-      this._selectedEdgeIndices.add(edgeIndex);
+      // Fallback: single edge toggle
+      if (this._selectedEdgeIndices.has(edgeIndex)) {
+        this._selectedEdgeIndices.delete(edgeIndex);
+      } else {
+        this._selectedEdgeIndices.add(edgeIndex);
+      }
     }
     return this._selectedEdgeIndices;
   }
@@ -1926,6 +1942,17 @@ export class WasmRenderer {
         normals: e.normals || [],
       }));
 
+      // Store edge paths and build edge→path lookup
+      this._meshEdgePaths = geometry.paths || [];
+      this._edgeToPath = new Map();
+      if (this._meshEdgePaths) {
+        for (let pi = 0; pi < this._meshEdgePaths.length; pi++) {
+          for (const ei of this._meshEdgePaths[pi].edgeIndices) {
+            this._edgeToPath.set(ei, pi);
+          }
+        }
+      }
+
       // Build silhouette candidates from face data for view-dependent outline edges
       this._meshSilhouetteCandidates = this._buildSilhouetteCandidates(faces);
     } else {
@@ -2804,6 +2831,8 @@ export class WasmRenderer {
     this._activeSceneEdgeVertexCount = 0;
     this._selectedFaceIndex = -1;
     this._meshEdgeSegments = null;
+    this._meshEdgePaths = null;
+    this._edgeToPath = null;
     this._selectedEdgeIndices.clear();
   }
 

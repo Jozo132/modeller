@@ -2,7 +2,7 @@
 // Applies a rounded edge to selected edges of a 3D solid
 
 import { Feature } from './Feature.js';
-import { applyFillet, calculateMeshVolume, calculateBoundingBox } from './CSG.js';
+import { applyFillet, calculateMeshVolume, calculateBoundingBox, expandPathEdgeKeys } from './CSG.js';
 
 export class FilletFeature extends Feature {
   constructor(name = 'Fillet', radius = 1) {
@@ -24,7 +24,9 @@ export class FilletFeature extends Feature {
       throw new Error('No edges selected for fillet');
     }
 
-    const geometry = applyFillet(solid.geometry, this.edgeKeys, this.radius, this.segments);
+    // Expand path-level keys to individual face-edge keys
+    const resolvedKeys = expandPathEdgeKeys(solid.geometry, this.edgeKeys);
+    const geometry = applyFillet(solid.geometry, resolvedKeys, this.radius, this.segments);
 
     // Tag faces with source feature
     for (const f of geometry.faces) {

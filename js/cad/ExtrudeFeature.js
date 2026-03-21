@@ -94,6 +94,7 @@ export class ExtrudeFeature extends Feature {
         }
         const edgeResult = computeFeatureEdges(geometry.faces);
         geometry.edges = edgeResult.edges;
+        geometry.paths = edgeResult.paths;
         geometry.visualEdges = edgeResult.visualEdges;
       }
       return { geometry };
@@ -326,6 +327,7 @@ export class ExtrudeFeature extends Feature {
         // Compute feature edges and face groups for the initial geometry
         const edgeResult = computeFeatureEdges(geometry.faces);
         geometry.edges = edgeResult.edges;
+        geometry.paths = edgeResult.paths;
         geometry.visualEdges = edgeResult.visualEdges;
       }
       return { geometry };

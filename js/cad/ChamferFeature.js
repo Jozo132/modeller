@@ -2,7 +2,7 @@
 // Applies a flat bevel to selected edges of a 3D solid
 
 import { Feature } from './Feature.js';
-import { applyChamfer, calculateMeshVolume, calculateBoundingBox } from './CSG.js';
+import { applyChamfer, calculateMeshVolume, calculateBoundingBox, expandPathEdgeKeys } from './CSG.js';
 
 export class ChamferFeature extends Feature {
   constructor(name = 'Chamfer', distance = 1) {
@@ -23,7 +23,9 @@ export class ChamferFeature extends Feature {
       throw new Error('No edges selected for chamfer');
     }
 
-    const geometry = applyChamfer(solid.geometry, this.edgeKeys, this.distance);
+    // Expand path-level keys to individual face-edge keys
+    const resolvedKeys = expandPathEdgeKeys(solid.geometry, this.edgeKeys);
+    const geometry = applyChamfer(solid.geometry, resolvedKeys, this.distance);
 
     // Tag faces with source feature
     for (const f of geometry.faces) {

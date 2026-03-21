@@ -357,9 +357,9 @@ class CSGSolid {
     }
 
     // Compute face groups and feature edges
-    const { edges, visualEdges } = computeFeatureEdges(faces);
+    const { edges, paths, visualEdges } = computeFeatureEdges(faces);
 
-    return { vertices, faces, edges, visualEdges };
+    return { vertices, faces, edges, paths, visualEdges };
   }
 }
 
@@ -725,22 +725,33 @@ export function computeFeatureEdges(faces) {
     }
   }
 
-  // Keep raw (unmerged) edges for face-matching in chamfer/fillet
-  const rawEdges = edges.map(e => ({ ...e }));
-  edges = _mergeColinearEdges(edges);
+  // Chain connected feature edges into paths.  A path is a maximal connected
+  // sequence of edges where every *internal* vertex has exactly 2 incident
+  // feature edges (i.e. the path continues through that vertex).  Vertices
+  // with 1 or 3+ connections become path endpoints; if every vertex in a
+  // connected component has valence 2 the path is closed (loop).
+  const paths = _chainEdgePaths(edges);
 
-  return { edges, rawEdges, visualEdges };
+  return { edges, paths, visualEdges };
 }
 
 /**
- * Merge connected colinear feature edges into single long edges.
+ * Chain connected feature edges into paths.
+ * A path is a maximal connected sequence of edges where every internal vertex
+ * connects exactly 2 feature edges.  Vertices with 1 or 3+ connections are
+ * path endpoints.  If all vertices in a component have valence 2 the path is
+ * a closed loop.
+ *
+ * @param {Array} edges - Feature edge array [{start, end, faceIndices, normals}, ...]
+ * @returns {Array} Array of path objects:
+ *   { edgeIndices: number[], isClosed: boolean }
  */
-function _mergeColinearEdges(edges) {
-  if (edges.length <= 1) return edges;
+function _chainEdgePaths(edges) {
+  if (edges.length === 0) return [];
 
   const vKey = (v) => `${v.x.toFixed(5)},${v.y.toFixed(5)},${v.z.toFixed(5)}`;
 
-  // Build vertex → edge indices
+  // Build vertex → [edge index] adjacency
   const vertexEdges = new Map();
   const addVE = (v, idx) => {
     const k = vKey(v);
@@ -753,71 +764,66 @@ function _mergeColinearEdges(edges) {
   }
 
   const visited = new Set();
-  const merged = [];
+  const paths = [];
 
-  for (let i = 0; i < edges.length; i++) {
-    if (visited.has(i)) continue;
-    visited.add(i);
+  for (let seed = 0; seed < edges.length; seed++) {
+    if (visited.has(seed)) continue;
 
-    let chainStart = edges[i].start;
-    let chainEnd = edges[i].end;
-    const dir = _vec3Normalize(_vec3Sub(edges[i].end, edges[i].start));
-
-    // Walk forward from chainEnd
-    let ext = true;
-    while (ext) {
-      ext = false;
-      const k = vKey(chainEnd);
-      const cands = vertexEdges.get(k) || [];
-      for (const ci of cands) {
-        if (visited.has(ci)) continue;
-        const ce = edges[ci];
-        let other = null;
-        if (vKey(ce.start) === k) other = ce.end;
-        else if (vKey(ce.end) === k) other = ce.start;
-        else continue;
-        const d2 = _vec3Normalize(_vec3Sub(other, chainEnd));
-        if (_vec3Len(_vec3Cross(dir, d2)) < 1e-4 && _vec3Dot(dir, d2) > 0.999) {
-          chainEnd = other;
-          visited.add(ci);
-          ext = true;
-          break;
-        }
+    // Walk backward from seed to find the start of the chain
+    // (stop when we hit a branch vertex or a dead end or revisit the seed)
+    let startEdge = seed;
+    let startVert = vKey(edges[seed].start);
+    {
+      let cur = seed;
+      let prevVert = vKey(edges[seed].end);
+      let curVert = vKey(edges[seed].start);
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const neighbors = vertexEdges.get(curVert) || [];
+        if (neighbors.length !== 2) break; // branch or dead-end → stop
+        const next = neighbors[0] === cur ? neighbors[1] : neighbors[0];
+        if (next === seed) break; // looped back → closed
+        const ne = edges[next];
+        const nextVert = vKey(ne.start) === curVert ? vKey(ne.end) : vKey(ne.start);
+        if (nextVert === prevVert) break; // shouldn't happen but guard
+        prevVert = curVert;
+        curVert = nextVert;
+        cur = next;
       }
+      startEdge = cur;
+      startVert = curVert;
     }
 
-    // Walk backward from chainStart
-    ext = true;
-    while (ext) {
-      ext = false;
-      const k = vKey(chainStart);
-      const cands = vertexEdges.get(k) || [];
-      for (const ci of cands) {
-        if (visited.has(ci)) continue;
-        const ce = edges[ci];
-        let other = null;
-        if (vKey(ce.start) === k) other = ce.end;
-        else if (vKey(ce.end) === k) other = ce.start;
-        else continue;
-        const d2 = _vec3Normalize(_vec3Sub(other, chainStart));
-        if (_vec3Len(_vec3Cross(dir, d2)) < 1e-4 && _vec3Dot(dir, d2) < -0.999) {
-          chainStart = other;
-          visited.add(ci);
-          ext = true;
-          break;
-        }
+    // Walk forward from startEdge/startVert collecting the chain
+    const chain = [startEdge];
+    visited.add(startEdge);
+    let curVert = vKey(edges[startEdge].start) === startVert
+      ? vKey(edges[startEdge].end) : startVert;
+    // Use the other vertex of startEdge as the forward direction
+    const se = edges[startEdge];
+    let walkVert = vKey(se.start) === startVert ? vKey(se.end) : vKey(se.start);
+
+    let isClosed = false;
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const neighbors = vertexEdges.get(walkVert) || [];
+      if (neighbors.length !== 2) break; // branch/dead-end
+      const next = neighbors[0] === chain[chain.length - 1] ? neighbors[1] : neighbors[0];
+      if (visited.has(next)) {
+        // We re-visited an edge → closed loop
+        isClosed = true;
+        break;
       }
+      chain.push(next);
+      visited.add(next);
+      const ne = edges[next];
+      walkVert = vKey(ne.start) === walkVert ? vKey(ne.end) : vKey(ne.start);
     }
 
-    merged.push({
-      start: chainStart,
-      end: chainEnd,
-      faceIndices: edges[i].faceIndices || [],
-      normals: edges[i].normals || [],
-    });
+    paths.push({ edgeIndices: chain, isClosed });
   }
 
-  return merged;
+  return paths;
 }
 
 // -----------------------------------------------------------------------
@@ -912,8 +918,11 @@ export function calculateBoundingBox(geometry) {
 // -----------------------------------------------------------------------
 
 const EDGE_PREC = 5;
+function _fmtCoord(n) {
+  return (Math.abs(n) < 5e-6 ? 0 : n).toFixed(EDGE_PREC);
+}
 function _edgeVKey(v) {
-  return `${v.x.toFixed(EDGE_PREC)},${v.y.toFixed(EDGE_PREC)},${v.z.toFixed(EDGE_PREC)}`;
+  return `${_fmtCoord(v.x)},${_fmtCoord(v.y)},${_fmtCoord(v.z)}`;
 }
 function _edgeKeyFromVerts(a, b) {
   const ka = _edgeVKey(a), kb = _edgeVKey(b);
@@ -1153,6 +1162,23 @@ function _findAdjacentFaces(faces, edgeKey) {
 // Chamfer geometry operation
 // -----------------------------------------------------------------------
 
+// Weld vertices that map to the same rounded key so seam duplicates are eliminated
+function _weldVertices(faces) {
+  const canon = new Map();
+  for (const f of faces) {
+    for (let i = 0; i < f.vertices.length; i++) {
+      const v = f.vertices[i];
+      const key = _edgeVKey(v);
+      if (canon.has(key)) {
+        const c = canon.get(key);
+        f.vertices[i] = { x: c.x, y: c.y, z: c.z };
+      } else {
+        canon.set(key, { x: v.x, y: v.y, z: v.z });
+      }
+    }
+  }
+}
+
 export function applyChamfer(geometry, edgeKeys, distance) {
   if (!geometry || !geometry.faces || edgeKeys.length === 0 || distance <= 0) {
     return geometry;
@@ -1169,9 +1195,12 @@ export function applyChamfer(geometry, edgeKeys, distance) {
     if (result) faces = result;
   }
 
+  _weldVertices(faces);
+
   const newGeom = { vertices: [], faces };
   const edgeResult = computeFeatureEdges(faces);
   newGeom.edges = edgeResult.edges;
+  newGeom.paths = edgeResult.paths;
   newGeom.visualEdges = edgeResult.visualEdges;
   return newGeom;
 }
@@ -1237,9 +1266,12 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8) {
     if (result) faces = result;
   }
 
+  _weldVertices(faces);
+
   const newGeom = { vertices: [], faces };
   const edgeResult = computeFeatureEdges(faces);
   newGeom.edges = edgeResult.edges;
+  newGeom.paths = edgeResult.paths;
   newGeom.visualEdges = edgeResult.visualEdges;
   return newGeom;
 }
@@ -1361,4 +1393,61 @@ function _filletOneEdge(faces, edgeKey, radius, segments) {
  */
 export function makeEdgeKey(a, b) {
   return _edgeKeyFromVerts(a, b);
+}
+
+/**
+ * Given a geometry (with .edges and .paths) and a set of edge keys from the
+ * user's selection, expand each key to include ALL edges that belong to the
+ * same path.  This allows selecting one segment of a circular edge to
+ * automatically select the whole circle.
+ *
+ * @param {Object} geometry - Geometry with .edges[] and .paths[]
+ * @param {string[]} edgeKeys - Edge keys selected by the user
+ * @returns {string[]} Expanded edge keys covering full paths (deduplicated)
+ */
+export function expandPathEdgeKeys(geometry, edgeKeys) {
+  if (!geometry || !geometry.edges || !geometry.paths || edgeKeys.length === 0) {
+    return edgeKeys;
+  }
+
+  // Build edge-index → path-index lookup
+  const edgeToPath = new Map();
+  for (let pi = 0; pi < geometry.paths.length; pi++) {
+    for (const ei of geometry.paths[pi].edgeIndices) {
+      edgeToPath.set(ei, pi);
+    }
+  }
+
+  // Build edge-key → edge-index lookup
+  const keyToIndex = new Map();
+  for (let i = 0; i < geometry.edges.length; i++) {
+    const e = geometry.edges[i];
+    keyToIndex.set(_edgeKeyFromVerts(e.start, e.end), i);
+  }
+
+  // Collect all path indices touched by the input keys
+  const touchedPaths = new Set();
+  for (const ek of edgeKeys) {
+    const ei = keyToIndex.get(ek);
+    if (ei !== undefined) {
+      const pi = edgeToPath.get(ei);
+      if (pi !== undefined) touchedPaths.add(pi);
+    }
+  }
+
+  // Expand: emit every edge key in every touched path
+  const result = new Set();
+  for (const pi of touchedPaths) {
+    for (const ei of geometry.paths[pi].edgeIndices) {
+      const e = geometry.edges[ei];
+      result.add(_edgeKeyFromVerts(e.start, e.end));
+    }
+  }
+
+  // Also keep any input keys that didn't match a path (fuzzy fallback)
+  for (const ek of edgeKeys) {
+    result.add(ek);
+  }
+
+  return [...result];
 }

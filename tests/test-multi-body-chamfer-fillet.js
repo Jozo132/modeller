@@ -22,7 +22,8 @@ function assertApprox(actual, expected, tolerance, msg) {
 // Check mesh manifoldness: every edge in exactly 2 faces with opposite traversal
 function checkManifold(geometry) {
   const PREC = 5;
-  const vk = (v) => `${v.x.toFixed(PREC)},${v.y.toFixed(PREC)},${v.z.toFixed(PREC)}`;
+  const fmt = (n) => (Math.abs(n) < 5e-6 ? 0 : n).toFixed(PREC);
+  const vk = (v) => `${fmt(v.x)},${fmt(v.y)},${fmt(v.z)}`;
   const edgeMap = new Map();
 
   for (let fi = 0; fi < geometry.faces.length; fi++) {

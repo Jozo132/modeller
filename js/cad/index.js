@@ -32,4 +32,4 @@ export {
   clearVariables, serializeVariables, deserializeVariables,
 } from './Constraint.js';
 export { disconnect, union, trim, split, movePoint, moveShape } from './Operations.js';
-export { booleanOp, calculateMeshVolume, calculateBoundingBox, applyChamfer, applyFillet, makeEdgeKey } from './CSG.js';
+export { booleanOp, calculateMeshVolume, calculateBoundingBox, applyChamfer, applyFillet, makeEdgeKey, expandPathEdgeKeys } from './CSG.js';

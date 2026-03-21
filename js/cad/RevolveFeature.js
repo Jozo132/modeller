@@ -287,6 +287,7 @@ export class RevolveFeature extends Feature {
       if (geometry && geometry.faces) {
         const edgeResult = computeFeatureEdges(geometry.faces);
         geometry.edges = edgeResult.edges;
+        geometry.paths = edgeResult.paths;
         geometry.visualEdges = edgeResult.visualEdges;
       }
       return { geometry };
@@ -315,6 +316,7 @@ export class RevolveFeature extends Feature {
       if (geometry && geometry.faces) {
         const edgeResult = computeFeatureEdges(geometry.faces);
         geometry.edges = edgeResult.edges;
+        geometry.paths = edgeResult.paths;
         geometry.visualEdges = edgeResult.visualEdges;
       }
       return { geometry };
