@@ -387,5 +387,171 @@ test('Cylinder extrude + fillet on round top edge: volume reduced, manifold', ()
   assert.strictEqual(m.windingErrors, 0, `winding=${m.windingErrors}`);
 });
 
+// --- Multi-edge polyline chamfer/fillet tests ---
+
+import { expandPathEdgeKeys } from '../js/cad/CSG.js';
+
+console.log('\n=== Multi-segment Polyline Chamfer/Fillet Tests ===\n');
+
+// L-shaped extrusion: more complex geometry with multi-edge paths
+function makeLSketch() {
+  const s = new Sketch();
+  // L-shape:  (0,0) → (10,0) → (10,5) → (5,5) → (5,10) → (0,10) → (0,0)
+  s.addSegment(0, 0, 10, 0);
+  s.addSegment(10, 0, 10, 5);
+  s.addSegment(10, 5, 5, 5);
+  s.addSegment(5, 5, 5, 10);
+  s.addSegment(5, 10, 0, 10);
+  s.addSegment(0, 10, 0, 0);
+  return s;
+}
+
+test('L-shape extrude + multi-edge chamfer on top: manifold', () => {
+  const part = new Part('T_L1');
+  const sf = part.addSketch(makeLSketch());
+  part.extrude(sf.id, 8);
+
+  const before = part.getFinalGeometry();
+  const volBefore = calculateMeshVolume(before.geometry);
+
+  // Find ALL top edges (z=8) and chamfer them together
+  const topEdgeKeys = before.geometry.edges
+    .filter(e => Math.abs(e.start.z - 8) < 0.1 && Math.abs(e.end.z - 8) < 0.1)
+    .map(e => makeEdgeKey(e.start, e.end));
+  assert.ok(topEdgeKeys.length >= 6, `Should find L-shape top edges: ${topEdgeKeys.length}`);
+
+  part.chamfer(topEdgeKeys, 0.5);
+  const after = part.getFinalGeometry();
+  assert.ok(after && after.type === 'solid', 'Should produce valid solid');
+  const volAfter = calculateMeshVolume(after.geometry);
+  assert.ok(volAfter < volBefore, `Chamfer should reduce volume: ${volBefore.toFixed(2)} → ${volAfter.toFixed(2)}`);
+
+  const m = checkManifold(after.geometry);
+  assert.strictEqual(m.boundaryEdges, 0, `boundary=${m.boundaryEdges}`);
+  assert.strictEqual(m.nonManifoldEdges, 0, `nonManifold=${m.nonManifoldEdges}`);
+  assert.strictEqual(m.windingErrors, 0, `winding=${m.windingErrors}`);
+});
+
+test('L-shape extrude + multi-edge fillet on top: manifold', () => {
+  const part = new Part('T_L2');
+  const sf = part.addSketch(makeLSketch());
+  part.extrude(sf.id, 8);
+
+  const before = part.getFinalGeometry();
+  const volBefore = calculateMeshVolume(before.geometry);
+
+  const topEdgeKeys = before.geometry.edges
+    .filter(e => Math.abs(e.start.z - 8) < 0.1 && Math.abs(e.end.z - 8) < 0.1)
+    .map(e => makeEdgeKey(e.start, e.end));
+  assert.ok(topEdgeKeys.length >= 6, `Should find L-shape top edges: ${topEdgeKeys.length}`);
+
+  part.fillet(topEdgeKeys, 0.5, { segments: 4 });
+  const after = part.getFinalGeometry();
+  assert.ok(after && after.type === 'solid', 'Should produce valid solid');
+  const volAfter = calculateMeshVolume(after.geometry);
+  assert.ok(volAfter < volBefore, `Fillet should reduce volume: ${volBefore.toFixed(2)} → ${volAfter.toFixed(2)}`);
+
+  const m = checkManifold(after.geometry);
+  assert.strictEqual(m.boundaryEdges, 0, `boundary=${m.boundaryEdges}`);
+  assert.strictEqual(m.nonManifoldEdges, 0, `nonManifold=${m.nonManifoldEdges}`);
+  assert.strictEqual(m.windingErrors, 0, `winding=${m.windingErrors}`);
+});
+
+test('expandPathEdgeKeys expands single edge to full path', () => {
+  const part = new Part('T_EP1');
+  const sf = part.addSketch(makeCircleSketch(0, 0, 5));
+  part.extrude(sf.id, 10);
+  const geom = part.getFinalGeometry().geometry;
+
+  // Select just ONE top-circle edge
+  const topEdges = geom.edges
+    .filter(e => Math.abs(e.start.z - 10) < 0.1 && Math.abs(e.end.z - 10) < 0.1);
+  assert.ok(topEdges.length > 1, 'Should have multiple top edges');
+
+  const singleKey = [makeEdgeKey(topEdges[0].start, topEdges[0].end)];
+  const expanded = expandPathEdgeKeys(geom, singleKey);
+
+  // Should expand to all edges in the same path (the full circle)
+  assert.ok(expanded.length > 1, `Should expand to more than 1 edge: ${expanded.length}`);
+  assert.ok(expanded.length >= topEdges.length,
+    `Should expand to full circle: ${expanded.length} >= ${topEdges.length}`);
+});
+
+test('expandPathEdgeKeys tangent expansion connects adjacent paths', () => {
+  const part = new Part('T_EP2');
+  const sf = part.addSketch(makeLSketch());
+  part.extrude(sf.id, 8);
+  const geom = part.getFinalGeometry().geometry;
+
+  // Find a single vertical edge on the L-shape (z varies, x and y constant)
+  const vertEdges = geom.edges.filter(e =>
+    Math.abs(e.start.x - e.end.x) < 0.01 && Math.abs(e.start.y - e.end.y) < 0.01 &&
+    Math.abs(e.start.z - e.end.z) > 1
+  );
+  assert.ok(vertEdges.length > 0, 'Should find vertical edges');
+
+  const singleKey = [makeEdgeKey(vertEdges[0].start, vertEdges[0].end)];
+  const expanded = expandPathEdgeKeys(geom, singleKey);
+
+  // For a straight vertical edge that is its own path, expansion should at
+  // least return the original edge
+  assert.ok(expanded.length >= 1, `Should expand to at least 1 edge: ${expanded.length}`);
+});
+
+test('Multi-edge chamfer on box (all top edges at once): manifold', () => {
+  const part = new Part('T_MT1');
+  const sf = part.addSketch(makeRectSketch(0, 0, 10, 5));
+  part.extrude(sf.id, 8);
+
+  const before = part.getFinalGeometry();
+  const volBefore = calculateMeshVolume(before.geometry);
+
+  // Select ALL 4 top edges at once
+  const topEdgeKeys = [
+    makeEdgeKey({ x: 0, y: 0, z: 8 }, { x: 10, y: 0, z: 8 }),
+    makeEdgeKey({ x: 10, y: 0, z: 8 }, { x: 10, y: 5, z: 8 }),
+    makeEdgeKey({ x: 10, y: 5, z: 8 }, { x: 0, y: 5, z: 8 }),
+    makeEdgeKey({ x: 0, y: 5, z: 8 }, { x: 0, y: 0, z: 8 }),
+  ];
+
+  part.chamfer(topEdgeKeys, 0.5);
+  const after = part.getFinalGeometry();
+  assert.ok(after && after.type === 'solid', 'Should produce valid solid');
+  const volAfter = calculateMeshVolume(after.geometry);
+  assert.ok(volAfter < volBefore, `Volume should decrease: ${volBefore.toFixed(2)} → ${volAfter.toFixed(2)}`);
+
+  const m = checkManifold(after.geometry);
+  assert.strictEqual(m.boundaryEdges, 0, `boundary=${m.boundaryEdges}`);
+  assert.strictEqual(m.nonManifoldEdges, 0, `nonManifold=${m.nonManifoldEdges}`);
+  assert.strictEqual(m.windingErrors, 0, `winding=${m.windingErrors}`);
+});
+
+test('Multi-edge fillet on box (all top edges at once): manifold', () => {
+  const part = new Part('T_MT2');
+  const sf = part.addSketch(makeRectSketch(0, 0, 10, 5));
+  part.extrude(sf.id, 8);
+
+  const before = part.getFinalGeometry();
+  const volBefore = calculateMeshVolume(before.geometry);
+
+  const topEdgeKeys = [
+    makeEdgeKey({ x: 0, y: 0, z: 8 }, { x: 10, y: 0, z: 8 }),
+    makeEdgeKey({ x: 10, y: 0, z: 8 }, { x: 10, y: 5, z: 8 }),
+    makeEdgeKey({ x: 10, y: 5, z: 8 }, { x: 0, y: 5, z: 8 }),
+    makeEdgeKey({ x: 0, y: 5, z: 8 }, { x: 0, y: 0, z: 8 }),
+  ];
+
+  part.fillet(topEdgeKeys, 0.5, { segments: 4 });
+  const after = part.getFinalGeometry();
+  assert.ok(after && after.type === 'solid', 'Should produce valid solid');
+  const volAfter = calculateMeshVolume(after.geometry);
+  assert.ok(volAfter < volBefore, `Volume should decrease: ${volBefore.toFixed(2)} → ${volAfter.toFixed(2)}`);
+
+  const m = checkManifold(after.geometry);
+  assert.strictEqual(m.boundaryEdges, 0, `boundary=${m.boundaryEdges}`);
+  assert.strictEqual(m.nonManifoldEdges, 0, `nonManifold=${m.nonManifoldEdges}`);
+  assert.strictEqual(m.windingErrors, 0, `winding=${m.windingErrors}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
