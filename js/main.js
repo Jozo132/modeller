@@ -46,6 +46,10 @@ class App {
     this._expandedFolders = new Set(); // track expanded feature tree folders
     this._editingSketchFeatureId = null; // ID of sketch being edited (null = creating new)
     this._recorder = new InteractionRecorder(); // interaction recorder for workflow debugging
+    this._extrudeMode = null; // active extrude mode state {isCut, sketchFeatureId, distance, direction, symmetric, operation}
+    this._draggingExtrudeHandle = false;
+    this._extrudeHandleInfo = null; // {origin, tip, dir} for drag handle
+    this._extrudeArrowHoveredState = false;
     
     // Initialize unified 3D renderer
     const view3dContainer = document.getElementById('view-3d');
@@ -134,6 +138,7 @@ class App {
     this._bindPartToolEvents();
     this._bindPlaneSelectionEvents();
     this._bindExitSketchButton();
+    this._bindExitExtrudeButton();
     this._bindRecordingControls();
 
     // Register viewport, part manager, renderer, and workspace mode for persistence
@@ -826,6 +831,30 @@ class App {
         return; // Let WASM renderer controls handle
       }
 
+      // Extrude handle drag start
+      if (e.button === 0 && this._extrudeMode && this._extrudeHandleInfo && this._renderer3d) {
+        const hi = this._extrudeHandleInfo;
+        const tipScr = this._renderer3d.worldToScreen(hi.tip.x, hi.tip.y, hi.tip.z);
+        if (tipScr) {
+          const hdx = sx - tipScr.x, hdy = sy - tipScr.y;
+          if (hdx * hdx + hdy * hdy < 625) { // 25px radius
+            this._draggingExtrudeHandle = true;
+            const oScr = this._renderer3d.worldToScreen(hi.origin.x, hi.origin.y, hi.origin.z);
+            const uPt = { x: hi.origin.x + hi.dir.x, y: hi.origin.y + hi.dir.y, z: hi.origin.z + hi.dir.z };
+            const uScr = this._renderer3d.worldToScreen(uPt.x, uPt.y, uPt.z);
+            if (oScr && uScr) {
+              const adx = uScr.x - oScr.x, ady = uScr.y - oScr.y;
+              const ppu = Math.sqrt(adx * adx + ady * ady);
+              if (ppu > 0.01) {
+                this._extrudeDragStart = { sx, sy, distance: this._extrudeMode.distance, axisX: adx / ppu, axisY: ady / ppu, pixelsPerUnit: ppu };
+                this.canvas.style.cursor = 'grabbing';
+                return;
+              }
+            }
+          }
+        }
+      }
+
       if (e.button === 0 && this.activeTool.onMouseDown) {
         if (this._sketchingOnPlane) {
           let wx, wy;
@@ -866,6 +895,45 @@ class App {
       const sy = e.clientY - rect.top;
       if (mouseDown) movedSinceDown = true;
 
+      // Extrude handle dragging
+      if (this._draggingExtrudeHandle && this._extrudeDragStart && this._extrudeMode) {
+        const ds = this._extrudeDragStart;
+        const mdx = sx - ds.sx, mdy = sy - ds.sy;
+        const proj = mdx * ds.axisX + mdy * ds.axisY;
+        const rawDist = ds.distance + proj / ds.pixelsPerUnit;
+        const newDist = Math.max(0.1, Math.round(rawDist * 10) / 10);
+        if (newDist !== this._extrudeMode.distance) {
+          this._extrudeMode.distance = newDist;
+          const distInput = document.querySelector('#left-feature-params-content input[type="number"]');
+          if (distInput) distInput.value = newDist;
+          this._updateExtrudePreview();
+        }
+        return;
+      }
+
+      // Extrude handle hover cursor
+      if (this._extrudeMode && this._extrudeHandleInfo && !mouseDown && this._renderer3d) {
+        const hi = this._extrudeHandleInfo;
+        const tipScr = this._renderer3d.worldToScreen(hi.tip.x, hi.tip.y, hi.tip.z);
+        if (tipScr) {
+          const hdx = sx - tipScr.x, hdy = sy - tipScr.y;
+          const isNearHandle = hdx * hdx + hdy * hdy < 625;
+          if (isNearHandle) {
+            this.canvas.style.cursor = 'pointer';
+            if (!this._extrudeArrowHoveredState) {
+              this._extrudeArrowHoveredState = true;
+              this._renderer3d.setExtrudeArrow(hi.origin, hi.tip, true);
+              this._scheduleRender();
+            }
+            return;
+          } else if (this._extrudeArrowHoveredState) {
+            this._extrudeArrowHoveredState = false;
+            this._renderer3d.setExtrudeArrow(hi.origin, hi.tip, false);
+            this._scheduleRender();
+          }
+        }
+      }
+
       if (this._sketchingOnPlane) {
         // Sketching on plane in 3D: process pointer for sketch tools
         this._lastPointer = { sx, sy, ctrlKey: e.ctrlKey };
@@ -897,6 +965,14 @@ class App {
       const sx = e.clientX - rect.left;
       const sy = e.clientY - rect.top;
       mouseDown = false;
+
+      // Extrude handle drag end
+      if (this._draggingExtrudeHandle) {
+        this._draggingExtrudeHandle = false;
+        this._extrudeDragStart = null;
+        this.canvas.style.cursor = '';
+        return;
+      }
 
       if (e.button === 1 || e.button === 2) {
         debouncedSave();
@@ -986,6 +1062,11 @@ class App {
             // Clear plane selection when a face is selected
             this._selectedPlane = null;
             this._renderer3d.setSelectedPlane(null);
+            // Clear feature selection and show selection summary
+            if (this._featurePanel) this._featurePanel.selectFeature(null);
+            if (this._renderer3d) this._renderer3d.setSelectedFeature(null);
+            if (this._parametersPanel) this._parametersPanel.clear();
+            this._showLeftFeatureParams(null);
             this.setStatus(`Selected face ${hit.faceIndex} (normal: ${hit.face.normal.x.toFixed(2)}, ${hit.face.normal.y.toFixed(2)}, ${hit.face.normal.z.toFixed(2)})`);
             info(`Face selected: ${hit.faceIndex}`);
             this._recorder.faceSelected(hit.faceIndex, hit.face.faceGroup, hit.face.normal, hit.face.shared && hit.face.shared.sourceFeatureId, hit.point);
@@ -1011,9 +1092,17 @@ class App {
             }
             this._renderer3d.setSelectedPlane(this._selectedPlane);
             if (this._selectedPlane && hitPlaneResult) {
+              // Clear feature selection and show selection summary
+              if (this._featurePanel) this._featurePanel.selectFeature(null);
+              if (this._renderer3d) this._renderer3d.setSelectedFeature(null);
+              if (this._parametersPanel) this._parametersPanel.clear();
+              this._showLeftFeatureParams(null);
               this.setStatus(`Selected ${this._selectedPlane} plane`);
               info(`Plane selected in 3D: ${this._selectedPlane}`);
               this._recorder.planeSelected(this._selectedPlane, hitPlaneResult.point);
+            } else {
+              // No plane selected — update selection summary
+              this._showLeftFeatureParams(null);
             }
           }
         }
@@ -1351,6 +1440,9 @@ class App {
             this.activeTool.onCancel();
             this.setActiveTool('select');
             this._scheduleRender();
+          } else if (this._extrudeMode) {
+            // In extrude mode — trigger exit extrude
+            document.getElementById('btn-exit-extrude').click();
           } else if (this._sketchingOnPlane) {
             // Nothing selected, no active tool — trigger exit sketch
             document.getElementById('btn-exit-sketch').click();
@@ -2034,8 +2126,10 @@ class App {
   _showLeftFeatureParams(feature) {
     const container = document.getElementById('left-feature-params-content');
     if (!container) return;
+    // Don't overwrite UI when in extrude mode
+    if (this._extrudeMode) return;
     if (!feature) {
-      container.innerHTML = '<p class="hint">Select a feature to view properties</p>';
+      this._showSelectionSummary(container);
       return;
     }
     container.innerHTML = '';
@@ -2053,30 +2147,10 @@ class App {
     typeRow.innerHTML = `<label class="parameter-label">Type</label><span class="parameter-value">${feature.type}</span>`;
     container.appendChild(typeRow);
 
-    if (feature.type === 'extrude') {
-      container.appendChild(this._createParamRow('Distance', 'number', feature.distance, (v) => {
-        const parsed = parseFloat(v);
-        this._partManager.modifyFeature(feature.id, (f) => f.setDistance(parsed));
-        if (this._parametersPanel && this._parametersPanel.onParameterChange) this._parametersPanel.onParameterChange(feature.id, 'distance', parsed);
-      }));
-      container.appendChild(this._createParamRow('Direction', 'select', feature.direction, (v) => {
-        const dir = parseInt(v, 10);
-        this._partManager.modifyFeature(feature.id, (f) => { f.direction = dir; });
-        if (this._parametersPanel && this._parametersPanel.onParameterChange) this._parametersPanel.onParameterChange(feature.id, 'direction', dir);
-      }, [{ value: '1', label: 'Normal' }, { value: '-1', label: 'Reverse' }]));
-      container.appendChild(this._createParamRow('Operation', 'select', feature.operation, (v) => {
-        this._partManager.modifyFeature(feature.id, (f) => { f.operation = v; });
-        if (this._parametersPanel && this._parametersPanel.onParameterChange) this._parametersPanel.onParameterChange(feature.id, 'operation', v);
-      }, [
-        { value: 'new', label: 'New Body' },
-        { value: 'add', label: 'Add (Union)' },
-        { value: 'subtract', label: 'Subtract (Cut)' },
-        { value: 'intersect', label: 'Intersect' },
-      ]));
-      container.appendChild(this._createParamRow('Symmetric', 'checkbox', feature.symmetric, (v) => {
-        this._partManager.modifyFeature(feature.id, (f) => { f.symmetric = v; });
-        if (this._parametersPanel && this._parametersPanel.onParameterChange) this._parametersPanel.onParameterChange(feature.id, 'symmetric', v);
-      }));
+    if (feature.type === 'extrude' || feature.type === 'extrude-cut') {
+      // Enter full extrude edit mode with ghost preview + drag handle
+      this._editExtrude(feature);
+      return;
     } else if (feature.type === 'revolve') {
       const angleDeg = (feature.angle * 180 / Math.PI).toFixed(1);
       container.appendChild(this._createParamRow('Angle (°)', 'number', angleDeg, (v) => {
@@ -2112,7 +2186,7 @@ class App {
           const stepRow = document.createElement('div');
           stepRow.className = 'parameter-row lp-item';
           stepRow.style.cursor = 'pointer';
-          stepRow.innerHTML = `<span style="opacity:0.6;margin-right:4px">${child.type === 'sketch' ? '📐' : child.type === 'extrude' ? '⬆️' : '🔄'}</span> ${child.name}`;
+          stepRow.innerHTML = `<span style="opacity:0.6;margin-right:4px">${child.type === 'sketch' ? '📐' : child.type === 'extrude' ? '⬆️' : child.type === 'extrude-cut' ? '⬇️' : '🔄'}</span> ${child.name}`;
           stepRow.addEventListener('click', () => {
             if (this._featurePanel) this._featurePanel.selectFeature(child.id);
             this._showLeftFeatureParams(child);
@@ -2122,6 +2196,76 @@ class App {
           container.appendChild(stepRow);
         }
       });
+    }
+  }
+
+  /**
+   * Show the selection summary in the left panel when no feature is selected.
+   */
+  _showSelectionSummary(container) {
+    container.innerHTML = '';
+
+    const header = document.createElement('div');
+    header.className = 'parameter-row';
+    header.innerHTML = '<label class="parameter-label" style="font-weight:600">Selection</label>';
+    container.appendChild(header);
+
+    const items = [];
+
+    if (this._selectedPlane) {
+      items.push({ icon: '📏', label: `${this._selectedPlane} Plane` });
+    }
+
+    if (this._selectedFace) {
+      const faceIdx = this._selectedFace.faceIndex != null ? this._selectedFace.faceIndex : '?';
+      items.push({ icon: '🔲', label: `Face ${faceIdx}` });
+    }
+
+    if (this._renderer3d && this._renderer3d._selectedFeatureId) {
+      const fId = this._renderer3d._selectedFeatureId;
+      const features = this._partManager ? this._partManager.getFeatures() : [];
+      const feat = features.find(f => f.id === fId);
+      items.push({ icon: '📐', label: feat ? feat.name : fId });
+    }
+
+    if (items.length === 0) {
+      const hint = document.createElement('p');
+      hint.className = 'hint';
+      hint.textContent = 'Nothing selected';
+      container.appendChild(hint);
+    } else {
+      for (const item of items) {
+        const row = document.createElement('div');
+        row.className = 'parameter-row lp-item';
+        row.innerHTML = `<span style="opacity:0.6;margin-right:4px">${item.icon}</span> ${item.label}`;
+        container.appendChild(row);
+      }
+    }
+
+    // Show required selections per operation
+    const reqHeader = document.createElement('div');
+    reqHeader.className = 'parameter-row';
+    reqHeader.innerHTML = '<label class="parameter-label" style="font-weight:600;margin-top:8px">Requirements</label>';
+    container.appendChild(reqHeader);
+
+    const hasPlane = !!this._selectedPlane;
+    const hasFace = !!this._selectedFace;
+    const hasSketch = !!this._lastSketchFeatureId;
+
+    const reqs = [
+      { op: 'Sketch', needs: 'Plane or Face', met: hasPlane || hasFace },
+      { op: 'Extrude', needs: 'Sketch', met: hasSketch },
+      { op: 'Extrude Cut', needs: 'Sketch', met: hasSketch },
+      { op: 'Revolve', needs: 'Sketch + Line', met: hasSketch },
+    ];
+
+    for (const r of reqs) {
+      const row = document.createElement('div');
+      row.className = 'parameter-row';
+      row.style.fontSize = '11px';
+      row.style.opacity = r.met ? '1' : '0.5';
+      row.innerHTML = `<span style="margin-right:4px">${r.met ? '✅' : '⬜'}</span><span>${r.op}</span><span style="margin-left:auto;opacity:0.6">${r.needs}</span>`;
+      container.appendChild(row);
     }
   }
 
@@ -3909,7 +4053,7 @@ class App {
     const planeDef = this._getPlaneDefinition(planeName);
     const sketchFeature = this._partManager.addSketchFromScene(
       state.scene,
-      `Sketch${this._partManager.getFeatures().length + 1}`,
+      `Sketch ${this._partManager.getFeatures().filter(f => f.type === 'sketch').length + 1}`,
       planeDef
     );
     this._lastSketchFeatureId = sketchFeature.id;
@@ -3935,7 +4079,7 @@ class App {
 
     const sketchFeature = this._partManager.addSketchFromScene(
       state.scene,
-      `Sketch${this._partManager.getFeatures().length + 1}`,
+      `Sketch ${this._partManager.getFeatures().filter(f => f.type === 'sketch').length + 1}`,
       planeDef
     );
     this._lastSketchFeatureId = sketchFeature.id;
@@ -4300,6 +4444,7 @@ class App {
     const featureIcons = {
       'sketch': '📐',
       'extrude': '⬆️',
+      'extrude-cut': '⬇️',
       'revolve': '🔄',
       'fillet': '🔘',
       'chamfer': '📐'
@@ -4627,15 +4772,16 @@ class App {
   _updateOperationButtons() {
     const hasSketch = this._lastSketchFeatureId !== null;
     const hasEntities = state.entities.length > 0;
+    const inExtrude = !!this._extrudeMode;
     
     const btnAddSketch = document.getElementById('btn-add-sketch');
-    if (btnAddSketch) btnAddSketch.disabled = !hasEntities;
+    if (btnAddSketch) btnAddSketch.disabled = !hasEntities || inExtrude;
     const btnExtrude = document.getElementById('btn-extrude');
-    if (btnExtrude) btnExtrude.disabled = !hasSketch;
+    if (btnExtrude) btnExtrude.disabled = inExtrude;
     const btnRevolve = document.getElementById('btn-revolve');
-    if (btnRevolve) btnRevolve.disabled = !hasSketch;
+    if (btnRevolve) btnRevolve.disabled = !hasSketch || inExtrude;
     const btnExtrudeCut = document.getElementById('btn-extrude-cut');
-    if (btnExtrudeCut) btnExtrudeCut.disabled = !hasSketch;
+    if (btnExtrudeCut) btnExtrudeCut.disabled = inExtrude;
   }
 
   // --- Quick-Start Page ---
@@ -4796,6 +4942,26 @@ class App {
       } else {
         // Nothing drawn, just exit
         this._discardSketchOnPlane();
+      }
+    });
+  }
+
+  _bindExitExtrudeButton() {
+    const btn = document.getElementById('btn-exit-extrude');
+    if (!btn) return;
+    btn.addEventListener('click', async () => {
+      if (!this._extrudeMode) return;
+
+      const confirm = await showConfirm({
+        title: 'Exit Extrude',
+        message: 'Accept extrude or discard?',
+        okText: 'Accept',
+        cancelText: 'Discard',
+      });
+      if (confirm) {
+        this._acceptExtrude();
+      } else {
+        this._cancelExtrude();
       }
     });
   }
@@ -5887,16 +6053,15 @@ class App {
       return;
     }
 
+    // If already in extrude mode, ignore
+    if (this._extrudeMode) return;
+
     // If a face is selected but no sketch was created for it, auto-create
     // a new sketch from the face outline instead of reusing an old sketch.
-    // Skip this if we already have a sketch ready (e.g. user just finished
-    // sketching on a face and the face happens to still be selected).
     if (this._selectedFace && this._selectedFace.face && !this._lastSketchFeatureId) {
       const face = this._selectedFace.face;
       const planeDef = this._getPlaneFromFace(this._selectedFace);
       if (planeDef) {
-        // Collect all face vertices — if this face belongs to a faceGroup,
-        // gather vertices from all faces in that group
         let allFaceVerts = [];
         const faceGroup = face.faceGroup;
         const allMeshFaces = this._renderer3d ? this._renderer3d.getAllFaces() : null;
@@ -5909,7 +6074,6 @@ class App {
           allFaceVerts.push(face.vertices || []);
         }
 
-        // Build the combined outline from all faces in the group
         const faceVerts = allFaceVerts.length === 1
           ? allFaceVerts[0]
           : this._computeGroupBoundary(allFaceVerts);
@@ -5917,8 +6081,7 @@ class App {
         if (faceVerts.length >= 3) {
           const { Sketch } = await import('./cad/Sketch.js');
           const sketch = new Sketch();
-          sketch.name = `Sketch${this._partManager.getFeatures().length + 1}`;
-          // Project 3D face vertices to 2D sketch coordinates
+          sketch.name = `Sketch ${this._partManager.getFeatures().filter(f => f.type === 'sketch').length + 1}`;
           const origin = planeDef.origin;
           const xAxis = planeDef.xAxis;
           const yAxis = planeDef.yAxis;
@@ -5926,13 +6089,11 @@ class App {
             x: (v.x - origin.x) * xAxis.x + (v.y - origin.y) * xAxis.y + (v.z - origin.z) * xAxis.z,
             y: (v.x - origin.x) * yAxis.x + (v.y - origin.y) * yAxis.y + (v.z - origin.z) * yAxis.z,
           }));
-          // Create segments forming the closed profile
           for (let i = 0; i < proj2D.length; i++) {
             const a = proj2D[i];
             const b = proj2D[(i + 1) % proj2D.length];
             sketch.addSegment(a.x, a.y, b.x, b.y);
           }
-          // Add as a new sketch feature on the face plane
           const part = this._partManager.getPart();
           if (part) {
             const sketchFeature = part.addSketch(sketch, planeDef);
@@ -5944,44 +6105,441 @@ class App {
       if (this._renderer3d) this._renderer3d.selectFace(-1);
     }
 
-    // Always clear face selection before extruding so it doesn't interfere
+    // Clear face selection
     if (this._selectedFace) {
       this._selectedFace = null;
       if (this._renderer3d) this._renderer3d.selectFace(-1);
     }
 
-    if (!this._lastSketchFeatureId) {
-      this.setStatus('Create a sketch first before extruding.');
-      return;
-    }
-
     const opName = isCut ? 'Extrude Cut' : 'Extrude';
 
-    const distance = await showPrompt({
-      title: opName,
-      message: `Enter ${opName.toLowerCase()} distance:`,
-      defaultValue: '10',
-    });
+    // Enter extrude mode
+    this._extrudeMode = {
+      isCut,
+      sketchFeatureId: this._lastSketchFeatureId || null,
+      distance: 10,
+      direction: isCut ? -1 : 1,
+      symmetric: false,
+      operation: isCut ? 'subtract' : (this._partManager.getFeatures().some(f => f.type === 'extrude' || f.type === 'extrude-cut' || f.type === 'revolve') ? 'add' : 'new'),
+      extrudeType: 'distance',
+      taper: false,
+      taperAngle: 5,
+      taperInward: true,
+    };
 
-    if (distance === null || distance === undefined) return;
-    const distVal = parseFloat(distance);
-    if (isNaN(distVal) || distVal === 0) {
-      this.setStatus('Invalid distance value.');
+    // Show Exit Extrude button
+    const exitBtn = document.getElementById('btn-exit-extrude');
+    if (exitBtn) exitBtn.style.display = 'flex';
+
+    // Highlight the extrude button
+    const btnExtrude = document.getElementById(isCut ? 'btn-extrude-cut' : 'btn-extrude');
+    if (btnExtrude) btnExtrude.classList.add('active');
+
+    // Update left panel with extrude params
+    this._showExtrudeUI();
+
+    // Show initial ghost preview
+    this._updateExtrudePreview();
+
+    this.setStatus(`${opName}: Adjust parameters, then accept or cancel.`);
+    info(`Entered ${opName.toLowerCase()} mode`);
+  }
+
+  /**
+   * Enter extrude edit mode for an existing feature — shows ghost preview, handle, and full edit UI.
+   */
+  _editExtrude(feature) {
+    if (!feature || (feature.type !== 'extrude' && feature.type !== 'extrude-cut')) return;
+    if (this._extrudeMode) return; // already in extrude mode
+
+    const isCut = feature.type === 'extrude-cut';
+
+    // Save original values for cancel/restore
+    this._extrudeMode = {
+      isCut,
+      editingFeatureId: feature.id,
+      editOriginal: {
+        distance: feature.distance,
+        direction: feature.direction,
+        symmetric: feature.symmetric,
+        operation: feature.operation,
+        extrudeType: feature.extrudeType || 'distance',
+        taper: feature.taper || false,
+        taperAngle: feature.taperAngle != null ? feature.taperAngle : 5,
+        taperInward: feature.taperInward != null ? feature.taperInward : true,
+      },
+      sketchFeatureId: feature.sketchFeatureId,
+      distance: feature.distance,
+      direction: feature.direction,
+      symmetric: feature.symmetric,
+      operation: feature.operation,
+      extrudeType: feature.extrudeType || 'distance',
+      taper: feature.taper || false,
+      taperAngle: feature.taperAngle != null ? feature.taperAngle : 5,
+      taperInward: feature.taperInward != null ? feature.taperInward : true,
+    };
+
+    // Show Exit Extrude button
+    const exitBtn = document.getElementById('btn-exit-extrude');
+    if (exitBtn) exitBtn.style.display = 'flex';
+
+    // Highlight the extrude button
+    const btnId = isCut ? 'btn-extrude-cut' : 'btn-extrude';
+    const btnExtrude = document.getElementById(btnId);
+    if (btnExtrude) btnExtrude.classList.add('active');
+
+    this._showExtrudeUI();
+    this._updateExtrudePreview();
+    this._updateOperationButtons();
+
+    const opName = isCut ? 'Extrude Cut' : 'Extrude';
+    this.setStatus(`Editing ${opName}: Adjust parameters, then accept or cancel.`);
+    info(`Editing ${opName.toLowerCase()} feature: ${feature.id}`);
+  }
+
+  /**
+   * Build the left panel UI for extrude mode with live parameter editing.
+   */
+  _showExtrudeUI() {
+    const container = document.getElementById('left-feature-params-content');
+    if (!container || !this._extrudeMode) return;
+    container.innerHTML = '';
+
+    const em = this._extrudeMode;
+    const baseName = em.isCut ? 'Extrude Cut' : 'Extrude';
+    const opName = em.editingFeatureId ? `Edit ${baseName}` : baseName;
+
+    // Header
+    const header = document.createElement('div');
+    header.className = 'parameter-row';
+    header.innerHTML = `<label class="parameter-label" style="font-weight:600">${opName}</label>`;
+    container.appendChild(header);
+
+    // Sketch selection
+    const features = this._partManager ? this._partManager.getFeatures() : [];
+    const sketches = features.filter(f => f.type === 'sketch');
+    const sketchOpts = sketches.map(s => ({ value: s.id, label: s.name }));
+    if (sketchOpts.length === 0) {
+      sketchOpts.push({ value: '', label: '(no sketches)' });
+    }
+    container.appendChild(this._createParamRow('Sketch', 'select', em.sketchFeatureId || '', (v) => {
+      em.sketchFeatureId = v || null;
+      this._updateExtrudePreview();
+    }, sketchOpts));
+
+    // Extrude type
+    const typeOpts = [
+      { value: 'distance', label: 'Distance' },
+      { value: 'throughAll', label: 'Through All' },
+      { value: 'upToFace', label: 'Up to Face' },
+    ];
+    container.appendChild(this._createParamRow('Type', 'select', em.extrudeType, (v) => {
+      em.extrudeType = v;
+      this._showExtrudeUI();
+      this._updateExtrudePreview();
+    }, typeOpts));
+
+    // Distance (only for 'distance' type)
+    if (em.extrudeType === 'distance') {
+      container.appendChild(this._createParamRow('Distance', 'number', em.distance, (v) => {
+        const parsed = parseFloat(v);
+        if (!isNaN(parsed) && parsed > 0) {
+          em.distance = parsed;
+          this._updateExtrudePreview();
+        }
+      }));
+    }
+
+    // Up to face notice
+    if (em.extrudeType === 'upToFace') {
+      const notice = document.createElement('div');
+      notice.className = 'parameter-row';
+      notice.innerHTML = '<label class="parameter-label" style="color:#e8a040;font-size:11px">Click a face in the 3D view to set target</label>';
+      container.appendChild(notice);
+    }
+
+    // Direction
+    container.appendChild(this._createParamRow('Direction', 'select', em.direction, (v) => {
+      em.direction = parseInt(v, 10);
+      this._updateExtrudePreview();
+    }, [{ value: '1', label: 'Normal' }, { value: '-1', label: 'Reverse' }]));
+
+    // Operation
+    container.appendChild(this._createParamRow('Operation', 'select', em.operation, (v) => {
+      em.operation = v;
+      this._updateExtrudePreview();
+    }, [
+      { value: 'new', label: 'New Body' },
+      { value: 'add', label: 'Add (Union)' },
+      { value: 'subtract', label: 'Subtract (Cut)' },
+      { value: 'intersect', label: 'Intersect' },
+    ]));
+
+    // Symmetric
+    container.appendChild(this._createParamRow('Symmetric', 'checkbox', em.symmetric, (v) => {
+      em.symmetric = v;
+      this._updateExtrudePreview();
+    }));
+
+    // Taper toggle
+    container.appendChild(this._createParamRow('Taper', 'checkbox', em.taper, (v) => {
+      em.taper = v;
+      this._showExtrudeUI();
+      this._updateExtrudePreview();
+    }));
+
+    // Taper options (only when taper enabled)
+    if (em.taper) {
+      container.appendChild(this._createParamRow('Taper Angle (°)', 'number', em.taperAngle, (v) => {
+        const parsed = parseFloat(v);
+        if (!isNaN(parsed) && parsed > 0 && parsed < 89) {
+          em.taperAngle = parsed;
+          this._updateExtrudePreview();
+        }
+      }));
+      container.appendChild(this._createParamRow('Taper Dir', 'select', em.taperInward ? 'in' : 'out', (v) => {
+        em.taperInward = v === 'in';
+        this._updateExtrudePreview();
+      }, [{ value: 'in', label: 'Inward' }, { value: 'out', label: 'Outward' }]));
+    }
+
+    // Accept / Cancel buttons
+    const btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex;gap:6px;margin-top:12px;padding:0 2px';
+
+    const acceptBtn = document.createElement('button');
+    acceptBtn.textContent = 'Accept';
+    acceptBtn.className = 'parameter-input';
+    acceptBtn.style.cssText = 'flex:1;padding:6px;cursor:pointer;background:rgba(60,180,80,0.9);color:#fff;border:1px solid rgba(80,200,100,0.9);border-radius:4px;font-weight:600';
+    acceptBtn.addEventListener('click', () => this._acceptExtrude());
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.className = 'parameter-input';
+    cancelBtn.style.cssText = 'flex:1;padding:6px;cursor:pointer;background:rgba(180,60,60,0.9);color:#fff;border:1px solid rgba(200,80,80,0.9);border-radius:4px;font-weight:600';
+    cancelBtn.addEventListener('click', () => this._cancelExtrude());
+
+    btnRow.appendChild(acceptBtn);
+    btnRow.appendChild(cancelBtn);
+    container.appendChild(btnRow);
+  }
+
+  /**
+   * Compute and display ghost preview for the current extrude mode parameters.
+   */
+  async _updateExtrudePreview() {
+    if (!this._extrudeMode || !this._renderer3d) return;
+
+    const em = this._extrudeMode;
+    if (!em.sketchFeatureId || (em.extrudeType === 'distance' && em.distance <= 0)) {
+      this._renderer3d.clearGhostPreview();
+      this._renderer3d.clearExtrudeArrow();
+      this._extrudeHandleInfo = null;
+      this._scheduleRender();
       return;
     }
 
-    const absDistance = Math.abs(distVal);
-    const extrudeOptions = isCut ? { operation: 'subtract', direction: -1 } : {};
-    const feature = this._partManager.extrude(this._lastSketchFeatureId, absDistance, extrudeOptions);
+    try {
+      const part = this._partManager.getPart();
+      if (!part) return;
 
-    this._featurePanel.update();
-    this._updateNodeTree();
+      const sketchFeature = part.getFeature(em.sketchFeatureId);
+      if (!sketchFeature || sketchFeature.type !== 'sketch') {
+        this._renderer3d.clearGhostPreview();
+        this._renderer3d.clearExtrudeArrow();
+        this._extrudeHandleInfo = null;
+        this._scheduleRender();
+        return;
+      }
+
+      // Execute sketch to get profiles
+      const sketchResult = sketchFeature.execute({ results: {}, tree: part.featureTree });
+      if (!sketchResult || !sketchResult.profiles || sketchResult.profiles.length === 0) {
+        this._renderer3d.clearGhostPreview();
+        this._renderer3d.clearExtrudeArrow();
+        this._extrudeHandleInfo = null;
+        this._scheduleRender();
+        return;
+      }
+
+      // Use a temporary ExtrudeFeature to generate geometry
+      const { ExtrudeFeature } = await import('./cad/ExtrudeFeature.js');
+      const tempExtrude = new ExtrudeFeature('_preview', em.sketchFeatureId, em.distance);
+      tempExtrude.direction = em.direction;
+      tempExtrude.symmetric = em.symmetric;
+      tempExtrude.extrudeType = em.extrudeType;
+      tempExtrude.taper = em.taper;
+      tempExtrude.taperAngle = em.taperAngle;
+      tempExtrude.taperInward = em.taperInward;
+
+      const geometry = tempExtrude.generateGeometry(sketchResult.profiles, sketchResult.plane);
+      this._renderer3d.setGhostPreview(geometry);
+
+      // Compute extrude handle position (centroid of first profile)
+      const profPts = sketchResult.profiles[0].points;
+      let hcx = 0, hcy = 0;
+      for (const p of profPts) { hcx += p.x; hcy += p.y; }
+      hcx /= profPts.length; hcy /= profPts.length;
+      const pln = sketchResult.plane;
+      const handleOrigin = {
+        x: pln.origin.x + hcx * pln.xAxis.x + hcy * pln.yAxis.x,
+        y: pln.origin.y + hcx * pln.xAxis.y + hcy * pln.yAxis.y,
+        z: pln.origin.z + hcx * pln.xAxis.z + hcy * pln.yAxis.z,
+      };
+      const ds = em.direction;
+      const arrowDist = em.extrudeType === 'throughAll' ? 30 : em.distance;
+      const handleTip = {
+        x: handleOrigin.x + pln.normal.x * arrowDist * ds,
+        y: handleOrigin.y + pln.normal.y * arrowDist * ds,
+        z: handleOrigin.z + pln.normal.z * arrowDist * ds,
+      };
+      if (em.extrudeType === 'throughAll') {
+        this._extrudeHandleInfo = null;
+        this._renderer3d.clearExtrudeArrow();
+      } else {
+        this._extrudeHandleInfo = {
+          origin: handleOrigin, tip: handleTip,
+          dir: { x: pln.normal.x * ds, y: pln.normal.y * ds, z: pln.normal.z * ds },
+        };
+        this._renderer3d.setExtrudeArrow(handleOrigin, handleTip);
+      }
+      this._scheduleRender();
+    } catch (err) {
+      console.warn('Extrude preview failed:', err);
+      this._renderer3d.clearGhostPreview();
+      this._renderer3d.clearExtrudeArrow();
+      this._extrudeHandleInfo = null;
+      this._scheduleRender();
+    }
+  }
+
+  /**
+   * Accept the extrude mode — create the actual feature.
+   */
+  _acceptExtrude() {
+    if (!this._extrudeMode) return;
+
+    const em = this._extrudeMode;
+
+    if (!em.sketchFeatureId) {
+      this.setStatus('Select a sketch before accepting.');
+      return;
+    }
+    if (em.distance <= 0 && em.extrudeType === 'distance') {
+      this.setStatus('Distance must be positive.');
+      return;
+    }
+
+    const opName = em.isCut ? 'Extrude Cut' : 'Extrude';
+
+    if (em.editingFeatureId) {
+      // Editing existing feature — apply changes via modifyFeature
+      this._partManager.modifyFeature(em.editingFeatureId, (f) => {
+        f.setDistance(em.distance);
+        f.direction = em.direction;
+        f.symmetric = em.symmetric;
+        f.operation = em.operation;
+        f.extrudeType = em.extrudeType;
+        f.taper = em.taper;
+        f.taperAngle = em.taperAngle;
+        f.taperInward = em.taperInward;
+      });
+
+      this._exitExtrudeMode();
+
+      this._featurePanel.update();
+      this._updateNodeTree();
+      this._update3DView();
+      this._updateOperationButtons();
+
+      this.setStatus(`${opName} updated: ${em.distance} units`);
+      this._recorder.featureModified(em.editingFeatureId, 'distance', em.distance);
+      info(`Updated ${opName.toLowerCase()} feature: ${em.editingFeatureId}`);
+    } else {
+      // Creating a new feature
+      const options = {
+        operation: em.operation,
+        direction: em.direction,
+        symmetric: em.symmetric,
+        extrudeType: em.extrudeType,
+        taper: em.taper,
+        taperAngle: em.taperAngle,
+        taperInward: em.taperInward,
+      };
+
+      const feature = em.isCut
+        ? this._partManager.extrudeCut(em.sketchFeatureId, em.distance, options)
+        : this._partManager.extrude(em.sketchFeatureId, em.distance, options);
+
+      this._exitExtrudeMode();
+
+      this._featurePanel.update();
+      this._updateNodeTree();
+      this._update3DView();
+      this._updateOperationButtons();
+
+      this.setStatus(`${opName}: ${em.distance} units`);
+      this._recorder.extrudeCreated(feature ? feature.id : null, em.distance, em.isCut);
+      info(`Created ${opName.toLowerCase()} feature: ${feature ? feature.id : 'failed'}`);
+    }
+  }
+
+  /**
+   * Cancel the extrude mode — discard without creating a feature.
+   */
+  _cancelExtrude() {
+    if (!this._extrudeMode) return;
+
+    // If editing, restore original values
+    if (this._extrudeMode.editingFeatureId && this._extrudeMode.editOriginal) {
+      const orig = this._extrudeMode.editOriginal;
+      const fId = this._extrudeMode.editingFeatureId;
+      this._partManager.modifyFeature(fId, (f) => {
+        f.setDistance(orig.distance);
+        f.direction = orig.direction;
+        f.symmetric = orig.symmetric;
+        f.operation = orig.operation;
+        f.extrudeType = orig.extrudeType;
+        f.taper = orig.taper;
+        f.taperAngle = orig.taperAngle;
+        f.taperInward = orig.taperInward;
+      });
+    }
+
+    this._exitExtrudeMode();
     this._update3DView();
     this._updateOperationButtons();
+    this.setStatus('Extrude cancelled.');
+  }
 
-    this.setStatus(`${opName}: ${absDistance} units`);
-    this._recorder.extrudeCreated(feature ? feature.id : null, absDistance, isCut);
-    info(`Created ${opName.toLowerCase()} feature: ${feature ? feature.id : 'failed'}`);
+  /**
+   * Clean up extrude mode state and UI.
+   */
+  _exitExtrudeMode() {
+    if (!this._extrudeMode) return;
+
+    // Clear ghost preview and handle arrow
+    if (this._renderer3d) {
+      this._renderer3d.clearGhostPreview();
+      this._renderer3d.clearExtrudeArrow();
+    }
+    this._extrudeHandleInfo = null;
+    this._draggingExtrudeHandle = false;
+    this._extrudeArrowHoveredState = false;
+    const exitBtn = document.getElementById('btn-exit-extrude');
+    if (exitBtn) exitBtn.style.display = 'none';
+
+    // Remove active class from extrude buttons
+    const btnExtrude = document.getElementById('btn-extrude');
+    if (btnExtrude) btnExtrude.classList.remove('active');
+    const btnExtrudeCut = document.getElementById('btn-extrude-cut');
+    if (btnExtrudeCut) btnExtrudeCut.classList.remove('active');
+
+    this._extrudeMode = null;
+
+    // Restore left panel to selection summary
+    this._showLeftFeatureParams(null);
+    this._scheduleRender();
   }
 }
 

@@ -357,9 +357,9 @@ class CSGSolid {
     }
 
     // Compute face groups and feature edges
-    const edges = computeFeatureEdges(faces);
+    const { edges, visualEdges } = computeFeatureEdges(faces);
 
-    return { vertices, faces, edges };
+    return { vertices, faces, edges, visualEdges };
   }
 }
 
@@ -623,8 +623,11 @@ export function computeFeatureEdges(faces) {
   }
 
   // Build feature edges: boundary edges or sharp edges
+  // Also build visual edges: tessellation edges on curved surfaces (non-selectable wireframe)
   const SHARP_THRESHOLD = Math.cos(15 * Math.PI / 180); // ~0.966
+  const COPLANAR_THRESHOLD = 1 - 1e-6;
   const edges = [];
+  const visualEdges = [];
   for (const [key, info] of edgeNormals) {
     if (info.normals.length === 1) {
       // Boundary edge — only suppress if it's a confirmed T-junction
@@ -635,9 +638,11 @@ export function computeFeatureEdges(faces) {
       // Check if any pair of adjacent normals differs significantly
       const n0 = info.normals[0];
       let isFeature = false;
+      let minDot = 1;
       for (let i = 1; i < info.normals.length; i++) {
         const n1 = info.normals[i];
         const dot = n0.x * n1.x + n0.y * n1.y + n0.z * n1.z;
+        if (dot < minDot) minDot = dot;
         if (dot < SHARP_THRESHOLD) {
           isFeature = true;
           break;
@@ -645,11 +650,18 @@ export function computeFeatureEdges(faces) {
       }
       if (isFeature) {
         edges.push({ start: info.start, end: info.end });
+      } else if (minDot < COPLANAR_THRESHOLD) {
+        // Normals differ but not enough for a feature edge — curved surface tessellation edge
+        // Only include if faces are in different coplanar groups
+        const groups = new Set(info.faceIndices.map(fi => faces[fi].faceGroup));
+        if (groups.size > 1) {
+          visualEdges.push({ start: info.start, end: info.end });
+        }
       }
     }
   }
 
-  return edges;
+  return { edges, visualEdges };
 }
 
 // -----------------------------------------------------------------------

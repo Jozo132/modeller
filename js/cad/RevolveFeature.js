@@ -280,7 +280,9 @@ export class RevolveFeature extends Feature {
     if (this.operation === 'new' || !solid) {
       // Compute feature edges and face groups for the initial geometry
       if (geometry && geometry.faces) {
-        geometry.edges = computeFeatureEdges(geometry.faces);
+        const edgeResult = computeFeatureEdges(geometry.faces);
+        geometry.edges = edgeResult.edges;
+        geometry.visualEdges = edgeResult.visualEdges;
       }
       return { geometry };
     }

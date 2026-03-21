@@ -56,7 +56,7 @@ export class ParametersPanel {
     this.contentElement.appendChild(nameDiv);
 
     // Type-specific parameters
-    if (feature.type === 'extrude') {
+    if (feature.type === 'extrude' || feature.type === 'extrude-cut') {
       this.showExtrudeParameters(feature);
     } else if (feature.type === 'revolve') {
       this.showRevolveParameters(feature);

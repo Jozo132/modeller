@@ -1741,6 +1741,9 @@ export class WasmRenderer {
       }
       this._meshEdges = edgeData;
       this._meshEdgeVertexCount = geometry.edges.length * 2;
+
+      // Build silhouette candidates from face data for view-dependent outline edges
+      this._meshSilhouetteCandidates = this._buildSilhouetteCandidates(faces);
     } else {
       // Compute feature edges: only show edges where adjacent faces have different normals
       const SHARP_COS = Math.cos(15 * Math.PI / 180);
@@ -1763,15 +1766,23 @@ export class WasmRenderer {
       }
 
       const featureEdges = [];
+      const silCandidates = [];
       for (const [, info] of edgeMap) {
         if (info.normals.length === 1) {
           featureEdges.push(info);
         } else if (info.normals.length >= 2) {
           const n0 = info.normals[0];
-          for (let i = 1; i < info.normals.length; i++) {
-            const n1 = info.normals[i];
-            const dot = n0.x * n1.x + n0.y * n1.y + n0.z * n1.z;
-            if (dot < SHARP_COS) { featureEdges.push(info); break; }
+          const n1 = info.normals[1];
+          const dot = n0.x * n1.x + n0.y * n1.y + n0.z * n1.z;
+          if (dot < SHARP_COS) {
+            featureEdges.push(info);
+          } else if (dot < 1 - 1e-6) {
+            silCandidates.push(
+              info.a.x, info.a.y, info.a.z,
+              info.b.x, info.b.y, info.b.z,
+              n0.x, n0.y, n0.z,
+              n1.x, n1.y, n1.z
+            );
           }
         }
       }
@@ -1784,7 +1795,102 @@ export class WasmRenderer {
       }
       this._meshEdges = edgeData;
       this._meshEdgeVertexCount = featureEdges.length * 2;
+      this._meshSilhouetteCandidates = silCandidates.length > 0 ? new Float32Array(silCandidates) : null;
     }
+
+    // Build visual edges (curved surface tessellation lines — non-selectable wireframe grid)
+    if (geometry.visualEdges && geometry.visualEdges.length > 0) {
+      const vEdgeData = new Float32Array(geometry.visualEdges.length * 2 * 3);
+      let vi = 0;
+      for (const edge of geometry.visualEdges) {
+        vEdgeData[vi++] = edge.start.x; vEdgeData[vi++] = edge.start.y; vEdgeData[vi++] = edge.start.z;
+        vEdgeData[vi++] = edge.end.x;   vEdgeData[vi++] = edge.end.y;   vEdgeData[vi++] = edge.end.z;
+      }
+      this._meshVisualEdges = vEdgeData;
+      this._meshVisualEdgeVertexCount = geometry.visualEdges.length * 2;
+    } else {
+      this._meshVisualEdges = null;
+      this._meshVisualEdgeVertexCount = 0;
+    }
+  }
+
+  /**
+   * Build silhouette edge candidates from face data.
+   * Returns a Float32Array of smooth shared edges: [ax,ay,az, bx,by,bz, n0x,n0y,n0z, n1x,n1y,n1z] x N
+   * Returns null if no candidates.
+   */
+  _buildSilhouetteCandidates(faces) {
+    const SHARP_COS = Math.cos(15 * Math.PI / 180);
+    const precision = 5;
+    const vKey = (v) => `${v.x.toFixed(precision)},${v.y.toFixed(precision)},${v.z.toFixed(precision)}`;
+    const eKey = (a, b) => { const ka = vKey(a), kb = vKey(b); return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`; };
+
+    const edgeMap = new Map();
+    for (const face of faces) {
+      const verts = face.vertices;
+      const n = face.normal || { x: 0, y: 0, z: 1 };
+      for (let i = 0; i < verts.length; i++) {
+        const a = verts[i], b = verts[(i + 1) % verts.length];
+        const key = eKey(a, b);
+        if (!edgeMap.has(key)) edgeMap.set(key, { a, b, normals: [] });
+        edgeMap.get(key).normals.push(n);
+      }
+    }
+
+    const candidates = [];
+    for (const [, info] of edgeMap) {
+      if (info.normals.length >= 2) {
+        const n0 = info.normals[0], n1 = info.normals[1];
+        const dot = n0.x * n1.x + n0.y * n1.y + n0.z * n1.z;
+        // Smooth edges only (not sharp feature, not coplanar)
+        if (dot >= SHARP_COS && dot < 1 - 1e-6) {
+          candidates.push(
+            info.a.x, info.a.y, info.a.z,
+            info.b.x, info.b.y, info.b.z,
+            n0.x, n0.y, n0.z,
+            n1.x, n1.y, n1.z
+          );
+        }
+      }
+    }
+    return candidates.length > 0 ? new Float32Array(candidates) : null;
+  }
+
+  /**
+   * Compute view-dependent silhouette edges from candidate data.
+   * An edge is a silhouette when one adjacent face is front-facing and the other is back-facing.
+   * @param {Float32Array} candidates - [ax,ay,az, bx,by,bz, n0x,n0y,n0z, n1x,n1y,n1z] per edge (12 floats)
+   * @returns {Float32Array|null} Line vertex data [ax,ay,az, bx,by,bz] per edge, or null
+   */
+  _computeSilhouetteEdges(candidates) {
+    if (!candidates || candidates.length === 0) return null;
+
+    const t = this._orbitTarget;
+    const theta = this._orbitTheta;
+    const phi = this._orbitPhi;
+    const rad = this._orbitRadius;
+    const eyeX = t.x + rad * Math.sin(phi) * Math.cos(theta);
+    const eyeY = t.y + rad * Math.sin(phi) * Math.sin(theta);
+    const eyeZ = t.z + rad * Math.cos(phi);
+
+    const count = candidates.length / 12;
+    const lines = [];
+    for (let i = 0; i < count; i++) {
+      const off = i * 12;
+      const ax = candidates[off], ay = candidates[off + 1], az = candidates[off + 2];
+      const bx = candidates[off + 3], by = candidates[off + 4], bz = candidates[off + 5];
+      // Edge midpoint → eye direction
+      const mx = (ax + bx) * 0.5, my = (ay + by) * 0.5, mz = (az + bz) * 0.5;
+      const vx = eyeX - mx, vy = eyeY - my, vz = eyeZ - mz;
+      // Dot with each normal
+      const d0 = candidates[off + 6] * vx + candidates[off + 7] * vy + candidates[off + 8] * vz;
+      const d1 = candidates[off + 9] * vx + candidates[off + 10] * vy + candidates[off + 11] * vz;
+      // Silhouette: one front-facing, one back-facing
+      if ((d0 > 0) !== (d1 > 0)) {
+        lines.push(ax, ay, az, bx, by, bz);
+      }
+    }
+    return lines.length > 0 ? new Float32Array(lines) : null;
   }
 
   /**
@@ -2053,11 +2159,13 @@ export class WasmRenderer {
     const gl = this.executor.gl;
     const exec = this.executor;
     const hasMesh = this._meshTriangles && this._meshTriangleCount > 0;
+    const hasGhost = this._ghostTriangles && this._ghostTriangleCount > 0;
+    const hasArrow = this._extrudeArrowLines && this._extrudeArrowVertexCount > 0;
     const hasSketchEdges = this._sketchEdges && this._sketchEdgeVertexCount > 0;
     const hasInactiveEdges = this._sketchInactiveEdges && this._sketchInactiveEdgeVertexCount > 0;
     const hasSelectedEdges = this._sketchSelectedEdges && this._sketchSelectedEdgeVertexCount > 0;
     const hasActiveScene = this._activeSceneEdges && this._activeSceneEdgeVertexCount > 0;
-    if (!hasMesh && !hasSketchEdges && !hasInactiveEdges && !hasSelectedEdges && !hasActiveScene) return;
+    if (!hasMesh && !hasGhost && !hasArrow && !hasSketchEdges && !hasInactiveEdges && !hasSelectedEdges && !hasActiveScene) return;
 
     // Compute the same MVP as the WASM camera
     const mvp = this._computeMVP();
@@ -2132,6 +2240,23 @@ export class WasmRenderer {
         }
       }
 
+      // Draw visual edges (curved surface tessellation — non-selectable wireframe grid)
+      if (this._meshVisualEdges && this._meshVisualEdgeVertexCount > 0) {
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+        gl.useProgram(exec.programs[1]);
+        gl.uniformMatrix4fv(exec.uniforms[1].uMVP, false, mvp);
+        gl.uniform4f(exec.uniforms[1].uColor, 0.25, 0.25, 0.25, 0.35);
+        gl.lineWidth(1.0);
+
+        gl.bindVertexArray(exec.vaoLine);
+        gl.bindBuffer(gl.ARRAY_BUFFER, exec.vbo);
+        gl.bufferData(gl.ARRAY_BUFFER, this._meshVisualEdges, gl.DYNAMIC_DRAW);
+        gl.drawArrays(gl.LINES, 0, this._meshVisualEdgeVertexCount);
+        gl.bindVertexArray(null);
+        gl.disable(gl.BLEND);
+      }
+
       // Draw feature wireframe edges
       if (this._meshEdges && this._meshEdgeVertexCount > 0) {
         gl.useProgram(exec.programs[1]);
@@ -2145,6 +2270,106 @@ export class WasmRenderer {
         gl.drawArrays(gl.LINES, 0, this._meshEdgeVertexCount);
         gl.bindVertexArray(null);
       }
+
+      // Draw silhouette edges (view-dependent outline on curved surfaces)
+      if (this._meshSilhouetteCandidates) {
+        const silData = this._computeSilhouetteEdges(this._meshSilhouetteCandidates);
+        if (silData) {
+          gl.useProgram(exec.programs[1]);
+          gl.uniformMatrix4fv(exec.uniforms[1].uMVP, false, mvp);
+          gl.uniform4f(exec.uniforms[1].uColor, 0.1, 0.1, 0.1, 1.0);
+          gl.lineWidth(1.0);
+
+          gl.bindVertexArray(exec.vaoLine);
+          gl.bindBuffer(gl.ARRAY_BUFFER, exec.vbo);
+          gl.bufferData(gl.ARRAY_BUFFER, silData, gl.DYNAMIC_DRAW);
+          gl.drawArrays(gl.LINES, 0, silData.length / 3);
+          gl.bindVertexArray(null);
+        }
+      }
+    }
+
+    // Draw ghost preview (semi-transparent extrude preview)
+    if (hasGhost) {
+      gl.enable(gl.DEPTH_TEST);
+      gl.depthFunc(gl.LEQUAL);
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      gl.disable(gl.CULL_FACE);
+
+      // Ghost solid triangles
+      gl.enable(gl.POLYGON_OFFSET_FILL);
+      gl.polygonOffset(1.0, 1.0);
+
+      gl.useProgram(exec.programs[0]);
+      gl.uniformMatrix4fv(exec.uniforms[0].uMVP, false, mvp);
+      gl.uniform4f(exec.uniforms[0].uColor, 0.4, 0.7, 1.0, 0.25);
+
+      gl.bindVertexArray(exec.vaoSolid);
+      gl.bindBuffer(gl.ARRAY_BUFFER, exec.vbo);
+      gl.bufferData(gl.ARRAY_BUFFER, this._ghostTriangles, gl.DYNAMIC_DRAW);
+      gl.drawArrays(gl.TRIANGLES, 0, this._ghostTriangleCount);
+      gl.bindVertexArray(null);
+
+      gl.disable(gl.POLYGON_OFFSET_FILL);
+
+      // Ghost wireframe edges (drawn through all geometry)
+      if (this._ghostEdges && this._ghostEdgeVertexCount > 0) {
+        gl.disable(gl.DEPTH_TEST);
+        gl.useProgram(exec.programs[1]);
+        gl.uniformMatrix4fv(exec.uniforms[1].uMVP, false, mvp);
+        gl.uniform4f(exec.uniforms[1].uColor, 0.4, 0.7, 1.0, 1.0);
+        gl.lineWidth(1.0);
+
+        gl.bindVertexArray(exec.vaoLine);
+        gl.bindBuffer(gl.ARRAY_BUFFER, exec.vbo);
+        gl.bufferData(gl.ARRAY_BUFFER, this._ghostEdges, gl.DYNAMIC_DRAW);
+        gl.drawArrays(gl.LINES, 0, this._ghostEdgeVertexCount);
+        gl.bindVertexArray(null);
+      }
+
+      // Ghost silhouette edges (view-dependent outline on curved surfaces)
+      if (this._ghostSilhouetteCandidates) {
+        const ghostSilData = this._computeSilhouetteEdges(this._ghostSilhouetteCandidates);
+        if (ghostSilData) {
+          gl.disable(gl.DEPTH_TEST);
+          gl.useProgram(exec.programs[1]);
+          gl.uniformMatrix4fv(exec.uniforms[1].uMVP, false, mvp);
+          gl.uniform4f(exec.uniforms[1].uColor, 0.4, 0.7, 1.0, 1.0);
+          gl.lineWidth(1.0);
+
+          gl.bindVertexArray(exec.vaoLine);
+          gl.bindBuffer(gl.ARRAY_BUFFER, exec.vbo);
+          gl.bufferData(gl.ARRAY_BUFFER, ghostSilData, gl.DYNAMIC_DRAW);
+          gl.drawArrays(gl.LINES, 0, ghostSilData.length / 3);
+          gl.bindVertexArray(null);
+        }
+      }
+
+      gl.enable(gl.DEPTH_TEST);
+
+      gl.disable(gl.BLEND);
+      gl.enable(gl.CULL_FACE);
+      gl.cullFace(gl.BACK);
+    }
+
+    // Draw extrude handle arrow (always visible, drawn on top)
+    if (hasArrow) {
+      gl.disable(gl.DEPTH_TEST);
+      gl.useProgram(exec.programs[1]);
+      gl.uniformMatrix4fv(exec.uniforms[1].uMVP, false, mvp);
+      if (this._extrudeArrowHovered) {
+        gl.uniform4f(exec.uniforms[1].uColor, 1.0, 0.75, 0.1, 1.0);
+      } else {
+        gl.uniform4f(exec.uniforms[1].uColor, 1.0, 0.6, 0.0, 0.9);
+      }
+      gl.lineWidth(1.0);
+      gl.bindVertexArray(exec.vaoLine);
+      gl.bindBuffer(gl.ARRAY_BUFFER, exec.vbo);
+      gl.bufferData(gl.ARRAY_BUFFER, this._extrudeArrowLines, gl.DYNAMIC_DRAW);
+      gl.drawArrays(gl.LINES, 0, this._extrudeArrowVertexCount);
+      gl.bindVertexArray(null);
+      gl.enable(gl.DEPTH_TEST);
     }
 
     // Draw sketch wireframes (visible sketch primitives in 3D)
@@ -2362,6 +2587,177 @@ export class WasmRenderer {
     this._activeSceneEdges = null;
     this._activeSceneEdgeVertexCount = 0;
     this._selectedFaceIndex = -1;
+  }
+
+  /**
+   * Set ghost preview geometry (semi-transparent extrude preview).
+   * @param {Object} geometry - Geometry with faces array (same format as CSG output)
+   */
+  setGhostPreview(geometry) {
+    if (!geometry || !geometry.faces || geometry.faces.length === 0) {
+      this.clearGhostPreview();
+      return;
+    }
+
+    const faces = geometry.faces;
+
+    // Build triangles (same as _buildMeshFromGeometry but into ghost buffers)
+    let triCount = 0;
+    for (const face of faces) {
+      if (face.vertices.length >= 3) triCount += face.vertices.length - 2;
+    }
+
+    const triData = new Float32Array(triCount * 3 * 6);
+    let ti = 0;
+    for (const face of faces) {
+      const verts = face.vertices;
+      const n = face.normal || { x: 0, y: 0, z: 1 };
+      if (verts.length < 3) continue;
+      for (let i = 1; i < verts.length - 1; i++) {
+        const v0 = verts[0], v1 = verts[i], v2 = verts[i + 1];
+        triData[ti++] = v0.x; triData[ti++] = v0.y; triData[ti++] = v0.z;
+        triData[ti++] = n.x;  triData[ti++] = n.y;  triData[ti++] = n.z;
+        triData[ti++] = v1.x; triData[ti++] = v1.y; triData[ti++] = v1.z;
+        triData[ti++] = n.x;  triData[ti++] = n.y;  triData[ti++] = n.z;
+        triData[ti++] = v2.x; triData[ti++] = v2.y; triData[ti++] = v2.z;
+        triData[ti++] = n.x;  triData[ti++] = n.y;  triData[ti++] = n.z;
+      }
+    }
+    this._ghostTriangles = triData;
+    this._ghostTriangleCount = triCount * 3;
+
+    // Build edges
+    const SHARP_COS = Math.cos(15 * Math.PI / 180);
+    const edgeMap = new Map();
+    const precision = 5;
+    const vKey = (v) => `${v.x.toFixed(precision)},${v.y.toFixed(precision)},${v.z.toFixed(precision)}`;
+    const eKey = (a, b) => { const ka = vKey(a), kb = vKey(b); return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`; };
+
+    for (const face of faces) {
+      const v = face.vertices;
+      const n = face.normal || { x: 0, y: 0, z: 1 };
+      for (let i = 0; i < v.length; i++) {
+        const a = v[i], b = v[(i + 1) % v.length];
+        const key = eKey(a, b);
+        if (!edgeMap.has(key)) edgeMap.set(key, { a, b, normals: [] });
+        edgeMap.get(key).normals.push(n);
+      }
+    }
+
+    const featureEdges = [];
+    for (const [, info] of edgeMap) {
+      if (info.normals.length === 1) { featureEdges.push(info); }
+      else if (info.normals.length >= 2) {
+        const n0 = info.normals[0];
+        for (let i = 1; i < info.normals.length; i++) {
+          const dot = n0.x * info.normals[i].x + n0.y * info.normals[i].y + n0.z * info.normals[i].z;
+          if (dot < SHARP_COS) { featureEdges.push(info); break; }
+        }
+      }
+    }
+
+    const edgeData = new Float32Array(featureEdges.length * 2 * 3);
+    let ei = 0;
+    for (const e of featureEdges) {
+      edgeData[ei++] = e.a.x; edgeData[ei++] = e.a.y; edgeData[ei++] = e.a.z;
+      edgeData[ei++] = e.b.x; edgeData[ei++] = e.b.y; edgeData[ei++] = e.b.z;
+    }
+    this._ghostEdges = edgeData;
+    this._ghostEdgeVertexCount = featureEdges.length * 2;
+
+    // Build silhouette candidates: smooth shared edges (non-feature, non-coplanar)
+    // Store as flat array: [ax,ay,az, bx,by,bz, n0x,n0y,n0z, n1x,n1y,n1z] per candidate (12 floats)
+    const silCandidates = [];
+    for (const [, info] of edgeMap) {
+      if (info.normals.length >= 2) {
+        const n0 = info.normals[0], n1 = info.normals[1];
+        const dot = n0.x * n1.x + n0.y * n1.y + n0.z * n1.z;
+        if (dot >= SHARP_COS && dot < 1 - 1e-6) {
+          silCandidates.push(
+            info.a.x, info.a.y, info.a.z,
+            info.b.x, info.b.y, info.b.z,
+            n0.x, n0.y, n0.z,
+            n1.x, n1.y, n1.z
+          );
+        }
+      }
+    }
+    this._ghostSilhouetteCandidates = silCandidates.length > 0 ? new Float32Array(silCandidates) : null;
+
+    this._ghostVisualEdges = null;
+    this._ghostVisualEdgeVertexCount = 0;
+  }
+
+  /**
+   * Clear ghost preview geometry.
+   */
+  clearGhostPreview() {
+    this._ghostTriangles = null;
+    this._ghostTriangleCount = 0;
+    this._ghostEdges = null;
+    this._ghostEdgeVertexCount = 0;
+    this._ghostVisualEdges = null;
+    this._ghostVisualEdgeVertexCount = 0;
+    this._ghostSilhouetteCandidates = null;
+  }
+
+  /**
+   * Set extrude handle arrow geometry (shaft + arrowhead lines).
+   */
+  setExtrudeArrow(origin, tip, hovered = false) {
+    if (!origin || !tip) { this.clearExtrudeArrow(); return; }
+    const dx = tip.x - origin.x, dy = tip.y - origin.y, dz = tip.z - origin.z;
+    const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (len < 0.001) { this.clearExtrudeArrow(); return; }
+    this._extrudeArrowHovered = hovered;
+    const dir = { x: dx / len, y: dy / len, z: dz / len };
+    const headLen = Math.min(len * 0.12, 1.5);
+    const headR = headLen * (hovered ? 0.55 : 0.35);
+
+    const ref = Math.abs(dir.z) < 0.9 ? { x: 0, y: 0, z: 1 } : { x: 1, y: 0, z: 0 };
+    const p1 = { x: dir.y * ref.z - dir.z * ref.y, y: dir.z * ref.x - dir.x * ref.z, z: dir.x * ref.y - dir.y * ref.x };
+    const p1l = Math.sqrt(p1.x * p1.x + p1.y * p1.y + p1.z * p1.z);
+    p1.x /= p1l; p1.y /= p1l; p1.z /= p1l;
+    const p2 = { x: dir.y * p1.z - dir.z * p1.y, y: dir.z * p1.x - dir.x * p1.z, z: dir.x * p1.y - dir.y * p1.x };
+    const base = { x: tip.x - dir.x * headLen, y: tip.y - dir.y * headLen, z: tip.z - dir.z * headLen };
+
+    // Cone spokes (4 normal, 8 hovered for a fuller arrowhead)
+    const spokes = hovered ? 8 : 4;
+    const lineCount = (hovered ? 3 : 1) + spokes; // shaft lines + cone lines
+    const data = new Float32Array(lineCount * 2 * 3);
+    let i = 0;
+
+    // Shaft line(s)
+    data[i++] = origin.x; data[i++] = origin.y; data[i++] = origin.z;
+    data[i++] = tip.x;    data[i++] = tip.y;    data[i++] = tip.z;
+    if (hovered) {
+      // Two parallel offset lines for visual thickness
+      const off = 0.02;
+      data[i++] = origin.x + p1.x * off; data[i++] = origin.y + p1.y * off; data[i++] = origin.z + p1.z * off;
+      data[i++] = tip.x + p1.x * off;    data[i++] = tip.y + p1.y * off;    data[i++] = tip.z + p1.z * off;
+      data[i++] = origin.x - p1.x * off; data[i++] = origin.y - p1.y * off; data[i++] = origin.z - p1.z * off;
+      data[i++] = tip.x - p1.x * off;    data[i++] = tip.y - p1.y * off;    data[i++] = tip.z - p1.z * off;
+    }
+
+    // Cone lines
+    for (let s = 0; s < spokes; s++) {
+      const angle = (s / spokes) * Math.PI * 2;
+      const cs = Math.cos(angle), sn = Math.sin(angle);
+      const cx = base.x + (p1.x * cs + p2.x * sn) * headR;
+      const cy = base.y + (p1.y * cs + p2.y * sn) * headR;
+      const cz = base.z + (p1.z * cs + p2.z * sn) * headR;
+      data[i++] = tip.x; data[i++] = tip.y; data[i++] = tip.z;
+      data[i++] = cx;    data[i++] = cy;    data[i++] = cz;
+    }
+
+    this._extrudeArrowLines = data;
+    this._extrudeArrowVertexCount = lineCount * 2;
+  }
+
+  clearExtrudeArrow() {
+    this._extrudeArrowLines = null;
+    this._extrudeArrowVertexCount = 0;
+    this._extrudeArrowHovered = false;
   }
 
   /**

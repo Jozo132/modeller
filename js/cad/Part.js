@@ -10,6 +10,7 @@ import { Sketch } from './Sketch.js';
 import { FeatureTree } from './FeatureTree.js';
 import { SketchFeature } from './SketchFeature.js';
 import { ExtrudeFeature } from './ExtrudeFeature.js';
+import { ExtrudeCutFeature } from './ExtrudeCutFeature.js';
 import { RevolveFeature } from './RevolveFeature.js';
 
 /**
@@ -143,6 +144,15 @@ export class Part {
   getFeature(featureId) {
     return this.featureTree.getFeature(featureId);
   }
+
+  /**
+   * Generate the next name for a feature type (e.g. "Sketch 2", "Extrude 1").
+   * Counts only features of the same type.
+   */
+  _nextTypeName(type, label) {
+    const count = this.featureTree.features.filter(f => f.type === type).length;
+    return `${label} ${count + 1}`;
+  }
   
   /**
    * Get the final geometry result.
@@ -166,7 +176,7 @@ export class Part {
   addSketch(sketch = null, plane = null, index = -1) {
     this.modified = new Date();
     
-    const sketchFeature = new SketchFeature(`Sketch${this.featureTree.features.length + 1}`, sketch);
+    const sketchFeature = new SketchFeature(this._nextTypeName('sketch', 'Sketch'), sketch);
     
     if (plane) {
       sketchFeature.setPlane(plane);
@@ -260,7 +270,7 @@ export class Part {
       throw new Error('Invalid sketch feature');
     }
     
-    const extrudeFeature = new ExtrudeFeature(`Extrude${this.featureTree.features.length + 1}`, sketchId, distance);
+    const extrudeFeature = new ExtrudeFeature(this._nextTypeName('extrude', 'Extrude'), sketchId, distance);
     
     // If there is already a solid body in the feature tree, default to 'add'
     // so subsequent features are combined (union) rather than replacing the body.
@@ -274,6 +284,10 @@ export class Part {
     }
     if (options.direction) extrudeFeature.direction = options.direction;
     if (options.symmetric !== undefined) extrudeFeature.symmetric = options.symmetric;
+    if (options.extrudeType) extrudeFeature.extrudeType = options.extrudeType;
+    if (options.taper !== undefined) extrudeFeature.taper = options.taper;
+    if (options.taperAngle != null) extrudeFeature.taperAngle = options.taperAngle;
+    if (options.taperInward !== undefined) extrudeFeature.taperInward = options.taperInward;
     
     // Link the sketch as a child of the extrude feature and hide it
     extrudeFeature.addChild(sketchId);
@@ -284,6 +298,42 @@ export class Part {
     // Note: Physical properties are computed lazily when requested
     
     return extrudeFeature;
+  }
+
+  /**
+   * Extrude-cut a sketch (subtract by default).
+   * @param {string|SketchFeature} sketchOrId - Sketch feature or ID
+   * @param {number} distance - The extrusion distance
+   * @param {Object} options - Additional options
+   * @returns {ExtrudeCutFeature} The created extrude-cut feature
+   */
+  extrudeCut(sketchOrId, distance, options = {}) {
+    this.modified = new Date();
+
+    const sketchId = typeof sketchOrId === 'string' ? sketchOrId : sketchOrId.id;
+    const sketchFeature = this.featureTree.getFeature(sketchId);
+
+    if (!sketchFeature || sketchFeature.type !== 'sketch') {
+      throw new Error('Invalid sketch feature');
+    }
+
+    const feature = new ExtrudeCutFeature(this._nextTypeName('extrude-cut', 'Extrude Cut'), sketchId, distance);
+
+    if (options.operation) feature.operation = options.operation;
+    if (options.direction) feature.direction = options.direction;
+    if (options.symmetric !== undefined) feature.symmetric = options.symmetric;
+    if (options.extrudeType) feature.extrudeType = options.extrudeType;
+    if (options.taper !== undefined) feature.taper = options.taper;
+    if (options.taperAngle != null) feature.taperAngle = options.taperAngle;
+    if (options.taperInward !== undefined) feature.taperInward = options.taperInward;
+
+    feature.addChild(sketchId);
+    sketchFeature.setVisible(false);
+
+    this.featureTree.addFeature(feature);
+    this._checkAutoHidePlanes();
+
+    return feature;
   }
 
   /**
@@ -303,7 +353,7 @@ export class Part {
       throw new Error('Invalid sketch feature');
     }
     
-    const revolveFeature = new RevolveFeature(`Revolve${this.featureTree.features.length + 1}`, sketchId, angle);
+    const revolveFeature = new RevolveFeature(this._nextTypeName('revolve', 'Revolve'), sketchId, angle);
     
     if (!options.operation) {
       const existingSolid = this.featureTree.getLastSolidResult();
@@ -483,6 +533,8 @@ export class Part {
             return SketchFeature.deserialize(featureData);
           case 'extrude':
             return ExtrudeFeature.deserialize(featureData);
+          case 'extrude-cut':
+            return ExtrudeCutFeature.deserialize(featureData);
           case 'revolve':
             return RevolveFeature.deserialize(featureData);
           default:

@@ -2208,6 +2208,38 @@ body.sketch-on-plane #parameters-panel {
 .exit-sketch-btn svg {
   flex-shrink: 0;
 }
+.exit-extrude-btn {
+  position: fixed;
+  top: 42px;
+  left: calc(var(--panel-width) + 216px);
+  z-index: 200;
+  display: none;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  background: rgba(220, 60, 60, 0.9);
+  border: 1.5px solid rgba(240, 80, 80, 0.95);
+  border-radius: 6px;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  transition: background 0.15s, box-shadow 0.15s;
+  letter-spacing: 0.3px;
+}
+.exit-extrude-btn:hover {
+  background: rgba(240, 70, 70, 1);
+  box-shadow: 0 4px 14px rgba(220, 60, 60, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+.exit-extrude-btn:active {
+  opacity: 0.85;
+}
+.exit-extrude-btn svg {
+  flex-shrink: 0;
+}
 @media (prefers-reduced-motion: reduce) {
 }
 

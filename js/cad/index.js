@@ -14,6 +14,7 @@ export { Feature, resetFeatureIds } from './Feature.js';
 export { FeatureTree } from './FeatureTree.js';
 export { SketchFeature } from './SketchFeature.js';
 export { ExtrudeFeature } from './ExtrudeFeature.js';
+export { ExtrudeCutFeature } from './ExtrudeCutFeature.js';
 export { RevolveFeature } from './RevolveFeature.js';
 export { solve } from './Solver.js';
 export {

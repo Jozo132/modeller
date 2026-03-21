@@ -102,6 +102,18 @@ export class PartManager {
   }
 
   /**
+   * Extrude-cut the active sketch feature (subtract by default)
+   */
+  extrudeCut(sketchFeatureId, distance = 10, options = {}) {
+    if (!this.part) return null;
+
+    const feature = this.part.extrudeCut(sketchFeatureId, distance, options);
+    this.activeFeature = feature;
+    this.notifyListeners();
+    return feature;
+  }
+
+  /**
    * Revolve the active sketch feature
    * @param {string} sketchFeatureId - ID of sketch feature to revolve
    * @param {number} angle - Revolution angle in radians

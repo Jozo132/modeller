@@ -22,6 +22,10 @@ export class ExtrudeFeature extends Feature {
     this.distance = distance;
     this.direction = 1; // 1 = normal direction, -1 = reverse
     this.symmetric = false; // If true, extrude in both directions
+    this.extrudeType = 'distance'; // 'distance' | 'throughAll' | 'upToFace'
+    this.taper = false;
+    this.taperAngle = 5; // degrees
+    this.taperInward = true; // true = inward taper, false = outward
     
     // Operation mode
     this.operation = 'new'; // 'new', 'add', 'subtract', 'intersect'
@@ -83,12 +87,20 @@ export class ExtrudeFeature extends Feature {
       edges: [],
     };
     
+    const effectiveDistance = this.extrudeType === 'throughAll' ? 1000 : this.distance;
+
     // Calculate extrusion vector
     const extrusionVector = {
-      x: plane.normal.x * this.distance * this.direction,
-      y: plane.normal.y * this.distance * this.direction,
-      z: plane.normal.z * this.distance * this.direction,
+      x: plane.normal.x * effectiveDistance * this.direction,
+      y: plane.normal.y * effectiveDistance * this.direction,
+      z: plane.normal.z * effectiveDistance * this.direction,
     };
+
+    // Taper: compute per-vertex shrink/grow at top face
+    const useTaper = this.taper && this.taperAngle > 0 && this.taperAngle < 89;
+    const taperOffset = useTaper
+      ? effectiveDistance * Math.tan(this.taperAngle * Math.PI / 180) * (this.taperInward ? -1 : 1)
+      : 0;
     
     // For each profile, create top and bottom faces and side faces
     for (const profile of profiles) {
@@ -104,6 +116,13 @@ export class ExtrudeFeature extends Feature {
         pts = [...pts].reverse();
       }
 
+      // Compute 2D centroid for taper scaling
+      let cx2 = 0, cy2 = 0;
+      if (useTaper) {
+        for (const p of pts) { cx2 += p.x; cy2 += p.y; }
+        cx2 /= pts.length; cy2 /= pts.length;
+      }
+
       const bottomVertices = [];
       const topVertices = [];
       
@@ -114,11 +133,23 @@ export class ExtrudeFeature extends Feature {
         bottomVertices.push(bottom3D);
         geometry.vertices.push(bottom3D);
         
-        // Create top vertex
+        // Create top vertex (with taper offset if enabled)
+        let topPoint = point;
+        if (useTaper) {
+          const dx = point.x - cx2, dy = point.y - cy2;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist > 1e-10) {
+            const scale = taperOffset / dist;
+            topPoint = { x: point.x + dx * scale, y: point.y + dy * scale };
+          } else {
+            topPoint = { x: point.x, y: point.y };
+          }
+        }
+        const topBase = this.sketchToWorld(topPoint, plane);
         const top3D = {
-          x: bottom3D.x + extrusionVector.x,
-          y: bottom3D.y + extrusionVector.y,
-          z: bottom3D.z + extrusionVector.z,
+          x: topBase.x + extrusionVector.x,
+          y: topBase.y + extrusionVector.y,
+          z: topBase.z + extrusionVector.z,
         };
         topVertices.push(top3D);
         geometry.vertices.push(top3D);
@@ -259,7 +290,9 @@ export class ExtrudeFeature extends Feature {
           if (!f.shared) f.shared = { sourceFeatureId: this.id };
         }
         // Compute feature edges and face groups for the initial geometry
-        geometry.edges = computeFeatureEdges(geometry.faces);
+        const edgeResult = computeFeatureEdges(geometry.faces);
+        geometry.edges = edgeResult.edges;
+        geometry.visualEdges = edgeResult.visualEdges;
       }
       return { geometry };
     }
@@ -347,6 +380,10 @@ export class ExtrudeFeature extends Feature {
       direction: this.direction,
       symmetric: this.symmetric,
       operation: this.operation,
+      extrudeType: this.extrudeType,
+      taper: this.taper,
+      taperAngle: this.taperAngle,
+      taperInward: this.taperInward,
     };
   }
 
@@ -367,6 +404,10 @@ export class ExtrudeFeature extends Feature {
     feature.direction = data.direction || 1;
     feature.symmetric = data.symmetric || false;
     feature.operation = data.operation || 'new';
+    feature.extrudeType = data.extrudeType || 'distance';
+    feature.taper = data.taper || false;
+    feature.taperAngle = data.taperAngle != null ? data.taperAngle : 5;
+    feature.taperInward = data.taperInward != null ? data.taperInward : true;
     
     return feature;
   }
