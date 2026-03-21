@@ -725,9 +725,11 @@ export function computeFeatureEdges(faces) {
     }
   }
 
+  // Keep raw (unmerged) edges for face-matching in chamfer/fillet
+  const rawEdges = edges.map(e => ({ ...e }));
   edges = _mergeColinearEdges(edges);
 
-  return { edges, visualEdges };
+  return { edges, rawEdges, visualEdges };
 }
 
 /**
@@ -1072,8 +1074,11 @@ function _computeOffsetDirs(face0, face1, edgeA, edgeB) {
 
 /**
  * Find the two faces sharing a given edge key. Returns array of {fi, a, b}.
+ * Falls back to fuzzy direction+proximity matching when a previous chamfer/fillet
+ * has displaced shared vertices so the stored key no longer exactly matches.
  */
 function _findAdjacentFaces(faces, edgeKey) {
+  // --- exact match ---
   const adj = [];
   for (let fi = 0; fi < faces.length; fi++) {
     const verts = faces[fi].vertices;
@@ -1086,7 +1091,49 @@ function _findAdjacentFaces(faces, edgeKey) {
     }
     if (adj.length >= 2) break;
   }
-  return adj;
+  if (adj.length >= 2) return adj;
+
+  // --- fuzzy fallback ---
+  const sep = edgeKey.indexOf('|');
+  if (sep < 0) return adj;
+  const parseV = (s) => { const c = s.split(',').map(Number); return { x: c[0], y: c[1], z: c[2] }; };
+  const origA = parseV(edgeKey.slice(0, sep));
+  const origB = parseV(edgeKey.slice(sep + 1));
+  const origDelta = _vec3Sub(origB, origA);
+  const origLen = _vec3Len(origDelta);
+  if (origLen < 1e-10) return adj;
+  const origDir = _vec3Normalize(origDelta);
+  const origMid = { x: (origA.x + origB.x) / 2, y: (origA.y + origB.y) / 2, z: (origA.z + origB.z) / 2 };
+  const maxMidDist = origLen * 0.4;
+
+  const candidates = [];
+  for (let fi = 0; fi < faces.length; fi++) {
+    const verts = faces[fi].vertices;
+    for (let i = 0; i < verts.length; i++) {
+      const a = verts[i], b = verts[(i + 1) % verts.length];
+      const d = _vec3Sub(b, a);
+      const len = _vec3Len(d);
+      if (len < 1e-10) continue;
+      if (Math.abs(_vec3Dot(_vec3Normalize(d), origDir)) < 0.95) continue;
+      const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, z: (a.z + b.z) / 2 };
+      const midDist = _vec3Len(_vec3Sub(mid, origMid));
+      if (midDist > maxMidDist) continue;
+      const lenRatio = len / origLen;
+      if (lenRatio < 0.3 || lenRatio > 1.5) continue;
+      candidates.push({ fi, a, b, score: midDist });
+    }
+  }
+
+  candidates.sort((x, y) => x.score - y.score);
+  const fuzzy = [];
+  const seen = new Set();
+  for (const c of candidates) {
+    if (seen.has(c.fi)) continue;
+    fuzzy.push({ fi: c.fi, a: c.a, b: c.b });
+    seen.add(c.fi);
+    if (fuzzy.length >= 2) break;
+  }
+  return fuzzy.length >= 2 ? fuzzy : adj;
 }
 
 // -----------------------------------------------------------------------

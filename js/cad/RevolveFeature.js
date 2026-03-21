@@ -59,9 +59,13 @@ export class RevolveFeature extends Feature {
     
     // Process each profile individually so multi-body sketches each get
     // a proper boolean operation against the accumulating solid.
-    for (const profile of profiles) {
-      const bodyGeom = this.generateGeometry([profile], plane);
-      solid = this.applyOperation(solid, bodyGeom);
+    for (let pi = 0; pi < profiles.length; pi++) {
+      const bodyGeom = this.generateGeometry([profiles[pi]], plane);
+      if (pi === 0) {
+        solid = this.applyOperation(solid, bodyGeom);
+      } else {
+        solid = this._unionBody(solid, bodyGeom);
+      }
     }
 
     const finalGeometry = solid.geometry;
@@ -299,6 +303,27 @@ export class RevolveFeature extends Feature {
     } catch (err) {
       console.warn(`Boolean operation '${this.operation}' failed:`, err.message);
       // Preserve the previous solid rather than replacing it with the new geometry
+      return solid;
+    }
+  }
+
+  /**
+   * Union a new body into an existing solid (used for multi-profile merging).
+   */
+  _unionBody(solid, geometry) {
+    if (!solid || !solid.geometry) {
+      if (geometry && geometry.faces) {
+        const edgeResult = computeFeatureEdges(geometry.faces);
+        geometry.edges = edgeResult.edges;
+        geometry.visualEdges = edgeResult.visualEdges;
+      }
+      return { geometry };
+    }
+    try {
+      const resultGeom = booleanOp(solid.geometry, geometry, 'union');
+      return { geometry: resultGeom };
+    } catch (err) {
+      console.warn('Multi-profile union failed:', err.message);
       return solid;
     }
   }

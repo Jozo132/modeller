@@ -59,9 +59,16 @@ export class ExtrudeFeature extends Feature {
     // Generate geometry per-profile and apply each body individually.
     // This ensures multi-body sketches (e.g. two separate rectangles)
     // each get a proper boolean operation against the accumulating solid.
-    for (const profile of profiles) {
-      const bodyGeom = this.generateGeometry([profile], plane);
-      solid = this.applyOperation(solid, bodyGeom);
+    for (let pi = 0; pi < profiles.length; pi++) {
+      const bodyGeom = this.generateGeometry([profiles[pi]], plane);
+      if (pi === 0) {
+        // First profile: use the feature's configured operation
+        solid = this.applyOperation(solid, bodyGeom);
+      } else {
+        // Subsequent profiles: always union into the accumulating solid
+        // so all bodies from the same sketch end up in one solid
+        solid = this._unionBody(solid, bodyGeom);
+      }
     }
 
     // Use the result geometry
@@ -74,6 +81,31 @@ export class ExtrudeFeature extends Feature {
       volume: this.calculateVolume(finalGeometry),
       boundingBox: this.calculateBoundingBox(finalGeometry),
     };
+  }
+
+  /**
+   * Union a new body into an existing solid (used for multi-profile merging).
+   */
+  _unionBody(solid, geometry) {
+    if (!solid || !solid.geometry) {
+      if (geometry && geometry.faces) {
+        for (const f of geometry.faces) {
+          if (!f.shared) f.shared = { sourceFeatureId: this.id };
+        }
+        const edgeResult = computeFeatureEdges(geometry.faces);
+        geometry.edges = edgeResult.edges;
+        geometry.visualEdges = edgeResult.visualEdges;
+      }
+      return { geometry };
+    }
+    try {
+      const resultGeom = booleanOp(solid.geometry, geometry, 'union',
+        null, { sourceFeatureId: this.id });
+      return { geometry: resultGeom };
+    } catch (err) {
+      console.warn('Multi-profile union failed:', err.message);
+      return solid;
+    }
   }
 
   /**
