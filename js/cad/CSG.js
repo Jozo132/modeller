@@ -682,7 +682,7 @@ export function computeFeatureEdges(faces) {
   // Also build visual edges: tessellation edges on curved surfaces (non-selectable wireframe)
   const SHARP_THRESHOLD = Math.cos(15 * Math.PI / 180); // ~0.966
   const COPLANAR_THRESHOLD = 1 - 1e-6;
-  const edges = [];
+  let edges = [];
   const visualEdges = [];
   for (const [key, info] of edgeNormals) {
     if (info.normals.length === 1) {
