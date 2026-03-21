@@ -688,7 +688,11 @@ export function computeFeatureEdges(faces) {
     if (info.normals.length === 1) {
       // Boundary edge — only suppress if it's a confirmed T-junction
       if (!tJunctionEdgeKeys.has(key)) {
-        edges.push({ start: info.start, end: info.end });
+        edges.push({
+          start: info.start, end: info.end,
+          faceIndices: info.faceIndices,
+          normals: info.normals,
+        });
       }
     } else if (info.normals.length >= 2) {
       // Check if any pair of adjacent normals differs significantly
@@ -705,7 +709,11 @@ export function computeFeatureEdges(faces) {
         }
       }
       if (isFeature) {
-        edges.push({ start: info.start, end: info.end });
+        edges.push({
+          start: info.start, end: info.end,
+          faceIndices: info.faceIndices,
+          normals: info.normals,
+        });
       } else if (minDot < COPLANAR_THRESHOLD) {
         // Normals differ but not enough for a feature edge — curved surface tessellation edge
         // Only include if faces are in different coplanar groups
@@ -805,4 +813,317 @@ export function calculateBoundingBox(geometry) {
     return { min: { x: 0, y: 0, z: 0 }, max: { x: 0, y: 0, z: 0 } };
   }
   return { min: { x: minX, y: minY, z: minZ }, max: { x: maxX, y: maxY, z: maxZ } };
+}
+
+// -----------------------------------------------------------------------
+// Edge key helpers for chamfer/fillet
+// -----------------------------------------------------------------------
+
+const EDGE_PREC = 5;
+function _edgeVKey(v) {
+  return `${v.x.toFixed(EDGE_PREC)},${v.y.toFixed(EDGE_PREC)},${v.z.toFixed(EDGE_PREC)}`;
+}
+function _edgeKeyFromVerts(a, b) {
+  const ka = _edgeVKey(a), kb = _edgeVKey(b);
+  return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+}
+
+function _vec3Sub(a, b) { return { x: a.x - b.x, y: a.y - b.y, z: a.z - b.z }; }
+function _vec3Add(a, b) { return { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z }; }
+function _vec3Scale(v, s) { return { x: v.x * s, y: v.y * s, z: v.z * s }; }
+function _vec3Dot(a, b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+function _vec3Cross(a, b) {
+  return { x: a.y * b.z - a.z * b.y, y: a.z * b.x - a.x * b.z, z: a.x * b.y - a.y * b.x };
+}
+function _vec3Len(v) { return Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z); }
+function _vec3Normalize(v) {
+  const len = _vec3Len(v);
+  if (len < 1e-10) return { x: 0, y: 0, z: 0 };
+  return { x: v.x / len, y: v.y / len, z: v.z / len };
+}
+function _vec3Lerp(a, b, t) {
+  return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, z: a.z + (b.z - a.z) * t };
+}
+
+/**
+ * Find the two face normals adjacent to an edge in a geometry.
+ * Returns { n0, n1 } or null if edge not found.
+ */
+function _findEdgeNormals(faces, edgeKey) {
+  const normals = [];
+  for (const face of faces) {
+    const verts = face.vertices;
+    for (let i = 0; i < verts.length; i++) {
+      const a = verts[i], b = verts[(i + 1) % verts.length];
+      if (_edgeKeyFromVerts(a, b) === edgeKey) {
+        normals.push(face.normal);
+        break;
+      }
+    }
+    if (normals.length >= 2) break;
+  }
+  return normals.length >= 2 ? { n0: normals[0], n1: normals[1] } : null;
+}
+
+// -----------------------------------------------------------------------
+// Chamfer geometry operation
+// -----------------------------------------------------------------------
+
+/**
+ * Apply chamfer to specified edges of a geometry.
+ * Each edge is replaced by a flat bevel face. Adjacent faces are trimmed.
+ * @param {Object} geometry - {vertices, faces, edges}
+ * @param {string[]} edgeKeys - Array of edge keys (from _edgeKeyFromVerts)
+ * @param {number} distance - Chamfer distance
+ * @returns {Object} New geometry with chamfered edges
+ */
+export function applyChamfer(geometry, edgeKeys, distance) {
+  if (!geometry || !geometry.faces || edgeKeys.length === 0 || distance <= 0) {
+    return geometry;
+  }
+
+  const edgeKeySet = new Set(edgeKeys);
+  let faces = geometry.faces.map(f => ({
+    vertices: f.vertices.map(v => ({ ...v })),
+    normal: { ...f.normal },
+    shared: f.shared ? { ...f.shared } : null,
+  }));
+
+  // For each edge to chamfer, split the adjacent faces and insert a bevel face.
+  for (const ek of edgeKeySet) {
+    const result = _chamferOneEdge(faces, ek, distance);
+    if (result) faces = result;
+  }
+
+  const newGeom = { vertices: [], faces };
+  const edgeResult = computeFeatureEdges(faces);
+  newGeom.edges = edgeResult.edges;
+  newGeom.visualEdges = edgeResult.visualEdges;
+  return newGeom;
+}
+
+function _chamferOneEdge(faces, edgeKey, dist) {
+  // Find the two faces sharing this edge
+  const adj = [];
+  for (let fi = 0; fi < faces.length; fi++) {
+    const verts = faces[fi].vertices;
+    for (let i = 0; i < verts.length; i++) {
+      const a = verts[i], b = verts[(i + 1) % verts.length];
+      if (_edgeKeyFromVerts(a, b) === edgeKey) {
+        adj.push({ fi, edgeStart: i, a, b });
+        break;
+      }
+    }
+    if (adj.length >= 2) break;
+  }
+  if (adj.length < 2) return null;
+
+  const face0 = faces[adj[0].fi];
+  const face1 = faces[adj[1].fi];
+  const n0 = _vec3Normalize(face0.normal);
+  const n1 = _vec3Normalize(face1.normal);
+
+  // For each endpoint of the edge, compute the offset points on each face
+  const edgeA = adj[0].a;
+  const edgeB = adj[0].b;
+
+  // Direction to offset along each face (away from the edge into the face)
+  // The offset direction on face0 is: normalize(n1 - dot(n1,n0)*n0) — pushes along face0 surface away from edge
+  const edgeDir = _vec3Normalize(_vec3Sub(edgeB, edgeA));
+
+  // Offset direction on face0: perpendicular to edge, lying on face0 plane, pointing into face0
+  const offsDir0 = _vec3Normalize(_vec3Cross(n0, edgeDir));
+  const offsDir1 = _vec3Normalize(_vec3Cross(edgeDir, n1));
+
+  // Check offset directions point into the correct faces (away from the edge)
+  // If the face centroid is on the wrong side, flip
+  const cen0 = _faceCentroid(face0);
+  if (_vec3Dot(offsDir0, _vec3Sub(cen0, edgeA)) < 0) {
+    offsDir0.x = -offsDir0.x; offsDir0.y = -offsDir0.y; offsDir0.z = -offsDir0.z;
+  }
+  const cen1 = _faceCentroid(face1);
+  if (_vec3Dot(offsDir1, _vec3Sub(cen1, edgeA)) < 0) {
+    offsDir1.x = -offsDir1.x; offsDir1.y = -offsDir1.y; offsDir1.z = -offsDir1.z;
+  }
+
+  // Chamfer points: offset each edge endpoint along each face
+  const p0a = _vec3Add(edgeA, _vec3Scale(offsDir0, dist)); // on face0 at vertex A
+  const p0b = _vec3Add(edgeB, _vec3Scale(offsDir0, dist)); // on face0 at vertex B
+  const p1a = _vec3Add(edgeA, _vec3Scale(offsDir1, dist)); // on face1 at vertex A
+  const p1b = _vec3Add(edgeB, _vec3Scale(offsDir1, dist)); // on face1 at vertex B
+
+  // Create the chamfer (bevel) face — a quad connecting the four offset points
+  const chamferNormal = _vec3Normalize(_vec3Cross(
+    _vec3Sub(p0b, p0a), _vec3Sub(p1a, p0a)
+  ));
+  const chamferFace = {
+    vertices: [p0a, p0b, p1b, p1a],
+    normal: chamferNormal,
+    shared: face0.shared ? { ...face0.shared } : null,
+  };
+
+  // Trim original faces — replace the edge vertices with offset points
+  _trimFaceEdge(face0, edgeA, edgeB, p0a, p0b);
+  _trimFaceEdge(face1, edgeA, edgeB, p1a, p1b);
+
+  faces.push(chamferFace);
+  return faces;
+}
+
+function _faceCentroid(face) {
+  let cx = 0, cy = 0, cz = 0;
+  for (const v of face.vertices) { cx += v.x; cy += v.y; cz += v.z; }
+  const n = face.vertices.length;
+  return { x: cx / n, y: cy / n, z: cz / n };
+}
+
+function _trimFaceEdge(face, edgeA, edgeB, newA, newB) {
+  const verts = face.vertices;
+  const keyA = _edgeVKey(edgeA);
+  const keyB = _edgeVKey(edgeB);
+  const newVerts = [];
+  for (let i = 0; i < verts.length; i++) {
+    const vk = _edgeVKey(verts[i]);
+    if (vk === keyA) {
+      newVerts.push({ ...newA });
+    } else if (vk === keyB) {
+      newVerts.push({ ...newB });
+    } else {
+      newVerts.push(verts[i]);
+    }
+  }
+  face.vertices = newVerts;
+}
+
+// -----------------------------------------------------------------------
+// Fillet geometry operation
+// -----------------------------------------------------------------------
+
+/**
+ * Apply fillet to specified edges of a geometry.
+ * Each edge is replaced by a strip of faces approximating a circular arc.
+ * @param {Object} geometry - {vertices, faces, edges}
+ * @param {string[]} edgeKeys - Array of edge keys (from _edgeKeyFromVerts)
+ * @param {number} radius - Fillet radius
+ * @param {number} segments - Number of arc segments for tessellation
+ * @returns {Object} New geometry with filleted edges
+ */
+export function applyFillet(geometry, edgeKeys, radius, segments = 8) {
+  if (!geometry || !geometry.faces || edgeKeys.length === 0 || radius <= 0) {
+    return geometry;
+  }
+
+  const edgeKeySet = new Set(edgeKeys);
+  let faces = geometry.faces.map(f => ({
+    vertices: f.vertices.map(v => ({ ...v })),
+    normal: { ...f.normal },
+    shared: f.shared ? { ...f.shared } : null,
+  }));
+
+  for (const ek of edgeKeySet) {
+    const result = _filletOneEdge(faces, ek, radius, segments);
+    if (result) faces = result;
+  }
+
+  const newGeom = { vertices: [], faces };
+  const edgeResult = computeFeatureEdges(faces);
+  newGeom.edges = edgeResult.edges;
+  newGeom.visualEdges = edgeResult.visualEdges;
+  return newGeom;
+}
+
+function _filletOneEdge(faces, edgeKey, radius, segments) {
+  // Find the two faces sharing this edge
+  const adj = [];
+  for (let fi = 0; fi < faces.length; fi++) {
+    const verts = faces[fi].vertices;
+    for (let i = 0; i < verts.length; i++) {
+      const a = verts[i], b = verts[(i + 1) % verts.length];
+      if (_edgeKeyFromVerts(a, b) === edgeKey) {
+        adj.push({ fi, a, b });
+        break;
+      }
+    }
+    if (adj.length >= 2) break;
+  }
+  if (adj.length < 2) return null;
+
+  const face0 = faces[adj[0].fi];
+  const face1 = faces[adj[1].fi];
+  const n0 = _vec3Normalize(face0.normal);
+  const n1 = _vec3Normalize(face1.normal);
+
+  const edgeA = adj[0].a;
+  const edgeB = adj[0].b;
+  const edgeDir = _vec3Normalize(_vec3Sub(edgeB, edgeA));
+
+  // Offset direction on each face (perpendicular to edge in face plane, pointing inward)
+  const offsDir0 = _vec3Normalize(_vec3Cross(n0, edgeDir));
+  const offsDir1 = _vec3Normalize(_vec3Cross(edgeDir, n1));
+
+  const cen0 = _faceCentroid(face0);
+  if (_vec3Dot(offsDir0, _vec3Sub(cen0, edgeA)) < 0) {
+    offsDir0.x = -offsDir0.x; offsDir0.y = -offsDir0.y; offsDir0.z = -offsDir0.z;
+  }
+  const cen1 = _faceCentroid(face1);
+  if (_vec3Dot(offsDir1, _vec3Sub(cen1, edgeA)) < 0) {
+    offsDir1.x = -offsDir1.x; offsDir1.y = -offsDir1.y; offsDir1.z = -offsDir1.z;
+  }
+
+  // Compute the angle between the two faces (exterior angle)
+  const dotN = _vec3Dot(n0, n1);
+  const halfAngle = Math.acos(Math.max(-1, Math.min(1, dotN))) / 2;
+  if (halfAngle < 1e-6) return null; // Faces are nearly coplanar
+
+  // Offset distance along face surface = radius * tan(halfAngle) for a true rolling ball
+  // For simplicity, use radius directly as the tangent distance
+  const tangentDist = radius;
+
+  // Trim points on each face
+  const p0a = _vec3Add(edgeA, _vec3Scale(offsDir0, tangentDist));
+  const p0b = _vec3Add(edgeB, _vec3Scale(offsDir0, tangentDist));
+  const p1a = _vec3Add(edgeA, _vec3Scale(offsDir1, tangentDist));
+  const p1b = _vec3Add(edgeB, _vec3Scale(offsDir1, tangentDist));
+
+  // Generate arc strip faces along the edge
+  // At each edge endpoint, generate arc points from face0 offset to face1 offset
+  const arcPointsA = [];
+  const arcPointsB = [];
+  for (let s = 0; s <= segments; s++) {
+    const t = s / segments;
+    // Spherical interpolation between the two offset directions
+    const dir = _vec3Normalize(_vec3Lerp(offsDir0, offsDir1, t));
+    arcPointsA.push(_vec3Add(edgeA, _vec3Scale(dir, tangentDist)));
+    arcPointsB.push(_vec3Add(edgeB, _vec3Scale(dir, tangentDist)));
+  }
+
+  // Create quad strip faces
+  const shared = face0.shared ? { ...face0.shared } : null;
+  for (let s = 0; s < segments; s++) {
+    const qa = arcPointsA[s];
+    const qb = arcPointsB[s];
+    const qc = arcPointsB[s + 1];
+    const qd = arcPointsA[s + 1];
+    const faceNormal = _vec3Normalize(_vec3Cross(
+      _vec3Sub(qb, qa), _vec3Sub(qd, qa)
+    ));
+    faces.push({
+      vertices: [qa, qb, qc, qd],
+      normal: faceNormal,
+      shared,
+    });
+  }
+
+  // Trim original faces
+  _trimFaceEdge(face0, edgeA, edgeB, p0a, p0b);
+  _trimFaceEdge(face1, edgeA, edgeB, p1a, p1b);
+
+  return faces;
+}
+
+/**
+ * Make an edge key from two vertex positions (for persistent edge identity).
+ */
+export function makeEdgeKey(a, b) {
+  return _edgeKeyFromVerts(a, b);
 }

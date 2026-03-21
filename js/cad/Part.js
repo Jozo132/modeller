@@ -12,6 +12,8 @@ import { SketchFeature } from './SketchFeature.js';
 import { ExtrudeFeature } from './ExtrudeFeature.js';
 import { ExtrudeCutFeature } from './ExtrudeCutFeature.js';
 import { RevolveFeature } from './RevolveFeature.js';
+import { ChamferFeature } from './ChamferFeature.js';
+import { FilletFeature } from './FilletFeature.js';
 
 /**
  * Part represents a 3D solid part built from 2D sketches and 3D operations.
@@ -377,29 +379,39 @@ export class Part {
   }
 
   /**
-   * Add a fillet to an edge (placeholder for future implementation).
-   * @param {Object} edge - The edge to fillet
+   * Add a fillet to selected edges.
+   * @param {string[]} edgeKeys - Edge keys identifying the edges to fillet
    * @param {number} radius - The fillet radius
-   * @returns {Object} Feature object (stub)
+   * @param {Object} options - Additional options (segments)
+   * @returns {FilletFeature} The created fillet feature
    */
-  fillet(edge, radius) {
+  fillet(edgeKeys, radius, options = {}) {
     this.modified = new Date();
-    console.warn('Part.fillet() is not yet fully implemented');
-    // Future: Create FilletFeature and add to tree
-    return { type: 'fillet', edge, radius };
+
+    const feature = new FilletFeature(this._nextTypeName('fillet', 'Fillet'), radius);
+    feature.setEdgeKeys(edgeKeys);
+    if (options.segments) feature.setSegments(options.segments);
+
+    this.featureTree.addFeature(feature);
+    this._checkAutoHidePlanes();
+    return feature;
   }
 
   /**
-   * Add a chamfer to an edge (placeholder for future implementation).
-   * @param {Object} edge - The edge to chamfer
+   * Add a chamfer to selected edges.
+   * @param {string[]} edgeKeys - Edge keys identifying the edges to chamfer
    * @param {number} distance - The chamfer distance
-   * @returns {Object} Feature object (stub)
+   * @returns {ChamferFeature} The created chamfer feature
    */
-  chamfer(edge, distance) {
+  chamfer(edgeKeys, distance) {
     this.modified = new Date();
-    console.warn('Part.chamfer() is not yet fully implemented');
-    // Future: Create ChamferFeature and add to tree
-    return { type: 'chamfer', edge, distance };
+
+    const feature = new ChamferFeature(this._nextTypeName('chamfer', 'Chamfer'), distance);
+    feature.setEdgeKeys(edgeKeys);
+
+    this.featureTree.addFeature(feature);
+    this._checkAutoHidePlanes();
+    return feature;
   }
 
   // -----------------------------------------------------------------------
@@ -537,6 +549,10 @@ export class Part {
             return ExtrudeCutFeature.deserialize(featureData);
           case 'revolve':
             return RevolveFeature.deserialize(featureData);
+          case 'chamfer':
+            return ChamferFeature.deserialize(featureData);
+          case 'fillet':
+            return FilletFeature.deserialize(featureData);
           default:
             console.warn(`Unknown feature type: ${featureData.type}`);
             return null;

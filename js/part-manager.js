@@ -127,6 +127,22 @@ export class PartManager {
     return feature;
   }
 
+  chamfer(edgeKeys, distance) {
+    if (!this.part) return null;
+    const feature = this.part.chamfer(edgeKeys, distance);
+    this.activeFeature = feature;
+    this.notifyListeners();
+    return feature;
+  }
+
+  fillet(edgeKeys, radius, options = {}) {
+    if (!this.part) return null;
+    const feature = this.part.fillet(edgeKeys, radius, options);
+    this.activeFeature = feature;
+    this.notifyListeners();
+    return feature;
+  }
+
   /**
    * Modify a feature's parameters
    * @param {string} featureId - Feature ID

@@ -114,6 +114,11 @@ export class WasmRenderer {
     // Selected face in 3D mode
     this._selectedFaceIndex = -1;
 
+    // Edge selection for chamfer/fillet
+    this._meshEdgeSegments = null; // Array of {start, end, faceIndices, normals} from CSG
+    this._selectedEdgeIndices = new Set(); // indices into _meshEdgeSegments
+    this._edgeSelectionMode = false; // true when picking edges for chamfer/fillet
+
     // Sketch plane reference (set when in sketch-on-plane mode)
     this._sketchPlane = null; // 'XY', 'XZ', 'YZ', or null
     this._originPlaneVisibilityMask = 0b111;
@@ -623,6 +628,104 @@ export class WasmRenderer {
       }
     }
     return null;
+  }
+
+  /**
+   * Pick the closest edge at screen coordinates.
+   * Uses ray-line closest distance with screen-space pixel threshold.
+   * @param {number} screenX
+   * @param {number} screenY
+   * @returns {{edgeIndex: number, edge: Object, point: {x,y,z}}|null}
+   */
+  pickEdge(screenX, screenY) {
+    if (!this._meshEdgeSegments || this._meshEdgeSegments.length === 0) return null;
+
+    const mvp = this._computeMVP();
+    if (!mvp) return null;
+    const invMVP = this._mat4Invert(mvp);
+    if (!invMVP) return null;
+
+    const rect = this.canvas.getBoundingClientRect();
+    const ndcX = ((screenX - rect.left) / rect.width) * 2 - 1;
+    const ndcY = -((screenY - rect.top) / rect.height) * 2 + 1;
+
+    const nearW = this._mat4TransformVec4(invMVP, ndcX, ndcY, -1, 1);
+    const farW = this._mat4TransformVec4(invMVP, ndcX, ndcY, 1, 1);
+    if (Math.abs(nearW.w) < 1e-10 || Math.abs(farW.w) < 1e-10) return null;
+
+    const origin = { x: nearW.x / nearW.w, y: nearW.y / nearW.w, z: nearW.z / nearW.w };
+    const farPt = { x: farW.x / farW.w, y: farW.y / farW.w, z: farW.z / farW.w };
+    const dir = {
+      x: farPt.x - origin.x,
+      y: farPt.y - origin.y,
+      z: farPt.z - origin.z,
+    };
+    const dirLen = Math.sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+    if (dirLen < 1e-10) return null;
+    dir.x /= dirLen; dir.y /= dirLen; dir.z /= dirLen;
+
+    const pixelThreshold = 12;
+    let closestDist = Infinity;
+    let closestIdx = -1;
+    let closestWorldPt = null;
+
+    for (let i = 0; i < this._meshEdgeSegments.length; i++) {
+      const seg = this._meshEdgeSegments[i];
+      const result = this._rayLineClosest(origin, dir, seg.start, seg.end);
+      if (result.dist < closestDist) {
+        closestDist = result.dist;
+        closestIdx = i;
+        closestWorldPt = result.point;
+      }
+    }
+
+    if (closestIdx >= 0 && closestWorldPt) {
+      const projected = this._mat4TransformVec4(mvp, closestWorldPt.x, closestWorldPt.y, closestWorldPt.z, 1);
+      if (Math.abs(projected.w) > 1e-10) {
+        const pNdcX = projected.x / projected.w;
+        const pNdcY = projected.y / projected.w;
+        const screenDistX = ((pNdcX - ndcX) / 2) * rect.width;
+        const screenDistY = ((pNdcY - ndcY) / 2) * rect.height;
+        const screenDist = Math.sqrt(screenDistX * screenDistX + screenDistY * screenDistY);
+        if (screenDist < pixelThreshold) {
+          return {
+            edgeIndex: closestIdx,
+            edge: this._meshEdgeSegments[closestIdx],
+            point: closestWorldPt,
+          };
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Toggle edge selection. Returns the current set of selected edge indices.
+   */
+  toggleEdgeSelection(edgeIndex) {
+    if (this._selectedEdgeIndices.has(edgeIndex)) {
+      this._selectedEdgeIndices.delete(edgeIndex);
+    } else {
+      this._selectedEdgeIndices.add(edgeIndex);
+    }
+    return this._selectedEdgeIndices;
+  }
+
+  /** Clear all selected edges. */
+  clearEdgeSelection() {
+    this._selectedEdgeIndices.clear();
+  }
+
+  /** Get selected edge metadata array. */
+  getSelectedEdges() {
+    if (!this._meshEdgeSegments) return [];
+    return [...this._selectedEdgeIndices].map(i => this._meshEdgeSegments[i]).filter(Boolean);
+  }
+
+  /** Set edge selection mode. */
+  setEdgeSelectionMode(enabled) {
+    this._edgeSelectionMode = enabled;
+    if (!enabled) this.clearEdgeSelection();
   }
 
   /**
@@ -1815,6 +1918,14 @@ export class WasmRenderer {
       this._meshEdges = edgeData;
       this._meshEdgeVertexCount = geometry.edges.length * 2;
 
+      // Store per-edge metadata for picking and chamfer/fillet
+      this._meshEdgeSegments = geometry.edges.map(e => ({
+        start: e.start,
+        end: e.end,
+        faceIndices: e.faceIndices || [],
+        normals: e.normals || [],
+      }));
+
       // Build silhouette candidates from face data for view-dependent outline edges
       this._meshSilhouetteCandidates = this._buildSilhouetteCandidates(faces);
     } else {
@@ -2344,6 +2455,32 @@ export class WasmRenderer {
         gl.bindVertexArray(null);
       }
 
+      // Draw selected edge highlights (bright cyan)
+      if (this._selectedEdgeIndices.size > 0 && this._meshEdgeSegments) {
+        const selEdgeVerts = [];
+        for (const idx of this._selectedEdgeIndices) {
+          const seg = this._meshEdgeSegments[idx];
+          if (!seg) continue;
+          selEdgeVerts.push(seg.start.x, seg.start.y, seg.start.z);
+          selEdgeVerts.push(seg.end.x, seg.end.y, seg.end.z);
+        }
+        if (selEdgeVerts.length > 0) {
+          const selEdgeData = new Float32Array(selEdgeVerts);
+          gl.useProgram(exec.programs[1]);
+          gl.uniformMatrix4fv(exec.uniforms[1].uMVP, false, mvp);
+          gl.uniform4f(exec.uniforms[1].uColor, 0.0, 0.8, 1.0, 1.0);
+          gl.lineWidth(1.0);
+          gl.disable(gl.DEPTH_TEST);
+
+          gl.bindVertexArray(exec.vaoLine);
+          gl.bindBuffer(gl.ARRAY_BUFFER, exec.vbo);
+          gl.bufferData(gl.ARRAY_BUFFER, selEdgeData, gl.DYNAMIC_DRAW);
+          gl.drawArrays(gl.LINES, 0, selEdgeVerts.length / 3);
+          gl.bindVertexArray(null);
+          gl.enable(gl.DEPTH_TEST);
+        }
+      }
+
       // Draw silhouette edges (view-dependent outline on curved surfaces)
       if (this._meshSilhouetteCandidates) {
         const silData = this._computeSilhouetteEdges(this._meshSilhouetteCandidates);
@@ -2666,6 +2803,8 @@ export class WasmRenderer {
     this._activeSceneEdges = null;
     this._activeSceneEdgeVertexCount = 0;
     this._selectedFaceIndex = -1;
+    this._meshEdgeSegments = null;
+    this._selectedEdgeIndices.clear();
   }
 
   /**

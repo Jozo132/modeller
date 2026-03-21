@@ -47,6 +47,8 @@ class App {
     this._editingSketchFeatureId = null; // ID of sketch being edited (null = creating new)
     this._recorder = new InteractionRecorder(); // interaction recorder for workflow debugging
     this._extrudeMode = null; // active extrude mode state {isCut, sketchFeatureId, distance, direction, symmetric, operation}
+    this._chamferMode = null; // active chamfer mode state {edgeKeys[], distance, editingFeatureId}
+    this._filletMode = null;  // active fillet mode state {edgeKeys[], radius, segments, editingFeatureId}
     this._draggingExtrudeHandle = false;
     this._extrudeHandleInfo = null; // {origin, tip, dir} for drag handle
     this._extrudeArrowHoveredState = false;
@@ -1043,6 +1045,19 @@ class App {
 
       // In Part mode 3D view: handle sketch/face/geometry picking and plane clicking
       if (this._workspaceMode === 'part' && this._renderer3d) {
+        // Edge picking for chamfer/fillet mode
+        if ((this._chamferMode || this._filletMode) && this._renderer3d._edgeSelectionMode) {
+          const edgeHit = this._renderer3d.pickEdge(e.clientX, e.clientY);
+          if (edgeHit) {
+            this._renderer3d.toggleEdgeSelection(edgeHit.edgeIndex);
+            this._onEdgeSelectionChanged();
+            this._scheduleRender();
+          }
+          this._updateNodeTree();
+          this._updateOperationButtons();
+          return;
+        }
+
         // Try sketch picking first (wireframes are visually on top)
         const sketchHit = this._renderer3d.pickSketch(e.clientX, e.clientY);
         if (sketchHit) {
@@ -2153,8 +2168,8 @@ class App {
   _showLeftFeatureParams(feature) {
     const container = document.getElementById('left-feature-params-content');
     if (!container) return;
-    // Don't overwrite UI when in extrude mode
-    if (this._extrudeMode) return;
+    // Don't overwrite UI when in extrude/chamfer/fillet mode
+    if (this._extrudeMode || this._chamferMode || this._filletMode) return;
     if (!feature) {
       this._showSelectionSummary(container);
       return;
@@ -2198,6 +2213,37 @@ class App {
         <p><strong>Points:</strong> ${feature.sketch ? feature.sketch.points.length : 0}</p>
       `;
       container.appendChild(info);
+    } else if (feature.type === 'chamfer') {
+      container.appendChild(this._createParamRow('Distance', 'number', feature.distance, (v) => {
+        const parsed = parseFloat(v);
+        if (!isNaN(parsed) && parsed > 0) {
+          this._partManager.modifyFeature(feature.id, (f) => { f.distance = parsed; });
+          this._update3DView();
+        }
+      }));
+      const edgeRow = document.createElement('div');
+      edgeRow.className = 'parameter-row';
+      edgeRow.innerHTML = `<label class="parameter-label">Edges</label><span class="parameter-value">${feature.edgeKeys.length}</span>`;
+      container.appendChild(edgeRow);
+    } else if (feature.type === 'fillet') {
+      container.appendChild(this._createParamRow('Radius', 'number', feature.radius, (v) => {
+        const parsed = parseFloat(v);
+        if (!isNaN(parsed) && parsed > 0) {
+          this._partManager.modifyFeature(feature.id, (f) => { f.radius = parsed; });
+          this._update3DView();
+        }
+      }));
+      container.appendChild(this._createParamRow('Segments', 'number', feature.segments, (v) => {
+        const parsed = parseInt(v, 10);
+        if (!isNaN(parsed) && parsed >= 2) {
+          this._partManager.modifyFeature(feature.id, (f) => { f.segments = parsed; });
+          this._update3DView();
+        }
+      }));
+      const edgeRow = document.createElement('div');
+      edgeRow.className = 'parameter-row';
+      edgeRow.innerHTML = `<label class="parameter-label">Edges</label><span class="parameter-value">${feature.edgeKeys.length}</span>`;
+      container.appendChild(edgeRow);
     }
 
     // Feature steps (children)
@@ -4068,6 +4114,22 @@ class App {
         this._revolveSketch(radians);
       }
     });
+
+    // Chamfer
+    const btnChamfer = document.getElementById('btn-chamfer');
+    if (btnChamfer) {
+      btnChamfer.addEventListener('click', () => {
+        this._startChamfer();
+      });
+    }
+
+    // Fillet
+    const btnFillet = document.getElementById('btn-fillet');
+    if (btnFillet) {
+      btnFillet.addEventListener('click', () => {
+        this._startFillet();
+      });
+    }
   }
 
   _addSketchToPart(planeName = 'XY') {
@@ -4800,15 +4862,25 @@ class App {
     const hasSketch = this._lastSketchFeatureId !== null;
     const hasEntities = state.entities.length > 0;
     const inExtrude = !!this._extrudeMode;
+    const inChamfer = !!this._chamferMode;
+    const inFillet = !!this._filletMode;
+    const busy = inExtrude || inChamfer || inFillet;
+    const hasSolid = this._partManager && this._partManager.getFeatures().some(
+      f => f.type === 'extrude' || f.type === 'extrude-cut' || f.type === 'revolve'
+    );
     
     const btnAddSketch = document.getElementById('btn-add-sketch');
-    if (btnAddSketch) btnAddSketch.disabled = !hasEntities || inExtrude;
+    if (btnAddSketch) btnAddSketch.disabled = !hasEntities || busy;
     const btnExtrude = document.getElementById('btn-extrude');
-    if (btnExtrude) btnExtrude.disabled = inExtrude;
+    if (btnExtrude) btnExtrude.disabled = busy;
     const btnRevolve = document.getElementById('btn-revolve');
-    if (btnRevolve) btnRevolve.disabled = !hasSketch || inExtrude;
+    if (btnRevolve) btnRevolve.disabled = !hasSketch || busy;
     const btnExtrudeCut = document.getElementById('btn-extrude-cut');
-    if (btnExtrudeCut) btnExtrudeCut.disabled = inExtrude;
+    if (btnExtrudeCut) btnExtrudeCut.disabled = busy;
+    const btnChamfer = document.getElementById('btn-chamfer');
+    if (btnChamfer) btnChamfer.disabled = !hasSolid || busy;
+    const btnFillet = document.getElementById('btn-fillet');
+    if (btnFillet) btnFillet.disabled = !hasSolid || busy;
   }
 
   // --- Quick-Start Page ---
@@ -6588,6 +6660,259 @@ class App {
     // Restore left panel to selection summary
     this._showLeftFeatureParams(null);
     this._scheduleRender();
+  }
+
+  // -----------------------------------------------------------------------
+  // Chamfer
+  // -----------------------------------------------------------------------
+
+  _startChamfer() {
+    if (this._workspaceMode !== 'part') {
+      this.setStatus('Chamfer is only available in Part workspace.');
+      return;
+    }
+    if (this._extrudeMode || this._chamferMode || this._filletMode) return;
+
+    this._chamferMode = {
+      edgeKeys: [],
+      distance: 1,
+      editingFeatureId: null,
+    };
+
+    if (this._renderer3d) {
+      this._renderer3d.setEdgeSelectionMode(true);
+      this._renderer3d.selectFace(-1);
+    }
+    this._selectedFace = null;
+
+    const btnChamfer = document.getElementById('btn-chamfer');
+    if (btnChamfer) btnChamfer.classList.add('active');
+
+    this._showChamferUI();
+    this._updateOperationButtons();
+    this.setStatus('Chamfer: Click edges to select, then adjust distance and accept.');
+  }
+
+  _showChamferUI() {
+    const container = document.getElementById('left-feature-params-content');
+    if (!container || !this._chamferMode) return;
+    container.innerHTML = '';
+
+    const cm = this._chamferMode;
+    const header = document.createElement('div');
+    header.className = 'parameter-row';
+    header.innerHTML = '<label class="parameter-label" style="font-weight:600">Chamfer</label>';
+    container.appendChild(header);
+
+    // Selected edges count
+    const edgeCount = this._renderer3d ? this._renderer3d._selectedEdgeIndices.size : 0;
+    const edgeRow = document.createElement('div');
+    edgeRow.className = 'parameter-row';
+    edgeRow.innerHTML = `<label class="parameter-label">Edges</label><span class="parameter-value">${edgeCount} selected</span>`;
+    container.appendChild(edgeRow);
+
+    // Distance
+    container.appendChild(this._createParamRow('Distance', 'number', cm.distance, (v) => {
+      const parsed = parseFloat(v);
+      if (!isNaN(parsed) && parsed > 0) { cm.distance = parsed; }
+    }));
+
+    // Accept / Cancel
+    const btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex;gap:8px;margin-top:12px;padding:0 4px';
+    const acceptBtn = document.createElement('button');
+    acceptBtn.textContent = 'Accept';
+    acceptBtn.className = 'param-btn accept';
+    acceptBtn.style.cssText = 'flex:1;padding:6px;background:#4caf50;color:#fff;border:none;border-radius:4px;cursor:pointer';
+    acceptBtn.addEventListener('click', () => this._acceptChamfer());
+    const cancelBtn = document.createElement('button');
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.className = 'param-btn cancel';
+    cancelBtn.style.cssText = 'flex:1;padding:6px;background:#f44336;color:#fff;border:none;border-radius:4px;cursor:pointer';
+    cancelBtn.addEventListener('click', () => this._cancelChamfer());
+    btnRow.appendChild(acceptBtn);
+    btnRow.appendChild(cancelBtn);
+    container.appendChild(btnRow);
+  }
+
+  _acceptChamfer() {
+    if (!this._chamferMode) return;
+    const cm = this._chamferMode;
+
+    const selectedEdges = this._renderer3d ? this._renderer3d.getSelectedEdges() : [];
+    if (selectedEdges.length === 0) {
+      this.setStatus('Select at least one edge for chamfer.');
+      return;
+    }
+
+    // Build edge keys from selected edges
+    const edgeKeys = selectedEdges.map(e => {
+      const prec = 5;
+      const vk = (v) => `${v.x.toFixed(prec)},${v.y.toFixed(prec)},${v.z.toFixed(prec)}`;
+      const ka = vk(e.start), kb = vk(e.end);
+      return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+    });
+
+    try {
+      const feature = this._partManager.chamfer(edgeKeys, cm.distance);
+      this._exitChamferMode();
+      this._featurePanel.update();
+      this._updateNodeTree();
+      this._update3DView();
+      this._updateOperationButtons();
+      this.setStatus(`Chamfer: ${cm.distance} units on ${edgeKeys.length} edge(s)`);
+    } catch (err) {
+      this.setStatus(`Chamfer failed: ${err.message}`);
+    }
+  }
+
+  _cancelChamfer() {
+    this._exitChamferMode();
+    this._updateOperationButtons();
+    this.setStatus('Chamfer cancelled.');
+  }
+
+  _exitChamferMode() {
+    if (!this._chamferMode) return;
+    if (this._renderer3d) this._renderer3d.setEdgeSelectionMode(false);
+    const btnChamfer = document.getElementById('btn-chamfer');
+    if (btnChamfer) btnChamfer.classList.remove('active');
+    this._chamferMode = null;
+    this._showLeftFeatureParams(null);
+    this._scheduleRender();
+  }
+
+  // -----------------------------------------------------------------------
+  // Fillet
+  // -----------------------------------------------------------------------
+
+  _startFillet() {
+    if (this._workspaceMode !== 'part') {
+      this.setStatus('Fillet is only available in Part workspace.');
+      return;
+    }
+    if (this._extrudeMode || this._chamferMode || this._filletMode) return;
+
+    this._filletMode = {
+      edgeKeys: [],
+      radius: 1,
+      segments: 8,
+      editingFeatureId: null,
+    };
+
+    if (this._renderer3d) {
+      this._renderer3d.setEdgeSelectionMode(true);
+      this._renderer3d.selectFace(-1);
+    }
+    this._selectedFace = null;
+
+    const btnFillet = document.getElementById('btn-fillet');
+    if (btnFillet) btnFillet.classList.add('active');
+
+    this._showFilletUI();
+    this._updateOperationButtons();
+    this.setStatus('Fillet: Click edges to select, then adjust radius and accept.');
+  }
+
+  _showFilletUI() {
+    const container = document.getElementById('left-feature-params-content');
+    if (!container || !this._filletMode) return;
+    container.innerHTML = '';
+
+    const fm = this._filletMode;
+    const header = document.createElement('div');
+    header.className = 'parameter-row';
+    header.innerHTML = '<label class="parameter-label" style="font-weight:600">Fillet</label>';
+    container.appendChild(header);
+
+    // Selected edges count
+    const edgeCount = this._renderer3d ? this._renderer3d._selectedEdgeIndices.size : 0;
+    const edgeRow = document.createElement('div');
+    edgeRow.className = 'parameter-row';
+    edgeRow.innerHTML = `<label class="parameter-label">Edges</label><span class="parameter-value">${edgeCount} selected</span>`;
+    container.appendChild(edgeRow);
+
+    // Radius
+    container.appendChild(this._createParamRow('Radius', 'number', fm.radius, (v) => {
+      const parsed = parseFloat(v);
+      if (!isNaN(parsed) && parsed > 0) { fm.radius = parsed; }
+    }));
+
+    // Segments
+    container.appendChild(this._createParamRow('Segments', 'number', fm.segments, (v) => {
+      const parsed = parseInt(v, 10);
+      if (!isNaN(parsed) && parsed >= 2 && parsed <= 32) { fm.segments = parsed; }
+    }));
+
+    // Accept / Cancel
+    const btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex;gap:8px;margin-top:12px;padding:0 4px';
+    const acceptBtn = document.createElement('button');
+    acceptBtn.textContent = 'Accept';
+    acceptBtn.className = 'param-btn accept';
+    acceptBtn.style.cssText = 'flex:1;padding:6px;background:#4caf50;color:#fff;border:none;border-radius:4px;cursor:pointer';
+    acceptBtn.addEventListener('click', () => this._acceptFillet());
+    const cancelBtn = document.createElement('button');
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.className = 'param-btn cancel';
+    cancelBtn.style.cssText = 'flex:1;padding:6px;background:#f44336;color:#fff;border:none;border-radius:4px;cursor:pointer';
+    cancelBtn.addEventListener('click', () => this._cancelFillet());
+    btnRow.appendChild(acceptBtn);
+    btnRow.appendChild(cancelBtn);
+    container.appendChild(btnRow);
+  }
+
+  _acceptFillet() {
+    if (!this._filletMode) return;
+    const fm = this._filletMode;
+
+    const selectedEdges = this._renderer3d ? this._renderer3d.getSelectedEdges() : [];
+    if (selectedEdges.length === 0) {
+      this.setStatus('Select at least one edge for fillet.');
+      return;
+    }
+
+    // Build edge keys from selected edges
+    const edgeKeys = selectedEdges.map(e => {
+      const prec = 5;
+      const vk = (v) => `${v.x.toFixed(prec)},${v.y.toFixed(prec)},${v.z.toFixed(prec)}`;
+      const ka = vk(e.start), kb = vk(e.end);
+      return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+    });
+
+    try {
+      const feature = this._partManager.fillet(edgeKeys, fm.radius, { segments: fm.segments });
+      this._exitFilletMode();
+      this._featurePanel.update();
+      this._updateNodeTree();
+      this._update3DView();
+      this._updateOperationButtons();
+      this.setStatus(`Fillet: radius ${fm.radius} on ${edgeKeys.length} edge(s)`);
+    } catch (err) {
+      this.setStatus(`Fillet failed: ${err.message}`);
+    }
+  }
+
+  _cancelFillet() {
+    this._exitFilletMode();
+    this._updateOperationButtons();
+    this.setStatus('Fillet cancelled.');
+  }
+
+  _exitFilletMode() {
+    if (!this._filletMode) return;
+    if (this._renderer3d) this._renderer3d.setEdgeSelectionMode(false);
+    const btnFillet = document.getElementById('btn-fillet');
+    if (btnFillet) btnFillet.classList.remove('active');
+    this._filletMode = null;
+    this._showLeftFeatureParams(null);
+    this._scheduleRender();
+  }
+
+  /** Called when edge selection changes (click toggle) — refresh UI. */
+  _onEdgeSelectionChanged() {
+    if (this._chamferMode) this._showChamferUI();
+    else if (this._filletMode) this._showFilletUI();
   }
 }
 

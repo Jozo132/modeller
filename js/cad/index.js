@@ -16,6 +16,8 @@ export { SketchFeature } from './SketchFeature.js';
 export { ExtrudeFeature } from './ExtrudeFeature.js';
 export { ExtrudeCutFeature } from './ExtrudeCutFeature.js';
 export { RevolveFeature } from './RevolveFeature.js';
+export { ChamferFeature } from './ChamferFeature.js';
+export { FilletFeature } from './FilletFeature.js';
 export { solve } from './Solver.js';
 export {
   Constraint, resetConstraintIds,
@@ -30,4 +32,4 @@ export {
   clearVariables, serializeVariables, deserializeVariables,
 } from './Constraint.js';
 export { disconnect, union, trim, split, movePoint, moveShape } from './Operations.js';
-export { booleanOp, calculateMeshVolume, calculateBoundingBox } from './CSG.js';
+export { booleanOp, calculateMeshVolume, calculateBoundingBox, applyChamfer, applyFillet, makeEdgeKey } from './CSG.js';
