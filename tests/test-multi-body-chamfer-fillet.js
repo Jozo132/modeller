@@ -387,9 +387,6 @@ test('Cylinder extrude + fillet on round top edge: volume reduced, manifold', ()
   assert.strictEqual(m.windingErrors, 0, `winding=${m.windingErrors}`);
 });
 
-console.log(`\n${passed} passed, ${failed} failed`);
-if (failed > 0) process.exit(1);
-
 // --- Multi-edge polyline chamfer/fillet tests ---
 
 import { expandPathEdgeKeys } from '../js/cad/CSG.js';

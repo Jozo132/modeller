@@ -1820,6 +1820,7 @@ function _generateCornerFaces(faces, origFaces, edgeDataList, vertexEdgeMap) {
  * and removing the "loop" between duplicates.
  */
 function _deduplicatePolygon(verts) {
+  if (!verts || verts.length === 0) return [];
   // First pass: remove consecutive duplicates
   const step1 = [verts[0]];
   for (let i = 1; i < verts.length; i++) {
@@ -2015,7 +2016,10 @@ export function expandPathEdgeKeys(geometry, edgeKeys) {
   // Expand tangent-connected paths: if a touched path endpoint meets
   // another path's endpoint at the same vertex with similar direction,
   // include that path too (and recurse)
-  const TANGENT_THRESHOLD = 0.9; // cos(~26°) — generous tangent tolerance
+  // Cosine threshold for tangent detection (~26° tolerance).
+  // Two path endpoints are considered tangent when the cosine of the angle
+  // between their edge directions exceeds this value.
+  const TANGENT_THRESHOLD = 0.9;
   let changed = true;
   while (changed) {
     changed = false;
