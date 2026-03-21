@@ -745,6 +745,36 @@ export class WasmRenderer {
   }
 
   /**
+   * Programmatically select edges by their position-based keys.
+   * Used to pre-select edges when editing an existing chamfer/fillet feature.
+   * @param {string[]} edgeKeys - Array of edge key strings (e.g. "x1,y1,z1|x2,y2,z2")
+   */
+  selectEdgesByKeys(edgeKeys) {
+    if (!this._meshEdgeSegments) return;
+    const keySet = new Set(edgeKeys);
+    const prec = 5;
+    const vk = (v) => `${v.x.toFixed(prec)},${v.y.toFixed(prec)},${v.z.toFixed(prec)}`;
+    for (let i = 0; i < this._meshEdgeSegments.length; i++) {
+      const seg = this._meshEdgeSegments[i];
+      const ka = vk(seg.start), kb = vk(seg.end);
+      const ek = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+      if (keySet.has(ek)) {
+        this._selectedEdgeIndices.add(i);
+      }
+    }
+  }
+
+  /**
+   * Render a preview geometry (chamfer/fillet preview) instead of the actual part.
+   * Builds the mesh from the geometry and triggers a re-render.
+   * @param {Object} geometry - Geometry object with .faces, .edges, .paths
+   */
+  renderPreviewGeometry(geometry) {
+    if (!geometry) return;
+    this._buildMeshFromGeometry(geometry);
+  }
+
+  /**
    * Compute the minimum distance between a ray and a line segment in 3D.
    * @param {{x:number,y:number,z:number}} rayOrigin
    * @param {{x:number,y:number,z:number}} rayDir - Normalized ray direction

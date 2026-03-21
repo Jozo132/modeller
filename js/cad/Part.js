@@ -164,6 +164,24 @@ export class Part {
     return this.featureTree.getLastSolidResult() || this.featureTree.getFinalResult();
   }
 
+  /**
+   * Get the solid geometry result just before a specific feature.
+   * Used for computing previews of chamfer/fillet edits.
+   * @param {string} featureId - The feature ID to look before
+   * @returns {Object|null} The solid result before the feature, or null
+   */
+  getGeometryBeforeFeature(featureId) {
+    const idx = this.featureTree.getFeatureIndex(featureId);
+    if (idx < 0) return null;
+    for (let i = idx - 1; i >= 0; i--) {
+      const f = this.featureTree.features[i];
+      if (f.suppressed) continue;
+      const r = this.featureTree.results[f.id];
+      if (r && r.type === 'solid' && !r.error) return r;
+    }
+    return null;
+  }
+
   // -----------------------------------------------------------------------
   // Sketch feature operations
   // -----------------------------------------------------------------------

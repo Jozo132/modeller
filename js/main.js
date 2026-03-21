@@ -31,6 +31,7 @@ import {
   LockTool, EqualTool, TangentTool, AngleTool,
 } from './tools/index.js';
 import { InteractionRecorder, PlaybackEngine } from './interaction-recorder.js';
+import { applyChamfer, applyFillet, expandPathEdgeKeys, makeEdgeKey } from './cad/CSG.js';
 
 class App {
   constructor() {
@@ -2225,6 +2226,12 @@ class App {
       edgeRow.className = 'parameter-row';
       edgeRow.innerHTML = `<label class="parameter-label">Edges</label><span class="parameter-value">${feature.edgeKeys.length}</span>`;
       container.appendChild(edgeRow);
+      // Edit Edges button
+      const editEdgeBtn = document.createElement('button');
+      editEdgeBtn.textContent = 'Edit Edges';
+      editEdgeBtn.style.cssText = 'width:100%;padding:6px;margin-top:8px;background:#2196f3;color:#fff;border:none;border-radius:4px;cursor:pointer';
+      editEdgeBtn.addEventListener('click', () => this._editChamferEdges(feature));
+      container.appendChild(editEdgeBtn);
     } else if (feature.type === 'fillet') {
       container.appendChild(this._createParamRow('Radius', 'number', feature.radius, (v) => {
         const parsed = parseFloat(v);
@@ -2244,6 +2251,12 @@ class App {
       edgeRow.className = 'parameter-row';
       edgeRow.innerHTML = `<label class="parameter-label">Edges</label><span class="parameter-value">${feature.edgeKeys.length}</span>`;
       container.appendChild(edgeRow);
+      // Edit Edges button
+      const editEdgeBtn = document.createElement('button');
+      editEdgeBtn.textContent = 'Edit Edges';
+      editEdgeBtn.style.cssText = 'width:100%;padding:6px;margin-top:8px;background:#2196f3;color:#fff;border:none;border-radius:4px;cursor:pointer';
+      editEdgeBtn.addEventListener('click', () => this._editFilletEdges(feature));
+      container.appendChild(editEdgeBtn);
     }
 
     // Feature steps (children)
@@ -6701,7 +6714,7 @@ class App {
     const cm = this._chamferMode;
     const header = document.createElement('div');
     header.className = 'parameter-row';
-    header.innerHTML = '<label class="parameter-label" style="font-weight:600">Chamfer</label>';
+    header.innerHTML = `<label class="parameter-label" style="font-weight:600">Chamfer${cm.editingFeatureId ? ' (Edit)' : ''}</label>`;
     container.appendChild(header);
 
     // Selected edges count
@@ -6714,7 +6727,10 @@ class App {
     // Distance
     container.appendChild(this._createParamRow('Distance', 'number', cm.distance, (v) => {
       const parsed = parseFloat(v);
-      if (!isNaN(parsed) && parsed > 0) { cm.distance = parsed; }
+      if (!isNaN(parsed) && parsed > 0) {
+        cm.distance = parsed;
+        this._updateChamferPreview();
+      }
     }));
 
     // Accept / Cancel
@@ -6733,6 +6749,9 @@ class App {
     btnRow.appendChild(acceptBtn);
     btnRow.appendChild(cancelBtn);
     container.appendChild(btnRow);
+
+    // Trigger preview update when edges change
+    this._updateChamferPreview();
   }
 
   _acceptChamfer() {
@@ -6754,7 +6773,15 @@ class App {
     });
 
     try {
-      const feature = this._partManager.chamfer(edgeKeys, cm.distance);
+      if (cm.editingFeatureId) {
+        // Update existing feature
+        this._partManager.modifyFeature(cm.editingFeatureId, (f) => {
+          f.distance = cm.distance;
+          f.edgeKeys = edgeKeys;
+        });
+      } else {
+        this._partManager.chamfer(edgeKeys, cm.distance);
+      }
       this._exitChamferMode();
       this._featurePanel.update();
       this._updateNodeTree();
@@ -6768,6 +6795,7 @@ class App {
 
   _cancelChamfer() {
     this._exitChamferMode();
+    this._update3DView();
     this._updateOperationButtons();
     this.setStatus('Chamfer cancelled.');
   }
@@ -6822,7 +6850,7 @@ class App {
     const fm = this._filletMode;
     const header = document.createElement('div');
     header.className = 'parameter-row';
-    header.innerHTML = '<label class="parameter-label" style="font-weight:600">Fillet</label>';
+    header.innerHTML = `<label class="parameter-label" style="font-weight:600">Fillet${fm.editingFeatureId ? ' (Edit)' : ''}</label>`;
     container.appendChild(header);
 
     // Selected edges count
@@ -6835,13 +6863,19 @@ class App {
     // Radius
     container.appendChild(this._createParamRow('Radius', 'number', fm.radius, (v) => {
       const parsed = parseFloat(v);
-      if (!isNaN(parsed) && parsed > 0) { fm.radius = parsed; }
+      if (!isNaN(parsed) && parsed > 0) {
+        fm.radius = parsed;
+        this._updateFilletPreview();
+      }
     }));
 
     // Segments
     container.appendChild(this._createParamRow('Segments', 'number', fm.segments, (v) => {
       const parsed = parseInt(v, 10);
-      if (!isNaN(parsed) && parsed >= 2 && parsed <= 32) { fm.segments = parsed; }
+      if (!isNaN(parsed) && parsed >= 2 && parsed <= 32) {
+        fm.segments = parsed;
+        this._updateFilletPreview();
+      }
     }));
 
     // Accept / Cancel
@@ -6860,6 +6894,9 @@ class App {
     btnRow.appendChild(acceptBtn);
     btnRow.appendChild(cancelBtn);
     container.appendChild(btnRow);
+
+    // Trigger preview update when edges change
+    this._updateFilletPreview();
   }
 
   _acceptFillet() {
@@ -6881,7 +6918,16 @@ class App {
     });
 
     try {
-      const feature = this._partManager.fillet(edgeKeys, fm.radius, { segments: fm.segments });
+      if (fm.editingFeatureId) {
+        // Update existing feature
+        this._partManager.modifyFeature(fm.editingFeatureId, (f) => {
+          f.radius = fm.radius;
+          f.segments = fm.segments;
+          f.edgeKeys = edgeKeys;
+        });
+      } else {
+        this._partManager.fillet(edgeKeys, fm.radius, { segments: fm.segments });
+      }
       this._exitFilletMode();
       this._featurePanel.update();
       this._updateNodeTree();
@@ -6895,6 +6941,7 @@ class App {
 
   _cancelFillet() {
     this._exitFilletMode();
+    this._update3DView();
     this._updateOperationButtons();
     this.setStatus('Fillet cancelled.');
   }
@@ -6913,6 +6960,147 @@ class App {
   _onEdgeSelectionChanged() {
     if (this._chamferMode) this._showChamferUI();
     else if (this._filletMode) this._showFilletUI();
+  }
+
+  // -----------------------------------------------------------------------
+  // Chamfer/Fillet Preview
+  // -----------------------------------------------------------------------
+
+  /** Compute and display a live preview of the chamfer result. */
+  _updateChamferPreview() {
+    if (!this._chamferMode || !this._renderer3d) return;
+    const cm = this._chamferMode;
+    const selectedEdges = this._renderer3d.getSelectedEdges();
+    if (selectedEdges.length === 0) return;
+
+    const part = this._partManager.getPart();
+    if (!part) return;
+
+    // Get base geometry (before this feature for edits, or current for new)
+    let baseResult;
+    if (cm.editingFeatureId) {
+      baseResult = part.getGeometryBeforeFeature(cm.editingFeatureId);
+    } else {
+      baseResult = part.getFinalGeometry();
+    }
+    if (!baseResult || !baseResult.geometry) return;
+
+    const edgeKeys = selectedEdges.map(e => makeEdgeKey(e.start, e.end));
+    try {
+      const resolvedKeys = expandPathEdgeKeys(baseResult.geometry, edgeKeys);
+      const preview = applyChamfer(baseResult.geometry, resolvedKeys, cm.distance);
+      this._renderer3d.renderPreviewGeometry(preview);
+      this._scheduleRender();
+    } catch (_) {
+      // Preview computation failed — leave current view
+    }
+  }
+
+  /** Compute and display a live preview of the fillet result. */
+  _updateFilletPreview() {
+    if (!this._filletMode || !this._renderer3d) return;
+    const fm = this._filletMode;
+    const selectedEdges = this._renderer3d.getSelectedEdges();
+    if (selectedEdges.length === 0) return;
+
+    const part = this._partManager.getPart();
+    if (!part) return;
+
+    let baseResult;
+    if (fm.editingFeatureId) {
+      baseResult = part.getGeometryBeforeFeature(fm.editingFeatureId);
+    } else {
+      baseResult = part.getFinalGeometry();
+    }
+    if (!baseResult || !baseResult.geometry) return;
+
+    const edgeKeys = selectedEdges.map(e => makeEdgeKey(e.start, e.end));
+    try {
+      const resolvedKeys = expandPathEdgeKeys(baseResult.geometry, edgeKeys);
+      const preview = applyFillet(baseResult.geometry, resolvedKeys, fm.radius, fm.segments);
+      this._renderer3d.renderPreviewGeometry(preview);
+      this._scheduleRender();
+    } catch (_) {
+      // Preview computation failed — leave current view
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Edit Edges for existing Chamfer/Fillet features
+  // -----------------------------------------------------------------------
+
+  /** Enter edge editing mode for an existing chamfer feature. */
+  _editChamferEdges(feature) {
+    if (this._extrudeMode || this._chamferMode || this._filletMode) return;
+
+    // Need to show geometry BEFORE this feature so edges can be selected
+    const part = this._partManager.getPart();
+    if (!part) return;
+    const baseResult = part.getGeometryBeforeFeature(feature.id);
+    if (!baseResult || !baseResult.geometry) {
+      this.setStatus('Cannot edit edges: no base geometry found.');
+      return;
+    }
+
+    this._chamferMode = {
+      edgeKeys: [...feature.edgeKeys],
+      distance: feature.distance,
+      editingFeatureId: feature.id,
+    };
+
+    if (this._renderer3d) {
+      // Display the base geometry (before chamfer) so edges are visible
+      this._renderer3d.renderPreviewGeometry(baseResult.geometry);
+      this._renderer3d.setEdgeSelectionMode(true);
+      this._renderer3d.selectFace(-1);
+      // Pre-select the feature's existing edges
+      this._renderer3d.selectEdgesByKeys(feature.edgeKeys);
+    }
+    this._selectedFace = null;
+
+    const btnChamfer = document.getElementById('btn-chamfer');
+    if (btnChamfer) btnChamfer.classList.add('active');
+
+    this._showChamferUI();
+    this._updateOperationButtons();
+    this._scheduleRender();
+    this.setStatus('Edit Chamfer: Modify edge selection and distance, then Accept.');
+  }
+
+  /** Enter edge editing mode for an existing fillet feature. */
+  _editFilletEdges(feature) {
+    if (this._extrudeMode || this._chamferMode || this._filletMode) return;
+
+    const part = this._partManager.getPart();
+    if (!part) return;
+    const baseResult = part.getGeometryBeforeFeature(feature.id);
+    if (!baseResult || !baseResult.geometry) {
+      this.setStatus('Cannot edit edges: no base geometry found.');
+      return;
+    }
+
+    this._filletMode = {
+      edgeKeys: [...feature.edgeKeys],
+      radius: feature.radius,
+      segments: feature.segments || 8,
+      editingFeatureId: feature.id,
+    };
+
+    if (this._renderer3d) {
+      this._renderer3d.renderPreviewGeometry(baseResult.geometry);
+      this._renderer3d.setEdgeSelectionMode(true);
+      this._renderer3d.selectFace(-1);
+      this._renderer3d.selectEdgesByKeys(feature.edgeKeys);
+    }
+    this._selectedFace = null;
+
+    const btnFillet = document.getElementById('btn-fillet');
+    if (btnFillet) btnFillet.classList.add('active');
+
+    this._showFilletUI();
+    this._updateOperationButtons();
+    this._scheduleRender();
+    this.setStatus('Edit Fillet: Modify edge selection, radius and segments, then Accept.');
   }
 }
 
