@@ -13,6 +13,11 @@ export declare function init(canvasWidth: number, canvasHeight: number): void;
  */
 export declare function resize(width: number, height: number): void;
 /**
+ * assembly/index/setFov
+ * @param fov `f32`
+ */
+export declare function setFov(fov: number): void;
+/**
  * assembly/index/setCameraMode
  * @param mode `i32`
  */

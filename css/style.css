@@ -1425,6 +1425,65 @@ html, body {
   gap: 6px;
 }
 
+/* FOV slider in toolbar */
+/* FOV slider in status bar */
+.fov-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.fov-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  user-select: none;
+}
+
+.fov-slider {
+  width: 90px;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  background: var(--bg-dark);
+  border-radius: 2px;
+  outline: none;
+}
+
+.fov-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  border: 1.5px solid var(--bg-panel);
+}
+
+.fov-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  border: 1.5px solid var(--bg-panel);
+}
+
+.fov-value {
+  font-size: 11px;
+  color: var(--text-secondary);
+  min-width: 30px;
+  text-align: right;
+  font-family: 'Consolas', monospace;
+  user-select: none;
+}
+
+.status-spacer {
+  flex: 1;
+}
+
 .motion-slider {
   flex: 1;
   -webkit-appearance: none;

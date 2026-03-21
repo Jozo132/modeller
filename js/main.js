@@ -196,6 +196,15 @@ class App {
   }
 
   // --- Rendering ---
+  _syncFovSlider(degrees) {
+    const slider = document.getElementById('fov-slider');
+    const label = document.getElementById('fov-value');
+    // Reverse-map: 0→0, 5..120 → 1..116
+    const raw = degrees <= 0 ? 0 : Math.max(1, degrees - 4);
+    if (slider) slider.value = raw;
+    if (label) label.textContent = degrees === 0 ? 'Ortho' : degrees + '\u00b0';
+  }
+
   _scheduleRender() {
     this._renderRequested = true;
     if (this._renderScheduled) return;
@@ -1326,6 +1335,21 @@ class App {
       this._scheduleRender();
     });
 
+    // FOV slider — raw 0 = ortho, raw 1..116 maps to 5..120°
+    const fovSlider = document.getElementById('fov-slider');
+    const fovValue = document.getElementById('fov-value');
+    if (fovSlider) {
+      fovSlider.addEventListener('input', () => {
+        const raw = parseInt(fovSlider.value, 10);
+        const deg = raw === 0 ? 0 : raw + 4; // 0→0, 1→5, 2→6 … 116→120
+        if (fovValue) fovValue.textContent = deg === 0 ? 'Ortho' : deg + '\u00b0';
+        if (this._renderer3d) {
+          this._renderer3d.setFOV(deg);
+        }
+        this._scheduleRender();
+      });
+    }
+
     // Construction mode toggle
     document.getElementById('btn-construction').addEventListener('click', () => {
       this._toggleConstructionMode();
@@ -1916,6 +1940,9 @@ class App {
     if (this._renderer3d) {
       this._savedOrbitState = this._renderer3d.saveOrbitState();
       this._renderer3d.orientToPlaneNormal(planeDef.normal, planeDef.origin);
+      // Lock to orthographic for sketch precision
+      this._renderer3d.setFOV(0);
+      this._syncFovSlider(0);
       this._renderer3d.setMode('3d');
       this._renderer3d.setVisible(true);
       this._renderer3d._sketchPlane = 'FACE';
@@ -4999,6 +5026,7 @@ class App {
       // Restore camera orientation from before entering sketch mode
       if (this._savedOrbitState) {
         this._renderer3d.restoreOrbitState(this._savedOrbitState);
+        this._syncFovSlider(this._savedOrbitState.fovDegrees != null ? this._savedOrbitState.fovDegrees : 45);
         this._savedOrbitState = null;
       }
     }
@@ -5707,6 +5735,9 @@ class App {
       this._savedOrbitState = this._renderer3d.saveOrbitState();
       // Orient camera perpendicular to the selected plane
       this._renderer3d.orientToPlane(plane);
+      // Lock to orthographic for sketch precision
+      this._renderer3d.setFOV(0);
+      this._syncFovSlider(0);
       // Stay in 3D mode so the mesh remains visible
       this._renderer3d.setMode('3d');
       this._renderer3d.setVisible(true);
@@ -5760,6 +5791,9 @@ class App {
       // Save camera state before reorienting so we can restore on exit
       this._savedOrbitState = this._renderer3d.saveOrbitState();
       this._renderer3d.orientToPlaneNormal(faceHit.face.normal, faceHit.point);
+      // Lock to orthographic for sketch precision
+      this._renderer3d.setFOV(0);
+      this._syncFovSlider(0);
     }
 
     // Stay in 3D mode but enable sketch-on-plane
@@ -5961,6 +5995,7 @@ class App {
       // Restore camera orientation from before entering sketch mode
       if (this._savedOrbitState) {
         this._renderer3d.restoreOrbitState(this._savedOrbitState);
+        this._syncFovSlider(this._savedOrbitState.fovDegrees != null ? this._savedOrbitState.fovDegrees : 45);
         this._savedOrbitState = null;
       }
     }
@@ -6034,6 +6069,9 @@ class App {
       if (planeName !== 'FACE') {
         this._renderer3d.orientToPlane(planeName);
       }
+      // Lock to orthographic for sketch precision
+      this._renderer3d.setFOV(0);
+      this._syncFovSlider(0);
       this._renderer3d.setMode('3d');
       this._renderer3d.setVisible(true);
       this._renderer3d._sketchPlane = planeName;

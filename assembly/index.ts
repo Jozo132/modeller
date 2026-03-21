@@ -67,6 +67,14 @@ export function resize(width: i32, height: i32): void {
 
 // === Camera ===
 
+export function setFov(fov: f32): void {
+  scene.camera.fov = fov;
+  if (scene.camera.isPerspective) {
+    const aspect: f32 = <f32>scene.canvasWidth / <f32>scene.canvasHeight;
+    scene.camera.setPerspective(fov, aspect, scene.camera.near, scene.camera.far);
+  }
+}
+
 export function setCameraMode(mode: i32): void {
   renderMode = mode;
   const aspect: f32 = <f32>scene.canvasWidth / <f32>scene.canvasHeight;

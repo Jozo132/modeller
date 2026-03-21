@@ -39,6 +39,7 @@ export const {
   memory,
   init,
   resize,
+  setFov,
   setCameraMode,
   setCameraPosition,
   setCameraTarget,

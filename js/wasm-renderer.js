@@ -86,6 +86,8 @@ export class WasmRenderer {
     this._lastMouseX = 0;
     this._lastMouseY = 0;
     this._ortho3D = false; // orthographic projection in 3D mode
+    this._fov = Math.PI / 4; // field of view in radians (default 45°)
+    this._fovDegrees = 45;   // FOV in degrees for UI
 
     // Callback for camera change events (used by interaction recorder)
     this.onCameraInteraction = null; // (type: 'orbit_start'|'pan_start'|'orbit_end'|'zoom', state) => void
@@ -274,17 +276,16 @@ export class WasmRenderer {
     this.wasm.setCameraTarget(t.x, t.y, t.z);
 
     // Apply orthographic or perspective projection for 3D mode
-    if (this._ortho3D) {
+    if (this._ortho3D || this._fovDegrees <= 0) {
       this.wasm.setCameraMode(0);
       const w = this._cssWidth || this.container.clientWidth || 800;
       const h = this._cssHeight || this.container.clientHeight || 600;
       const aspect = w / h;
       const halfH = r * 0.5;
       const halfW = halfH * aspect;
-      this.wasm.setOrthoBounds(
-        t.x - halfW, t.x + halfW,
-        t.z - halfH, t.z + halfH
-      );
+      // Ortho bounds must be view-space (centered at origin) since the
+      // lookAt view matrix already positions the camera relative to target.
+      this.wasm.setOrthoBounds(-halfW, halfW, -halfH, halfH);
     } else {
       this.wasm.setCameraMode(1);
     }
@@ -300,6 +301,41 @@ export class WasmRenderer {
       this._orbitDirty = true;
     }
   }
+
+  /**
+   * Set the field of view in degrees. 0 = orthographic, 120 = ultra-wide.
+   * Adjusts orbit radius to keep the visible extent roughly constant.
+   * @param {number} degrees
+   */
+  setFOV(degrees) {
+    const newDeg = Math.max(0, Math.min(120, degrees));
+    const oldDeg = this._fovDegrees;
+
+    // Compensate orbit radius so apparent object size stays constant.
+    // Visible half-height: perspective = r * tan(fov/2), ortho = r * 0.5
+    if (newDeg !== oldDeg) {
+      const ORTHO_K = 0.5;
+      const oldH = oldDeg > 0 ? Math.tan((oldDeg * Math.PI / 180) / 2) : ORTHO_K;
+      const newH = newDeg > 0 ? Math.tan((newDeg * Math.PI / 180) / 2) : ORTHO_K;
+      this._orbitRadius = Math.max(1, Math.min(5000, this._orbitRadius * oldH / newH));
+    }
+
+    this._fovDegrees = newDeg;
+    this._fov = this._fovDegrees * Math.PI / 180;
+    // Sync WASM camera FOV and mode
+    if (this._ready) {
+      if (this._fovDegrees <= 0) {
+        this.wasm.setCameraMode(0);
+      } else {
+        this.wasm.setFov(this._fov);
+        this.wasm.setCameraMode(1);
+      }
+    }
+    this._orbitDirty = true;
+  }
+
+  /** @returns {number} Current FOV in degrees */
+  getFOV() { return this._fovDegrees; }
 
   /**
    * Project a sketch-local 2D coordinate to screen (CSS) pixel coordinates.
@@ -425,6 +461,7 @@ export class WasmRenderer {
       phi: this._orbitPhi,
       radius: this._orbitRadius,
       target: { ...this._orbitTarget },
+      fovDegrees: this._fovDegrees,
     };
   }
 
@@ -436,8 +473,13 @@ export class WasmRenderer {
     if (!state) return;
     this._orbitTheta = state.theta;
     this._orbitPhi = state.phi;
-    this._orbitRadius = state.radius;
     this._orbitTarget = { ...state.target };
+    if (state.fovDegrees != null) {
+      // Set FOV first (which adjusts radius via compensation),
+      // then override radius with the exact saved value.
+      this.setFOV(state.fovDegrees);
+    }
+    this._orbitRadius = state.radius;
     this._orbitDirty = true;
     this._applyOrbitCamera();
   }
@@ -2494,7 +2536,6 @@ export class WasmRenderer {
     if (w === 0 || h === 0) return null;
 
     const aspect = w / h;
-    const fov = Math.PI / 4;
     const near = 0.1;
     const far = 10000;
     const t = this._orbitTarget;
@@ -2510,14 +2551,21 @@ export class WasmRenderer {
     const view = this._mat4LookAt(camX, camY, camZ, t.x, t.y, t.z, 0, 0, 1);
     if (!view) return null;
 
-    // Projection matrix must match the active WASM camera mode.
-    // Otherwise ray picking / sketch mapping drifts (especially in ORTH mode).
+    // Projection matrix: orthographic when FOV is 0 or ortho3D is forced,
+    // otherwise perspective with the configured FOV.
     let proj;
-    if (this._ortho3D && this._orthoBounds) {
-      const b = this._orthoBounds;
-      proj = this._mat4Ortho(b.left, b.right, b.bottom, b.top, near, far);
+    if (this._fovDegrees <= 0 || (this._ortho3D && this._orthoBounds)) {
+      // Orthographic: map orbit radius to view extent
+      const halfH = r * 0.5;
+      const halfW = halfH * aspect;
+      if (this._ortho3D && this._orthoBounds) {
+        const b = this._orthoBounds;
+        proj = this._mat4Ortho(b.left, b.right, b.bottom, b.top, near, far);
+      } else {
+        proj = this._mat4Ortho(-halfW, halfW, -halfH, halfH, near, far);
+      }
     } else {
-      proj = this._mat4Perspective(fov, aspect, near, far);
+      proj = this._mat4Perspective(this._fov, aspect, near, far);
     }
 
     // MVP = proj * view (column-major multiplication)
