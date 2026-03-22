@@ -9,6 +9,7 @@ import { getSnappedPosition } from './snap.js';
 import { undo, redo, takeSnapshot, setPartManager } from './history.js';
 import { downloadDXF } from './dxf/export.js';
 import { openDXFFile } from './dxf/import.js';
+import { downloadCMOD, openCMODFile, setCmodViewport, setCmodPartManager, setCmodRenderer, setCmodWorkspaceModeGetter, setCmodSessionStateGetter } from './cmod.js';
 import { debug, info, warn, error } from './logger.js';
 import { loadProject, debouncedSave, clearSavedProject, setViewport, setPartManagerForPersist, setRendererForPersist, setWorkspaceModeGetter, setSessionStateGetter } from './persist.js';
 import { showConfirm, showPrompt, showDimensionInput } from './ui/popup.js';
@@ -150,6 +151,13 @@ class App {
     setRendererForPersist(this._renderer3d);
     setWorkspaceModeGetter(() => this._workspaceMode);
     setSessionStateGetter(() => this._serializeSessionState());
+
+    // Register the same singletons for .cmod export/import
+    setCmodViewport(this.viewport);
+    setCmodPartManager(this._partManager);
+    setCmodRenderer(this._renderer3d);
+    setCmodWorkspaceModeGetter(() => this._workspaceMode);
+    setCmodSessionStateGetter(() => this._serializeSessionState());
 
     this._setStartupLoading(true, 'Loading renderer and project state...', 20);
 
@@ -1288,14 +1296,24 @@ class App {
         this._createNewDrawing();
       }
     });
-    document.getElementById('btn-save').addEventListener('click', () => downloadDXF());
+    document.getElementById('btn-save').addEventListener('click', () => {
+      if (this._workspaceMode === 'part') {
+        downloadCMOD();
+      } else {
+        downloadDXF();
+      }
+    });
     document.getElementById('btn-open').addEventListener('click', () => {
-      info('Opening DXF file');
-      openDXFFile();
-      setTimeout(() => {
-        this.viewport.fitEntities(state.entities);
-        this._scheduleRender();
-      }, 500);
+      if (this._workspaceMode === 'part') {
+        this._openCMODProject();
+      } else {
+        info('Opening DXF file');
+        openDXFFile();
+        setTimeout(() => {
+          this.viewport.fitEntities(state.entities);
+          this._scheduleRender();
+        }, 500);
+      }
     });
 
     // Edit
@@ -1427,7 +1445,11 @@ class App {
         switch (e.key.toLowerCase()) {
           case 'z': e.preventDefault(); undo(); this._scheduleRender(); break;
           case 'y': e.preventDefault(); redo(); this._scheduleRender(); break;
-          case 's': e.preventDefault(); downloadDXF(); break;
+          case 's':
+            e.preventDefault();
+            if (this._workspaceMode === 'part') downloadCMOD();
+            else downloadDXF();
+            break;
           case 'n':
             e.preventDefault();
             showConfirm({ title: 'New Drawing', message: 'Clear all?', okText: 'Clear', cancelText: 'Cancel' })
@@ -1922,8 +1944,14 @@ class App {
         }
         this._scheduleRender();
         break;
-      case 'save': downloadDXF(); break;
-      case 'open': openDXFFile(); break;
+      case 'save':
+        if (this._workspaceMode === 'part') downloadCMOD();
+        else downloadDXF();
+        break;
+      case 'open':
+        if (this._workspaceMode === 'part') this._openCMODProject();
+        else openDXFFile();
+        break;
       case 'new':
         showConfirm({ title: 'New Drawing', message: 'Clear all?', okText: 'Clear', cancelText: 'Cancel' })
           .then((ok) => {
@@ -4545,6 +4573,46 @@ class App {
     this._update3DView();
     this._updateOperationButtons();
     this._scheduleRender();
+  }
+
+  async _openCMODProject() {
+    const result = await openCMODFile();
+    if (!result.ok) {
+      if (result.error) this.setStatus(result.error);
+      return;
+    }
+
+    // Restore part
+    if (result.part) {
+      this._partManager.deserialize(result.part);
+      if (!this._workspaceMode || this._workspaceMode !== 'part') {
+        this._enterWorkspace('part');
+      }
+      if (result.sessionState) {
+        this._restoreSessionState(result.sessionState);
+      }
+    }
+
+    // Restore camera
+    if (result.orbit && this._renderer3d) {
+      this._renderer3d.setOrbitState(result.orbit);
+    }
+
+    // Rebuild UI
+    this._rebuildLayersPanel();
+    this._rebuildLeftPanel();
+    if (!result.hasViewport && state.entities.length > 0) {
+      this.viewport.fitEntities(state.entities);
+    }
+    this._update3DView();
+    this._updateNodeTree();
+    this._updateOperationButtons();
+    this._scheduleRender();
+    debouncedSave();
+
+    const name = result.filename || 'project';
+    info('CMOD project loaded', { filename: name, metadata: result.metadata });
+    this.setStatus(`Opened ${name}`);
   }
 
   _updateNodeTree() {

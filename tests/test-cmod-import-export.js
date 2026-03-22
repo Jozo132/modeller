@@ -1,0 +1,328 @@
+// tests/test-cmod-import-export.js — Tests for .cmod project file import/export
+//
+// Verifies the round-trip: build a Part → export to .cmod → validate format →
+// import back → verify the feature tree and geometry match.
+
+import assert from 'assert';
+import { Part } from '../js/cad/Part.js';
+import { Sketch } from '../js/cad/Sketch.js';
+import { buildCMOD, parseCMOD } from '../js/cmod.js';
+import {
+  calculateMeshVolume, calculateBoundingBox, calculateSurfaceArea,
+  detectDisconnectedBodies, calculateWallThickness,
+} from '../js/cad/CSG.js';
+
+let passed = 0;
+let failed = 0;
+
+function test(name, fn) {
+  try {
+    fn();
+    console.log(`  ✓ ${name}`);
+    passed++;
+  } catch (err) {
+    console.log(`  ✗ ${name}`);
+    console.log(`    ${err.message}`);
+    failed++;
+  }
+}
+
+function assertApprox(actual, expected, tol, msg) {
+  assert.ok(Math.abs(actual - expected) < tol,
+    `${msg}: expected ~${expected}, got ${actual}`);
+}
+
+// -----------------------------------------------------------------------
+// Build test geometry
+// -----------------------------------------------------------------------
+
+function makeBox(w, h, d) {
+  const part = new Part('TestBox');
+  const sketch = new Sketch();
+  sketch.addSegment(0, 0, w, 0);
+  sketch.addSegment(w, 0, w, h);
+  sketch.addSegment(w, h, 0, h);
+  sketch.addSegment(0, h, 0, 0);
+  const sf = part.addSketch(sketch);
+  part.extrude(sf.id, d);
+  return part;
+}
+
+function makeBoxWithChamfer(w, h, d, dist) {
+  const part = makeBox(w, h, d);
+  const geo = part.getFinalGeometry();
+  if (geo && geo.geometry && geo.geometry.edges) {
+    // Chamfer the first edge
+    const edge = geo.geometry.edges[0];
+    const ek = edgeKey(edge.start, edge.end);
+    part.chamfer([ek], dist);
+  }
+  return part;
+}
+
+function edgeKey(a, b) {
+  const ka = `${a.x.toFixed(5)},${a.y.toFixed(5)},${a.z.toFixed(5)}`;
+  const kb = `${b.x.toFixed(5)},${b.y.toFixed(5)},${b.z.toFixed(5)}`;
+  return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+}
+
+// -----------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------
+
+console.log('\n=== CMOD Import/Export Tests ===\n');
+
+// --- Test 1: Basic export format ---
+console.log('--- Test 1: Export format ---');
+{
+  const part = makeBox(10, 10, 10);
+  const cmod = buildCMOD(part);
+
+  test('format field is correct', () => {
+    assert.strictEqual(cmod.format, 'CAD Modeller Open Design');
+  });
+
+  test('version field is 1', () => {
+    assert.strictEqual(cmod.version, 1);
+  });
+
+  test('has part data', () => {
+    assert.ok(cmod.part);
+    assert.strictEqual(cmod.part.type, 'Part');
+    assert.strictEqual(cmod.part.name, 'TestBox');
+  });
+
+  test('has settings', () => {
+    assert.ok(cmod.settings);
+    assert.strictEqual(cmod.settings.gridSize, 10);
+    assert.strictEqual(cmod.settings.snapEnabled, true);
+  });
+
+  test('has metadata', () => {
+    assert.ok(cmod.metadata);
+    assert.strictEqual(cmod.metadata.featureCount, 2); // sketch + extrude
+    assert.deepStrictEqual(cmod.metadata.featureTypes, ['sketch', 'extrude']);
+  });
+
+  test('metadata has geometry stats', () => {
+    assert.strictEqual(cmod.metadata.faceCount, 6);
+    assertApprox(cmod.metadata.volume, 1000, 1, 'volume');
+    assert.ok(cmod.metadata.edgeCount > 0);
+    assert.ok(cmod.metadata.pathCount > 0);
+    assert.strictEqual(cmod.metadata.bodyCount, 1);
+  });
+
+  test('metadata has wall thickness', () => {
+    assertApprox(cmod.metadata.minWallThickness, 10, 0.1, 'minWall');
+    assertApprox(cmod.metadata.maxWallThickness, 10, 0.1, 'maxWall');
+  });
+
+  test('metadata has bounding box', () => {
+    const bb = cmod.metadata.boundingBox;
+    assert.ok(bb);
+    assertApprox(bb.min.x, 0, 0.01, 'bb.min.x');
+    assertApprox(bb.max.x, 10, 0.01, 'bb.max.x');
+  });
+
+  test('has layers', () => {
+    assert.ok(Array.isArray(cmod.layers));
+    assert.ok(cmod.layers.length >= 1);
+  });
+}
+
+// --- Test 2: JSON serialization round-trip ---
+console.log('--- Test 2: JSON round-trip ---');
+{
+  const part = makeBox(20, 30, 40);
+  const cmod = buildCMOD(part, {
+    orbit: { theta: 0.5, phi: 1.0, radius: 100, target: { x: 10, y: 15, z: 20 } },
+    settings: { gridSize: 5, snapEnabled: false },
+  });
+
+  const json = JSON.stringify(cmod);
+  const parsed = parseCMOD(json);
+
+  test('parseCMOD from string succeeds', () => {
+    assert.strictEqual(parsed.ok, true);
+    assert.ok(parsed.data);
+  });
+
+  test('round-trip preserves format', () => {
+    assert.strictEqual(parsed.data.format, 'CAD Modeller Open Design');
+    assert.strictEqual(parsed.data.version, 1);
+  });
+
+  test('round-trip preserves part', () => {
+    assert.ok(parsed.data.part);
+    assert.strictEqual(parsed.data.part.name, 'TestBox');
+  });
+
+  test('round-trip preserves orbit', () => {
+    const orbit = parsed.data.orbit;
+    assert.ok(orbit);
+    assertApprox(orbit.theta, 0.5, 0.001, 'theta');
+    assertApprox(orbit.phi, 1.0, 0.001, 'phi');
+    assertApprox(orbit.radius, 100, 0.001, 'radius');
+  });
+
+  test('round-trip preserves custom settings', () => {
+    assert.strictEqual(parsed.data.settings.gridSize, 5);
+    assert.strictEqual(parsed.data.settings.snapEnabled, false);
+  });
+
+  test('round-trip preserves metadata', () => {
+    assert.strictEqual(parsed.data.metadata.featureCount, 2);
+    assertApprox(parsed.data.metadata.volume, 24000, 1, 'volume');
+  });
+}
+
+// --- Test 3: Validation ---
+console.log('--- Test 3: Validation ---');
+{
+  test('rejects null input', () => {
+    const r = parseCMOD(null);
+    assert.strictEqual(r.ok, false);
+    assert.ok(r.error.includes('Invalid'));
+  });
+
+  test('rejects wrong format', () => {
+    const r = parseCMOD({ format: 'SomeOtherApp', version: 1 });
+    assert.strictEqual(r.ok, false);
+    assert.ok(r.error.includes('Unknown format'));
+  });
+
+  test('rejects future version', () => {
+    const r = parseCMOD({ format: 'CAD Modeller Open Design', version: 999 });
+    assert.strictEqual(r.ok, false);
+    assert.ok(r.error.includes('newer'));
+  });
+
+  test('rejects invalid JSON string', () => {
+    const r = parseCMOD('not valid json{{{');
+    assert.strictEqual(r.ok, false);
+    assert.ok(r.error.includes('JSON parse'));
+  });
+
+  test('accepts valid object', () => {
+    const r = parseCMOD({ format: 'CAD Modeller Open Design', version: 1 });
+    assert.strictEqual(r.ok, true);
+  });
+}
+
+// --- Test 4: Feature tree preservation ---
+console.log('--- Test 4: Feature tree preservation ---');
+{
+  const part = makeBoxWithChamfer(50, 50, 50, 2);
+  const cmod = buildCMOD(part);
+  const json = JSON.stringify(cmod);
+  const parsed = parseCMOD(json);
+
+  test('feature tree round-trip successful', () => {
+    assert.strictEqual(parsed.ok, true);
+    const ft = parsed.data.part.featureTree;
+    assert.ok(ft);
+    assert.ok(Array.isArray(ft.features));
+  });
+
+  test('feature types preserved', () => {
+    const types = parsed.data.part.featureTree.features.map(f => f.type);
+    assert.ok(types.includes('sketch'));
+    assert.ok(types.includes('extrude'));
+    assert.ok(types.includes('chamfer'));
+  });
+
+  test('part can be deserialized back', () => {
+    const restored = Part.deserialize(parsed.data.part);
+    assert.ok(restored);
+    assert.strictEqual(restored.name, 'TestBox');
+    const features = restored.getFeatures();
+    assert.strictEqual(features.length, 3); // sketch, extrude, chamfer
+  });
+
+  test('restored geometry matches original', () => {
+    const restored = Part.deserialize(parsed.data.part);
+    const origGeo = part.getFinalGeometry();
+    const restGeo = restored.getFinalGeometry();
+    assert.ok(origGeo && origGeo.geometry);
+    assert.ok(restGeo && restGeo.geometry);
+
+    const origFaces = origGeo.geometry.faces.length;
+    const restFaces = restGeo.geometry.faces.length;
+    assert.strictEqual(restFaces, origFaces);
+
+    const origVol = calculateMeshVolume(origGeo.geometry);
+    const restVol = calculateMeshVolume(restGeo.geometry);
+    assertApprox(restVol, origVol, 0.5, 'volume');
+  });
+}
+
+// --- Test 5: Origin planes preservation ---
+console.log('--- Test 5: Origin planes ---');
+{
+  const part = makeBox(10, 10, 10);
+  const cmod = buildCMOD(part);
+
+  test('origin planes serialized', () => {
+    assert.ok(cmod.part.originPlanes);
+    assert.ok(cmod.part.originPlanes.XY);
+    assert.ok(cmod.part.originPlanes.XZ);
+    assert.ok(cmod.part.originPlanes.YZ);
+  });
+
+  test('origin planes round-trip', () => {
+    const restored = Part.deserialize(cmod.part);
+    const planes = restored.getOriginPlanes();
+    assert.ok(planes.XY);
+    assert.ok(planes.XZ);
+    assert.ok(planes.YZ);
+  });
+}
+
+// --- Test 6: Empty project ---
+console.log('--- Test 6: Edge cases ---');
+{
+  test('null part produces valid cmod', () => {
+    const cmod = buildCMOD(null);
+    assert.strictEqual(cmod.format, 'CAD Modeller Open Design');
+    assert.strictEqual(cmod.part, null);
+    assert.ok(cmod.metadata);
+    assert.strictEqual(cmod.metadata.featureCount, undefined);
+  });
+
+  test('part-only (no geometry features) exports', () => {
+    const part = new Part('EmptyPart');
+    const cmod = buildCMOD(part);
+    assert.strictEqual(cmod.part.name, 'EmptyPart');
+    assert.strictEqual(cmod.metadata.featureCount, 0);
+  });
+}
+
+// --- Test 7: Metadata accuracy ---
+console.log('--- Test 7: Metadata accuracy ---');
+{
+  const part = makeBox(100, 100, 100);
+  const cmod = buildCMOD(part);
+
+  test('volume is accurate', () => {
+    assertApprox(cmod.metadata.volume, 1000000, 1, 'volume');
+  });
+
+  test('dimensions are accurate', () => {
+    assertApprox(cmod.metadata.width, 100, 0.01, 'width');
+    assertApprox(cmod.metadata.height, 100, 0.01, 'height');
+    assertApprox(cmod.metadata.depth, 100, 0.01, 'depth');
+  });
+
+  test('faces count correct', () => {
+    assert.strictEqual(cmod.metadata.faceCount, 6);
+  });
+
+  test('single body', () => {
+    assert.strictEqual(cmod.metadata.bodyCount, 1);
+  });
+}
+
+// --- Summary ---
+console.log('');
+console.log(`CMOD Import/Export Tests: ${passed} passed, ${failed} failed`);
+if (failed > 0) process.exit(1);

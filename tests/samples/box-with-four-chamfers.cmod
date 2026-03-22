@@ -1,0 +1,316 @@
+{
+  "format": "CAD Modeller Open Design",
+  "version": 1,
+  "scene": {
+    "points": [],
+    "segments": [],
+    "circles": [],
+    "arcs": [],
+    "constraints": [],
+    "texts": [],
+    "dimensions": [],
+    "variables": {}
+  },
+  "layers": [
+    {
+      "name": "0",
+      "color": "#9CDCFE",
+      "visible": true,
+      "locked": false
+    }
+  ],
+  "activeLayer": "0",
+  "settings": {
+    "gridSize": 10,
+    "gridVisible": true,
+    "snapEnabled": true,
+    "orthoEnabled": false,
+    "autoCoincidence": true
+  },
+  "viewport": {
+    "zoom": 1,
+    "panX": 0,
+    "panY": 0
+  },
+  "part": {
+    "type": "Part",
+    "name": "Part1",
+    "description": "",
+    "created": "2026-03-22T12:44:53.845Z",
+    "modified": "2026-03-22T14:05:23.905Z",
+    "featureTree": {
+      "features": [
+        {
+          "id": "feature_5",
+          "name": "Sketch 1",
+          "type": "sketch",
+          "suppressed": false,
+          "visible": false,
+          "created": "2026-03-22T12:45:04.602Z",
+          "modified": "2026-03-22T12:45:08.582Z",
+          "dependencies": [],
+          "children": [],
+          "sketch": {
+            "name": "Sketch 1",
+            "description": "",
+            "created": "2026-03-22T12:45:04.602Z",
+            "modified": "2026-03-22T12:45:04.602Z",
+            "scene": {
+              "points": [
+                {
+                  "id": 441,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": 21.9713984992769,
+                  "y": -19.198646551744815,
+                  "fixed": false
+                },
+                {
+                  "id": 442,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": -35.94835178057353,
+                  "y": -19.198646551744815,
+                  "fixed": false
+                },
+                {
+                  "id": 444,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": -35.94835178057353,
+                  "y": 23.545742236559647,
+                  "fixed": false
+                },
+                {
+                  "id": 446,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": 21.9713984992769,
+                  "y": 23.545742236559647,
+                  "fixed": false
+                }
+              ],
+              "segments": [
+                {
+                  "id": 443,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 441,
+                  "p2": 442
+                },
+                {
+                  "id": 445,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 442,
+                  "p2": 444
+                },
+                {
+                  "id": 447,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 444,
+                  "p2": 446
+                },
+                {
+                  "id": 448,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 446,
+                  "p2": 441
+                }
+              ],
+              "circles": [],
+              "arcs": [],
+              "constraints": [],
+              "texts": [],
+              "dimensions": [],
+              "variables": {}
+            }
+          },
+          "plane": {
+            "origin": {
+              "x": 0,
+              "y": 0,
+              "z": 0
+            },
+            "normal": {
+              "x": 0,
+              "y": 0,
+              "z": 1
+            },
+            "xAxis": {
+              "x": 1,
+              "y": 0,
+              "z": 0
+            },
+            "yAxis": {
+              "x": 0,
+              "y": 1,
+              "z": 0
+            }
+          }
+        },
+        {
+          "id": "feature_7",
+          "name": "Extrude 1",
+          "type": "extrude",
+          "suppressed": false,
+          "visible": true,
+          "created": "2026-03-22T12:45:08.582Z",
+          "modified": "2026-03-22T12:45:08.582Z",
+          "dependencies": [
+            "feature_5"
+          ],
+          "children": [
+            "feature_5"
+          ],
+          "sketchFeatureId": "feature_5",
+          "distance": 10,
+          "direction": 1,
+          "symmetric": false,
+          "operation": "new",
+          "extrudeType": "distance",
+          "taper": false,
+          "taperAngle": 5,
+          "taperInward": true
+        },
+        {
+          "id": "feature_8",
+          "name": "Chamfer 1",
+          "type": "chamfer",
+          "suppressed": false,
+          "visible": true,
+          "created": "2026-03-22T12:45:16.770Z",
+          "modified": "2026-03-22T12:45:16.770Z",
+          "dependencies": [],
+          "children": [],
+          "distance": 1,
+          "edgeKeys": [
+            "21.97140,-19.19865,10.00000|21.97140,23.54574,10.00000",
+            "-35.94835,23.54574,10.00000|21.97140,23.54574,10.00000"
+          ]
+        },
+        {
+          "id": "feature_7",
+          "name": "Chamfer 2",
+          "type": "chamfer",
+          "suppressed": false,
+          "visible": true,
+          "created": "2026-03-22T13:15:43.850Z",
+          "modified": "2026-03-22T13:15:43.850Z",
+          "dependencies": [],
+          "children": [],
+          "distance": 1,
+          "edgeKeys": [
+            "-35.94835,-19.19865,10.00000|20.97140,-19.19865,10.00000"
+          ]
+        },
+        {
+          "id": "feature_9",
+          "name": "Chamfer 3",
+          "type": "chamfer",
+          "suppressed": false,
+          "visible": true,
+          "created": "2026-03-22T14:05:23.905Z",
+          "modified": "2026-03-22T14:05:23.905Z",
+          "dependencies": [],
+          "children": [],
+          "distance": 1,
+          "edgeKeys": [
+            "-35.94835,-18.19865,10.00000|-35.94835,22.54574,10.00000"
+          ]
+        }
+      ]
+    },
+    "originPlanes": {
+      "XY": {
+        "visible": false,
+        "size": 5
+      },
+      "XZ": {
+        "visible": false,
+        "size": 5
+      },
+      "YZ": {
+        "visible": false,
+        "size": 5
+      }
+    },
+    "originPlanesAutoHidden": true,
+    "material": null,
+    "mass": 0,
+    "volume": 0,
+    "centerOfMass": {
+      "x": 0,
+      "y": 0,
+      "z": 0
+    }
+  },
+  "orbit": {
+    "theta": 2.580398163397446,
+    "phi": 1.1821975511965965,
+    "radius": 100.38531606559364,
+    "target": {
+      "x": -6.988476640648315,
+      "y": 2.173547842407416,
+      "z": 5
+    }
+  },
+  "workspaceMode": "part",
+  "sessionState": {
+    "sketchingOnPlane": false,
+    "activeSketchPlane": null,
+    "editingSketchFeatureId": null,
+    "lastSketchFeatureId": null,
+    "savedOrbitState": null,
+    "expandedFolders": [],
+    "rollbackIndex": -1
+  },
+  "metadata": {
+    "createdWith": "CAD Modeller Open Design",
+    "exportedAt": "2026-03-22T14:05:43.662Z",
+    "featureCount": 5,
+    "featureTypes": [
+      "sketch",
+      "extrude",
+      "chamfer",
+      "chamfer",
+      "chamfer"
+    ],
+    "faceCount": 13,
+    "volume": 24658.112439,
+    "surfaceArea": 6845.179201,
+    "boundingBox": {
+      "min": {
+        "x": -35.94835178057353,
+        "y": -19.198646551744815,
+        "z": 0
+      },
+      "max": {
+        "x": 21.9713984992769,
+        "y": 23.545742236559647,
+        "z": 10
+      }
+    },
+    "width": 57.91975,
+    "height": 42.744389,
+    "depth": 10,
+    "edgeCount": 23,
+    "pathCount": 20,
+    "bodyCount": 1,
+    "bodySizes": [
+      13
+    ],
+    "minWallThickness": 10,
+    "maxWallThickness": 57.91975
+  }
+}

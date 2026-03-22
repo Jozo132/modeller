@@ -3,6 +3,10 @@
 // Loads JSON recording files from tests/samples/ and replays the commands
 // headlessly using the CAD API. Verifies that the final solid matches the
 // expected statistics stored in the recording's partStats field.
+//
+// Also loads .cmod project files from tests/samples/ — deserializes the Part
+// from the feature tree and verifies that rebuilt geometry matches the embedded
+// metadata.
 
 import assert from 'assert';
 import { readFileSync, readdirSync } from 'fs';
@@ -10,6 +14,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { Part } from '../js/cad/Part.js';
 import { Sketch } from '../js/cad/Sketch.js';
+import { parseCMOD } from '../js/cmod.js';
 import { calculateMeshVolume, calculateBoundingBox, calculateSurfaceArea, detectDisconnectedBodies, calculateWallThickness } from '../js/cad/CSG.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -421,6 +426,155 @@ for (const file of sampleFiles) {
       const wt = calculateWallThickness(geometry);
       assertApprox(wt.maxThickness, expected.maxWallThickness, 0.5,
         'Max wall thickness mismatch');
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Load and run all .cmod project samples
+// ---------------------------------------------------------------------------
+
+console.log('\n--- .cmod Project File Tests ---\n');
+
+let cmodFiles;
+try {
+  cmodFiles = readdirSync(SAMPLES_DIR).filter(f => f.endsWith('.cmod'));
+} catch (e) {
+  console.log('  No samples directory found — skipping .cmod tests');
+  cmodFiles = [];
+}
+
+for (const file of cmodFiles) {
+  const filePath = join(SAMPLES_DIR, file);
+  let raw;
+  try {
+    raw = readFileSync(filePath, 'utf-8');
+  } catch (e) {
+    test(`${file}: readable`, () => { throw new Error(`Failed to read: ${e.message}`); });
+    continue;
+  }
+
+  // Parse and validate
+  const parsed = parseCMOD(raw);
+  if (!parsed.ok) {
+    test(`${file}: valid .cmod`, () => { throw new Error(parsed.error); });
+    continue;
+  }
+
+  const cmod = parsed.data;
+  const expected = cmod.metadata;
+  if (!expected) {
+    test(`${file}: has metadata`, () => { throw new Error('Missing metadata in .cmod file'); });
+    continue;
+  }
+
+  // Deserialize the Part from the feature tree
+  let part;
+  try {
+    part = Part.deserialize(cmod.part);
+  } catch (e) {
+    test(`${file}: Part deserialize`, () => { throw new Error(`Deserialize failed: ${e.message}`); });
+    continue;
+  }
+
+  // Validate feature count
+  if (expected.featureCount !== undefined) {
+    test(`${file}: feature count`, () => {
+      assert.strictEqual(part.getFeatures().length, expected.featureCount,
+        `Expected ${expected.featureCount} features, got ${part.getFeatures().length}`);
+    });
+  }
+
+  // Validate feature types
+  if (expected.featureTypes) {
+    test(`${file}: feature types`, () => {
+      const actual = part.getFeatures().map(f => f.type);
+      assert.deepStrictEqual(actual, expected.featureTypes,
+        `Expected types ${JSON.stringify(expected.featureTypes)}, got ${JSON.stringify(actual)}`);
+    });
+  }
+
+  // Rebuild geometry from deserialized Part
+  const geo = part.getFinalGeometry();
+  const geometry = geo && geo.geometry ? geo.geometry : null;
+
+  if (!geometry) {
+    test(`${file}: has final geometry`, () => { throw new Error('No final geometry produced after deserialize'); });
+    continue;
+  }
+
+  // Validate face count
+  if (expected.faceCount !== undefined) {
+    test(`${file}: face count`, () => {
+      assert.strictEqual(geometry.faces.length, expected.faceCount,
+        `Expected ${expected.faceCount} faces, got ${geometry.faces.length}`);
+    });
+  }
+
+  // Validate volume (tolerance: 0.5)
+  if (expected.volume !== undefined) {
+    test(`${file}: volume`, () => {
+      assertApprox(calculateMeshVolume(geometry), expected.volume, 0.5, 'Volume mismatch');
+    });
+  }
+
+  // Validate surface area (tolerance: 0.5)
+  if (expected.surfaceArea !== undefined) {
+    test(`${file}: surface area`, () => {
+      assertApprox(calculateSurfaceArea(geometry), expected.surfaceArea, 0.5, 'Surface area mismatch');
+    });
+  }
+
+  // Validate bounding box dimensions (tolerance: 0.01)
+  const bb = calculateBoundingBox(geometry);
+  if (expected.width !== undefined) {
+    test(`${file}: width`, () => { assertApprox(bb.max.x - bb.min.x, expected.width, 0.01, 'Width mismatch'); });
+  }
+  if (expected.height !== undefined) {
+    test(`${file}: height`, () => { assertApprox(bb.max.y - bb.min.y, expected.height, 0.01, 'Height mismatch'); });
+  }
+  if (expected.depth !== undefined) {
+    test(`${file}: depth`, () => { assertApprox(bb.max.z - bb.min.z, expected.depth, 0.01, 'Depth mismatch'); });
+  }
+
+  // Validate edge count
+  if (expected.edgeCount !== undefined) {
+    test(`${file}: edge count`, () => {
+      const actual = (geometry.edges || []).length;
+      assert.strictEqual(actual, expected.edgeCount,
+        `Expected ${expected.edgeCount} feature edges, got ${actual}`);
+    });
+  }
+
+  // Validate path count
+  if (expected.pathCount !== undefined) {
+    test(`${file}: path count`, () => {
+      const actual = (geometry.paths || []).length;
+      assert.strictEqual(actual, expected.pathCount,
+        `Expected ${expected.pathCount} paths, got ${actual}`);
+    });
+  }
+
+  // Validate body count
+  if (expected.bodyCount !== undefined) {
+    test(`${file}: body count`, () => {
+      const bodies = detectDisconnectedBodies(geometry);
+      assert.strictEqual(bodies.bodyCount, expected.bodyCount,
+        `Expected ${expected.bodyCount} connected body(ies), got ${bodies.bodyCount}`);
+    });
+  }
+
+  // Validate wall thickness
+  if (expected.minWallThickness !== undefined) {
+    test(`${file}: min wall thickness`, () => {
+      const wt = calculateWallThickness(geometry);
+      assertApprox(wt.minThickness, expected.minWallThickness, 0.5, 'Min wall thickness mismatch');
+    });
+  }
+  if (expected.maxWallThickness !== undefined) {
+    test(`${file}: max wall thickness`, () => {
+      const wt = calculateWallThickness(geometry);
+      assertApprox(wt.maxThickness, expected.maxWallThickness, 0.5, 'Max wall thickness mismatch');
     });
   }
 }

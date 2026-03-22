@@ -1,0 +1,256 @@
+{
+  "format": "CAD Modeller Open Design",
+  "version": 1,
+  "scene": null,
+  "layers": [
+    {
+      "name": "0",
+      "color": "#9CDCFE",
+      "visible": true,
+      "locked": false
+    }
+  ],
+  "activeLayer": "0",
+  "settings": {
+    "gridSize": 10,
+    "gridVisible": true,
+    "snapEnabled": true,
+    "orthoEnabled": false,
+    "autoCoincidence": true,
+    "fov": 45,
+    "constructionMode": false
+  },
+  "viewport": null,
+  "part": {
+    "type": "Part",
+    "name": "Part1",
+    "description": "",
+    "created": "2026-03-22T13:40:44.999Z",
+    "modified": "2026-03-22T13:40:45.000Z",
+    "featureTree": {
+      "features": [
+        {
+          "id": "feature_3",
+          "name": "Sketch 1",
+          "type": "sketch",
+          "suppressed": false,
+          "visible": false,
+          "created": "2026-03-22T13:40:44.999Z",
+          "modified": "2026-03-22T13:40:44.999Z",
+          "dependencies": [],
+          "children": [],
+          "sketch": {
+            "name": "Sketch 1",
+            "description": "",
+            "created": "2026-03-22T13:40:44.999Z",
+            "modified": "2026-03-22T13:40:44.999Z",
+            "scene": {
+              "points": [
+                {
+                  "id": 9,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": 0,
+                  "y": 0,
+                  "fixed": false
+                },
+                {
+                  "id": 10,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": 10,
+                  "y": 0,
+                  "fixed": false
+                },
+                {
+                  "id": 12,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": 10,
+                  "y": 10,
+                  "fixed": false
+                },
+                {
+                  "id": 14,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": 0,
+                  "y": 10,
+                  "fixed": false
+                }
+              ],
+              "segments": [
+                {
+                  "id": 11,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 9,
+                  "p2": 10
+                },
+                {
+                  "id": 13,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 10,
+                  "p2": 12
+                },
+                {
+                  "id": 15,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 12,
+                  "p2": 14
+                },
+                {
+                  "id": 16,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 14,
+                  "p2": 9
+                }
+              ],
+              "circles": [],
+              "arcs": [],
+              "constraints": [],
+              "texts": [],
+              "dimensions": [],
+              "variables": {}
+            }
+          },
+          "plane": {
+            "origin": {
+              "x": 0,
+              "y": 0,
+              "z": 0
+            },
+            "normal": {
+              "x": 0,
+              "y": 0,
+              "z": 1
+            },
+            "xAxis": {
+              "x": 1,
+              "y": 0,
+              "z": 0
+            },
+            "yAxis": {
+              "x": 0,
+              "y": 1,
+              "z": 0
+            }
+          }
+        },
+        {
+          "id": "feature_4",
+          "name": "Extrude 1",
+          "type": "extrude",
+          "suppressed": false,
+          "visible": true,
+          "created": "2026-03-22T13:40:44.999Z",
+          "modified": "2026-03-22T13:40:44.999Z",
+          "dependencies": [
+            "feature_3"
+          ],
+          "children": [
+            "feature_3"
+          ],
+          "sketchFeatureId": "feature_3",
+          "distance": 10,
+          "direction": 1,
+          "symmetric": false,
+          "operation": "new",
+          "extrudeType": "distance",
+          "taper": false,
+          "taperAngle": 5,
+          "taperInward": true
+        },
+        {
+          "id": "feature_5",
+          "name": "Chamfer 1",
+          "type": "chamfer",
+          "suppressed": false,
+          "visible": true,
+          "created": "2026-03-22T13:40:45.001Z",
+          "modified": "2026-03-22T13:40:45.001Z",
+          "dependencies": [],
+          "children": [],
+          "distance": 1,
+          "edgeKeys": [
+            "0.00000,0.00000,10.00000|10.00000,0.00000,10.00000"
+          ]
+        }
+      ]
+    },
+    "originPlanes": {
+      "XY": {
+        "visible": false,
+        "size": 5
+      },
+      "XZ": {
+        "visible": false,
+        "size": 5
+      },
+      "YZ": {
+        "visible": false,
+        "size": 5
+      }
+    },
+    "originPlanesAutoHidden": true,
+    "material": null,
+    "mass": 0,
+    "volume": 0,
+    "centerOfMass": {
+      "x": 0,
+      "y": 0,
+      "z": 0
+    }
+  },
+  "orbit": null,
+  "workspaceMode": "part",
+  "sessionState": null,
+  "metadata": {
+    "createdWith": "CAD Modeller Open Design",
+    "exportedAt": "2026-03-22T13:40:45.008Z",
+    "featureCount": 3,
+    "featureTypes": [
+      "sketch",
+      "extrude",
+      "chamfer"
+    ],
+    "faceCount": 7,
+    "volume": 995,
+    "surfaceArea": 593.142136,
+    "boundingBox": {
+      "min": {
+        "x": 0,
+        "y": 0,
+        "z": 0
+      },
+      "max": {
+        "x": 10,
+        "y": 10,
+        "z": 10
+      }
+    },
+    "width": 10,
+    "height": 10,
+    "depth": 10,
+    "edgeCount": 15,
+    "pathCount": 15,
+    "bodyCount": 1,
+    "bodySizes": [
+      7
+    ],
+    "minWallThickness": 10,
+    "maxWallThickness": 13.435029,
+    "description": "10x10x10 box with a 1-unit chamfer on one top edge"
+  }
+}

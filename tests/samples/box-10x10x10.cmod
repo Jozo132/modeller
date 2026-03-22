@@ -1,0 +1,240 @@
+{
+  "format": "CAD Modeller Open Design",
+  "version": 1,
+  "scene": null,
+  "layers": [
+    {
+      "name": "0",
+      "color": "#9CDCFE",
+      "visible": true,
+      "locked": false
+    }
+  ],
+  "activeLayer": "0",
+  "settings": {
+    "gridSize": 10,
+    "gridVisible": true,
+    "snapEnabled": true,
+    "orthoEnabled": false,
+    "autoCoincidence": true,
+    "fov": 45,
+    "constructionMode": false
+  },
+  "viewport": null,
+  "part": {
+    "type": "Part",
+    "name": "Part1",
+    "description": "",
+    "created": "2026-03-22T13:40:44.984Z",
+    "modified": "2026-03-22T13:40:44.986Z",
+    "featureTree": {
+      "features": [
+        {
+          "id": "feature_1",
+          "name": "Sketch 1",
+          "type": "sketch",
+          "suppressed": false,
+          "visible": false,
+          "created": "2026-03-22T13:40:44.985Z",
+          "modified": "2026-03-22T13:40:44.986Z",
+          "dependencies": [],
+          "children": [],
+          "sketch": {
+            "name": "Sketch 1",
+            "description": "",
+            "created": "2026-03-22T13:40:44.985Z",
+            "modified": "2026-03-22T13:40:44.985Z",
+            "scene": {
+              "points": [
+                {
+                  "id": 1,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": 0,
+                  "y": 0,
+                  "fixed": false
+                },
+                {
+                  "id": 2,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": 10,
+                  "y": 0,
+                  "fixed": false
+                },
+                {
+                  "id": 4,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": 10,
+                  "y": 10,
+                  "fixed": false
+                },
+                {
+                  "id": 6,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": 0,
+                  "y": 10,
+                  "fixed": false
+                }
+              ],
+              "segments": [
+                {
+                  "id": 3,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 1,
+                  "p2": 2
+                },
+                {
+                  "id": 5,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 2,
+                  "p2": 4
+                },
+                {
+                  "id": 7,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 4,
+                  "p2": 6
+                },
+                {
+                  "id": 8,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 6,
+                  "p2": 1
+                }
+              ],
+              "circles": [],
+              "arcs": [],
+              "constraints": [],
+              "texts": [],
+              "dimensions": [],
+              "variables": {}
+            }
+          },
+          "plane": {
+            "origin": {
+              "x": 0,
+              "y": 0,
+              "z": 0
+            },
+            "normal": {
+              "x": 0,
+              "y": 0,
+              "z": 1
+            },
+            "xAxis": {
+              "x": 1,
+              "y": 0,
+              "z": 0
+            },
+            "yAxis": {
+              "x": 0,
+              "y": 1,
+              "z": 0
+            }
+          }
+        },
+        {
+          "id": "feature_2",
+          "name": "Extrude 1",
+          "type": "extrude",
+          "suppressed": false,
+          "visible": true,
+          "created": "2026-03-22T13:40:44.986Z",
+          "modified": "2026-03-22T13:40:44.986Z",
+          "dependencies": [
+            "feature_1"
+          ],
+          "children": [
+            "feature_1"
+          ],
+          "sketchFeatureId": "feature_1",
+          "distance": 10,
+          "direction": 1,
+          "symmetric": false,
+          "operation": "new",
+          "extrudeType": "distance",
+          "taper": false,
+          "taperAngle": 5,
+          "taperInward": true
+        }
+      ]
+    },
+    "originPlanes": {
+      "XY": {
+        "visible": false,
+        "size": 5
+      },
+      "XZ": {
+        "visible": false,
+        "size": 5
+      },
+      "YZ": {
+        "visible": false,
+        "size": 5
+      }
+    },
+    "originPlanesAutoHidden": true,
+    "material": null,
+    "mass": 0,
+    "volume": 0,
+    "centerOfMass": {
+      "x": 0,
+      "y": 0,
+      "z": 0
+    }
+  },
+  "orbit": null,
+  "workspaceMode": "part",
+  "sessionState": null,
+  "metadata": {
+    "createdWith": "CAD Modeller Open Design",
+    "exportedAt": "2026-03-22T13:40:44.995Z",
+    "featureCount": 2,
+    "featureTypes": [
+      "sketch",
+      "extrude"
+    ],
+    "faceCount": 6,
+    "volume": 1000,
+    "surfaceArea": 600,
+    "boundingBox": {
+      "min": {
+        "x": 0,
+        "y": 0,
+        "z": 0
+      },
+      "max": {
+        "x": 10,
+        "y": 10,
+        "z": 10
+      }
+    },
+    "width": 10,
+    "height": 10,
+    "depth": 10,
+    "edgeCount": 12,
+    "pathCount": 12,
+    "bodyCount": 1,
+    "bodySizes": [
+      6
+    ],
+    "minWallThickness": 10,
+    "maxWallThickness": 10,
+    "description": "Simple 10x10x10 box: rectangle sketch on XY plane, extruded 10 units"
+  }
+}
