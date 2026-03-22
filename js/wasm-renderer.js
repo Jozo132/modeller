@@ -120,6 +120,8 @@ export class WasmRenderer {
     this._edgeToPath = null;       // Map<edgeIndex, pathIndex>
     this._selectedEdgeIndices = new Set(); // indices into _meshEdgeSegments
     this._edgeSelectionMode = false; // true when picking edges for chamfer/fillet
+    this._hoveredEdgeIndex = -1;  // currently hovered edge index (for highlight)
+    this._hoveredFaceIndex = -1;  // currently hovered face index (for highlight)
 
     // Sketch plane reference (set when in sketch-on-plane mode)
     this._sketchPlane = null; // 'XY', 'XZ', 'YZ', or null
@@ -762,6 +764,106 @@ export class WasmRenderer {
         this._selectedEdgeIndices.add(i);
       }
     }
+  }
+
+  /**
+   * Get all edge indices that border a given face.
+   * @param {number} faceIndex
+   * @returns {number[]} edge indices
+   */
+  getEdgeIndicesForFace(faceIndex) {
+    if (!this._meshEdgeSegments) return [];
+    const result = [];
+    for (let i = 0; i < this._meshEdgeSegments.length; i++) {
+      const seg = this._meshEdgeSegments[i];
+      if (seg.faceIndices && seg.faceIndices.includes(faceIndex)) {
+        result.push(i);
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Select all edges around a face (add to selection).
+   * @param {number} faceIndex
+   */
+  selectEdgesForFace(faceIndex) {
+    const edgeIndices = this.getEdgeIndicesForFace(faceIndex);
+    for (const i of edgeIndices) {
+      this._selectedEdgeIndices.add(i);
+    }
+  }
+
+  /**
+   * Add a single edge (by path) to the selection without toggling.
+   * @param {number} edgeIndex
+   */
+  addEdgeSelection(edgeIndex) {
+    const pathIdx = this._edgeToPath ? this._edgeToPath.get(edgeIndex) : undefined;
+    if (pathIdx !== undefined && this._meshEdgePaths) {
+      const path = this._meshEdgePaths[pathIdx];
+      for (const i of path.edgeIndices) this._selectedEdgeIndices.add(i);
+    } else {
+      this._selectedEdgeIndices.add(edgeIndex);
+    }
+  }
+
+  /**
+   * Remove a single edge (by path) from the selection without toggling.
+   * @param {number} edgeIndex
+   */
+  removeEdgeSelection(edgeIndex) {
+    const pathIdx = this._edgeToPath ? this._edgeToPath.get(edgeIndex) : undefined;
+    if (pathIdx !== undefined && this._meshEdgePaths) {
+      const path = this._meshEdgePaths[pathIdx];
+      for (const i of path.edgeIndices) this._selectedEdgeIndices.delete(i);
+    } else {
+      this._selectedEdgeIndices.delete(edgeIndex);
+    }
+  }
+
+  /**
+   * Set the hovered edge index for highlight rendering. Pass -1 to clear.
+   * @param {number} edgeIndex
+   */
+  setHoveredEdge(edgeIndex) {
+    this._hoveredEdgeIndex = edgeIndex;
+  }
+
+  /**
+   * Set the hovered face index for highlight rendering. Pass -1 to clear.
+   * @param {number} faceIndex
+   */
+  setHoveredFace(faceIndex) {
+    this._hoveredFaceIndex = faceIndex;
+  }
+
+  /**
+   * Get selected edge keys as position-based strings.
+   * @returns {string[]} Array of edge key strings
+   */
+  getSelectedEdgeKeys() {
+    const edges = this.getSelectedEdges();
+    const prec = 5;
+    const vk = (v) => `${v.x.toFixed(prec)},${v.y.toFixed(prec)},${v.z.toFixed(prec)}`;
+    return edges.map(e => {
+      const ka = vk(e.start), kb = vk(e.end);
+      return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+    });
+  }
+
+  /**
+   * Check if an edge (by path) is currently selected.
+   * @param {number} edgeIndex
+   * @returns {boolean}
+   */
+  isEdgeSelected(edgeIndex) {
+    const pathIdx = this._edgeToPath ? this._edgeToPath.get(edgeIndex) : undefined;
+    if (pathIdx !== undefined && this._meshEdgePaths) {
+      const path = this._meshEdgePaths[pathIdx];
+      return path.edgeIndices.some(i => this._selectedEdgeIndices.has(i));
+    }
+    return this._selectedEdgeIndices.has(edgeIndex);
   }
 
   /**
@@ -2535,6 +2637,81 @@ export class WasmRenderer {
           gl.drawArrays(gl.LINES, 0, selEdgeVerts.length / 3);
           gl.bindVertexArray(null);
           gl.enable(gl.DEPTH_TEST);
+        }
+      }
+
+      // Draw hovered edge highlight (yellow, not yet selected)
+      if (this._hoveredEdgeIndex >= 0 && this._meshEdgeSegments) {
+        const hovVerts = [];
+        // Resolve full path for the hovered edge
+        const pathIdx = this._edgeToPath ? this._edgeToPath.get(this._hoveredEdgeIndex) : undefined;
+        if (pathIdx !== undefined && this._meshEdgePaths) {
+          for (const i of this._meshEdgePaths[pathIdx].edgeIndices) {
+            const seg = this._meshEdgeSegments[i];
+            if (!seg) continue;
+            hovVerts.push(seg.start.x, seg.start.y, seg.start.z);
+            hovVerts.push(seg.end.x, seg.end.y, seg.end.z);
+          }
+        } else {
+          const seg = this._meshEdgeSegments[this._hoveredEdgeIndex];
+          if (seg) {
+            hovVerts.push(seg.start.x, seg.start.y, seg.start.z);
+            hovVerts.push(seg.end.x, seg.end.y, seg.end.z);
+          }
+        }
+        if (hovVerts.length > 0) {
+          const hovData = new Float32Array(hovVerts);
+          gl.useProgram(exec.programs[1]);
+          gl.uniformMatrix4fv(exec.uniforms[1].uMVP, false, mvp);
+          gl.uniform4f(exec.uniforms[1].uColor, 1.0, 0.9, 0.0, 1.0);
+          gl.lineWidth(1.0);
+          gl.disable(gl.DEPTH_TEST);
+
+          gl.bindVertexArray(exec.vaoLine);
+          gl.bindBuffer(gl.ARRAY_BUFFER, exec.vbo);
+          gl.bufferData(gl.ARRAY_BUFFER, hovData, gl.DYNAMIC_DRAW);
+          gl.drawArrays(gl.LINES, 0, hovVerts.length / 3);
+          gl.bindVertexArray(null);
+          gl.enable(gl.DEPTH_TEST);
+        }
+      }
+
+      // Draw hovered face highlight (semi-transparent yellow)
+      if (this._hoveredFaceIndex >= 0 && this._meshFaces && this._triFaceMap) {
+        const hovFaceVerts = [];
+        const triCnt = this._meshTriangleCount / 3;
+        for (let ti = 0; ti < triCnt; ti++) {
+          if (this._triFaceMap[ti] === this._hoveredFaceIndex) {
+            const base = ti * 3 * 6;
+            for (let vi = 0; vi < 3; vi++) {
+              const vb = base + vi * 6;
+              hovFaceVerts.push(
+                this._meshTriangles[vb], this._meshTriangles[vb + 1], this._meshTriangles[vb + 2],
+                this._meshTriangles[vb + 3], this._meshTriangles[vb + 4], this._meshTriangles[vb + 5]
+              );
+            }
+          }
+        }
+        if (hovFaceVerts.length > 0) {
+          gl.enable(gl.BLEND);
+          gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+          gl.depthFunc(gl.LEQUAL);
+          gl.disable(gl.CULL_FACE);
+
+          const hovFaceData = new Float32Array(hovFaceVerts);
+          gl.useProgram(exec.programs[0]);
+          gl.uniformMatrix4fv(exec.uniforms[0].uMVP, false, mvp);
+          gl.uniform4f(exec.uniforms[0].uColor, 1.0, 0.9, 0.0, 0.2);
+
+          gl.bindVertexArray(exec.vaoSolid);
+          gl.bindBuffer(gl.ARRAY_BUFFER, exec.vbo);
+          gl.bufferData(gl.ARRAY_BUFFER, hovFaceData, gl.DYNAMIC_DRAW);
+          gl.drawArrays(gl.TRIANGLES, 0, hovFaceVerts.length / 6);
+          gl.bindVertexArray(null);
+
+          gl.disable(gl.BLEND);
+          gl.enable(gl.CULL_FACE);
+          gl.cullFace(gl.BACK);
         }
       }
 

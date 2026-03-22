@@ -965,6 +965,41 @@ class App {
 
       // Plane hover highlight in Part mode 3D view
       if (this._workspaceMode === 'part' && this._renderer3d) {
+        // Edge/face hover for chamfer/fillet mode or default part mode
+        if ((this._chamferMode || this._filletMode) && this._renderer3d._edgeSelectionMode) {
+          const edgeHit = this._renderer3d.pickEdge(e.clientX, e.clientY);
+          if (edgeHit) {
+            this._renderer3d.setHoveredEdge(edgeHit.edgeIndex);
+            this._renderer3d.setHoveredFace(-1);
+            this.canvas.style.cursor = 'pointer';
+          } else {
+            // Try face hover
+            const faceHit = this._renderer3d.pickFace(e.clientX, e.clientY);
+            if (faceHit) {
+              this._renderer3d.setHoveredEdge(-1);
+              this._renderer3d.setHoveredFace(faceHit.faceIndex);
+              this.canvas.style.cursor = 'pointer';
+            } else {
+              this._renderer3d.setHoveredEdge(-1);
+              this._renderer3d.setHoveredFace(-1);
+              this.canvas.style.cursor = '';
+            }
+          }
+          this._scheduleRender();
+        } else if (!this._sketchingOnPlane && !this._extrudeMode) {
+          // Default part mode: hover highlight for edges
+          const edgeHit = this._renderer3d.pickEdge(e.clientX, e.clientY);
+          if (edgeHit) {
+            this._renderer3d.setHoveredEdge(edgeHit.edgeIndex);
+            this.canvas.style.cursor = 'pointer';
+            this._scheduleRender();
+          } else if (this._renderer3d._hoveredEdgeIndex >= 0) {
+            this._renderer3d.setHoveredEdge(-1);
+            this.canvas.style.cursor = '';
+            this._scheduleRender();
+          }
+        }
+
         const hitPlaneResult = this._renderer3d.pickPlane(e.clientX, e.clientY);
         const hitPlane = hitPlaneResult ? hitPlaneResult.name : null;
         if (hitPlane !== this._hoveredPlane) {
@@ -973,7 +1008,9 @@ class App {
           // Update feature tree hover styling
           const planeItems = document.querySelectorAll('.node-tree-plane[data-plane]');
           planeItems.forEach(p => p.classList.toggle('hovered', p.getAttribute('data-plane') === hitPlane));
-          this.canvas.style.cursor = hitPlane ? 'pointer' : '';
+          if (!this._chamferMode && !this._filletMode) {
+            this.canvas.style.cursor = hitPlane ? 'pointer' : '';
+          }
         }
       }
 
@@ -1055,17 +1092,86 @@ class App {
 
       // In Part mode 3D view: handle sketch/face/geometry picking and plane clicking
       if (this._workspaceMode === 'part' && this._renderer3d) {
-        // Edge picking for chamfer/fillet mode
+        // Edge/face picking for chamfer/fillet mode
         if ((this._chamferMode || this._filletMode) && this._renderer3d._edgeSelectionMode) {
           const edgeHit = this._renderer3d.pickEdge(e.clientX, e.clientY);
           if (edgeHit) {
-            this._renderer3d.toggleEdgeSelection(edgeHit.edgeIndex);
+            // Shift = always add, Ctrl = toggle, plain = clear + add
+            if (e.shiftKey) {
+              this._renderer3d.addEdgeSelection(edgeHit.edgeIndex);
+            } else if (e.ctrlKey) {
+              this._renderer3d.toggleEdgeSelection(edgeHit.edgeIndex);
+            } else {
+              this._renderer3d.clearEdgeSelection();
+              this._selectedFacesForEdges = new Map();
+              this._renderer3d.addEdgeSelection(edgeHit.edgeIndex);
+            }
+            this._onEdgeSelectionChanged();
+            this._scheduleRender();
+            this._updateNodeTree();
+            this._updateOperationButtons();
+            return;
+          }
+          // No edge hit — try face picking to select all edges around that face
+          const faceHit = this._renderer3d.pickFace(e.clientX, e.clientY);
+          if (faceHit) {
+            const faceIdx = faceHit.faceIndex;
+            const faceEdges = this._renderer3d.getEdgeIndicesForFace(faceIdx);
+            if (!e.shiftKey && !e.ctrlKey) {
+              this._renderer3d.clearEdgeSelection();
+              this._selectedFacesForEdges = new Map();
+            }
+            if (e.ctrlKey) {
+              // Toggle: if face is already tracked, remove it
+              if (this._selectedFacesForEdges && this._selectedFacesForEdges.has(faceIdx)) {
+                for (const i of faceEdges) this._renderer3d.removeEdgeSelection(i);
+                this._selectedFacesForEdges.delete(faceIdx);
+              } else {
+                this._renderer3d.selectEdgesForFace(faceIdx);
+                if (this._selectedFacesForEdges) this._selectedFacesForEdges.set(faceIdx, faceEdges);
+              }
+            } else {
+              this._renderer3d.selectEdgesForFace(faceIdx);
+              if (this._selectedFacesForEdges) this._selectedFacesForEdges.set(faceIdx, faceEdges);
+            }
+            this._onEdgeSelectionChanged();
+            this._scheduleRender();
+            this._updateNodeTree();
+            this._updateOperationButtons();
+            return;
+          }
+          // Clicked empty space — clear selection (unless modifier held)
+          if (!e.shiftKey && !e.ctrlKey) {
+            this._renderer3d.clearEdgeSelection();
+            this._selectedFacesForEdges = new Map();
             this._onEdgeSelectionChanged();
             this._scheduleRender();
           }
           this._updateNodeTree();
           this._updateOperationButtons();
           return;
+        }
+
+        // Edge picking in default part select mode
+        if (!this._sketchingOnPlane && !this._extrudeMode) {
+          const edgeHit = this._renderer3d.pickEdge(e.clientX, e.clientY);
+          if (edgeHit) {
+            // Show edge info in status bar
+            const seg = edgeHit.edge;
+            const prec = 2;
+            const fmt = (v) => `(${v.x.toFixed(prec)}, ${v.y.toFixed(prec)}, ${v.z.toFixed(prec)})`;
+            this.setStatus(`Edge: ${fmt(seg.start)} \u2192 ${fmt(seg.end)}`);
+            // Highlight this edge temporarily via selection
+            this._renderer3d.setHoveredEdge(-1);
+            this._selectedFace = null;
+            this._renderer3d.selectFace(-1);
+            if (this._featurePanel) this._featurePanel.selectFeature(null);
+            if (this._renderer3d) this._renderer3d.setSelectedFeature(null);
+            if (this._parametersPanel) this._parametersPanel.clear();
+            this._showLeftFeatureParams(null);
+            this._scheduleRender();
+            // Don't return — fall through to allow sketch/plane picking to take priority below
+          }
         }
 
         // Try sketch picking first (wireframes are visually on top)
@@ -2391,42 +2497,14 @@ class App {
   _showSelectionSummary(container) {
     container.innerHTML = '';
 
-    const header = document.createElement('div');
-    header.className = 'parameter-row';
-    header.innerHTML = '<label class="parameter-label" style="font-weight:600">Selection</label>';
-    container.appendChild(header);
+    // Hint text
+    const hint = document.createElement('div');
+    hint.className = 'hint edge-selection-hint';
+    hint.textContent = 'Click to select faces, planes, or features. Shift+click to add, Ctrl+click to toggle.';
+    container.appendChild(hint);
 
-    const items = [];
-
-    if (this._selectedPlane) {
-      items.push({ icon: '📏', label: `${this._selectedPlane} Plane` });
-    }
-
-    if (this._selectedFace) {
-      const faceIdx = this._selectedFace.faceIndex != null ? this._selectedFace.faceIndex : '?';
-      items.push({ icon: '🔲', label: `Face ${faceIdx}` });
-    }
-
-    if (this._renderer3d && this._renderer3d._selectedFeatureId) {
-      const fId = this._renderer3d._selectedFeatureId;
-      const features = this._partManager ? this._partManager.getFeatures() : [];
-      const feat = features.find(f => f.id === fId);
-      items.push({ icon: '📐', label: feat ? feat.name : fId });
-    }
-
-    if (items.length === 0) {
-      const hint = document.createElement('p');
-      hint.className = 'hint';
-      hint.textContent = 'Nothing selected';
-      container.appendChild(hint);
-    } else {
-      for (const item of items) {
-        const row = document.createElement('div');
-        row.className = 'parameter-row lp-item';
-        row.innerHTML = `<span style="opacity:0.6;margin-right:4px">${item.icon}</span> ${item.label}`;
-        container.appendChild(row);
-      }
-    }
+    // Unified selection list
+    container.appendChild(this._buildSelectionList());
 
     // Show required selections per operation
     const reqHeader = document.createElement('div');
@@ -6921,6 +6999,7 @@ class App {
       distance: 1,
       editingFeatureId: null,
     };
+    this._selectedFacesForEdges = new Map(); // faceIndex → edgeIndices[]
 
     if (this._renderer3d) {
       this._renderer3d.setEdgeSelectionMode(true);
@@ -6947,12 +7026,14 @@ class App {
     header.innerHTML = `<label class="parameter-label" style="font-weight:600">Chamfer${cm.editingFeatureId ? ' (Edit)' : ''}</label>`;
     container.appendChild(header);
 
-    // Selected edges count
-    const edgeCount = this._renderer3d ? this._renderer3d._selectedEdgeIndices.size : 0;
-    const edgeRow = document.createElement('div');
-    edgeRow.className = 'parameter-row';
-    edgeRow.innerHTML = `<label class="parameter-label">Edges</label><span class="parameter-value">${edgeCount} selected</span>`;
-    container.appendChild(edgeRow);
+    // Hint text
+    const hint = document.createElement('div');
+    hint.className = 'hint edge-selection-hint';
+    hint.textContent = 'Click edge to select. Click face to select all edges. Shift+click to add, Ctrl+click to toggle.';
+    container.appendChild(hint);
+
+    // Selection list
+    container.appendChild(this._buildEdgeSelectionList());
 
     // Distance
     container.appendChild(this._createParamRow('Distance', 'number', cm.distance, (v) => {
@@ -6988,19 +7069,11 @@ class App {
     if (!this._chamferMode) return;
     const cm = this._chamferMode;
 
-    const selectedEdges = this._renderer3d ? this._renderer3d.getSelectedEdges() : [];
-    if (selectedEdges.length === 0) {
+    const edgeKeys = this._renderer3d ? this._renderer3d.getSelectedEdgeKeys() : [];
+    if (edgeKeys.length === 0) {
       this.setStatus('Select at least one edge for chamfer.');
       return;
     }
-
-    // Build edge keys from selected edges
-    const edgeKeys = selectedEdges.map(e => {
-      const prec = 5;
-      const vk = (v) => `${v.x.toFixed(prec)},${v.y.toFixed(prec)},${v.z.toFixed(prec)}`;
-      const ka = vk(e.start), kb = vk(e.end);
-      return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
-    });
 
     try {
       if (cm.editingFeatureId) {
@@ -7037,6 +7110,8 @@ class App {
     if (this._renderer3d) {
       this._renderer3d.setEdgeSelectionMode(false);
       this._renderer3d.clearGhostPreview();
+      this._renderer3d.setHoveredEdge(-1);
+      this._renderer3d.setHoveredFace(-1);
     }
     const btnChamfer = document.getElementById('btn-chamfer');
     if (btnChamfer) btnChamfer.classList.remove('active');
@@ -7062,6 +7137,7 @@ class App {
       segments: 8,
       editingFeatureId: null,
     };
+    this._selectedFacesForEdges = new Map(); // faceIndex → edgeIndices[]
 
     if (this._renderer3d) {
       this._renderer3d.setEdgeSelectionMode(true);
@@ -7088,12 +7164,14 @@ class App {
     header.innerHTML = `<label class="parameter-label" style="font-weight:600">Fillet${fm.editingFeatureId ? ' (Edit)' : ''}</label>`;
     container.appendChild(header);
 
-    // Selected edges count
-    const edgeCount = this._renderer3d ? this._renderer3d._selectedEdgeIndices.size : 0;
-    const edgeRow = document.createElement('div');
-    edgeRow.className = 'parameter-row';
-    edgeRow.innerHTML = `<label class="parameter-label">Edges</label><span class="parameter-value">${edgeCount} selected</span>`;
-    container.appendChild(edgeRow);
+    // Hint text
+    const hint = document.createElement('div');
+    hint.className = 'hint edge-selection-hint';
+    hint.textContent = 'Click edge to select. Click face to select all edges. Shift+click to add, Ctrl+click to toggle.';
+    container.appendChild(hint);
+
+    // Selection list
+    container.appendChild(this._buildEdgeSelectionList());
 
     // Radius
     container.appendChild(this._createParamRow('Radius', 'number', fm.radius, (v) => {
@@ -7138,19 +7216,11 @@ class App {
     if (!this._filletMode) return;
     const fm = this._filletMode;
 
-    const selectedEdges = this._renderer3d ? this._renderer3d.getSelectedEdges() : [];
-    if (selectedEdges.length === 0) {
+    const edgeKeys = this._renderer3d ? this._renderer3d.getSelectedEdgeKeys() : [];
+    if (edgeKeys.length === 0) {
       this.setStatus('Select at least one edge for fillet.');
       return;
     }
-
-    // Build edge keys from selected edges
-    const edgeKeys = selectedEdges.map(e => {
-      const prec = 5;
-      const vk = (v) => `${v.x.toFixed(prec)},${v.y.toFixed(prec)},${v.z.toFixed(prec)}`;
-      const ka = vk(e.start), kb = vk(e.end);
-      return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
-    });
 
     try {
       if (fm.editingFeatureId) {
@@ -7188,6 +7258,8 @@ class App {
     if (this._renderer3d) {
       this._renderer3d.setEdgeSelectionMode(false);
       this._renderer3d.clearGhostPreview();
+      this._renderer3d.setHoveredEdge(-1);
+      this._renderer3d.setHoveredFace(-1);
     }
     const btnFillet = document.getElementById('btn-fillet');
     if (btnFillet) btnFillet.classList.remove('active');
@@ -7196,10 +7268,207 @@ class App {
     this._scheduleRender();
   }
 
-  /** Called when edge selection changes (click toggle) — refresh UI. */
-  _onEdgeSelectionChanged() {
+  /**
+   * Build a unified selection list panel showing all currently selected items
+   * (planes, faces, features, edges) with × remove buttons and hover highlights.
+   * Reused in selection summary, chamfer UI, fillet UI, etc.
+   * @returns {HTMLElement}
+   */
+  _buildSelectionList() {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'edge-selection-list';
+
+    // Collect all selected items
+    const items = [];
+
+    // Plane
+    if (this._selectedPlane) {
+      items.push({
+        icon: '📏', label: `${this._selectedPlane} Plane`, type: 'plane',
+        onHover: () => { if (this._renderer3d) { this._renderer3d.setHoveredPlane(this._selectedPlane); this._scheduleRender(); } },
+        onLeave: () => { if (this._renderer3d) { this._renderer3d.setHoveredPlane(null); this._scheduleRender(); } },
+        onRemove: () => { this._selectedPlane = null; if (this._renderer3d) this._renderer3d.setSelectedPlane(null); this._refreshSelectionUI(); this._scheduleRender(); }
+      });
+    }
+
+    // Face (selected in default mode, not edge-selection mode)
+    if (this._selectedFace) {
+      const faceIdx = this._selectedFace.faceIndex != null ? this._selectedFace.faceIndex : '?';
+      items.push({
+        icon: '🔲', label: `Face ${faceIdx}`, type: 'face',
+        onHover: () => { if (this._renderer3d) { this._renderer3d.setHoveredFace(this._selectedFace.faceIndex); this._scheduleRender(); } },
+        onLeave: () => { if (this._renderer3d) { this._renderer3d.setHoveredFace(-1); this._scheduleRender(); } },
+        onRemove: () => { this._selectedFace = null; if (this._renderer3d) this._renderer3d.selectFace(-1); this._refreshSelectionUI(); this._scheduleRender(); }
+      });
+    }
+
+    // Feature
+    if (this._renderer3d && this._renderer3d._selectedFeatureId) {
+      const fId = this._renderer3d._selectedFeatureId;
+      const features = this._partManager ? this._partManager.getFeatures() : [];
+      const feat = features.find(f => f.id === fId);
+      items.push({
+        icon: '📐', label: feat ? feat.name : fId, type: 'feature',
+        onHover: () => {},
+        onLeave: () => {},
+        onRemove: () => { if (this._renderer3d) this._renderer3d.setSelectedFeature(null); if (this._featurePanel) this._featurePanel.selectFeature(null); this._refreshSelectionUI(); this._scheduleRender(); }
+      });
+    }
+
+    // Faces selected for edge extraction (chamfer/fillet mode)
+    const faceEdgeIndices = new Set(); // track which edge indices belong to a face selection
+    if (this._selectedFacesForEdges && this._selectedFacesForEdges.size > 0) {
+      for (const [faceIdx, edgeIndices] of this._selectedFacesForEdges) {
+        for (const i of edgeIndices) faceEdgeIndices.add(i);
+        items.push({
+          icon: '🔲', label: `Face ${faceIdx}`, type: 'face-edges',
+          onHover: () => { if (this._renderer3d) { this._renderer3d.setHoveredFace(faceIdx); this._scheduleRender(); } },
+          onLeave: () => { if (this._renderer3d) { this._renderer3d.setHoveredFace(-1); this._scheduleRender(); } },
+          onRemove: () => {
+            if (this._renderer3d) { for (const i of edgeIndices) this._renderer3d._selectedEdgeIndices.delete(i); }
+            if (this._selectedFacesForEdges) this._selectedFacesForEdges.delete(faceIdx);
+            this._refreshSelectionUI(); this._scheduleRender();
+          }
+        });
+      }
+    }
+
+    // Edges (grouped by path) — only show edges NOT covered by a face selection
+    const edgeEntries = this._getSelectedPathEntries();
+    for (const entry of edgeEntries) {
+      // Skip if all edges in this entry belong to a face selection
+      if (entry.edgeIndices.every(i => faceEdgeIndices.has(i))) continue;
+      items.push({
+        icon: '🔗', label: entry.label, type: 'edge',
+        onHover: () => { if (this._renderer3d && entry.edgeIndices.length > 0) { this._renderer3d.setHoveredEdge(entry.edgeIndices[0]); this._scheduleRender(); } },
+        onLeave: () => { if (this._renderer3d) { this._renderer3d.setHoveredEdge(-1); this._scheduleRender(); } },
+        onRemove: () => { if (this._renderer3d) { for (const i of entry.edgeIndices) this._renderer3d._selectedEdgeIndices.delete(i); this._refreshSelectionUI(); this._scheduleRender(); } }
+      });
+    }
+
+    // Count
+    const labelRow = document.createElement('div');
+    labelRow.className = 'parameter-row';
+    labelRow.innerHTML = `<label class="parameter-label">Selection</label><span class="parameter-value">${items.length} item${items.length !== 1 ? 's' : ''}</span>`;
+    wrapper.appendChild(labelRow);
+
+    if (items.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'edge-selection-empty';
+      empty.textContent = 'Nothing selected';
+      wrapper.appendChild(empty);
+    } else {
+      const list = document.createElement('div');
+      list.className = 'edge-selection-items';
+      for (const item of items) {
+        const el = document.createElement('div');
+        el.className = 'edge-selection-item';
+
+        const iconSpan = document.createElement('span');
+        iconSpan.style.cssText = 'opacity:0.6;flex-shrink:0';
+        iconSpan.textContent = item.icon;
+
+        const label = document.createElement('span');
+        label.className = 'edge-selection-label';
+        label.textContent = item.label;
+        label.addEventListener('mouseenter', item.onHover);
+        label.addEventListener('mouseleave', item.onLeave);
+
+        const removeBtn = document.createElement('button');
+        removeBtn.className = 'edge-selection-remove';
+        removeBtn.textContent = '\u00d7';
+        removeBtn.title = `Remove ${item.label}`;
+        removeBtn.addEventListener('click', (ev) => { ev.stopPropagation(); item.onRemove(); });
+
+        el.appendChild(iconSpan);
+        el.appendChild(label);
+        el.appendChild(removeBtn);
+        list.appendChild(el);
+      }
+      wrapper.appendChild(list);
+
+      // Clear All button
+      const clearBtn = document.createElement('button');
+      clearBtn.className = 'edge-selection-clear';
+      clearBtn.textContent = 'Clear All';
+      clearBtn.addEventListener('click', () => {
+        this._selectedFace = null;
+        this._selectedPlane = null;
+        this._selectedFacesForEdges = new Map();
+        if (this._renderer3d) {
+          this._renderer3d.selectFace(-1);
+          this._renderer3d.setSelectedPlane(null);
+          this._renderer3d.setSelectedFeature(null);
+          this._renderer3d.clearEdgeSelection();
+        }
+        if (this._featurePanel) this._featurePanel.selectFeature(null);
+        this._refreshSelectionUI();
+        this._scheduleRender();
+      });
+      wrapper.appendChild(clearBtn);
+    }
+
+    return wrapper;
+  }
+
+  /**
+   * Refresh the selection UI after a selection change.
+   * Routes to the correct UI builder depending on the current mode.
+   */
+  _refreshSelectionUI() {
     if (this._chamferMode) this._showChamferUI();
     else if (this._filletMode) this._showFilletUI();
+    else this._showLeftFeatureParams(null);
+    this._updateOperationButtons();
+  }
+
+  /**
+   * Build the edge selection list panel showing each selected path/edge with a × remove button.
+   * Groups edges by path and shows a compact label for each.
+   * @returns {HTMLElement}
+   * @deprecated Use _buildSelectionList() instead
+   */
+  _buildEdgeSelectionList() {
+    return this._buildSelectionList();
+  }
+
+  /**
+   * Get selected edges grouped by path for the selection list.
+   * @returns {{label: string, key: string, edgeIndices: number[]}[]}
+   */
+  _getSelectedPathEntries() {
+    if (!this._renderer3d || !this._renderer3d._meshEdgeSegments) return [];
+    const seen = new Set();
+    const entries = [];
+
+    for (const idx of this._renderer3d._selectedEdgeIndices) {
+      const pathIdx = this._renderer3d._edgeToPath ? this._renderer3d._edgeToPath.get(idx) : undefined;
+      const groupKey = pathIdx !== undefined ? `path:${pathIdx}` : `edge:${idx}`;
+      if (seen.has(groupKey)) continue;
+      seen.add(groupKey);
+
+      let edgeIndices;
+      if (pathIdx !== undefined && this._renderer3d._meshEdgePaths) {
+        edgeIndices = this._renderer3d._meshEdgePaths[pathIdx].edgeIndices;
+      } else {
+        edgeIndices = [idx];
+      }
+
+      let label;
+      if (edgeIndices.length === 1) {
+        label = `Edge ${idx}`;
+      } else {
+        label = `Edge group ${pathIdx} (${edgeIndices.length} segments)`;
+      }
+
+      entries.push({ label, key: groupKey, edgeIndices });
+    }
+    return entries;
+  }
+
+  /** Called when edge selection changes (click toggle) — refresh UI. */
+  _onEdgeSelectionChanged() {
+    this._refreshSelectionUI();
   }
 
   // -----------------------------------------------------------------------
@@ -7210,8 +7479,8 @@ class App {
   _updateChamferPreview() {
     if (!this._chamferMode || !this._renderer3d) return;
     const cm = this._chamferMode;
-    const selectedEdges = this._renderer3d.getSelectedEdges();
-    if (selectedEdges.length === 0) {
+    const edgeKeys = this._renderer3d.getSelectedEdgeKeys();
+    if (edgeKeys.length === 0) {
       this._renderer3d.clearGhostPreview();
       this._scheduleRender();
       return;
@@ -7229,7 +7498,6 @@ class App {
     }
     if (!baseResult || !baseResult.geometry) return;
 
-    const edgeKeys = selectedEdges.map(e => makeEdgeKey(e.start, e.end));
     try {
       const resolvedKeys = expandPathEdgeKeys(baseResult.geometry, edgeKeys);
       const preview = applyChamfer(baseResult.geometry, resolvedKeys, cm.distance);
@@ -7244,8 +7512,8 @@ class App {
   _updateFilletPreview() {
     if (!this._filletMode || !this._renderer3d) return;
     const fm = this._filletMode;
-    const selectedEdges = this._renderer3d.getSelectedEdges();
-    if (selectedEdges.length === 0) {
+    const edgeKeys = this._renderer3d.getSelectedEdgeKeys();
+    if (edgeKeys.length === 0) {
       this._renderer3d.clearGhostPreview();
       this._scheduleRender();
       return;
@@ -7262,7 +7530,6 @@ class App {
     }
     if (!baseResult || !baseResult.geometry) return;
 
-    const edgeKeys = selectedEdges.map(e => makeEdgeKey(e.start, e.end));
     try {
       const resolvedKeys = expandPathEdgeKeys(baseResult.geometry, edgeKeys);
       const preview = applyFillet(baseResult.geometry, resolvedKeys, fm.radius, fm.segments);
@@ -7295,6 +7562,7 @@ class App {
       distance: feature.distance,
       editingFeatureId: feature.id,
     };
+    this._selectedFacesForEdges = new Map();
 
     if (this._renderer3d) {
       // Display the base geometry (before chamfer) so edges are visible
@@ -7333,6 +7601,7 @@ class App {
       segments: feature.segments || 8,
       editingFeatureId: feature.id,
     };
+    this._selectedFacesForEdges = new Map();
 
     if (this._renderer3d) {
       this._renderer3d.renderPreviewGeometry(baseResult.geometry);
