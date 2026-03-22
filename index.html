@@ -44,14 +44,27 @@
       <span class="menu-label">File</span>
       <div class="menu-dropdown">
         <button data-action="new">New</button>
-        <button data-action="open">Open DXF...</button>
-        <button data-action="open-cmod">Open .cmod...</button>
         <hr>
-        <button data-action="save">Save DXF</button>
+        <button data-action="open-cmod">Open .cmod...</button>
         <button data-action="save-cmod">Export .cmod</button>
+        <hr>
+        <button data-action="import-dxf">Import DXF...</button>
+        <button data-action="export-dxf">Export DXF</button>
         <hr>
         <button data-action="import-json">Import JSON...</button>
         <button data-action="export-json">Export JSON</button>
+        <hr>
+        <div class="menu-submenu-item" data-submenu="examples">
+          <span>Examples</span><span class="submenu-arrow">&#9654;</span>
+          <div class="menu-submenu">
+            <button data-action="example-box">Box 10×10×10</button>
+            <button data-action="example-chamfer">Box with Chamfer</button>
+            <button data-action="example-chamfers2">Box with 2 Chamfers</button>
+            <button data-action="example-chamfers3">Box with 3 Chamfers</button>
+            <button data-action="example-chamfers4">Box with 4 Chamfers</button>
+            <button data-action="example-fillet">Box with Fillet</button>
+          </div>
+        </div>
       </div>
     </div>
     <div class="menu-item" data-menu="settings">

@@ -7,12 +7,13 @@ import { FeaturePanel } from './ui/featurePanel.js';
 import { ParametersPanel } from './ui/parametersPanel.js';
 import { getSnappedPosition } from './snap.js';
 import { undo, redo, takeSnapshot, setPartManager } from './history.js';
-import { downloadDXF } from './dxf/export.js';
-import { openDXFFile } from './dxf/import.js';
-import { downloadCMOD, openCMODFile, setCmodViewport, setCmodPartManager, setCmodRenderer, setCmodWorkspaceModeGetter, setCmodSessionStateGetter } from './cmod.js';
+import { downloadDXF, downloadFacesDXF } from './dxf/export.js';
+import { openDXFFile, pickDXFFile, addDXFToScene, dxfBounds } from './dxf/import.js';
+import { downloadCMOD, openCMODFile, projectFromCMOD, setCmodViewport, setCmodPartManager, setCmodRenderer, setCmodWorkspaceModeGetter, setCmodSessionStateGetter } from './cmod.js';
 import { debug, info, warn, error } from './logger.js';
 import { loadProject, debouncedSave, clearSavedProject, setViewport, setPartManagerForPersist, setRendererForPersist, setWorkspaceModeGetter, setSessionStateGetter } from './persist.js';
 import { showConfirm, showPrompt, showDimensionInput } from './ui/popup.js';
+import { DxfExportPanel } from './ui/dxfExportPanel.js';
 import { showContextMenu, closeContextMenu, isContextMenuOpen } from './ui/contextMenu.js';
 import {
   Coincident, Horizontal, Vertical,
@@ -51,6 +52,7 @@ class App {
     this._extrudeMode = null; // active extrude mode state {isCut, sketchFeatureId, distance, direction, symmetric, operation}
     this._chamferMode = null; // active chamfer mode state {edgeKeys[], distance, editingFeatureId}
     this._filletMode = null;  // active fillet mode state {edgeKeys[], radius, segments, editingFeatureId}
+    this._dxfExportPanel = null;  // DXF export sidebar panel instance
     this._draggingExtrudeHandle = false;
     this._extrudeHandleInfo = null; // {origin, tip, dir} for drag handle
     this._extrudeArrowHoveredState = false;
@@ -1480,6 +1482,14 @@ class App {
           case 'save-cmod': downloadCMOD?.(); break;
           case 'import-json': document.getElementById('btn-open')?.click(); break;
           case 'export-json': document.getElementById('btn-save')?.click(); break;
+          case 'import-dxf': this._importDXFToSketch(); break;
+          case 'export-dxf': this._exportDXFFromFaces(); break;
+          case 'example-box': this._loadExample('box-10x10x10.cmod'); break;
+          case 'example-chamfer': this._loadExample('box-with-chamfer.cmod'); break;
+          case 'example-chamfers2': this._loadExample('box-with-chamfers-2.cmod'); break;
+          case 'example-chamfers3': this._loadExample('box-with-three-chamfers.cmod'); break;
+          case 'example-chamfers4': this._loadExample('box-with-four-chamfers.cmod'); break;
+          case 'example-fillet': this._loadExample('box-with-fillet.cmod'); break;
           case 'toggle-grid': document.getElementById('btn-grid-toggle')?.click(); break;
           case 'toggle-snap': document.getElementById('btn-snap-toggle')?.click(); break;
           case 'toggle-ortho': document.getElementById('btn-ortho-toggle')?.click(); break;
@@ -2496,6 +2506,11 @@ class App {
     if (!container) return;
     // Don't overwrite UI when in extrude/chamfer/fillet mode
     if (this._extrudeMode || this._chamferMode || this._filletMode) return;
+    // When DXF export panel is active, refresh it instead of overwriting
+    if (this._dxfExportPanel && !feature) {
+      this._dxfExportPanel.refresh();
+      return;
+    }
     if (!feature) {
       this._showSelectionSummary(container);
       return;
@@ -4785,6 +4800,92 @@ class App {
     const name = result.filename || 'project';
     info('CMOD project loaded', { filename: name, metadata: result.metadata });
     this.setStatus(`Opened ${name}`);
+  }
+
+  async _loadExample(filename) {
+    try {
+      const resp = await fetch(`tests/samples/${filename}`);
+      if (!resp.ok) { this.setStatus(`Failed to load example: ${resp.statusText}`); return; }
+      const data = await resp.json();
+      const result = projectFromCMOD(data);
+      if (!result.ok) { this.setStatus(result.error || 'Failed to load example'); return; }
+
+      if (result.part) {
+        this._partManager.deserialize(result.part);
+        if (this._workspaceMode !== 'part') this._enterWorkspace('part');
+        if (result.sessionState) this._restoreSessionState(result.sessionState);
+      }
+      if (result.orbit && this._renderer3d) this._renderer3d.setOrbitState(result.orbit);
+
+      this._rebuildLayersPanel();
+      this._rebuildLeftPanel();
+      if (!result.hasViewport && state.entities.length > 0) {
+        this.viewport.fitEntities(state.entities);
+      }
+      this._update3DView();
+      this._updateNodeTree();
+      this._updateOperationButtons();
+      this._scheduleRender();
+      debouncedSave();
+      this.setStatus(`Loaded example: ${filename}`);
+    } catch (err) {
+      this.setStatus(`Failed to load example: ${err.message}`);
+    }
+  }
+
+  _exportDXFFromFaces() {
+    if (!this._renderer3d) { this.setStatus('3D renderer not available'); return; }
+
+    // Show export panel in left sidebar
+    const container = document.getElementById('left-feature-params-content');
+    if (!container) return;
+
+    if (this._dxfExportPanel) this._dxfExportPanel.destroy();
+    this._dxfExportPanel = new DxfExportPanel({
+      getSelectedFaces: () => this._selectedFaces,
+      getRenderer: () => this._renderer3d,
+      onExit: () => this._closeDxfExportPanel(),
+      setStatus: (msg) => this.setStatus(msg),
+      buildSelectionList: () => this._buildSelectionList(),
+    });
+    this._dxfExportPanel.build(container);
+  }
+
+  _closeDxfExportPanel() {
+    if (this._dxfExportPanel) {
+      this._dxfExportPanel.destroy();
+      this._dxfExportPanel = null;
+    }
+    this._showLeftFeatureParams(null);
+  }
+
+  async _importDXFToSketch() {
+    if (!this._sketchingOnPlane) {
+      this.setStatus('Start a sketch first before importing DXF');
+      return;
+    }
+    const picked = await pickDXFFile();
+    if (!picked) return;
+
+    const { items, filename } = picked;
+    if (!items || items.length === 0) {
+      this.setStatus('DXF file contains no geometry');
+      return;
+    }
+    const bounds = dxfBounds(items);
+    const scaleStr = await showPrompt({
+      title: 'Import DXF',
+      message: `File: ${filename}\n${items.length} entities (${bounds.width.toFixed(1)} × ${bounds.height.toFixed(1)})\n\nScale factor:`,
+      defaultValue: '1',
+    });
+    if (scaleStr === null || scaleStr === undefined) return;
+    const scale = parseFloat(scaleStr) || 1;
+
+    const count = addDXFToScene(items, { offsetX: 0, offsetY: 0, scale, centerOnOrigin: true });
+    takeSnapshot();
+    this.viewport.fitEntities(state.entities);
+    this._scheduleRender();
+    this.setStatus(`Imported ${count} entities from ${filename} (scale ${scale})`);
   }
 
   _updateNodeTree() {

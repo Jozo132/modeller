@@ -240,3 +240,167 @@ export function openDXFFile() {
   };
   input.click();
 }
+
+/**
+ * Parse a DXF string and return an array of 2D geometry primitives
+ * without adding them to state. Used for sketch-mode import.
+ *
+ * Each returned item has: { type: 'line'|'circle'|'arc', ...coords }
+ * Lines: { type: 'line', x1, y1, x2, y2 }
+ * Circles: { type: 'circle', cx, cy, radius }
+ * Arcs: { type: 'arc', cx, cy, radius, startAngle, endAngle }
+ *
+ * @param {string} dxfContent - Raw DXF file text
+ * @returns {Array} Array of geometry primitives
+ */
+export function parseDXFGeometry(dxfContent) {
+  const pairs = parsePairs(dxfContent);
+  const entities = extractEntities(pairs);
+  const result = [];
+
+  for (const ent of entities) {
+    const p = ent.props;
+    switch (ent.type) {
+      case 'LINE':
+        result.push({
+          type: 'line',
+          x1: parseFloat(p[10]) || 0, y1: parseFloat(p[20]) || 0,
+          x2: parseFloat(p[11]) || 0, y2: parseFloat(p[21]) || 0,
+        });
+        break;
+      case 'CIRCLE':
+        result.push({
+          type: 'circle',
+          cx: parseFloat(p[10]) || 0, cy: parseFloat(p[20]) || 0,
+          radius: parseFloat(p[40]) || 1,
+        });
+        break;
+      case 'ARC':
+        result.push({
+          type: 'arc',
+          cx: parseFloat(p[10]) || 0, cy: parseFloat(p[20]) || 0,
+          radius: parseFloat(p[40]) || 1,
+          startAngle: (parseFloat(p[50]) || 0) * Math.PI / 180,
+          endAngle: (parseFloat(p[51]) || 360) * Math.PI / 180,
+        });
+        break;
+      case 'LWPOLYLINE': {
+        const xs = Array.isArray(p[10]) ? p[10] : [p[10]];
+        const ys = Array.isArray(p[20]) ? p[20] : [p[20]];
+        const points = [];
+        for (let i = 0; i < xs.length; i++) {
+          points.push({ x: parseFloat(xs[i]) || 0, y: parseFloat(ys[i]) || 0 });
+        }
+        const closed = (parseInt(p[70], 10) & 1) === 1;
+        const count = closed ? points.length : points.length - 1;
+        for (let i = 0; i < count; i++) {
+          const a = points[i], b = points[(i + 1) % points.length];
+          result.push({ type: 'line', x1: a.x, y1: a.y, x2: b.x, y2: b.y });
+        }
+        break;
+      }
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Compute the bounding box of parsed DXF geometry primitives.
+ * @param {Array} items - From parseDXFGeometry
+ * @returns {{minX, minY, maxX, maxY, width, height, cx, cy}}
+ */
+export function dxfBounds(items) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const item of items) {
+    if (item.type === 'line') {
+      minX = Math.min(minX, item.x1, item.x2);
+      minY = Math.min(minY, item.y1, item.y2);
+      maxX = Math.max(maxX, item.x1, item.x2);
+      maxY = Math.max(maxY, item.y1, item.y2);
+    } else if (item.type === 'circle') {
+      minX = Math.min(minX, item.cx - item.radius);
+      minY = Math.min(minY, item.cy - item.radius);
+      maxX = Math.max(maxX, item.cx + item.radius);
+      maxY = Math.max(maxY, item.cy + item.radius);
+    } else if (item.type === 'arc') {
+      minX = Math.min(minX, item.cx - item.radius);
+      minY = Math.min(minY, item.cy - item.radius);
+      maxX = Math.max(maxX, item.cx + item.radius);
+      maxY = Math.max(maxY, item.cy + item.radius);
+    }
+  }
+  const width = maxX - minX;
+  const height = maxY - minY;
+  return { minX, minY, maxX, maxY, width, height, cx: (minX + maxX) / 2, cy: (minY + maxY) / 2 };
+}
+
+/**
+ * Apply offset and scale to parsed DXF geometry and add to the sketch scene.
+ * @param {Array} items - From parseDXFGeometry
+ * @param {object} opts
+ * @param {number} opts.offsetX - X offset (reference point in sketch coordinates)
+ * @param {number} opts.offsetY - Y offset
+ * @param {number} opts.scale - Uniform scale factor (default 1)
+ * @param {boolean} opts.centerOnOrigin - If true, center the DXF at offset point
+ */
+export function addDXFToScene(items, { offsetX = 0, offsetY = 0, scale = 1, centerOnOrigin = true } = {}) {
+  const bounds = dxfBounds(items);
+  // If centering, shift so the DXF center lands on the offset point
+  const shiftX = centerOnOrigin ? -bounds.cx : 0;
+  const shiftY = centerOnOrigin ? -bounds.cy : 0;
+
+  let count = 0;
+  for (const item of items) {
+    if (item.type === 'line') {
+      const x1 = (item.x1 + shiftX) * scale + offsetX;
+      const y1 = (item.y1 + shiftY) * scale + offsetY;
+      const x2 = (item.x2 + shiftX) * scale + offsetX;
+      const y2 = (item.y2 + shiftY) * scale + offsetY;
+      state.scene.addSegment(x1, y1, x2, y2, { merge: true });
+      count++;
+    } else if (item.type === 'circle') {
+      const cx = (item.cx + shiftX) * scale + offsetX;
+      const cy = (item.cy + shiftY) * scale + offsetY;
+      state.scene.addCircle(cx, cy, item.radius * scale, { merge: true });
+      count++;
+    } else if (item.type === 'arc') {
+      const cx = (item.cx + shiftX) * scale + offsetX;
+      const cy = (item.cy + shiftY) * scale + offsetY;
+      state.scene.addArc(cx, cy, item.radius * scale, item.startAngle, item.endAngle, { merge: true });
+      count++;
+    }
+  }
+
+  info('DXF geometry added to sketch', { count, offsetX, offsetY, scale });
+  return count;
+}
+
+/**
+ * Open a file picker for DXF import and return the parsed geometry (no state mutation).
+ * @returns {Promise<{items: Array, filename: string}|null>}
+ */
+export function pickDXFFile() {
+  return new Promise((resolve) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.dxf';
+    input.addEventListener('change', () => {
+      const file = input.files[0];
+      if (!file) return resolve(null);
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const items = parseDXFGeometry(reader.result);
+          resolve({ items, filename: file.name });
+        } catch (err) {
+          error('DXF parse failed', err);
+          resolve(null);
+        }
+      };
+      reader.onerror = () => { resolve(null); };
+      reader.readAsText(file);
+    });
+    input.click();
+  });
+}
