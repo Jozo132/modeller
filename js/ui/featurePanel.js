@@ -11,6 +11,7 @@ export class FeaturePanel {
     this.onFeatureSelect = null;
     this.onFeatureToggle = null;
     this.onFeatureDelete = null;
+    this.isLocked = null; // callback returning true to block interactions
 
     this.init();
   }
@@ -89,6 +90,7 @@ export class FeaturePanel {
 
     // Add event listeners
     div.addEventListener('click', (e) => {
+      if (this.isLocked && this.isLocked()) return;
       if (!e.target.classList.contains('feature-btn')) {
         this.selectFeature(feature.id);
       }
@@ -103,6 +105,7 @@ export class FeaturePanel {
     const deleteBtn = div.querySelector('[data-action="delete"]');
     deleteBtn.addEventListener('click', (e) => {
       e.stopPropagation();
+      if (this.isLocked && this.isLocked()) return;
       this.deleteFeature(feature.id);
     });
 

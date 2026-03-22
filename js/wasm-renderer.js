@@ -1419,6 +1419,7 @@ export class WasmRenderer {
     const cursorWorld = overlays.cursorWorld || null;
     const allDimensionsVisible = overlays.allDimensionsVisible !== false;
     const constraintIconsVisible = overlays.constraintIconsVisible !== false;
+    const activeTool = overlays.activeTool || null;
 
     // Transform local sketch coordinates to world (for 3D sketch on non-XY planes).
     // For the XY plane or 2D mode, this is identity.
@@ -1744,24 +1745,56 @@ export class WasmRenderer {
       });
     }
 
-    // --- Sketch plane reference axes (colored, from origin) ---
+    // --- Sketch plane reference axes (colored, from world origin) ---
     if (this._sketchPlane) {
+      const pd = this._sketchPlaneDef;
       const axisLen = in3DSketch ? 50 : Math.max(this._orthoBounds.right - this._orthoBounds.left, this._orthoBounds.top - this._orthoBounds.bottom) * 0.6;
-      const origin = sketchPtToScreen(0, 0);
+
+      // Compute world origin (0,0,0) in sketch-local 2D coordinates
+      let olx = 0, oly = 0;
+      if (pd) {
+        // Vector from plane origin to world origin
+        const dx = -pd.origin.x, dy = -pd.origin.y, dz = -pd.origin.z;
+        olx = dx * pd.xAxis.x + dy * pd.xAxis.y + dz * pd.xAxis.z;
+        oly = dx * pd.yAxis.x + dy * pd.yAxis.y + dz * pd.yAxis.z;
+      }
+
+      const origin = sketchPtToScreen(olx, oly);
       const ox = origin.x;
       const oy = origin.y;
 
-      // Determine axis labels and colors based on the sketch plane
+      // Determine axis labels and colors based on which world axis aligns with sketch axes
       let hLabel, vLabel, hColor, vColor;
-      switch (this._sketchPlane) {
-        case 'XY': hLabel = 'X'; vLabel = 'Y'; hColor = '#ff4444'; vColor = '#44ff44'; break;
-        case 'XZ': hLabel = 'X'; vLabel = 'Z'; hColor = '#ff4444'; vColor = '#4488ff'; break;
-        case 'YZ': hLabel = 'Y'; vLabel = 'Z'; hColor = '#44ff44'; vColor = '#4488ff'; break;
-        default:   hLabel = 'X'; vLabel = 'Y'; hColor = '#ff4444'; vColor = '#44ff44'; break;
+      const worldColors = { X: '#ff4444', Y: '#44ff44', Z: '#4488ff' };
+      if (pd && this._sketchPlane === 'FACE') {
+        // Find which world axis best aligns with xAxis and yAxis
+        const xa = pd.xAxis, ya = pd.yAxis;
+        const axes = [
+          { name: 'X', v: { x: 1, y: 0, z: 0 } },
+          { name: 'Y', v: { x: 0, y: 1, z: 0 } },
+          { name: 'Z', v: { x: 0, y: 0, z: 1 } },
+        ];
+        let bestH = axes[0], bestHDot = 0;
+        let bestV = axes[0], bestVDot = 0;
+        for (const a of axes) {
+          const dh = Math.abs(xa.x * a.v.x + xa.y * a.v.y + xa.z * a.v.z);
+          const dv = Math.abs(ya.x * a.v.x + ya.y * a.v.y + ya.z * a.v.z);
+          if (dh > bestHDot) { bestHDot = dh; bestH = a; }
+          if (dv > bestVDot) { bestVDot = dv; bestV = a; }
+        }
+        hLabel = bestH.name; hColor = worldColors[bestH.name];
+        vLabel = bestV.name; vColor = worldColors[bestV.name];
+      } else {
+        switch (this._sketchPlane) {
+          case 'XY': hLabel = 'X'; vLabel = 'Y'; hColor = worldColors.X; vColor = worldColors.Y; break;
+          case 'XZ': hLabel = 'X'; vLabel = 'Z'; hColor = worldColors.X; vColor = worldColors.Z; break;
+          case 'YZ': hLabel = 'Y'; vLabel = 'Z'; hColor = worldColors.Y; vColor = worldColors.Z; break;
+          default:   hLabel = 'X'; vLabel = 'Y'; hColor = worldColors.X; vColor = worldColors.Y; break;
+        }
       }
 
       // Horizontal axis (positive direction to the right)
-      const hEnd = sketchPtToScreen(axisLen, 0);
+      const hEnd = sketchPtToScreen(olx + axisLen, oly);
       ctx.save();
       ctx.strokeStyle = hColor;
       ctx.lineWidth = 1.5;
@@ -1791,7 +1824,7 @@ export class WasmRenderer {
       ctx.restore();
 
       // Vertical axis (positive direction upward)
-      const vEnd = sketchPtToScreen(0, axisLen);
+      const vEnd = sketchPtToScreen(olx, oly + axisLen);
       ctx.save();
       ctx.strokeStyle = vColor;
       ctx.lineWidth = 1.5;
@@ -1960,6 +1993,11 @@ export class WasmRenderer {
       ctx.lineTo(cs.x, h);
       ctx.stroke();
       ctx.restore();
+    }
+
+    // --- Active tool overlay (selection box, snap indicators, etc.) ---
+    if (activeTool && typeof activeTool.drawOverlay === 'function') {
+      activeTool.drawOverlay(ctx, { worldToScreen: sketchPtToScreen });
     }
   }
 

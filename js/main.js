@@ -12,7 +12,7 @@ import { openDXFFile, pickDXFFile, addDXFToScene, dxfBounds } from './dxf/import
 import { downloadCMOD, openCMODFile, projectFromCMOD, setCmodViewport, setCmodPartManager, setCmodRenderer, setCmodWorkspaceModeGetter, setCmodSessionStateGetter } from './cmod.js';
 import { debug, info, warn, error } from './logger.js';
 import { loadProject, debouncedSave, clearSavedProject, setViewport, setPartManagerForPersist, setRendererForPersist, setWorkspaceModeGetter, setSessionStateGetter } from './persist.js';
-import { showConfirm, showPrompt, showDimensionInput } from './ui/popup.js';
+import { showConfirm, showPrompt, showDimensionInput, isModalOpen } from './ui/popup.js';
 import { DxfExportPanel } from './ui/dxfExportPanel.js';
 import { showContextMenu, closeContextMenu, isContextMenuOpen } from './ui/contextMenu.js';
 import {
@@ -53,9 +53,13 @@ class App {
     this._chamferMode = null; // active chamfer mode state {edgeKeys[], distance, editingFeatureId}
     this._filletMode = null;  // active fillet mode state {edgeKeys[], radius, segments, editingFeatureId}
     this._dxfExportPanel = null;  // DXF export sidebar panel instance
+    this._awaitingSketchPlane = false; // true when waiting for user to pick a plane/face for sketch
     this._draggingExtrudeHandle = false;
     this._extrudeHandleInfo = null; // {origin, tip, dir} for drag handle
     this._extrudeArrowHoveredState = false;
+
+    /** Returns true when any feature-editing mode is active (sketch, extrude, chamfer, fillet) */
+    this._isEditingFeature = () => !!(this._sketchingOnPlane || this._extrudeMode || this._chamferMode || this._filletMode);
     
     // Initialize unified 3D renderer
     const view3dContainer = document.getElementById('view-3d');
@@ -180,8 +184,8 @@ class App {
         if (loaded.sessionState) {
           this._restoreSessionState(loaded.sessionState);
         }
-        // Restore orbit camera
-        if (loaded.orbit && this._renderer3d) {
+        // Restore orbit camera (skip if sketch mode — normal view was set by restore)
+        if (loaded.orbit && this._renderer3d && !this._sketchingOnPlane) {
           this._renderer3d.setOrbitState(loaded.orbit);
         }
         this._setStartupLoading(true, 'Preparing part workspace...', 72);
@@ -220,6 +224,9 @@ class App {
   }
 
   _scheduleRender() {
+    // Sync locked state on feature tree immediately (no wait for render)
+    this._syncFeatureTreeLocked();
+
     this._renderRequested = true;
     if (this._renderScheduled) return;
 
@@ -245,6 +252,7 @@ class App {
             getLayerColor: (layer) => state.getLayerColor(layer),
             allDimensionsVisible: state.allDimensionsVisible,
             constraintIconsVisible: state.constraintIconsVisible,
+            activeTool: this.activeTool,
           });
         } else {
           // No sketch entities: clear stale 2D overlays
@@ -260,6 +268,14 @@ class App {
     };
 
     requestAnimationFrame(runRender);
+  }
+
+  /** Sync the locked/unlocked visual state on both feature trees */
+  _syncFeatureTreeLocked() {
+    const locked = this._isEditingFeature();
+    const treeEl = document.getElementById('node-tree');
+    if (treeEl) treeEl.classList.toggle('locked', locked);
+    if (this._featurePanel) this._featurePanel.container.classList.toggle('locked', locked);
   }
 
   _syncViewportSize() {
@@ -1205,6 +1221,35 @@ class App {
         }
 
         // Try sketch picking first (wireframes are visually on top)
+        // When awaiting sketch plane selection, intercept face/plane clicks
+        if (this._awaitingSketchPlane) {
+          const faceHit = this._renderer3d.pickFace(e.clientX, e.clientY);
+          if (faceHit && faceHit.face) {
+            if (faceHit.face.isCurved) {
+              this.setStatus('Cannot sketch on a curved surface. Select a flat face or reference plane.');
+            } else {
+              this._awaitingSketchPlane = false;
+              const btn = document.getElementById('btn-sketch-on-plane');
+              if (btn) btn.classList.remove('awaiting');
+              this._startSketchOnFace(faceHit);
+            }
+            this._scheduleRender();
+            return;
+          }
+          const planeHit = this._renderer3d.pickPlane(e.clientX, e.clientY);
+          if (planeHit) {
+            this._awaitingSketchPlane = false;
+            const btn = document.getElementById('btn-sketch-on-plane');
+            if (btn) btn.classList.remove('awaiting');
+            this._startSketchOnPlane(planeHit.name);
+            this._scheduleRender();
+            return;
+          }
+          // Clicked empty space — keep waiting
+          this._scheduleRender();
+          return;
+        }
+
         const sketchHit = this._renderer3d.pickSketch(e.clientX, e.clientY);
         if (sketchHit) {
           if (!e.shiftKey && !e.ctrlKey) {
@@ -1659,6 +1704,9 @@ class App {
     const cmdInput = document.getElementById('cmd-input');
 
     document.addEventListener('keydown', (e) => {
+      // Don't intercept when a modal dialog is open
+      if (isModalOpen()) return;
+
       // Don't intercept when typing in input fields, textareas, or contenteditable
       const tag = document.activeElement?.tagName?.toLowerCase();
       const isEditable = tag === 'input' || tag === 'textarea' || document.activeElement?.isContentEditable;
@@ -1694,6 +1742,7 @@ class App {
               });
             break;
           case 'd': e.preventDefault(); this.setActiveTool('copy'); break;
+          case '8': e.preventDefault(); this._orientToNormalView(); break;
           case 'a':
             e.preventDefault();
             state.entities.forEach(ent => state.select(ent));
@@ -1705,6 +1754,12 @@ class App {
 
       switch (e.key) {
         case 'Escape': {
+          // Cancel awaiting sketch plane selection first
+          if (this._awaitingSketchPlane) {
+            this._cancelAwaitSketchPlane();
+            break;
+          }
+
           // Check if anything is currently selected
           const hadSelection =
             !!this._selectedPlane ||
@@ -1774,7 +1829,10 @@ class App {
         case 't': case 'T': this.setActiveTool('text'); break;
         case 'd': case 'D': this.setActiveTool('dimension'); break;
         case 'm': case 'M': this.setActiveTool('move'); break;
-        case 'x': case 'X': this.setActiveTool('trim'); break;
+        case 'x': case 'X':
+          if (this._awaitingSketchPlane) { this._cancelAwaitSketchPlane(); break; }
+          this.setActiveTool('trim');
+          break;
         case 'k': case 'K': this.setActiveTool('split'); break;
         case 'h': case 'H':
           if (this._tryApplyConstraintFromSelection('horizontal')) break;
@@ -1805,6 +1863,9 @@ class App {
             this._renderer3d.setOrtho3D(state.orthoEnabled);
           }
           this._scheduleRender();
+          break;
+        case '0':
+          this._orientToNormalView();
           break;
         case 'q': case 'Q': {
           // If primitives are selected, toggle their construction flag
@@ -4336,6 +4397,7 @@ class App {
     const parametersPanelContainer = document.getElementById('parameters-panel');
     
     this._featurePanel = new FeaturePanel(featurePanelContainer, this._partManager);
+    this._featurePanel.isLocked = () => this._isEditingFeature();
     this._parametersPanel = new ParametersPanel(parametersPanelContainer, this._partManager);
 
     // Record sidebar parameter edits
@@ -4607,6 +4669,7 @@ class App {
         getLayerColor: (layer) => state.getLayerColor(layer),
         allDimensionsVisible: state.allDimensionsVisible,
         constraintIconsVisible: state.constraintIconsVisible,
+        activeTool: this.activeTool,
       });
       return;
     }
@@ -4703,6 +4766,9 @@ class App {
     modeIndicator.className = 'status-mode sketch-mode';
 
     this.setActiveTool('select');
+
+    // Orient camera to the sketch plane normal
+    this._orientToNormalView();
   }
 
   _createNewDrawing() {
@@ -4780,8 +4846,8 @@ class App {
       }
     }
 
-    // Restore camera
-    if (result.orbit && this._renderer3d) {
+    // Restore camera (skip if sketch mode — normal view was set by restore)
+    if (result.orbit && this._renderer3d && !this._sketchingOnPlane) {
       this._renderer3d.setOrbitState(result.orbit);
     }
 
@@ -4815,7 +4881,7 @@ class App {
         if (this._workspaceMode !== 'part') this._enterWorkspace('part');
         if (result.sessionState) this._restoreSessionState(result.sessionState);
       }
-      if (result.orbit && this._renderer3d) this._renderer3d.setOrbitState(result.orbit);
+      if (result.orbit && this._renderer3d && !this._sketchingOnPlane) this._renderer3d.setOrbitState(result.orbit);
 
       this._rebuildLayersPanel();
       this._rebuildLeftPanel();
@@ -4941,6 +5007,7 @@ class App {
         planeEl.onclick = (e) => {
           if (e.target && e.target.classList && e.target.classList.contains('node-tree-eye')) return;
           if (this._workspaceMode !== 'part') return;
+          if (this._isEditingFeature()) return;
           if (!isVisible) return;
           if (this._selectedPlane === planeName) {
             this._selectedPlane = null;
@@ -5020,6 +5087,7 @@ class App {
       }
 
       div.addEventListener('click', () => {
+        if (this._isEditingFeature()) return;
         if (this._featurePanel) {
           this._featurePanel.selectFeature(feature.id);
         }
@@ -5041,7 +5109,7 @@ class App {
 
       // Double-click on sketch features to enter edit mode
       div.addEventListener('dblclick', () => {
-        if (feature.type === 'sketch' && !this._sketchingOnPlane) {
+        if (feature.type === 'sketch' && !this._isEditingFeature()) {
           this._recorder.sketchEditStarted(feature.id, feature.name);
           this._editExistingSketch(feature);
         }
@@ -5051,6 +5119,7 @@ class App {
       div.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         e.stopPropagation();
+        if (this._isEditingFeature()) return;
         const ctxItems = [];
 
         // Edit (sketch only)
@@ -5299,6 +5368,9 @@ class App {
   }
 
   _updateOperationButtons() {
+    // Sync the locked/unlocked visual state on feature trees
+    this._syncFeatureTreeLocked();
+
     const hasSketch = this._lastSketchFeatureId !== null;
     const hasEntities = state.entities.length > 0;
     const inExtrude = !!this._extrudeMode;
@@ -5473,6 +5545,7 @@ class App {
           okText: 'Save & Exit',
           cancelText: 'Discard',
         });
+        if (save === null) return; // ESC pressed — cancel exit, stay in sketch
         if (save) {
           this._finishSketchOnPlane();
         } else {
@@ -5497,6 +5570,7 @@ class App {
         okText: 'Accept',
         cancelText: 'Discard',
       });
+      if (confirm === null) return; // ESC pressed — cancel exit, stay in extrude
       if (confirm) {
         this._acceptExtrude();
       } else {
@@ -6284,16 +6358,10 @@ class App {
       return;
     }
 
-    // If no plane specified and none pre-selected, show a picker
+    // If no plane specified and none pre-selected, enter awaiting mode
     const plane = planeName || this._selectedPlane;
     if (!plane) {
-      const btn = document.getElementById('btn-sketch-on-plane');
-      const rect = btn.getBoundingClientRect();
-      showContextMenu(rect.left, rect.bottom + 2, [
-        { type: 'item', label: 'XY Plane', icon: '▬', action: () => this._startSketchOnPlane('XY') },
-        { type: 'item', label: 'XZ Plane', icon: '▬', action: () => this._startSketchOnPlane('XZ') },
-        { type: 'item', label: 'YZ Plane', icon: '▬', action: () => this._startSketchOnPlane('YZ') },
-      ]);
+      this._enterAwaitSketchPlane();
       return;
     }
 
@@ -6334,9 +6402,15 @@ class App {
       this._renderer3d._sketchPlaneDef = this._activeSketchPlaneDef;
     }
 
-    // Deselect the plane now that we've entered sketch mode on it
+    // Deselect everything now that we've entered sketch mode
     this._selectedPlane = null;
-    if (this._renderer3d) this._renderer3d.setSelectedPlane(null);
+    this._selectedFaces.clear();
+    if (this._renderer3d) {
+      this._renderer3d.setSelectedPlane(null);
+      this._renderer3d.clearFaceSelection();
+      this._renderer3d.setHoveredFace(-1);
+      this._renderer3d.clearEdgeSelection();
+    }
 
     const modeIndicator = document.getElementById('status-mode');
     modeIndicator.textContent = `SKETCH ON ${plane}`;
@@ -6353,6 +6427,26 @@ class App {
    * Start sketching on a selected 3D face. Derives the plane from the face normal.
    * @param {Object} faceHit - Face hit from pickFace() with face and point
    */
+  /**
+   * Enter "awaiting sketch plane" mode: highlight the button and wait for
+   * the user to click a flat face or reference plane. ESC / X cancels.
+   */
+  _enterAwaitSketchPlane() {
+    if (this._awaitingSketchPlane) return; // already waiting
+    this._awaitingSketchPlane = true;
+    const btn = document.getElementById('btn-sketch-on-plane');
+    if (btn) btn.classList.add('awaiting');
+    this.setStatus('Select a flat face or reference plane to start sketching. Press Escape to cancel.');
+  }
+
+  _cancelAwaitSketchPlane() {
+    if (!this._awaitingSketchPlane) return;
+    this._awaitingSketchPlane = false;
+    const btn = document.getElementById('btn-sketch-on-plane');
+    if (btn) btn.classList.remove('awaiting');
+    this.setStatus('Sketch plane selection cancelled.');
+  }
+
   _startSketchOnFace(faceHit) {
     if (this._workspaceMode !== 'part') return;
     if (!faceHit || !faceHit.face) return;
@@ -6405,9 +6499,15 @@ class App {
       this._renderer3d._sketchPlaneDef = this._activeSketchPlaneDef;
     }
 
-    // Clear face selection
+    // Clear all selections
     this._selectedFaces.clear();
-    if (this._renderer3d) this._renderer3d.clearFaceSelection();
+    this._selectedPlane = null;
+    if (this._renderer3d) {
+      this._renderer3d.clearFaceSelection();
+      this._renderer3d.setHoveredFace(-1);
+      this._renderer3d.setSelectedPlane(null);
+      this._renderer3d.clearEdgeSelection();
+    }
 
     const modeIndicator = document.getElementById('status-mode');
     modeIndicator.textContent = 'SKETCH ON FACE';
@@ -6425,27 +6525,78 @@ class App {
    * @param {Object} faceHit - Result from pickFace()
    * @returns {Object} Plane definition with origin, normal, xAxis, yAxis
    */
+  /**
+   * Orient the camera perpendicular to the active sketch plane, selected face, or selected plane.
+   */
+  _orientToNormalView() {
+    if (!this._renderer3d) return;
+
+    // 1. Active sketch plane
+    if (this._sketchingOnPlane && this._activeSketchPlaneDef) {
+      this._renderer3d.orientToPlaneNormal(this._activeSketchPlaneDef.normal, this._activeSketchPlaneDef.origin);
+      this._scheduleRender();
+      return;
+    }
+    if (this._sketchingOnPlane && this._activeSketchPlane && this._activeSketchPlane !== 'FACE') {
+      this._renderer3d.orientToPlane(this._activeSketchPlane);
+      this._scheduleRender();
+      return;
+    }
+
+    // 2. Selected face
+    if (this._selectedFaces.size > 0) {
+      const firstFace = this._selectedFaces.values().next().value;
+      if (firstFace && firstFace.face && firstFace.face.normal) {
+        this._renderer3d.orientToPlaneNormal(firstFace.face.normal, firstFace.point);
+        this._scheduleRender();
+        return;
+      }
+    }
+
+    // 3. Selected reference plane
+    if (this._selectedPlane) {
+      this._renderer3d.orientToPlane(this._selectedPlane);
+      this._scheduleRender();
+      return;
+    }
+
+    this.setStatus('Select a face or plane first, or enter a sketch.');
+  }
+
   _getPlaneFromFace(faceHit) {
     const normal = faceHit.face.normal;
     const origin = faceHit.point;
 
-    // Build xAxis perpendicular to normal
-    // Choose a reference vector that's not parallel to normal
-    let ref = { x: 0, y: 0, z: 1 };
-    const dot = Math.abs(normal.x * ref.x + normal.y * ref.y + normal.z * ref.z);
-    if (dot > 0.9) ref = { x: 1, y: 0, z: 0 };
+    const absNx = Math.abs(normal.x), absNy = Math.abs(normal.y), absNz = Math.abs(normal.z);
 
-    // xAxis = normalize(ref × normal)
+    // Choose xAxis reference to match standard plane conventions:
+    //   Z-dominant normal → xAxis along X, yAxis along Y  (like XY plane)
+    //   Y-dominant normal → xAxis along X, yAxis along Z  (like XZ plane)
+    //   X-dominant normal → xAxis along Y, yAxis along Z  (like YZ plane)
+    let xRef, yRef;
+    if (absNz >= absNx && absNz >= absNy) {
+      xRef = { x: 1, y: 0, z: 0 };
+      yRef = { x: 0, y: 1, z: 0 };
+    } else if (absNy >= absNx) {
+      xRef = { x: 1, y: 0, z: 0 };
+      yRef = { x: 0, y: 0, z: 1 };
+    } else {
+      xRef = { x: 0, y: 1, z: 0 };
+      yRef = { x: 0, y: 0, z: 1 };
+    }
+
+    // Project xRef onto the plane (remove component along normal)
+    const d = xRef.x * normal.x + xRef.y * normal.y + xRef.z * normal.z;
     const xAxis = {
-      x: ref.y * normal.z - ref.z * normal.y,
-      y: ref.z * normal.x - ref.x * normal.z,
-      z: ref.x * normal.y - ref.y * normal.x,
+      x: xRef.x - d * normal.x,
+      y: xRef.y - d * normal.y,
+      z: xRef.z - d * normal.z,
     };
     const xLen = Math.sqrt(xAxis.x * xAxis.x + xAxis.y * xAxis.y + xAxis.z * xAxis.z);
     if (xLen < 1e-10) return null;
     xAxis.x /= xLen; xAxis.y /= xLen; xAxis.z /= xLen;
 
-    // yAxis = normalize(normal × xAxis)
+    // yAxis = normal × xAxis (perpendicular to both)
     const yAxis = {
       x: normal.y * xAxis.z - normal.z * xAxis.y,
       y: normal.z * xAxis.x - normal.x * xAxis.z,
@@ -6454,6 +6605,10 @@ class App {
     const yLen = Math.sqrt(yAxis.x * yAxis.x + yAxis.y * yAxis.y + yAxis.z * yAxis.z);
     if (yLen < 1e-10) return null;
     yAxis.x /= yLen; yAxis.y /= yLen; yAxis.z /= yLen;
+
+    // Flip yAxis if it doesn't align with the expected positive direction
+    const yDot = yAxis.x * yRef.x + yAxis.y * yRef.y + yAxis.z * yRef.z;
+    if (yDot < 0) { yAxis.x = -yAxis.x; yAxis.y = -yAxis.y; yAxis.z = -yAxis.z; }
 
     return { origin, normal, xAxis, yAxis };
   }

@@ -264,6 +264,16 @@ html, body {
   border-color: #2ecc71;
   color: #fff;
 }
+#toolbar button.sketch-accent.awaiting {
+  background: rgba(230, 180, 40, 0.25);
+  border-color: rgba(230, 180, 40, 0.7);
+  color: #e8b428;
+  animation: awaitPulse 1.2s ease-in-out infinite;
+}
+@keyframes awaitPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(230, 180, 40, 0.4); }
+  50% { box-shadow: 0 0 8px 2px rgba(230, 180, 40, 0.5); }
+}
 
 /* Properties Panel (unified right sidebar) */
 #properties-panel {
@@ -1898,6 +1908,11 @@ body.motion-active #view-3d {
   background: rgba(255,255,255,0.1);
 }
 
+/* Locked state — dims panel and disables pointer interactions */
+#feature-panel.locked .feature-list {
+  opacity: 0.45;
+  pointer-events: none;
+}
 
 .parameters-panel-header {
   padding: 12px;
@@ -2173,6 +2188,16 @@ body.workspace-part #parameters-panel {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Locked state — dims tree and disables pointer interactions on items */
+.node-tree.locked .node-tree-content {
+  opacity: 0.45;
+  pointer-events: none;
+}
+.node-tree.locked .node-tree-content .node-tree-eye {
+  pointer-events: auto;
+  opacity: 0.5;
 }
 
 .node-tree-children {

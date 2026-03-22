@@ -1,5 +1,9 @@
 let modalBusy = false;
 
+export function isModalOpen() {
+  return modalBusy;
+}
+
 function getRoot() {
   return document.getElementById('app-modal-root');
 }
@@ -82,10 +86,12 @@ export function showConfirm({ title = 'Confirm', message = '', okText = 'OK', ca
     const onKeyDown = (e) => {
       if (e.key === 'Escape') {
         e.preventDefault();
-        finish(false);
+        e.stopImmediatePropagation();
+        finish(null);
       }
       if (e.key === 'Enter') {
         e.preventDefault();
+        e.stopImmediatePropagation();
         finish(true);
       }
     };
