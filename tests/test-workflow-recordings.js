@@ -44,11 +44,36 @@ class HeadlessReplay {
     this.part = null;
     this.lastSketchFeatureId = null;
     this.scene = { segments: [], circles: [], arcs: [], clear() { this.segments = []; this.circles = []; this.arcs = []; } };
+    this.activeTool = 'select';
+    this.inSketch = false;
+    this.toolClicks = [];
   }
 
   run(commands) {
     for (const cmd of commands) {
       this._handleCommand(cmd);
+    }
+  }
+
+  _processToolClicks() {
+    if (this.activeTool === 'rectangle' && this.toolClicks.length === 2) {
+      const [p1, p2] = this.toolClicks;
+      const x1 = p1.x, y1 = p1.y, x2 = p2.x, y2 = p2.y;
+      this.scene.segments.push({ x1, y1, x2, y2: y1 });
+      this.scene.segments.push({ x1: x2, y1, x2, y2 });
+      this.scene.segments.push({ x1: x2, y1: y2, x2: x1, y2 });
+      this.scene.segments.push({ x1, y1: y2, x2: x1, y2: y1 });
+      this.toolClicks = [];
+    } else if (this.activeTool === 'line' && this.toolClicks.length === 2) {
+      const [p1, p2] = this.toolClicks;
+      this.scene.segments.push({ x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y });
+      this.toolClicks = [p2]; // line tool chains points
+    } else if (this.activeTool === 'circle' && this.toolClicks.length === 2) {
+      const [center, edge] = this.toolClicks;
+      const dx = edge.x - center.x, dy = edge.y - center.y;
+      const radius = Math.sqrt(dx * dx + dy * dy);
+      this.scene.circles.push({ cx: center.x, cy: center.y, radius });
+      this.toolClicks = [];
     }
   }
 
@@ -65,22 +90,41 @@ class HeadlessReplay {
       return;
     }
 
-    if (command === 'camera.set' || command === 'tool' ||
+    if (command === 'camera.set' ||
         command === 'select.face' || command === 'deselect.face' ||
         command === 'select.plane' || command === 'select.feature' ||
         command === 'select.edge' || command === 'deselect.edge' ||
-        command === 'setting' || command === 'click' ||
+        command === 'setting' ||
         command.startsWith('record.')) {
       // These are UI-only commands with no effect on geometry
       return;
     }
 
+    if (command === 'tool') {
+      this.activeTool = (args[0] || 'select').toLowerCase();
+      this.toolClicks = [];
+      return;
+    }
+
+    if (command === 'click') {
+      if (this.inSketch && args.length >= 2) {
+        const cx = parseFloat(args[0]), cy = parseFloat(args[1]);
+        this.toolClicks.push({ x: cx, y: cy });
+        this._processToolClicks();
+      }
+      return;
+    }
+
     if (command === 'sketch.start') {
       this.scene.clear();
+      this.inSketch = true;
+      this.activeTool = 'select';
+      this.toolClicks = [];
       return;
     }
 
     if (command === 'sketch.finish') {
+      this.inSketch = false;
       if (!this.part) this.part = new Part('Part1');
       const sketch = new Sketch();
       for (const seg of this.scene.segments) {
