@@ -19,6 +19,12 @@
     "surfaceArea": 595.243465,
     "width": 10,
     "height": 10,
-    "depth": 10
+    "depth": 10,
+    "edgeCount": 27,
+    "pathCount": 9,
+    "bodyCount": 1,
+    "bodySizes": [28],
+    "minWallThickness": 10,
+    "maxWallThickness": 12.637977
   }
 }

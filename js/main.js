@@ -31,7 +31,7 @@ import {
   LockTool, EqualTool, TangentTool, AngleTool,
 } from './tools/index.js';
 import { InteractionRecorder, PlaybackEngine } from './interaction-recorder.js';
-import { applyChamfer, applyFillet, expandPathEdgeKeys, makeEdgeKey, calculateMeshVolume, calculateBoundingBox, calculateSurfaceArea } from './cad/CSG.js';
+import { applyChamfer, applyFillet, expandPathEdgeKeys, makeEdgeKey, calculateMeshVolume, calculateBoundingBox, calculateSurfaceArea, detectDisconnectedBodies, calculateWallThickness } from './cad/CSG.js';
 
 class App {
   constructor() {
@@ -573,6 +573,7 @@ class App {
 
   _toggleConstructionMode() {
     state.constructionMode = !state.constructionMode;
+    this._recorder.settingToggled('construction', state.constructionMode);
     const btn = document.getElementById('btn-construction');
     btn.classList.toggle('active', state.constructionMode);
     // Tint all Draw tool buttons when construction mode is active
@@ -1326,23 +1327,27 @@ class App {
     });
     document.getElementById('btn-grid-toggle').addEventListener('click', () => {
       state.gridVisible = !state.gridVisible;
+      this._recorder.settingToggled('grid', state.gridVisible);
       this._scheduleRender();
     });
 
     // Snap
     document.getElementById('btn-snap-toggle').addEventListener('click', (e) => {
       state.snapEnabled = !state.snapEnabled;
+      this._recorder.settingToggled('snap', state.snapEnabled);
       e.currentTarget.classList.toggle('active', state.snapEnabled);
       document.getElementById('status-snap').classList.toggle('active', state.snapEnabled);
     });
     // Auto-connect coincidences
     document.getElementById('btn-autocoincidence-toggle').addEventListener('click', (e) => {
       state.autoCoincidence = !state.autoCoincidence;
+      this._recorder.settingToggled('autoCoincidence', state.autoCoincidence);
       e.currentTarget.classList.toggle('active', state.autoCoincidence);
       document.getElementById('status-autocoincidence').classList.toggle('active', state.autoCoincidence);
     });
     document.getElementById('btn-ortho-toggle').addEventListener('click', (e) => {
       state.orthoEnabled = !state.orthoEnabled;
+      this._recorder.settingToggled('ortho', state.orthoEnabled);
       e.currentTarget.classList.toggle('active', state.orthoEnabled);
       document.getElementById('status-ortho').classList.toggle('active', state.orthoEnabled);
       if (this._renderer3d) {
@@ -1361,6 +1366,7 @@ class App {
         if (fovValue) fovValue.textContent = deg === 0 ? 'Ortho' : deg + '\u00b0';
         if (this._renderer3d) {
           this._renderer3d.setFOV(deg);
+          this._recorder.fovChanged(deg);
         }
         this._scheduleRender();
       });
@@ -1841,6 +1847,19 @@ class App {
       if (args[0] === 'grid') { state.gridVisible = args[1] !== 'false'; }
       else if (args[0] === 'snap') { state.snapEnabled = args[1] !== 'false'; }
       else if (args[0] === 'ortho') { state.orthoEnabled = args[1] !== 'false'; }
+      else if (args[0] === 'fov' && args[1] != null) {
+        const deg = parseFloat(args[1]);
+        if (this._renderer3d && isFinite(deg)) {
+          this._renderer3d.setFOV(deg);
+          this._syncFovSlider(deg);
+        }
+      }
+      else if (args[0] === 'gridSize' && args[1] != null) {
+        const size = parseFloat(args[1]);
+        if (size > 0) state.gridSize = size;
+      }
+      else if (args[0] === 'construction') { state.constructionMode = args[1] !== 'false'; }
+      else if (args[0] === 'autoCoincidence') { state.autoCoincidence = args[1] !== 'false'; }
       this._scheduleRender();
       return;
     }
@@ -5445,6 +5464,18 @@ class App {
     this._partManager.part = null;
     this._partManager.activeFeature = null;
 
+    // Restore initial settings from the recording if available
+    const s = this._playbackInitialSettings;
+    if (s) {
+      if (s.fov != null && this._renderer3d) { this._renderer3d.setFOV(s.fov); this._syncFovSlider(s.fov); }
+      if (s.snapEnabled != null) state.snapEnabled = s.snapEnabled;
+      if (s.orthoEnabled != null) state.orthoEnabled = s.orthoEnabled;
+      if (s.gridVisible != null) state.gridVisible = s.gridVisible;
+      if (s.gridSize != null && s.gridSize > 0) state.gridSize = s.gridSize;
+      if (s.constructionMode != null) state.constructionMode = s.constructionMode;
+      if (s.autoCoincidence != null) state.autoCoincidence = s.autoCoincidence;
+    }
+
     // Reset UI
     if (this._featurePanel) this._featurePanel.update();
     if (this._parametersPanel) this._parametersPanel.clear();
@@ -5492,6 +5523,7 @@ class App {
       });
       if (!ok) return;
 
+      this._playbackInitialSettings = recording.initialSettings || null;
       this._resetForPlayback();
       this._playbackSteps = recording.steps;
       this._playbackIndex = -1;
@@ -5684,6 +5716,16 @@ class App {
     if (btnRecord) btnRecord.classList.add('recording');
     if (btnExport) btnExport.style.display = 'none';
     if (recPreview) { recPreview.textContent = ''; recPreview.classList.remove('active'); }
+    // Capture initial UI settings so playback can restore them
+    this._recorder.setInitialSettings({
+      fov: this._renderer3d ? this._renderer3d.getFOV() : 45,
+      snapEnabled: state.snapEnabled,
+      orthoEnabled: state.orthoEnabled,
+      gridVisible: state.gridVisible,
+      gridSize: state.gridSize,
+      constructionMode: state.constructionMode,
+      autoCoincidence: state.autoCoincidence,
+    });
     // Record initial workspace state
     if (this._workspaceMode) this._recorder.workspaceChanged(this._workspaceMode);
     // Record initial camera state
@@ -5752,6 +5794,22 @@ class App {
       stats.width = +(bb.max.x - bb.min.x).toFixed(6);
       stats.height = +(bb.max.y - bb.min.y).toFixed(6);
       stats.depth = +(bb.max.z - bb.min.z).toFixed(6);
+
+      // Feature edges and paths
+      const edges = geometry.edges || [];
+      const paths = geometry.paths || [];
+      stats.edgeCount = edges.length;
+      stats.pathCount = paths.length;
+
+      // Disconnected body detection
+      const bodies = detectDisconnectedBodies(geometry);
+      stats.bodyCount = bodies.bodyCount;
+      stats.bodySizes = bodies.bodySizes;
+
+      // Wall thickness analysis
+      const wt = calculateWallThickness(geometry);
+      stats.minWallThickness = +wt.minThickness.toFixed(6);
+      stats.maxWallThickness = +wt.maxThickness.toFixed(6);
     }
 
     return stats;
@@ -5766,6 +5824,11 @@ class App {
         this.setStatus('No recording to play back.');
         return;
       }
+    }
+
+    // Use initial settings from the recorder if not already set from a loaded file
+    if (!this._playbackInitialSettings && this._recorder._initialSettings) {
+      this._playbackInitialSettings = this._recorder._initialSettings;
     }
 
     // Warn the user that current work will be lost

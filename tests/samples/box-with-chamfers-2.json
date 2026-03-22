@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "recorded": "2026-03-22T12:20:53.577Z",
+  "recorded": "2026-03-22T12:45:20.947Z",
   "steps": [
     {
       "seq": 0,
@@ -9,60 +9,64 @@
     },
     {
       "seq": 1,
-      "ts": 2555,
-      "command": "camera.set 0.7854 1.0472 83.94 0.5839 0.1447 5"
+      "ts": 2439,
+      "command": "camera.set 0.7854 1.0472 79.5919 2.1834 -2.0381 5"
     },
     {
       "seq": 2,
-      "ts": 2558,
+      "ts": 2444,
       "command": "tool select"
     },
     {
       "seq": 3,
-      "ts": 2558,
+      "ts": 2444,
       "command": "sketch.start XY"
     },
     {
       "seq": 4,
-      "ts": 3552,
+      "ts": 4436,
       "command": "tool rectangle"
     },
     {
       "seq": 5,
-      "ts": 3935,
-      "command": "click 14.9028 -15.8209"
+      "ts": 5026,
+      "command": "click 21.9714 -19.1986"
     },
     {
       "seq": 6,
-      "ts": 4428,
-      "command": "click -21.0468 17.3796"
+      "ts": 5843,
+      "command": "click -35.9484 23.5457"
     },
     {
       "seq": 7,
-      "ts": 6386,
+      "ts": 7922,
       "command": "tool select"
     },
     {
       "seq": 8,
-      "ts": 6390,
+      "ts": 7927,
       "command": "sketch.finish"
     },
     {
       "seq": 9,
-      "ts": 8507,
-      "command": "select.feature feature_7"
-    },
-    {
-      "seq": 10,
-      "ts": 12680,
+      "ts": 11903,
       "command": "extrude 10"
     },
     {
-      "seq": 11,
-      "ts": 22619,
-      "command": "chamfer 1 14.90282,-15.82088,10.00000|14.90282,17.37959,10.00000 -21.04684,17.37959,10.00000|14.90282,17.37959,10.00000"
+      "seq": 10,
+      "ts": 20091,
+      "command": "chamfer 1 21.97140,-19.19865,10.00000|21.97140,23.54574,10.00000 -35.94835,23.54574,10.00000|21.97140,23.54574,10.00000"
     }
   ],
+  "initialSettings": {
+    "fov": 45,
+    "snapEnabled": true,
+    "orthoEnabled": false,
+    "gridVisible": true,
+    "gridSize": 10,
+    "constructionMode": false,
+    "autoCoincidence": true
+  },
   "partStats": {
     "featureCount": 3,
     "featureTypes": [
@@ -70,23 +74,29 @@
       "extrude",
       "chamfer"
     ],
-    "faceCount": 9,
-    "volume": 11901.048495,
-    "surfaceArea": 3765.902488,
+    "faceCount": 8,
+    "volume": 24707.414355,
+    "surfaceArea": 6904.382736,
     "boundingBox": {
       "min": {
-        "x": -21.04683860143026,
-        "y": -15.820883699018085,
+        "x": -35.94835178057353,
+        "y": -19.198646551744815,
         "z": 0
       },
       "max": {
-        "x": 14.902816613515215,
-        "y": 17.379592975453903,
+        "x": 21.9713984992769,
+        "y": 23.545742236559647,
         "z": 10
       }
     },
-    "width": 35.949655,
-    "height": 33.200477,
-    "depth": 10
+    "width": 57.91975,
+    "height": 42.744389,
+    "depth": 10,
+    "edgeCount": 17,
+    "pathCount": 17,
+    "bodyCount": 1,
+    "bodySizes": [8],
+    "minWallThickness": 10,
+    "maxWallThickness": 57.9198
   }
 }

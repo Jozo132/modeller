@@ -34,6 +34,8 @@ export class InteractionRecorder {
     this._pendingCamera = null;
     /** Optional callback invoked with (step) every time a step is committed. */
     this.onStep = null;
+    /** Snapshot of UI settings at recording start */
+    this._initialSettings = null;
   }
 
   // ---- Control ----
@@ -45,6 +47,12 @@ export class InteractionRecorder {
     this._recording = true;
     this._pendingOrbit = null;
     this._pendingCamera = null;
+    this._initialSettings = null;
+  }
+
+  /** Store a snapshot of UI settings captured at the moment recording starts. */
+  setInitialSettings(settings) {
+    this._initialSettings = settings ? { ...settings } : null;
   }
 
   stop() {
@@ -69,6 +77,9 @@ export class InteractionRecorder {
       recorded: new Date().toISOString(),
       steps: this._steps,
     };
+    if (this._initialSettings) {
+      data.initialSettings = this._initialSettings;
+    }
     if (partStats) {
       data.partStats = partStats;
     }
@@ -258,6 +269,10 @@ export class InteractionRecorder {
 
   settingToggled(setting, value) {
     this._push(`setting ${setting} ${value}`);
+  }
+
+  fovChanged(degrees) {
+    this._push(`setting fov ${degrees}`);
   }
 
   uiAction(action, details) {

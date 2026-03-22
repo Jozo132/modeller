@@ -18,6 +18,12 @@
     "surfaceArea": 600,
     "width": 10,
     "height": 10,
-    "depth": 10
+    "depth": 10,
+    "edgeCount": 12,
+    "pathCount": 12,
+    "bodyCount": 1,
+    "bodySizes": [6],
+    "minWallThickness": 10,
+    "maxWallThickness": 10
   }
 }

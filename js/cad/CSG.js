@@ -1068,6 +1068,157 @@ export function calculateSurfaceArea(geometry) {
 }
 
 // -----------------------------------------------------------------------
+// Geometry analysis utilities
+// -----------------------------------------------------------------------
+
+/**
+ * Detect disconnected bodies (connected components) in a geometry mesh.
+ * Builds a face adjacency graph from shared edge vertices and finds
+ * connected components via BFS.
+ * @param {Object} geometry - {faces: [{vertices: [{x,y,z},...], ...}]}
+ * @returns {Object} { bodyCount: number, bodySizes: number[] }
+ *   bodyCount = number of connected components (1 = single solid)
+ *   bodySizes = array of face counts per component, sorted descending
+ */
+export function detectDisconnectedBodies(geometry) {
+  const faces = geometry.faces || [];
+  if (faces.length === 0) return { bodyCount: 0, bodySizes: [] };
+
+  // Build edge → face indices map
+  const edgeFaces = new Map();
+  for (let fi = 0; fi < faces.length; fi++) {
+    const verts = faces[fi].vertices;
+    for (let i = 0; i < verts.length; i++) {
+      const a = verts[i], b = verts[(i + 1) % verts.length];
+      const key = edgeKey(a, b);
+      if (!edgeFaces.has(key)) edgeFaces.set(key, []);
+      edgeFaces.get(key).push(fi);
+    }
+  }
+
+  // Build face adjacency (face → set of neighbor face indices)
+  const adj = Array.from({ length: faces.length }, () => new Set());
+  for (const faceList of edgeFaces.values()) {
+    for (let i = 0; i < faceList.length; i++) {
+      for (let j = i + 1; j < faceList.length; j++) {
+        adj[faceList[i]].add(faceList[j]);
+        adj[faceList[j]].add(faceList[i]);
+      }
+    }
+  }
+
+  // BFS connected components
+  const visited = new Uint8Array(faces.length);
+  const bodySizes = [];
+  for (let start = 0; start < faces.length; start++) {
+    if (visited[start]) continue;
+    let count = 0;
+    const queue = [start];
+    visited[start] = 1;
+    while (queue.length > 0) {
+      const fi = queue.pop();
+      count++;
+      for (const neighbor of adj[fi]) {
+        if (!visited[neighbor]) {
+          visited[neighbor] = 1;
+          queue.push(neighbor);
+        }
+      }
+    }
+    bodySizes.push(count);
+  }
+
+  bodySizes.sort((a, b) => b - a);
+  return { bodyCount: bodySizes.length, bodySizes };
+}
+
+/**
+ * Estimate wall thickness by ray-casting from each face centroid along its
+ * inward normal and finding the nearest opposing face hit.
+ * Returns min and max wall thickness across all faces.
+ * @param {Object} geometry - {faces: [{vertices: [{x,y,z},...], normal: {x,y,z}, ...}]}
+ * @returns {Object} { minThickness: number, maxThickness: number }
+ */
+export function calculateWallThickness(geometry) {
+  const faces = geometry.faces || [];
+  if (faces.length < 2) return { minThickness: 0, maxThickness: 0 };
+
+  // Pre-compute face centroids
+  const centroids = faces.map(f => {
+    const vs = f.vertices;
+    const n = vs.length;
+    let cx = 0, cy = 0, cz = 0;
+    for (const v of vs) { cx += v.x; cy += v.y; cz += v.z; }
+    return { x: cx / n, y: cy / n, z: cz / n };
+  });
+
+  let minT = Infinity, maxT = 0;
+
+  for (let fi = 0; fi < faces.length; fi++) {
+    const face = faces[fi];
+    const n = face.normal;
+    if (!n) continue;
+    // Ray origin: centroid, direction: inward normal (negated outward normal)
+    const origin = centroids[fi];
+    const dir = { x: -n.x, y: -n.y, z: -n.z };
+
+    let closest = Infinity;
+    for (let ti = 0; ti < faces.length; ti++) {
+      if (ti === fi) continue;
+      const target = faces[ti];
+      const tn = target.normal;
+      if (!tn) continue;
+      // Only consider roughly opposing faces (normals pointing toward each other)
+      const dotNormals = n.x * tn.x + n.y * tn.y + n.z * tn.z;
+      if (dotNormals > -0.1) continue; // not opposing
+
+      // Ray-triangle intersection for each triangle in the fan
+      const tverts = target.vertices;
+      if (tverts.length < 3) continue;
+      const v0 = tverts[0];
+      for (let k = 1; k < tverts.length - 1; k++) {
+        const v1 = tverts[k], v2 = tverts[k + 1];
+        const t = _rayTriangleIntersect(origin, dir, v0, v1, v2);
+        if (t > 1e-6 && t < closest) closest = t;
+      }
+    }
+
+    if (closest < Infinity) {
+      if (closest < minT) minT = closest;
+      if (closest > maxT) maxT = closest;
+    }
+  }
+
+  if (minT === Infinity) minT = 0;
+  return { minThickness: minT, maxThickness: maxT };
+}
+
+/**
+ * Möller–Trumbore ray-triangle intersection.
+ * @returns {number} Distance t along ray, or Infinity if no hit.
+ */
+function _rayTriangleIntersect(origin, dir, v0, v1, v2) {
+  const e1x = v1.x - v0.x, e1y = v1.y - v0.y, e1z = v1.z - v0.z;
+  const e2x = v2.x - v0.x, e2y = v2.y - v0.y, e2z = v2.z - v0.z;
+  const px = dir.y * e2z - dir.z * e2y;
+  const py = dir.z * e2x - dir.x * e2z;
+  const pz = dir.x * e2y - dir.y * e2x;
+  const det = e1x * px + e1y * py + e1z * pz;
+  if (Math.abs(det) < 1e-10) return Infinity;
+  const invDet = 1.0 / det;
+  const tx = origin.x - v0.x, ty = origin.y - v0.y, tz = origin.z - v0.z;
+  const u = (tx * px + ty * py + tz * pz) * invDet;
+  if (u < 0 || u > 1) return Infinity;
+  const qx = ty * e1z - tz * e1y;
+  const qy = tz * e1x - tx * e1z;
+  const qz = tx * e1y - ty * e1x;
+  const v = (dir.x * qx + dir.y * qy + dir.z * qz) * invDet;
+  if (v < 0 || u + v > 1) return Infinity;
+  const t = (e2x * qx + e2y * qy + e2z * qz) * invDet;
+  return t;
+}
+
+// -----------------------------------------------------------------------
 // Edge key helpers for chamfer/fillet
 // -----------------------------------------------------------------------
 
@@ -1491,6 +1642,13 @@ export function applyChamfer(geometry, edgeKeys, distance) {
   // --- Phase 2: Build vertex-sharing map ---
   const vertexEdgeMap = _buildVertexEdgeMap(edgeDataList);
 
+  // --- Phase 2.5: Merge shared-vertex positions on common faces ---
+  // When 2+ chamfer edges meet at a vertex and share a common face, combine
+  // their independent offsets into a single merged position that lies at the
+  // intersection of the bevel planes on the face, eliminating the gap that
+  // would otherwise require a corner face.
+  _mergeSharedVertexPositions(edgeDataList, vertexEdgeMap);
+
   // --- Phase 3: Apply batch face trimming ---
   _batchTrimFaces(faces, edgeDataList);
 
@@ -1749,6 +1907,72 @@ function _buildVertexEdgeMap(edgeDataList) {
     map.get(vkB).push(i);
   }
   return map;
+}
+
+/**
+ * Merge trimmed-vertex positions at shared vertices on common faces.
+ *
+ * When 2+ chamfer edges meet at a vertex and share a common face, each edge
+ * independently offsets the vertex inward along the face.  Instead of producing
+ * two separate trimmed positions (which creates a gap needing a corner face),
+ * compute a single merged position that combines both offsets:
+ *   mergedPos = originalVertex + sum(offset_i)
+ * This places the vertex at the intersection of the bevel planes on the face.
+ * If the p1 positions also converge (as on axis-aligned boxes), the corner
+ * polygon degenerates and is automatically skipped.
+ */
+function _mergeSharedVertexPositions(edgeDataList, vertexEdgeMap) {
+  for (const [vk, edgeIndices] of vertexEdgeMap) {
+    if (edgeIndices.length < 2) continue;
+
+    // Get original vertex position
+    const d0 = edgeDataList[edgeIndices[0]];
+    const origV = _edgeVKey(d0.edgeA) === vk ? d0.edgeA : d0.edgeB;
+
+    // Build face → contributions map
+    const faceContribs = new Map();
+    for (const di of edgeIndices) {
+      const d = edgeDataList[di];
+      const isA = _edgeVKey(d.edgeA) === vk;
+
+      // fi0 contribution
+      if (!faceContribs.has(d.fi0)) faceContribs.set(d.fi0, []);
+      faceContribs.get(d.fi0).push({ di, side: 0, isA });
+
+      // fi1 contribution
+      if (!faceContribs.has(d.fi1)) faceContribs.set(d.fi1, []);
+      faceContribs.get(d.fi1).push({ di, side: 1, isA });
+    }
+
+    // For each face shared by 2+ edges, compute the merged position
+    for (const [, contribs] of faceContribs) {
+      if (contribs.length < 2) continue;
+
+      // Merged position = original vertex + sum of all (offset - V) contributions
+      let mx = origV.x, my = origV.y, mz = origV.z;
+      for (const c of contribs) {
+        const d = edgeDataList[c.di];
+        const pos = c.side === 0
+          ? (c.isA ? d.p0a : d.p0b)
+          : (c.isA ? d.p1a : d.p1b);
+        mx += pos.x - origV.x;
+        my += pos.y - origV.y;
+        mz += pos.z - origV.z;
+      }
+
+      // Update each contributing edge's position to the merged value
+      for (const c of contribs) {
+        const d = edgeDataList[c.di];
+        if (c.side === 0) {
+          if (c.isA) d.p0a = { x: mx, y: my, z: mz };
+          else d.p0b = { x: mx, y: my, z: mz };
+        } else {
+          if (c.isA) d.p1a = { x: mx, y: my, z: mz };
+          else d.p1b = { x: mx, y: my, z: mz };
+        }
+      }
+    }
+  }
 }
 
 /**

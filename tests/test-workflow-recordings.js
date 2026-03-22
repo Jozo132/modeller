@@ -10,7 +10,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { Part } from '../js/cad/Part.js';
 import { Sketch } from '../js/cad/Sketch.js';
-import { calculateMeshVolume, calculateBoundingBox, calculateSurfaceArea } from '../js/cad/CSG.js';
+import { calculateMeshVolume, calculateBoundingBox, calculateSurfaceArea, detectDisconnectedBodies, calculateWallThickness } from '../js/cad/CSG.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SAMPLES_DIR = join(__dirname, 'samples');
@@ -47,6 +47,26 @@ class HeadlessReplay {
     this.activeTool = 'select';
     this.inSketch = false;
     this.toolClicks = [];
+    // Settings state (mirrors app defaults)
+    this.settings = {
+      fov: 45,
+      snapEnabled: true,
+      orthoEnabled: false,
+      gridVisible: true,
+      gridSize: 10,
+      constructionMode: false,
+      autoCoincidence: true,
+    };
+  }
+
+  /** Apply initial settings from recording before replaying commands. */
+  applyInitialSettings(initialSettings) {
+    if (!initialSettings) return;
+    for (const key of Object.keys(initialSettings)) {
+      if (key in this.settings) {
+        this.settings[key] = initialSettings[key];
+      }
+    }
   }
 
   run(commands) {
@@ -94,9 +114,20 @@ class HeadlessReplay {
         command === 'select.face' || command === 'deselect.face' ||
         command === 'select.plane' || command === 'select.feature' ||
         command === 'select.edge' || command === 'deselect.edge' ||
-        command === 'setting' ||
         command.startsWith('record.')) {
       // These are UI-only commands with no effect on geometry
+      return;
+    }
+
+    if (command === 'setting') {
+      // Track settings state for potential geometry-affecting settings
+      if (args[0] === 'fov' && args[1] != null) this.settings.fov = parseFloat(args[1]);
+      else if (args[0] === 'snap') this.settings.snapEnabled = args[1] !== 'false';
+      else if (args[0] === 'ortho') this.settings.orthoEnabled = args[1] !== 'false';
+      else if (args[0] === 'grid') this.settings.gridVisible = args[1] !== 'false';
+      else if (args[0] === 'gridSize' && args[1] != null) this.settings.gridSize = parseFloat(args[1]);
+      else if (args[0] === 'construction') this.settings.constructionMode = args[1] !== 'false';
+      else if (args[0] === 'autoCoincidence') this.settings.autoCoincidence = args[1] !== 'false';
       return;
     }
 
@@ -272,6 +303,7 @@ for (const file of sampleFiles) {
 
   // Replay commands headlessly
   const replay = new HeadlessReplay();
+  replay.applyInitialSettings(recording.initialSettings);
   try {
     replay.run(commands);
   } catch (e) {
@@ -346,6 +378,49 @@ for (const file of sampleFiles) {
   if (expected.depth !== undefined) {
     test(`${file}: depth`, () => {
       assertApprox(bb.max.z - bb.min.z, expected.depth, 0.01, 'Depth mismatch');
+    });
+  }
+
+  // Validate feature edge count
+  if (expected.edgeCount !== undefined) {
+    test(`${file}: edge count`, () => {
+      const actual = (geometry.edges || []).length;
+      assert.strictEqual(actual, expected.edgeCount,
+        `Expected ${expected.edgeCount} feature edges, got ${actual}`);
+    });
+  }
+
+  // Validate path count
+  if (expected.pathCount !== undefined) {
+    test(`${file}: path count`, () => {
+      const actual = (geometry.paths || []).length;
+      assert.strictEqual(actual, expected.pathCount,
+        `Expected ${expected.pathCount} paths, got ${actual}`);
+    });
+  }
+
+  // Validate disconnected bodies (1 = solid, >1 = problem)
+  if (expected.bodyCount !== undefined) {
+    test(`${file}: body count`, () => {
+      const bodies = detectDisconnectedBodies(geometry);
+      assert.strictEqual(bodies.bodyCount, expected.bodyCount,
+        `Expected ${expected.bodyCount} connected body(ies), got ${bodies.bodyCount}`);
+    });
+  }
+
+  // Validate wall thickness
+  if (expected.minWallThickness !== undefined) {
+    test(`${file}: min wall thickness`, () => {
+      const wt = calculateWallThickness(geometry);
+      assertApprox(wt.minThickness, expected.minWallThickness, 0.5,
+        'Min wall thickness mismatch');
+    });
+  }
+  if (expected.maxWallThickness !== undefined) {
+    test(`${file}: max wall thickness`, () => {
+      const wt = calculateWallThickness(geometry);
+      assertApprox(wt.maxThickness, expected.maxWallThickness, 0.5,
+        'Max wall thickness mismatch');
     });
   }
 }
