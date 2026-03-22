@@ -38,6 +38,53 @@
     </div>
   </div>
 
+  <!-- Menu Bar -->
+  <div id="menu-bar">
+    <div class="menu-item" data-menu="file">
+      <span class="menu-label">File</span>
+      <div class="menu-dropdown">
+        <button data-action="new">New</button>
+        <button data-action="open">Open DXF...</button>
+        <button data-action="open-cmod">Open .cmod...</button>
+        <hr>
+        <button data-action="save">Save DXF</button>
+        <button data-action="save-cmod">Export .cmod</button>
+        <hr>
+        <button data-action="import-json">Import JSON...</button>
+        <button data-action="export-json">Export JSON</button>
+      </div>
+    </div>
+    <div class="menu-item" data-menu="settings">
+      <span class="menu-label">Settings</span>
+      <div class="menu-dropdown">
+        <button data-action="toggle-grid">Toggle Grid</button>
+        <button data-action="toggle-snap">Toggle Snap</button>
+        <button data-action="toggle-ortho">Toggle Ortho</button>
+        <button data-action="toggle-autoconnect">Toggle Auto-Connect</button>
+      </div>
+    </div>
+    <div class="menu-item" data-menu="tools">
+      <span class="menu-label">Tools</span>
+      <div class="menu-dropdown">
+        <button data-action="tool-select">Select</button>
+        <button data-action="tool-line">Line</button>
+        <button data-action="tool-rect">Rectangle</button>
+        <button data-action="tool-circle">Circle</button>
+        <button data-action="tool-arc">Arc</button>
+        <hr>
+        <button data-action="tool-chamfer">Chamfer</button>
+        <button data-action="tool-fillet">Fillet</button>
+      </div>
+    </div>
+    <div class="menu-item" data-menu="help">
+      <span class="menu-label">Help</span>
+      <div class="menu-dropdown">
+        <button data-action="help-shortcuts">Keyboard Shortcuts</button>
+        <button data-action="help-about">About</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Toolbar -->
   <div id="toolbar">
     <div class="tool-group">

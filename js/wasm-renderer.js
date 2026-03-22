@@ -111,8 +111,8 @@ export class WasmRenderer {
     this._sketchInactiveEdges = null;     // Float32Array: inactive sketch edges (grey)
     this._sketchInactiveEdgeVertexCount = 0;
 
-    // Selected face in 3D mode
-    this._selectedFaceIndex = -1;
+    // Selected faces in 3D mode (multi-select)
+    this._selectedFaceIndices = new Set();
 
     // Edge selection for chamfer/fillet
     this._meshEdgeSegments = null; // Array of {start, end, faceIndices, normals} from CSG
@@ -934,19 +934,50 @@ export class WasmRenderer {
   }
 
   /**
-   * Select a face by index for highlighting. Pass -1 to clear selection.
+   * Select exactly one face (clears previous selection). Pass -1 to clear.
    * @param {number} faceIndex
    */
   selectFace(faceIndex) {
-    this._selectedFaceIndex = faceIndex;
+    this._selectedFaceIndices.clear();
+    if (faceIndex >= 0) this._selectedFaceIndices.add(faceIndex);
+  }
+
+  /** Add a face to the current selection. */
+  addFaceSelection(faceIndex) {
+    if (faceIndex >= 0) this._selectedFaceIndices.add(faceIndex);
+  }
+
+  /** Remove a face from the current selection. */
+  removeFaceSelection(faceIndex) {
+    this._selectedFaceIndices.delete(faceIndex);
+  }
+
+  /** Toggle a face in the selection. */
+  toggleFaceSelection(faceIndex) {
+    if (this._selectedFaceIndices.has(faceIndex)) {
+      this._selectedFaceIndices.delete(faceIndex);
+    } else if (faceIndex >= 0) {
+      this._selectedFaceIndices.add(faceIndex);
+    }
+  }
+
+  /** Clear all selected faces. */
+  clearFaceSelection() {
+    this._selectedFaceIndices.clear();
+  }
+
+  /** Check if a face is currently selected. */
+  isFaceSelected(faceIndex) {
+    return this._selectedFaceIndices.has(faceIndex);
   }
 
   /**
-   * Get the currently selected face index.
+   * Get the first selected face index (backward compat).
    * @returns {number} face index or -1 if none
    */
   getSelectedFaceIndex() {
-    return this._selectedFaceIndex;
+    if (this._selectedFaceIndices.size === 0) return -1;
+    return this._selectedFaceIndices.values().next().value;
   }
 
   /** Return the current 3D orbit camera state for persistence. */
@@ -2537,19 +2568,22 @@ export class WasmRenderer {
 
       gl.disable(gl.POLYGON_OFFSET_FILL);
 
-      // Draw selected face highlight (highlights entire face group)
-      if (this._selectedFaceIndex >= 0 && this._meshFaces && this._triFaceMap) {
-        // Find the faceGroup of the selected face
-        const selMeta = this._meshFaces[this._selectedFaceIndex];
-        const selGroup = selMeta ? selMeta.faceGroup : this._selectedFaceIndex;
-        // Build highlight triangles for all faces in the same group
+      // Draw selected face highlight (highlights entire face group for each selected face)
+      if (this._selectedFaceIndices.size > 0 && this._meshFaces && this._triFaceMap) {
+        // Collect all face groups from selected faces
+        const selGroups = new Set();
+        for (const fi of this._selectedFaceIndices) {
+          const selMeta = this._meshFaces[fi];
+          selGroups.add(selMeta ? selMeta.faceGroup : fi);
+        }
+        // Build highlight triangles for all faces in any selected group
         const highlightVerts = [];
         const triCount = this._meshTriangleCount / 3;
         for (let ti = 0; ti < triCount; ti++) {
           const faceIdx = this._triFaceMap[ti];
           const faceMeta = this._meshFaces[faceIdx];
           const group = faceMeta ? faceMeta.faceGroup : faceIdx;
-          if (group === selGroup) {
+          if (selGroups.has(group)) {
             const base = ti * 3 * 6;
             for (let vi = 0; vi < 3; vi++) {
               const vbase = base + vi * 6;
@@ -2663,7 +2697,12 @@ export class WasmRenderer {
           const hovData = new Float32Array(hovVerts);
           gl.useProgram(exec.programs[1]);
           gl.uniformMatrix4fv(exec.uniforms[1].uMVP, false, mvp);
-          gl.uniform4f(exec.uniforms[1].uColor, 1.0, 0.9, 0.0, 1.0);
+          // Use a lighter cyan when hovering over an already-selected edge, yellow otherwise
+          if (this._selectedEdgeIndices.has(this._hoveredEdgeIndex)) {
+            gl.uniform4f(exec.uniforms[1].uColor, 0.4, 0.9, 1.0, 1.0);
+          } else {
+            gl.uniform4f(exec.uniforms[1].uColor, 1.0, 0.9, 0.0, 1.0);
+          }
           gl.lineWidth(1.0);
           gl.disable(gl.DEPTH_TEST);
 
@@ -2701,7 +2740,12 @@ export class WasmRenderer {
           const hovFaceData = new Float32Array(hovFaceVerts);
           gl.useProgram(exec.programs[0]);
           gl.uniformMatrix4fv(exec.uniforms[0].uMVP, false, mvp);
-          gl.uniform4f(exec.uniforms[0].uColor, 1.0, 0.9, 0.0, 0.2);
+          // Use a lighter blue when hovering over an already-selected face, yellow otherwise
+          if (this._selectedFaceIndices.has(this._hoveredFaceIndex)) {
+            gl.uniform4f(exec.uniforms[0].uColor, 0.4, 0.75, 1.0, 0.45);
+          } else {
+            gl.uniform4f(exec.uniforms[0].uColor, 1.0, 0.9, 0.0, 0.2);
+          }
 
           gl.bindVertexArray(exec.vaoSolid);
           gl.bindBuffer(gl.ARRAY_BUFFER, exec.vbo);
@@ -3036,7 +3080,7 @@ export class WasmRenderer {
     this._sketchSelectedEdgeVertexCount = 0;
     this._activeSceneEdges = null;
     this._activeSceneEdgeVertexCount = 0;
-    this._selectedFaceIndex = -1;
+    this._selectedFaceIndices.clear();
     this._meshEdgeSegments = null;
     this._meshEdgePaths = null;
     this._edgeToPath = null;

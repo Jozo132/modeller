@@ -43,7 +43,7 @@ class App {
     this._activeSketchPlane = null; // plane reference for current sketch
     this._selectedPlane = null; // currently selected plane in Part mode ('XY', 'XZ', 'YZ', or null)
     this._hoveredPlane = null;  // currently hovered plane in 3D viewport
-    this._selectedFace = null; // currently selected 3D face in Part mode
+    this._selectedFaces = new Map(); // faceIndex → hit object for multi-face selection
     this._savedOrbitState = null; // saved camera state before entering sketch mode
     this._expandedFolders = new Set(); // track expanded feature tree folders
     this._editingSketchFeatureId = null; // ID of sketch being edited (null = creating new)
@@ -132,6 +132,7 @@ class App {
     // Bind events
     this._bind3DCanvasEvents(); // 3D-only interactions
     this._bindToolbarEvents();
+    this._bindMenuBarEvents();
     this._bindKeyboardEvents();
     this._bindResizeEvent();
     this._bindStateEvents();
@@ -965,15 +966,20 @@ class App {
 
       // Plane hover highlight in Part mode 3D view
       if (this._workspaceMode === 'part' && this._renderer3d) {
-        // Edge/face hover for chamfer/fillet mode or default part mode
-        if ((this._chamferMode || this._filletMode) && this._renderer3d._edgeSelectionMode) {
+        // Disable hover highlighting while rotating/panning (mouseDown)
+        if (mouseDown) {
+          if (this._renderer3d._hoveredEdgeIndex >= 0) { this._renderer3d.setHoveredEdge(-1); this._scheduleRender(); }
+          if (this._renderer3d._hoveredFaceIndex >= 0) { this._renderer3d.setHoveredFace(-1); this._scheduleRender(); }
+          if (this._hoveredPlane) { this._hoveredPlane = null; this._renderer3d.setHoveredPlane(null); this._scheduleRender(); }
+          this.canvas.style.cursor = '';
+        } else if ((this._chamferMode || this._filletMode) && this._renderer3d._edgeSelectionMode) {
+          // Edge/face hover for chamfer/fillet mode
           const edgeHit = this._renderer3d.pickEdge(e.clientX, e.clientY);
           if (edgeHit) {
             this._renderer3d.setHoveredEdge(edgeHit.edgeIndex);
             this._renderer3d.setHoveredFace(-1);
             this.canvas.style.cursor = 'pointer';
           } else {
-            // Try face hover
             const faceHit = this._renderer3d.pickFace(e.clientX, e.clientY);
             if (faceHit) {
               this._renderer3d.setHoveredEdge(-1);
@@ -987,29 +993,40 @@ class App {
           }
           this._scheduleRender();
         } else if (!this._sketchingOnPlane && !this._extrudeMode) {
-          // Default part mode: hover highlight for edges
+          // Default part mode: hover highlight for edges and faces
           const edgeHit = this._renderer3d.pickEdge(e.clientX, e.clientY);
           if (edgeHit) {
             this._renderer3d.setHoveredEdge(edgeHit.edgeIndex);
+            this._renderer3d.setHoveredFace(-1);
             this.canvas.style.cursor = 'pointer';
             this._scheduleRender();
-          } else if (this._renderer3d._hoveredEdgeIndex >= 0) {
-            this._renderer3d.setHoveredEdge(-1);
-            this.canvas.style.cursor = '';
-            this._scheduleRender();
+          } else {
+            const faceHit = this._renderer3d.pickFace(e.clientX, e.clientY);
+            if (faceHit) {
+              this._renderer3d.setHoveredEdge(-1);
+              this._renderer3d.setHoveredFace(faceHit.faceIndex);
+              this.canvas.style.cursor = 'pointer';
+              this._scheduleRender();
+            } else {
+              let changed = false;
+              if (this._renderer3d._hoveredEdgeIndex >= 0) { this._renderer3d.setHoveredEdge(-1); changed = true; }
+              if (this._renderer3d._hoveredFaceIndex >= 0) { this._renderer3d.setHoveredFace(-1); changed = true; }
+              if (changed) { this.canvas.style.cursor = ''; this._scheduleRender(); }
+            }
           }
         }
 
-        const hitPlaneResult = this._renderer3d.pickPlane(e.clientX, e.clientY);
-        const hitPlane = hitPlaneResult ? hitPlaneResult.name : null;
-        if (hitPlane !== this._hoveredPlane) {
-          this._hoveredPlane = hitPlane;
-          this._renderer3d.setHoveredPlane(hitPlane);
-          // Update feature tree hover styling
-          const planeItems = document.querySelectorAll('.node-tree-plane[data-plane]');
-          planeItems.forEach(p => p.classList.toggle('hovered', p.getAttribute('data-plane') === hitPlane));
-          if (!this._chamferMode && !this._filletMode) {
-            this.canvas.style.cursor = hitPlane ? 'pointer' : '';
+        if (!mouseDown) {
+          const hitPlaneResult = this._renderer3d.pickPlane(e.clientX, e.clientY);
+          const hitPlane = hitPlaneResult ? hitPlaneResult.name : null;
+          if (hitPlane !== this._hoveredPlane) {
+            this._hoveredPlane = hitPlane;
+            this._renderer3d.setHoveredPlane(hitPlane);
+            const planeItems = document.querySelectorAll('.node-tree-plane[data-plane]');
+            planeItems.forEach(p => p.classList.toggle('hovered', p.getAttribute('data-plane') === hitPlane));
+            if (!this._chamferMode && !this._filletMode) {
+              this.canvas.style.cursor = hitPlane ? 'pointer' : '';
+            }
           }
         }
       }
@@ -1152,38 +1169,51 @@ class App {
           return;
         }
 
-        // Edge picking in default part select mode
+        // Edge/face picking in default part select mode (multi-select with Shift/Ctrl)
         if (!this._sketchingOnPlane && !this._extrudeMode) {
           const edgeHit = this._renderer3d.pickEdge(e.clientX, e.clientY);
           if (edgeHit) {
-            // Show edge info in status bar
+            this._renderer3d.setHoveredEdge(-1);
+            if (e.shiftKey) {
+              this._renderer3d.addEdgeSelection(edgeHit.edgeIndex);
+            } else if (e.ctrlKey) {
+              this._renderer3d.toggleEdgeSelection(edgeHit.edgeIndex);
+            } else {
+              // Clear all other selections and select this edge
+              this._selectedFaces.clear();
+              this._selectedPlane = null;
+              this._renderer3d.clearFaceSelection();
+              this._renderer3d.setSelectedPlane(null);
+              this._renderer3d.clearEdgeSelection();
+              if (this._featurePanel) this._featurePanel.selectFeature(null);
+              this._renderer3d.setSelectedFeature(null);
+              if (this._parametersPanel) this._parametersPanel.clear();
+              this._renderer3d.addEdgeSelection(edgeHit.edgeIndex);
+            }
             const seg = edgeHit.edge;
             const prec = 2;
             const fmt = (v) => `(${v.x.toFixed(prec)}, ${v.y.toFixed(prec)}, ${v.z.toFixed(prec)})`;
             this.setStatus(`Edge: ${fmt(seg.start)} \u2192 ${fmt(seg.end)}`);
-            // Highlight this edge temporarily via selection
-            this._renderer3d.setHoveredEdge(-1);
-            this._selectedFace = null;
-            this._renderer3d.selectFace(-1);
-            if (this._featurePanel) this._featurePanel.selectFeature(null);
-            if (this._renderer3d) this._renderer3d.setSelectedFeature(null);
-            if (this._parametersPanel) this._parametersPanel.clear();
-            this._showLeftFeatureParams(null);
+            this._onEdgeSelectionChanged();
             this._scheduleRender();
-            // Don't return — fall through to allow sketch/plane picking to take priority below
+            this._updateNodeTree();
+            this._updateOperationButtons();
+            return;
           }
         }
 
         // Try sketch picking first (wireframes are visually on top)
         const sketchHit = this._renderer3d.pickSketch(e.clientX, e.clientY);
         if (sketchHit) {
-          this._selectedFace = null;
-          this._renderer3d.selectFace(-1);
-          this._selectedPlane = null;
-          this._renderer3d.setSelectedPlane(null);
+          if (!e.shiftKey && !e.ctrlKey) {
+            this._selectedFaces.clear();
+            this._renderer3d.clearFaceSelection();
+            this._selectedPlane = null;
+            this._renderer3d.setSelectedPlane(null);
+            this._renderer3d.clearEdgeSelection();
+          }
           this._renderer3d.setSelectedFeature(sketchHit.featureId);
 
-          // Select in feature tree and show parameters
           const feature = this._partManager.getFeatures().find(f => f.id === sketchHit.featureId);
           if (feature) {
             if (this._featurePanel) this._featurePanel.selectFeature(feature.id);
@@ -1197,51 +1227,73 @@ class App {
         } else {
           const hit = this._renderer3d.pickFace(e.clientX, e.clientY);
           if (hit) {
-            this._selectedFace = hit;
-            this._renderer3d.selectFace(hit.faceIndex);
-            // Clear plane selection when a face is selected
-            this._selectedPlane = null;
-            this._renderer3d.setSelectedPlane(null);
-            // Clear feature selection and show selection summary
-            if (this._featurePanel) this._featurePanel.selectFeature(null);
-            if (this._renderer3d) this._renderer3d.setSelectedFeature(null);
-            if (this._parametersPanel) this._parametersPanel.clear();
+            if (e.shiftKey) {
+              // Shift+click: add face to selection
+              this._selectedFaces.set(hit.faceIndex, hit);
+              this._renderer3d.addFaceSelection(hit.faceIndex);
+            } else if (e.ctrlKey) {
+              // Ctrl+click: toggle face in selection
+              if (this._selectedFaces.has(hit.faceIndex)) {
+                this._selectedFaces.delete(hit.faceIndex);
+                this._renderer3d.removeFaceSelection(hit.faceIndex);
+              } else {
+                this._selectedFaces.set(hit.faceIndex, hit);
+                this._renderer3d.addFaceSelection(hit.faceIndex);
+              }
+            } else {
+              // Single select: clear others
+              this._selectedPlane = null;
+              this._renderer3d.setSelectedPlane(null);
+              this._renderer3d.clearEdgeSelection();
+              if (this._featurePanel) this._featurePanel.selectFeature(null);
+              this._renderer3d.setSelectedFeature(null);
+              if (this._parametersPanel) this._parametersPanel.clear();
+              this._selectedFaces.clear();
+              this._selectedFaces.set(hit.faceIndex, hit);
+              this._renderer3d.selectFace(hit.faceIndex);
+            }
             this._showLeftFeatureParams(null);
             this.setStatus(`Selected face ${hit.faceIndex} (normal: ${hit.face.normal.x.toFixed(2)}, ${hit.face.normal.y.toFixed(2)}, ${hit.face.normal.z.toFixed(2)})`);
             info(`Face selected: ${hit.faceIndex}`);
             this._recorder.faceSelected(hit.faceIndex, hit.face.faceGroup, hit.face.normal, hit.face.shared && hit.face.shared.sourceFeatureId, hit.point);
           } else {
-            this._selectedFace = null;
-            this._renderer3d.selectFace(-1);
-
             // Try plane picking
             const hitPlaneResult = this._renderer3d.pickPlane(e.clientX, e.clientY);
             const clickPoint3D = hitPlaneResult ? hitPlaneResult.point : null;
 
-            // Record deselect with best-available 3D position
             this._recorder.faceDeselected(clickPoint3D);
 
             if (hitPlaneResult) {
-              if (this._selectedPlane === hitPlaneResult.name) {
-                this._selectedPlane = null; // toggle off
+              if (e.ctrlKey && this._selectedPlane === hitPlaneResult.name) {
+                this._selectedPlane = null;
+              } else if (!e.shiftKey && !e.ctrlKey) {
+                this._selectedFaces.clear();
+                this._renderer3d.clearFaceSelection();
+                this._renderer3d.clearEdgeSelection();
+                if (this._featurePanel) this._featurePanel.selectFeature(null);
+                this._renderer3d.setSelectedFeature(null);
+                if (this._parametersPanel) this._parametersPanel.clear();
+                this._selectedPlane = hitPlaneResult.name;
               } else {
                 this._selectedPlane = hitPlaneResult.name;
               }
-            } else {
+            } else if (!e.shiftKey && !e.ctrlKey) {
+              // Clicked empty space: deselect all
+              this._selectedFaces.clear();
               this._selectedPlane = null;
+              this._renderer3d.clearFaceSelection();
+              this._renderer3d.clearEdgeSelection();
+              if (this._featurePanel) this._featurePanel.selectFeature(null);
+              this._renderer3d.setSelectedFeature(null);
+              if (this._parametersPanel) this._parametersPanel.clear();
             }
             this._renderer3d.setSelectedPlane(this._selectedPlane);
             if (this._selectedPlane && hitPlaneResult) {
-              // Clear feature selection and show selection summary
-              if (this._featurePanel) this._featurePanel.selectFeature(null);
-              if (this._renderer3d) this._renderer3d.setSelectedFeature(null);
-              if (this._parametersPanel) this._parametersPanel.clear();
               this._showLeftFeatureParams(null);
               this.setStatus(`Selected ${this._selectedPlane} plane`);
               info(`Plane selected in 3D: ${this._selectedPlane}`);
               this._recorder.planeSelected(this._selectedPlane, hitPlaneResult.point);
             } else {
-              // No plane selected — update selection summary
               this._showLeftFeatureParams(null);
             }
           }
@@ -1380,6 +1432,72 @@ class App {
   }
 
   // --- Toolbar ---
+  _bindMenuBarEvents() {
+    const menuBar = document.getElementById('menu-bar');
+    if (!menuBar) return;
+    let openMenu = null;
+
+    // Toggle menu on click
+    menuBar.querySelectorAll('.menu-item').forEach(item => {
+      const label = item.querySelector('.menu-label');
+      label.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (openMenu === item) {
+          item.classList.remove('open');
+          openMenu = null;
+        } else {
+          if (openMenu) openMenu.classList.remove('open');
+          item.classList.add('open');
+          openMenu = item;
+        }
+      });
+      // Hover to switch between open menus
+      item.addEventListener('mouseenter', () => {
+        if (openMenu && openMenu !== item) {
+          openMenu.classList.remove('open');
+          item.classList.add('open');
+          openMenu = item;
+        }
+      });
+    });
+
+    // Close on outside click
+    document.addEventListener('click', () => {
+      if (openMenu) { openMenu.classList.remove('open'); openMenu = null; }
+    });
+
+    // Handle menu actions
+    menuBar.querySelectorAll('.menu-dropdown button').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (openMenu) { openMenu.classList.remove('open'); openMenu = null; }
+        const action = btn.dataset.action;
+        switch (action) {
+          case 'new': document.getElementById('btn-new')?.click(); break;
+          case 'open': document.getElementById('btn-open')?.click(); break;
+          case 'save': document.getElementById('btn-save')?.click(); break;
+          case 'open-cmod': this._openCMODProject?.(); break;
+          case 'save-cmod': downloadCMOD?.(); break;
+          case 'import-json': document.getElementById('btn-open')?.click(); break;
+          case 'export-json': document.getElementById('btn-save')?.click(); break;
+          case 'toggle-grid': document.getElementById('btn-grid-toggle')?.click(); break;
+          case 'toggle-snap': document.getElementById('btn-snap-toggle')?.click(); break;
+          case 'toggle-ortho': document.getElementById('btn-ortho-toggle')?.click(); break;
+          case 'toggle-autoconnect': document.getElementById('btn-autocoincidence-toggle')?.click(); break;
+          case 'tool-select': this.setActiveTool('select'); break;
+          case 'tool-line': this.setActiveTool('line'); break;
+          case 'tool-rect': this.setActiveTool('rectangle'); break;
+          case 'tool-circle': this.setActiveTool('circle'); break;
+          case 'tool-arc': this.setActiveTool('arc'); break;
+          case 'tool-chamfer': document.getElementById('btn-chamfer')?.click(); break;
+          case 'tool-fillet': document.getElementById('btn-fillet')?.click(); break;
+          case 'help-shortcuts': this.setStatus('Shortcuts: L=Line, R=Rect, C=Circle, Esc=Select, Del=Delete, Ctrl+Z=Undo, Ctrl+Y=Redo, F=Fit'); break;
+          case 'help-about': this.setStatus('CAD Modeller v1.0.0 — Parametric 2D/3D CAD'); break;
+        }
+      });
+    });
+  }
+
   _bindToolbarEvents() {
     // Draw tools — intercept constraint buttons to apply from selection
     document.querySelectorAll('#toolbar button[data-tool]').forEach(btn => {
@@ -1580,7 +1698,7 @@ class App {
           // Check if anything is currently selected
           const hadSelection =
             !!this._selectedPlane ||
-            !!this._selectedFace ||
+            this._selectedFaces.size > 0 ||
             (this._featurePanel && !!this._featurePanel.selectedFeatureId) ||
             (this._renderer3d && this._renderer3d._selectedFeatureId) ||
             state.selectedEntities.length > 0;
@@ -1593,9 +1711,9 @@ class App {
               this._selectedPlane = null;
               if (this._renderer3d) this._renderer3d.setSelectedPlane(null);
             }
-            if (this._selectedFace) {
-              this._selectedFace = null;
-              if (this._renderer3d) this._renderer3d.selectFace(-1);
+            if (this._selectedFaces.size > 0) {
+              this._selectedFaces.clear();
+              if (this._renderer3d) this._renderer3d.clearFaceSelection();
             }
             if (this._featurePanel && this._featurePanel.selectedFeatureId) {
               this._featurePanel.selectFeature(null);
@@ -1739,7 +1857,8 @@ class App {
         const faceIndex = parseInt(args[0], 10);
         const faceMeta = this._renderer3d.getFaceInfo(faceIndex);
         if (faceMeta) {
-          this._selectedFace = { faceIndex, face: faceMeta };
+          this._selectedFaces.clear();
+          this._selectedFaces.set(faceIndex, { faceIndex, face: faceMeta });
           this._renderer3d.selectFace(faceIndex);
           this._selectedPlane = null;
           this._renderer3d.setSelectedPlane(null);
@@ -1751,8 +1870,8 @@ class App {
     }
 
     if (command === 'deselect.face') {
-      this._selectedFace = null;
-      if (this._renderer3d) this._renderer3d.selectFace(-1);
+      this._selectedFaces.clear();
+      if (this._renderer3d) this._renderer3d.clearFaceSelection();
       this._updateNodeTree();
       this._updateOperationButtons();
       return;
@@ -1763,8 +1882,8 @@ class App {
       if (args[0]) {
         this._selectedPlane = args[0].toUpperCase();
         if (this._renderer3d) this._renderer3d.setSelectedPlane(this._selectedPlane);
-        this._selectedFace = null;
-        if (this._renderer3d) this._renderer3d.selectFace(-1);
+        this._selectedFaces.clear();
+        if (this._renderer3d) this._renderer3d.clearFaceSelection();
         this._updateNodeTree();
         this._updateOperationButtons();
       }
@@ -2505,32 +2624,6 @@ class App {
 
     // Unified selection list
     container.appendChild(this._buildSelectionList());
-
-    // Show required selections per operation
-    const reqHeader = document.createElement('div');
-    reqHeader.className = 'parameter-row';
-    reqHeader.innerHTML = '<label class="parameter-label" style="font-weight:600;margin-top:8px">Requirements</label>';
-    container.appendChild(reqHeader);
-
-    const hasPlane = !!this._selectedPlane;
-    const hasFace = !!this._selectedFace;
-    const hasSketch = !!this._lastSketchFeatureId;
-
-    const reqs = [
-      { op: 'Sketch', needs: 'Plane or Face', met: hasPlane || hasFace },
-      { op: 'Extrude', needs: 'Sketch', met: hasSketch },
-      { op: 'Extrude Cut', needs: 'Sketch', met: hasSketch },
-      { op: 'Revolve', needs: 'Sketch + Line', met: hasSketch },
-    ];
-
-    for (const r of reqs) {
-      const row = document.createElement('div');
-      row.className = 'parameter-row';
-      row.style.fontSize = '11px';
-      row.style.opacity = r.met ? '1' : '0.5';
-      row.innerHTML = `<span style="margin-right:4px">${r.met ? '✅' : '⬜'}</span><span>${r.op}</span><span style="margin-left:auto;opacity:0.6">${r.needs}</span>`;
-      container.appendChild(row);
-    }
   }
 
   /**
@@ -4261,13 +4354,14 @@ class App {
 
     // Add Sketch to Part
     document.getElementById('btn-add-sketch').addEventListener('click', (e) => {
-      if (this._selectedFace && this._selectedFace.face) {
+      const firstFace = this._selectedFaces.size > 0 ? this._selectedFaces.values().next().value : null;
+      if (firstFace && firstFace.face) {
         // Use selected face's plane
-        const planeDef = this._getPlaneFromFace(this._selectedFace);
+        const planeDef = this._getPlaneFromFace(firstFace);
         if (planeDef) {
           this._addSketchToPartWithPlane(planeDef);
-          this._selectedFace = null;
-          if (this._renderer3d) this._renderer3d.selectFace(-1);
+          this._selectedFaces.clear();
+          if (this._renderer3d) this._renderer3d.clearFaceSelection();
           return;
         }
       }
@@ -4464,10 +4558,10 @@ class App {
 
   /** Clear all 3D selections (face, plane, feature). */
   _deselectAll() {
-    this._selectedFace = null;
+    this._selectedFaces.clear();
     this._selectedPlane = null;
     if (this._renderer3d) {
-      this._renderer3d.selectFace(-1);
+      this._renderer3d.clearFaceSelection();
       this._renderer3d.setSelectedPlane(null);
       this._renderer3d.setSelectedFeature(null);
     }
@@ -4556,7 +4650,7 @@ class App {
     this._lastSketchFeatureId = sessionState.lastSketchFeatureId || this._editingSketchFeatureId || null;
     this._savedOrbitState = sessionState.savedOrbitState || null;
     this._selectedPlane = null;
-    this._selectedFace = null;
+    this._selectedFaces.clear();
     this._hoveredPlane = null;
     this._3dMode = true;
 
@@ -4605,7 +4699,7 @@ class App {
     this.renderer.snapPoint = null;
     this.renderer.cursorWorld = null;
 
-    this._selectedFace = null;
+    this._selectedFaces.clear();
     this._selectedPlane = null;
     this._hoveredPlane = null;
     this._activeSketchPlane = null;
@@ -5594,7 +5688,7 @@ class App {
     state.selectedEntities = [];
 
     // Reset internal state
-    this._selectedFace = null;
+    this._selectedFaces.clear();
     this._selectedPlane = null;
     this._hoveredPlane = null;
     this._activeSketchPlane = null;
@@ -6009,8 +6103,9 @@ class App {
     if (btnSketchOnPlane) {
       btnSketchOnPlane.addEventListener('click', () => {
         // If a face is selected, use its plane
-        if (this._selectedFace && this._selectedFace.face) {
-          this._startSketchOnFace(this._selectedFace);
+        const firstFace = this._selectedFaces.size > 0 ? this._selectedFaces.values().next().value : null;
+        if (firstFace && firstFace.face) {
+          this._startSketchOnFace(firstFace);
         } else {
           this._startSketchOnPlane();
         }
@@ -6210,8 +6305,8 @@ class App {
     }
 
     // Clear face selection
-    this._selectedFace = null;
-    if (this._renderer3d) this._renderer3d.selectFace(-1);
+    this._selectedFaces.clear();
+    if (this._renderer3d) this._renderer3d.clearFaceSelection();
 
     const modeIndicator = document.getElementById('status-mode');
     modeIndicator.textContent = 'SKETCH ON FACE';
@@ -6493,13 +6588,14 @@ class App {
 
     // If a face is selected but no sketch was created for it, auto-create
     // a new sketch from the face outline instead of reusing an old sketch.
-    if (this._selectedFace && this._selectedFace.face && !this._lastSketchFeatureId) {
-      const face = this._selectedFace.face;
+    const firstFace = this._selectedFaces.size > 0 ? this._selectedFaces.values().next().value : null;
+    if (firstFace && firstFace.face && !this._lastSketchFeatureId) {
+      const face = firstFace.face;
       if (face.isCurved) {
         this.setStatus('Cannot extrude from a curved surface. Select a flat face.');
         return;
       }
-      const planeDef = this._getPlaneFromFace(this._selectedFace);
+      const planeDef = this._getPlaneFromFace(firstFace);
       if (planeDef) {
         let allFaceVerts = [];
         const faceGroup = face.faceGroup;
@@ -6540,14 +6636,14 @@ class App {
           }
         }
       }
-      this._selectedFace = null;
-      if (this._renderer3d) this._renderer3d.selectFace(-1);
+      this._selectedFaces.clear();
+      if (this._renderer3d) this._renderer3d.clearFaceSelection();
     }
 
     // Clear face selection
-    if (this._selectedFace) {
-      this._selectedFace = null;
-      if (this._renderer3d) this._renderer3d.selectFace(-1);
+    if (this._selectedFaces.size > 0) {
+      this._selectedFaces.clear();
+      if (this._renderer3d) this._renderer3d.clearFaceSelection();
     }
 
     const opName = isCut ? 'Extrude Cut' : 'Extrude';
@@ -7005,7 +7101,7 @@ class App {
       this._renderer3d.setEdgeSelectionMode(true);
       this._renderer3d.selectFace(-1);
     }
-    this._selectedFace = null;
+    this._selectedFaces.clear();
 
     const btnChamfer = document.getElementById('btn-chamfer');
     if (btnChamfer) btnChamfer.classList.add('active');
@@ -7143,7 +7239,7 @@ class App {
       this._renderer3d.setEdgeSelectionMode(true);
       this._renderer3d.selectFace(-1);
     }
-    this._selectedFace = null;
+    this._selectedFaces.clear();
 
     const btnFillet = document.getElementById('btn-fillet');
     if (btnFillet) btnFillet.classList.add('active');
@@ -7292,14 +7388,16 @@ class App {
     }
 
     // Face (selected in default mode, not edge-selection mode)
-    if (this._selectedFace) {
-      const faceIdx = this._selectedFace.faceIndex != null ? this._selectedFace.faceIndex : '?';
-      items.push({
-        icon: '🔲', label: `Face ${faceIdx}`, type: 'face',
-        onHover: () => { if (this._renderer3d) { this._renderer3d.setHoveredFace(this._selectedFace.faceIndex); this._scheduleRender(); } },
-        onLeave: () => { if (this._renderer3d) { this._renderer3d.setHoveredFace(-1); this._scheduleRender(); } },
-        onRemove: () => { this._selectedFace = null; if (this._renderer3d) this._renderer3d.selectFace(-1); this._refreshSelectionUI(); this._scheduleRender(); }
-      });
+    if (this._selectedFaces.size > 0) {
+      for (const [fIdx, fHit] of this._selectedFaces) {
+        const faceIdx = fHit.faceIndex != null ? fHit.faceIndex : '?';
+        items.push({
+          icon: '🔲', label: `Face ${faceIdx}`, type: 'face',
+          onHover: () => { if (this._renderer3d) { this._renderer3d.setHoveredFace(fHit.faceIndex); this._scheduleRender(); } },
+          onLeave: () => { if (this._renderer3d) { this._renderer3d.setHoveredFace(-1); this._scheduleRender(); } },
+          onRemove: () => { this._selectedFaces.delete(fIdx); if (this._renderer3d) this._renderer3d.removeFaceSelection(fIdx); this._refreshSelectionUI(); this._scheduleRender(); }
+        });
+      }
     }
 
     // Feature
@@ -7392,11 +7490,11 @@ class App {
       clearBtn.className = 'edge-selection-clear';
       clearBtn.textContent = 'Clear All';
       clearBtn.addEventListener('click', () => {
-        this._selectedFace = null;
+        this._selectedFaces.clear();
         this._selectedPlane = null;
         this._selectedFacesForEdges = new Map();
         if (this._renderer3d) {
-          this._renderer3d.selectFace(-1);
+          this._renderer3d.clearFaceSelection();
           this._renderer3d.setSelectedPlane(null);
           this._renderer3d.setSelectedFeature(null);
           this._renderer3d.clearEdgeSelection();
@@ -7572,7 +7670,7 @@ class App {
       // Pre-select the feature's existing edges
       this._renderer3d.selectEdgesByKeys(feature.edgeKeys);
     }
-    this._selectedFace = null;
+    this._selectedFaces.clear();
 
     const btnChamfer = document.getElementById('btn-chamfer');
     if (btnChamfer) btnChamfer.classList.add('active');
@@ -7609,7 +7707,7 @@ class App {
       this._renderer3d.selectFace(-1);
       this._renderer3d.selectEdgesByKeys(feature.edgeKeys);
     }
-    this._selectedFace = null;
+    this._selectedFaces.clear();
 
     const btnFillet = document.getElementById('btn-fillet');
     if (btnFillet) btnFillet.classList.add('active');

@@ -29,10 +29,82 @@ html, body {
   color: var(--text-primary);
 }
 
+/* Menu Bar */
+#menu-bar {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  height: 24px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 4px;
+  z-index: 101;
+  user-select: none;
+  font-size: 12px;
+}
+.menu-item {
+  position: relative;
+  height: 100%;
+  display: flex;
+  align-items: center;
+}
+.menu-label {
+  padding: 0 8px;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  cursor: default;
+  color: var(--text-secondary);
+  border-radius: 2px;
+}
+.menu-label:hover,
+.menu-item.open .menu-label {
+  background: rgba(255,255,255,0.08);
+  color: var(--text-primary);
+}
+.menu-dropdown {
+  display: none;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  min-width: 180px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+  padding: 4px 0;
+  z-index: 200;
+}
+.menu-item.open .menu-dropdown {
+  display: block;
+}
+.menu-dropdown button {
+  display: block;
+  width: 100%;
+  padding: 4px 16px;
+  background: none;
+  border: none;
+  color: var(--text-primary);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+}
+.menu-dropdown button:hover {
+  background: var(--accent);
+  color: #fff;
+}
+.menu-dropdown hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 4px 0;
+}
+
 /* Toolbar */
 #toolbar {
   position: fixed;
-  top: 0; left: 0; right: 0;
+  top: 24px; left: 0; right: 0;
   height: 34px;
   background: var(--bg-toolbar);
   border-bottom: 1px solid var(--border);
@@ -142,7 +214,7 @@ html, body {
 /* Properties Panel (unified right sidebar) */
 #properties-panel {
   position: fixed;
-  top: 34px;
+  top: 58px;
   right: 0;
   width: var(--panel-width);
   bottom: 88px;
@@ -283,7 +355,7 @@ html, body {
 /* Left Panel (Primitives & Constraints) */
 #left-panel {
   position: fixed;
-  top: 34px;
+  top: 58px;
   left: 0;
   width: var(--panel-width);
   bottom: 88px;
@@ -549,7 +621,7 @@ html, body {
 /* Canvas */
 #cad-canvas {
   position: fixed;
-  top: 34px;
+  top: 58px;
   left: var(--panel-width);
   right: var(--panel-width);
   bottom: 88px;
@@ -1576,7 +1648,7 @@ body.motion-active #view-3d {
 /* Unified 3D View - Full Screen */
 #view-3d {
   position: fixed;
-  top: 34px;
+  top: 58px;
   left: var(--panel-width);
   right: var(--panel-width);
   bottom: 88px;
@@ -1851,7 +1923,7 @@ body.workspace-part #parameters-panel {
 /* Node Tree Overlay — transparent panel in top-left of viewport */
 .node-tree {
   position: fixed;
-  top: 42px;
+  top: 66px;
   left: calc(var(--panel-width) + 8px);
   width: 200px;
   max-height: calc(100vh - 142px);
@@ -2318,7 +2390,7 @@ body.sketch-on-plane #parameters-panel {
 /* ── Exit Sketch Button ── */
 .exit-sketch-btn {
   position: fixed;
-  top: 42px;
+  top: 66px;
   left: calc(var(--panel-width) + 8px);
   z-index: 200;
   display: none;
@@ -2350,7 +2422,7 @@ body.sketch-on-plane #parameters-panel {
 }
 .exit-extrude-btn {
   position: fixed;
-  top: 42px;
+  top: 66px;
   left: calc(var(--panel-width) + 216px);
   z-index: 200;
   display: none;
