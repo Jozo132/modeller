@@ -63,12 +63,16 @@ export class InteractionRecorder {
   getCommands() { return this._steps.map(s => s.command); }
 
   /** Export as JSON with commands and metadata. */
-  exportJSON() {
-    return JSON.stringify({
+  exportJSON(partStats) {
+    const data = {
       version: 1,
       recorded: new Date().toISOString(),
       steps: this._steps,
-    }, null, 2);
+    };
+    if (partStats) {
+      data.partStats = partStats;
+    }
+    return JSON.stringify(data, null, 2);
   }
 
   // ---- Internal ----
@@ -200,6 +204,22 @@ export class InteractionRecorder {
 
   featureModified(featureId, paramName, value) {
     this._push(`feature.modify ${featureId} ${paramName} ${value}`);
+  }
+
+  chamferCreated(edgeKeys, distance) {
+    this._push(`chamfer ${n4(distance)} ${edgeKeys.join(' ')}`);
+  }
+
+  filletCreated(edgeKeys, radius, segments) {
+    this._push(`fillet ${n4(radius)} ${segments || 8} ${edgeKeys.join(' ')}`);
+  }
+
+  edgeSelected(edgeKey) {
+    this._push(`select.edge ${edgeKey}`);
+  }
+
+  edgeDeselected(edgeKey) {
+    this._push(`deselect.edge ${edgeKey}`);
   }
 
   autoSketchFromFace(sketchFeatureId, faceIndex, vertexCount) {

@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "description": "10x10x10 box with a radius-1 fillet (8 segments) on one top edge",
+  "recorded": "2026-03-22T12:00:00.000Z",
+  "steps": [
+    { "seq": 0, "ts": 0, "command": "workspace part" },
+    { "seq": 1, "ts": 100, "command": "select.plane XY" },
+    { "seq": 2, "ts": 200, "command": "sketch.start XY" },
+    { "seq": 3, "ts": 300, "command": "draw.rect 0 0 10 10" },
+    { "seq": 4, "ts": 400, "command": "sketch.finish" },
+    { "seq": 5, "ts": 500, "command": "extrude 10" },
+    { "seq": 6, "ts": 600, "command": "fillet 1 8 0.00000,0.00000,10.00000|10.00000,0.00000,10.00000" }
+  ],
+  "partStats": {
+    "featureCount": 3,
+    "featureTypes": ["sketch", "extrude", "fillet"],
+    "faceCount": 28,
+    "volume": 997.803613,
+    "surfaceArea": 595.243465,
+    "width": 10,
+    "height": 10,
+    "depth": 10
+  }
+}

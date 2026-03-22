@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "description": "Simple 10x10x10 box: rectangle sketch on XY plane, extruded 10 units",
+  "recorded": "2026-03-22T12:00:00.000Z",
+  "steps": [
+    { "seq": 0, "ts": 0, "command": "workspace part" },
+    { "seq": 1, "ts": 100, "command": "select.plane XY" },
+    { "seq": 2, "ts": 200, "command": "sketch.start XY" },
+    { "seq": 3, "ts": 300, "command": "draw.rect 0 0 10 10" },
+    { "seq": 4, "ts": 400, "command": "sketch.finish" },
+    { "seq": 5, "ts": 500, "command": "extrude 10" }
+  ],
+  "partStats": {
+    "featureCount": 2,
+    "featureTypes": ["sketch", "extrude"],
+    "faceCount": 6,
+    "volume": 1000,
+    "surfaceArea": 600,
+    "width": 10,
+    "height": 10,
+    "depth": 10
+  }
+}

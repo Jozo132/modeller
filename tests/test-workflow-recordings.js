@@ -1,0 +1,310 @@
+// tests/test-workflow-recordings.js — Replay workflow recordings and verify part statistics
+//
+// Loads JSON recording files from tests/samples/ and replays the commands
+// headlessly using the CAD API. Verifies that the final solid matches the
+// expected statistics stored in the recording's partStats field.
+
+import assert from 'assert';
+import { readFileSync, readdirSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
+import { Part } from '../js/cad/Part.js';
+import { Sketch } from '../js/cad/Sketch.js';
+import { calculateMeshVolume, calculateBoundingBox, calculateSurfaceArea } from '../js/cad/CSG.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const SAMPLES_DIR = join(__dirname, 'samples');
+
+let passed = 0;
+let failed = 0;
+
+function test(name, fn) {
+  try {
+    fn();
+    console.log(`  ✓ ${name}`);
+    passed++;
+  } catch (err) {
+    console.log(`  ✗ ${name}`);
+    console.log(`    ${err.message}`);
+    failed++;
+  }
+}
+
+function assertApprox(actual, expected, tolerance, msg) {
+  assert.ok(Math.abs(actual - expected) < tolerance,
+    `${msg}: expected ~${expected}, got ${actual} (diff: ${Math.abs(actual - expected).toFixed(6)})`);
+}
+
+// ---------------------------------------------------------------------------
+// Headless command replay engine
+// ---------------------------------------------------------------------------
+
+class HeadlessReplay {
+  constructor() {
+    this.part = null;
+    this.lastSketchFeatureId = null;
+    this.scene = { segments: [], circles: [], arcs: [], clear() { this.segments = []; this.circles = []; this.arcs = []; } };
+  }
+
+  run(commands) {
+    for (const cmd of commands) {
+      this._handleCommand(cmd);
+    }
+  }
+
+  _handleCommand(cmd) {
+    if (!cmd) return;
+    const raw = cmd.trim().split(/\s+/);
+    const command = raw[0].toLowerCase();
+    const args = raw.slice(1);
+
+    if (command === 'workspace') {
+      if (args[0] === 'part' && !this.part) {
+        this.part = new Part('Part1');
+      }
+      return;
+    }
+
+    if (command === 'camera.set' || command === 'tool' ||
+        command === 'select.face' || command === 'deselect.face' ||
+        command === 'select.plane' || command === 'select.feature' ||
+        command === 'select.edge' || command === 'deselect.edge' ||
+        command === 'setting' || command === 'click' ||
+        command.startsWith('record.')) {
+      // These are UI-only commands with no effect on geometry
+      return;
+    }
+
+    if (command === 'sketch.start') {
+      this.scene.clear();
+      return;
+    }
+
+    if (command === 'sketch.finish') {
+      if (!this.part) this.part = new Part('Part1');
+      const sketch = new Sketch();
+      for (const seg of this.scene.segments) {
+        sketch.addSegment(seg.x1, seg.y1, seg.x2, seg.y2);
+      }
+      for (const c of this.scene.circles) {
+        sketch.addCircle(c.cx, c.cy, c.radius);
+      }
+      const sketchFeature = this.part.addSketch(sketch);
+      this.lastSketchFeatureId = sketchFeature.id;
+      this.scene.clear();
+      return;
+    }
+
+    if (command === 'sketch.edit' || command === 'sketch.from-face') {
+      return;
+    }
+
+    if (command === 'draw.line') {
+      if (args.length >= 4) {
+        this.scene.segments.push({
+          x1: parseFloat(args[0]), y1: parseFloat(args[1]),
+          x2: parseFloat(args[2]), y2: parseFloat(args[3]),
+        });
+      }
+      return;
+    }
+
+    if (command === 'draw.rect') {
+      if (args.length >= 4) {
+        const x1 = parseFloat(args[0]), y1 = parseFloat(args[1]);
+        const x2 = parseFloat(args[2]), y2 = parseFloat(args[3]);
+        this.scene.segments.push({ x1, y1: y1, x2, y2: y1 });
+        this.scene.segments.push({ x1: x2, y1: y1, x2, y2 });
+        this.scene.segments.push({ x1: x2, y1: y2, x2: x1, y2 });
+        this.scene.segments.push({ x1, y1: y2, x2: x1, y2: y1 });
+      }
+      return;
+    }
+
+    if (command === 'draw.circle') {
+      if (args.length >= 3) {
+        this.scene.circles.push({
+          cx: parseFloat(args[0]), cy: parseFloat(args[1]),
+          radius: parseFloat(args[2]),
+        });
+      }
+      return;
+    }
+
+    if (command === 'extrude') {
+      if (args.length >= 1 && this.lastSketchFeatureId && this.part) {
+        const dist = parseFloat(args[0]);
+        const isCut = args[1] === 'cut';
+        const options = isCut ? { operation: 'subtract', direction: -1 } : {};
+        if (isCut) {
+          this.part.extrudeCut(this.lastSketchFeatureId, Math.abs(dist), options);
+        } else {
+          this.part.extrude(this.lastSketchFeatureId, Math.abs(dist), options);
+        }
+      }
+      return;
+    }
+
+    if (command === 'revolve') {
+      if (args.length >= 1 && this.lastSketchFeatureId && this.part) {
+        const angleDeg = parseFloat(args[0]);
+        this.part.revolve(this.lastSketchFeatureId, (angleDeg * Math.PI) / 180);
+      }
+      return;
+    }
+
+    if (command === 'chamfer') {
+      if (args.length >= 2 && this.part) {
+        const distance = parseFloat(args[0]);
+        const edgeKeys = args.slice(1);
+        this.part.chamfer(edgeKeys, distance);
+      }
+      return;
+    }
+
+    if (command === 'fillet') {
+      if (args.length >= 3 && this.part) {
+        const radius = parseFloat(args[0]);
+        const segments = parseInt(args[1], 10);
+        const edgeKeys = args.slice(2);
+        this.part.fillet(edgeKeys, radius, { segments });
+      }
+      return;
+    }
+
+    if (command === 'feature.modify') {
+      if (args.length >= 3 && this.part) {
+        const featureId = args[0];
+        const paramName = args[1];
+        const value = args[2];
+        this.part.modifyFeature(featureId, (f) => {
+          switch (paramName) {
+            case 'distance': f.setDistance(parseFloat(value)); break;
+            case 'direction': f.direction = parseInt(value, 10); break;
+            case 'operation': f.operation = value; break;
+            case 'symmetric': f.symmetric = value === 'true'; break;
+            case 'angle': if (typeof f.setAngle === 'function') f.setAngle(parseFloat(value)); break;
+            case 'segments': f.segments = parseInt(value, 10); break;
+          }
+        });
+      }
+      return;
+    }
+
+    // Ignore unknown commands during headless replay
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Load and run all sample recordings
+// ---------------------------------------------------------------------------
+
+console.log('\n=== Workflow Recording Tests ===\n');
+
+let sampleFiles;
+try {
+  sampleFiles = readdirSync(SAMPLES_DIR).filter(f => f.endsWith('.json'));
+} catch (e) {
+  console.log('  No samples directory found — skipping workflow tests');
+  sampleFiles = [];
+}
+
+for (const file of sampleFiles) {
+  const filePath = join(SAMPLES_DIR, file);
+  let recording;
+  try {
+    recording = JSON.parse(readFileSync(filePath, 'utf-8'));
+  } catch (e) {
+    test(`${file}: valid JSON`, () => { throw new Error(`Failed to parse: ${e.message}`); });
+    continue;
+  }
+
+  const commands = (recording.steps || []).map(s => s.command);
+  const expected = recording.partStats;
+  if (!expected) {
+    test(`${file}: has partStats`, () => { throw new Error('Missing partStats in recording'); });
+    continue;
+  }
+
+  // Replay commands headlessly
+  const replay = new HeadlessReplay();
+  try {
+    replay.run(commands);
+  } catch (e) {
+    test(`${file}: replay succeeds`, () => { throw new Error(`Replay failed: ${e.message}`); });
+    continue;
+  }
+
+  const part = replay.part;
+
+  // Validate feature count
+  if (expected.featureCount !== undefined) {
+    test(`${file}: feature count`, () => {
+      assert.strictEqual(part.getFeatures().length, expected.featureCount,
+        `Expected ${expected.featureCount} features, got ${part.getFeatures().length}`);
+    });
+  }
+
+  // Validate feature types
+  if (expected.featureTypes) {
+    test(`${file}: feature types`, () => {
+      const actual = part.getFeatures().map(f => f.type);
+      assert.deepStrictEqual(actual, expected.featureTypes,
+        `Expected types ${JSON.stringify(expected.featureTypes)}, got ${JSON.stringify(actual)}`);
+    });
+  }
+
+  // Get final geometry for numeric checks
+  const geo = part.getFinalGeometry();
+  const geometry = geo && geo.geometry ? geo.geometry : null;
+
+  if (!geometry) {
+    test(`${file}: has final geometry`, () => { throw new Error('No final geometry produced'); });
+    continue;
+  }
+
+  // Validate face count
+  if (expected.faceCount !== undefined) {
+    test(`${file}: face count`, () => {
+      assert.strictEqual(geometry.faces.length, expected.faceCount,
+        `Expected ${expected.faceCount} faces, got ${geometry.faces.length}`);
+    });
+  }
+
+  // Validate volume (tolerance: 0.5)
+  if (expected.volume !== undefined) {
+    test(`${file}: volume`, () => {
+      assertApprox(calculateMeshVolume(geometry), expected.volume, 0.5,
+        'Volume mismatch');
+    });
+  }
+
+  // Validate surface area (tolerance: 0.5)
+  if (expected.surfaceArea !== undefined) {
+    test(`${file}: surface area`, () => {
+      assertApprox(calculateSurfaceArea(geometry), expected.surfaceArea, 0.5,
+        'Surface area mismatch');
+    });
+  }
+
+  // Validate bounding box dimensions (tolerance: 0.01)
+  const bb = calculateBoundingBox(geometry);
+  if (expected.width !== undefined) {
+    test(`${file}: width`, () => {
+      assertApprox(bb.max.x - bb.min.x, expected.width, 0.01, 'Width mismatch');
+    });
+  }
+  if (expected.height !== undefined) {
+    test(`${file}: height`, () => {
+      assertApprox(bb.max.y - bb.min.y, expected.height, 0.01, 'Height mismatch');
+    });
+  }
+  if (expected.depth !== undefined) {
+    test(`${file}: depth`, () => {
+      assertApprox(bb.max.z - bb.min.z, expected.depth, 0.01, 'Depth mismatch');
+    });
+  }
+}
+
+console.log(`\nWorkflow Recording Tests: ${passed} passed, ${failed} failed`);
+if (failed > 0) process.exit(1);

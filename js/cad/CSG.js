@@ -1041,6 +1041,32 @@ export function calculateBoundingBox(geometry) {
   return { min: { x: minX, y: minY, z: minZ }, max: { x: maxX, y: maxY, z: maxZ } };
 }
 
+/**
+ * Calculate the total surface area of a closed mesh.
+ * Uses fan triangulation per face and sums triangle areas.
+ * @param {Object} geometry - {faces: [{vertices: [{x,y,z},...], ...}]}
+ * @returns {number} Total surface area
+ */
+export function calculateSurfaceArea(geometry) {
+  let area = 0;
+  for (const face of (geometry.faces || [])) {
+    const verts = face.vertices;
+    if (verts.length < 3) continue;
+    const v0 = verts[0];
+    for (let i = 1; i < verts.length - 1; i++) {
+      const v1 = verts[i], v2 = verts[i + 1];
+      // Cross product of (v1-v0) x (v2-v0)
+      const ax = v1.x - v0.x, ay = v1.y - v0.y, az = v1.z - v0.z;
+      const bx = v2.x - v0.x, by = v2.y - v0.y, bz = v2.z - v0.z;
+      const cx = ay * bz - az * by;
+      const cy = az * bx - ax * bz;
+      const cz = ax * by - ay * bx;
+      area += Math.sqrt(cx * cx + cy * cy + cz * cz) / 2;
+    }
+  }
+  return area;
+}
+
 // -----------------------------------------------------------------------
 // Edge key helpers for chamfer/fillet
 // -----------------------------------------------------------------------
