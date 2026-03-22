@@ -31,7 +31,7 @@ import {
   LockTool, EqualTool, TangentTool, AngleTool,
 } from './tools/index.js';
 import { InteractionRecorder, PlaybackEngine } from './interaction-recorder.js';
-import { applyChamfer, applyFillet, expandPathEdgeKeys, makeEdgeKey } from './cad/CSG.js';
+import { applyChamfer, applyFillet, expandPathEdgeKeys, makeEdgeKey, calculateMeshVolume, calculateBoundingBox, calculateSurfaceArea } from './cad/CSG.js';
 
 class App {
   constructor() {
@@ -1720,6 +1720,57 @@ class App {
       return;
     }
 
+    if (command === 'chamfer') {
+      // chamfer <distance> <edgeKey1> [edgeKey2] ...
+      if (args.length >= 2) {
+        const distance = parseFloat(args[0]);
+        const edgeKeys = args.slice(1);
+        try {
+          this._partManager.chamfer(edgeKeys, distance);
+          this._deselectAll();
+          if (this._featurePanel) this._featurePanel.update();
+          this._updateNodeTree();
+          this._update3DView();
+          this._updateOperationButtons();
+          this._scheduleRender();
+        } catch (err) {
+          this.setStatus(`Chamfer failed: ${err.message}`);
+        }
+      }
+      return;
+    }
+
+    if (command === 'fillet') {
+      // fillet <radius> <segments> <edgeKey1> [edgeKey2] ...
+      if (args.length >= 3) {
+        const radius = parseFloat(args[0]);
+        const segments = parseInt(args[1], 10);
+        const edgeKeys = args.slice(2);
+        try {
+          this._partManager.fillet(edgeKeys, radius, { segments });
+          this._deselectAll();
+          if (this._featurePanel) this._featurePanel.update();
+          this._updateNodeTree();
+          this._update3DView();
+          this._updateOperationButtons();
+          this._scheduleRender();
+        } catch (err) {
+          this.setStatus(`Fillet failed: ${err.message}`);
+        }
+      }
+      return;
+    }
+
+    if (command === 'select.edge') {
+      // select.edge <edgeKey> — handled during edge selection mode
+      return;
+    }
+
+    if (command === 'deselect.edge') {
+      // deselect.edge <edgeKey> — handled during edge selection mode
+      return;
+    }
+
     if (command === 'draw.line') {
       // draw.line <x1> <y1> <x2> <y2>
       // merge: true enables auto-coincidence so shared endpoints form proper constraints
@@ -1875,6 +1926,7 @@ class App {
     if (absDistance === 0) return;
     const extrudeOptions = isCut ? { operation: 'subtract', direction: -1 } : {};
     const feature = this._partManager.extrude(this._lastSketchFeatureId, absDistance, extrudeOptions);
+    this._deselectAll();
     if (this._featurePanel) this._featurePanel.update();
     this._updateNodeTree();
     this._update3DView();
@@ -1886,6 +1938,7 @@ class App {
     if (!this._lastSketchFeatureId) return;
     const radians = (angleDeg * Math.PI) / 180;
     const feature = this._partManager.revolve(this._lastSketchFeatureId, radians);
+    this._deselectAll();
     if (this._featurePanel) this._featurePanel.update();
     this._updateNodeTree();
     this._update3DView();
@@ -4284,6 +4337,20 @@ class App {
     info(`Created revolve feature: ${feature.id}`);
   }
 
+  /** Clear all 3D selections (face, plane, feature). */
+  _deselectAll() {
+    this._selectedFace = null;
+    this._selectedPlane = null;
+    if (this._renderer3d) {
+      this._renderer3d.selectFace(-1);
+      this._renderer3d.setSelectedPlane(null);
+      this._renderer3d.setSelectedFeature(null);
+    }
+    if (this._featurePanel) this._featurePanel.selectFeature(null);
+    if (this._parametersPanel) this._parametersPanel.clear();
+    this._showLeftFeatureParams(null);
+  }
+
   _update3DView() {
     if (!this._renderer3d) return;
 
@@ -5648,7 +5715,8 @@ class App {
   }
 
   _exportRecording() {
-    const json = this._recorder.exportJSON();
+    const partStats = this._gatherPartStats();
+    const json = this._recorder.exportJSON(partStats);
     const blob = new Blob([json], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -5658,6 +5726,35 @@ class App {
     URL.revokeObjectURL(url);
     this.setStatus('Recording exported.');
     info('Recording exported as JSON');
+  }
+
+  /** Collect statistics about the current part/solid for regression tracking. */
+  _gatherPartStats() {
+    const part = this._partManager.getPart();
+    if (!part) return null;
+
+    const features = part.getFeatures();
+    const geo = part.getFinalGeometry();
+    const stats = {
+      featureCount: features.length,
+      featureTypes: features.map(f => f.type),
+    };
+
+    if (geo && geo.geometry) {
+      const geometry = geo.geometry;
+      const faces = geometry.faces || [];
+      stats.faceCount = faces.length;
+      stats.volume = +calculateMeshVolume(geometry).toFixed(6);
+      stats.surfaceArea = +calculateSurfaceArea(geometry).toFixed(6);
+
+      const bb = calculateBoundingBox(geometry);
+      stats.boundingBox = bb;
+      stats.width = +(bb.max.x - bb.min.x).toFixed(6);
+      stats.height = +(bb.max.y - bb.min.y).toFixed(6);
+      stats.depth = +(bb.max.z - bb.min.z).toFixed(6);
+    }
+
+    return stats;
   }
 
   async _playbackRecording(stepDelay = 300) {
@@ -6580,6 +6677,7 @@ class App {
 
       this._exitExtrudeMode();
 
+      this._deselectAll();
       this._featurePanel.update();
       this._updateNodeTree();
       this._update3DView();
@@ -6606,6 +6704,7 @@ class App {
 
       this._exitExtrudeMode();
 
+      this._deselectAll();
       this._featurePanel.update();
       this._updateNodeTree();
       this._update3DView();
@@ -6782,7 +6881,9 @@ class App {
       } else {
         this._partManager.chamfer(edgeKeys, cm.distance);
       }
+      this._recorder.chamferCreated(edgeKeys, cm.distance);
       this._exitChamferMode();
+      this._deselectAll();
       this._featurePanel.update();
       this._updateNodeTree();
       this._update3DView();
@@ -6802,7 +6903,10 @@ class App {
 
   _exitChamferMode() {
     if (!this._chamferMode) return;
-    if (this._renderer3d) this._renderer3d.setEdgeSelectionMode(false);
+    if (this._renderer3d) {
+      this._renderer3d.setEdgeSelectionMode(false);
+      this._renderer3d.clearGhostPreview();
+    }
     const btnChamfer = document.getElementById('btn-chamfer');
     if (btnChamfer) btnChamfer.classList.remove('active');
     this._chamferMode = null;
@@ -6928,7 +7032,9 @@ class App {
       } else {
         this._partManager.fillet(edgeKeys, fm.radius, { segments: fm.segments });
       }
+      this._recorder.filletCreated(edgeKeys, fm.radius, fm.segments);
       this._exitFilletMode();
+      this._deselectAll();
       this._featurePanel.update();
       this._updateNodeTree();
       this._update3DView();
@@ -6948,7 +7054,10 @@ class App {
 
   _exitFilletMode() {
     if (!this._filletMode) return;
-    if (this._renderer3d) this._renderer3d.setEdgeSelectionMode(false);
+    if (this._renderer3d) {
+      this._renderer3d.setEdgeSelectionMode(false);
+      this._renderer3d.clearGhostPreview();
+    }
     const btnFillet = document.getElementById('btn-fillet');
     if (btnFillet) btnFillet.classList.remove('active');
     this._filletMode = null;
@@ -6971,7 +7080,11 @@ class App {
     if (!this._chamferMode || !this._renderer3d) return;
     const cm = this._chamferMode;
     const selectedEdges = this._renderer3d.getSelectedEdges();
-    if (selectedEdges.length === 0) return;
+    if (selectedEdges.length === 0) {
+      this._renderer3d.clearGhostPreview();
+      this._scheduleRender();
+      return;
+    }
 
     const part = this._partManager.getPart();
     if (!part) return;
@@ -6989,7 +7102,7 @@ class App {
     try {
       const resolvedKeys = expandPathEdgeKeys(baseResult.geometry, edgeKeys);
       const preview = applyChamfer(baseResult.geometry, resolvedKeys, cm.distance);
-      this._renderer3d.renderPreviewGeometry(preview);
+      this._renderer3d.setGhostPreview(preview);
       this._scheduleRender();
     } catch (_) {
       // Preview computation failed — leave current view
@@ -7001,7 +7114,11 @@ class App {
     if (!this._filletMode || !this._renderer3d) return;
     const fm = this._filletMode;
     const selectedEdges = this._renderer3d.getSelectedEdges();
-    if (selectedEdges.length === 0) return;
+    if (selectedEdges.length === 0) {
+      this._renderer3d.clearGhostPreview();
+      this._scheduleRender();
+      return;
+    }
 
     const part = this._partManager.getPart();
     if (!part) return;
@@ -7018,7 +7135,7 @@ class App {
     try {
       const resolvedKeys = expandPathEdgeKeys(baseResult.geometry, edgeKeys);
       const preview = applyFillet(baseResult.geometry, resolvedKeys, fm.radius, fm.segments);
-      this._renderer3d.renderPreviewGeometry(preview);
+      this._renderer3d.setGhostPreview(preview);
       this._scheduleRender();
     } catch (_) {
       // Preview computation failed — leave current view
