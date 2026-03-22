@@ -254,5 +254,68 @@ function assert(cond, msg) {
   assert(steps[2].command === 'feature.modify feature_3 direction -1', `Direction modify: ${steps[2].command}`);
 }
 
+// ---- Test 18: chamferCreated records chamfer command ----
+{
+  const rec = new InteractionRecorder();
+  rec.start();
+  rec.chamferCreated(['0,0,10|10,0,10', '10,0,10|10,10,10'], 1.5);
+  const steps = rec.stop();
+  assert(steps.length === 1, `Expected 1 step, got ${steps.length}`);
+  assert(steps[0].command === 'chamfer 1.5 0,0,10|10,0,10 10,0,10|10,10,10', `Chamfer command: ${steps[0].command}`);
+}
+
+// ---- Test 19: filletCreated records fillet command ----
+{
+  const rec = new InteractionRecorder();
+  rec.start();
+  rec.filletCreated(['0,0,10|10,0,10'], 2, 12);
+  const steps = rec.stop();
+  assert(steps.length === 1, `Expected 1 step, got ${steps.length}`);
+  assert(steps[0].command === 'fillet 2 12 0,0,10|10,0,10', `Fillet command: ${steps[0].command}`);
+}
+
+// ---- Test 20: edgeSelected records select.edge command ----
+{
+  const rec = new InteractionRecorder();
+  rec.start();
+  rec.edgeSelected('0,0,0|10,0,0');
+  const steps = rec.stop();
+  assert(steps.length === 1, `Expected 1 step, got ${steps.length}`);
+  assert(steps[0].command === 'select.edge 0,0,0|10,0,0', `Edge select: ${steps[0].command}`);
+}
+
+// ---- Test 21: edgeDeselected records deselect.edge command ----
+{
+  const rec = new InteractionRecorder();
+  rec.start();
+  rec.edgeDeselected('0,0,0|10,0,0');
+  const steps = rec.stop();
+  assert(steps.length === 1, `Expected 1 step, got ${steps.length}`);
+  assert(steps[0].command === 'deselect.edge 0,0,0|10,0,0', `Edge deselect: ${steps[0].command}`);
+}
+
+// ---- Test 22: exportJSON includes partStats when provided ----
+{
+  const rec = new InteractionRecorder();
+  rec.start();
+  rec.toolActivated('select');
+  rec.stop();
+  const stats = { featureCount: 3, volume: 1000, faceCount: 6 };
+  const json = JSON.parse(rec.exportJSON(stats));
+  assert(json.partStats !== undefined, 'Export has partStats');
+  assert(json.partStats.featureCount === 3, `featureCount: ${json.partStats.featureCount}`);
+  assert(json.partStats.volume === 1000, `volume: ${json.partStats.volume}`);
+}
+
+// ---- Test 23: exportJSON without partStats omits field ----
+{
+  const rec = new InteractionRecorder();
+  rec.start();
+  rec.toolActivated('line');
+  rec.stop();
+  const json = JSON.parse(rec.exportJSON());
+  assert(json.partStats === undefined, 'Export has no partStats when not provided');
+}
+
 console.log(`\nInteraction Recorder Tests: ${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
