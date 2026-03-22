@@ -489,6 +489,8 @@ function assignCoplanarFaceGroups(faces) {
         const dot = na.x * nb.x + na.y * nb.y + na.z * nb.z;
         // Smooth but not coplanar: normals within 15° but not identical
         if (dot >= SMOOTH_COS && dot < 1 - 1e-6) {
+          // Don't merge fillet strip faces with non-fillet faces
+          if (!!fa.isFillet !== !!fb.isFillet) continue;
           unite(fis[i], fis[j]);
         }
       }
@@ -835,6 +837,12 @@ export function computeFeatureEdges(faces) {
           isFeature = true;
           break;
         }
+      }
+      // Force feature edge at fillet-to-flat face boundary
+      if (!isFeature && info.faceIndices.length >= 2) {
+        const hasF = info.faceIndices.some(fi => faces[fi].isFillet);
+        const hasNF = info.faceIndices.some(fi => !faces[fi].isFillet);
+        if (hasF && hasNF) isFeature = true;
       }
       if (isFeature) {
         edges.push({
@@ -1785,6 +1793,7 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8) {
         vertices: [{ ...arcA[s] }, { ...arcA[s + 1] }, { ...arcB[s + 1] }, { ...arcB[s] }],
         normal: faceNormal,
         shared,
+        isFillet: true,
       });
     }
 
