@@ -1,7 +1,16 @@
 {
   "format": "CAD Modeller Open Design",
   "version": 1,
-  "scene": null,
+  "scene": {
+    "points": [],
+    "segments": [],
+    "circles": [],
+    "arcs": [],
+    "constraints": [],
+    "texts": [],
+    "dimensions": [],
+    "variables": {}
+  },
   "layers": [
     {
       "name": "0",
@@ -16,17 +25,19 @@
     "gridVisible": true,
     "snapEnabled": true,
     "orthoEnabled": false,
-    "autoCoincidence": true,
-    "fov": 45,
-    "constructionMode": false
+    "autoCoincidence": true
   },
-  "viewport": null,
+  "viewport": {
+    "zoom": 1,
+    "panX": 0,
+    "panY": 0
+  },
   "part": {
     "type": "Part",
     "name": "Part1",
     "description": "",
-    "created": "2026-03-22T23:06:14.574Z",
-    "modified": "2026-03-22T23:06:14.576Z",
+    "created": "2026-03-22T13:40:45.022Z",
+    "modified": "2026-03-22T22:46:29.582Z",
     "featureTree": {
       "features": [
         {
@@ -35,15 +46,15 @@
           "type": "sketch",
           "suppressed": false,
           "visible": false,
-          "created": "2026-03-22T23:06:14.574Z",
-          "modified": "2026-03-22T23:06:14.574Z",
+          "created": "2026-03-22T13:40:45.023Z",
+          "modified": "2026-03-22T13:40:45.023Z",
           "dependencies": [],
           "children": [],
           "sketch": {
             "name": "Sketch 1",
             "description": "",
-            "created": "2026-03-22T23:06:14.574Z",
-            "modified": "2026-03-22T23:06:14.574Z",
+            "created": "2026-03-22T13:40:45.023Z",
+            "modified": "2026-03-22T13:40:45.023Z",
             "scene": {
               "points": [
                 {
@@ -154,8 +165,8 @@
           "type": "extrude",
           "suppressed": false,
           "visible": true,
-          "created": "2026-03-22T23:06:14.574Z",
-          "modified": "2026-03-22T23:06:14.574Z",
+          "created": "2026-03-22T13:40:45.023Z",
+          "modified": "2026-03-22T13:40:45.023Z",
           "dependencies": [
             "feature_9"
           ],
@@ -178,14 +189,30 @@
           "type": "fillet",
           "suppressed": false,
           "visible": true,
-          "created": "2026-03-22T23:06:14.576Z",
-          "modified": "2026-03-22T23:06:14.576Z",
+          "created": "2026-03-22T13:40:45.024Z",
+          "modified": "2026-03-22T13:40:45.024Z",
           "dependencies": [],
           "children": [],
           "radius": 1,
           "segments": 8,
           "edgeKeys": [
             "0.00000,0.00000,10.00000|10.00000,0.00000,10.00000"
+          ]
+        },
+        {
+          "id": "feature_8",
+          "name": "Fillet 2",
+          "type": "fillet",
+          "suppressed": false,
+          "visible": true,
+          "created": "2026-03-22T22:46:09.030Z",
+          "modified": "2026-03-22T22:46:29.550Z",
+          "dependencies": [],
+          "children": [],
+          "radius": 0.5,
+          "segments": 8,
+          "edgeKeys": [
+            "10.00000,1.00000,10.00000|10.00000,10.00000,10.00000"
           ]
         }
       ]
@@ -207,28 +234,46 @@
     "originPlanesAutoHidden": true,
     "material": null,
     "mass": 0,
-    "volume": 0,
+    "volume": 997.1665651496292,
     "centerOfMass": {
       "x": 0,
       "y": 0,
       "z": 0
     }
   },
-  "orbit": null,
+  "orbit": {
+    "theta": -0.6046018366025514,
+    "phi": 1.2921975511965953,
+    "radius": 28.245855390489023,
+    "target": {
+      "x": 3.0720374716091863,
+      "y": 3.354098094672738,
+      "z": 8.41951776104494
+    }
+  },
   "workspaceMode": "part",
-  "sessionState": null,
+  "sessionState": {
+    "sketchingOnPlane": false,
+    "activeSketchPlane": null,
+    "editingSketchFeatureId": null,
+    "lastSketchFeatureId": null,
+    "savedOrbitState": null,
+    "expandedFolders": [],
+    "rollbackIndex": -1
+  },
   "metadata": {
     "createdWith": "CAD Modeller Open Design",
-    "exportedAt": "2026-03-22T23:06:14.584Z",
-    "featureCount": 3,
+    "exportedAt": "2026-03-22T22:46:59.774Z",
+    "featureCount": 4,
     "featureTypes": [
       "sketch",
       "extrude",
+      "fillet",
       "fillet"
     ],
-    "faceCount": 28,
-    "volume": 997.803613,
-    "surfaceArea": 595.243465,
+    "faceCount": 266,
+    "volume": 997.166565,
+    "surfaceArea": 597.070824,
     "boundingBox": {
       "min": {
         "x": 0,
@@ -244,14 +289,13 @@
     "width": 10,
     "height": 10,
     "depth": 10,
-    "edgeCount": 29,
-    "pathCount": 15,
+    "edgeCount": 257,
+    "pathCount": 108,
     "bodyCount": 1,
     "bodySizes": [
-      28
+      266
     ],
-    "minWallThickness": 10,
-    "maxWallThickness": 12.637977,
-    "description": "10x10x10 box with a radius-1 fillet (8 segments) on one top edge"
+    "minWallThickness": 0.000199,
+    "maxWallThickness": 12.787206
   }
 }

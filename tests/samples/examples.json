@@ -1,0 +1,82 @@
+[
+  {
+    "file": "box-10x10x10.cmod",
+    "label": "Simple 10x10x10 box: rectangle sketch on XY plane, extruded 10 units",
+    "featureTypes": [
+      "sketch",
+      "extrude"
+    ]
+  },
+  {
+    "file": "box-fillet-2-p.cmod",
+    "label": "Box Fillet 2 P",
+    "featureTypes": [
+      "sketch",
+      "extrude",
+      "fillet"
+    ]
+  },
+  {
+    "file": "box-fillet-2-s.cmod",
+    "label": "Box Fillet 2 S",
+    "featureTypes": [
+      "sketch",
+      "extrude",
+      "fillet"
+    ]
+  },
+  {
+    "file": "box-fillet.cmod",
+    "label": "Box Fillet",
+    "featureTypes": [
+      "sketch",
+      "extrude",
+      "fillet"
+    ]
+  },
+  {
+    "file": "box-with-chamfer.cmod",
+    "label": "10x10x10 box with a 1-unit chamfer on one top edge",
+    "featureTypes": [
+      "sketch",
+      "extrude",
+      "chamfer"
+    ]
+  },
+  {
+    "file": "box-with-chamfers-2.cmod",
+    "label": "Box With Chamfers 2",
+    "featureTypes": [
+      "sketch",
+      "extrude",
+      "chamfer"
+    ]
+  },
+  {
+    "file": "box-with-fillet.cmod",
+    "label": "10x10x10 box with a radius-1 fillet (8 segments) on one top edge",
+    "featureTypes": [
+      "sketch",
+      "extrude",
+      "fillet"
+    ]
+  },
+  {
+    "file": "box-with-four-chamfers.cmod",
+    "label": "Box With Four Chamfers",
+    "featureTypes": [
+      "sketch",
+      "extrude",
+      "chamfer"
+    ]
+  },
+  {
+    "file": "box-with-three-chamfers.cmod",
+    "label": "Box With Three Chamfers",
+    "featureTypes": [
+      "sketch",
+      "extrude",
+      "chamfer"
+    ]
+  }
+]

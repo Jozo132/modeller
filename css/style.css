@@ -154,6 +154,13 @@ html, body {
   background: var(--accent);
   color: #fff;
 }
+.menu-placeholder {
+  display: block;
+  padding: 4px 16px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-style: italic;
+}
 
 /* Toolbar */
 #toolbar {

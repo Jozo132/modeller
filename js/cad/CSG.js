@@ -1488,6 +1488,79 @@ function _findAdjacentFaces(faces, edgeKey) {
 // Chamfer geometry operation
 // -----------------------------------------------------------------------
 
+/**
+ * Close small boundary-edge loops left by sequential fillet interactions.
+ * Detects edges shared by only one face, traces them into closed loops,
+ * and triangulates each loop to heal the hole.
+ */
+function _healBoundaryLoops(faces) {
+  // Step 1: Build directed boundary-edge map.
+  // For each boundary edge A→B (that exists in exactly one face),
+  // the healing face should go B→A (reversed winding).
+  const edgeCounts = new Map(); // edgeKey → count
+  const edgeInfo = new Map();   // edgeKey → {fi, a, b, vkA, vkB}
+  for (let fi = 0; fi < faces.length; fi++) {
+    const verts = faces[fi].vertices;
+    for (let i = 0; i < verts.length; i++) {
+      const a = verts[i], b = verts[(i + 1) % verts.length];
+      const ek = _edgeKeyFromVerts(a, b);
+      edgeCounts.set(ek, (edgeCounts.get(ek) || 0) + 1);
+      // Store directed info (last writer wins — only used for boundary edges)
+      edgeInfo.set(ek + ':' + fi, { fi, a: { ...a }, b: { ...b } });
+    }
+  }
+
+  // Step 2: Collect boundary edges and build outgoing map (reversed direction)
+  const outgoing = new Map(); // vkFrom → {to: vkTo, posFrom, posTo}
+  for (const [ek, count] of edgeCounts) {
+    if (count !== 1) continue;
+    // Find the directed info for this boundary edge
+    let info = null;
+    for (const [key, val] of edgeInfo) {
+      if (key.startsWith(ek + ':')) {
+        const testEk = _edgeKeyFromVerts(val.a, val.b);
+        if (testEk === ek) { info = val; break; }
+      }
+    }
+    if (!info) continue;
+    const vkA = _edgeVKey(info.a), vkB = _edgeVKey(info.b);
+    // Reverse: healing edge goes B→A
+    outgoing.set(vkB, { to: vkA, posFrom: { ...info.b }, posTo: { ...info.a } });
+  }
+
+  if (outgoing.size === 0) return;
+
+  // Step 3: Trace closed loops
+  const visited = new Set();
+  for (const [startVk] of outgoing) {
+    if (visited.has(startVk)) continue;
+    const loop = [];
+    let current = startVk;
+    while (!visited.has(current) && outgoing.has(current)) {
+      visited.add(current);
+      const entry = outgoing.get(current);
+      loop.push(entry.posFrom);
+      current = entry.to;
+    }
+    if (current !== startVk || loop.length < 3) continue;
+
+    // Step 4: Triangulate the loop as a fan from vertex 0
+    for (let i = 1; i < loop.length - 1; i++) {
+      const triNormal = _vec3Normalize(_vec3Cross(
+        _vec3Sub(loop[i], loop[0]),
+        _vec3Sub(loop[i + 1], loop[0])
+      ));
+      if (_vec3Len(triNormal) > 1e-10) {
+        faces.push({
+          vertices: [{ ...loop[0] }, { ...loop[i] }, { ...loop[i + 1] }],
+          normal: triNormal,
+          shared: null,
+        });
+      }
+    }
+  }
+}
+
 // Weld vertices that map to the same rounded key so seam duplicates are eliminated
 function _weldVertices(faces) {
   const canon = new Map();
@@ -1746,6 +1819,7 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8) {
     vertices: f.vertices.map(v => ({ ...v })),
     normal: { ...f.normal },
     shared: f.shared ? { ...f.shared } : null,
+    isFillet: f.isFillet || false,
   }));
 
   // Save original face vertices for corner-face generation
@@ -1832,6 +1906,9 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8) {
 
   // --- Phase 5: Generate corner/blending faces at shared vertices ---
   _generateCornerFaces(faces, origFaces, edgeDataList, vertexEdgeMap);
+
+  // --- Phase 6: Heal boundary edges left by sequential fillet interactions ---
+  _healBoundaryLoops(faces);
 
   _weldVertices(faces);
   _recomputeFaceNormals(faces);
@@ -2238,11 +2315,18 @@ function _batchSplitVertices(faces, edgeDataList, vertexEdgeMap) {
           }
         }
       } else if (touchesAnyF0) {
-        newPts = nextInAnyF0
-          ? [{ ...firstP1 }, { ...firstP0 }]
-          : [{ ...firstP0 }, { ...firstP1 }];
+        // Fillet strip faces from previous ops connect to face0 via their
+        // top edge but don't span across to face1.  Inserting two positions
+        // would create malformed polygons.  Use only p0.
+        if (face.isFillet) {
+          newPts = [{ ...firstP0 }];
+        } else {
+          newPts = nextInAnyF0
+            ? [{ ...firstP1 }, { ...firstP0 }]
+            : [{ ...firstP0 }, { ...firstP1 }];
+        }
       } else if (touchesAnyF1) {
-        newPts = [{ ...firstP1 }];
+        newPts = [face.isFillet ? { ...firstP1 } : { ...firstP1 }];
       } else {
         // No direct edge connection — pick side by normal alignment
         const fn = _vec3Normalize(face.normal);
@@ -2536,63 +2620,79 @@ function _generateFilletCorner(faces, edgeInfos, shared) {
 
     const segs = arcCurr.length - 1;
 
-    // Build polygon:
-    // [arcNext[0], arcCurr[0], arcCurr[1], ..., arcCurr[seg], vi_bot, arcNext[seg], arcNext[seg-1], ..., arcNext[1]]
-    const cornerVerts = [];
-
-    // Start: p0 of next edge (on face0/top side)
-    cornerVerts.push({ ...arcNext[0] });
-
-    // p0 of curr edge (on face0/top side)
-    cornerVerts.push({ ...arcCurr[0] });
-
-    // arcCurr forward (edge i's arc, going from face0 to face1)
-    for (let s = 1; s <= segs; s++) {
-      cornerVerts.push({ ...arcCurr[s] });
-    }
-
-    // Other vertex between the two arcs (if they don't meet at the same point)
     const lastCurr = arcCurr[segs];
     const lastNext = arcNext[segs];
     const arcsMeet = _edgeVKey(lastCurr) === _edgeVKey(lastNext);
 
-    if (!arcsMeet && curr.otherVertex) {
-      cornerVerts.push({ ...curr.otherVertex });
-    }
-
-    // arcNext backward (next edge's arc, going from face1 back to face0)
-    const startS = arcsMeet ? segs - 1 : segs;
-    for (let s = startS; s >= 1; s--) {
-      cornerVerts.push({ ...arcNext[s] });
-    }
-
-    // Remove any remaining consecutive duplicates
-    const cleaned = [cornerVerts[0]];
-    for (let i = 1; i < cornerVerts.length; i++) {
-      if (_edgeVKey(cornerVerts[i]) !== _edgeVKey(cleaned[cleaned.length - 1])) {
-        cleaned.push(cornerVerts[i]);
+    if (arcsMeet && segs > 1) {
+      // Grid patch: connect corresponding levels of both arcs with quads.
+      // This creates a smooth ruled surface instead of a flat triangle fan.
+      // Winding: [arcCurr[s], arcCurr[s+1], arcNext[s+1], arcNext[s]]
+      // Last row degenerates to a triangle since both arcs converge.
+      for (let s = 0; s < segs; s++) {
+        if (s < segs - 1) {
+          const v0 = arcCurr[s], v1 = arcCurr[s + 1];
+          const v2 = arcNext[s + 1], v3 = arcNext[s];
+          const faceNormal = _vec3Normalize(_vec3Cross(
+            _vec3Sub(v1, v0), _vec3Sub(v3, v0)
+          ));
+          if (_vec3Len(faceNormal) > 1e-10) {
+            faces.push({
+              vertices: [{ ...v0 }, { ...v1 }, { ...v2 }, { ...v3 }],
+              normal: faceNormal, shared,
+            });
+          }
+        } else {
+          // Last row: triangle (both arcs converge to same endpoint)
+          const v0 = arcCurr[s], v1 = arcCurr[s + 1], v2 = arcNext[s];
+          const triNormal = _vec3Normalize(_vec3Cross(
+            _vec3Sub(v1, v0), _vec3Sub(v2, v0)
+          ));
+          if (_vec3Len(triNormal) > 1e-10) {
+            faces.push({
+              vertices: [{ ...v0 }, { ...v1 }, { ...v2 }],
+              normal: triNormal, shared,
+            });
+          }
+        }
       }
-    }
-    if (cleaned.length > 1 && _edgeVKey(cleaned[0]) === _edgeVKey(cleaned[cleaned.length - 1])) {
-      cleaned.pop();
-    }
-    if (cleaned.length < 3) continue;
-
-    // Skip redundant corner faces (all edges already covered by existing faces)
-    if (_isCornerRedundant(faces, cleaned)) continue;
-
-    // Triangulate the polygon as a fan from the first vertex
-    for (let i = 1; i < cleaned.length - 1; i++) {
-      const triNormal = _vec3Normalize(_vec3Cross(
-        _vec3Sub(cleaned[i], cleaned[0]),
-        _vec3Sub(cleaned[i + 1], cleaned[0])
-      ));
-      if (_vec3Len(triNormal) > 1e-10) {
-        faces.push({
-          vertices: [{ ...cleaned[0] }, { ...cleaned[i] }, { ...cleaned[i + 1] }],
-          normal: triNormal,
-          shared,
-        });
+    } else {
+      // Fallback: polygon fan approach for non-meeting arcs
+      const cornerVerts = [];
+      cornerVerts.push({ ...arcNext[0] });
+      cornerVerts.push({ ...arcCurr[0] });
+      for (let s = 1; s <= segs; s++) {
+        cornerVerts.push({ ...arcCurr[s] });
+      }
+      if (!arcsMeet && curr.otherVertex) {
+        cornerVerts.push({ ...curr.otherVertex });
+      }
+      const startS = arcsMeet ? segs - 1 : segs;
+      for (let s = startS; s >= 1; s--) {
+        cornerVerts.push({ ...arcNext[s] });
+      }
+      const cleaned = [cornerVerts[0]];
+      for (let i = 1; i < cornerVerts.length; i++) {
+        if (_edgeVKey(cornerVerts[i]) !== _edgeVKey(cleaned[cleaned.length - 1])) {
+          cleaned.push(cornerVerts[i]);
+        }
+      }
+      if (cleaned.length > 1 && _edgeVKey(cleaned[0]) === _edgeVKey(cleaned[cleaned.length - 1])) {
+        cleaned.pop();
+      }
+      if (cleaned.length < 3) { if (edgeInfos.length === 2) break; continue; }
+      if (_isCornerRedundant(faces, cleaned)) { if (edgeInfos.length === 2) break; continue; }
+      for (let i = 1; i < cleaned.length - 1; i++) {
+        const triNormal = _vec3Normalize(_vec3Cross(
+          _vec3Sub(cleaned[i], cleaned[0]),
+          _vec3Sub(cleaned[i + 1], cleaned[0])
+        ));
+        if (_vec3Len(triNormal) > 1e-10) {
+          faces.push({
+            vertices: [{ ...cleaned[0] }, { ...cleaned[i] }, { ...cleaned[i + 1] }],
+            normal: triNormal, shared,
+          });
+        }
       }
     }
 

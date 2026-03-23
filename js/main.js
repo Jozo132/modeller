@@ -1529,12 +1529,7 @@ class App {
           case 'export-json': document.getElementById('btn-save')?.click(); break;
           case 'import-dxf': this._importDXFToSketch(); break;
           case 'export-dxf': this._exportDXFFromFaces(); break;
-          case 'example-box': this._loadExample('box-10x10x10.cmod'); break;
-          case 'example-chamfer': this._loadExample('box-with-chamfer.cmod'); break;
-          case 'example-chamfers2': this._loadExample('box-with-chamfers-2.cmod'); break;
-          case 'example-chamfers3': this._loadExample('box-with-three-chamfers.cmod'); break;
-          case 'example-chamfers4': this._loadExample('box-with-four-chamfers.cmod'); break;
-          case 'example-fillet': this._loadExample('box-with-fillet.cmod'); break;
+          // Dynamic examples are handled via event delegation below
           case 'toggle-grid': document.getElementById('btn-grid-toggle')?.click(); break;
           case 'toggle-snap': document.getElementById('btn-snap-toggle')?.click(); break;
           case 'toggle-ortho': document.getElementById('btn-ortho-toggle')?.click(); break;
@@ -1551,6 +1546,19 @@ class App {
         }
       });
     });
+
+    // Dynamic examples submenu — event delegation + population
+    const examplesSubmenu = document.getElementById('examples-submenu');
+    if (examplesSubmenu) {
+      examplesSubmenu.addEventListener('click', (e) => {
+        const btn = e.target.closest('button[data-file]');
+        if (!btn) return;
+        e.stopPropagation();
+        if (openMenu) { openMenu.classList.remove('open'); openMenu = null; }
+        this._loadExample(btn.dataset.file);
+      });
+      this._populateExamplesMenu(examplesSubmenu);
+    }
   }
 
   _bindToolbarEvents() {
@@ -4866,6 +4874,23 @@ class App {
     const name = result.filename || 'project';
     info('CMOD project loaded', { filename: name, metadata: result.metadata });
     this.setStatus(`Opened ${name}`);
+  }
+
+  async _populateExamplesMenu(container) {
+    try {
+      const resp = await fetch('tests/samples/examples.json');
+      if (!resp.ok) { container.textContent = 'Failed to load'; return; }
+      const examples = await resp.json();
+      container.innerHTML = '';
+      for (const ex of examples) {
+        const btn = document.createElement('button');
+        btn.dataset.file = ex.file;
+        btn.textContent = ex.label;
+        container.appendChild(btn);
+      }
+    } catch {
+      container.textContent = 'Failed to load';
+    }
   }
 
   async _loadExample(filename) {
