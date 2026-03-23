@@ -1717,27 +1717,22 @@ function _findAdjacentFaces(faces, edgeKey) {
  * and triangulates each loop to heal the hole.
  */
 function _healBoundaryLoops(faces) {
-  // Step 1: Build directed boundary-edge map.
-  // For each boundary edge A→B (that exists in exactly one face),
-  // the healing face should go B→A (reversed winding).
+  // Step 1: Collect all boundary edges with the face that owns them.
   const edgeCounts = new Map(); // edgeKey → count
-  const edgeInfo = new Map();   // edgeKey → {fi, a, b, vkA, vkB}
+  const edgeInfo = new Map();   // edgeKey → {fi, a, b}
   for (let fi = 0; fi < faces.length; fi++) {
     const verts = faces[fi].vertices;
     for (let i = 0; i < verts.length; i++) {
       const a = verts[i], b = verts[(i + 1) % verts.length];
       const ek = _edgeKeyFromVerts(a, b);
       edgeCounts.set(ek, (edgeCounts.get(ek) || 0) + 1);
-      // Store directed info (last writer wins — only used for boundary edges)
       edgeInfo.set(ek + ':' + fi, { fi, a: { ...a }, b: { ...b } });
     }
   }
 
-  // Step 2: Collect boundary edges and build outgoing map (reversed direction)
-  const outgoing = new Map(); // vkFrom → {to: vkTo, posFrom, posTo}
+  const boundaryEdges = [];
   for (const [ek, count] of edgeCounts) {
     if (count !== 1) continue;
-    // Find the directed info for this boundary edge
     let info = null;
     for (const [key, val] of edgeInfo) {
       if (key.startsWith(ek + ':')) {
@@ -1746,40 +1741,595 @@ function _healBoundaryLoops(faces) {
       }
     }
     if (!info) continue;
-    const vkA = _edgeVKey(info.a), vkB = _edgeVKey(info.b);
-    // Reverse: healing edge goes B→A
-    outgoing.set(vkB, { to: vkA, posFrom: { ...info.b }, posTo: { ...info.a } });
+    boundaryEdges.push({
+      fi: info.fi,
+      a: { ...info.a },
+      b: { ...info.b },
+      vkA: _edgeVKey(info.a),
+      vkB: _edgeVKey(info.b),
+    });
   }
 
-  if (outgoing.size === 0) return;
+  if (boundaryEdges.length === 0) return;
+
+  // Step 2: Build an undirected boundary graph so loops still trace when
+  // multiple boundary edges leave the same vertex after local rewinding.
+  const vertexEdges = new Map();
+  for (let ei = 0; ei < boundaryEdges.length; ei++) {
+    const edge = boundaryEdges[ei];
+    if (!vertexEdges.has(edge.vkA)) vertexEdges.set(edge.vkA, []);
+    if (!vertexEdges.has(edge.vkB)) vertexEdges.set(edge.vkB, []);
+    vertexEdges.get(edge.vkA).push(ei);
+    vertexEdges.get(edge.vkB).push(ei);
+  }
+
+  const usedEdges = new Uint8Array(boundaryEdges.length);
+
+  function faceArea(face) {
+    const verts = face.vertices || [];
+    let area = 0;
+    for (let i = 1; i < verts.length - 1; i++) {
+      const ab = _vec3Sub(verts[i], verts[0]);
+      const ac = _vec3Sub(verts[i + 1], verts[0]);
+      area += 0.5 * _vec3Len(_vec3Cross(ab, ac));
+    }
+    return area;
+  }
+
+  function chooseNextEdge(currentVk, previousVk, candidateIndices, localUsed, startVk) {
+    let best = -1;
+    for (const ei of candidateIndices) {
+      if (localUsed.has(ei)) continue;
+      const edge = boundaryEdges[ei];
+      const otherVk = edge.vkA === currentVk ? edge.vkB : edge.vkA;
+      if (otherVk === previousVk && candidateIndices.length > 1) continue;
+      if (otherVk === startVk) return ei;
+      if (best < 0) best = ei;
+    }
+    return best;
+  }
 
   // Step 3: Trace closed loops
-  const visited = new Set();
-  for (const [startVk] of outgoing) {
-    if (visited.has(startVk)) continue;
-    const loop = [];
-    let current = startVk;
-    while (!visited.has(current) && outgoing.has(current)) {
-      visited.add(current);
-      const entry = outgoing.get(current);
-      loop.push(entry.posFrom);
-      current = entry.to;
+  for (let startEi = 0; startEi < boundaryEdges.length; startEi++) {
+    if (usedEdges[startEi]) continue;
+
+    const startEdge = boundaryEdges[startEi];
+    const startVk = startEdge.vkA;
+    const loopVerts = [{ ...startEdge.a }];
+    const loopEdgeIndices = [startEi];
+    const localUsed = new Set([startEi]);
+    let previousVk = startEdge.vkA;
+    let currentVk = startEdge.vkB;
+    let currentPos = { ...startEdge.b };
+    let closed = false;
+
+    while (true) {
+      loopVerts.push({ ...currentPos });
+      if (currentVk === startVk) {
+        closed = true;
+        break;
+      }
+
+      const candidates = vertexEdges.get(currentVk) || [];
+      const nextEi = chooseNextEdge(currentVk, previousVk, candidates, localUsed, startVk);
+      if (nextEi < 0) break;
+      localUsed.add(nextEi);
+      loopEdgeIndices.push(nextEi);
+      const nextEdge = boundaryEdges[nextEi];
+      const nextVk = nextEdge.vkA === currentVk ? nextEdge.vkB : nextEdge.vkA;
+      const nextPos = nextEdge.vkA === currentVk ? nextEdge.b : nextEdge.a;
+      previousVk = currentVk;
+      currentVk = nextVk;
+      currentPos = { ...nextPos };
     }
-    if (current !== startVk || loop.length < 3) continue;
+
+    if (!closed || loopVerts.length < 4) continue;
+
+    loopVerts.pop(); // duplicated start vertex
+    for (const ei of loopEdgeIndices) usedEdges[ei] = 1;
+
+    let sameDirCount = 0;
+    for (let i = 0; i < loopVerts.length; i++) {
+      const edge = boundaryEdges[loopEdgeIndices[i]];
+      const fromVk = _edgeVKey(loopVerts[i]);
+      const toVk = _edgeVKey(loopVerts[(i + 1) % loopVerts.length]);
+      if (edge.vkA === fromVk && edge.vkB === toVk) sameDirCount++;
+    }
+
+    let loopNormal = _computePolygonNormal(loopVerts);
+    if (!loopNormal) continue;
+
+    // The healing face must run each shared boundary edge in the opposite
+    // direction from the existing face that owns it.
+    if (sameDirCount > loopVerts.length / 2) {
+      loopVerts.reverse();
+      loopNormal = _computePolygonNormal(loopVerts);
+      if (!loopNormal) continue;
+    }
+
+    // Fallback: if the loop walk was ambiguous, align with the dominant
+    // coplanar neighboring faces.
+    if (sameDirCount * 2 === loopVerts.length) {
+      let avgNormal = { x: 0, y: 0, z: 0 };
+      for (const ei of loopEdgeIndices) {
+        const face = faces[boundaryEdges[ei].fi];
+        if (!face || !face.normal) continue;
+        const fn = _vec3Normalize(face.normal);
+        if (Math.abs(_vec3Dot(fn, loopNormal)) < 0.5) continue;
+        const weight = Math.max(1e-6, faceArea(face));
+        avgNormal.x += fn.x * weight;
+        avgNormal.y += fn.y * weight;
+        avgNormal.z += fn.z * weight;
+      }
+      if (_vec3Len(avgNormal) > 1e-10 && _vec3Dot(loopNormal, avgNormal) < 0) {
+        loopVerts.reverse();
+        loopNormal = _computePolygonNormal(loopVerts);
+        if (!loopNormal) continue;
+      }
+    }
 
     // Step 4: Triangulate the loop as a fan from vertex 0
-    for (let i = 1; i < loop.length - 1; i++) {
-      const triNormal = _vec3Normalize(_vec3Cross(
-        _vec3Sub(loop[i], loop[0]),
-        _vec3Sub(loop[i + 1], loop[0])
-      ));
-      if (_vec3Len(triNormal) > 1e-10) {
+    for (let i = 1; i < loopVerts.length - 1; i++) {
+      const triVerts = [{ ...loopVerts[0] }, { ...loopVerts[i] }, { ...loopVerts[i + 1] }];
+      const triNormal = _computePolygonNormal(triVerts);
+      if (triNormal) {
         faces.push({
-          vertices: [{ ...loop[0] }, { ...loop[i] }, { ...loop[i + 1] }],
+          vertices: triVerts,
           normal: triNormal,
           shared: null,
         });
       }
+    }
+  }
+}
+
+function _polygonArea(face) {
+  const verts = face.vertices || [];
+  let area = 0;
+  for (let i = 1; i < verts.length - 1; i++) {
+    const ab = _vec3Sub(verts[i], verts[0]);
+    const ac = _vec3Sub(verts[i + 1], verts[0]);
+    area += 0.5 * _vec3Len(_vec3Cross(ab, ac));
+  }
+  return area;
+}
+
+function _isConvexPlanarPolygon(verts, normal) {
+  if (!verts || verts.length < 3 || !normal) return false;
+  let sign = 0;
+  for (let i = 0; i < verts.length; i++) {
+    const a = verts[i];
+    const b = verts[(i + 1) % verts.length];
+    const c = verts[(i + 2) % verts.length];
+    const cross = _vec3Cross(_vec3Sub(b, a), _vec3Sub(c, b));
+    const turn = _vec3Dot(cross, normal);
+    if (Math.abs(turn) < 1e-8) continue;
+    const nextSign = turn > 0 ? 1 : -1;
+    if (sign === 0) sign = nextSign;
+    else if (sign !== nextSign) return false;
+  }
+  return true;
+}
+
+function _projectPolygon2D(verts, normal) {
+  const an = {
+    x: Math.abs(normal.x),
+    y: Math.abs(normal.y),
+    z: Math.abs(normal.z),
+  };
+  if (an.z >= an.x && an.z >= an.y) {
+    return verts.map((v) => ({ x: v.x, y: v.y }));
+  }
+  if (an.y >= an.x) {
+    return verts.map((v) => ({ x: v.x, y: v.z }));
+  }
+  return verts.map((v) => ({ x: v.y, y: v.z }));
+}
+
+function _triangulatePlanarPolygon(verts, normal) {
+  if (!verts || verts.length < 3) return [];
+  if (verts.length === 3) return [verts.map((v) => ({ ...v }))];
+
+  const pts2d = _projectPolygon2D(verts, normal);
+  const signedArea = (() => {
+    let area = 0;
+    for (let i = 0; i < pts2d.length; i++) {
+      const a = pts2d[i];
+      const b = pts2d[(i + 1) % pts2d.length];
+      area += a.x * b.y - b.x * a.y;
+    }
+    return area * 0.5;
+  })();
+  const winding = signedArea >= 0 ? 1 : -1;
+
+  function cross2(a, b, c) {
+    return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+  }
+
+  function pointInTri(p, a, b, c) {
+    const c1 = cross2(a, b, p) * winding;
+    const c2 = cross2(b, c, p) * winding;
+    const c3 = cross2(c, a, p) * winding;
+    return c1 >= -1e-8 && c2 >= -1e-8 && c3 >= -1e-8;
+  }
+
+  const remaining = verts.map((_, i) => i);
+  const triangles = [];
+  let guard = 0;
+
+  while (remaining.length > 3 && guard < verts.length * verts.length) {
+    let earFound = false;
+    for (let ri = 0; ri < remaining.length; ri++) {
+      const prev = remaining[(ri - 1 + remaining.length) % remaining.length];
+      const curr = remaining[ri];
+      const next = remaining[(ri + 1) % remaining.length];
+      const a = pts2d[prev];
+      const b = pts2d[curr];
+      const c = pts2d[next];
+      if (cross2(a, b, c) * winding <= 1e-8) continue;
+
+      let containsPoint = false;
+      for (const other of remaining) {
+        if (other === prev || other === curr || other === next) continue;
+        if (pointInTri(pts2d[other], a, b, c)) {
+          containsPoint = true;
+          break;
+        }
+      }
+      if (containsPoint) continue;
+
+      triangles.push([
+        { ...verts[prev] },
+        { ...verts[curr] },
+        { ...verts[next] },
+      ]);
+      remaining.splice(ri, 1);
+      earFound = true;
+      break;
+    }
+
+    if (!earFound) return null;
+    guard++;
+  }
+
+  if (remaining.length === 3) {
+    triangles.push(remaining.map((idx) => ({ ...verts[idx] })));
+  }
+  return triangles;
+}
+
+function _mergeMixedSharedPlanarComponents(faces) {
+  const quantize = (value, digits = 5) => {
+    const clamped = Math.abs(value) < 1e-10 ? 0 : value;
+    const text = clamped.toFixed(digits);
+    return text === '-0.00000' ? '0.00000' : text;
+  };
+
+  function planeKey(face) {
+    const n = _vec3Normalize(face.normal || { x: 0, y: 0, z: 0 });
+    if (_vec3Len(n) < 1e-10 || !face.vertices || face.vertices.length < 3) return null;
+    let sign = 1;
+    if (Math.abs(n.z) > Math.abs(n.x) && Math.abs(n.z) > Math.abs(n.y)) {
+      sign = n.z < 0 ? -1 : 1;
+    } else if (Math.abs(n.y) > Math.abs(n.x)) {
+      sign = n.y < 0 ? -1 : 1;
+    } else {
+      sign = n.x < 0 ? -1 : 1;
+    }
+    const d = _vec3Dot(face.vertices[0], n) * sign;
+    return `${quantize(n.x * sign)},${quantize(n.y * sign)},${quantize(n.z * sign)}|${quantize(d)}`;
+  }
+
+  const buckets = new Map();
+  for (let fi = 0; fi < faces.length; fi++) {
+    const face = faces[fi];
+    if (!face || !face.vertices || face.vertices.length < 3) continue;
+    if (face.isFillet || face.isCorner) continue;
+    const key = planeKey(face);
+    if (!key) continue;
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key).push(fi);
+  }
+
+  const replacements = [];
+  const removeIndices = new Set();
+
+  for (const indices of buckets.values()) {
+    if (indices.length < 2) continue;
+
+    const edgeToFaces = new Map();
+    for (const fi of indices) {
+      const verts = faces[fi].vertices;
+      for (let i = 0; i < verts.length; i++) {
+        const ek = _edgeKeyFromVerts(verts[i], verts[(i + 1) % verts.length]);
+        if (!edgeToFaces.has(ek)) edgeToFaces.set(ek, []);
+        edgeToFaces.get(ek).push(fi);
+      }
+    }
+
+    const adjacency = new Map();
+    for (const fi of indices) adjacency.set(fi, new Set());
+    for (const fis of edgeToFaces.values()) {
+      if (fis.length < 2) continue;
+      for (let i = 0; i < fis.length - 1; i++) {
+        for (let j = i + 1; j < fis.length; j++) {
+          adjacency.get(fis[i]).add(fis[j]);
+          adjacency.get(fis[j]).add(fis[i]);
+        }
+      }
+    }
+
+    const seen = new Set();
+    for (const startFi of indices) {
+      if (seen.has(startFi)) continue;
+      const stack = [startFi];
+      const component = [];
+      while (stack.length > 0) {
+        const fi = stack.pop();
+        if (seen.has(fi)) continue;
+        seen.add(fi);
+        component.push(fi);
+        for (const other of adjacency.get(fi) || []) {
+          if (!seen.has(other)) stack.push(other);
+        }
+      }
+
+      if (component.length < 2) continue;
+
+      const sharedValues = new Set(component.map((fi) => faces[fi].shared || null));
+      const refFace = faces[component[0]];
+      const refNormal = _vec3Normalize(refFace.normal || { x: 0, y: 0, z: 0 });
+      const mixedNormals = component.some((fi) => {
+        const fn = _vec3Normalize(faces[fi].normal || { x: 0, y: 0, z: 0 });
+        return _vec3Len(fn) < 1e-10 || _vec3Dot(fn, refNormal) < 0.999;
+      });
+      if (sharedValues.size < 2 && !mixedNormals) continue;
+
+      const boundaryEdges = [];
+      const componentSet = new Set(component);
+      for (const fi of component) {
+        const verts = faces[fi].vertices;
+        for (let i = 0; i < verts.length; i++) {
+          const a = verts[i];
+          const b = verts[(i + 1) % verts.length];
+          const ek = _edgeKeyFromVerts(a, b);
+          const owners = edgeToFaces.get(ek) || [];
+          const insideCount = owners.filter((owner) => componentSet.has(owner)).length;
+          if (insideCount === 1) {
+            boundaryEdges.push({
+              fi,
+              a: { ...a },
+              b: { ...b },
+              startKey: _edgeVKey(a),
+              endKey: _edgeVKey(b),
+            });
+          }
+        }
+      }
+
+      if (boundaryEdges.length < 3) continue;
+
+      const outgoing = new Map();
+      const incoming = new Map();
+      for (const edge of boundaryEdges) {
+        if (outgoing.has(edge.startKey) || incoming.has(edge.endKey)) {
+          outgoing.set('__invalid__', true);
+          break;
+        }
+        outgoing.set(edge.startKey, edge);
+        incoming.set(edge.endKey, edge);
+      }
+      if (outgoing.has('__invalid__')) continue;
+
+      let startEdge = boundaryEdges[0];
+      for (const edge of boundaryEdges) {
+        if (!incoming.has(edge.startKey)) {
+          startEdge = edge;
+          break;
+        }
+      }
+
+      const loop = [{ ...startEdge.a }];
+      const used = new Set();
+      let current = startEdge;
+      while (current && !used.has(current.startKey + '|' + current.endKey)) {
+        used.add(current.startKey + '|' + current.endKey);
+        loop.push({ ...current.b });
+        const next = outgoing.get(current.endKey);
+        current = next;
+        if (current && current.startKey === startEdge.startKey) break;
+      }
+
+      if (_edgeVKey(loop[0]) !== _edgeVKey(loop[loop.length - 1])) continue;
+      loop.pop();
+      if (used.size !== boundaryEdges.length) continue;
+
+      const mergedVerts = _deduplicatePolygon(loop);
+      if (mergedVerts.length < 3) continue;
+
+      let mergedNormal = _computePolygonNormal(mergedVerts);
+      if (!mergedNormal) continue;
+      const template = [...component]
+        .map((fi) => faces[fi])
+        .sort((a, b) => _polygonArea(b) - _polygonArea(a))[0];
+      if (!mixedNormals && _vec3Dot(mergedNormal, refNormal) < 0) {
+        mergedVerts.reverse();
+        mergedNormal = _computePolygonNormal(mergedVerts);
+        if (!mergedNormal) continue;
+      }
+      if (!_isConvexPlanarPolygon(mergedVerts, mergedNormal)) continue;
+
+      replacements.push({
+        component,
+        face: {
+          ...template,
+          vertices: mergedVerts.map((v) => ({ ...v })),
+          normal: mergedNormal,
+          shared: null,
+        },
+      });
+      for (const fi of component) removeIndices.add(fi);
+    }
+  }
+
+  if (replacements.length === 0) return;
+
+  const kept = [];
+  for (let fi = 0; fi < faces.length; fi++) {
+    if (!removeIndices.has(fi)) kept.push(faces[fi]);
+  }
+  for (const replacement of replacements) kept.push(replacement.face);
+  faces.length = 0;
+  faces.push(...kept);
+}
+
+function _facesSharePlane(faceA, faceB) {
+  const na = _vec3Normalize(faceA?.normal || { x: 0, y: 0, z: 0 });
+  const nb = _vec3Normalize(faceB?.normal || { x: 0, y: 0, z: 0 });
+  if (_vec3Len(na) < 1e-10 || _vec3Len(nb) < 1e-10) return false;
+  if (Math.abs(_vec3Dot(na, nb)) < 0.999) return false;
+  const planeD = _vec3Dot(faceA.vertices[0], na);
+  for (const v of faceB.vertices || []) {
+    if (Math.abs(_vec3Dot(v, na) - planeD) > 1e-5) return false;
+  }
+  return true;
+}
+
+function _traceMergedPairLoop(faceA, faceB) {
+  const directedEdges = [];
+  for (const face of [faceA, faceB]) {
+    const verts = face.vertices || [];
+    for (let i = 0; i < verts.length; i++) {
+      directedEdges.push({
+        a: { ...verts[i] },
+        b: { ...verts[(i + 1) % verts.length] },
+      });
+    }
+  }
+
+  const counts = new Map();
+  for (const edge of directedEdges) {
+    const ek = _edgeKeyFromVerts(edge.a, edge.b);
+    counts.set(ek, (counts.get(ek) || 0) + 1);
+  }
+
+  const boundary = directedEdges
+    .filter((edge) => counts.get(_edgeKeyFromVerts(edge.a, edge.b)) === 1)
+    .map((edge) => ({
+      ...edge,
+      startKey: _edgeVKey(edge.a),
+      endKey: _edgeVKey(edge.b),
+    }));
+
+  if (boundary.length < 3) return null;
+
+  const outgoing = new Map();
+  const incoming = new Map();
+  for (const edge of boundary) {
+    if (outgoing.has(edge.startKey) || incoming.has(edge.endKey)) return null;
+    outgoing.set(edge.startKey, edge);
+    incoming.set(edge.endKey, edge);
+  }
+
+  let start = boundary[0];
+  for (const edge of boundary) {
+    if (!incoming.has(edge.startKey)) {
+      start = edge;
+      break;
+    }
+  }
+
+  const loop = [{ ...start.a }];
+  const used = new Set();
+  let current = start;
+  while (current && !used.has(current.startKey + '|' + current.endKey)) {
+    used.add(current.startKey + '|' + current.endKey);
+    loop.push({ ...current.b });
+    current = outgoing.get(current.endKey);
+    if (current && current.startKey === start.startKey) break;
+  }
+
+  if (_edgeVKey(loop[0]) !== _edgeVKey(loop[loop.length - 1])) return null;
+  loop.pop();
+  if (used.size !== boundary.length) return null;
+
+  return _deduplicatePolygon(loop);
+}
+
+function _mergeAdjacentCoplanarFacePairs(faces) {
+  let changed = true;
+  let iterations = 0;
+  const maxIterations = Math.max(32, faces.length * 4);
+  while (changed && iterations < maxIterations) {
+    changed = false;
+    iterations++;
+
+    const edgeFaces = new Map();
+    for (let fi = 0; fi < faces.length; fi++) {
+      const face = faces[fi];
+      if (!face || !face.vertices || face.vertices.length < 3) continue;
+      if (face.isFillet || face.isCorner) continue;
+      const verts = face.vertices;
+      for (let i = 0; i < verts.length; i++) {
+        const ek = _edgeKeyFromVerts(verts[i], verts[(i + 1) % verts.length]);
+        if (!edgeFaces.has(ek)) edgeFaces.set(ek, []);
+        edgeFaces.get(ek).push(fi);
+      }
+    }
+
+    outer:
+    for (const fis of edgeFaces.values()) {
+      if (fis.length !== 2) continue;
+      const [fi, fj] = fis;
+      const faceA = faces[fi];
+      const faceB = faces[fj];
+      if (!faceA || !faceB) continue;
+      if (!_facesSharePlane(faceA, faceB)) continue;
+
+      const mergedVerts = _traceMergedPairLoop(faceA, faceB);
+      if (!mergedVerts || mergedVerts.length < 3) continue;
+
+      let mergedNormal = _computePolygonNormal(mergedVerts);
+      if (!mergedNormal) continue;
+
+      const na = _vec3Normalize(faceA.normal || { x: 0, y: 0, z: 0 });
+      const nb = _vec3Normalize(faceB.normal || { x: 0, y: 0, z: 0 });
+      const sameSense = _vec3Dot(na, nb) > 0.999;
+      if (sameSense && _vec3Dot(mergedNormal, na) < 0) {
+        mergedVerts.reverse();
+        mergedNormal = _computePolygonNormal(mergedVerts);
+        if (!mergedNormal) continue;
+      }
+
+      const template = _polygonArea(faceA) >= _polygonArea(faceB) ? faceA : faceB;
+      const shared = faceA.shared === faceB.shared ? faceA.shared : null;
+      let replacementFaces = null;
+      if (_isConvexPlanarPolygon(mergedVerts, mergedNormal)) {
+        replacementFaces = [{
+          ...template,
+          vertices: mergedVerts.map((v) => ({ ...v })),
+          normal: mergedNormal,
+          shared,
+        }];
+      } else {
+        // Only resolve opposite-facing leftovers here. Re-triangulating
+        // same-sense concave regions can cause the pass to merge/split forever.
+        if (sameSense) continue;
+        const tris = _triangulatePlanarPolygon(mergedVerts, mergedNormal);
+        if (!tris || tris.length === 0) continue;
+        replacementFaces = tris.map((tri) => ({
+          ...template,
+          vertices: tri,
+          normal: mergedNormal,
+          shared,
+        }));
+      }
+
+      faces.splice(Math.max(fi, fj), 1);
+      faces.splice(Math.min(fi, fj), 1);
+      faces.push(...replacementFaces);
+      changed = true;
+      break outer;
     }
   }
 }
@@ -2130,10 +2680,73 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8) {
     if (edgeIndices.length >= 2) sharedEndpoints.add(vk);
   }
 
+  function trySpliceEndpointArcIntoFace(arc, desiredNormal) {
+    if (!desiredNormal || _vec3Len(desiredNormal) < 1e-10 || arc.length < 3) return false;
+
+    const startKey = _edgeVKey(arc[0]);
+    const endKey = _edgeVKey(arc[arc.length - 1]);
+    const arcKeys = new Set(arc.map((v) => _edgeVKey(v)));
+    const arcInterior = arc.slice(1, -1);
+
+    for (const face of faces) {
+      if (!face || !face.vertices || face.vertices.length < 3 || face.isFillet) continue;
+      if (face.vertices.every((v) => arcKeys.has(_edgeVKey(v)))) continue;
+      const fn = _vec3Normalize(face.normal || { x: 0, y: 0, z: 0 });
+      if (_vec3Len(fn) < 1e-10) continue;
+      if (Math.abs(_vec3Dot(fn, desiredNormal)) < 0.999) continue;
+      if (!arc.every((p) => _pointOnFacePlane(p, face.vertices))) continue;
+
+      const verts = face.vertices;
+      for (let i = 0; i < verts.length; i++) {
+        const a = verts[i];
+        const b = verts[(i + 1) % verts.length];
+        const aKey = _edgeVKey(a);
+        const bKey = _edgeVKey(b);
+        if ((aKey !== startKey || bKey !== endKey) && (aKey !== endKey || bKey !== startKey)) continue;
+
+        const insert = aKey === startKey ? arcInterior : [...arcInterior].reverse();
+        const newVerts = [];
+        for (let vi = 0; vi < verts.length; vi++) {
+          newVerts.push({ ...verts[vi] });
+          if (vi === i) {
+            for (const p of insert) newVerts.push({ ...p });
+          }
+        }
+
+        face.vertices = _deduplicatePolygon(newVerts);
+        let newNormal = _computePolygonNormal(face.vertices);
+        if (newNormal && _vec3Dot(newNormal, desiredNormal) < 0) {
+          face.vertices.reverse();
+          newNormal = _computePolygonNormal(face.vertices);
+        }
+        if (newNormal) face.normal = newNormal;
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  function pushFallbackEndpointFan(arc, atStart, shared) {
+    for (let s = 1; s < arc.length - 1; s++) {
+      const triVerts = atStart
+        ? [{ ...arc[0] }, { ...arc[s + 1] }, { ...arc[s] }]
+        : [{ ...arc[0] }, { ...arc[s] }, { ...arc[s + 1] }];
+      const triNormal = _computePolygonNormal(triVerts);
+      if (!triNormal || _vec3Len(triNormal) < 1e-10) continue;
+      faces.push({
+        vertices: triVerts,
+        normal: triNormal,
+        shared,
+      });
+    }
+  }
+
   for (const data of edgeDataList) {
     const shared = data.shared;
     const arcA = data.arcA;
     const arcB = data.arcB;
+    const edgeDir = _vec3Normalize(_vec3Sub(data.edgeB, data.edgeA));
 
     // Create NURBS fillet surface for this edge
     // The fillet is a rolling-ball blend: circular arc cross-section swept along the edge.
@@ -2166,7 +2779,6 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8) {
 
       // Add NURBS arc curves at each cross-section
       // These represent the exact circular profile of the fillet
-      const edgeDir = _vec3Normalize(_vec3Sub(data.edgeB, data.edgeA));
       const xAxisA = _vec3Normalize(_vec3Sub(arcA[0], centerA));
       const crossA = _vec3Cross(edgeDir, xAxisA);
       const yAxisA = _vec3Normalize(crossA);
@@ -2210,33 +2822,15 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8) {
     // Fan triangles at endpoint A — only if NOT a shared internal vertex
     const vkA = _edgeVKey(data.edgeA);
     if (!sharedEndpoints.has(vkA)) {
-      for (let s = 1; s < segments; s++) {
-        const triNormal = _vec3Normalize(_vec3Cross(
-          _vec3Sub(arcA[s + 1], arcA[0]),
-          _vec3Sub(arcA[s], arcA[0])
-        ));
-        faces.push({
-          vertices: [{ ...arcA[0] }, { ...arcA[s + 1] }, { ...arcA[s] }],
-          normal: triNormal,
-          shared,
-        });
-      }
+      const merged = trySpliceEndpointArcIntoFace(arcA, _vec3Scale(edgeDir, -1));
+      if (!merged) pushFallbackEndpointFan(arcA, true, shared);
     }
 
     // Fan triangles at endpoint B — only if NOT a shared internal vertex
     const vkB = _edgeVKey(data.edgeB);
     if (!sharedEndpoints.has(vkB)) {
-      for (let s = 1; s < segments; s++) {
-        const triNormal = _vec3Normalize(_vec3Cross(
-          _vec3Sub(arcB[s], arcB[0]),
-          _vec3Sub(arcB[s + 1], arcB[0])
-        ));
-        faces.push({
-          vertices: [{ ...arcB[0] }, { ...arcB[s] }, { ...arcB[s + 1] }],
-          normal: triNormal,
-          shared,
-        });
-      }
+      const merged = trySpliceEndpointArcIntoFace(arcB, edgeDir);
+      if (!merged) pushFallbackEndpointFan(arcB, false, shared);
     }
   }
 
@@ -2273,6 +2867,9 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8) {
   _healBoundaryLoops(faces);
 
   _weldVertices(faces);
+  _removeDegenerateFaces(faces);
+  _mergeMixedSharedPlanarComponents(faces);
+  _mergeAdjacentCoplanarFacePairs(faces);
   _removeDegenerateFaces(faces);
   _recomputeFaceNormals(faces);
 

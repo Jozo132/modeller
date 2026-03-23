@@ -90,6 +90,25 @@ function assertSingleHorizontalCapGroup(geometry, context) {
   assert.strictEqual(groups.size, 1, `${context}: expected a single top cap face group, got ${groups.size}`);
 }
 
+function assertNoDownwardTopExtremeFaces(geometry, context) {
+  const faces = geometry.faces || [];
+  let zMax = -Infinity;
+  for (const face of faces) {
+    for (const vertex of face.vertices || []) {
+      zMax = Math.max(zMax, vertex.z);
+    }
+  }
+
+  const eps = 1e-5;
+  const topWrong = faces.filter((face) =>
+    (face.normal?.z || 0) < -0.99999 &&
+    (face.vertices || []).length >= 3 &&
+    face.vertices.every((vertex) => Math.abs(vertex.z - zMax) < eps)
+  );
+
+  assert.strictEqual(topWrong.length, 0, `${context}: expected no downward-facing top-extreme faces, got ${topWrong.length}`);
+}
+
 // -----------------------------------------------------------------------
 // Build test geometry
 // -----------------------------------------------------------------------
@@ -484,6 +503,29 @@ console.log('--- Test 11: Chamfered concave cut edge ---');
     assert.strictEqual(countInvertedFaces(finalGeometry.geometry), 0, 'Expected no inverted faces');
     assertPositiveWallThickness(finalGeometry.geometry, 'concave cut-edge chamfer sample');
     assertSingleHorizontalCapGroup(finalGeometry.geometry, 'concave cut-edge chamfer sample');
+  });
+}
+
+// --- Test 12: Filleted chamfered concave cut edge keeps cap winding ---
+console.log('--- Test 12: Filleted chamfered concave cut edge ---');
+{
+  const sample = JSON.parse(
+    fs.readFileSync(new URL('./samples/extrude-on-extrude-dual-with-cut-and-chamfer-fillet.cmod', import.meta.url), 'utf8')
+  );
+
+  test('deserialized cut+chamfer+fillet sample keeps cap normals outward', () => {
+    const restored = Part.deserialize(sample.part);
+    const finalGeometry = restored.getFinalGeometry();
+    assert.ok(finalGeometry && finalGeometry.geometry, 'Expected final solid geometry');
+
+    const edgeUsage = collectEdgeUsage(finalGeometry.geometry);
+    assert.strictEqual(edgeUsage.boundaryEdges, 0, `Expected no boundary edges, got ${edgeUsage.boundaryEdges}`);
+    assert.strictEqual(edgeUsage.nonManifoldEdges, 0, `Expected no non-manifold edges, got ${edgeUsage.nonManifoldEdges}`);
+    assert.strictEqual(edgeUsage.windingErrors, 0, `Expected no winding errors, got ${edgeUsage.windingErrors}`);
+    assert.strictEqual(countInvertedFaces(finalGeometry.geometry), 0, 'Expected no inverted faces');
+    assertPositiveWallThickness(finalGeometry.geometry, 'concave cut-edge chamfer+fillet sample');
+    assertSingleHorizontalCapGroup(finalGeometry.geometry, 'concave cut-edge chamfer+fillet sample');
+    assertNoDownwardTopExtremeFaces(finalGeometry.geometry, 'concave cut-edge chamfer+fillet sample');
   });
 }
 

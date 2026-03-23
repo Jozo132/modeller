@@ -97,6 +97,17 @@
     ]
   },
   {
+    "file": "extrude-on-extrude-dual-with-cut-and-chamfer-fillet.cmod",
+    "label": "Extrude On Extrude Dual With Cut And Chamfer Fillet",
+    "featureTypes": [
+      "sketch",
+      "extrude",
+      "extrude-cut",
+      "chamfer",
+      "fillet"
+    ]
+  },
+  {
     "file": "extrude-on-extrude-dual-with-cut-and-chamfer.cmod",
     "label": "Extrude On Extrude Dual With Cut And Chamfer",
     "featureTypes": [
