@@ -1950,8 +1950,13 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8) {
       }
 
       brep.addFace(brepFace);
-    } catch (_) {
-      // NURBS construction may fail for degenerate cases; mesh data still valid
+    } catch (nurbsErr) {
+      // NURBS construction may fail for degenerate edge geometries (e.g.
+      // near-zero sweep angle or coincident rails); mesh data still valid.
+      // Log for debugging but don't block the operation.
+      if (typeof console !== 'undefined' && console.warn) {
+        console.warn('NURBS fillet surface construction skipped:', nurbsErr.message);
+      }
     }
 
     // Create fillet strip quads (mesh tessellation — same as before)

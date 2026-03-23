@@ -469,19 +469,12 @@ export class NurbsSurface {
     }
 
     // Knots: linear in u (along edge), quadratic arc in v (across fillet)
-    const knotsU = [];
-    for (let i = 0; i <= numRows - 1 + 1; i++) {
-      knotsU.push(i === 0 ? 0 : i >= numRows ? 1 : (i - 1) / (numRows - 1));
-    }
-    // Clamp: need numRows + 1 + 1 = numRows + 2 knots for degree 1
-    // Actually: knotsU length = numRows + degreeU + 1 = numRows + 2
+    // Clamped knot vector: need numRows + 2 knots for degree 1
     const knotsUClamped = [0];
     for (let i = 0; i < numRows; i++) {
       knotsUClamped.push(i / (numRows - 1 || 1));
     }
     knotsUClamped.push(1);
-    // That gives numRows + 2 knots for degree 1. Let's verify:
-    // Expected: numRows + 1 + 1 = numRows + 2. ✓
 
     const knotsV = [0, 0, 0, 1, 1, 1]; // Quadratic, clamped
 
