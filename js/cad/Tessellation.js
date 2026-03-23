@@ -5,6 +5,93 @@
 
 import { DEFAULT_TOLERANCE } from './Tolerance.js';
 
+function projectPolygon2D(verts, normal) {
+  const an = {
+    x: Math.abs(normal?.x || 0),
+    y: Math.abs(normal?.y || 0),
+    z: Math.abs(normal?.z || 0),
+  };
+  if (an.z >= an.x && an.z >= an.y) {
+    return verts.map((v) => ({ x: v.x, y: v.y }));
+  }
+  if (an.y >= an.x) {
+    return verts.map((v) => ({ x: v.x, y: v.z }));
+  }
+  return verts.map((v) => ({ x: v.y, y: v.z }));
+}
+
+function triangulatePolygonIndices(verts, normal) {
+  if (!verts || verts.length < 3) return [];
+  if (verts.length === 3) return [[0, 1, 2]];
+
+  const pts2d = projectPolygon2D(verts, normal);
+  let signedArea = 0;
+  for (let i = 0; i < pts2d.length; i++) {
+    const a = pts2d[i];
+    const b = pts2d[(i + 1) % pts2d.length];
+    signedArea += a.x * b.y - b.x * a.y;
+  }
+  const winding = signedArea >= 0 ? 1 : -1;
+
+  function cross2(a, b, c) {
+    return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+  }
+
+  function pointInTri(p, a, b, c) {
+    const c1 = cross2(a, b, p) * winding;
+    const c2 = cross2(b, c, p) * winding;
+    const c3 = cross2(c, a, p) * winding;
+    return c1 >= -1e-8 && c2 >= -1e-8 && c3 >= -1e-8;
+  }
+
+  const remaining = verts.map((_, i) => i);
+  const triangles = [];
+  let guard = 0;
+  const maxGuard = verts.length * verts.length;
+
+  while (remaining.length > 3 && guard < maxGuard) {
+    let earFound = false;
+    for (let ri = 0; ri < remaining.length; ri++) {
+      const prev = remaining[(ri - 1 + remaining.length) % remaining.length];
+      const curr = remaining[ri];
+      const next = remaining[(ri + 1) % remaining.length];
+      const a = pts2d[prev];
+      const b = pts2d[curr];
+      const c = pts2d[next];
+      if (cross2(a, b, c) * winding <= 1e-8) continue;
+
+      let containsPoint = false;
+      for (const other of remaining) {
+        if (other === prev || other === curr || other === next) continue;
+        if (pointInTri(pts2d[other], a, b, c)) {
+          containsPoint = true;
+          break;
+        }
+      }
+      if (containsPoint) continue;
+
+      triangles.push([prev, curr, next]);
+      remaining.splice(ri, 1);
+      earFound = true;
+      break;
+    }
+
+    if (!earFound) break;
+    guard++;
+  }
+
+  if (remaining.length === 3) {
+    triangles.push([remaining[0], remaining[1], remaining[2]]);
+  }
+
+  if (triangles.length !== Math.max(0, verts.length - 2)) {
+    const fan = [];
+    for (let i = 1; i < verts.length - 1; i++) fan.push([0, i, i + 1]);
+    return fan;
+  }
+  return triangles;
+}
+
 /**
  * Tessellate a TopoBody into a mesh geometry object compatible with the
  * existing rendering pipeline.
@@ -104,14 +191,14 @@ export function tessellateFace(face, segments = 8) {
     }
   }
 
-  // Fan triangulation for convex-ish polygons
+  // Ear-clip planar polygons so non-convex exact-result faces render correctly.
   const meshFaces = [];
-  for (let i = 1; i < orderedPts.length - 1; i++) {
+  for (const [a, b, c] of triangulatePolygonIndices(orderedPts, normal)) {
     meshFaces.push({
       vertices: [
-        { ...orderedPts[0] },
-        { ...orderedPts[i] },
-        { ...orderedPts[i + 1] },
+        { ...orderedPts[a] },
+        { ...orderedPts[b] },
+        { ...orderedPts[c] },
       ],
       normal: { ...normal },
     });
