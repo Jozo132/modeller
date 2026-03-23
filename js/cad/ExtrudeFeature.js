@@ -134,17 +134,25 @@ export class ExtrudeFeature extends Feature {
    * @returns {Object} Combined geometry
    */
   combineGeometries(geometries) {
-    const combined = {
-      vertices: [],
-      faces: [],
-      edges: [],
-    };
+    let combined = null;
 
     for (const geometry of geometries) {
       if (!geometry) continue;
-      if (geometry.vertices) combined.vertices.push(...geometry.vertices);
-      if (geometry.faces) combined.faces.push(...geometry.faces);
-      if (geometry.edges) combined.edges.push(...geometry.edges);
+      if (!combined) {
+        combined = geometry;
+        continue;
+      }
+      combined = booleanOp(combined, geometry, 'union',
+        combined.faces?.[0]?.shared || null,
+        { sourceFeatureId: this.id });
+    }
+
+    if (!combined) {
+      return {
+        vertices: [],
+        faces: [],
+        edges: [],
+      };
     }
 
     return combined;
@@ -166,6 +174,23 @@ export class ExtrudeFeature extends Feature {
     };
     
     const effectiveDistance = this.extrudeType === 'throughAll' ? 1000 : this.distance;
+    const shouldOvershootForSubtract = this.operation === 'subtract';
+    const overshoot = shouldOvershootForSubtract ? Math.max(1e-4, effectiveDistance * 1e-5) : 0;
+    const directionUnit = {
+      x: resolvedPlane.normal.x * this.direction,
+      y: resolvedPlane.normal.y * this.direction,
+      z: resolvedPlane.normal.z * this.direction,
+    };
+    const baseOffset = shouldOvershootForSubtract ? {
+      x: -directionUnit.x * overshoot,
+      y: -directionUnit.y * overshoot,
+      z: -directionUnit.z * overshoot,
+    } : { x: 0, y: 0, z: 0 };
+    const tipOffset = shouldOvershootForSubtract ? {
+      x: directionUnit.x * overshoot,
+      y: directionUnit.y * overshoot,
+      z: directionUnit.z * overshoot,
+    } : { x: 0, y: 0, z: 0 };
 
     // Calculate extrusion vector
     const extrusionVector = {
@@ -207,7 +232,12 @@ export class ExtrudeFeature extends Feature {
       // Create vertices
       for (const point of pts) {
         // Transform 2D sketch point to 3D world coordinates
-        const bottom3D = this.sketchToWorld(point, resolvedPlane);
+        const bottomBase = this.sketchToWorld(point, resolvedPlane);
+        const bottom3D = {
+          x: bottomBase.x + baseOffset.x,
+          y: bottomBase.y + baseOffset.y,
+          z: bottomBase.z + baseOffset.z,
+        };
         bottomVertices.push(bottom3D);
         geometry.vertices.push(bottom3D);
         
@@ -225,9 +255,9 @@ export class ExtrudeFeature extends Feature {
         }
         const topBase = this.sketchToWorld(topPoint, resolvedPlane);
         const top3D = {
-          x: topBase.x + extrusionVector.x,
-          y: topBase.y + extrusionVector.y,
-          z: topBase.z + extrusionVector.z,
+          x: topBase.x + extrusionVector.x + tipOffset.x,
+          y: topBase.y + extrusionVector.y + tipOffset.y,
+          z: topBase.z + extrusionVector.z + tipOffset.z,
         };
         topVertices.push(top3D);
         geometry.vertices.push(top3D);
@@ -278,7 +308,7 @@ export class ExtrudeFeature extends Feature {
     
     // Attach exact B-Rep alongside mesh
     try {
-      geometry.topoBody = this.buildExactBrep(profiles, resolvedPlane, extrusionVector, planeFrame);
+      geometry.topoBody = this.buildExactBrep(profiles, resolvedPlane, extrusionVector, planeFrame, baseOffset, tipOffset);
     } catch (_) {
       // Exact B-Rep is best-effort; mesh is always the fallback
       geometry.topoBody = null;
@@ -302,7 +332,7 @@ export class ExtrudeFeature extends Feature {
    * @param {Object} planeFrame - Plane frame from resolvePlaneFrame
    * @returns {import('./BRepTopology.js').TopoBody}
    */
-  buildExactBrep(profiles, plane, extrusionVector, planeFrame) {
+  buildExactBrep(profiles, plane, extrusionVector, planeFrame, baseOffset = { x: 0, y: 0, z: 0 }, tipOffset = { x: 0, y: 0, z: 0 }) {
     const faceDescs = [];
 
     for (const profile of profiles) {
@@ -317,11 +347,18 @@ export class ExtrudeFeature extends Feature {
       if (signedArea < 0) pts = [...pts].reverse();
 
       const n = pts.length;
-      const bottomVerts = pts.map(p => this.sketchToWorld(p, plane));
+      const bottomVerts = pts.map((p) => {
+        const world = this.sketchToWorld(p, plane);
+        return {
+          x: world.x + baseOffset.x,
+          y: world.y + baseOffset.y,
+          z: world.z + baseOffset.z,
+        };
+      });
       const topVerts = bottomVerts.map(v => ({
-        x: v.x + extrusionVector.x,
-        y: v.y + extrusionVector.y,
-        z: v.z + extrusionVector.z,
+        x: v.x + extrusionVector.x + tipOffset.x - baseOffset.x,
+        y: v.y + extrusionVector.y + tipOffset.y - baseOffset.y,
+        z: v.z + extrusionVector.z + tipOffset.z - baseOffset.z,
       }));
 
       // Bottom cap (reverse winding for outward normal)

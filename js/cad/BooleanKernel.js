@@ -20,6 +20,9 @@ import { splitFace, classifyFragment } from './FaceSplitter.js';
 import { buildBody } from './ShellBuilder.js';
 import { tessellateBody } from './Tessellation.js';
 import { DEFAULT_TOLERANCE, Tolerance } from './Tolerance.js';
+import { SurfaceType, TopoFace, TopoLoop, TopoCoEdge, TopoEdge, TopoVertex } from './BRepTopology.js';
+import { NurbsSurface } from './NurbsSurface.js';
+import { NurbsCurve } from './NurbsCurve.js';
 
 /**
  * Perform an exact boolean operation on two TopoBody operands.
@@ -34,6 +37,11 @@ import { DEFAULT_TOLERANCE, Tolerance } from './Tolerance.js';
  * }}
  */
 export function exactBooleanOp(bodyA, bodyB, operation, tol = DEFAULT_TOLERANCE) {
+  if (_isPlanarBody(bodyA) && _isPlanarBody(bodyB)) {
+    const planar = _exactPlanarBoolean(bodyA, bodyB, operation, tol);
+    if (planar) return planar;
+  }
+
   // Step 1-2: Intersect candidate face pairs and compute intersection curves
   const intersections = intersectBodies(bodyA, bodyB, tol);
 
@@ -52,6 +60,44 @@ export function exactBooleanOp(bodyA, bodyB, operation, tol = DEFAULT_TOLERANCE)
   // Step 10: Tessellate for rendering
   const mesh = tessellateBody(resultBody);
 
+  return { body: resultBody, mesh };
+}
+
+function _isPlanarBody(body) {
+  if (!body || !Array.isArray(body.shells) || body.shells.length === 0) return false;
+  return body.faces().every(face =>
+    face &&
+    face.surfaceType === SurfaceType.PLANE &&
+    face.surface &&
+    face.outerLoop &&
+    face.innerLoops.length === 0
+  );
+}
+
+function _exactPlanarBoolean(bodyA, bodyB, operation, tol) {
+  const polysA = _splitPolygonsByBody(_bodyToPolygons(bodyA), bodyB, tol);
+  const polysB = _splitPolygonsByBody(_bodyToPolygons(bodyB), bodyA, tol);
+
+  const kept = [];
+  for (const poly of polysA) {
+    const cls = _classifyPlanarPolygon(poly, bodyB, tol);
+    if (_shouldKeep(cls, operation, 'A')) kept.push(poly);
+  }
+  for (const poly of polysB) {
+    const cls = _classifyPlanarPolygon(poly, bodyA, tol);
+    if (_shouldKeep(cls, operation, 'B')) {
+      kept.push(operation === 'subtract' ? _reversePolygon(poly) : poly);
+    }
+  }
+
+  const cleaned = _dedupePlanarPolygons(kept, tol);
+  if (cleaned.length === 0) return null;
+  _fixPolygonTJunctions(cleaned, tol);
+  const stitchedPolys = _dedupePlanarPolygons(cleaned, tol);
+
+  const faces = stitchedPolys.map(poly => _polygonToTopoFace(poly, tol)).filter(Boolean);
+  const resultBody = buildBody(faces, tol);
+  const mesh = tessellateBody(resultBody);
   return { body: resultBody, mesh };
 }
 
@@ -150,6 +196,288 @@ function _shouldKeep(classification, operation, operand) {
     default:
       return false;
   }
+}
+
+function _bodyToPolygons(body) {
+  return body.faces().map(face => {
+    const verts = face.outerLoop.points();
+    const oriented = face.sameSense === false ? [...verts].reverse() : verts;
+    const normal = _polygonNormal(oriented);
+    return {
+      vertices: oriented.map(v => ({ ...v })),
+      normal,
+      shared: face.shared ? { ...face.shared } : null,
+      surfaceType: face.surfaceType,
+    };
+  }).filter(poly => poly.vertices.length >= 3 && _vecLen(poly.normal) > 1e-10);
+}
+
+function _splitPolygonsByBody(polygons, body, tol) {
+  let fragments = polygons;
+  for (const splitter of _bodyToPolygons(body)) {
+    const plane = {
+      normal: splitter.normal,
+      w: _dot(splitter.normal, splitter.vertices[0]),
+    };
+    const next = [];
+    for (const poly of fragments) {
+      next.push(..._splitPolygonByPlane(poly, plane, tol));
+    }
+    fragments = next;
+  }
+  return fragments;
+}
+
+function _splitPolygonByPlane(poly, plane, tol) {
+  const verts = poly.vertices;
+  const front = [];
+  const back = [];
+  const side = [];
+  for (const v of verts) {
+    const d = _dot(plane.normal, v) - plane.w;
+    side.push(Math.abs(d) <= tol.intersection ? 0 : d > 0 ? 1 : -1);
+  }
+  let hasFront = false, hasBack = false;
+  for (const s of side) { if (s > 0) hasFront = true; if (s < 0) hasBack = true; }
+  if (!hasFront || !hasBack) return [poly];
+
+  for (let i = 0; i < verts.length; i++) {
+    const a = verts[i];
+    const b = verts[(i + 1) % verts.length];
+    const sa = side[i];
+    const sb = side[(i + 1) % verts.length];
+
+    if (sa >= 0) front.push({ ...a });
+    if (sa <= 0) back.push({ ...a });
+
+    if ((sa > 0 && sb < 0) || (sa < 0 && sb > 0)) {
+      const da = _dot(plane.normal, a) - plane.w;
+      const db = _dot(plane.normal, b) - plane.w;
+      const t = da / (da - db);
+      const p = {
+        x: a.x + (b.x - a.x) * t,
+        y: a.y + (b.y - a.y) * t,
+        z: a.z + (b.z - a.z) * t,
+      };
+      front.push(p);
+      back.push({ ...p });
+    }
+  }
+
+  const out = [];
+  const frontPoly = _cleanPolygon({ ...poly, vertices: front }, tol);
+  const backPoly = _cleanPolygon({ ...poly, vertices: back }, tol);
+  if (frontPoly) out.push(frontPoly);
+  if (backPoly) out.push(backPoly);
+  return out.length > 0 ? out : [poly];
+}
+
+function _classifyPlanarPolygon(poly, body, tol) {
+  const c = _polygonCentroid(poly.vertices);
+  const n = _normalize(poly.normal);
+  const p = {
+    x: c.x + n.x * (tol.pointCoincidence * 10),
+    y: c.y + n.y * (tol.pointCoincidence * 10),
+    z: c.z + n.z * (tol.pointCoincidence * 10),
+  };
+  return _rayCastClassifyPoint(p, body, tol);
+}
+
+function _rayCastClassifyPoint(point, body, tol) {
+  let crossings = 0;
+  const dir = { x: 0.137, y: 0.271, z: 1 };
+  for (const face of body.faces()) {
+    if (!face.outerLoop) continue;
+    const pts = face.outerLoop.points();
+    for (let i = 1; i < pts.length - 1; i++) {
+      if (_rayTriangleIntersect(point, dir, pts[0], pts[i], pts[i + 1], tol)) crossings++;
+    }
+  }
+  return crossings % 2 === 1 ? 'inside' : 'outside';
+}
+
+function _rayTriangleIntersect(origin, dir, v0, v1, v2, tol) {
+  const eps = tol.modelingEpsilon;
+  const e1 = _sub(v1, v0);
+  const e2 = _sub(v2, v0);
+  const h = _cross(dir, e2);
+  const a = _dot(e1, h);
+  if (Math.abs(a) < eps) return false;
+  const f = 1 / a;
+  const s = _sub(origin, v0);
+  const u = f * _dot(s, h);
+  if (u < -eps || u > 1 + eps) return false;
+  const q = _cross(s, e1);
+  const v = f * _dot(dir, q);
+  if (v < -eps || u + v > 1 + eps) return false;
+  const t = f * _dot(e2, q);
+  return t > eps;
+}
+
+function _reversePolygon(poly) {
+  return {
+    ...poly,
+    vertices: [...poly.vertices].reverse(),
+    normal: { x: -poly.normal.x, y: -poly.normal.y, z: -poly.normal.z },
+  };
+}
+
+function _dedupePlanarPolygons(polygons, tol) {
+  const seen = new Set();
+  const out = [];
+  for (const poly of polygons) {
+    const clean = _cleanPolygon(poly, tol);
+    if (!clean) continue;
+    const key = _polygonKey(clean);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(clean);
+  }
+  return out;
+}
+
+function _fixPolygonTJunctions(polygons, tol) {
+  const uniqueVerts = [];
+  for (const poly of polygons) {
+    for (const v of poly.vertices) {
+      if (!uniqueVerts.some(u => _pointsCoincident(u, v, tol))) uniqueVerts.push({ ...v });
+    }
+  }
+
+  for (const poly of polygons) {
+    const nextVerts = [];
+    const verts = poly.vertices;
+    for (let i = 0; i < verts.length; i++) {
+      const a = verts[i];
+      const b = verts[(i + 1) % verts.length];
+      nextVerts.push({ ...a });
+
+      const ab = _sub(b, a);
+      const lenSq = _dot(ab, ab);
+      if (lenSq <= 1e-14) continue;
+
+      const onEdge = [];
+      for (const p of uniqueVerts) {
+        if (_pointsCoincident(p, a, tol) || _pointsCoincident(p, b, tol)) continue;
+        const ap = _sub(p, a);
+        const cross = _cross(ab, ap);
+        if (_vecLen(cross) > tol.intersection * 10) continue;
+        const t = _dot(ap, ab) / lenSq;
+        if (t <= tol.intersection || t >= 1 - tol.intersection) continue;
+        const proj = {
+          x: a.x + ab.x * t,
+          y: a.y + ab.y * t,
+          z: a.z + ab.z * t,
+        };
+        if (!_pointsCoincident(proj, p, tol)) continue;
+        onEdge.push({ t, point: { ...p } });
+      }
+
+      onEdge.sort((m, n) => m.t - n.t);
+      for (const hit of onEdge) nextVerts.push(hit.point);
+    }
+    poly.vertices = _cleanPolygon({ ...poly, vertices: nextVerts }, tol)?.vertices || poly.vertices;
+    poly.normal = _polygonNormal(poly.vertices);
+  }
+}
+
+function _cleanPolygon(poly, tol) {
+  const verts = [];
+  for (const v of poly.vertices) {
+    if (verts.length === 0 || !_pointsCoincident(verts[verts.length - 1], v, tol)) {
+      verts.push({ ...v });
+    }
+  }
+  if (verts.length > 1 && _pointsCoincident(verts[0], verts[verts.length - 1], tol)) verts.pop();
+  if (verts.length < 3) return null;
+  const normal = _polygonNormal(verts);
+  if (_vecLen(normal) <= 1e-10) return null;
+  return { ...poly, vertices: verts, normal };
+}
+
+function _polygonToTopoFace(poly, tol) {
+  const cleaned = _cleanPolygon(poly, tol);
+  if (!cleaned) return null;
+  const verts = cleaned.vertices.map(v => new TopoVertex(v, tol.pointCoincidence));
+  const coedges = [];
+  for (let i = 0; i < verts.length; i++) {
+    const a = verts[i];
+    const b = verts[(i + 1) % verts.length];
+    const edge = new TopoEdge(a, b, NurbsCurve.createLine(a.point, b.point), tol.edgeOverlap);
+    coedges.push(new TopoCoEdge(edge, true, null));
+  }
+  const face = new TopoFace(
+    NurbsSurface.createPlane(
+      cleaned.vertices[0],
+      _sub(cleaned.vertices[1], cleaned.vertices[0]),
+      _sub(cleaned.vertices[cleaned.vertices.length - 1], cleaned.vertices[0]),
+    ),
+    SurfaceType.PLANE,
+    true,
+  );
+  face.shared = cleaned.shared ? { ...cleaned.shared } : null;
+  face.setOuterLoop(new TopoLoop(coedges));
+  return face;
+}
+
+function _polygonCentroid(vertices) {
+  let x = 0, y = 0, z = 0;
+  for (const v of vertices) { x += v.x; y += v.y; z += v.z; }
+  const n = vertices.length || 1;
+  return { x: x / n, y: y / n, z: z / n };
+}
+
+function _polygonNormal(vertices) {
+  let nx = 0, ny = 0, nz = 0;
+  for (let i = 0; i < vertices.length; i++) {
+    const curr = vertices[i];
+    const next = vertices[(i + 1) % vertices.length];
+    nx += (curr.y - next.y) * (curr.z + next.z);
+    ny += (curr.z - next.z) * (curr.x + next.x);
+    nz += (curr.x - next.x) * (curr.y + next.y);
+  }
+  const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+  return len > 1e-10 ? { x: nx / len, y: ny / len, z: nz / len } : { x: 0, y: 0, z: 0 };
+}
+
+function _polygonKey(poly) {
+  const keys = poly.vertices.map(v => `${v.x.toFixed(6)},${v.y.toFixed(6)},${v.z.toFixed(6)}`);
+  const rotations = [];
+  for (let i = 0; i < keys.length; i++) rotations.push(keys.slice(i).concat(keys.slice(0, i)).join('|'));
+  const reversed = [...keys].reverse();
+  for (let i = 0; i < reversed.length; i++) rotations.push(reversed.slice(i).concat(reversed.slice(0, i)).join('|'));
+  rotations.sort();
+  return rotations[0];
+}
+
+function _pointsCoincident(a, b, tol) {
+  const dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+  return Math.sqrt(dx * dx + dy * dy + dz * dz) <= tol.pointCoincidence * 10;
+}
+
+function _normalize(v) {
+  const len = _vecLen(v);
+  return len > 1e-10 ? { x: v.x / len, y: v.y / len, z: v.z / len } : { x: 0, y: 0, z: 1 };
+}
+
+function _vecLen(v) {
+  return Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+}
+
+function _dot(a, b) {
+  return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+function _cross(a, b) {
+  return {
+    x: a.y * b.z - a.z * b.y,
+    y: a.z * b.x - a.x * b.z,
+    z: a.x * b.y - a.y * b.x,
+  };
+}
+
+function _sub(a, b) {
+  return { x: a.x - b.x, y: a.y - b.y, z: a.z - b.z };
 }
 
 /**

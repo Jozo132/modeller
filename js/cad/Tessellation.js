@@ -64,8 +64,10 @@ export function tessellateBody(body, opts = {}) {
  * @returns {{ vertices: Array<{x,y,z}>, faces: Array<{vertices: Array<{x,y,z}>, normal: {x,y,z}}> }}
  */
 export function tessellateFace(face, segments = 8) {
-  // If we have a NURBS surface, use it
-  if (face.surface) {
+  // Planar faces should tessellate from their trim loops, not from the full
+  // support surface patch. Otherwise boolean-trimmed planar faces render as
+  // their original untrimmed rectangles.
+  if (face.surface && face.surfaceType !== 'plane') {
     const tess = face.surface.tessellate(segments, segments);
     // If face is reversed, flip normals and winding
     if (!face.sameSense) {
@@ -77,6 +79,7 @@ export function tessellateFace(face, segments = 8) {
     return tess;
   }
 
+  // If we have a NURBS surface, use it
   // Fallback: tessellate from loop vertices as a polygon
   if (!face.outerLoop) return { vertices: [], faces: [] };
 

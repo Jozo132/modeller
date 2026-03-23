@@ -351,8 +351,10 @@ class CSGSolid {
     const faces = [];
 
     for (const poly of this.polygons) {
-      const faceVerts = poly.vertices.map(v => v.pos.toObj());
-      const normal = poly.plane.normal.toObj();
+      const faceVerts = _deduplicatePolygon(poly.vertices.map(v => v.pos.toObj()));
+      if (faceVerts.length < 3) continue;
+      const normal = _computePolygonNormal(faceVerts);
+      if (!normal) continue;
 
       // Classify face type based on normal direction
       const faceType = classifyFaceType(normal, faceVerts);
@@ -368,6 +370,10 @@ class CSGSolid {
     // Fix T-junctions left by BSP splitting: insert missing vertices into
     // face edges so that adjacent faces share all boundary vertices.
     _fixTJunctions(faces);
+    _healBoundaryLoops(faces);
+    _weldVertices(faces);
+    _recomputeFaceNormals(faces);
+    _fixWindingConsistency(faces);
 
     for (const face of faces) {
       for (const v of face.vertices) {
@@ -471,6 +477,17 @@ function assignCoplanarFaceGroups(faces) {
     for (const [, faceIds] of vertexFaces) {
       for (let i = 1; i < faceIds.length; i++) {
         unite(faceIds[0], faceIds[i]);
+      }
+    }
+
+    // Post-boolean planar fragments often meet via split edges/T-junctions
+    // without sharing all corner vertices. Merge same-plane faces when any
+    // vertex lies on another face's edge or when collinear edges overlap.
+    for (let gi = 0; gi < group.length - 1; gi++) {
+      const fa = faces[group[gi]];
+      for (let gj = gi + 1; gj < group.length; gj++) {
+        const fb = faces[group[gj]];
+        if (_coplanarFacesTouch(fa, fb)) unite(group[gi], group[gj]);
       }
     }
   }
@@ -1033,17 +1050,16 @@ export function booleanOp(geomA, geomB, operation, sharedA = null, sharedB = nul
   // If both operands carry exact topology, use the exact boolean kernel.
   if (geomA && geomA.topoBody && geomB && geomB.topoBody &&
       hasExactTopology(geomA.topoBody) && hasExactTopology(geomB.topoBody)) {
-    try {
-      const opName = (operation === 'add') ? 'union' : operation;
-      const { body, mesh } = exactBooleanOp(geomA.topoBody, geomB.topoBody, opName);
-      const resultGeom = { ...mesh, topoBody: body };
-      return resultGeom;
-    } catch (err) {
-      // Log and fall through to legacy mesh boolean
-      if (typeof console !== 'undefined') {
-        console.warn('Exact boolean failed, falling back to mesh BSP:', err.message);
-      }
-    }
+    const opName = (operation === 'add') ? 'union' : operation;
+    const { body, mesh } = exactBooleanOp(geomA.topoBody, geomB.topoBody, opName);
+    const edgeResult = computeFeatureEdges(mesh.faces || []);
+    return {
+      ...mesh,
+      edges: edgeResult.edges,
+      paths: edgeResult.paths,
+      visualEdges: edgeResult.visualEdges,
+      topoBody: body,
+    };
   }
 
   // --- Legacy mesh BSP path ---
@@ -1085,6 +1101,69 @@ export function booleanOp(geomA, geomB, operation, sharedA = null, sharedB = nul
   }
 
   return result.toGeometry();
+}
+
+function _coplanarFacesTouch(faceA, faceB) {
+  const vertsA = faceA.vertices || [];
+  const vertsB = faceB.vertices || [];
+  for (const va of vertsA) {
+    for (let i = 0; i < vertsB.length; i++) {
+      if (pointOnSegmentStrict(va, vertsB[i], vertsB[(i + 1) % vertsB.length])) return true;
+    }
+  }
+  for (const vb of vertsB) {
+    for (let i = 0; i < vertsA.length; i++) {
+      if (pointOnSegmentStrict(vb, vertsA[i], vertsA[(i + 1) % vertsA.length])) return true;
+    }
+  }
+  for (let i = 0; i < vertsA.length; i++) {
+    const a0 = vertsA[i], a1 = vertsA[(i + 1) % vertsA.length];
+    for (let j = 0; j < vertsB.length; j++) {
+      const b0 = vertsB[j], b1 = vertsB[(j + 1) % vertsB.length];
+      if (_collinearSegmentsOverlap(a0, a1, b0, b1)) return true;
+    }
+  }
+  return false;
+}
+
+function _collinearSegmentsOverlap(a0, a1, b0, b1) {
+  const ab = { x: a1.x - a0.x, y: a1.y - a0.y, z: a1.z - a0.z };
+  const ac = { x: b0.x - a0.x, y: b0.y - a0.y, z: b0.z - a0.z };
+  const ad = { x: b1.x - a0.x, y: b1.y - a0.y, z: b1.z - a0.z };
+  const crossC = {
+    x: ab.y * ac.z - ab.z * ac.y,
+    y: ab.z * ac.x - ab.x * ac.z,
+    z: ab.x * ac.y - ab.y * ac.x,
+  };
+  const crossD = {
+    x: ab.y * ad.z - ab.z * ad.y,
+    y: ab.z * ad.x - ab.x * ad.z,
+    z: ab.x * ad.y - ab.y * ad.x,
+  };
+  const lenC = Math.sqrt(crossC.x * crossC.x + crossC.y * crossC.y + crossC.z * crossC.z);
+  const lenD = Math.sqrt(crossD.x * crossD.x + crossD.y * crossD.y + crossD.z * crossD.z);
+  if (lenC > 1e-5 || lenD > 1e-5) return false;
+
+  const lenSq = ab.x * ab.x + ab.y * ab.y + ab.z * ab.z;
+  if (lenSq < 1e-10) return false;
+  const t0 = (ac.x * ab.x + ac.y * ab.y + ac.z * ab.z) / lenSq;
+  const t1 = (ad.x * ab.x + ad.y * ab.y + ad.z * ab.z) / lenSq;
+  const minT = Math.min(t0, t1);
+  const maxT = Math.max(t0, t1);
+  return maxT > 1e-5 && minT < 1 - 1e-5 && (Math.min(1, maxT) - Math.max(0, minT)) > 1e-5;
+}
+function _computePolygonNormal(vertices) {
+  let nx = 0, ny = 0, nz = 0;
+  for (let i = 0; i < vertices.length; i++) {
+    const curr = vertices[i];
+    const next = vertices[(i + 1) % vertices.length];
+    nx += (curr.y - next.y) * (curr.z + next.z);
+    ny += (curr.z - next.z) * (curr.x + next.x);
+    nz += (curr.x - next.x) * (curr.y + next.y);
+  }
+  const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+  if (len <= 1e-10) return null;
+  return { x: nx / len, y: ny / len, z: nz / len };
 }
 
 /**

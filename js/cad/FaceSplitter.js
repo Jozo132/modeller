@@ -25,24 +25,16 @@ export function splitFace(face, splitCurves, tol = DEFAULT_TOLERANCE) {
   if (!splitCurves || splitCurves.length === 0) return [face];
   if (!face.surface) return [face];
 
-  // For each split curve, create new edges and vertices at the intersections
-  const fragments = [];
-  let remainingFace = face;
-
+  let fragments = [face];
   for (const sc of splitCurves) {
     if (!sc.curve || !sc.paramsOnFace || sc.paramsOnFace.length < 2) continue;
-
-    const result = _splitFaceByOneCurve(remainingFace, sc.curve, sc.paramsOnFace, tol);
-    if (result.length > 1) {
-      // Successfully split; keep first as "remaining", add rest to fragments
-      remainingFace = result[0];
-      for (let i = 1; i < result.length; i++) {
-        fragments.push(result[i]);
-      }
+    const nextFragments = [];
+    for (const fragment of fragments) {
+      nextFragments.push(..._splitFaceByOneCurve(fragment, sc.curve, sc.paramsOnFace, tol));
     }
+    fragments = nextFragments;
   }
 
-  fragments.unshift(remainingFace);
   return fragments;
 }
 
@@ -50,6 +42,10 @@ export function splitFace(face, splitCurves, tol = DEFAULT_TOLERANCE) {
  * Split a face by a single curve.
  */
 function _splitFaceByOneCurve(face, curve, paramsOnFace, tol) {
+  if (face.surfaceType === SurfaceType.PLANE && face.outerLoop) {
+    return _splitPlanarFaceByCurve(face, curve, tol);
+  }
+
   // Sample the curve to find entry/exit points on the face boundary
   const entryExit = _findBoundaryIntersections(face, curve, paramsOnFace, tol);
 
@@ -73,6 +69,64 @@ function _splitFaceByOneCurve(face, curve, paramsOnFace, tol) {
   }
 
   return [face];
+}
+
+function _splitPlanarFaceByCurve(face, curve, tol) {
+  const boundary3D = face.outerLoop?.points() || [];
+  if (boundary3D.length < 3) return [face];
+
+  const planeNormal = _faceNormal(face);
+  const lineStart = curve.evaluate(curve.uMin);
+  const lineEnd = curve.evaluate(curve.uMax);
+  const projected = _project3Dto2D(boundary3D, lineStart, planeNormal, lineEnd);
+  const polygon2D = projected.pts2D;
+  const line2D0 = projected.pt2D;
+  const line2D1 = projected.line2D;
+
+  const intersections = [];
+  for (let i = 0; i < polygon2D.length; i++) {
+    const a2 = polygon2D[i];
+    const b2 = polygon2D[(i + 1) % polygon2D.length];
+    const hit = _intersectInfiniteLineWithSegment2D(line2D0, line2D1, a2, b2, tol);
+    if (!hit) continue;
+
+    const a3 = boundary3D[i];
+    const b3 = boundary3D[(i + 1) % boundary3D.length];
+    const point3D = {
+      x: a3.x + (b3.x - a3.x) * hit.segT,
+      y: a3.y + (b3.y - a3.y) * hit.segT,
+      z: a3.z + (b3.z - a3.z) * hit.segT,
+    };
+    _pushUniqueIntersection(intersections, {
+      edgeIndex: i,
+      edgeT: hit.segT,
+      lineT: hit.lineT,
+      point3D,
+      point2D: hit.point,
+    }, tol);
+  }
+
+  if (intersections.length < 2) return [face];
+  intersections.sort((a, b) => a.lineT - b.lineT);
+  const first = intersections[0];
+  const last = intersections[intersections.length - 1];
+  if (_pointsCoincident3D(first.point3D, last.point3D, tol)) return [face];
+
+  const inserted = _insertSplitPoints(boundary3D, first, last, tol);
+  if (!inserted) return [face];
+
+  const fragA = _buildPolygonFromSplit(inserted.points, inserted.firstIndex, inserted.secondIndex, true);
+  const fragB = _buildPolygonFromSplit(inserted.points, inserted.firstIndex, inserted.secondIndex, false);
+  if (fragA.length < 3 || fragB.length < 3) return [face];
+
+  const faceNormal = _loopNormal(boundary3D);
+  const fragAFixed = _orientFragmentLikeFace(fragA, faceNormal);
+  const fragBFixed = _orientFragmentLikeFace(fragB, faceNormal);
+
+  return [
+    _buildPlanarFragment(face, fragAFixed, tol),
+    _buildPlanarFragment(face, fragBFixed, tol),
+  ];
 }
 
 /**
@@ -115,6 +169,27 @@ function _buildFragment(face, splitEdge, side, tol) {
     fragment.setOuterLoop(loop);
   }
 
+  return fragment;
+}
+
+function _buildPlanarFragment(face, polygon, tol) {
+  const fragment = new TopoFace(
+    face.surface ? face.surface.clone() : null,
+    face.surfaceType,
+    face.sameSense,
+  );
+  fragment.shared = face.shared ? { ...face.shared } : null;
+  fragment.tolerance = face.tolerance;
+
+  const vertices = polygon.map(pt => new TopoVertex(pt, tol.pointCoincidence));
+  const coedges = [];
+  for (let i = 0; i < vertices.length; i++) {
+    const v0 = vertices[i];
+    const v1 = vertices[(i + 1) % vertices.length];
+    const edge = new TopoEdge(v0, v1, NurbsCurve.createLine(v0.point, v1.point), tol.edgeOverlap);
+    coedges.push(new TopoCoEdge(edge, true, null));
+  }
+  fragment.setOuterLoop(new TopoLoop(coedges));
   return fragment;
 }
 
@@ -175,21 +250,33 @@ export function classifyFragment(fragment, body, tol = DEFAULT_TOLERANCE) {
  * Sample an interior point of a face.
  */
 function _sampleInteriorPoint(face) {
-  if (face.surface) {
-    const uMid = (face.surface.uMin + face.surface.uMax) / 2;
-    const vMid = (face.surface.vMin + face.surface.vMax) / 2;
-    return face.surface.evaluate(uMid, vMid);
-  }
-
   if (face.outerLoop) {
     const pts = face.outerLoop.points();
     if (pts.length >= 3) {
-      return {
+      const centroid = {
         x: (pts[0].x + pts[1].x + pts[2].x) / 3,
         y: (pts[0].y + pts[1].y + pts[2].y) / 3,
         z: (pts[0].z + pts[1].z + pts[2].z) / 3,
       };
+      const n = _faceNormal(face);
+      return {
+        x: centroid.x + n.x * 1e-5,
+        y: centroid.y + n.y * 1e-5,
+        z: centroid.z + n.z * 1e-5,
+      };
     }
+  }
+
+  if (face.surface) {
+    const uMid = (face.surface.uMin + face.surface.uMax) / 2;
+    const vMid = (face.surface.vMin + face.surface.vMax) / 2;
+    const point = face.surface.evaluate(uMid, vMid);
+    const n = _faceNormal(face);
+    return {
+      x: point.x + n.x * 1e-5,
+      y: point.y + n.y * 1e-5,
+      z: point.z + n.z * 1e-5,
+    };
   }
 
   return null;
@@ -260,7 +347,7 @@ function _rayTriangleIntersect(origin, dir, v0, v1, v2, tol) {
 /**
  * Project 3D points to 2D along a normal.
  */
-function _project3Dto2D(pts3D, point3D, normal) {
+function _project3Dto2D(pts3D, point3D, normal, linePoint3D = null) {
   // Choose projection axes perpendicular to normal
   const ax = Math.abs(normal.x);
   const ay = Math.abs(normal.y);
@@ -284,6 +371,7 @@ function _project3Dto2D(pts3D, point3D, normal) {
   return {
     pts2D: pts3D.map(p => ({ u: u(p), v: v(p) })),
     pt2D: { u: u(point3D), v: v(point3D) },
+    line2D: linePoint3D ? { u: u(linePoint3D), v: v(linePoint3D) } : null,
   };
 }
 
@@ -316,4 +404,129 @@ function _polyNormal(pts) {
   const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
   if (len < 1e-14) return { x: 0, y: 0, z: 1 };
   return { x: nx / len, y: ny / len, z: nz / len };
+}
+
+function _intersectInfiniteLineWithSegment2D(lineA, lineB, segA, segB, tol) {
+  const r = { u: lineB.u - lineA.u, v: lineB.v - lineA.v };
+  const s = { u: segB.u - segA.u, v: segB.v - segA.v };
+  const denom = r.u * s.v - r.v * s.u;
+  if (Math.abs(denom) < tol.intersection) return null;
+
+  const qp = { u: segA.u - lineA.u, v: segA.v - lineA.v };
+  const lineT = (qp.u * s.v - qp.v * s.u) / denom;
+  const segT = (qp.u * r.v - qp.v * r.u) / denom;
+  if (segT < -tol.intersection || segT > 1 + tol.intersection) return null;
+
+  return {
+    lineT,
+    segT: Math.max(0, Math.min(1, segT)),
+    point: {
+      u: lineA.u + lineT * r.u,
+      v: lineA.v + lineT * r.v,
+    },
+  };
+}
+
+function _pushUniqueIntersection(intersections, candidate, tol) {
+  for (const hit of intersections) {
+    if (_pointsCoincident3D(hit.point3D, candidate.point3D, tol)) return;
+  }
+  intersections.push(candidate);
+}
+
+function _pointsCoincident3D(a, b, tol) {
+  const dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+  return Math.sqrt(dx * dx + dy * dy + dz * dz) <= tol.pointCoincidence * 10;
+}
+
+function _insertSplitPoints(boundary3D, first, second, tol) {
+  const points = [];
+  let firstIndex = -1;
+  let secondIndex = -1;
+  const ordered = [first, second].sort((a, b) => {
+    if (a.edgeIndex !== b.edgeIndex) return a.edgeIndex - b.edgeIndex;
+    return a.edgeT - b.edgeT;
+  });
+  const hitMap = new Map();
+  for (const hit of ordered) {
+    if (!hitMap.has(hit.edgeIndex)) hitMap.set(hit.edgeIndex, []);
+    hitMap.get(hit.edgeIndex).push(hit);
+  }
+
+  for (let i = 0; i < boundary3D.length; i++) {
+    points.push({ ...boundary3D[i] });
+    const idx = points.length - 1;
+    if (_pointsCoincident3D(points[idx], first.point3D, tol) && firstIndex < 0) firstIndex = idx;
+    if (_pointsCoincident3D(points[idx], second.point3D, tol) && secondIndex < 0) secondIndex = idx;
+
+    const hits = hitMap.get(i) || [];
+    for (const hit of hits) {
+      if (_pointsCoincident3D(boundary3D[i], hit.point3D, tol) ||
+          _pointsCoincident3D(boundary3D[(i + 1) % boundary3D.length], hit.point3D, tol)) {
+        continue;
+      }
+      points.push({ ...hit.point3D });
+      const insertedIdx = points.length - 1;
+      if (hit === first) firstIndex = insertedIdx;
+      if (hit === second) secondIndex = insertedIdx;
+    }
+  }
+
+  if (firstIndex < 0 || secondIndex < 0) return null;
+  return { points, firstIndex, secondIndex };
+}
+
+function _buildPolygonFromSplit(points, firstIndex, secondIndex, forward) {
+  const polygon = [];
+  const start = forward ? firstIndex : secondIndex;
+  const end = forward ? secondIndex : firstIndex;
+  polygon.push({ ...points[start] });
+  let i = start;
+  while (i !== end) {
+    i = (i + 1) % points.length;
+    polygon.push({ ...points[i] });
+  }
+  return _deduplicatePolygon3D(polygon);
+}
+
+function _deduplicatePolygon3D(points) {
+  const out = [];
+  for (const point of points) {
+    if (out.length === 0 || !_pointsCoincident3D(out[out.length - 1], point, DEFAULT_TOLERANCE)) {
+      out.push(point);
+    }
+  }
+  if (out.length > 1 && _pointsCoincident3D(out[0], out[out.length - 1], DEFAULT_TOLERANCE)) {
+    out.pop();
+  }
+  return out;
+}
+
+function _loopNormal(points) {
+  return _polyNormal(points);
+}
+
+function _orientFragmentLikeFace(points, targetNormal) {
+  const n = _loopNormal(points);
+  const dot = n.x * targetNormal.x + n.y * targetNormal.y + n.z * targetNormal.z;
+  return dot >= 0 ? points : [...points].reverse();
+}
+
+function _faceNormal(face) {
+  let n = null;
+  if (face.outerLoop) {
+    const pts = face.outerLoop.points();
+    if (pts.length >= 3) n = _polyNormal(pts);
+  }
+  if (!n && face.surface) {
+    n = face.surface.normal(
+      (face.surface.uMin + face.surface.uMax) / 2,
+      (face.surface.vMin + face.surface.vMax) / 2,
+    );
+  }
+  if (!n) n = { x: 0, y: 0, z: 1 };
+  if (face.sameSense === false) {
+    return { x: -n.x, y: -n.y, z: -n.z };
+  }
+  return n;
 }
