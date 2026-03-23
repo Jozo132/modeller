@@ -33,3 +33,6 @@ export {
 } from './Constraint.js';
 export { disconnect, union, trim, split, movePoint, moveShape } from './Operations.js';
 export { booleanOp, calculateMeshVolume, calculateBoundingBox, applyChamfer, applyFillet, makeEdgeKey, expandPathEdgeKeys } from './CSG.js';
+export { NurbsCurve } from './NurbsCurve.js';
+export { NurbsSurface } from './NurbsSurface.js';
+export { BRep, BRepVertex, BRepEdge, BRepFace, tessellateNurbsFaces } from './BRep.js';

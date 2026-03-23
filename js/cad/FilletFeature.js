@@ -39,6 +39,7 @@ export class FilletFeature extends Feature {
       solid: { geometry },
       volume: calculateMeshVolume(geometry),
       boundingBox: calculateBoundingBox(geometry),
+      brep: geometry.brep || null,
     };
   }
 
