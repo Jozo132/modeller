@@ -2753,12 +2753,17 @@ export class WasmRenderer {
         }
       }
 
-      // Draw hovered face highlight (semi-transparent yellow)
+      // Draw hovered face highlight (semi-transparent yellow) — highlights entire feature face group
       if (this._hoveredFaceIndex >= 0 && this._meshFaces && this._triFaceMap) {
+        const hovMeta = this._meshFaces[this._hoveredFaceIndex];
+        const hovGroup = hovMeta ? hovMeta.faceGroup : this._hoveredFaceIndex;
         const hovFaceVerts = [];
         const triCnt = this._meshTriangleCount / 3;
         for (let ti = 0; ti < triCnt; ti++) {
-          if (this._triFaceMap[ti] === this._hoveredFaceIndex) {
+          const faceIdx = this._triFaceMap[ti];
+          const faceMeta = this._meshFaces[faceIdx];
+          const group = faceMeta ? faceMeta.faceGroup : faceIdx;
+          if (group === hovGroup) {
             const base = ti * 3 * 6;
             for (let vi = 0; vi < 3; vi++) {
               const vb = base + vi * 6;
@@ -2778,8 +2783,15 @@ export class WasmRenderer {
           const hovFaceData = new Float32Array(hovFaceVerts);
           gl.useProgram(exec.programs[0]);
           gl.uniformMatrix4fv(exec.uniforms[0].uMVP, false, mvp);
-          // Use a lighter blue when hovering over an already-selected face, yellow otherwise
-          if (this._selectedFaceIndices.has(this._hoveredFaceIndex)) {
+          // Use a lighter blue when hovering over an already-selected face group, yellow otherwise
+          const hovGroupSelected = (() => {
+            for (const fi of this._selectedFaceIndices) {
+              const selMeta = this._meshFaces[fi];
+              if ((selMeta ? selMeta.faceGroup : fi) === hovGroup) return true;
+            }
+            return false;
+          })();
+          if (hovGroupSelected) {
             gl.uniform4f(exec.uniforms[0].uColor, 0.4, 0.75, 1.0, 0.45);
           } else {
             gl.uniform4f(exec.uniforms[0].uColor, 1.0, 0.9, 0.0, 0.2);

@@ -107,11 +107,24 @@ export class DxfExportPanel {
     const selectedFaces = this._getSelectedFaces();
     const renderer = this._getRenderer();
     if (!selectedFaces || selectedFaces.size === 0 || !renderer) return null;
-    const faces = [];
+
+    // Expand selection to all faces in the same feature face group(s)
+    const allFaces = renderer.getAllFaces();
+    if (!allFaces) return null;
+
+    const selectedGroups = new Set();
     for (const faceIndex of selectedFaces.keys()) {
       const info = renderer.getFaceInfo(faceIndex);
-      if (info) faces.push(info);
+      if (info) selectedGroups.add(info.faceGroup != null ? info.faceGroup : faceIndex);
     }
+
+    const faces = [];
+    for (let i = 0; i < allFaces.length; i++) {
+      const face = allFaces[i];
+      const group = face.faceGroup != null ? face.faceGroup : i;
+      if (selectedGroups.has(group)) faces.push(face);
+    }
+
     return faces.length > 0 ? faces : null;
   }
 
