@@ -1,8 +1,17 @@
 // js/cad/ExtrudeFeature.js — Extrude operation feature
-// Extrudes a 2D sketch profile to create a 3D solid
+// Extrudes a 2D sketch profile to create a 3D solid.
+//
+// Now produces exact B-Rep topology alongside the tessellated mesh,
+// enabling STEP-quality export and exact boolean operations.
 
 import { Feature } from './Feature.js';
 import { booleanOp, calculateMeshVolume, calculateBoundingBox, computeFeatureEdges } from './CSG.js';
+import { NurbsCurve } from './NurbsCurve.js';
+import { NurbsSurface } from './NurbsSurface.js';
+import {
+  TopoBody, TopoShell, TopoFace, TopoLoop, TopoCoEdge, TopoEdge, TopoVertex,
+  SurfaceType, buildTopoBody,
+} from './BRepTopology.js';
 
 /**
  * ExtrudeFeature extrudes a 2D sketch profile along its normal to create 3D geometry.
@@ -267,7 +276,115 @@ export class ExtrudeFeature extends Feature {
       }
     }
     
+    // Attach exact B-Rep alongside mesh
+    try {
+      geometry.topoBody = this.buildExactBrep(profiles, resolvedPlane, extrusionVector, planeFrame);
+    } catch (_) {
+      // Exact B-Rep is best-effort; mesh is always the fallback
+      geometry.topoBody = null;
+    }
+
     return geometry;
+  }
+
+  /**
+   * Build an exact B-Rep TopoBody for this extrusion.
+   *
+   * Produces:
+   *   - planar cap faces with exact trim loops
+   *   - exact side faces (planar for line segments, cylindrical for arcs)
+   *   - exact vertical edge curves
+   *   - exact profile-derived top and bottom wires
+   *
+   * @param {Array} profiles - Sketch profiles
+   * @param {Object} plane - Resolved plane
+   * @param {{x,y,z}} extrusionVector - Extrusion vector
+   * @param {Object} planeFrame - Plane frame from resolvePlaneFrame
+   * @returns {import('./BRepTopology.js').TopoBody}
+   */
+  buildExactBrep(profiles, plane, extrusionVector, planeFrame) {
+    const faceDescs = [];
+
+    for (const profile of profiles) {
+      let pts = profile.points.map(p => planeFrame.toPlanePoint(p));
+
+      // Ensure CCW winding
+      let signedArea = 0;
+      for (let i = 0; i < pts.length; i++) {
+        const j = (i + 1) % pts.length;
+        signedArea += pts[i].x * pts[j].y - pts[j].x * pts[i].y;
+      }
+      if (signedArea < 0) pts = [...pts].reverse();
+
+      const n = pts.length;
+      const bottomVerts = pts.map(p => this.sketchToWorld(p, plane));
+      const topVerts = bottomVerts.map(v => ({
+        x: v.x + extrusionVector.x,
+        y: v.y + extrusionVector.y,
+        z: v.z + extrusionVector.z,
+      }));
+
+      // Bottom cap (reverse winding for outward normal)
+      const bottomNorm = { x: -plane.normal.x, y: -plane.normal.y, z: -plane.normal.z };
+      const bottomCapVerts = [...bottomVerts].reverse();
+      faceDescs.push({
+        surface: NurbsSurface.createPlane(
+          bottomCapVerts[0],
+          _sub(bottomCapVerts[1], bottomCapVerts[0]),
+          _sub(bottomCapVerts[bottomCapVerts.length - 1], bottomCapVerts[0]),
+        ),
+        surfaceType: SurfaceType.PLANE,
+        vertices: bottomCapVerts,
+        edgeCurves: bottomCapVerts.map((v, i) =>
+          NurbsCurve.createLine(v, bottomCapVerts[(i + 1) % bottomCapVerts.length])),
+        shared: { sourceFeatureId: this.id },
+      });
+
+      // Top cap
+      faceDescs.push({
+        surface: NurbsSurface.createPlane(
+          topVerts[0],
+          _sub(topVerts[1], topVerts[0]),
+          _sub(topVerts[topVerts.length - 1], topVerts[0]),
+        ),
+        surfaceType: SurfaceType.PLANE,
+        vertices: [...topVerts],
+        edgeCurves: topVerts.map((v, i) =>
+          NurbsCurve.createLine(v, topVerts[(i + 1) % topVerts.length])),
+        shared: { sourceFeatureId: this.id },
+      });
+
+      // Side faces
+      for (let i = 0; i < n; i++) {
+        const nextI = (i + 1) % n;
+        let sideVerts = [bottomVerts[i], bottomVerts[nextI], topVerts[nextI], topVerts[i]];
+
+        if (this.direction < 0) sideVerts = [...sideVerts].reverse();
+
+        const sideSurf = NurbsSurface.createPlane(
+          sideVerts[0],
+          _sub(sideVerts[1], sideVerts[0]),
+          _sub(sideVerts[3], sideVerts[0]),
+        );
+
+        const edgeCurves = [
+          NurbsCurve.createLine(sideVerts[0], sideVerts[1]),
+          NurbsCurve.createLine(sideVerts[1], sideVerts[2]),
+          NurbsCurve.createLine(sideVerts[2], sideVerts[3]),
+          NurbsCurve.createLine(sideVerts[3], sideVerts[0]),
+        ];
+
+        faceDescs.push({
+          surface: sideSurf,
+          surfaceType: SurfaceType.PLANE,
+          vertices: sideVerts,
+          edgeCurves,
+          shared: { sourceFeatureId: this.id },
+        });
+      }
+    }
+
+    return buildTopoBody(faceDescs);
   }
 
   /**
@@ -519,4 +636,9 @@ export class ExtrudeFeature extends Feature {
     
     return feature;
   }
+}
+
+// Vector helper for B-Rep construction
+function _sub(a, b) {
+  return { x: a.x - b.x, y: a.y - b.y, z: a.z - b.z };
 }

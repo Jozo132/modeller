@@ -5,10 +5,16 @@
 //
 // Chamfer and fillet operations now produce NURBS surface definitions alongside
 // tessellated mesh data, enabling mathematically exact B-Rep representation.
+//
+// === Compatibility façade ===
+// When operands expose exact B-Rep topology (via .topoBody), this module
+// dispatches to the exact boolean kernel in BooleanKernel.js. Otherwise
+// it falls back to the legacy mesh BSP engine below.
 
 import { NurbsSurface } from './NurbsSurface.js';
 import { BRep, BRepVertex, BRepEdge, BRepFace } from './BRep.js';
 import { NurbsCurve } from './NurbsCurve.js';
+import { exactBooleanOp, hasExactTopology } from './BooleanKernel.js';
 
 const EPSILON = 1e-5;
 
@@ -1023,6 +1029,24 @@ function _chainEdgePaths(edges) {
  * @returns {Object} Resulting geometry {vertices, faces, edges}
  */
 export function booleanOp(geomA, geomB, operation, sharedA = null, sharedB = null) {
+  // --- Exact B-Rep dispatch ---
+  // If both operands carry exact topology, use the exact boolean kernel.
+  if (geomA && geomA.topoBody && geomB && geomB.topoBody &&
+      hasExactTopology(geomA.topoBody) && hasExactTopology(geomB.topoBody)) {
+    try {
+      const opName = (operation === 'add') ? 'union' : operation;
+      const { body, mesh } = exactBooleanOp(geomA.topoBody, geomB.topoBody, opName);
+      const resultGeom = { ...mesh, topoBody: body };
+      return resultGeom;
+    } catch (err) {
+      // Log and fall through to legacy mesh boolean
+      if (typeof console !== 'undefined') {
+        console.warn('Exact boolean failed, falling back to mesh BSP:', err.message);
+      }
+    }
+  }
+
+  // --- Legacy mesh BSP path ---
   const normalizeBooleanOperand = (geometry) => {
     if (!geometry || !Array.isArray(geometry.faces)) return geometry;
 

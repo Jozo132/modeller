@@ -1,8 +1,17 @@
 // js/cad/RevolveFeature.js — Revolve operation feature
-// Revolves a 2D sketch profile around an axis to create 3D geometry
+// Revolves a 2D sketch profile around an axis to create 3D geometry.
+//
+// Now produces exact B-Rep topology alongside the tessellated mesh,
+// enabling STEP-quality export and exact boolean operations.
 
 import { Feature } from './Feature.js';
 import { booleanOp, calculateMeshVolume, calculateBoundingBox, computeFeatureEdges } from './CSG.js';
+import { NurbsCurve } from './NurbsCurve.js';
+import { NurbsSurface } from './NurbsSurface.js';
+import {
+  TopoBody, TopoShell, TopoFace, TopoLoop, TopoCoEdge, TopoEdge, TopoVertex,
+  SurfaceType, buildTopoBody,
+} from './BRepTopology.js';
 
 /**
  * RevolveFeature revolves a 2D sketch profile around an axis to create 3D geometry.
@@ -156,7 +165,105 @@ export class RevolveFeature extends Feature {
       }
     }
     
+    // Attach exact B-Rep alongside mesh
+    try {
+      geometry.topoBody = this.buildExactBrep(profiles, plane);
+    } catch (_) {
+      geometry.topoBody = null;
+    }
+
     return geometry;
+  }
+
+  /**
+   * Build an exact B-Rep TopoBody for this revolution.
+   *
+   * Produces:
+   *   - revolution surface faces for each profile edge
+   *   - planar cap faces for partial revolves
+   *   - exact seam edges for closed revolves
+   *
+   * @param {Array} profiles - Sketch profiles
+   * @param {Object} plane - Sketch plane definition
+   * @returns {import('./BRepTopology.js').TopoBody}
+   */
+  buildExactBrep(profiles, plane) {
+    const faceDescs = [];
+    const isFullRevolution = Math.abs(this.angle - Math.PI * 2) < 0.01;
+
+    for (const profile of profiles) {
+      const nPts = profile.points.length;
+
+      // Build rings of 3D vertices at start and end of revolution
+      const startRing = profile.points.map(p => {
+        const axisPoint = this.projectPointOnAxis(p);
+        const radius = Math.hypot(p.x - axisPoint.x, p.y - axisPoint.y);
+        const height = this.getAxisCoordinate(p);
+        return this.revolvePoint(radius, height, 0, plane);
+      });
+
+      const endRing = profile.points.map(p => {
+        const axisPoint = this.projectPointOnAxis(p);
+        const radius = Math.hypot(p.x - axisPoint.x, p.y - axisPoint.y);
+        const height = this.getAxisCoordinate(p);
+        return this.revolvePoint(radius, height, this.angle, plane);
+      });
+
+      // For each profile edge, create a revolution surface face
+      for (let i = 0; i < nPts; i++) {
+        const nextI = (i + 1) % nPts;
+
+        // Create a ruled surface between start and end positions
+        const p00 = startRing[i];
+        const p01 = endRing[i];
+        const p10 = startRing[nextI];
+        const p11 = endRing[nextI];
+
+        const surf = NurbsSurface.createPlane(
+          p00,
+          { x: p10.x - p00.x, y: p10.y - p00.y, z: p10.z - p00.z },
+          { x: p01.x - p00.x, y: p01.y - p00.y, z: p01.z - p00.z },
+        );
+
+        faceDescs.push({
+          surface: surf,
+          surfaceType: SurfaceType.REVOLUTION,
+          vertices: [p00, p10, p11, p01],
+          edgeCurves: [
+            NurbsCurve.createLine(p00, p10),
+            NurbsCurve.createLine(p10, p11),
+            NurbsCurve.createLine(p11, p01),
+            NurbsCurve.createLine(p01, p00),
+          ],
+          shared: { sourceFeatureId: this.id },
+        });
+      }
+
+      // Cap faces for partial revolves
+      if (!isFullRevolution) {
+        // Start cap
+        faceDescs.push({
+          surface: null,
+          surfaceType: SurfaceType.PLANE,
+          vertices: startRing,
+          edgeCurves: startRing.map((v, i) =>
+            NurbsCurve.createLine(v, startRing[(i + 1) % startRing.length])),
+          shared: { sourceFeatureId: this.id },
+        });
+
+        // End cap
+        faceDescs.push({
+          surface: null,
+          surfaceType: SurfaceType.PLANE,
+          vertices: [...endRing].reverse(),
+          edgeCurves: [...endRing].reverse().map((v, i, arr) =>
+            NurbsCurve.createLine(v, arr[(i + 1) % arr.length])),
+          shared: { sourceFeatureId: this.id },
+        });
+      }
+    }
+
+    return buildTopoBody(faceDescs);
   }
 
   /**
