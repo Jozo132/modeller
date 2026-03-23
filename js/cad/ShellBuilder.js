@@ -8,6 +8,7 @@
 
 import { TopoShell, TopoBody, TopoVertex, TopoEdge, TopoCoEdge, TopoLoop, TopoFace } from './BRepTopology.js';
 import { DEFAULT_TOLERANCE } from './Tolerance.js';
+import { tessellateBody } from './Tessellation.js';
 
 /**
  * Stitch face fragments into one or more closed shells.
@@ -213,45 +214,132 @@ function _isShellClosed(shell) {
  * Orient shell faces consistently (outward-pointing normals).
  */
 function _orientShell(shell) {
-  // Simple heuristic: check that the first face's normal points outward
-  // by comparing with the centroid direction
   if (shell.faces.length === 0) return;
+  const baseDirections = shell.faces.map(face => _faceEdgeDirections(face));
+  const edgeUses = new Map();
 
-  // Compute centroid
-  let cx = 0, cy = 0, cz = 0, count = 0;
-  for (const f of shell.faces) {
-    const pts = f.outerLoop ? f.outerLoop.points() : [];
-    for (const p of pts) {
-      cx += p.x; cy += p.y; cz += p.z;
-      count++;
+  for (let fi = 0; fi < shell.faces.length; fi++) {
+    for (const dir of baseDirections[fi]) {
+      if (!edgeUses.has(dir.key)) edgeUses.set(dir.key, []);
+      edgeUses.get(dir.key).push({ fi, fwd: dir.fwd });
     }
   }
-  if (count > 0) {
-    cx /= count; cy /= count; cz /= count;
+
+  const flip = new Array(shell.faces.length).fill(false);
+  const visited = new Array(shell.faces.length).fill(false);
+
+  for (let start = 0; start < shell.faces.length; start++) {
+    if (visited[start]) continue;
+    visited[start] = true;
+    const queue = [start];
+
+    while (queue.length > 0) {
+      const fi = queue.shift();
+      const dirs = baseDirections[fi];
+      for (const dir of dirs) {
+        const uses = edgeUses.get(dir.key) || [];
+        if (uses.length !== 2) continue;
+        const other = uses[0].fi === fi ? uses[1] : uses[0];
+        const relationFlip = dir.fwd === other.fwd;
+        const expected = relationFlip ? !flip[fi] : flip[fi];
+        if (!visited[other.fi]) {
+          visited[other.fi] = true;
+          flip[other.fi] = expected;
+          queue.push(other.fi);
+        }
+      }
+    }
   }
 
-  // Check and flip face orientations if needed
-  for (const face of shell.faces) {
-    if (!face.surface || !face.outerLoop) continue;
-    const pts = face.outerLoop.points();
-    if (pts.length === 0) continue;
+  for (let fi = 0; fi < shell.faces.length; fi++) {
+    if (flip[fi]) shell.faces[fi].sameSense = !shell.faces[fi].sameSense;
+  }
 
-    const facePt = pts[0];
-    const normal = face.surface.normal(
-      (face.surface.uMin + face.surface.uMax) / 2,
-      (face.surface.vMin + face.surface.vMax) / 2,
-    );
-
-    // Direction from centroid to face point
-    const toCentroid = {
-      x: facePt.x - cx,
-      y: facePt.y - cy,
-      z: facePt.z - cz,
-    };
-
-    const dot = normal.x * toCentroid.x + normal.y * toCentroid.y + normal.z * toCentroid.z;
-    if (dot < 0) {
+  const signedVolume = _approximateShellVolume(shell);
+  if (signedVolume < -1e-8) {
+    for (const face of shell.faces) {
       face.sameSense = !face.sameSense;
     }
   }
+}
+
+function _faceEdgeDirections(face) {
+  const pts = _orientedFacePoints(face);
+  const dirs = [];
+  if (pts.length < 2) return dirs;
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i];
+    const b = pts[(i + 1) % pts.length];
+    const ka = _pointKey(a);
+    const kb = _pointKey(b);
+    dirs.push({
+      key: ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`,
+      fwd: ka < kb,
+    });
+  }
+  return dirs;
+}
+
+function _orientedFacePoints(face) {
+  const pts = face.outerLoop ? face.outerLoop.points() : [];
+  if (pts.length < 3) return pts;
+  const polyNormal = _polygonNormal(pts);
+  if (!polyNormal) return pts;
+  const desired = _desiredFaceNormal(face);
+  if (!desired) return pts;
+  const dot = polyNormal.x * desired.x + polyNormal.y * desired.y + polyNormal.z * desired.z;
+  return dot < 0 ? [...pts].reverse() : pts;
+}
+
+function _desiredFaceNormal(face) {
+  if (!face.surface) return null;
+  const normal = face.surface.normal(
+    (face.surface.uMin + face.surface.uMax) / 2,
+    (face.surface.vMin + face.surface.vMax) / 2,
+  );
+  if (!normal) return null;
+  return face.sameSense === false
+    ? { x: -normal.x, y: -normal.y, z: -normal.z }
+    : normal;
+}
+
+function _approximateShellVolume(shell) {
+  const mesh = tessellateBody(new TopoBody([shell]));
+  let volume = 0;
+  for (const face of mesh.faces || []) {
+    const verts = face.vertices || [];
+    if (verts.length < 3) continue;
+    for (let i = 1; i < verts.length - 1; i++) {
+      volume += _signedTetraVolume(verts[0], verts[i], verts[i + 1]);
+    }
+  }
+  return volume;
+}
+
+function _signedTetraVolume(a, b, c) {
+  return (
+    a.x * (b.y * c.z - b.z * c.y) -
+    a.y * (b.x * c.z - b.z * c.x) +
+    a.z * (b.x * c.y - b.y * c.x)
+  ) / 6;
+}
+
+function _polygonNormal(points) {
+  let nx = 0;
+  let ny = 0;
+  let nz = 0;
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i];
+    const b = points[(i + 1) % points.length];
+    nx += (a.y - b.y) * (a.z + b.z);
+    ny += (a.z - b.z) * (a.x + b.x);
+    nz += (a.x - b.x) * (a.y + b.y);
+  }
+  const len = Math.hypot(nx, ny, nz);
+  if (len <= 1e-10) return null;
+  return { x: nx / len, y: ny / len, z: nz / len };
+}
+
+function _pointKey(p) {
+  return `${p.x.toFixed(6)},${p.y.toFixed(6)},${p.z.toFixed(6)}`;
 }

@@ -15,7 +15,7 @@ import { fileURLToPath } from 'url';
 import { Part } from '../js/cad/Part.js';
 import { Sketch } from '../js/cad/Sketch.js';
 import { parseCMOD } from '../js/cmod.js';
-import { calculateMeshVolume, calculateBoundingBox, calculateSurfaceArea, detectDisconnectedBodies, calculateWallThickness } from '../js/cad/CSG.js';
+import { calculateMeshVolume, calculateBoundingBox, calculateSurfaceArea, detectDisconnectedBodies, calculateWallThickness, countInvertedFaces } from '../js/cad/CSG.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SAMPLES_DIR = join(__dirname, 'samples');
@@ -38,6 +38,12 @@ function test(name, fn) {
 function assertApprox(actual, expected, tolerance, msg) {
   assert.ok(Math.abs(actual - expected) < tolerance,
     `${msg}: expected ~${expected}, got ${actual} (diff: ${Math.abs(actual - expected).toFixed(6)})`);
+}
+
+function assertPositiveWallThickness(geometry, context) {
+  const wt = calculateWallThickness(geometry);
+  assert.ok(wt.minThickness > 0, `${context}: expected min wall thickness > 0, got ${wt.minThickness}`);
+  assert.ok(wt.maxThickness > 0, `${context}: expected max wall thickness > 0, got ${wt.maxThickness}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -344,6 +350,10 @@ for (const file of sampleFiles) {
     continue;
   }
 
+  test(`${file}: positive wall thickness`, () => {
+    assertPositiveWallThickness(geometry, file);
+  });
+
   // Validate face count
   if (expected.faceCount !== undefined) {
     test(`${file}: face count`, () => {
@@ -428,6 +438,13 @@ for (const file of sampleFiles) {
         'Max wall thickness mismatch');
     });
   }
+
+  if (expected.invertedFaceCount !== undefined) {
+    test(`${file}: inverted face count`, () => {
+      assert.strictEqual(countInvertedFaces(geometry), expected.invertedFaceCount,
+        `Expected ${expected.invertedFaceCount} inverted faces, got ${countInvertedFaces(geometry)}`);
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -503,6 +520,10 @@ for (const file of cmodFiles) {
     continue;
   }
 
+  test(`${file}: positive wall thickness`, () => {
+    assertPositiveWallThickness(geometry, file);
+  });
+
   // Validate face count
   if (expected.faceCount !== undefined) {
     test(`${file}: face count`, () => {
@@ -575,6 +596,13 @@ for (const file of cmodFiles) {
     test(`${file}: max wall thickness`, () => {
       const wt = calculateWallThickness(geometry);
       assertApprox(wt.maxThickness, expected.maxWallThickness, 0.5, 'Max wall thickness mismatch');
+    });
+  }
+
+  if (expected.invertedFaceCount !== undefined) {
+    test(`${file}: inverted face count`, () => {
+      assert.strictEqual(countInvertedFaces(geometry), expected.invertedFaceCount,
+        `Expected ${expected.invertedFaceCount} inverted faces, got ${countInvertedFaces(geometry)}`);
     });
   }
 }

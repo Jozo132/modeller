@@ -17,6 +17,7 @@ import {
   calculateSurfaceArea,
   detectDisconnectedBodies,
   calculateWallThickness,
+  countInvertedFaces,
   makeEdgeKey,
 } from '../js/cad/CSG.js';
 
@@ -128,6 +129,7 @@ const vol = calculateMeshVolume(geom);
 const sa = calculateSurfaceArea(geom);
 const bodies = detectDisconnectedBodies(geom);
 const wt = calculateWallThickness(geom);
+const invertedFaceCount = countInvertedFaces(geom);
 
 report.geometry = {
   faceCount: faces.length,
@@ -145,6 +147,7 @@ report.geometry = {
   bodyCount: bodies.bodyCount,
   bodySizes: bodies.bodySizes,
   wallThickness: { min: +wt.minThickness.toFixed(6), max: +wt.maxThickness.toFixed(6) },
+  invertedFaceCount,
 };
 
 // --- Triangle mesh analysis ---

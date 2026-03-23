@@ -8,7 +8,7 @@ import { state } from './state.js';
 import { Scene } from './cad/index.js';
 import {
   calculateMeshVolume, calculateBoundingBox, calculateSurfaceArea,
-  detectDisconnectedBodies, calculateWallThickness,
+  detectDisconnectedBodies, calculateWallThickness, countInvertedFaces,
 } from './cad/CSG.js';
 import { info, warn, error } from './logger.js';
 
@@ -79,6 +79,7 @@ function _computeMetadata(part) {
     const wt = calculateWallThickness(geometry);
     meta.minWallThickness = +wt.minThickness.toFixed(6);
     meta.maxWallThickness = +wt.maxThickness.toFixed(6);
+    meta.invertedFaceCount = countInvertedFaces(geometry);
   }
 
   return meta;

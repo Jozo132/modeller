@@ -87,22 +87,37 @@ export function tessellateFace(face, segments = 8) {
   if (pts.length < 3) return { vertices: [], faces: [] };
 
   // Calculate face normal from first 3 vertices
-  const normal = calculateNormal(pts[0], pts[1], pts[2]);
+  let orderedPts = pts;
+  let normal = calculateNormal(orderedPts[0], orderedPts[1], orderedPts[2]);
+  if (face.surface) {
+    const surfNormal = face.surface.normal(
+      (face.surface.uMin + face.surface.uMax) / 2,
+      (face.surface.vMin + face.surface.vMax) / 2,
+    );
+    const desired = face.sameSense
+      ? surfNormal
+      : { x: -surfNormal.x, y: -surfNormal.y, z: -surfNormal.z };
+    const dot = normal.x * desired.x + normal.y * desired.y + normal.z * desired.z;
+    if (dot < 0) {
+      orderedPts = [...pts].reverse();
+      normal = { x: -normal.x, y: -normal.y, z: -normal.z };
+    }
+  }
 
   // Fan triangulation for convex-ish polygons
   const meshFaces = [];
-  for (let i = 1; i < pts.length - 1; i++) {
+  for (let i = 1; i < orderedPts.length - 1; i++) {
     meshFaces.push({
       vertices: [
-        { ...pts[0] },
-        { ...pts[i] },
-        { ...pts[i + 1] },
+        { ...orderedPts[0] },
+        { ...orderedPts[i] },
+        { ...orderedPts[i + 1] },
       ],
       normal: { ...normal },
     });
   }
 
-  return { vertices: pts.map(p => ({ ...p })), faces: meshFaces };
+  return { vertices: orderedPts.map(p => ({ ...p })), faces: meshFaces };
 }
 
 /**

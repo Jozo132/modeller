@@ -1,0 +1,650 @@
+{
+  "format": "CAD Modeller Open Design",
+  "version": 1,
+  "scene": {
+    "points": [],
+    "segments": [],
+    "circles": [],
+    "arcs": [],
+    "constraints": [],
+    "texts": [],
+    "dimensions": [],
+    "variables": {}
+  },
+  "layers": [
+    {
+      "name": "0",
+      "color": "#9CDCFE",
+      "visible": true,
+      "locked": false
+    }
+  ],
+  "activeLayer": "0",
+  "settings": {
+    "gridSize": 10,
+    "gridVisible": true,
+    "snapEnabled": true,
+    "orthoEnabled": false,
+    "autoCoincidence": true
+  },
+  "viewport": {
+    "zoom": 1,
+    "panX": 0,
+    "panY": 0
+  },
+  "part": {
+    "type": "Part",
+    "name": "Part1",
+    "description": "",
+    "created": "2026-03-23T10:02:35.825Z",
+    "modified": "2026-03-23T12:25:52.120Z",
+    "featureTree": {
+      "features": [
+        {
+          "id": "feature_7",
+          "name": "Sketch 1",
+          "type": "sketch",
+          "suppressed": false,
+          "visible": false,
+          "created": "2026-03-23T10:02:46.159Z",
+          "modified": "2026-03-23T10:02:49.418Z",
+          "dependencies": [],
+          "children": [],
+          "sketch": {
+            "name": "Sketch 1",
+            "description": "",
+            "created": "2026-03-23T10:02:46.158Z",
+            "modified": "2026-03-23T10:02:46.159Z",
+            "scene": {
+              "points": [
+                {
+                  "id": 429,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": 10,
+                  "y": 0,
+                  "fixed": false
+                },
+                {
+                  "id": 430,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": 0,
+                  "y": 0,
+                  "fixed": false
+                },
+                {
+                  "id": 432,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": 0,
+                  "y": 10,
+                  "fixed": false
+                },
+                {
+                  "id": 434,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": 10,
+                  "y": 10,
+                  "fixed": false
+                }
+              ],
+              "segments": [
+                {
+                  "id": 431,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 429,
+                  "p2": 430
+                },
+                {
+                  "id": 433,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 430,
+                  "p2": 432
+                },
+                {
+                  "id": 435,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 432,
+                  "p2": 434
+                },
+                {
+                  "id": 436,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 434,
+                  "p2": 429
+                }
+              ],
+              "circles": [],
+              "arcs": [],
+              "constraints": [],
+              "texts": [],
+              "dimensions": [],
+              "variables": {}
+            }
+          },
+          "plane": {
+            "origin": {
+              "x": 0,
+              "y": 0,
+              "z": 0
+            },
+            "normal": {
+              "x": 0,
+              "y": 0,
+              "z": 1
+            },
+            "xAxis": {
+              "x": 1,
+              "y": 0,
+              "z": 0
+            },
+            "yAxis": {
+              "x": 0,
+              "y": 1,
+              "z": 0
+            }
+          }
+        },
+        {
+          "id": "feature_9",
+          "name": "Extrude 1",
+          "type": "extrude",
+          "suppressed": false,
+          "visible": true,
+          "created": "2026-03-23T10:02:49.418Z",
+          "modified": "2026-03-23T10:03:29.973Z",
+          "dependencies": [
+            "feature_7"
+          ],
+          "children": [
+            "feature_7"
+          ],
+          "sketchFeatureId": "feature_7",
+          "distance": 10,
+          "direction": 1,
+          "symmetric": false,
+          "operation": "new",
+          "extrudeType": "distance",
+          "taper": false,
+          "taperAngle": 5,
+          "taperInward": true
+        },
+        {
+          "id": "feature_10",
+          "name": "Sketch 2",
+          "type": "sketch",
+          "suppressed": false,
+          "visible": false,
+          "created": "2026-03-23T10:03:02.372Z",
+          "modified": "2026-03-23T10:12:33.503Z",
+          "dependencies": [],
+          "children": [],
+          "sketch": {
+            "name": "Sketch 2",
+            "description": "",
+            "created": "2026-03-23T10:12:33.502Z",
+            "modified": "2026-03-23T10:12:33.503Z",
+            "scene": {
+              "points": [
+                {
+                  "id": 545,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": 2.956468792214851,
+                  "y": 1.8593414879815384,
+                  "fixed": false
+                },
+                {
+                  "id": 546,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": -0.3695585366887606,
+                  "y": 1.8593414879815384,
+                  "fixed": false
+                },
+                {
+                  "id": 548,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": -0.3695585366887606,
+                  "y": -0.8430555429871127,
+                  "fixed": false
+                },
+                {
+                  "id": 550,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": 2.956468792214851,
+                  "y": -0.8430555429871127,
+                  "fixed": false
+                },
+                {
+                  "id": 553,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": -2.006822698185274,
+                  "y": 0.8131779857457326,
+                  "fixed": false
+                },
+                {
+                  "id": 554,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": -4.734580551615946,
+                  "y": 0.8131779857457326,
+                  "fixed": false
+                },
+                {
+                  "id": 556,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": -4.734580551615946,
+                  "y": -1.6317013972137966,
+                  "fixed": false
+                },
+                {
+                  "id": 558,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": -2.006822698185274,
+                  "y": -1.6317013972137966,
+                  "fixed": false
+                }
+              ],
+              "segments": [
+                {
+                  "id": 547,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 545,
+                  "p2": 546
+                },
+                {
+                  "id": 549,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 546,
+                  "p2": 548
+                },
+                {
+                  "id": 551,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 548,
+                  "p2": 550
+                },
+                {
+                  "id": 552,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 550,
+                  "p2": 545
+                },
+                {
+                  "id": 555,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 553,
+                  "p2": 554
+                },
+                {
+                  "id": 557,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 554,
+                  "p2": 556
+                },
+                {
+                  "id": 559,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 556,
+                  "p2": 558
+                },
+                {
+                  "id": 560,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 558,
+                  "p2": 553
+                }
+              ],
+              "circles": [],
+              "arcs": [],
+              "constraints": [],
+              "texts": [],
+              "dimensions": [],
+              "variables": {}
+            }
+          },
+          "plane": {
+            "origin": {
+              "x": 5.814691488167698,
+              "y": 9.999999999999998,
+              "z": 7.066122114020926
+            },
+            "normal": {
+              "x": 0,
+              "y": 1,
+              "z": 0
+            },
+            "xAxis": {
+              "x": 1,
+              "y": 0,
+              "z": 0
+            },
+            "yAxis": {
+              "x": 0,
+              "y": 0,
+              "z": 1
+            }
+          }
+        },
+        {
+          "id": "feature_13",
+          "name": "Extrude 2",
+          "type": "extrude",
+          "suppressed": false,
+          "visible": true,
+          "created": "2026-03-23T10:03:09.906Z",
+          "modified": "2026-03-23T10:12:37.702Z",
+          "dependencies": [
+            "feature_10"
+          ],
+          "children": [
+            "feature_10"
+          ],
+          "sketchFeatureId": "feature_10",
+          "distance": 2,
+          "direction": 1,
+          "symmetric": false,
+          "operation": "add",
+          "extrudeType": "distance",
+          "taper": false,
+          "taperAngle": 5,
+          "taperInward": true
+        },
+        {
+          "id": "feature_14",
+          "name": "Sketch 3",
+          "type": "sketch",
+          "suppressed": false,
+          "visible": false,
+          "created": "2026-03-23T10:17:33.611Z",
+          "modified": "2026-03-23T10:45:39.439Z",
+          "dependencies": [],
+          "children": [],
+          "sketch": {
+            "name": "Sketch 3",
+            "description": "",
+            "created": "2026-03-23T10:17:33.611Z",
+            "modified": "2026-03-23T10:17:33.611Z",
+            "scene": {
+              "points": [
+                {
+                  "id": 549,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": -1.1856674908352969,
+                  "y": 0.3079652992079396,
+                  "fixed": false
+                },
+                {
+                  "id": 550,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": 2.6639027108496336,
+                  "y": 0.3079652992079396,
+                  "fixed": false
+                },
+                {
+                  "id": 552,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": 2.6639027108496336,
+                  "y": 2.6485027879906635,
+                  "fixed": false
+                },
+                {
+                  "id": 554,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": -1.1856674908352969,
+                  "y": 2.6485027879906635,
+                  "fixed": false
+                }
+              ],
+              "segments": [
+                {
+                  "id": 551,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 549,
+                  "p2": 550
+                },
+                {
+                  "id": 553,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 550,
+                  "p2": 552
+                },
+                {
+                  "id": 555,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 552,
+                  "p2": 554
+                },
+                {
+                  "id": 556,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 554,
+                  "p2": 549
+                }
+              ],
+              "circles": [],
+              "arcs": [],
+              "constraints": [],
+              "texts": [],
+              "dimensions": [],
+              "variables": {}
+            }
+          },
+          "plane": {
+            "origin": {
+              "x": 4.102108514259273,
+              "y": 8.543983619315078,
+              "z": 10
+            },
+            "normal": {
+              "x": 0,
+              "y": 0,
+              "z": 1
+            },
+            "xAxis": {
+              "x": 1,
+              "y": 0,
+              "z": 0
+            },
+            "yAxis": {
+              "x": 0,
+              "y": 1,
+              "z": 0
+            }
+          }
+        },
+        {
+          "id": "feature_17",
+          "name": "Extrude Cut 1",
+          "type": "extrude-cut",
+          "suppressed": false,
+          "visible": true,
+          "created": "2026-03-23T10:45:39.439Z",
+          "modified": "2026-03-23T10:45:39.439Z",
+          "dependencies": [
+            "feature_14"
+          ],
+          "children": [
+            "feature_14"
+          ],
+          "sketchFeatureId": "feature_14",
+          "distance": 10,
+          "direction": -1,
+          "symmetric": false,
+          "operation": "subtract",
+          "extrudeType": "distance",
+          "taper": false,
+          "taperAngle": 5,
+          "taperInward": true
+        },
+        {
+          "id": "feature_28",
+          "name": "Fillet 1",
+          "type": "fillet",
+          "suppressed": false,
+          "visible": true,
+          "created": "2026-03-23T12:25:52.120Z",
+          "modified": "2026-03-23T12:25:52.120Z",
+          "dependencies": [],
+          "children": [],
+          "radius": 0.5,
+          "segments": 8,
+          "edgeKeys": [
+            "2.91644,8.85195,10.00000|2.91644,8.85195,8.92546",
+            "2.91644,8.85195,7.87930|2.91644,8.85195,8.92546",
+            "2.91644,8.85195,6.22307|2.91644,8.85195,7.87930",
+            "2.91644,8.85195,5.43442|2.91644,8.85195,6.22307",
+            "2.91644,8.85195,0.00000|2.91644,8.85195,5.43442"
+          ]
+        }
+      ]
+    },
+    "originPlanes": {
+      "XY": {
+        "visible": false,
+        "size": 5
+      },
+      "XZ": {
+        "visible": false,
+        "size": 5
+      },
+      "YZ": {
+        "visible": false,
+        "size": 5
+      }
+    },
+    "originPlanesAutoHidden": true,
+    "material": null,
+    "mass": 0,
+    "volume": 995.7463629652375,
+    "centerOfMass": {
+      "x": 0,
+      "y": 0,
+      "z": 0
+    }
+  },
+  "orbit": {
+    "theta": 0.7853981633974483,
+    "phi": 1.0471975511965976,
+    "radius": 29.999999999999996,
+    "target": {
+      "x": 5,
+      "y": 5.999999999999999,
+      "z": 5
+    }
+  },
+  "workspaceMode": "part",
+  "sessionState": {
+    "sketchingOnPlane": false,
+    "activeSketchPlane": null,
+    "editingSketchFeatureId": null,
+    "lastSketchFeatureId": null,
+    "savedOrbitState": null,
+    "expandedFolders": [
+      "folder-feature_13",
+      "folder-feature_9"
+    ],
+    "rollbackIndex": -1
+  },
+  "metadata": {
+    "createdWith": "CAD Modeller Open Design",
+    "exportedAt": "2026-03-23T12:32:23.026Z",
+    "featureCount": 7,
+    "featureTypes": [
+      "sketch",
+      "extrude",
+      "sketch",
+      "extrude",
+      "sketch",
+      "extrude-cut",
+      "fillet"
+    ],
+    "faceCount": 388,
+    "volume": 1039.231912,
+    "surfaceArea": 670.223762,
+    "boundingBox": {
+      "min": {
+        "x": 0,
+        "y": 0,
+        "z": 0
+      },
+      "max": {
+        "x": 10,
+        "y": 11.999999999999998,
+        "z": 10
+      }
+    },
+    "width": 10,
+    "height": 12,
+    "depth": 10,
+    "edgeCount": 177,
+    "pathCount": 92,
+    "bodyCount": 1,
+    "bodySizes": [
+      388
+    ],
+    "minWallThickness": 0.525764,
+    "maxWallThickness": 12,
+    "invertedFaceCount": 0
+  }
+}

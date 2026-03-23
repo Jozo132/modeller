@@ -36,6 +36,35 @@ void main() {
   fragColor = vec4(uColor.rgb * (ambient + diffuse), uColor.a);
 }`;
 
+// Program 2: diagnostic solid shader with purple/yellow hatch overlay
+const DIAG_SOLID_VS = `#version 300 es
+layout(location = 0) in vec3 aPosition;
+layout(location = 1) in vec3 aNormal;
+uniform mat4 uMVP;
+out vec3 vNormal;
+void main() {
+  vec3 n = normalize(aNormal);
+  vNormal = n;
+  gl_Position = uMVP * vec4(aPosition + n * 0.01, 1.0);
+}`;
+
+const DIAG_SOLID_FS = `#version 300 es
+precision mediump float;
+in vec3 vNormal;
+out vec4 fragColor;
+void main() {
+  vec3 lightDir = normalize(vec3(0.3, 0.5, 0.8));
+  float ambient = 0.35;
+  float diffuse = abs(dot(normalize(vNormal), lightDir)) * 0.65;
+  float shade = ambient + diffuse;
+
+  vec3 purple = vec3(0.38, 0.10, 0.52);
+  vec3 yellow = vec3(0.97, 0.90, 0.16);
+  float stripe = step(fract((gl_FragCoord.x - gl_FragCoord.y) * 0.125), 0.13);
+  vec3 color = mix(purple, yellow, stripe);
+  fragColor = vec4(color * shade, 0.98);
+}`;
+
 // Program 1: line/point shader, no lighting
 const LINE_VS = `#version 300 es
 layout(location = 0) in vec3 aPosition;
@@ -100,6 +129,7 @@ export class WebGLExecutor {
     this.programs = [
       createProgram(gl, SOLID_VS, SOLID_FS),
       createProgram(gl, LINE_VS, LINE_FS),
+      createProgram(gl, DIAG_SOLID_VS, DIAG_SOLID_FS),
     ];
 
     // Cache uniform locations for each program

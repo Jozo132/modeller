@@ -102,6 +102,9 @@ export class WasmRenderer {
     // Pre-built mesh data for direct WebGL rendering (bypasses WASM scene nodes)
     this._meshTriangles = null;  // Float32Array: interleaved [x,y,z,nx,ny,nz, ...]
     this._meshTriangleCount = 0;
+    this._problemTriangles = null; // Diagnostic triangles for inverted/problem faces
+    this._problemTriangleCount = 0;
+    this._diagnosticBackfaceHatchEnabled = false;
     this._meshEdges = null;      // Float32Array: [x,y,z, x,y,z, ...] line pairs
     this._meshEdgeVertexCount = 0;
 
@@ -2037,12 +2040,39 @@ export class WasmRenderer {
     this._buildSketchWireframes(part);
   }
 
+  setDiagnosticBackfaceHatchEnabled(enabled) {
+    this._diagnosticBackfaceHatchEnabled = !!enabled;
+  }
+
   /**
    * Triangulate polygon faces and build Float32Arrays for WebGL rendering.
    * Stores face metadata for selection/identification.
    */
   _buildMeshFromGeometry(geometry) {
     const faces = geometry.faces || [];
+    const computePolygonNormal = (verts) => {
+      let nx = 0, ny = 0, nz = 0;
+      for (let i = 0; i < verts.length; i++) {
+        const curr = verts[i];
+        const next = verts[(i + 1) % verts.length];
+        nx += (curr.y - next.y) * (curr.z + next.z);
+        ny += (curr.z - next.z) * (curr.x + next.x);
+        nz += (curr.x - next.x) * (curr.y + next.y);
+      }
+      const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+      if (len <= 1e-10) return null;
+      return { x: nx / len, y: ny / len, z: nz / len };
+    };
+    const isInvertedFace = (face) => {
+      const polygonNormal = computePolygonNormal(face.vertices || []);
+      const normal = face.normal;
+      if (!polygonNormal || !normal) return false;
+      const dot =
+        polygonNormal.x * normal.x +
+        polygonNormal.y * normal.y +
+        polygonNormal.z * normal.z;
+      return dot < -1e-5;
+    };
 
     // Store face metadata for selection
     this._meshFaces = faces.map((face, idx) => ({
@@ -2050,6 +2080,7 @@ export class WasmRenderer {
       faceGroup: face.faceGroup != null ? face.faceGroup : idx,
       faceType: face.faceType || 'unknown',
       isCurved: !!face.isCurved,
+      isInverted: isInvertedFace(face),
       normal: face.normal || { x: 0, y: 0, z: 1 },
       shared: face.shared || null,
       vertices: face.vertices || [],
@@ -2092,6 +2123,7 @@ export class WasmRenderer {
     // Build interleaved triangle data: [x,y,z,nx,ny,nz] per vertex
     const triData = new Float32Array(triCount * 3 * 6);
     let ti = 0;
+    const problemVerts = [];
 
     // Map triangle index → face index for hit testing
     this._triFaceMap = new Int32Array(triCount);
@@ -2103,6 +2135,7 @@ export class WasmRenderer {
       const n = face.normal || { x: 0, y: 0, z: 1 };
       const curved = face.isCurved;
       const g = face.faceGroup;
+      const inverted = this._meshFaces[fi].isInverted;
       if (verts.length < 3) continue;
 
       // Fan triangulation from vertex 0
@@ -2116,6 +2149,9 @@ export class WasmRenderer {
           } else {
             triData[ti++] = n.x; triData[ti++] = n.y; triData[ti++] = n.z;
           }
+          if (inverted) {
+            problemVerts.push(v.x, v.y, v.z, n.x, n.y, n.z);
+          }
         }
         this._triFaceMap[triIdx++] = fi;
       }
@@ -2123,6 +2159,8 @@ export class WasmRenderer {
 
     this._meshTriangles = triData;
     this._meshTriangleCount = triCount * 3; // vertex count
+    this._problemTriangles = problemVerts.length > 0 ? new Float32Array(problemVerts) : null;
+    this._problemTriangleCount = problemVerts.length / 6;
 
     // Use deduplicated edges from CSG if available, otherwise compute feature edges
     if (geometry.edges && geometry.edges.length > 0) {
@@ -2605,6 +2643,27 @@ export class WasmRenderer {
       gl.bindVertexArray(null);
 
       gl.disable(gl.POLYGON_OFFSET_FILL);
+
+      if (this._diagnosticBackfaceHatchEnabled) {
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+        gl.enable(gl.CULL_FACE);
+        gl.cullFace(gl.FRONT);
+        gl.depthFunc(gl.LEQUAL);
+
+        gl.useProgram(exec.programs[2]);
+        gl.uniformMatrix4fv(exec.uniforms[2].uMVP, false, mvp);
+
+        gl.bindVertexArray(exec.vaoSolid);
+        gl.bindBuffer(gl.ARRAY_BUFFER, exec.vbo);
+        gl.bufferData(gl.ARRAY_BUFFER, this._meshTriangles, gl.DYNAMIC_DRAW);
+        gl.drawArrays(gl.TRIANGLES, 0, this._meshTriangleCount);
+        gl.bindVertexArray(null);
+
+        gl.disable(gl.BLEND);
+        gl.enable(gl.CULL_FACE);
+        gl.cullFace(gl.BACK);
+      }
 
       // Draw selected face highlight (highlights entire face group for each selected face)
       if (this._selectedFaceIndices.size > 0 && this._meshFaces && this._triFaceMap) {
@@ -3118,6 +3177,8 @@ export class WasmRenderer {
     this._partBounds = null;
     this._meshTriangles = null;
     this._meshTriangleCount = 0;
+    this._problemTriangles = null;
+    this._problemTriangleCount = 0;
     this._meshEdges = null;
     this._meshEdgeVertexCount = 0;
     this._meshFaces = null;

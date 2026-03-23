@@ -10,7 +10,7 @@ import { Sketch } from '../js/cad/Sketch.js';
 import { buildCMOD, parseCMOD } from '../js/cmod.js';
 import {
   calculateMeshVolume, calculateBoundingBox, calculateSurfaceArea,
-  detectDisconnectedBodies, calculateWallThickness,
+  detectDisconnectedBodies, calculateWallThickness, countInvertedFaces,
 } from '../js/cad/CSG.js';
 
 let passed = 0;
@@ -35,6 +35,7 @@ function assertApprox(actual, expected, tol, msg) {
 
 function collectEdgeUsage(geometry) {
   const edgeCounts = new Map();
+  const directedEdges = new Map();
   const toKey = (vertex) => [vertex.x, vertex.y, vertex.z].map((value) => Number(value).toFixed(6)).join(',');
   const edgeKey = (start, end) => {
     const startKey = toKey(start);
@@ -46,15 +47,31 @@ function collectEdgeUsage(geometry) {
     for (let index = 0; index < face.vertices.length; index++) {
       const current = face.vertices[index];
       const next = face.vertices[(index + 1) % face.vertices.length];
+      const currentKey = toKey(current);
+      const nextKey = toKey(next);
       const key = edgeKey(current, next);
       edgeCounts.set(key, (edgeCounts.get(key) || 0) + 1);
+      if (!directedEdges.has(key)) directedEdges.set(key, []);
+      directedEdges.get(key).push({ fwd: currentKey < nextKey });
     }
+  }
+
+  let windingErrors = 0;
+  for (const entries of directedEdges.values()) {
+    if (entries.length === 2 && entries[0].fwd === entries[1].fwd) windingErrors++;
   }
 
   return {
     boundaryEdges: [...edgeCounts.values()].filter((count) => count === 1).length,
     nonManifoldEdges: [...edgeCounts.values()].filter((count) => count > 2).length,
+    windingErrors,
   };
+}
+
+function assertPositiveWallThickness(geometry, context) {
+  const wt = calculateWallThickness(geometry);
+  assert.ok(wt.minThickness > 0, `${context}: expected min wall thickness > 0, got ${wt.minThickness}`);
+  assert.ok(wt.maxThickness > 0, `${context}: expected max wall thickness > 0, got ${wt.maxThickness}`);
 }
 
 // -----------------------------------------------------------------------
@@ -135,6 +152,7 @@ console.log('--- Test 1: Export format ---');
     assert.ok(cmod.metadata.edgeCount > 0);
     assert.ok(cmod.metadata.pathCount > 0);
     assert.strictEqual(cmod.metadata.bodyCount, 1);
+    assert.strictEqual(cmod.metadata.invertedFaceCount, 0);
   });
 
   test('metadata has wall thickness', () => {
@@ -198,6 +216,7 @@ console.log('--- Test 2: JSON round-trip ---');
   test('round-trip preserves metadata', () => {
     assert.strictEqual(parsed.data.metadata.featureCount, 2);
     assertApprox(parsed.data.metadata.volume, 24000, 1, 'volume');
+    assert.strictEqual(parsed.data.metadata.invertedFaceCount, 0);
   });
 }
 
@@ -278,6 +297,8 @@ console.log('--- Test 4: Feature tree preservation ---');
     const origVol = calculateMeshVolume(origGeo.geometry);
     const restVol = calculateMeshVolume(restGeo.geometry);
     assertApprox(restVol, origVol, 0.5, 'volume');
+    assertPositiveWallThickness(origGeo.geometry, 'original chamfered box');
+    assertPositiveWallThickness(restGeo.geometry, 'restored chamfered box');
   });
 }
 
@@ -345,6 +366,16 @@ console.log('--- Test 7: Metadata accuracy ---');
   test('single body', () => {
     assert.strictEqual(cmod.metadata.bodyCount, 1);
   });
+
+  test('no inverted faces', () => {
+    assert.strictEqual(cmod.metadata.invertedFaceCount, 0);
+  });
+
+  test('positive wall thickness', () => {
+    const result = part.getFinalGeometry();
+    assert.ok(result && result.geometry, 'Expected solid geometry');
+    assertPositiveWallThickness(result.geometry, '100x100x100 box');
+  });
 }
 
 // --- Test 8: Duplicate imported feature IDs are repaired ---
@@ -391,6 +422,30 @@ console.log('--- Test 9: Coplanar face-start extrude cuts ---');
     const edgeUsage = collectEdgeUsage(finalGeometry.geometry);
     assert.strictEqual(edgeUsage.boundaryEdges, 0, `Expected no boundary edges, got ${edgeUsage.boundaryEdges}`);
     assert.strictEqual(edgeUsage.nonManifoldEdges, 0, `Expected no non-manifold edges, got ${edgeUsage.nonManifoldEdges}`);
+    assert.strictEqual(edgeUsage.windingErrors, 0, `Expected no winding errors, got ${edgeUsage.windingErrors}`);
+    assert.strictEqual(countInvertedFaces(finalGeometry.geometry), 0, 'Expected no inverted faces');
+    assertPositiveWallThickness(finalGeometry.geometry, 'coplanar face-start cut sample');
+  });
+}
+
+// --- Test 10: Filleted coplanar face-start cuts stay closed ---
+console.log('--- Test 10: Filleted coplanar face-start extrude cuts ---');
+{
+  const sample = JSON.parse(
+    fs.readFileSync(new URL('./samples/extrude-on-extrude-dual-with-cut-and-radius.cmod', import.meta.url), 'utf8')
+  );
+
+  test('deserialized cut+fillet sample produces a closed manifold mesh', () => {
+    const restored = Part.deserialize(sample.part);
+    const finalGeometry = restored.getFinalGeometry();
+    assert.ok(finalGeometry && finalGeometry.geometry, 'Expected final solid geometry');
+
+    const edgeUsage = collectEdgeUsage(finalGeometry.geometry);
+    assert.strictEqual(edgeUsage.boundaryEdges, 0, `Expected no boundary edges, got ${edgeUsage.boundaryEdges}`);
+    assert.strictEqual(edgeUsage.nonManifoldEdges, 0, `Expected no non-manifold edges, got ${edgeUsage.nonManifoldEdges}`);
+    assert.strictEqual(edgeUsage.windingErrors, 0, `Expected no winding errors, got ${edgeUsage.windingErrors}`);
+    assert.strictEqual(countInvertedFaces(finalGeometry.geometry), 0, 'Expected no inverted faces');
+    assertPositiveWallThickness(finalGeometry.geometry, 'coplanar face-start cut+fillet sample');
   });
 }
 

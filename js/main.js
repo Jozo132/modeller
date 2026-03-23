@@ -33,7 +33,12 @@ import {
   LockTool, EqualTool, TangentTool, AngleTool,
 } from './tools/index.js';
 import { InteractionRecorder, PlaybackEngine } from './interaction-recorder.js';
-import { applyChamfer, applyFillet, expandPathEdgeKeys, makeEdgeKey, calculateMeshVolume, calculateBoundingBox, calculateSurfaceArea, detectDisconnectedBodies, calculateWallThickness } from './cad/CSG.js';
+import { applyChamfer, applyFillet, expandPathEdgeKeys, makeEdgeKey, calculateMeshVolume, calculateBoundingBox, calculateSurfaceArea, detectDisconnectedBodies, calculateWallThickness, countInvertedFaces } from './cad/CSG.js';
+
+const DIAGNOSTIC_HATCH_STORAGE_KEY = 'cad-modeller-diagnostic-backface-hatch';
+const DIAGNOSTIC_HATCH_MODE_AUTO = 'auto';
+const DIAGNOSTIC_HATCH_MODE_ON = 'on';
+const DIAGNOSTIC_HATCH_MODE_OFF = 'off';
 
 class App {
   constructor() {
@@ -57,6 +62,8 @@ class App {
     this._draggingExtrudeHandle = false;
     this._extrudeHandleInfo = null; // {origin, tip, dir} for drag handle
     this._extrudeArrowHoveredState = false;
+    this._diagnosticBackfaceHatchMode = this._loadDiagnosticBackfaceHatchMode();
+    this._diagnosticBackfaceHatchAuto = false;
 
     /** Returns true when any feature-editing mode is active (sketch, extrude, chamfer, fillet) */
     this._isEditingFeature = () => !!(this._sketchingOnPlane || this._extrudeMode || this._chamferMode || this._filletMode);
@@ -66,6 +73,7 @@ class App {
     this._renderer3d = new WasmRenderer(view3dContainer);
     this._renderer3d.setMode('2d'); // Start in 2D sketching mode
     this._renderer3d.setVisible(true);
+    this._renderer3d.setDiagnosticBackfaceHatchEnabled(this._effectiveDiagnosticBackfaceHatchEnabled());
     if (this._renderer3d._loadPromise) {
       this._renderer3d._loadPromise.then(() => {
         this._update3DView();
@@ -151,6 +159,7 @@ class App {
     this._bindExitSketchButton();
     this._bindExitExtrudeButton();
     this._bindRecordingControls();
+    this._syncDiagnosticHatchUI();
 
     // Register viewport, part manager, renderer, and workspace mode for persistence
     setViewport(this.viewport);
@@ -1541,6 +1550,7 @@ class App {
           case 'tool-arc': this.setActiveTool('arc'); break;
           case 'tool-chamfer': document.getElementById('btn-chamfer')?.click(); break;
           case 'tool-fillet': document.getElementById('btn-fillet')?.click(); break;
+          case 'toggle-diagnostic-hatch': this._toggleDiagnosticBackfaceHatchPref(); break;
           case 'help-shortcuts': this.setStatus('Shortcuts: L=Line, R=Rect, C=Circle, Esc=Select, Del=Delete, Ctrl+Z=Undo, Ctrl+Y=Redo, F=Fit'); break;
           case 'help-about': this.setStatus('CAD Modeller v1.0.0 — Parametric 2D/3D CAD'); break;
         }
@@ -4688,6 +4698,8 @@ class App {
 
     const part = this._partManager.getPart();
     if (!part) {
+      this._diagnosticBackfaceHatchAuto = false;
+      this._applyDiagnosticBackfaceHatchState();
       this._renderer3d.clearPartGeometry();
       this._renderer3d.sync2DView(this.viewport);
       this._renderer3d.render2DScene(state.scene, {
@@ -4706,6 +4718,11 @@ class App {
     }
 
     try {
+      const finalGeometry = part.getFinalGeometry();
+      const geometry = finalGeometry && finalGeometry.geometry ? finalGeometry.geometry : null;
+      this._diagnosticBackfaceHatchAuto = this._hasMeshHoles(geometry);
+      this._applyDiagnosticBackfaceHatchState();
+
       const hadGeometry = this._renderer3d.hasGeometry();
       this._renderer3d.renderPart(part);
       // Only auto-fit the camera when geometry first appears; subsequent
@@ -4717,6 +4734,94 @@ class App {
       error('Failed to render 3D part:', err);
       this.setStatus('Error rendering 3D part');
     }
+  }
+
+  _loadDiagnosticBackfaceHatchMode() {
+    try {
+      const stored = localStorage.getItem(DIAGNOSTIC_HATCH_STORAGE_KEY);
+      if (stored === DIAGNOSTIC_HATCH_MODE_ON || stored === DIAGNOSTIC_HATCH_MODE_OFF) {
+        return stored;
+      }
+      if (stored === 'true') {
+        return DIAGNOSTIC_HATCH_MODE_ON;
+      }
+      if (stored === 'false') {
+        return DIAGNOSTIC_HATCH_MODE_OFF;
+      }
+      return DIAGNOSTIC_HATCH_MODE_AUTO;
+    } catch {
+      return DIAGNOSTIC_HATCH_MODE_AUTO;
+    }
+  }
+
+  _saveDiagnosticBackfaceHatchMode() {
+    try {
+      localStorage.setItem(DIAGNOSTIC_HATCH_STORAGE_KEY, this._diagnosticBackfaceHatchMode);
+    } catch {}
+  }
+
+  _effectiveDiagnosticBackfaceHatchEnabled() {
+    if (this._diagnosticBackfaceHatchMode === DIAGNOSTIC_HATCH_MODE_ON) return true;
+    if (this._diagnosticBackfaceHatchMode === DIAGNOSTIC_HATCH_MODE_OFF) return false;
+    return !!this._diagnosticBackfaceHatchAuto;
+  }
+
+  _applyDiagnosticBackfaceHatchState() {
+    if (this._renderer3d) {
+      this._renderer3d.setDiagnosticBackfaceHatchEnabled(this._effectiveDiagnosticBackfaceHatchEnabled());
+    }
+    this._syncDiagnosticHatchUI();
+  }
+
+  _syncDiagnosticHatchUI() {
+    const btn = document.getElementById('menu-toggle-diagnostic-hatch');
+    if (!btn) return;
+    const auto = this._diagnosticBackfaceHatchAuto;
+    const mode = this._diagnosticBackfaceHatchMode;
+    const effective = this._effectiveDiagnosticBackfaceHatchEnabled();
+    let suffix = '';
+    if (mode === DIAGNOSTIC_HATCH_MODE_AUTO) {
+      suffix = auto ? ' (Auto)' : '';
+    } else if (auto) {
+      suffix = ' (Override)';
+    }
+    btn.textContent = `${effective ? 'Hide' : 'Show'} Inner Face Hatch${suffix}`;
+    btn.classList.toggle('active', effective);
+    btn.title = auto
+      ? 'Toggle diagnostic hatch for inner/back faces. Holes or non-manifold edges were detected on the current solid.'
+      : 'Toggle diagnostic hatch for inner/back faces';
+  }
+
+  _toggleDiagnosticBackfaceHatchPref() {
+    const effective = this._effectiveDiagnosticBackfaceHatchEnabled();
+    this._diagnosticBackfaceHatchMode = effective ? DIAGNOSTIC_HATCH_MODE_OFF : DIAGNOSTIC_HATCH_MODE_ON;
+    this._saveDiagnosticBackfaceHatchMode();
+    this._applyDiagnosticBackfaceHatchState();
+    this._scheduleRender();
+  }
+
+  _hasMeshHoles(geometry) {
+    if (!geometry || !geometry.faces || geometry.faces.length === 0) return false;
+    const edgeCounts = new Map();
+    const vertexKey = (v) => `${v.x.toFixed(5)},${v.y.toFixed(5)},${v.z.toFixed(5)}`;
+    for (const face of geometry.faces) {
+      const verts = face.vertices || [];
+      for (let i = 0; i < verts.length; i++) {
+        const a = verts[i];
+        const b = verts[(i + 1) % verts.length];
+        const ka = vertexKey(a);
+        const kb = vertexKey(b);
+        const ek = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+        edgeCounts.set(ek, (edgeCounts.get(ek) || 0) + 1);
+      }
+    }
+    let boundaryEdges = 0;
+    let nonManifoldEdges = 0;
+    for (const count of edgeCounts.values()) {
+      if (count === 1) boundaryEdges++;
+      else if (count > 2) nonManifoldEdges++;
+    }
+    return boundaryEdges > 0 || nonManifoldEdges > 0;
   }
 
   _isOriginPlaneVisible(planeName) {
@@ -6280,6 +6385,7 @@ class App {
       const wt = calculateWallThickness(geometry);
       stats.minWallThickness = +wt.minThickness.toFixed(6);
       stats.maxWallThickness = +wt.maxThickness.toFixed(6);
+      stats.invertedFaceCount = countInvertedFaces(geometry);
     }
 
     return stats;

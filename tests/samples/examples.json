@@ -97,6 +97,16 @@
     ]
   },
   {
+    "file": "extrude-on-extrude-dual-with-cut-and-radius.cmod",
+    "label": "Extrude On Extrude Dual With Cut And Radius",
+    "featureTypes": [
+      "sketch",
+      "extrude",
+      "extrude-cut",
+      "fillet"
+    ]
+  },
+  {
     "file": "extrude-on-extrude-dual-with-cut.cmod",
     "label": "Extrude On Extrude Dual With Cut",
     "featureTypes": [

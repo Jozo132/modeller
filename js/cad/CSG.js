@@ -1167,6 +1167,27 @@ function _computePolygonNormal(vertices) {
 }
 
 /**
+ * Count faces whose polygon winding opposes their stored face normal.
+ * Degenerate faces or faces without a stored normal are ignored.
+ * @param {Object} geometry - {faces: [{vertices: [...], normal: {x,y,z}}]}
+ * @returns {number}
+ */
+export function countInvertedFaces(geometry) {
+  let inverted = 0;
+  for (const face of (geometry.faces || [])) {
+    const polygonNormal = _computePolygonNormal(face.vertices || []);
+    const faceNormal = face.normal;
+    if (!polygonNormal || !faceNormal) continue;
+    const dot =
+      polygonNormal.x * faceNormal.x +
+      polygonNormal.y * faceNormal.y +
+      polygonNormal.z * faceNormal.z;
+    if (dot < -1e-5) inverted++;
+  }
+  return inverted;
+}
+
+/**
  * Calculate the volume of a geometry using the divergence theorem.
  * Assumes the mesh is closed and consistently wound.
  * @param {Object} geometry - {faces: [{vertices: [{x,y,z},...], ...}]}
@@ -1775,6 +1796,23 @@ function _weldVertices(faces) {
   }
 }
 
+function _removeDegenerateFaces(faces) {
+  for (let i = faces.length - 1; i >= 0; i--) {
+    const face = faces[i];
+    const cleaned = _deduplicatePolygon(face.vertices || []);
+    if (cleaned.length < 3) {
+      faces.splice(i, 1);
+      continue;
+    }
+    const normal = _computePolygonNormal(cleaned);
+    if (!normal) {
+      faces.splice(i, 1);
+      continue;
+    }
+    face.vertices = cleaned;
+  }
+}
+
 /**
  * Recompute face normals using the Newell method for correctness after
  * vertex modifications (trimming, splitting). The Newell method sums
@@ -1991,6 +2029,7 @@ export function applyChamfer(geometry, edgeKeys, distance) {
   _generateCornerFaces(faces, origFaces, edgeDataList, vertexEdgeMap);
 
   _weldVertices(faces);
+  _removeDegenerateFaces(faces);
   _recomputeFaceNormals(faces);
 
   const newGeom = { vertices: [], faces, brep };
@@ -2229,6 +2268,7 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8) {
   _healBoundaryLoops(faces);
 
   _weldVertices(faces);
+  _removeDegenerateFaces(faces);
   _recomputeFaceNormals(faces);
 
   const newGeom = { vertices: [], faces, brep };
@@ -2701,6 +2741,8 @@ function _generateCornerFaces(faces, origFaces, edgeDataList, vertexEdgeMap) {
       });
     }
 
+    if (_isLinearFilletContinuation(edgeInfos, origFaces)) continue;
+
     // Find "other vertex" for each edge (the vertex adjacent to vk in face1
     // that is NOT the other endpoint of the chamfered edge)
     for (const info of edgeInfos) {
@@ -2842,6 +2884,32 @@ function _generateCornerFaces(faces, origFaces, edgeDataList, vertexEdgeMap) {
       faces.push({ vertices: cleaned, normal: cornerNormal, shared });
     }
   }
+}
+
+function _sameNormalPair(a0, a1, b0, b1) {
+  const same = (u, v) => Math.abs(_vec3Dot(_vec3Normalize(u), _vec3Normalize(v)) - 1) < 1e-5;
+  return (same(a0, b0) && same(a1, b1)) || (same(a0, b1) && same(a1, b0));
+}
+
+function _isLinearFilletContinuation(edgeInfos, origFaces) {
+  if (edgeInfos.length !== 2) return false;
+  if (!edgeInfos[0].arc || !edgeInfos[1].arc) return false;
+
+  const d0 = edgeInfos[0].data;
+  const d1 = edgeInfos[1].data;
+  const n00 = origFaces[d0.fi0]?.normal;
+  const n01 = origFaces[d0.fi1]?.normal;
+  const n10 = origFaces[d1.fi0]?.normal;
+  const n11 = origFaces[d1.fi1]?.normal;
+  if (!n00 || !n01 || !n10 || !n11) return false;
+  if (!_sameNormalPair(n00, n01, n10, n11)) return false;
+
+  const other0 = edgeInfos[0].isA ? d0.edgeB : d0.edgeA;
+  const other1 = edgeInfos[1].isA ? d1.edgeB : d1.edgeA;
+  const shared = edgeInfos[0].isA ? d0.edgeA : d0.edgeB;
+  const dir0 = _vec3Normalize(_vec3Sub(other0, shared));
+  const dir1 = _vec3Normalize(_vec3Sub(other1, shared));
+  return _vec3Dot(dir0, dir1) < -0.999;
 }
 
 /**
