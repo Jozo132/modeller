@@ -2,6 +2,13 @@
 // Implements union, subtract, and intersect on polygon meshes using BSP trees.
 // Based on the algorithm from "Constructive Solid Geometry Using BSP Tree"
 // (Laidlaw, Trumbore, Hughes, 1986) with modifications for numerical robustness.
+//
+// Chamfer and fillet operations now produce NURBS surface definitions alongside
+// tessellated mesh data, enabling mathematically exact B-Rep representation.
+
+import { NurbsSurface } from './NurbsSurface.js';
+import { BRep, BRepVertex, BRepEdge, BRepFace } from './BRep.js';
+import { NurbsCurve } from './NurbsCurve.js';
 
 const EPSILON = 1e-5;
 
@@ -1749,16 +1756,45 @@ export function applyChamfer(geometry, edgeKeys, distance) {
   // --- Phase 4: Batch split vertices at endpoints ---
   _batchSplitVertices(faces, edgeDataList, vertexEdgeMap);
 
-  // --- Phase 5: Generate all bevel faces ---
+  // --- Phase 5: Generate all bevel faces + NURBS definitions ---
+  const brep = new BRep();
+
+  // Add BRep faces for existing trimmed faces (no NURBS — they are planar)
+  for (const face of faces) {
+    const brepFace = new BRepFace(null, 'planar', face.shared);
+    brep.addFace(brepFace);
+  }
+
   for (const data of edgeDataList) {
     const chamferNormal = _vec3Normalize(_vec3Cross(
       _vec3Sub(data.p1a, data.p0a), _vec3Sub(data.p1b, data.p0a)
     ));
-    faces.push({
+
+    const meshFace = {
       vertices: [{ ...data.p0a }, { ...data.p1a }, { ...data.p1b }, { ...data.p0b }],
       normal: chamferNormal,
       shared: data.shared,
-    });
+    };
+    faces.push(meshFace);
+
+    // Create NURBS surface for the chamfer bevel (bilinear planar patch)
+    const nurbsSurface = NurbsSurface.createChamferSurface(
+      data.p0a, data.p0b, data.p1a, data.p1b
+    );
+    const brepFace = new BRepFace(nurbsSurface, 'chamfer', data.shared);
+
+    // Add BRep edge curves (straight lines for chamfer trim edges)
+    const edge0 = new BRepEdge(
+      new BRepVertex(data.p0a), new BRepVertex(data.p0b),
+      NurbsCurve.createLine(data.p0a, data.p0b)
+    );
+    const edge1 = new BRepEdge(
+      new BRepVertex(data.p1a), new BRepVertex(data.p1b),
+      NurbsCurve.createLine(data.p1a, data.p1b)
+    );
+    brep.addEdge(edge0);
+    brep.addEdge(edge1);
+    brep.addFace(brepFace);
   }
 
   // --- Phase 6: Generate corner faces at shared vertices ---
@@ -1767,7 +1803,7 @@ export function applyChamfer(geometry, edgeKeys, distance) {
   _weldVertices(faces);
   _recomputeFaceNormals(faces);
 
-  const newGeom = { vertices: [], faces };
+  const newGeom = { vertices: [], faces, brep };
   const edgeResult = computeFeatureEdges(faces);
   newGeom.edges = edgeResult.edges;
   newGeom.paths = edgeResult.paths;
@@ -1846,7 +1882,15 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8) {
 
   _batchSplitVertices(faces, edgeDataList, vertexEdgeMap);
 
-  // --- Phase 4: Generate all fillet strip quads and endpoint fans ---
+  // --- Phase 4: Generate all fillet strip quads, endpoint fans, + NURBS ---
+  const brep = new BRep();
+
+  // Add BRep faces for existing trimmed faces (planar or previously defined)
+  for (const face of faces) {
+    const brepFace = new BRepFace(null, face.isFillet ? 'fillet' : 'planar', face.shared);
+    brep.addFace(brepFace);
+  }
+
   const sharedEndpoints = new Set();
   for (const [vk, edgeIndices] of vertexEdgeMap) {
     if (edgeIndices.length >= 2) sharedEndpoints.add(vk);
@@ -1857,7 +1901,65 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8) {
     const arcA = data.arcA;
     const arcB = data.arcB;
 
-    // Create fillet strip quads
+    // Create NURBS fillet surface for this edge
+    // The fillet is a rolling-ball blend: circular arc cross-section swept along the edge.
+    // Rail curves are the tangent lines on each adjacent face.
+    const rail0 = [{ ...arcA[0] }, { ...arcB[0] }];
+    const rail1 = [{ ...arcA[segments] }, { ...arcB[segments] }];
+
+    // Compute arc centers at each endpoint for the NURBS definition
+    const { offsDir0, offsDir1 } = _computeOffsetDirs(
+      faces[data.fi0], faces[data.fi1], data.edgeA, data.edgeB
+    );
+    const bisector = _vec3Normalize(_vec3Add(offsDir0, offsDir1));
+    const alpha = Math.acos(Math.max(-1, Math.min(1, _vec3Dot(offsDir0, offsDir1))));
+    const centerDist = alpha > 1e-6 ? radius / Math.sin(alpha / 2) : radius;
+    const centerA = _vec3Add(data.edgeA, _vec3Scale(bisector, centerDist));
+    const centerB = _vec3Add(data.edgeB, _vec3Scale(bisector, centerDist));
+
+    // Create NURBS fillet surface using the rolling-ball factory
+    try {
+      const nurbsSurface = NurbsSurface.createFilletSurface(
+        rail0, rail1, [centerA, centerB], radius, _vec3Normalize(_vec3Sub(data.edgeB, data.edgeA))
+      );
+      const brepFace = new BRepFace(nurbsSurface, 'fillet', shared);
+
+      // Add BRep edge curves for the trim lines
+      const trimCurve0 = NurbsCurve.createLine(arcA[0], arcB[0]);
+      const trimCurve1 = NurbsCurve.createLine(arcA[segments], arcB[segments]);
+      brep.addEdge(new BRepEdge(new BRepVertex(arcA[0]), new BRepVertex(arcB[0]), trimCurve0));
+      brep.addEdge(new BRepEdge(new BRepVertex(arcA[segments]), new BRepVertex(arcB[segments]), trimCurve1));
+
+      // Add NURBS arc curves at each cross-section
+      // These represent the exact circular profile of the fillet
+      const edgeDir = _vec3Normalize(_vec3Sub(data.edgeB, data.edgeA));
+      const xAxisA = _vec3Normalize(_vec3Sub(arcA[0], centerA));
+      const crossA = _vec3Cross(edgeDir, xAxisA);
+      const yAxisA = _vec3Normalize(crossA);
+      const sweep = Math.PI - alpha;
+
+      if (sweep > 1e-6) {
+        const arcCurveA = NurbsCurve.createArc(centerA, radius, xAxisA, yAxisA, 0, sweep);
+        const arcCurveB = NurbsCurve.createArc(centerB, radius,
+          _vec3Normalize(_vec3Sub(arcB[0], centerB)),
+          _vec3Normalize(_vec3Cross(edgeDir, _vec3Normalize(_vec3Sub(arcB[0], centerB)))),
+          0, sweep
+        );
+        brep.addEdge(new BRepEdge(new BRepVertex(arcA[0]), new BRepVertex(arcA[segments]), arcCurveA));
+        brep.addEdge(new BRepEdge(new BRepVertex(arcB[0]), new BRepVertex(arcB[segments]), arcCurveB));
+      }
+
+      brep.addFace(brepFace);
+    } catch (nurbsErr) {
+      // NURBS construction may fail for degenerate edge geometries (e.g.
+      // near-zero sweep angle or coincident rails); mesh data still valid.
+      // Log for debugging but don't block the operation.
+      if (typeof console !== 'undefined' && console.warn) {
+        console.warn('NURBS fillet surface construction skipped:', nurbsErr.message);
+      }
+    }
+
+    // Create fillet strip quads (mesh tessellation — same as before)
     for (let s = 0; s < segments; s++) {
       const faceNormal = _vec3Normalize(_vec3Cross(
         _vec3Sub(arcA[s + 1], arcA[s]),
@@ -1913,7 +2015,7 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8) {
   _weldVertices(faces);
   _recomputeFaceNormals(faces);
 
-  const newGeom = { vertices: [], faces };
+  const newGeom = { vertices: [], faces, brep };
   const edgeResult = computeFeatureEdges(faces);
   newGeom.edges = edgeResult.edges;
   newGeom.paths = edgeResult.paths;
