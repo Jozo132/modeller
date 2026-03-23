@@ -36,3 +36,21 @@ export { booleanOp, calculateMeshVolume, calculateBoundingBox, applyChamfer, app
 export { NurbsCurve } from './NurbsCurve.js';
 export { NurbsSurface } from './NurbsSurface.js';
 export { BRep, BRepVertex, BRepEdge, BRepFace, tessellateNurbsFaces } from './BRep.js';
+
+// --- New exact-geometry modules ---
+export { Tolerance, DEFAULT_TOLERANCE } from './Tolerance.js';
+export {
+  TopoBody, TopoShell, TopoFace, TopoLoop, TopoCoEdge, TopoEdge, TopoVertex,
+  SurfaceType, buildTopoBody, resetTopoIds,
+} from './BRepTopology.js';
+export { ValidationResult, validateBody, validateIncidence, validateNoDuplicateEdges, validateFull } from './BRepValidator.js';
+export { tessellateBody, tessellateFace, tessellateForSTL } from './Tessellation.js';
+export { curveCurveIntersect } from './CurveCurveIntersect.js';
+export { curveSurfaceIntersect } from './CurveSurfaceIntersect.js';
+export { surfaceSurfaceIntersect } from './SurfaceSurfaceIntersect.js';
+export { intersectCurves, intersectCurveSurface, intersectSurfaces, intersectBodies } from './Intersections.js';
+export { splitFace, classifyPointOnFace, classifyFragment } from './FaceSplitter.js';
+export { stitchFaces, buildBody } from './ShellBuilder.js';
+export { exactBooleanOp, hasExactTopology } from './BooleanKernel.js';
+export { exportSTEP } from './StepExport.js';
+
