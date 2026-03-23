@@ -4,6 +4,7 @@
 // import back → verify the feature tree and geometry match.
 
 import assert from 'assert';
+import fs from 'fs';
 import { Part } from '../js/cad/Part.js';
 import { Sketch } from '../js/cad/Sketch.js';
 import { buildCMOD, parseCMOD } from '../js/cmod.js';
@@ -30,6 +31,30 @@ function test(name, fn) {
 function assertApprox(actual, expected, tol, msg) {
   assert.ok(Math.abs(actual - expected) < tol,
     `${msg}: expected ~${expected}, got ${actual}`);
+}
+
+function collectEdgeUsage(geometry) {
+  const edgeCounts = new Map();
+  const toKey = (vertex) => [vertex.x, vertex.y, vertex.z].map((value) => Number(value).toFixed(6)).join(',');
+  const edgeKey = (start, end) => {
+    const startKey = toKey(start);
+    const endKey = toKey(end);
+    return startKey < endKey ? `${startKey}|${endKey}` : `${endKey}|${startKey}`;
+  };
+
+  for (const face of geometry.faces || []) {
+    for (let index = 0; index < face.vertices.length; index++) {
+      const current = face.vertices[index];
+      const next = face.vertices[(index + 1) % face.vertices.length];
+      const key = edgeKey(current, next);
+      edgeCounts.set(key, (edgeCounts.get(key) || 0) + 1);
+    }
+  }
+
+  return {
+    boundaryEdges: [...edgeCounts.values()].filter((count) => count === 1).length,
+    nonManifoldEdges: [...edgeCounts.values()].filter((count) => count > 2).length,
+  };
 }
 
 // -----------------------------------------------------------------------
@@ -319,6 +344,53 @@ console.log('--- Test 7: Metadata accuracy ---');
 
   test('single body', () => {
     assert.strictEqual(cmod.metadata.bodyCount, 1);
+  });
+}
+
+// --- Test 8: Duplicate imported feature IDs are repaired ---
+console.log('--- Test 8: Duplicate imported feature IDs ---');
+{
+  const sample = JSON.parse(
+    fs.readFileSync(new URL('./samples/extrude-on-extrude-dual-failing-sketch-select.cmod', import.meta.url), 'utf8')
+  );
+
+  test('deserialized part repairs duplicate feature IDs', () => {
+    const restored = Part.deserialize(sample.part);
+    const ids = restored.getFeatures().map((feature) => feature.id);
+    assert.strictEqual(new Set(ids).size, ids.length, `Expected unique feature IDs, got ${ids.join(', ')}`);
+  });
+
+  test('new features after import use fresh IDs', () => {
+    const restored = Part.deserialize(sample.part);
+    const sketch = new Sketch();
+    sketch.addSegment(0, 0, 1, 0);
+    sketch.addSegment(1, 0, 1, 1);
+    sketch.addSegment(1, 1, 0, 1);
+    sketch.addSegment(0, 1, 0, 0);
+    const feature = restored.addSketch(sketch);
+    const ids = restored.getFeatures().map((candidate) => candidate.id);
+    assert.strictEqual(new Set(ids).size, ids.length, `Expected unique feature IDs after add, got ${ids.join(', ')}`);
+    const numericId = parseInt(String(feature.id).replace('feature_', ''), 10);
+    assert.ok(Number.isFinite(numericId), `Expected numeric feature ID, got ${feature.id}`);
+    assert.ok(numericId > 13, `Expected imported feature IDs to advance beyond 13, got ${feature.id}`);
+  });
+}
+
+// --- Test 9: Coplanar face-start extrude cuts stay closed ---
+console.log('--- Test 9: Coplanar face-start extrude cuts ---');
+{
+  const sample = JSON.parse(
+    fs.readFileSync(new URL('./samples/extrude-on-extrude-dual-with-cut.cmod', import.meta.url), 'utf8')
+  );
+
+  test('deserialized cut sample produces a closed manifold mesh', () => {
+    const restored = Part.deserialize(sample.part);
+    const finalGeometry = restored.getFinalGeometry();
+    assert.ok(finalGeometry && finalGeometry.geometry, 'Expected final solid geometry');
+
+    const edgeUsage = collectEdgeUsage(finalGeometry.geometry);
+    assert.strictEqual(edgeUsage.boundaryEdges, 0, `Expected no boundary edges, got ${edgeUsage.boundaryEdges}`);
+    assert.strictEqual(edgeUsage.nonManifoldEdges, 0, `Expected no non-manifold edges, got ${edgeUsage.nonManifoldEdges}`);
   });
 }
 

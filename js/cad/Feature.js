@@ -4,6 +4,20 @@
 
 let nextFeatureId = 1;
 
+function parseFeatureIdNumber(featureId) {
+  if (typeof featureId !== 'string') return null;
+  const match = /^feature_(\d+)$/.exec(featureId);
+  return match ? parseInt(match[1], 10) : null;
+}
+
+export function claimFeatureId(featureId) {
+  const parsedId = parseFeatureIdNumber(featureId);
+  if (parsedId != null && nextFeatureId <= parsedId) {
+    nextFeatureId = parsedId + 1;
+  }
+  return featureId;
+}
+
 /**
  * Base class for all parametric features.
  * A feature represents a modeling operation that can be:
@@ -163,6 +177,7 @@ export class Feature {
     if (!data) return feature;
     
     feature.id = data.id || feature.id;
+    claimFeatureId(feature.id);
     feature.name = data.name || 'Feature';
     feature.type = data.type || 'base';
     feature.suppressed = data.suppressed || false;

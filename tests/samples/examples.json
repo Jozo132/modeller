@@ -26,6 +26,15 @@
     ]
   },
   {
+    "file": "box-fillet-3.cmod",
+    "label": "Box Fillet 3",
+    "featureTypes": [
+      "sketch",
+      "extrude",
+      "fillet"
+    ]
+  },
+  {
     "file": "box-fillet.cmod",
     "label": "Box Fillet",
     "featureTypes": [
@@ -77,6 +86,39 @@
       "sketch",
       "extrude",
       "chamfer"
+    ]
+  },
+  {
+    "file": "extrude-on-extrude-dual-failing-sketch-select.cmod",
+    "label": "Extrude On Extrude Dual Failing Sketch Select",
+    "featureTypes": [
+      "sketch",
+      "extrude"
+    ]
+  },
+  {
+    "file": "extrude-on-extrude-dual-with-cut.cmod",
+    "label": "Extrude On Extrude Dual With Cut",
+    "featureTypes": [
+      "sketch",
+      "extrude",
+      "extrude-cut"
+    ]
+  },
+  {
+    "file": "extrude-on-extrude-dual.cmod",
+    "label": "Extrude On Extrude Dual",
+    "featureTypes": [
+      "sketch",
+      "extrude"
+    ]
+  },
+  {
+    "file": "extrude-on-extrude.cmod",
+    "label": "Extrude On Extrude",
+    "featureTypes": [
+      "sketch",
+      "extrude"
     ]
   }
 ]

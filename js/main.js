@@ -2570,9 +2570,10 @@ class App {
    * Show feature properties in the left panel (Part mode)
    * @param {Feature|null} feature
    */
-  _showLeftFeatureParams(feature) {
+  _showLeftFeatureParams(feature, options = {}) {
     const container = document.getElementById('left-feature-params-content');
     if (!container) return;
+    const { enterEditMode = false } = options;
     // Don't overwrite UI when in extrude/chamfer/fillet mode
     if (this._extrudeMode || this._chamferMode || this._filletMode) return;
     // When DXF export panel is active, refresh it instead of overwriting
@@ -2600,9 +2601,28 @@ class App {
     container.appendChild(typeRow);
 
     if (feature.type === 'extrude' || feature.type === 'extrude-cut') {
-      // Enter full extrude edit mode with ghost preview + drag handle
-      this._editExtrude(feature);
-      return;
+      if (enterEditMode) {
+        this._editExtrude(feature);
+        return;
+      }
+
+      const sketchFeature = this._partManager.getFeatures().find((candidate) => candidate.id === feature.sketchFeatureId);
+      const details = document.createElement('div');
+      details.className = 'parameter-info';
+      details.innerHTML = `
+        <p><strong>Sketch:</strong> ${sketchFeature ? sketchFeature.name : 'None'}</p>
+        <p><strong>Distance:</strong> ${feature.distance}</p>
+        <p><strong>Direction:</strong> ${feature.direction >= 0 ? 'Normal' : 'Reverse'}</p>
+        <p><strong>Operation:</strong> ${feature.operation || (feature.type === 'extrude-cut' ? 'subtract' : 'new')}</p>
+        <p><strong>Symmetric:</strong> ${feature.symmetric ? 'Yes' : 'No'}</p>
+      `;
+      container.appendChild(details);
+
+      const editBtn = document.createElement('button');
+      editBtn.textContent = feature.type === 'extrude-cut' ? 'Edit Extrude Cut' : 'Edit Extrude';
+      editBtn.style.cssText = 'width:100%;padding:8px;margin-top:8px;background:#2196f3;color:#fff;border:none;border-radius:4px;cursor:pointer';
+      editBtn.addEventListener('click', () => this._editExtrude(feature));
+      container.appendChild(editBtn);
     } else if (feature.type === 'revolve') {
       const angleDeg = (feature.angle * 180 / Math.PI).toFixed(1);
       container.appendChild(this._createParamRow('Angle (°)', 'number', angleDeg, (v) => {
@@ -4415,6 +4435,9 @@ class App {
 
     // Setup callbacks
     this._featurePanel.setOnFeatureSelect((feature) => {
+      if (feature && feature.type === 'sketch') {
+        this._lastSketchFeatureId = feature.id;
+      }
       this._parametersPanel.showFeature(feature);
       this._showLeftFeatureParams(feature);
     });
@@ -5111,17 +5134,20 @@ class App {
         });
       }
 
-      div.addEventListener('click', () => {
+      div.addEventListener('click', (e) => {
+        e.stopPropagation();
         if (this._isEditingFeature()) return;
+        if (feature.type === 'sketch') {
+          this._lastSketchFeatureId = feature.id;
+        }
         if (this._featurePanel) {
           this._featurePanel.selectFeature(feature.id);
+        } else {
+          if (this._parametersPanel) {
+            this._parametersPanel.showFeature(feature);
+          }
+          this._showLeftFeatureParams(feature);
         }
-        // Show parameters in the sidebar
-        if (this._parametersPanel) {
-          this._parametersPanel.showFeature(feature);
-        }
-        // Show parameters in the left panel (Part mode)
-        this._showLeftFeatureParams(feature);
         // Highlight selected feature in 3D view
         if (this._renderer3d) {
           this._renderer3d.setSelectedFeature(feature.id);
@@ -5133,10 +5159,14 @@ class App {
       });
 
       // Double-click on sketch features to enter edit mode
-      div.addEventListener('dblclick', () => {
-        if (feature.type === 'sketch' && !this._isEditingFeature()) {
+      div.addEventListener('dblclick', (e) => {
+        e.stopPropagation();
+        if (this._isEditingFeature()) return;
+        if (feature.type === 'sketch') {
           this._recorder.sketchEditStarted(feature.id, feature.name);
           this._editExistingSketch(feature);
+        } else if (feature.type === 'extrude' || feature.type === 'extrude-cut') {
+          this._editExtrude(feature);
         }
       });
 
@@ -6633,7 +6663,10 @@ class App {
 
     // Flip yAxis if it doesn't align with the expected positive direction
     const yDot = yAxis.x * yRef.x + yAxis.y * yRef.y + yAxis.z * yRef.z;
-    if (yDot < 0) { yAxis.x = -yAxis.x; yAxis.y = -yAxis.y; yAxis.z = -yAxis.z; }
+    if (yDot < 0) {
+      xAxis.x = -xAxis.x; xAxis.y = -xAxis.y; xAxis.z = -xAxis.z;
+      yAxis.x = -yAxis.x; yAxis.y = -yAxis.y; yAxis.z = -yAxis.z;
+    }
 
     return { origin, normal, xAxis, yAxis };
   }
@@ -6858,6 +6891,25 @@ class App {
     this._scheduleRender();
   }
 
+  _getPreferredSketchFeatureId() {
+    const features = this._partManager ? this._partManager.getFeatures() : [];
+    const activeFeature = this._partManager ? this._partManager.getActiveFeature() : null;
+    const selectedFeatureId =
+      (this._featurePanel && this._featurePanel.selectedFeatureId) ||
+      (activeFeature ? activeFeature.id : null) ||
+      (this._renderer3d ? this._renderer3d._selectedFeatureId : null) ||
+      null;
+
+    if (selectedFeatureId) {
+      const selectedFeature = features.find((feature) => feature.id === selectedFeatureId);
+      if (selectedFeature && selectedFeature.type === 'sketch') {
+        return selectedFeature.id;
+      }
+    }
+
+    return this._lastSketchFeatureId || null;
+  }
+
   async _startExtrude(isCut = false) {
     if (this._workspaceMode !== 'part') {
       this.setStatus('Extrude is only available in Part workspace.');
@@ -6928,11 +6980,12 @@ class App {
     }
 
     const opName = isCut ? 'Extrude Cut' : 'Extrude';
+    const sketchFeatureId = this._getPreferredSketchFeatureId();
 
     // Enter extrude mode
     this._extrudeMode = {
       isCut,
-      sketchFeatureId: this._lastSketchFeatureId || null,
+      sketchFeatureId,
       distance: 10,
       direction: isCut ? -1 : 1,
       symmetric: false,

@@ -553,5 +553,177 @@ test('Multi-edge fillet on box (all top edges at once): manifold', () => {
   assert.strictEqual(m.windingErrors, 0, `winding=${m.windingErrors}`);
 });
 
+// --- 3-edge corner fillet (trihedron) tests ---
+
+console.log('\n=== 3-Edge Corner Fillet (Trihedron) Tests ===\n');
+
+test('Fillet 3 edges meeting at a box corner: manifold, no overlapping faces', () => {
+  const part = new Part('T_tri1');
+  const sf = part.addSketch(makeRectSketch(0, 0, 10, 10));
+  part.extrude(sf.id, 10);
+
+  const before = part.getFinalGeometry();
+  const volBefore = calculateMeshVolume(before.geometry);
+
+  // 3 edges meeting at corner (10, 10, 10)
+  const ek1 = makeEdgeKey({ x: 0, y: 10, z: 10 }, { x: 10, y: 10, z: 10 }); // top-back
+  const ek2 = makeEdgeKey({ x: 10, y: 0, z: 10 }, { x: 10, y: 10, z: 10 }); // top-right
+  const ek3 = makeEdgeKey({ x: 10, y: 10, z: 0 }, { x: 10, y: 10, z: 10 }); // vertical
+
+  part.fillet([ek1, ek2, ek3], 1, { segments: 8 });
+
+  const after = part.getFinalGeometry();
+  assert.ok(after && after.type === 'solid', 'Should produce valid solid');
+  const volAfter = calculateMeshVolume(after.geometry);
+  assert.ok(volAfter < volBefore, `Volume should decrease: ${volBefore.toFixed(2)} → ${volAfter.toFixed(2)}`);
+  assert.ok(volAfter > volBefore * 0.8, `Volume should not decrease too much: ${volAfter.toFixed(2)}`);
+
+  const m = checkManifold(after.geometry);
+  assert.strictEqual(m.boundaryEdges, 0, `boundary=${m.boundaryEdges}`);
+  assert.strictEqual(m.nonManifoldEdges, 0, `nonManifold=${m.nonManifoldEdges}`);
+  assert.strictEqual(m.windingErrors, 0, `winding=${m.windingErrors}`);
+});
+
+test('Fillet 3 edges meeting at a corner: no zero-area faces', () => {
+  const part = new Part('T_tri2');
+  const sf = part.addSketch(makeRectSketch(0, 0, 10, 10));
+  part.extrude(sf.id, 10);
+
+  const ek1 = makeEdgeKey({ x: 0, y: 10, z: 10 }, { x: 10, y: 10, z: 10 });
+  const ek2 = makeEdgeKey({ x: 10, y: 0, z: 10 }, { x: 10, y: 10, z: 10 });
+  const ek3 = makeEdgeKey({ x: 10, y: 10, z: 0 }, { x: 10, y: 10, z: 10 });
+
+  part.fillet([ek1, ek2, ek3], 1, { segments: 8 });
+
+  const after = part.getFinalGeometry();
+  let degenerateFaces = 0;
+  for (const f of after.geometry.faces) {
+    if (f.vertices.length < 3) { degenerateFaces++; continue; }
+    const v = f.vertices;
+    const cross = {
+      x: (v[1].y - v[0].y) * (v[2].z - v[0].z) - (v[1].z - v[0].z) * (v[2].y - v[0].y),
+      y: (v[1].z - v[0].z) * (v[2].x - v[0].x) - (v[1].x - v[0].x) * (v[2].z - v[0].z),
+      z: (v[1].x - v[0].x) * (v[2].y - v[0].y) - (v[1].y - v[0].y) * (v[2].x - v[0].x),
+    };
+    const area = Math.sqrt(cross.x ** 2 + cross.y ** 2 + cross.z ** 2) / 2;
+    if (area < 1e-10) degenerateFaces++;
+  }
+  assert.strictEqual(degenerateFaces, 0, `Found ${degenerateFaces} degenerate (zero-area) faces`);
+});
+
+test('box-fillet-3: 10 feature faces and 21 feature lines (6 curved)', () => {
+  const part = new Part('T_tri3');
+  const sf = part.addSketch(makeRectSketch(0, 0, 10, 10));
+  part.extrude(sf.id, 10);
+
+  const ek1 = makeEdgeKey({ x: 0, y: 10, z: 10 }, { x: 10, y: 10, z: 10 });
+  const ek2 = makeEdgeKey({ x: 10, y: 0, z: 10 }, { x: 10, y: 10, z: 10 });
+  const ek3 = makeEdgeKey({ x: 10, y: 10, z: 0 }, { x: 10, y: 10, z: 10 });
+
+  part.fillet([ek1, ek2, ek3], 1, { segments: 8 });
+
+  const after = part.getFinalGeometry();
+  const geom = after.geometry;
+
+  // Count unique face groups
+  const groups = new Set(geom.faces.map(f => f.faceGroup));
+  assert.strictEqual(groups.size, 10, `Expected 10 face groups, got ${groups.size}`);
+
+  // Count feature lines (paths)
+  assert.strictEqual(geom.paths.length, 21, `Expected 21 feature lines, got ${geom.paths.length}`);
+
+  // Count curved paths (more than 2 edges)
+  const curvedPaths = geom.paths.filter(p => p.edgeIndices.length > 2).length;
+  assert.strictEqual(curvedPaths, 6, `Expected 6 curved feature lines, got ${curvedPaths}`);
+});
+
+test('box-fillet-3: spherical corner has NURBS surface on sphere', () => {
+  const part = new Part('T_tri4');
+  const sf = part.addSketch(makeRectSketch(0, 0, 10, 10));
+  part.extrude(sf.id, 10);
+
+  const ek1 = makeEdgeKey({ x: 0, y: 10, z: 10 }, { x: 10, y: 10, z: 10 });
+  const ek2 = makeEdgeKey({ x: 10, y: 0, z: 10 }, { x: 10, y: 10, z: 10 });
+  const ek3 = makeEdgeKey({ x: 10, y: 10, z: 0 }, { x: 10, y: 10, z: 10 });
+
+  part.fillet([ek1, ek2, ek3], 1, { segments: 8 });
+
+  const after = part.getFinalGeometry();
+  const brep = after.geometry.brep;
+  assert.ok(brep, 'Should have BRep data');
+
+  // Find the spherical BRep face
+  const sphereFace = brep.faces.find(f => f.surfaceType === 'spherical');
+  assert.ok(sphereFace, 'Should have a spherical BRep face');
+  assert.ok(sphereFace.surface, 'Spherical face should have a NURBS surface');
+  assert.strictEqual(sphereFace.surface.degreeU, 2, 'Degree U should be 2');
+  assert.strictEqual(sphereFace.surface.degreeV, 2, 'Degree V should be 2');
+  assert.strictEqual(sphereFace.surface.numRowsU, 3, 'Should have 3x3 control points');
+
+  // Evaluate the surface at several parameter values and check points lie
+  // on (or very near) the sphere defined by center + radius.
+  const center = sphereFace.sphereCenter;
+  const radius = sphereFace.sphereRadius;
+  const surf = sphereFace.surface;
+
+  const params = [
+    [0.5, 0.5], [0.25, 0.5], [0.75, 0.5],
+    [0.5, 0.25], [0.5, 0.75], [1.0, 0.0], [1.0, 1.0],
+  ];
+  for (const [u, v] of params) {
+    const pt = surf.evaluate(u, v);
+    const dx = pt.x - center.x, dy = pt.y - center.y, dz = pt.z - center.z;
+    const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    assert.ok(
+      Math.abs(dist - radius) < 0.01,
+      `Point at (${u},${v}) dist=${dist.toFixed(4)} should be near radius=${radius.toFixed(4)}`
+    );
+  }
+});
+
+// --- 2-Edge Corner Fillet Tests ---
+
+test('box-fillet-2: manifold, corner faces merge with fillet groups', () => {
+  const part = new Part('T_bi1');
+  const sf = part.addSketch(makeRectSketch(0, 0, 10, 10));
+  part.extrude(sf.id, 10);
+
+  // Two top edges meeting at (10, 0, 10)
+  const ek1 = makeEdgeKey({ x: 0, y: 0, z: 10 }, { x: 10, y: 0, z: 10 });
+  const ek2 = makeEdgeKey({ x: 10, y: 0, z: 10 }, { x: 10, y: 10, z: 10 });
+  part.fillet([ek1, ek2], 1, { segments: 8 });
+
+  const after = part.getFinalGeometry();
+  const geom = after.geometry;
+
+  // Manifold check
+  const m = checkManifold(geom);
+  assert.strictEqual(m.boundaryEdges, 0, 'No boundary edges');
+  assert.strictEqual(m.nonManifoldEdges, 0, 'No non-manifold edges');
+  assert.strictEqual(m.windingErrors, 0, 'No winding errors');
+
+  // Corner faces should be marked isFillet (not isCorner) so they merge
+  // with the adjacent fillet strip groups rather than forming a separate group.
+  const filletFaces = geom.faces.filter(f => f.isFillet);
+  assert.ok(filletFaces.length > 16, 'Should have >16 isFillet faces (2 strips + corner blend)');
+
+  // Should NOT have separate isCorner faces for the 2-edge case
+  const cornerFaces = geom.faces.filter(f => f.isCorner);
+  assert.strictEqual(cornerFaces.length, 0, 'No isCorner faces for 2-edge case');
+
+  // Face groups: should have fillet groups that include corner blend faces
+  const groups = {};
+  for (const f of geom.faces) {
+    const g = f.faceGroup !== undefined ? f.faceGroup : -1;
+    if (!groups[g]) groups[g] = { count: 0, isFillet: false };
+    groups[g].count++;
+    if (f.isFillet) groups[g].isFillet = true;
+  }
+  const filletGroups = Object.values(groups).filter(g => g.isFillet);
+  // Should have 2 fillet groups (one per edge), each with >8 faces
+  // (8 strip quads + some corner blend triangles)
+  assert.ok(filletGroups.length >= 2, `Should have >=2 fillet face groups, got ${filletGroups.length}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

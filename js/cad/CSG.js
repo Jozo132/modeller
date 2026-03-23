@@ -498,10 +498,42 @@ function assignCoplanarFaceGroups(faces) {
         if (dot >= SMOOTH_COS && dot < 1 - 1e-6) {
           // Don't merge fillet strip faces with non-fillet faces
           if (!!fa.isFillet !== !!fb.isFillet) continue;
+          // Don't merge corner faces with non-corner faces
+          if (!!fa.isCorner !== !!fb.isCorner) continue;
           unite(fis[i], fis[j]);
         }
       }
     }
+  }
+
+  // Force-merge adjacent corner faces into a single group.
+  // Spherical corner patches can span large angular ranges where adjacent
+  // triangle normals exceed the smooth threshold, but they are a single
+  // continuous surface that must stay in one group.
+  // Merge by shared edges first, then by shared vertices (the base triangle
+  // shares vertices but not edges with the spherical grid).
+  for (const [, fis] of edgeFaces) {
+    if (fis.length < 2) continue;
+    for (let i = 0; i < fis.length - 1; i++) {
+      for (let j = i + 1; j < fis.length; j++) {
+        if (faces[fis[i]].isCorner && faces[fis[j]].isCorner) {
+          unite(fis[i], fis[j]);
+        }
+      }
+    }
+  }
+  // Vertex-based merge for corner faces (base triangle ↔ spherical grid)
+  const cornerVertFaces = new Map();
+  for (let fi = 0; fi < faces.length; fi++) {
+    if (!faces[fi].isCorner) continue;
+    for (const v of faces[fi].vertices) {
+      const k = vKey(v);
+      if (!cornerVertFaces.has(k)) cornerVertFaces.set(k, []);
+      cornerVertFaces.get(k).push(fi);
+    }
+  }
+  for (const [, fis] of cornerVertFaces) {
+    for (let i = 1; i < fis.length; i++) unite(fis[0], fis[i]);
   }
 
   // Assign final faceGroup from union-find
@@ -851,6 +883,14 @@ export function computeFeatureEdges(faces) {
         const hasNF = info.faceIndices.some(fi => !faces[fi].isFillet);
         if (hasF && hasNF) isFeature = true;
       }
+      // Suppress feature edges at the corner base seam: the flat base triangle
+      // connecting the spherical corner to the trimmed box faces is a geometric
+      // necessity for manifold closure but should not produce visible feature lines.
+      if (isFeature && info.faceIndices.length >= 2) {
+        const hasCorner = info.faceIndices.some(fi => faces[fi].isCorner);
+        const allNonFillet = info.faceIndices.every(fi => !faces[fi].isFillet);
+        if (hasCorner && allNonFillet) isFeature = false;
+      }
       if (isFeature) {
         edges.push({
           start: info.start, end: info.end,
@@ -983,8 +1023,26 @@ function _chainEdgePaths(edges) {
  * @returns {Object} Resulting geometry {vertices, faces, edges}
  */
 export function booleanOp(geomA, geomB, operation, sharedA = null, sharedB = null) {
-  const a = CSGSolid.fromGeometry(geomA, sharedA);
-  const b = CSGSolid.fromGeometry(geomB, sharedB);
+  const normalizeBooleanOperand = (geometry) => {
+    if (!geometry || !Array.isArray(geometry.faces)) return geometry;
+
+    const faces = geometry.faces.map((face) => ({
+      ...face,
+      vertices: (face.vertices || []).map((vertex) => ({ ...vertex })),
+      normal: face.normal ? { ...face.normal } : face.normal,
+      shared: face.shared || null,
+    }));
+
+    _fixTJunctions(faces);
+
+    return {
+      ...geometry,
+      faces,
+    };
+  };
+
+  const a = CSGSolid.fromGeometry(normalizeBooleanOperand(geomA), sharedA);
+  const b = CSGSolid.fromGeometry(normalizeBooleanOperand(geomB), sharedB);
 
   let result;
   switch (operation) {
@@ -1264,6 +1322,35 @@ function _vec3Normalize(v) {
 }
 function _vec3Lerp(a, b, t) {
   return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, z: a.z + (b.z - a.z) * t };
+}
+
+/**
+ * Compute the circumsphere center of 4 non-coplanar points.
+ * All 4 points are equidistant from the returned center.
+ * Returns {x,y,z} or null if the points are (near-)coplanar.
+ */
+function _circumsphereCenter(p0, p1, p2, p3) {
+  const d1 = _vec3Sub(p1, p0);
+  const d2 = _vec3Sub(p2, p0);
+  const d3 = _vec3Sub(p3, p0);
+  const b1 = _vec3Dot(d1, d1) / 2;
+  const b2 = _vec3Dot(d2, d2) / 2;
+  const b3 = _vec3Dot(d3, d3) / 2;
+  const det = d1.x * (d2.y * d3.z - d2.z * d3.y)
+            - d1.y * (d2.x * d3.z - d2.z * d3.x)
+            + d1.z * (d2.x * d3.y - d2.y * d3.x);
+  if (Math.abs(det) < 1e-12) return null;
+  const inv = 1 / det;
+  const cx = (b1 * (d2.y * d3.z - d2.z * d3.y)
+            - d1.y * (b2 * d3.z - d2.z * b3)
+            + d1.z * (b2 * d3.y - d2.y * b3)) * inv;
+  const cy = (d1.x * (b2 * d3.z - d2.z * b3)
+            - b1 * (d2.x * d3.z - d2.z * d3.x)
+            + d1.z * (d2.x * b3 - b2 * d3.x)) * inv;
+  const cz = (d1.x * (d2.y * b3 - b2 * d3.y)
+            - d1.y * (d2.x * b3 - b2 * d3.x)
+            + b1 * (d2.x * d3.y - d2.y * d3.x)) * inv;
+  return { x: p0.x + cx, y: p0.y + cy, z: p0.z + cz };
 }
 
 /**
@@ -2009,6 +2096,32 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8) {
   // --- Phase 5: Generate corner/blending faces at shared vertices ---
   _generateCornerFaces(faces, origFaces, edgeDataList, vertexEdgeMap);
 
+  // Add BRep faces for spherical corner patches (from _generateTrihedronCorner).
+  // Build a NURBS surface using the Cobb octant construction so that the
+  // spherical face has an exact rational representation for CAM/machining.
+  {
+    const seen = new Set();
+    for (const face of faces) {
+      if (!face.isCorner || !face._sphereCenter || !face._triVerts) continue;
+      const cKey = _edgeVKey(face._sphereCenter);
+      if (seen.has(cKey)) continue;
+      seen.add(cKey);
+      let nurbsSurf = null;
+      try {
+        nurbsSurf = NurbsSurface.createSphericalPatch(
+          face._sphereCenter, face._sphereRadius,
+          face._triVerts[0], face._triVerts[1], face._triVerts[2]
+        );
+      } catch (e) {
+        // Degenerate geometry — fall back to metadata-only.
+      }
+      const brepFace = new BRepFace(nurbsSurf, 'spherical', face.shared);
+      brepFace.sphereCenter = { ...face._sphereCenter };
+      brepFace.sphereRadius = face._sphereRadius;
+      brep.addFace(brepFace);
+    }
+  }
+
   // --- Phase 6: Heal boundary edges left by sequential fillet interactions ---
   _healBoundaryLoops(faces);
 
@@ -2698,6 +2811,228 @@ function _deduplicatePolygon(verts) {
 }
 
 /**
+ * Generate a spherical triangle patch for a trihedron corner where 3+ fillet
+ * edges meet at a single vertex.  The 3 fillet arcs at the vertex form the
+ * boundary of a spherical triangle on a common sphere.  This function fills
+ * that triangle with a properly tessellated mesh, replacing the pairwise
+ * approach which produces overlapping/incorrect faces at 3-edge corners.
+ *
+ * @returns {boolean} true if the corner was handled, false to fall back
+ */
+function _generateTrihedronCorner(faces, edgeInfos, shared) {
+  if (edgeInfos.length < 3) return false;
+  const segs = edgeInfos[0].arc ? edgeInfos[0].arc.length - 1 : 0;
+  if (segs < 1) return false;
+
+  // Step 1: Find the 3 unique arc endpoints (vertices of the spherical triangle).
+  // Each fillet arc at the shared vertex has 2 endpoints (arc[0] on face0,
+  // arc[segs] on face1).  At a trihedron corner each endpoint is shared by
+  // exactly 2 arcs.
+  const endpointMap = new Map();
+  for (let i = 0; i < edgeInfos.length; i++) {
+    const arc = edgeInfos[i].arc;
+    if (!arc) continue;
+    for (const idx of [0, segs]) {
+      const vk = _edgeVKey(arc[idx]);
+      if (!endpointMap.has(vk)) endpointMap.set(vk, []);
+      endpointMap.get(vk).push({ ei: i, idx });
+    }
+  }
+
+  const triVerts = [];
+  for (const [vk, entries] of endpointMap) {
+    if (entries.length >= 2) {
+      triVerts.push({
+        vk,
+        pos: { ...edgeInfos[entries[0].ei].arc[entries[0].idx] },
+        entries,
+      });
+    }
+  }
+
+  // Must have exactly 3 triangle vertices for a trihedron
+  if (triVerts.length !== 3) return false;
+
+  // Step 2: Find which arc connects each pair of vertices, oriented V[i]→V[j].
+  function findArc(vi, vj) {
+    for (const info of edgeInfos) {
+      const arc = info.arc;
+      if (!arc) continue;
+      if (_edgeVKey(arc[0]) === vi.vk && _edgeVKey(arc[segs]) === vj.vk) return arc;
+      if (_edgeVKey(arc[0]) === vj.vk && _edgeVKey(arc[segs]) === vi.vk) return [...arc].reverse();
+    }
+    return null;
+  }
+
+  // Bottom arc: V[0] → V[1] ;  Left arc: V[0] → V[2] ;  Right arc: V[1] → V[2]
+  const arcBottom = findArc(triVerts[0], triVerts[1]);
+  const arcLeft   = findArc(triVerts[0], triVerts[2]);
+  const arcRight  = findArc(triVerts[1], triVerts[2]);
+  if (!arcBottom || !arcLeft || !arcRight) return false;
+
+  // Step 3: Compute the common sphere so interior points bulge correctly.
+  // All fillet arc points lie on a common sphere; find its center via circumsphere
+  // of 4 non-coplanar points (3 triangle vertices + 1 interior arc point).
+  const midIdx = Math.max(1, Math.floor(segs / 2));
+  const p3Arc = edgeInfos[0].arc[midIdx];
+  const sphereCenter = _circumsphereCenter(triVerts[0].pos, triVerts[1].pos, triVerts[2].pos, p3Arc);
+  const sphereRadius = sphereCenter ? _vec3Len(_vec3Sub(triVerts[0].pos, sphereCenter)) : 0;
+  const useSphere = sphereCenter !== null && sphereRadius > 1e-10;
+
+  // Step 4: Build the triangular grid.
+  //   Row 0 (bottom):  segs+1 points from arcBottom (V[0] → V[1])
+  //   Row r:           segs-r+1 points; left = arcLeft[r], right = arcRight[r]
+  //   Row segs (top):  1 point = V[2]
+  const grid = [];
+
+  // Row 0: exact bottom boundary arc
+  grid[0] = arcBottom.map(p => ({ ...p }));
+
+  // Row segs: top vertex
+  grid[segs] = [{ ...triVerts[2].pos }];
+
+  // Intermediate rows
+  for (let r = 1; r < segs; r++) {
+    const left = arcLeft[r];
+    const right = arcRight[r];
+    const count = segs - r + 1;
+    grid[r] = [];
+    for (let j = 0; j < count; j++) {
+      if (j === 0) {
+        grid[r][j] = { ...left };
+      } else if (j === count - 1) {
+        grid[r][j] = { ...right };
+      } else {
+        const t = j / (count - 1);
+        let pt = _vec3Lerp(left, right, t);
+        // Project onto the common sphere for a rounder surface
+        if (useSphere) {
+          const dir = _vec3Sub(pt, sphereCenter);
+          const len = _vec3Len(dir);
+          if (len > 1e-10) {
+            pt = _vec3Add(sphereCenter, _vec3Scale(dir, sphereRadius / len));
+          }
+        }
+        grid[r][j] = pt;
+      }
+    }
+  }
+
+  // Step 5: Determine correct winding by checking a boundary edge against the
+  // adjacent fillet strip face.  The fillet strip quads already have consistent
+  // winding; the trihedron must match by traversing shared boundary edges in
+  // the opposite direction.
+  const flip = _shouldFlipTrihedronWinding(faces, grid);
+
+  // Pre-compute shared metadata for emitted corner faces.
+  const triVertPositions = [{ ...triVerts[0].pos }, { ...triVerts[1].pos }, { ...triVerts[2].pos }];
+
+  // Step 6: Emit triangles from the grid.
+  for (let r = 0; r < segs; r++) {
+    const currRow = grid[r];
+    const nextRow = grid[r + 1];
+    const currLen = currRow.length;
+    const nextLen = nextRow.length;
+
+    for (let j = 0; j < currLen - 1; j++) {
+      // "Down" triangle: currRow[j], currRow[j+1], nextRow[j]
+      const a = currRow[j], b = currRow[j + 1], c = nextRow[j];
+      const tri1 = flip
+        ? [{ ...a }, { ...c }, { ...b }]
+        : [{ ...a }, { ...b }, { ...c }];
+      const n1 = _vec3Normalize(_vec3Cross(
+        _vec3Sub(tri1[1], tri1[0]), _vec3Sub(tri1[2], tri1[0])
+      ));
+      if (_vec3Len(n1) > 1e-10) {
+        faces.push({ vertices: tri1, normal: n1, shared, isCorner: true,
+          _sphereCenter: useSphere ? sphereCenter : null, _sphereRadius: sphereRadius,
+          _triVerts: triVertPositions });
+      }
+
+      // "Up" triangle: currRow[j+1], nextRow[j+1], nextRow[j]
+      if (j < nextLen - 1) {
+        const d = currRow[j + 1], e = nextRow[j + 1], f = nextRow[j];
+        const tri2 = flip
+          ? [{ ...d }, { ...f }, { ...e }]
+          : [{ ...d }, { ...e }, { ...f }];
+        const n2 = _vec3Normalize(_vec3Cross(
+          _vec3Sub(tri2[1], tri2[0]), _vec3Sub(tri2[2], tri2[0])
+        ));
+        if (_vec3Len(n2) > 1e-10) {
+          faces.push({ vertices: tri2, normal: n2, shared, isCorner: true,
+            _sphereCenter: useSphere ? sphereCenter : null, _sphereRadius: sphereRadius,
+            _triVerts: triVertPositions });
+        }
+      }
+    }
+  }
+
+  // Add the flat base triangle connecting the 3 trihedron vertices.
+  // This seals the small triangular boundary loop between the 3 trimmed box
+  // faces at the corner, preventing _healBoundaryLoops from creating an
+  // untagged face later.
+  const bk0 = _edgeVKey(triVerts[0].pos);
+  const bk1 = _edgeVKey(triVerts[1].pos);
+  let baseFlip = false;
+  for (let fi = 0; fi < faces.length && !baseFlip; fi++) {
+    const verts = faces[fi].vertices;
+    for (let i = 0; i < verts.length; i++) {
+      if (_edgeVKey(verts[i]) === bk0 &&
+          _edgeVKey(verts[(i + 1) % verts.length]) === bk1) {
+        baseFlip = true;
+        break;
+      }
+    }
+  }
+  const baseTri = baseFlip
+    ? [{ ...triVerts[0].pos }, { ...triVerts[2].pos }, { ...triVerts[1].pos }]
+    : [{ ...triVerts[0].pos }, { ...triVerts[1].pos }, { ...triVerts[2].pos }];
+  const baseN = _vec3Normalize(_vec3Cross(
+    _vec3Sub(baseTri[1], baseTri[0]), _vec3Sub(baseTri[2], baseTri[0])
+  ));
+  if (_vec3Len(baseN) > 1e-10) {
+    faces.push({ vertices: baseTri, normal: baseN, shared, isCorner: true });
+  }
+
+  return true;
+}
+
+/**
+ * Determine whether the trihedron corner grid needs its winding flipped.
+ * Checks if the first boundary edge of the grid (row 0, columns 0→1)
+ * is traversed in the same direction by an adjacent fillet strip face.
+ * If so, the trihedron must flip to maintain manifold consistency.
+ */
+function _shouldFlipTrihedronWinding(faces, grid) {
+  if (!grid[0] || grid[0].length < 2) return false;
+  const k0 = _edgeVKey(grid[0][0]);
+  const k1 = _edgeVKey(grid[0][1]);
+
+  for (let fi = 0; fi < faces.length; fi++) {
+    if (!faces[fi].isFillet) continue;
+    const verts = faces[fi].vertices;
+    for (let i = 0; i < verts.length; i++) {
+      const va = verts[i], vb = verts[(i + 1) % verts.length];
+      const ka = _edgeVKey(va), kb = _edgeVKey(vb);
+      if (ka === k0 && kb === k1) return true;   // same direction → flip
+      if (ka === k1 && kb === k0) return false;  // opposite → no flip
+    }
+  }
+
+  // Fallback: try any face (not just fillet) sharing this edge
+  for (let fi = 0; fi < faces.length; fi++) {
+    const verts = faces[fi].vertices;
+    for (let i = 0; i < verts.length; i++) {
+      const va = verts[i], vb = verts[(i + 1) % verts.length];
+      const ka = _edgeVKey(va), kb = _edgeVKey(vb);
+      if (ka === k0 && kb === k1) return true;
+      if (ka === k1 && kb === k0) return false;
+    }
+  }
+  return false;
+}
+
+/**
  * Generate fillet corner faces at a shared vertex using triangle fans.
  * The boundary of the gap consists of:
  * 1. Top face edge: arcB_(i-1)[0] → arcA_i[0]
@@ -2708,6 +3043,12 @@ function _deduplicatePolygon(verts) {
  * The polygon must traverse these in opposite direction to adjacent faces.
  */
 function _generateFilletCorner(faces, edgeInfos, shared) {
+  // For 3+ edges forming a closed trihedron, use a proper spherical triangle
+  // patch instead of the pairwise approach which creates overlapping faces.
+  if (edgeInfos.length >= 3 && _generateTrihedronCorner(faces, edgeInfos, shared)) {
+    return;
+  }
+
   // Handle pairs of adjacent edges around the vertex.
   // For M edges, process each consecutive pair (i, i+1).
   // For M=2 this produces a single corner patch; for M>=3 it produces one
@@ -2727,34 +3068,54 @@ function _generateFilletCorner(faces, edgeInfos, shared) {
     const arcsMeet = _edgeVKey(lastCurr) === _edgeVKey(lastNext);
 
     if (arcsMeet && segs > 1) {
-      // Grid patch: connect corresponding levels of both arcs with quads.
-      // This creates a smooth ruled surface instead of a flat triangle fan.
-      // Winding: [arcCurr[s], arcCurr[s+1], arcNext[s+1], arcNext[s]]
-      // Last row degenerates to a triangle since both arcs converge.
+      // Ruled surface between the two fillet cross-section arcs, split into
+      // triangles along the diagonal so each half can merge with the adjacent
+      // fillet strip group.  The diagonal becomes the feature line where the
+      // two fillets meet — no separate corner patch is needed.
+      //
+      // Winding: check a representative triangle against existing fillet
+      // faces to ensure consistent orientation.
+      const flip = _shouldFlipTrihedronWinding(faces, [
+        [arcCurr[0], arcCurr[1]],  // just need first 2 points in row 0
+      ]);
+
       for (let s = 0; s < segs; s++) {
         if (s < segs - 1) {
           const v0 = arcCurr[s], v1 = arcCurr[s + 1];
           const v2 = arcNext[s + 1], v3 = arcNext[s];
-          const faceNormal = _vec3Normalize(_vec3Cross(
-            _vec3Sub(v1, v0), _vec3Sub(v3, v0)
+
+          // Triangle along arcCurr side → merges with fillet strip 1
+          const tri1 = flip
+            ? [{ ...v0 }, { ...v2 }, { ...v1 }]
+            : [{ ...v0 }, { ...v1 }, { ...v2 }];
+          const n1 = _vec3Normalize(_vec3Cross(
+            _vec3Sub(tri1[1], tri1[0]), _vec3Sub(tri1[2], tri1[0])
           ));
-          if (_vec3Len(faceNormal) > 1e-10) {
-            faces.push({
-              vertices: [{ ...v0 }, { ...v1 }, { ...v2 }, { ...v3 }],
-              normal: faceNormal, shared,
-            });
+          if (_vec3Len(n1) > 1e-10) {
+            faces.push({ vertices: tri1, normal: n1, shared, isFillet: true });
+          }
+
+          // Triangle along arcNext side → merges with fillet strip 2
+          const tri2 = flip
+            ? [{ ...v0 }, { ...v3 }, { ...v2 }]
+            : [{ ...v0 }, { ...v2 }, { ...v3 }];
+          const n2 = _vec3Normalize(_vec3Cross(
+            _vec3Sub(tri2[1], tri2[0]), _vec3Sub(tri2[2], tri2[0])
+          ));
+          if (_vec3Len(n2) > 1e-10) {
+            faces.push({ vertices: tri2, normal: n2, shared, isFillet: true });
           }
         } else {
-          // Last row: triangle (both arcs converge to same endpoint)
+          // Last row: single triangle (both arcs converge to same endpoint)
           const v0 = arcCurr[s], v1 = arcCurr[s + 1], v2 = arcNext[s];
+          const tri = flip
+            ? [{ ...v0 }, { ...v2 }, { ...v1 }]
+            : [{ ...v0 }, { ...v1 }, { ...v2 }];
           const triNormal = _vec3Normalize(_vec3Cross(
-            _vec3Sub(v1, v0), _vec3Sub(v2, v0)
+            _vec3Sub(tri[1], tri[0]), _vec3Sub(tri[2], tri[0])
           ));
           if (_vec3Len(triNormal) > 1e-10) {
-            faces.push({
-              vertices: [{ ...v0 }, { ...v1 }, { ...v2 }],
-              normal: triNormal, shared,
-            });
+            faces.push({ vertices: tri, normal: triNormal, shared, isFillet: true });
           }
         }
       }

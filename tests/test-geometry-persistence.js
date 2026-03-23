@@ -6,6 +6,7 @@
 import assert from 'assert';
 import { Part } from '../js/cad/Part.js';
 import { Sketch } from '../js/cad/Sketch.js';
+import { calculateMeshVolume } from '../js/cad/CSG.js';
 
 console.log('=== Geometry Persistence Test ===\n');
 
@@ -101,5 +102,81 @@ assert.strictEqual(lastSolid.type, 'solid', 'getLastSolidResult should return so
 const secondExtrudeResult = part.featureTree.results[extrudeFeature2.id];
 assert.strictEqual(lastSolid, secondExtrudeResult, 'Last solid should be from second extrude');
 console.log('  ✓ getLastSolidResult returns correct result');
+
+// ---------------------------------------------------------------------------
+// Step 6: Left-handed face planes from older files should still extrude correctly
+// ---------------------------------------------------------------------------
+console.log('\n--- Step 6: Extrude from a legacy left-handed face plane ---');
+const legacyPart = new Part('LegacyFacePlane');
+const baseSketch = new Sketch();
+baseSketch.addSegment(0, 0, 10, 0);
+baseSketch.addSegment(10, 0, 10, 10);
+baseSketch.addSegment(10, 10, 0, 10);
+baseSketch.addSegment(0, 10, 0, 0);
+
+const legacyBase = legacyPart.addSketch(baseSketch);
+legacyPart.extrude(legacyBase.id, 10);
+
+const legacyFacePlane = {
+  origin: { x: 5.814691488167698, y: 10, z: 7.066122114020926 },
+  normal: { x: 0, y: 1, z: 0 },
+  xAxis: { x: 1, y: 0, z: 0 },
+  yAxis: { x: 0, y: 0, z: 1 },
+};
+
+const legacySketch = new Sketch();
+legacySketch.addSegment(2.956468792214851, 1.8593414879815384, -0.3695585366887606, 1.8593414879815384);
+legacySketch.addSegment(-0.3695585366887606, 1.8593414879815384, -0.3695585366887606, -0.8430555429871127);
+legacySketch.addSegment(-0.3695585366887606, -0.8430555429871127, 2.956468792214851, -0.8430555429871127);
+legacySketch.addSegment(2.956468792214851, -0.8430555429871127, 2.956468792214851, 1.8593414879815384);
+
+const legacyFeature = legacyPart.addSketch(legacySketch, legacyFacePlane);
+const legacyExtrude = legacyPart.extrude(legacyFeature.id, 2);
+assert.strictEqual(legacyExtrude.operation, 'add', 'Legacy face-plane extrude should still union with the existing solid');
+
+const legacyResult = legacyPart.getFinalGeometry();
+assert.ok(legacyResult && legacyResult.type === 'solid', 'Legacy face-plane extrude should produce a solid');
+assert.ok(calculateMeshVolume(legacyResult.geometry) > 1000, 'Legacy face-plane extrude should preserve the original body volume');
+assert.ok(legacyResult.boundingBox.min.x <= 0.001, `Legacy result min.x should keep the base body, got ${legacyResult.boundingBox.min.x}`);
+assert.ok(legacyResult.boundingBox.max.x >= 9.999, `Legacy result max.x should keep the base body, got ${legacyResult.boundingBox.max.x}`);
+assert.ok(legacyResult.boundingBox.max.y >= 11.999, `Legacy result max.y should include the added boss, got ${legacyResult.boundingBox.max.y}`);
+console.log('  ✓ Legacy left-handed face planes still extrude as additive solids');
+
+// ---------------------------------------------------------------------------
+// Step 7: Multiple disjoint profiles on a legacy face plane should all add
+// ---------------------------------------------------------------------------
+console.log('\n--- Step 7: Multi-profile extrude on a legacy left-handed face plane ---');
+const dualPart = new Part('LegacyFacePlaneDual');
+const dualBaseSketch = new Sketch();
+dualBaseSketch.addSegment(0, 0, 10, 0);
+dualBaseSketch.addSegment(10, 0, 10, 10);
+dualBaseSketch.addSegment(10, 10, 0, 10);
+dualBaseSketch.addSegment(0, 10, 0, 0);
+
+const dualBase = dualPart.addSketch(dualBaseSketch);
+dualPart.extrude(dualBase.id, 10);
+
+const dualSketch = new Sketch();
+dualSketch.addSegment(2.956468792214851, 1.8593414879815384, -0.3695585366887606, 1.8593414879815384);
+dualSketch.addSegment(-0.3695585366887606, 1.8593414879815384, -0.3695585366887606, -0.8430555429871127);
+dualSketch.addSegment(-0.3695585366887606, -0.8430555429871127, 2.956468792214851, -0.8430555429871127);
+dualSketch.addSegment(2.956468792214851, -0.8430555429871127, 2.956468792214851, 1.8593414879815384);
+dualSketch.addSegment(-2.006822698185274, 0.8131779857457326, -4.734580551615946, 0.8131779857457326);
+dualSketch.addSegment(-4.734580551615946, 0.8131779857457326, -4.734580551615946, -1.6317013972137966);
+dualSketch.addSegment(-4.734580551615946, -1.6317013972137966, -2.006822698185274, -1.6317013972137966);
+dualSketch.addSegment(-2.006822698185274, -1.6317013972137966, -2.006822698185274, 0.8131779857457326);
+
+const dualFeature = dualPart.addSketch(dualSketch, legacyFacePlane);
+const dualExtrude = dualPart.extrude(dualFeature.id, 2);
+assert.strictEqual(dualExtrude.operation, 'add', 'Dual legacy face-plane extrude should use add operation');
+
+const dualResult = dualPart.getFinalGeometry();
+assert.ok(dualResult && dualResult.type === 'solid', 'Dual legacy face-plane extrude should produce a solid');
+const dualVolume = calculateMeshVolume(dualResult.geometry);
+assert.ok(Math.abs(dualVolume - 1031.3145706322168) < 0.01, `Dual legacy face-plane extrude volume mismatch: ${dualVolume}`);
+assert.ok(dualResult.boundingBox.min.x <= 0.001, `Dual result min.x should keep the base body, got ${dualResult.boundingBox.min.x}`);
+assert.ok(dualResult.boundingBox.max.x >= 9.999, `Dual result max.x should keep the base body, got ${dualResult.boundingBox.max.x}`);
+assert.ok(dualResult.boundingBox.max.y >= 11.999, `Dual result max.y should include both added bosses, got ${dualResult.boundingBox.max.y}`);
+console.log('  ✓ Multi-profile legacy face planes add all bosses without cutting holes');
 
 console.log('\n=== All geometry persistence tests passed! ===');

@@ -15,6 +15,84 @@ import { RevolveFeature } from './RevolveFeature.js';
 import { ChamferFeature } from './ChamferFeature.js';
 import { FilletFeature } from './FilletFeature.js';
 
+function parseFeatureIdNumber(featureId) {
+  if (typeof featureId !== 'string') return null;
+  const match = /^feature_(\d+)$/.exec(featureId);
+  return match ? parseInt(match[1], 10) : null;
+}
+
+function normalizeFeatureTreeData(featureTreeData) {
+  if (!featureTreeData || !Array.isArray(featureTreeData.features)) {
+    return featureTreeData;
+  }
+
+  const usedIds = new Set();
+  const originalOccurrences = new Map();
+  const numericIds = featureTreeData.features
+    .map((feature) => parseFeatureIdNumber(feature && feature.id))
+    .filter((value) => value != null);
+  let nextGeneratedId = (numericIds.length > 0 ? Math.max(...numericIds) : 0) + 1;
+
+  const takeNextId = () => {
+    let candidate = `feature_${nextGeneratedId++}`;
+    while (usedIds.has(candidate)) {
+      candidate = `feature_${nextGeneratedId++}`;
+    }
+    return candidate;
+  };
+
+  const normalizedFeatures = featureTreeData.features.map((featureData, index) => {
+    const originalId = featureData && featureData.id ? featureData.id : null;
+    let resolvedId = originalId;
+    if (!resolvedId || usedIds.has(resolvedId)) {
+      resolvedId = takeNextId();
+    }
+
+    usedIds.add(resolvedId);
+
+    if (originalId) {
+      const occurrences = originalOccurrences.get(originalId) || [];
+      occurrences.push({ index, resolvedId, type: featureData.type || null });
+      originalOccurrences.set(originalId, occurrences);
+    }
+
+    return {
+      ...featureData,
+      id: resolvedId,
+    };
+  });
+
+  const resolveReference = (referenceId, currentIndex, preferredType = null) => {
+    if (!referenceId) return referenceId;
+    const occurrences = originalOccurrences.get(referenceId);
+    if (!occurrences || occurrences.length === 0) return referenceId;
+
+    const priorOccurrences = occurrences.filter((entry) => entry.index < currentIndex);
+    const searchPool = priorOccurrences.length > 0 ? priorOccurrences : occurrences;
+    const typedPool = preferredType
+      ? searchPool.filter((entry) => entry.type === preferredType)
+      : searchPool;
+    const chosenPool = typedPool.length > 0 ? typedPool : searchPool;
+    return chosenPool[chosenPool.length - 1].resolvedId;
+  };
+
+  return {
+    ...featureTreeData,
+    features: normalizedFeatures.map((featureData, index) => ({
+      ...featureData,
+      dependencies: Array.isArray(featureData.dependencies)
+        ? featureData.dependencies.map((dependencyId) => resolveReference(dependencyId, index))
+        : [],
+      children: Array.isArray(featureData.children)
+        ? featureData.children.map((childId) => resolveReference(childId, index, 'sketch'))
+        : [],
+      sketchFeatureId: featureData.sketchFeatureId
+        ? resolveReference(featureData.sketchFeatureId, index, 'sketch')
+        : featureData.sketchFeatureId,
+    })),
+  };
+}
+
 /**
  * Part represents a 3D solid part built from 2D sketches and 3D operations.
  * Uses a parametric feature tree where modifying a feature recalculates all dependent features.
@@ -556,7 +634,8 @@ export class Part {
     
     // Deserialize feature tree
     if (data.featureTree) {
-      part.featureTree = FeatureTree.deserialize(data.featureTree, (featureData) => {
+      const normalizedFeatureTree = normalizeFeatureTreeData(data.featureTree);
+      part.featureTree = FeatureTree.deserialize(normalizedFeatureTree, (featureData) => {
         // Factory function to create features based on type
         switch (featureData.type) {
           case 'sketch':

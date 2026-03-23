@@ -512,4 +512,134 @@ export class NurbsSurface {
       [0, 0, 1, 1]
     );
   }
+
+  /**
+   * Create a degree (2,2) rational Bézier surface representing a spherical
+   * triangle patch between three points on a sphere.
+   *
+   * Uses the Cobb octant construction: a degenerate tensor-product patch
+   * where one parametric edge (u = 0) collapses to a single pole vertex.
+   * The three boundary arcs are mathematically exact circular arcs on the
+   * sphere; the interior is exact when all inter-vertex angles are 90° and
+   * a very close rational approximation otherwise.
+   *
+   * References:
+   *   - Cobb, "Tiling the Sphere with Rational Bezier Patches" (1988)
+   *   - Piegl & Tiller, "The NURBS Book", Example 8.5 (1997)
+   *
+   * @param {{x:number,y:number,z:number}} center - Sphere center
+   * @param {number} radius - Sphere radius
+   * @param {{x:number,y:number,z:number}} v0 - First vertex on sphere
+   * @param {{x:number,y:number,z:number}} v1 - Second vertex on sphere
+   * @param {{x:number,y:number,z:number}} v2 - Third vertex / pole
+   * @returns {NurbsSurface}
+   */
+  static createSphericalPatch(center, radius, v0, v1, v2) {
+    const sub = (a, b) => ({ x: a.x - b.x, y: a.y - b.y, z: a.z - b.z });
+    const add = (a, b) => ({ x: a.x + b.x, y: a.y + b.y, z: a.z + b.z });
+    const scl = (v, s) => ({ x: v.x * s, y: v.y * s, z: v.z * s });
+    const dot = (a, b) => a.x * b.x + a.y * b.y + a.z * b.z;
+    const len = v => Math.sqrt(dot(v, v));
+    const nrm = v => { const l = len(v); return l > 1e-15 ? scl(v, 1 / l) : v; };
+
+    // Unit direction vectors from center to each vertex
+    const d0 = nrm(sub(v0, center));
+    const d1 = nrm(sub(v1, center));
+    const d2 = nrm(sub(v2, center));
+
+    // Cosines of inter-vertex angles
+    const cos01 = Math.max(-1, Math.min(1, dot(d0, d1)));
+    const cos02 = Math.max(-1, Math.min(1, dot(d0, d2)));
+    const cos12 = Math.max(-1, Math.min(1, dot(d1, d2)));
+
+    // Half-angle weights for the three boundary arcs
+    const w01 = Math.cos(Math.acos(cos01) / 2);
+    const w02 = Math.cos(Math.acos(cos02) / 2);
+    const w12 = Math.cos(Math.acos(cos12) / 2);
+
+    // Tangent intersection scale: R / (1 + cos α) for arc mid-control points.
+    // Each boundary arc A→B has its middle Bézier CP at distance R/cos(α/2)
+    // from center, along the bisector of dA and dB.
+    const f01 = radius / Math.max(1e-10, 1 + cos01);
+    const f02 = radius / Math.max(1e-10, 1 + cos02);
+    const f12 = radius / Math.max(1e-10, 1 + cos12);
+
+    // 3×3 control point grid (row-major, 3 rows u × 3 cols v):
+    //   Row 0 (u=0): degenerate pole — all three CPs equal to v2
+    //   Row 1 (u=½): tangent-intersection ring
+    //   Row 2 (u=1): bottom boundary arc v0 → v1
+    const controlPoints = [
+      // Row 0: pole
+      { ...v2 },
+      { ...v2 },
+      { ...v2 },
+      // Row 1: tangent intersection points
+      add(center, scl(add(d0, d2), f02)),                // P10: arc v0↔v2 tangent
+      { ...center },                                      // P11: placeholder, solved below
+      add(center, scl(add(d1, d2), f12)),                // P12: arc v1↔v2 tangent
+      // Row 2: bottom arc
+      { ...v0 },                                          // P20
+      add(center, scl(add(d0, d1), f01)),                // P21: arc v0↔v1 tangent
+      { ...v1 },                                          // P22
+    ];
+
+    // Weights: tensor product of per-arc half-angle cosines.
+    //   Corner CPs (on sphere) get weight 1.
+    //   Edge-mid CPs get the half-angle cosine of that boundary arc.
+    //   Center CP gets the product of the two parametric-direction weights.
+    const weights = [
+      1,    w12,        1,
+      w02,  w02 * w12,  w12,
+      1,    w01,        1,
+    ];
+
+    // Solve for the center CP P[1][1] = center + λ·D where D = d0+d1+d2,
+    // such that the surface at (u=½, v=½) lies exactly on the sphere.
+    // The rational surface S(u,v) = Σ Bᵢⱼ wᵢⱼ Pᵢⱼ / Σ Bᵢⱼ wᵢⱼ.
+    // At (½,½) with quadratic Bernstein: B = [[1/16,1/8,1/16],[1/8,1/4,1/8],[1/16,1/8,1/16]].
+    // Setting |S(½,½) - center|² = R² gives a quadratic in λ.
+    const D = add(add(d0, d1), d2);
+    const Bern = [1 / 16, 1 / 8, 1 / 16, 1 / 8, 1 / 4, 1 / 8, 1 / 16, 1 / 8, 1 / 16];
+    const w11 = weights[4];
+
+    // Total weight sum (fixed, independent of P11 position)
+    let Wsum = 0;
+    for (let k = 0; k < 9; k++) Wsum += Bern[k] * weights[k];
+
+    // Weighted displacement sum excluding P11: A = Σ_{k≠4} Bₖ wₖ (Pₖ − center)
+    let Ax = 0, Ay = 0, Az = 0;
+    for (let k = 0; k < 9; k++) {
+      if (k === 4) continue;
+      const bw = Bern[k] * weights[k];
+      Ax += bw * (controlPoints[k].x - center.x);
+      Ay += bw * (controlPoints[k].y - center.y);
+      Az += bw * (controlPoints[k].z - center.z);
+    }
+
+    // Quadratic: α²|D|²λ² + 2α(A·D)λ + (|A|² − R²W²) = 0
+    const alpha = Bern[4] * w11;
+    const DD = dot(D, D);
+    const AD = Ax * D.x + Ay * D.y + Az * D.z;
+    const AA = Ax * Ax + Ay * Ay + Az * Az;
+
+    const qa = alpha * alpha * DD;
+    const qb = 2 * alpha * AD;
+    const qc = AA - radius * radius * Wsum * Wsum;
+
+    const disc = qb * qb - 4 * qa * qc;
+    let lambda;
+    if (disc >= 0 && qa > 1e-20) {
+      const sqrtD = Math.sqrt(disc);
+      const l1 = (-qb + sqrtD) / (2 * qa);
+      const l2 = (-qb - sqrtD) / (2 * qa);
+      lambda = l1 > 0 ? l1 : l2;
+    } else {
+      lambda = radius; // fallback to octant formula
+    }
+
+    controlPoints[4] = add(center, scl(D, lambda));
+
+    const knots = [0, 0, 0, 1, 1, 1]; // Bézier (no interior knots)
+    return new NurbsSurface(2, 2, 3, 3, controlPoints, knots, knots, weights);
+  }
 }

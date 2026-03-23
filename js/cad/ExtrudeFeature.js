@@ -47,7 +47,7 @@ export class ExtrudeFeature extends Feature {
       throw new Error('Referenced feature is not a sketch');
     }
     
-    const { sketch, plane, profiles } = sketchResult;
+    const { plane, profiles } = sketchResult;
     
     if (profiles.length === 0) {
       throw new Error('No closed profiles found in sketch');
@@ -55,19 +55,29 @@ export class ExtrudeFeature extends Feature {
     
     // Get the current solid (if any)
     let solid = this.getPreviousSolid(context);
-    
-    // Generate geometry per-profile and apply each body individually.
-    // This ensures multi-body sketches (e.g. two separate rectangles)
-    // each get a proper boolean operation against the accumulating solid.
-    for (let pi = 0; pi < profiles.length; pi++) {
-      const bodyGeom = this.generateGeometry([profiles[pi]], plane);
-      if (pi === 0) {
-        // First profile: use the feature's configured operation
-        solid = this.applyOperation(solid, bodyGeom);
-      } else {
-        // Subsequent profiles: always union into the accumulating solid
-        // so all bodies from the same sketch end up in one solid
-        solid = this._unionBody(solid, bodyGeom);
+
+    const profileGeometries = profiles.map((profile) => this.generateGeometry([profile], plane));
+
+    // When adding/subtracting/intersecting against an existing solid, combine
+    // all bodies from this feature first and run a single boolean. Sequential
+    // unions on the same support face can trigger BSP coplanar clipping issues.
+    if (solid && profileGeometries.length > 1) {
+      const featureGeometry = this.combineGeometries(profileGeometries);
+      solid = this.applyOperation(solid, featureGeometry);
+    } else {
+      // Generate geometry per-profile and apply each body individually.
+      // This preserves support for disconnected new bodies when no prior solid
+      // exists yet in the feature tree.
+      for (let pi = 0; pi < profileGeometries.length; pi++) {
+        const bodyGeom = profileGeometries[pi];
+        if (pi === 0) {
+          // First profile: use the feature's configured operation
+          solid = this.applyOperation(solid, bodyGeom);
+        } else {
+          // Subsequent profiles: always union into the accumulating solid
+          // so all bodies from the same sketch end up in one solid
+          solid = this._unionBody(solid, bodyGeom);
+        }
       }
     }
 
@@ -110,12 +120,36 @@ export class ExtrudeFeature extends Feature {
   }
 
   /**
+   * Combine multiple generated profile bodies into a single geometry.
+   * @param {Array<Object>} geometries - Array of geometry objects
+   * @returns {Object} Combined geometry
+   */
+  combineGeometries(geometries) {
+    const combined = {
+      vertices: [],
+      faces: [],
+      edges: [],
+    };
+
+    for (const geometry of geometries) {
+      if (!geometry) continue;
+      if (geometry.vertices) combined.vertices.push(...geometry.vertices);
+      if (geometry.faces) combined.faces.push(...geometry.faces);
+      if (geometry.edges) combined.edges.push(...geometry.edges);
+    }
+
+    return combined;
+  }
+
+  /**
    * Generate 3D geometry from sketch profiles.
    * @param {Array} profiles - Sketch profiles to extrude
    * @param {Object} plane - Sketch plane definition
    * @returns {Object} 3D geometry data
    */
   generateGeometry(profiles, plane) {
+    const planeFrame = this.resolvePlaneFrame(plane);
+    const resolvedPlane = planeFrame.plane;
     const geometry = {
       vertices: [],
       faces: [],
@@ -126,9 +160,9 @@ export class ExtrudeFeature extends Feature {
 
     // Calculate extrusion vector
     const extrusionVector = {
-      x: plane.normal.x * effectiveDistance * this.direction,
-      y: plane.normal.y * effectiveDistance * this.direction,
-      z: plane.normal.z * effectiveDistance * this.direction,
+      x: resolvedPlane.normal.x * effectiveDistance * this.direction,
+      y: resolvedPlane.normal.y * effectiveDistance * this.direction,
+      z: resolvedPlane.normal.z * effectiveDistance * this.direction,
     };
 
     // Taper: compute per-vertex shrink/grow at top face
@@ -141,7 +175,7 @@ export class ExtrudeFeature extends Feature {
     for (const profile of profiles) {
       // Ensure profile winding is CCW (positive signed area) so that
       // extrusion normals point outward.
-      let pts = profile.points;
+      let pts = profile.points.map((point) => planeFrame.toPlanePoint(point));
       let signedArea = 0;
       for (let i = 0; i < pts.length; i++) {
         const j = (i + 1) % pts.length;
@@ -164,7 +198,7 @@ export class ExtrudeFeature extends Feature {
       // Create vertices
       for (const point of pts) {
         // Transform 2D sketch point to 3D world coordinates
-        const bottom3D = this.sketchToWorld(point, plane);
+        const bottom3D = this.sketchToWorld(point, resolvedPlane);
         bottomVertices.push(bottom3D);
         geometry.vertices.push(bottom3D);
         
@@ -180,7 +214,7 @@ export class ExtrudeFeature extends Feature {
             topPoint = { x: point.x, y: point.y };
           }
         }
-        const topBase = this.sketchToWorld(topPoint, plane);
+        const topBase = this.sketchToWorld(topPoint, resolvedPlane);
         const top3D = {
           x: topBase.x + extrusionVector.x,
           y: topBase.y + extrusionVector.y,
@@ -193,13 +227,13 @@ export class ExtrudeFeature extends Feature {
       // Create bottom face (reverse winding for outward-facing normal)
       geometry.faces.push({
         vertices: [...bottomVertices].reverse(),
-        normal: { x: -plane.normal.x, y: -plane.normal.y, z: -plane.normal.z },
+        normal: { x: -resolvedPlane.normal.x, y: -resolvedPlane.normal.y, z: -resolvedPlane.normal.z },
       });
       
       // Create top face
       geometry.faces.push({
         vertices: [...topVertices],
-        normal: { x: plane.normal.x, y: plane.normal.y, z: plane.normal.z },
+        normal: { x: resolvedPlane.normal.x, y: resolvedPlane.normal.y, z: resolvedPlane.normal.z },
       });
       
       // Create side faces
@@ -234,6 +268,44 @@ export class ExtrudeFeature extends Feature {
     }
     
     return geometry;
+  }
+
+  /**
+   * Normalize the sketch plane basis to a right-handed frame.
+   * Existing files may contain left-handed face planes; mirror local Y at
+   * extrusion time so world-space sketch positions stay unchanged.
+   * @param {Object} plane - Sketch plane definition
+   * @returns {{plane: Object, toPlanePoint: Function}}
+   */
+  resolvePlaneFrame(plane) {
+    const cross = {
+      x: plane.xAxis.y * plane.yAxis.z - plane.xAxis.z * plane.yAxis.y,
+      y: plane.xAxis.z * plane.yAxis.x - plane.xAxis.x * plane.yAxis.z,
+      z: plane.xAxis.x * plane.yAxis.y - plane.xAxis.y * plane.yAxis.x,
+    };
+    const handedness = cross.x * plane.normal.x + cross.y * plane.normal.y + cross.z * plane.normal.z;
+    if (handedness >= 0) {
+      return {
+        plane,
+        toPlanePoint(point) {
+          return { x: point.x, y: point.y };
+        },
+      };
+    }
+
+    return {
+      plane: {
+        ...plane,
+        yAxis: {
+          x: -plane.yAxis.x,
+          y: -plane.yAxis.y,
+          z: -plane.yAxis.z,
+        },
+      },
+      toPlanePoint(point) {
+        return { x: point.x, y: -point.y };
+      },
+    };
   }
 
   /**
