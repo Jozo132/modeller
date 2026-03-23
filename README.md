@@ -48,6 +48,7 @@ The project features a modular architecture with three main design interfaces:
 - **Assembly** — (Stub) Future support for multi-part assemblies with constraints and BOM
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed documentation.
+See [NURBS_BOOLEAN_UPGRADE.md](NURBS_BOOLEAN_UPGRADE.md) for the exact-geometry roadmap from mesh CSG to STEP-oriented B-Rep and NURBS booleans.
 
 ## Getting Started
 
