@@ -409,6 +409,11 @@ class CSGSolid {
 function assignCoplanarFaceGroups(faces) {
   // Build a plane key for grouping: quantized normal + plane distance
   function planeKey(normal, vertices) {
+    const quantize = (value, digits = 4) => {
+      const clamped = Math.abs(value) < 1e-10 ? 0 : value;
+      const text = clamped.toFixed(digits);
+      return text === '-0.0000' ? '0.0000' : text;
+    };
     const n = Vec3.from(normal).unit();
     // Ensure consistent normal direction (flip so largest component is positive)
     let sign = 1;
@@ -419,10 +424,10 @@ function assignCoplanarFaceGroups(faces) {
     } else {
       sign = n.x < 0 ? -1 : 1;
     }
-    const nx = (n.x * sign).toFixed(4);
-    const ny = (n.y * sign).toFixed(4);
-    const nz = (n.z * sign).toFixed(4);
-    const d = (Vec3.from(vertices[0]).dot(n) * sign).toFixed(4);
+    const nx = quantize(n.x * sign);
+    const ny = quantize(n.y * sign);
+    const nz = quantize(n.z * sign);
+    const d = quantize(Vec3.from(vertices[0]).dot(n) * sign);
     return `${nx},${ny},${nz}|${d}`;
   }
 
@@ -2673,10 +2678,14 @@ function _batchSplitVertices(faces, edgeDataList, vertexEdgeMap) {
           }
         }
       } else if (touchesAnyF0) {
-        // Fillet strip faces from previous ops connect to face0 via their
-        // top edge but don't span across to face1.  Inserting two positions
-        // would create malformed polygons.  Use only p0.
-        if (face.isFillet) {
+        // Faces that stay on the face0 side should receive a single trim point.
+        // This is critical for segmented exact-boolean walls where a chamfered
+        // path runs through multiple coplanar triangles: inserting both p0 and
+        // p1 opens the wall and creates overlapping seam triangles.
+        const fn = _vec3Normalize(face.normal);
+        const n0 = _vec3Normalize(faces[primary.d.fi0].normal);
+        const sameAsF0 = Math.abs(_vec3Dot(fn, n0)) > 0.999;
+        if (face.isFillet || sameAsF0) {
           newPts = [{ ...firstP0 }];
         } else {
           newPts = nextInAnyF0
@@ -2741,7 +2750,7 @@ function _generateCornerFaces(faces, origFaces, edgeDataList, vertexEdgeMap) {
       });
     }
 
-    if (_isLinearFilletContinuation(edgeInfos, origFaces)) continue;
+    if (_isLinearEdgeContinuation(edgeInfos, origFaces)) continue;
 
     // Find "other vertex" for each edge (the vertex adjacent to vk in face1
     // that is NOT the other endpoint of the chamfered edge)
@@ -2891,9 +2900,8 @@ function _sameNormalPair(a0, a1, b0, b1) {
   return (same(a0, b0) && same(a1, b1)) || (same(a0, b1) && same(a1, b0));
 }
 
-function _isLinearFilletContinuation(edgeInfos, origFaces) {
+function _isLinearEdgeContinuation(edgeInfos, origFaces) {
   if (edgeInfos.length !== 2) return false;
-  if (!edgeInfos[0].arc || !edgeInfos[1].arc) return false;
 
   const d0 = edgeInfos[0].data;
   const d1 = edgeInfos[1].data;
@@ -2910,6 +2918,11 @@ function _isLinearFilletContinuation(edgeInfos, origFaces) {
   const dir0 = _vec3Normalize(_vec3Sub(other0, shared));
   const dir1 = _vec3Normalize(_vec3Sub(other1, shared));
   return _vec3Dot(dir0, dir1) < -0.999;
+}
+
+function _isLinearFilletContinuation(edgeInfos, origFaces) {
+  if (!edgeInfos[0].arc || !edgeInfos[1].arc) return false;
+  return _isLinearEdgeContinuation(edgeInfos, origFaces);
 }
 
 /**

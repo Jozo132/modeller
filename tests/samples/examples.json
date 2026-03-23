@@ -97,6 +97,16 @@
     ]
   },
   {
+    "file": "extrude-on-extrude-dual-with-cut-and-chamfer.cmod",
+    "label": "Extrude On Extrude Dual With Cut And Chamfer",
+    "featureTypes": [
+      "sketch",
+      "extrude",
+      "extrude-cut",
+      "chamfer"
+    ]
+  },
+  {
     "file": "extrude-on-extrude-dual-with-cut-and-radius.cmod",
     "label": "Extrude On Extrude Dual With Cut And Radius",
     "featureTypes": [

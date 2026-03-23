@@ -74,6 +74,22 @@ function assertPositiveWallThickness(geometry, context) {
   assert.ok(wt.maxThickness > 0, `${context}: expected max wall thickness > 0, got ${wt.maxThickness}`);
 }
 
+function assertSingleHorizontalCapGroup(geometry, context) {
+  const faces = geometry.faces || [];
+  let zMax = -Infinity;
+  for (const face of faces) {
+    for (const vertex of face.vertices || []) zMax = Math.max(zMax, vertex.z);
+  }
+  const topFaces = faces.filter((face) =>
+    (face.normal?.z || 0) > 0.99999 &&
+    (face.vertices || []).length >= 3 &&
+    face.vertices.every((vertex) => Math.abs(vertex.z - zMax) < 1e-5)
+  );
+  assert.ok(topFaces.length > 0, `${context}: expected at least one top cap face`);
+  const groups = new Set(topFaces.map((face) => face.faceGroup));
+  assert.strictEqual(groups.size, 1, `${context}: expected a single top cap face group, got ${groups.size}`);
+}
+
 // -----------------------------------------------------------------------
 // Build test geometry
 // -----------------------------------------------------------------------
@@ -446,6 +462,28 @@ console.log('--- Test 10: Filleted coplanar face-start extrude cuts ---');
     assert.strictEqual(edgeUsage.windingErrors, 0, `Expected no winding errors, got ${edgeUsage.windingErrors}`);
     assert.strictEqual(countInvertedFaces(finalGeometry.geometry), 0, 'Expected no inverted faces');
     assertPositiveWallThickness(finalGeometry.geometry, 'coplanar face-start cut+fillet sample');
+  });
+}
+
+// --- Test 11: Chamfered concave cut edge stays closed ---
+console.log('--- Test 11: Chamfered concave cut edge ---');
+{
+  const sample = JSON.parse(
+    fs.readFileSync(new URL('./samples/extrude-on-extrude-dual-with-cut-and-chamfer.cmod', import.meta.url), 'utf8')
+  );
+
+  test('deserialized cut+chamfer sample produces a closed manifold mesh', () => {
+    const restored = Part.deserialize(sample.part);
+    const finalGeometry = restored.getFinalGeometry();
+    assert.ok(finalGeometry && finalGeometry.geometry, 'Expected final solid geometry');
+
+    const edgeUsage = collectEdgeUsage(finalGeometry.geometry);
+    assert.strictEqual(edgeUsage.boundaryEdges, 0, `Expected no boundary edges, got ${edgeUsage.boundaryEdges}`);
+    assert.strictEqual(edgeUsage.nonManifoldEdges, 0, `Expected no non-manifold edges, got ${edgeUsage.nonManifoldEdges}`);
+    assert.strictEqual(edgeUsage.windingErrors, 0, `Expected no winding errors, got ${edgeUsage.windingErrors}`);
+    assert.strictEqual(countInvertedFaces(finalGeometry.geometry), 0, 'Expected no inverted faces');
+    assertPositiveWallThickness(finalGeometry.geometry, 'concave cut-edge chamfer sample');
+    assertSingleHorizontalCapGroup(finalGeometry.geometry, 'concave cut-edge chamfer sample');
   });
 }
 
