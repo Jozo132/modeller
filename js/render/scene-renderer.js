@@ -151,6 +151,8 @@ export class SceneRenderer {
     this._meshVisualEdges = null;
     this._meshVisualEdgeVertexCount = 0;
     this._meshSilhouetteCandidates = null;
+    this._problemTriangles = null;
+    this._problemTriangleCount = 0;
   }
 
   _applyOrbitCamera() {
@@ -180,6 +182,9 @@ export class SceneRenderer {
       meshSilhouetteCandidates: this._meshSilhouetteCandidates,
       orbitState: this.getOrbitState(),
       mvp,
+      diagnosticHatch: this.diagnosticHatch,
+      problemTriangles: this._problemTriangles,
+      problemTriangleCount: this._problemTriangleCount,
     });
   }
 

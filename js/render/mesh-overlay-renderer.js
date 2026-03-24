@@ -24,10 +24,14 @@ export function renderBaseMeshOverlay(executor, options) {
 
   if (!meshTriangles || meshTriangleCount === 0 || !mvp) return;
 
+  // Diagnostic hatch uses a combined front+back face pass with painter's algorithm
+  const { diagnosticHatch } = options;
+
   executor.drawTriangleBuffer(meshTriangles, meshTriangleCount, {
     mvp,
     color: faceColor,
     polygonOffset: [1, 1],
+    diagnosticHatch: !!diagnosticHatch,
   });
 
   if (meshVisualEdges && meshVisualEdgeVertexCount > 0) {

@@ -21,6 +21,7 @@ export async function renderCmodToPngBuffer(options) {
 
   const part = Part.deserialize(options.cmod.part);
   renderer.renderPart(part);
+  if (options.diagnosticHatch !== false) renderer.diagnosticHatch = true;
 
   if (options.fitToView) {
     renderer.fitToView();
@@ -69,6 +70,7 @@ export async function renderCmodGalleryPng(options) {
 
   const part = Part.deserialize(cmod.part);
   renderer.renderPart(part);
+  if (options.diagnosticHatch !== false) renderer.diagnosticHatch = true;
 
   // Create the gallery grid canvas
   const grid = createCanvas(cols * cellW, rows * cellH);

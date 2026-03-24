@@ -138,6 +138,12 @@ export class CanvasCommandExecutor {
   }
 
   drawTriangleBuffer(data, vertexCount, options) {
+    const hatch = !!options.diagnosticHatch;
+    const spacing = 6;
+    const hatchAngle = Math.PI / 4;
+    const hatchStroke = 'rgba(200,40,40,0.55)';
+    const hatchFill = 'rgba(200,40,40,0.18)';
+
     const triangles = [];
     for (let index = 0; index < vertexCount; index += 3) {
       const projected = [];
@@ -157,12 +163,24 @@ export class CanvasCommandExecutor {
         normal.z += data[offset + 5];
       }
       if (!visible) continue;
+
+      let backFace = false;
+      if (hatch) {
+        const ax = projected[1].x - projected[0].x;
+        const ay = projected[1].y - projected[0].y;
+        const bx = projected[2].x - projected[0].x;
+        const by = projected[2].y - projected[0].y;
+        // In screen space (Y-down), front-facing (CCW in clip) has cross < 0
+        backFace = (ax * by - ay * bx) > 0;
+      }
+
       normal = normalize(normal);
       const shade = 0.3 + Math.max(0, normal.x * LIGHT_DIR.x + normal.y * LIGHT_DIR.y + normal.z * LIGHT_DIR.z) * 0.7;
       triangles.push({
         points: projected,
         shade,
         depth: (projected[0].z + projected[1].z + projected[2].z) / 3,
+        backFace,
       });
     }
 
@@ -170,14 +188,50 @@ export class CanvasCommandExecutor {
 
     const ctx = this.ctx;
     ctx.save();
-    for (const triangle of triangles) {
+    const cos = Math.cos(hatchAngle);
+    const sin = Math.sin(hatchAngle);
+
+    for (const tri of triangles) {
       ctx.beginPath();
-      ctx.moveTo(triangle.points[0].x, triangle.points[0].y);
-      ctx.lineTo(triangle.points[1].x, triangle.points[1].y);
-      ctx.lineTo(triangle.points[2].x, triangle.points[2].y);
+      ctx.moveTo(tri.points[0].x, tri.points[0].y);
+      ctx.lineTo(tri.points[1].x, tri.points[1].y);
+      ctx.lineTo(tri.points[2].x, tri.points[2].y);
       ctx.closePath();
-      ctx.fillStyle = colorToCss(options.color, triangle.shade);
-      ctx.fill();
+
+      if (tri.backFace) {
+        ctx.fillStyle = hatchFill;
+        ctx.fill();
+        ctx.save();
+        ctx.clip();
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const p of tri.points) {
+          if (p.x < minX) minX = p.x;
+          if (p.y < minY) minY = p.y;
+          if (p.x > maxX) maxX = p.x;
+          if (p.y > maxY) maxY = p.y;
+        }
+        const diag = Math.hypot(maxX - minX, maxY - minY);
+        const cx = (minX + maxX) / 2;
+        const cy = (minY + maxY) / 2;
+        const count = Math.ceil(diag / spacing) + 2;
+        ctx.strokeStyle = hatchStroke;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (let j = -count; j <= count; j++) {
+          const off = j * spacing;
+          const x0 = cx + off * cos - diag * sin;
+          const y0 = cy + off * sin + diag * cos;
+          const x1 = cx + off * cos + diag * sin;
+          const y1 = cy + off * sin - diag * cos;
+          ctx.moveTo(x0, y0);
+          ctx.lineTo(x1, y1);
+        }
+        ctx.stroke();
+        ctx.restore();
+      } else {
+        ctx.fillStyle = colorToCss(options.color, tri.shade);
+        ctx.fill();
+      }
     }
     ctx.restore();
   }
