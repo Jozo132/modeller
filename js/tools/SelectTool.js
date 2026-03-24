@@ -462,6 +462,12 @@ export class SelectTool extends BaseTool {
     // ---- Finish vertex drag ----
     if (this._dragPoint) {
       if (this._isDragging) {
+        // Recompute snap candidates at the drag point's current position
+        // to guard against stale data from deferred mouse processing.
+        if (state.autoCoincidence) {
+          this._snapCandidates = this._findSnapCandidates([this._dragPoint]);
+          this._lineSnapCandidates = this._findLineSnapCandidates([this._dragPoint]);
+        }
         this._applySnapCandidates();
         this._applyLineSnapCandidates();
         state.scene.solve();
@@ -492,6 +498,12 @@ export class SelectTool extends BaseTool {
     // ---- Finish shape drag ----
     if (this._dragShape) {
       if (this._isDragging) {
+        // Recompute snap candidates at the current positions to guard
+        // against stale data from deferred mouse processing.
+        if (state.autoCoincidence) {
+          this._snapCandidates = this._findSnapCandidates(this._dragShapePts);
+          this._lineSnapCandidates = this._findLineSnapCandidates(this._dragShapePts);
+        }
         this._applySnapCandidates();
         this._applyLineSnapCandidates();
         state.scene.solve();
