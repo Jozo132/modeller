@@ -45,10 +45,10 @@ export class StepImportFeature extends Feature {
       throw new Error('No STEP data provided');
     }
 
-    // Re-use cached mesh unless segments changed
+    // Re-use cached result unless segments changed
     if (!this._cachedMesh || this._cachedMesh.curveSegments !== this.curveSegments) {
-      const mesh = importSTEP(this.stepData, { curveSegments: this.curveSegments });
-      this._cachedMesh = { ...mesh, curveSegments: this.curveSegments };
+      const result = importSTEP(this.stepData, { curveSegments: this.curveSegments });
+      this._cachedMesh = { ...result, curveSegments: this.curveSegments };
     }
 
     const geometry = {
@@ -73,10 +73,19 @@ export class StepImportFeature extends Feature {
     const volume = this._estimateVolume(geometry);
     const boundingBox = this._computeBoundingBox(geometry);
 
+    // If the import returned a TopoBody, tag its faces with this feature
+    const body = this._cachedMesh.body || null;
+    if (body) {
+      for (const face of body.faces()) {
+        face.shared = { sourceFeatureId: this.id };
+      }
+    }
+
     return {
       type: 'solid',
       geometry,
-      solid: { geometry },
+      solid: { geometry, body },
+      body,
       volume,
       boundingBox,
     };

@@ -350,4 +350,31 @@ export class NurbsCurve {
   static createCircle(center, radius, xAxis, yAxis) {
     return NurbsCurve.createArc(center, radius, xAxis, yAxis, 0, 2 * Math.PI);
   }
+
+  // -------------------------------------------------------------------
+  // STEP import factory methods
+  // -------------------------------------------------------------------
+
+  /**
+   * Create a NurbsCurve from STEP B_SPLINE_CURVE_WITH_KNOTS data.
+   *
+   * @param {number} degree - Polynomial degree
+   * @param {Array<{x:number,y:number,z:number}>} controlPoints - 3D control points
+   * @param {number[]} knotMultiplicities - Knot multiplicities
+   * @param {number[]} knotValues - Distinct knot values
+   * @param {number[]|null} [weights=null] - Weights (null = non-rational)
+   * @returns {NurbsCurve}
+   */
+  static fromStepBSpline(degree, controlPoints, knotMultiplicities, knotValues, weights = null) {
+    // Expand knot multiplicities into full knot vector
+    const knots = [];
+    for (let i = 0; i < knotValues.length; i++) {
+      const val = knotValues[i];
+      const mult = knotMultiplicities[i] || 1;
+      for (let m = 0; m < mult; m++) {
+        knots.push(val);
+      }
+    }
+    return new NurbsCurve(degree, controlPoints, knots, weights);
+  }
 }

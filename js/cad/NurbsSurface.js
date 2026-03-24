@@ -699,4 +699,67 @@ export class NurbsSurface {
     const knots = [0, 0, 0, 1, 1, 1]; // Bézier (no interior knots)
     return new NurbsSurface(2, 2, 3, 3, controlPoints, knots, knots, weights);
   }
+
+  // -------------------------------------------------------------------
+  // STEP import factory methods
+  // -------------------------------------------------------------------
+
+  /**
+   * Create a NurbsSurface from STEP B_SPLINE_SURFACE_WITH_KNOTS data.
+   *
+   * STEP stores control points as a nested list: ((row0_cp0, row0_cp1, ...),
+   * (row1_cp0, ...), ...). The u-direction corresponds to rows and
+   * v-direction to columns.
+   *
+   * @param {number} degreeU - Degree in u-direction
+   * @param {number} degreeV - Degree in v-direction
+   * @param {Array<Array<{x:number,y:number,z:number}>>} controlPointGrid - Nested [rows][cols] grid
+   * @param {number[]} knotMultsU - Knot multiplicities in u
+   * @param {number[]} knotValsU - Distinct knot values in u
+   * @param {number[]} knotMultsV - Knot multiplicities in v
+   * @param {number[]} knotValsV - Distinct knot values in v
+   * @param {Array<Array<number>>|null} [weightsGrid=null] - Nested [rows][cols] weights (null = non-rational)
+   * @returns {NurbsSurface}
+   */
+  static fromStepBSpline(degreeU, degreeV, controlPointGrid, knotMultsU, knotValsU, knotMultsV, knotValsV, weightsGrid = null) {
+    const numRowsU = controlPointGrid.length;
+    const numColsV = controlPointGrid[0].length;
+
+    // Flatten control points (row-major)
+    const controlPoints = [];
+    for (let i = 0; i < numRowsU; i++) {
+      for (let j = 0; j < numColsV; j++) {
+        const cp = controlPointGrid[i][j];
+        controlPoints.push({ x: cp.x, y: cp.y, z: cp.z });
+      }
+    }
+
+    // Flatten weights if provided
+    let weights = null;
+    if (weightsGrid) {
+      weights = [];
+      for (let i = 0; i < numRowsU; i++) {
+        for (let j = 0; j < numColsV; j++) {
+          weights.push(weightsGrid[i][j]);
+        }
+      }
+    }
+
+    // Expand knot multiplicities into full knot vectors
+    const knotsU = [];
+    for (let i = 0; i < knotValsU.length; i++) {
+      const val = knotValsU[i];
+      const mult = knotMultsU[i] || 1;
+      for (let m = 0; m < mult; m++) knotsU.push(val);
+    }
+
+    const knotsV = [];
+    for (let i = 0; i < knotValsV.length; i++) {
+      const val = knotValsV[i];
+      const mult = knotMultsV[i] || 1;
+      for (let m = 0; m < mult; m++) knotsV.push(val);
+    }
+
+    return new NurbsSurface(degreeU, degreeV, numRowsU, numColsV, controlPoints, knotsU, knotsV, weights);
+  }
 }

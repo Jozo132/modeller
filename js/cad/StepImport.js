@@ -1,27 +1,47 @@
 // js/cad/StepImport.js — STEP AP203/AP214/AP242 file import
 //
-// Parses ISO 10303 STEP files and extracts tessellated mesh geometry.
+// Parses ISO 10303 STEP files and builds exact B-Rep topology with
+// NurbsCurve / NurbsSurface geometry, plus tessellated mesh for display.
+//
 // Supports:
 //   - MANIFOLD_SOLID_BREP / ADVANCED_BREP_SHAPE_REPRESENTATION
 //   - CLOSED_SHELL / OPEN_SHELL
 //   - ADVANCED_FACE with FACE_BOUND / FACE_OUTER_BOUND
 //   - EDGE_LOOP, ORIENTED_EDGE, EDGE_CURVE
 //   - VERTEX_POINT, CARTESIAN_POINT, DIRECTION, VECTOR
-//   - LINE, CIRCLE, ELLIPSE, B_SPLINE_CURVE_WITH_KNOTS
-//   - SURFACE_CURVE (unwraps to underlying 3D curve)
-//   - PLANE, CYLINDRICAL_SURFACE, SPHERICAL_SURFACE, TOROIDAL_SURFACE
-//   - B_SPLINE_SURFACE_WITH_KNOTS
+//   - LINE, CIRCLE, ELLIPSE
+//   - B_SPLINE_CURVE_WITH_KNOTS, RATIONAL_B_SPLINE_CURVE
+//   - SURFACE_CURVE / SEAM_CURVE (unwraps to underlying 3D curve)
+//   - PLANE, CYLINDRICAL_SURFACE, CONICAL_SURFACE
+//   - SPHERICAL_SURFACE, TOROIDAL_SURFACE
+//   - B_SPLINE_SURFACE_WITH_KNOTS, RATIONAL_B_SPLINE_SURFACE
+
+import { NurbsCurve } from './NurbsCurve.js';
+import { NurbsSurface } from './NurbsSurface.js';
+import {
+  SurfaceType,
+  TopoVertex,
+  TopoEdge,
+  TopoCoEdge,
+  TopoLoop,
+  TopoFace,
+  TopoShell,
+  TopoBody,
+} from './BRepTopology.js';
 
 /**
- * Parse a STEP file string and return tessellated mesh geometry.
+ * Parse a STEP file string and return tessellated mesh geometry plus
+ * an optional exact B-Rep topology body.
  *
  * @param {string} stepString - Contents of a STEP file
  * @param {Object} [opts]
  * @param {number} [opts.curveSegments=16] - Segments for curved edge tessellation
- * @returns {{ vertices: {x,y,z}[], faces: {vertices:{x,y,z}[], normal:{x,y,z}}[] }}
+ * @param {number} [opts.surfaceSegments=8] - Segments for surface tessellation
+ * @returns {{ vertices: {x,y,z}[], faces: {vertices:{x,y,z}[], normal:{x,y,z}}[], body: TopoBody|null }}
  */
 export function importSTEP(stepString, opts = {}) {
   const curveSegments = opts.curveSegments ?? 16;
+  const surfaceSegments = opts.surfaceSegments ?? 8;
 
   // ------------------------------------------------------------------
   // 1. Parse all entities from the DATA section
@@ -42,26 +62,36 @@ export function importSTEP(stepString, opts = {}) {
   }
 
   // ------------------------------------------------------------------
-  // 4. Tessellate each shell → mesh geometry
+  // 4. Build B-Rep topology and tessellate
   // ------------------------------------------------------------------
   const allVertices = [];
   const allFaces = [];
+  const topoShells = [];
 
   for (const shell of shells) {
-    // CLOSED_SHELL('', (face_refs...)) — face list is the second argument
     const faceRefs = Array.isArray(shell.args[1]) ? shell.args[1] : shell.args;
+    const topoFaces = [];
+
     for (const faceRef of faceRefs) {
       const faceId = _refId(faceRef);
       if (faceId == null) continue;
-      const faceMesh = _tessellateFace(resolved, faceId, curveSegments);
-      if (faceMesh) {
-        allVertices.push(...faceMesh.vertices);
-        allFaces.push(...faceMesh.faces);
+
+      const result = _buildFace(resolved, faceId, curveSegments, surfaceSegments);
+      if (result) {
+        allVertices.push(...result.mesh.vertices);
+        allFaces.push(...result.mesh.faces);
+        if (result.topoFace) topoFaces.push(result.topoFace);
       }
     }
+
+    const topoShell = new TopoShell(topoFaces);
+    topoShell.closed = shell.type === 'CLOSED_SHELL';
+    topoShells.push(topoShell);
   }
 
-  return { vertices: allVertices, faces: allFaces };
+  const body = topoShells.length > 0 ? new TopoBody(topoShells) : null;
+
+  return { vertices: allVertices, faces: allFaces, body };
 }
 
 // =====================================================================
@@ -387,38 +417,43 @@ function _findShells(resolved) {
 }
 
 // =====================================================================
-// Face tessellation
+// Face building — B-Rep topology + tessellated mesh
 // =====================================================================
 
 /**
- * Tessellate a single ADVANCED_FACE into mesh triangles.
+ * Build a single ADVANCED_FACE into both B-Rep topology and mesh triangles.
  *
  * @param {Map} resolved - Resolved entity map
  * @param {number} faceId - Entity ID of the ADVANCED_FACE
  * @param {number} curveSegments - Segments for curved edges
- * @returns {{ vertices: {x,y,z}[], faces: {vertices:{x,y,z}[], normal:{x,y,z}}[] } | null}
+ * @param {number} surfaceSegments - Segments for surface tessellation
+ * @returns {{ topoFace: TopoFace|null, mesh: { vertices:{x,y,z}[], faces:{vertices:{x,y,z}[], normal:{x,y,z}}[] } }|null}
  */
-function _tessellateFace(resolved, faceId, curveSegments) {
+function _buildFace(resolved, faceId, curveSegments, surfaceSegments) {
   const face = resolved.get(faceId);
   if (!face || face.type !== 'ADVANCED_FACE') return null;
 
   // ADVANCED_FACE('', (bound_refs...), surface_ref, same_sense)
-  const boundsList = face.args[1]; // list of bound references
+  const boundsList = face.args[1];
   const surfaceRef = face.args[2];
   const sameSense = face.args[3] === '.T.';
 
   if (!Array.isArray(boundsList) || boundsList.length === 0) return null;
 
-  // Extract the surface normal (for correct winding)
+  // Build NURBS surface from the STEP surface entity
+  const surfResult = _buildNurbsSurface(resolved, surfaceRef);
+  const nurbsSurface = surfResult ? surfResult.surface : null;
+  const surfaceType = surfResult ? surfResult.type : SurfaceType.UNKNOWN;
+
+  // Extract surface normal from analytic surfaces for face winding
   const surfaceNormal = _extractSurfaceNormal(resolved, surfaceRef);
 
-  const loopPolygons = [];
-
+  // Build topology loops and polygon loops
+  const loopData = [];
   for (const boundRef of boundsList) {
     const bound = _getEntity(resolved, boundRef);
     if (!bound) continue;
 
-    // FACE_BOUND or FACE_OUTER_BOUND: ('', edge_loop_ref, orientation)
     const isFaceBound = bound.type === 'FACE_BOUND' || bound.type === 'FACE_OUTER_BOUND';
     if (!isFaceBound) continue;
 
@@ -428,82 +463,113 @@ function _tessellateFace(resolved, faceId, curveSegments) {
     const loop = _getEntity(resolved, loopRef);
     if (!loop || loop.type !== 'EDGE_LOOP') continue;
 
-    // EDGE_LOOP('', (oriented_edge_refs...))
     const orientedEdgeRefs = loop.args[1];
     if (!Array.isArray(orientedEdgeRefs)) continue;
 
-    const polygon = _extractLoopPolygon(resolved, orientedEdgeRefs, curveSegments);
-    if (polygon.length < 3) continue;
+    const loopResult = _buildLoop(resolved, orientedEdgeRefs, curveSegments);
+    if (!loopResult || loopResult.polygon.length < 3) continue;
 
-    // Apply bound sense
     if (!boundSense) {
-      polygon.reverse();
+      loopResult.polygon.reverse();
+      loopResult.coedges.reverse();
+      for (const ce of loopResult.coedges) ce.sameSense = !ce.sameSense;
     }
 
-    loopPolygons.push({
+    loopData.push({
       isOuter: bound.type === 'FACE_OUTER_BOUND',
-      polygon,
+      polygon: loopResult.polygon,
+      topoLoop: new TopoLoop(loopResult.coedges),
     });
   }
 
-  if (loopPolygons.length === 0) return null;
+  if (loopData.length === 0) return null;
 
-  // Use the first polygon (outer bound) as the face polygon
-  // Inner bounds (holes) would require more complex tessellation
-  let outerLoop = loopPolygons.find(l => l.isOuter);
-  if (!outerLoop) outerLoop = loopPolygons[0];
+  // Build TopoFace
+  const topoFace = new TopoFace(nurbsSurface, surfaceType, sameSense);
+  const outerData = loopData.find(l => l.isOuter) || loopData[0];
+  topoFace.setOuterLoop(outerData.topoLoop);
+  for (const ld of loopData) {
+    if (ld !== outerData) topoFace.addInnerLoop(ld.topoLoop);
+  }
 
-  let polygon = outerLoop.polygon;
+  // Tessellate: use parametric surface tessellation for curved surfaces with NURBS data
+  const polygon = outerData.polygon;
+  let meshFaces = [];
+  let meshVertices = [];
 
-  // The polygon winding after applying boundSense is CCW when viewed from
-  // the face normal direction. The face normal is:
-  //   sameSense ? surfaceNormal : -surfaceNormal
-  // We do NOT reverse the polygon for sameSense — the bound orientation
-  // already accounts for the face normal direction.
-  let faceNormal;
-  if (surfaceNormal) {
-    faceNormal = sameSense
-      ? surfaceNormal
-      : { x: -surfaceNormal.x, y: -surfaceNormal.y, z: -surfaceNormal.z };
+  const hasBSplineSurface = nurbsSurface && (
+    surfaceType === SurfaceType.BSPLINE ||
+    surfaceType === SurfaceType.CYLINDER ||
+    surfaceType === SurfaceType.CONE ||
+    surfaceType === SurfaceType.SPHERE ||
+    surfaceType === SurfaceType.TORUS
+  );
+
+  if (hasBSplineSurface && surfaceType === SurfaceType.BSPLINE) {
+    // Parametric tessellation of the full NURBS surface patch
+    const tess = nurbsSurface.tessellate(surfaceSegments, surfaceSegments);
+    if (!sameSense) {
+      for (const f of tess.faces) {
+        f.vertices.reverse();
+        f.normal = { x: -f.normal.x, y: -f.normal.y, z: -f.normal.z };
+      }
+    }
+    meshFaces = tess.faces;
+    meshVertices = tess.vertices;
   } else {
-    faceNormal = _computePolygonNormal(polygon);
+    // Polygon-based tessellation (planar, or curved surfaces where we sample edges)
+    let faceNormal;
+    if (surfaceNormal) {
+      faceNormal = sameSense
+        ? surfaceNormal
+        : { x: -surfaceNormal.x, y: -surfaceNormal.y, z: -surfaceNormal.z };
+    } else {
+      // For curved surfaces without an extracted analytic normal, compute
+      // from the surface if available, otherwise from the polygon
+      if (nurbsSurface) {
+        const midU = (nurbsSurface.uMin + nurbsSurface.uMax) / 2;
+        const midV = (nurbsSurface.vMin + nurbsSurface.vMax) / 2;
+        const sn = nurbsSurface.normal(midU, midV);
+        faceNormal = sameSense ? sn : { x: -sn.x, y: -sn.y, z: -sn.z };
+      } else {
+        faceNormal = _computePolygonNormal(polygon);
+      }
+    }
+
+    // Triangulate the polygon with ear clipping
+    const triangles = _triangulatePolygon(polygon, faceNormal);
+    for (const tri of triangles) {
+      meshFaces.push({
+        vertices: [tri[0], tri[1], tri[2]],
+        normal: { ...faceNormal },
+      });
+      meshVertices.push(tri[0], tri[1], tri[2]);
+    }
   }
 
-  // Triangulate the polygon
-  const triangles = _triangulatePolygon(polygon, faceNormal);
-
-  const vertices = [];
-  const faces = [];
-
-  for (const tri of triangles) {
-    vertices.push(tri[0], tri[1], tri[2]);
-    faces.push({
-      vertices: [tri[0], tri[1], tri[2]],
-      normal: { ...faceNormal },
-    });
-  }
-
-  return { vertices, faces };
+  return {
+    topoFace,
+    mesh: { vertices: meshVertices, faces: meshFaces },
+  };
 }
 
 /**
- * Extract ordered vertex positions from a loop of oriented edges.
+ * Build a TopoLoop with coedges and gather the tessellated polygon.
  */
-function _extractLoopPolygon(resolved, orientedEdgeRefs, curveSegments) {
+function _buildLoop(resolved, orientedEdgeRefs, curveSegments) {
   const polygon = [];
+  const coedges = [];
 
   for (const oeRef of orientedEdgeRefs) {
     const oe = _getEntity(resolved, oeRef);
     if (!oe || oe.type !== 'ORIENTED_EDGE') continue;
 
-    // ORIENTED_EDGE('', *, *, edge_curve_ref, orientation)
     const edgeCurveRef = oe.args[3];
     const oeSense = oe.args[4] === '.T.';
 
     const edgeCurve = _getEntity(resolved, edgeCurveRef);
     if (!edgeCurve || edgeCurve.type !== 'EDGE_CURVE') continue;
 
-    // EDGE_CURVE('', start_vertex, end_vertex, curve_geometry, same_sense)
     const startVertexRef = edgeCurve.args[1];
     const endVertexRef = edgeCurve.args[2];
     const curveRef = edgeCurve.args[3];
@@ -511,15 +577,22 @@ function _extractLoopPolygon(resolved, orientedEdgeRefs, curveSegments) {
 
     const startPt = _getVertexPoint(resolved, startVertexRef);
     const endPt = _getVertexPoint(resolved, endVertexRef);
-
     if (!startPt || !endPt) continue;
 
-    // Determine the effective direction
     const forward = oeSense === edgeSense;
 
-    // Try to get intermediate curve points for curved edges
-    const curvePoints = _sampleCurvePoints(resolved, curveRef, startPt, endPt, curveSegments);
+    // Build NurbsCurve from the edge geometry
+    const nurbsCurve = _buildNurbsCurve(resolved, curveRef, startPt, endPt);
 
+    // Create topology elements
+    const sv = new TopoVertex(forward ? startPt : endPt);
+    const ev = new TopoVertex(forward ? endPt : startPt);
+    const topoEdge = new TopoEdge(sv, ev, nurbsCurve);
+    const coedge = new TopoCoEdge(topoEdge, forward);
+    coedges.push(coedge);
+
+    // Tessellate for polygon
+    const curvePoints = _sampleCurvePoints(resolved, curveRef, startPt, endPt, curveSegments);
     let edgePoints;
     if (curvePoints && curvePoints.length > 2) {
       edgePoints = forward ? curvePoints : [...curvePoints].reverse();
@@ -527,13 +600,12 @@ function _extractLoopPolygon(resolved, orientedEdgeRefs, curveSegments) {
       edgePoints = forward ? [startPt, endPt] : [endPt, startPt];
     }
 
-    // Add points (skip last to avoid duplicates at loop junctions)
     for (let i = 0; i < edgePoints.length - 1; i++) {
       polygon.push(edgePoints[i]);
     }
   }
 
-  return polygon;
+  return { polygon, coedges };
 }
 
 /**
@@ -583,7 +655,214 @@ function _getDirection(resolved, ref) {
 }
 
 // =====================================================================
-// Curve sampling for curved edges
+// NurbsCurve / NurbsSurface construction from STEP entities
+// =====================================================================
+
+/**
+ * Build a NurbsCurve from a STEP curve entity (LINE, CIRCLE, ELLIPSE,
+ * B_SPLINE_CURVE_WITH_KNOTS, RATIONAL_B_SPLINE_CURVE).
+ * Returns null for LINE (represented as a linear NurbsCurve would be wasteful)
+ * or unsupported types.
+ */
+function _buildNurbsCurve(resolved, curveRef, startPt, endPt) {
+  const curve = _getEntity(resolved, curveRef);
+  if (!curve) return null;
+
+  let geomCurve = curve;
+  if (curve.type === 'SURFACE_CURVE' || curve.type === 'SEAM_CURVE') {
+    const innerRef = curve.args[1];
+    geomCurve = _getEntity(resolved, innerRef);
+    if (!geomCurve) return null;
+  }
+
+  switch (geomCurve.type) {
+    case 'LINE':
+      return NurbsCurve.createLine(startPt, endPt);
+
+    case 'CIRCLE': {
+      const axisRef = geomCurve.args[1];
+      const radius = Number(geomCurve.args[2]);
+      const axis = _getAxis2Placement3D(resolved, axisRef);
+      if (!axis || !radius) return null;
+      const yDir = _cross(axis.zDir, axis.xDir);
+      const startAngle = _pointToAngle(startPt, axis.origin, axis.xDir, yDir);
+      let endAngle = _pointToAngle(endPt, axis.origin, axis.xDir, yDir);
+      let sweep = endAngle - startAngle;
+      if (sweep <= -Math.PI) sweep += 2 * Math.PI;
+      if (sweep > Math.PI) sweep -= 2 * Math.PI;
+      if (_dist3D(startPt, endPt) < 1e-8) sweep = 2 * Math.PI;
+      return NurbsCurve.createArc(axis.origin, radius, axis.xDir, yDir, startAngle, sweep);
+    }
+
+    case 'B_SPLINE_CURVE_WITH_KNOTS':
+      return _buildBSplineCurveNurbs(resolved, geomCurve, null);
+
+    case 'RATIONAL_B_SPLINE_CURVE':
+      return _buildBSplineCurveNurbs(resolved, geomCurve, geomCurve.args[9]);
+
+    default:
+      return null;
+  }
+}
+
+/**
+ * Build a NurbsCurve from a B_SPLINE_CURVE_WITH_KNOTS or RATIONAL_B_SPLINE_CURVE.
+ */
+function _buildBSplineCurveNurbs(resolved, entity, weightsArg) {
+  const degree = Number(entity.args[1]) || 1;
+  const cpRefs = entity.args[2];
+  const knotMults = entity.args[6];
+  const knotVals = entity.args[7];
+
+  if (!Array.isArray(cpRefs) || !Array.isArray(knotMults) || !Array.isArray(knotVals)) {
+    return null;
+  }
+
+  const controlPoints = [];
+  for (const cpRef of cpRefs) {
+    const pt = _getCartesianPoint(resolved, cpRef);
+    if (!pt) return null;
+    controlPoints.push(pt);
+  }
+
+  const mults = knotMults.map(m => Number(m) || 1);
+  const vals = knotVals.map(v => Number(v));
+
+  let weights = null;
+  if (Array.isArray(weightsArg) && weightsArg.length === controlPoints.length) {
+    weights = weightsArg.map(w => Number(w) || 1);
+  }
+
+  return NurbsCurve.fromStepBSpline(degree, controlPoints, mults, vals, weights);
+}
+
+/**
+ * Build a NurbsSurface (and surface type) from a STEP surface entity.
+ * Returns { surface: NurbsSurface, type: SurfaceType } or null.
+ */
+function _buildNurbsSurface(resolved, surfaceRef) {
+  const surf = _getEntity(resolved, surfaceRef);
+  if (!surf) return null;
+
+  switch (surf.type) {
+    case 'PLANE': {
+      // Could build a NurbsSurface plane but the tessellator handles
+      // planes via polygon anyway, so we just return the type.
+      return { surface: null, type: SurfaceType.PLANE };
+    }
+
+    case 'CYLINDRICAL_SURFACE': {
+      const axis = _getAxis2Placement3D(resolved, surf.args[1]);
+      const radius = Number(surf.args[2]);
+      if (!axis || !radius) return { surface: null, type: SurfaceType.CYLINDER };
+      const yDir = _cross(axis.zDir, axis.xDir);
+      // Build a full cylinder patch (360°, unit height) — trimmed by edge loops
+      const surface = NurbsSurface.createCylinder(
+        axis.origin, axis.zDir, radius, 1.0,
+        axis.xDir, yDir, 0, 2 * Math.PI
+      );
+      return { surface, type: SurfaceType.CYLINDER };
+    }
+
+    case 'CONICAL_SURFACE': {
+      return { surface: null, type: SurfaceType.CONE };
+    }
+
+    case 'SPHERICAL_SURFACE': {
+      return { surface: null, type: SurfaceType.SPHERE };
+    }
+
+    case 'TOROIDAL_SURFACE': {
+      return { surface: null, type: SurfaceType.TORUS };
+    }
+
+    case 'B_SPLINE_SURFACE_WITH_KNOTS':
+      return _buildBSplineSurfaceNurbs(resolved, surf, null);
+
+    case 'RATIONAL_B_SPLINE_SURFACE':
+      return _buildBSplineSurfaceNurbs(resolved, surf, 'rational');
+
+    default:
+      return { surface: null, type: SurfaceType.UNKNOWN };
+  }
+}
+
+/**
+ * Build a NurbsSurface from a B_SPLINE_SURFACE_WITH_KNOTS or RATIONAL_B_SPLINE_SURFACE.
+ *
+ * Merged args layout:
+ *   [0] name
+ *   [1] degree_u
+ *   [2] degree_v
+ *   [3] control_points_grid  — nested list ((row0_cps), (row1_cps), ...)
+ *   [4] surface_form
+ *   [5] u_closed
+ *   [6] v_closed
+ *   [7] self_intersect
+ *   [8] u_knot_multiplicities
+ *   [9] u_knot_values
+ *   [10] v_knot_multiplicities
+ *   [11] v_knot_values
+ *   [12] knot_spec
+ *   [13] weights_grid (only for rational)
+ */
+function _buildBSplineSurfaceNurbs(resolved, entity, rational) {
+  const degreeU = Number(entity.args[1]) || 1;
+  const degreeV = Number(entity.args[2]) || 1;
+  const cpGrid = entity.args[3];
+
+  // Knot data
+  const uKnotMults = entity.args[8];
+  const uKnotVals = entity.args[9];
+  const vKnotMults = entity.args[10];
+  const vKnotVals = entity.args[11];
+
+  if (!Array.isArray(cpGrid) || !Array.isArray(uKnotMults) || !Array.isArray(uKnotVals) ||
+      !Array.isArray(vKnotMults) || !Array.isArray(vKnotVals)) {
+    return { surface: null, type: SurfaceType.BSPLINE };
+  }
+
+  // Resolve control point grid
+  const controlPointGrid = [];
+  for (const row of cpGrid) {
+    if (!Array.isArray(row)) return { surface: null, type: SurfaceType.BSPLINE };
+    const cpRow = [];
+    for (const cpRef of row) {
+      const pt = _getCartesianPoint(resolved, cpRef);
+      if (!pt) return { surface: null, type: SurfaceType.BSPLINE };
+      cpRow.push(pt);
+    }
+    controlPointGrid.push(cpRow);
+  }
+
+  const multsU = uKnotMults.map(m => Number(m) || 1);
+  const valsU = uKnotVals.map(v => Number(v));
+  const multsV = vKnotMults.map(m => Number(m) || 1);
+  const valsV = vKnotVals.map(v => Number(v));
+
+  // Weights for rational surfaces
+  let weightsGrid = null;
+  if (rational) {
+    const wGrid = entity.args[13];
+    if (Array.isArray(wGrid) && wGrid.length === controlPointGrid.length) {
+      weightsGrid = [];
+      for (const row of wGrid) {
+        if (Array.isArray(row)) {
+          weightsGrid.push(row.map(w => Number(w) || 1));
+        }
+      }
+    }
+  }
+
+  const surface = NurbsSurface.fromStepBSpline(
+    degreeU, degreeV, controlPointGrid,
+    multsU, valsU, multsV, valsV, weightsGrid
+  );
+  return { surface, type: SurfaceType.BSPLINE };
+}
+
+// =====================================================================
+// Curve sampling for curved edges (tessellation)
 // =====================================================================
 
 /**
