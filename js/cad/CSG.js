@@ -3912,67 +3912,9 @@ function _generateTrihedronCorner(faces, edgeInfos, shared) {
   const arcRight  = findArc(triVerts[1], triVerts[2]);
   if (!arcBottom || !arcLeft || !arcRight) return false;
 
-  // Do NOT splice boundary arcs into the planar faces here.
-  // The fillet strip quads share the arc boundary with the trihedron corner
-  // triangles (2 faces per edge, manifold).  The planar faces keep their
-  // straight trim chords, leaving 3 boundary edges.  Emit a fill triangle
-  // now (with proper corner metadata) so _healBoundaryLoops does not have
-  // to create an unattributed healing face later.
-  {
-    const p0 = triVerts[0].pos, p1 = triVerts[1].pos, p2 = triVerts[2].pos;
-    const fillVerts = [
-      { x: p0.x, y: p0.y, z: p0.z },
-      { x: p1.x, y: p1.y, z: p1.z },
-      { x: p2.x, y: p2.y, z: p2.z },
-    ];
-    const fillNormal = _computePolygonNormal(fillVerts);
-    if (fillNormal && _vec3Len(fillNormal) > 1e-10) {
-      // Determine correct winding: the fill triangle normal should point
-      // AWAY from the sphere center (outward) for consistent rendering.
-      if (useSphere) {
-        const fillCentroid = {
-          x: (p0.x + p1.x + p2.x) / 3,
-          y: (p0.y + p1.y + p2.y) / 3,
-          z: (p0.z + p1.z + p2.z) / 3,
-        };
-        const outDir = _vec3Sub(fillCentroid, sphereCenter);
-        if (_vec3Dot(fillNormal, outDir) < 0) {
-          fillVerts.reverse();
-        }
-      } else {
-        // Fallback: use planar-face edge winding when sphere center is
-        // unavailable (e.g. degenerate corner).
-        let windingScore = 0;
-        for (const face of faces) {
-          if (face.isFillet || face.isCorner) continue;
-          const verts = face.vertices;
-          for (let i = 0; i < verts.length; i++) {
-            const ak = _edgeVKey(verts[i]);
-            const bk = _edgeVKey(verts[(i + 1) % verts.length]);
-            if (ak === triVerts[0].vk && bk === triVerts[1].vk) windingScore++;
-            if (ak === triVerts[1].vk && bk === triVerts[0].vk) windingScore--;
-          }
-        }
-        if (windingScore > 0) {
-          fillVerts.reverse();
-        }
-      }
-      const n = _computePolygonNormal(fillVerts) || fillNormal;
-      faces.push({
-        vertices: fillVerts,
-        normal: n,
-        shared,
-        isCorner: true,
-        _sphereCenter: null,
-        _sphereRadius: 0,
-        _triVerts: [
-          { x: p0.x, y: p0.y, z: p0.z },
-          { x: p1.x, y: p1.y, z: p1.z },
-          { x: p2.x, y: p2.y, z: p2.z },
-        ],
-      });
-    }
-  }
+  // The planar faces keep their straight chord trims from _batchTrimFaces.
+  // The fillet strip + trihedron grid share the curved arc boundary.
+  // A fill triangle bridges the gap between the straight chord and the arcs.
 
   // Step 3: Build the triangular grid.
   //   Row 0 (bottom):  segs+1 points from arcBottom (V[0] → V[1])
@@ -4041,10 +3983,35 @@ function _generateTrihedronCorner(faces, edgeInfos, shared) {
   // Pre-compute shared metadata for emitted corner faces.
   const triVertPositions = [{ ...triVerts[0].pos }, { ...triVerts[1].pos }, { ...triVerts[2].pos }];
 
+  // Determine correct winding by checking manifold consistency with adjacent
+  // fillet strip faces.  The grid boundary edge grid[0][0]→grid[0][1] must
+  // traverse in the OPPOSITE direction from the adjacent fillet quad's edge.
+  const needFlip = _shouldFlipTrihedronWinding(faces, grid);
+
+  // Emit the fill triangle that bridges the straight trim chords on the
+  // planar faces to the curved trihedron boundary arcs.
+  {
+    const p0 = triVerts[0].pos, p1 = triVerts[1].pos, p2 = triVerts[2].pos;
+    const fillVerts = needFlip
+      ? [{ x: p0.x, y: p0.y, z: p0.z }, { x: p2.x, y: p2.y, z: p2.z }, { x: p1.x, y: p1.y, z: p1.z }]
+      : [{ x: p0.x, y: p0.y, z: p0.z }, { x: p1.x, y: p1.y, z: p1.z }, { x: p2.x, y: p2.y, z: p2.z }];
+    const n = _computePolygonNormal(fillVerts);
+    if (n && _vec3Len(n) > 1e-10) {
+      faces.push({
+        vertices: fillVerts,
+        normal: n,
+        shared,
+        isCorner: true,
+        _sphereCenter: null,
+        _sphereRadius: 0,
+        _triVerts: triVertPositions,
+      });
+    }
+  }
+
   // Step 4: Emit triangles from the grid.
-  // The triVerts ordering was chosen above so that the default winding
-  // (a, b, c) produces outward-facing normals that are manifold-consistent
-  // with the adjacent fillet strip quads—no flip is needed.
+  // Use needFlip to swap vertex order so boundary edges are manifold-
+  // consistent with the adjacent fillet strip quads.
   for (let r = 0; r < segs; r++) {
     const currRow = grid[r];
     const nextRow = grid[r + 1];
@@ -4054,7 +4021,9 @@ function _generateTrihedronCorner(faces, edgeInfos, shared) {
     for (let j = 0; j < currLen - 1; j++) {
       // "Down" triangle: currRow[j], currRow[j+1], nextRow[j]
       const a = currRow[j], b = currRow[j + 1], c = nextRow[j];
-      const tri1 = [{ ...a }, { ...b }, { ...c }];
+      const tri1 = needFlip
+        ? [{ ...a }, { ...c }, { ...b }]
+        : [{ ...a }, { ...b }, { ...c }];
       const n1 = _vec3Normalize(_vec3Cross(
         _vec3Sub(tri1[1], tri1[0]), _vec3Sub(tri1[2], tri1[0])
       ));
@@ -4067,7 +4036,9 @@ function _generateTrihedronCorner(faces, edgeInfos, shared) {
       // "Up" triangle: currRow[j+1], nextRow[j+1], nextRow[j]
       if (j < nextLen - 1) {
         const d = currRow[j + 1], e = nextRow[j + 1], f = nextRow[j];
-        const tri2 = [{ ...d }, { ...e }, { ...f }];
+        const tri2 = needFlip
+          ? [{ ...d }, { ...f }, { ...e }]
+          : [{ ...d }, { ...e }, { ...f }];
         const n2 = _vec3Normalize(_vec3Cross(
           _vec3Sub(tri2[1], tri2[0]), _vec3Sub(tri2[2], tri2[0])
         ));
