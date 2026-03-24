@@ -6,7 +6,6 @@
 //
 // Public API:
 //   parseSTEPTopology(stepString) → TopoBody   (exact topology, no mesh)
-//   tessellateBody(body, opts)    → { vertices, faces }  (display mesh)
 //   importSTEP(stepString, opts)  → { body, vertices, faces }  (convenience)
 //
 // Supports:
@@ -100,10 +99,13 @@ export function parseSTEPTopology(stepString) {
 }
 
 /**
- * Tessellate a TopoBody into a display mesh (post-processing only).
+ * Tessellate a STEP-imported TopoBody into a display mesh.
  *
- * Walks the topology graph and produces triangulated mesh faces using
- * the exact NurbsCurve / NurbsSurface data stored on each element.
+ * This is a STEP-optimized tessellator that produces faceGroup indices,
+ * isCurved flags for smooth shading, and analytic per-vertex normals
+ * for curved surfaces.  For general B-Rep tessellation see
+ * {@link import('./Tessellation.js').tessellateBody}.
+ *
  * The resulting mesh is suitable for rendering but must NOT be used
  * for further feature operations — see ARCHITECTURE.md, Rule 2.
  *
@@ -113,7 +115,7 @@ export function parseSTEPTopology(stepString) {
  * @param {number} [opts.surfaceSegments=16] - Segments per axis for B-spline surface tessellation
  * @returns {{ vertices: {x,y,z}[], faces: {vertices:{x,y,z}[], normal:{x,y,z}}[] }}
  */
-export function tessellateBody(body, opts = {}) {
+function _tessellateSTEPBody(body, opts = {}) {
   const curveSegments = opts.curveSegments ?? 64;
   const surfaceSegments = opts.surfaceSegments ?? 16;
 
@@ -137,9 +139,9 @@ export function tessellateBody(body, opts = {}) {
  * Parse a STEP file and return both exact B-Rep topology and a display mesh.
  *
  * Convenience wrapper that calls {@link parseSTEPTopology} to extract the
- * complete topology, then {@link tessellateBody} to produce a display mesh.
- * The `body` (TopoBody) is the primary output; `vertices` and `faces` are
- * secondary display-only data.
+ * complete topology, then tessellates it for display.  The `body` (TopoBody)
+ * is the primary output; `vertices` and `faces` are secondary display-only
+ * data — see ARCHITECTURE.md, Rule 2.
  *
  * @param {string} stepString - Contents of a STEP file
  * @param {Object} [opts]
@@ -149,7 +151,7 @@ export function tessellateBody(body, opts = {}) {
  */
 export function importSTEP(stepString, opts = {}) {
   const body = parseSTEPTopology(stepString);
-  const mesh = tessellateBody(body, opts);
+  const mesh = _tessellateSTEPBody(body, opts);
   return { body, vertices: mesh.vertices, faces: mesh.faces };
 }
 

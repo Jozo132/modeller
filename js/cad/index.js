@@ -54,5 +54,5 @@ export { splitFace, classifyPointOnFace, classifyFragment } from './FaceSplitter
 export { stitchFaces, buildBody } from './ShellBuilder.js';
 export { exactBooleanOp, hasExactTopology } from './BooleanKernel.js';
 export { exportSTEP } from './StepExport.js';
-export { importSTEP } from './StepImport.js';
+export { importSTEP, parseSTEPTopology } from './StepImport.js';
 
