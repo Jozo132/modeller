@@ -2752,7 +2752,7 @@ class App {
           const stepRow = document.createElement('div');
           stepRow.className = 'parameter-row lp-item';
           stepRow.style.cursor = 'pointer';
-          stepRow.innerHTML = `<span class="node-tree-icon" style="opacity:0.6;margin-right:4px;display:inline-flex">${getFeatureIconSVG(child.type)}</span> ${child.name}`;
+          stepRow.innerHTML = `<span class="node-tree-icon node-tree-child-icon">${getFeatureIconSVG(child.type)}</span> ${child.name}`;
           stepRow.addEventListener('click', () => {
             if (this._featurePanel) this._featurePanel.selectFeature(child.id);
             this._showLeftFeatureParams(child);

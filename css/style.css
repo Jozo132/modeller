@@ -2241,6 +2241,11 @@ body.workspace-part #parameters-panel {
   fill: none;
 }
 
+.node-tree-child-icon {
+  opacity: 0.6;
+  margin-right: 4px;
+}
+
 .node-tree-label {
   flex: 1;
   white-space: nowrap;
