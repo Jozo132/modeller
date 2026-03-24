@@ -4,6 +4,123 @@
 
 This document describes the modular architecture with parametric 3D CAD capabilities.
 
+---
+
+## ⚠️ Mandatory: Topology-First, Mesh Only for Visualization
+
+This project is a professional, fully featured CAD program. The following rules
+are **mandatory** and must be followed in all code contributions. Violating them
+will introduce precision loss that compounds over time and makes the system
+unsuitable for high-precision CAM operations on complex surfaces.
+
+### Rule 1 — B-Rep Topology Is the Source of Truth
+
+Every solid body in the feature tree **must** be represented by its exact
+NURBS/B-Rep topology (`TopoBody` from `BRepTopology.js`). The topology graph
+
+```
+TopoBody → TopoShell → TopoFace → TopoLoop → TopoCoEdge → TopoEdge → TopoVertex
+```
+
+carries the mathematically exact geometry:
+
+| Element    | Exact Data                                              |
+|------------|---------------------------------------------------------|
+| TopoFace   | `NurbsSurface` (support surface), `surfaceType`, `surfaceInfo` |
+| TopoEdge   | `NurbsCurve` (exact 3D edge curve)                      |
+| TopoVertex | Exact 3D point `{x, y, z}`                             |
+
+All feature operations (extrude, revolve, chamfer, fillet, boolean, etc.)
+**must** operate on this topology — never on tessellated mesh faces/vertices.
+
+### Rule 2 — Tessellation Is Post-Processing Only
+
+Mesh tessellation (`vertices[]`, `faces[]`) exists **only** for rendering an
+approximate visualization in the UI. It is generated **after** the topology is
+fully computed and **must never** be fed back into feature operations.
+
+```
+STEP file  ──parse──►  TopoBody (exact)  ──tessellate──►  mesh (display only)
+Sketch     ──extrude──► TopoBody (exact)  ──tessellate──►  mesh (display only)
+```
+
+- `parseSTEPTopology()` returns the exact `TopoBody`.
+- `tessellateBody()` converts a `TopoBody` into display mesh.
+- `importSTEP()` is a convenience wrapper that calls both.
+
+### Rule 3 — Features Operate on TopoBody, Not on Mesh
+
+When a feature in the tree receives the result of a previous feature, it
+**must** use `solid.body` (the `TopoBody`) for its operations:
+
+```js
+// ✅ CORRECT — operate on exact topology
+const body = previousResult.solid.body;   // TopoBody
+const newBody = applyExactChamfer(body, edgeKeys, distance);
+
+// ❌ WRONG — operating on tessellated mesh loses precision
+const geometry = previousResult.solid.geometry;   // mesh
+const newGeom = applyChamfer(geometry, edgeKeys, distance);
+```
+
+Every feature's `execute()` method **must** produce and propagate a `TopoBody`
+in its result so downstream features can continue working on exact data:
+
+```js
+return {
+  type: 'solid',
+  geometry,                          // mesh — for display only
+  solid: { geometry, body: newBody }, // body is mandatory
+  body: newBody,
+};
+```
+
+### Rule 4 — STEP Import Must Parse Full Topology First
+
+When importing a STEP file, the parser **must** extract the complete,
+mathematically exact B-Rep topology **before** any tessellation occurs:
+
+1. Parse all STEP entities from the DATA section.
+2. Resolve entity references into an object graph.
+3. Build the full `TopoBody` with `NurbsSurface` on every face and
+   `NurbsCurve` on every edge.
+4. **Only then** tessellate the topology for display.
+
+The `TopoBody` returned from STEP import is **never** optional — it is the
+primary output. The mesh is secondary.
+
+### Current Known Gaps
+
+The following areas currently violate these rules and must be addressed:
+
+- **`applyChamfer()` / `applyFillet()` in `CSG.js`** operate on mesh geometry
+  (`geometry.faces`) instead of `TopoBody`. They return a minimal `BRep` object
+  but not a full `TopoBody`. This means any chamfer or fillet in the feature
+  tree **breaks the exact topology chain** for all downstream features.
+
+- **`ChamferFeature.execute()`** and **`FilletFeature.execute()`** discard the
+  incoming `solid.body` (`TopoBody`) and operate only on `solid.geometry`
+  (mesh). They do not propagate a `TopoBody` in their result.
+
+These gaps must be closed by implementing exact chamfer/fillet operations on
+`TopoBody` and ensuring they propagate the topology downstream.
+
+### Why This Matters
+
+- Mesh-based operations introduce **cumulative approximation error**. Each
+  feature that works on tessellated geometry degrades precision.
+- High-precision CNC/CAM toolpath generation requires exact NURBS surfaces —
+  not polygonal approximations.
+- Boolean operations on exact B-Rep topology are **geometrically correct**;
+  mesh-based BSP booleans produce artifacts and degenerate geometry.
+- STEP export of modified models requires the exact topology to produce
+  valid, standards-compliant output.
+
+**Do not take shortcuts that sacrifice long-term precision for short-term
+convenience.** We are building a professional CAD system.
+
+---
+
 ## Design Hierarchy
 
 The project has three main design interfaces, organized in a hierarchy:

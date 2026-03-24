@@ -319,6 +319,12 @@ export class TopoFace {
     this.surface = surface;
     this.surfaceType = surfaceType;
     this.sameSense = sameSense;
+    /**
+     * Analytic surface geometry for per-vertex normal computation.
+     * Populated for cylinder, sphere, cone, torus surfaces.
+     * @type {{ type:string, origin:{x,y,z}, axis?:{x,y,z}, radius?:number, semiAngle?:number, majorR?:number, minorR?:number }|null}
+     */
+    this.surfaceInfo = null;
     /** @type {TopoLoop|null} Outer boundary loop */
     this.outerLoop = null;
     /** @type {TopoLoop[]} Inner loops (holes) */
@@ -396,6 +402,7 @@ export class TopoFace {
       this.sameSense,
     );
     f.shared = this.shared ? { ...this.shared } : null;
+    f.surfaceInfo = this.surfaceInfo ? { ...this.surfaceInfo } : null;
     f.tolerance = this.tolerance;
     f.id = this.id;
     if (this.outerLoop) f.setOuterLoop(this.outerLoop.clone());
@@ -409,6 +416,7 @@ export class TopoFace {
       surfaceType: this.surfaceType,
       surface: this.surface ? this.surface.serialize() : null,
       sameSense: this.sameSense,
+      surfaceInfo: this.surfaceInfo || null,
       outerLoopId: this.outerLoop ? this.outerLoop.id : null,
       innerLoopIds: this.innerLoops.map(l => l.id),
       shared: this.shared,
@@ -665,6 +673,7 @@ export class TopoBody {
       const face = new TopoFace(surf, fd.surfaceType || SurfaceType.UNKNOWN, fd.sameSense !== false);
       face.id = fd.id;
       face.shared = fd.shared || null;
+      face.surfaceInfo = fd.surfaceInfo || null;
       face.tolerance = fd.tolerance || 0;
       if (fd.outerLoopId != null) {
         const ol = loopMap.get(fd.outerLoopId);
