@@ -5,6 +5,7 @@ import { WasmRenderer } from './wasm-renderer.js';
 import { PartManager } from './part-manager.js';
 import { FeaturePanel } from './ui/featurePanel.js';
 import { ParametersPanel } from './ui/parametersPanel.js';
+import { getFeatureIconSVG } from './ui/featureIcons.js';
 import { getSnappedPosition } from './snap.js';
 import { undo, redo, takeSnapshot, setPartManager } from './history.js';
 import { downloadDXF, downloadFacesDXF } from './dxf/export.js';
@@ -2617,6 +2618,7 @@ class App {
   _showLeftFeatureParams(feature, options = {}) {
     const container = document.getElementById('left-feature-params-content');
     if (!container) return;
+    const headerEl = document.querySelector('#left-feature-params > h3');
     const { enterEditMode = false } = options;
     // Don't overwrite UI when in extrude/chamfer/fillet mode
     if (this._extrudeMode || this._chamferMode || this._filletMode) return;
@@ -2626,8 +2628,13 @@ class App {
       return;
     }
     if (!feature) {
+      if (headerEl) headerEl.innerHTML = 'Feature Properties';
       this._showSelectionSummary(container);
       return;
+    }
+    // Update header with feature icon
+    if (headerEl) {
+      headerEl.innerHTML = `<span class="parameters-header-icon">${getFeatureIconSVG(feature.type)}</span>Feature Properties`;
     }
     container.innerHTML = '';
 
@@ -2745,7 +2752,7 @@ class App {
           const stepRow = document.createElement('div');
           stepRow.className = 'parameter-row lp-item';
           stepRow.style.cursor = 'pointer';
-          stepRow.innerHTML = `<span style="opacity:0.6;margin-right:4px">${child.type === 'sketch' ? '📐' : child.type === 'extrude' ? '⬆️' : child.type === 'extrude-cut' ? '⬇️' : '🔄'}</span> ${child.name}`;
+          stepRow.innerHTML = `<span class="node-tree-icon node-tree-child-icon">${getFeatureIconSVG(child.type)}</span> ${child.name}`;
           stepRow.addEventListener('click', () => {
             if (this._featurePanel) this._featurePanel.selectFeature(child.id);
             this._showLeftFeatureParams(child);
@@ -5566,15 +5573,6 @@ class App {
     
     if (features.length === 0) return;
 
-    const featureIcons = {
-      'sketch': '📐',
-      'extrude': '⬆️',
-      'extrude-cut': '⬇️',
-      'revolve': '🔄',
-      'fillet': '🔘',
-      'chamfer': '📐'
-    };
-
     // Build a set of feature IDs that are consumed as children of other features
     const consumedIds = new Set();
     features.forEach((f) => {
@@ -5598,7 +5596,7 @@ class App {
         div.classList.add('active');
       }
 
-      const icon = featureIcons[feature.type] || '📦';
+      const icon = getFeatureIconSVG(feature.type);
       const eyeIcon = feature.visible ? '👁' : '—';
       const hiddenTag = feature.visible ? '' : ' <span class="node-tree-hidden-indicator" title="Hidden">[hidden]</span>';
       div.innerHTML = `<span class="node-tree-eye" title="Toggle feature visibility">${eyeIcon}</span><span class="node-tree-icon">${icon}</span><span class="node-tree-label">${feature.name}${hiddenTag}</span>`;
@@ -8222,7 +8220,7 @@ class App {
       const features = this._partManager ? this._partManager.getFeatures() : [];
       const feat = features.find(f => f.id === fId);
       items.push({
-        icon: '📐', label: feat ? feat.name : fId, type: 'feature',
+        iconHtml: getFeatureIconSVG(feat ? feat.type : 'sketch'), label: feat ? feat.name : fId, type: 'feature',
         onHover: () => {},
         onLeave: () => {},
         onRemove: () => { if (this._renderer3d) this._renderer3d.setSelectedFeature(null); if (this._featurePanel) this._featurePanel.selectFeature(null); this._refreshSelectionUI(); this._scheduleRender(); }
@@ -8280,7 +8278,12 @@ class App {
 
         const iconSpan = document.createElement('span');
         iconSpan.style.cssText = 'opacity:0.6;flex-shrink:0';
-        iconSpan.textContent = item.icon;
+        if (item.iconHtml) {
+          iconSpan.classList.add('node-tree-icon');
+          iconSpan.innerHTML = item.iconHtml;
+        } else {
+          iconSpan.textContent = item.icon;
+        }
 
         const label = document.createElement('span');
         label.className = 'edge-selection-label';

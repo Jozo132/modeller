@@ -1878,6 +1878,19 @@ body.motion-active #view-3d {
   font-size: 20px;
   line-height: 1;
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+}
+
+.feature-icon svg {
+  width: 20px;
+  height: 20px;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  fill: none;
 }
 
 .feature-info {
@@ -1938,6 +1951,26 @@ body.motion-active #view-3d {
   font-weight: 600;
   color: var(--text-primary);
   margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.parameters-header-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+.parameters-header-icon svg {
+  width: 18px;
+  height: 18px;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  fill: none;
 }
 
 .parameters-content {
@@ -2192,8 +2225,25 @@ body.workspace-part #parameters-panel {
 .node-tree-icon {
   flex-shrink: 0;
   width: 16px;
+  height: 16px;
   text-align: center;
   font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.node-tree-icon svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  fill: none;
+}
+
+.node-tree-child-icon {
+  opacity: 0.6;
+  margin-right: 4px;
 }
 
 .node-tree-label {

@@ -1,4 +1,5 @@
 // ui/parametersPanel.js - Feature parameters editing panel
+import { getFeatureIconSVG } from './featureIcons.js';
 
 /**
  * ParametersPanel - Displays and edits feature parameters
@@ -40,10 +41,17 @@ export class ParametersPanel {
    */
   showFeature(feature) {
     this.currentFeature = feature;
+    const headerEl = this.container.querySelector('.parameters-panel-header');
 
     if (!feature) {
+      if (headerEl) headerEl.innerHTML = '<h3>Parameters</h3>';
       this.contentElement.innerHTML = '<p class="hint">Select a feature to edit parameters</p>';
       return;
+    }
+
+    // Update header with feature icon and name
+    if (headerEl) {
+      headerEl.innerHTML = `<h3><span class="parameters-header-icon">${getFeatureIconSVG(feature.type)}</span>Parameters</h3>`;
     }
 
     this.contentElement.innerHTML = '';

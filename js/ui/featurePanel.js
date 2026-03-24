@@ -1,4 +1,5 @@
 // ui/featurePanel.js - Feature tree panel UI component
+import { getFeatureIconSVG } from './featureIcons.js';
 
 /**
  * FeaturePanel - Displays and manages the feature tree
@@ -117,14 +118,7 @@ export class FeaturePanel {
    * @param {string} type - Feature type
    */
   getFeatureIcon(type) {
-    const icons = {
-      'sketch': '📐',
-      'extrude': '⬆️',
-      'revolve': '🔄',
-      'fillet': '🔘',
-      'chamfer': '📐'
-    };
-    return icons[type] || '📦';
+    return getFeatureIconSVG(type);
   }
 
   /**
