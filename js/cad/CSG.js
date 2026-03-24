@@ -532,6 +532,11 @@ function assignCoplanarFaceGroups(faces) {
           const sourceA = fa.shared && fa.shared.sourceFeatureId ? fa.shared.sourceFeatureId : null;
           const sourceB = fb.shared && fb.shared.sourceFeatureId ? fb.shared.sourceFeatureId : null;
           if ((fa.isFillet || fa.isCorner || fb.isFillet || fb.isCorner) && sourceA !== sourceB) continue;
+          // Don't merge faces from different STEP topology faces.
+          // STEP import tags each mesh face with topoFaceId — these
+          // represent distinct B-Rep surfaces that must remain
+          // independently selectable (e.g. separate fillet cylinders).
+          if (fa.topoFaceId !== undefined && fb.topoFaceId !== undefined && fa.topoFaceId !== fb.topoFaceId) continue;
           unite(fis[i], fis[j]);
         }
       }

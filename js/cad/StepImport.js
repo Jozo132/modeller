@@ -721,6 +721,12 @@ function _tessellateFace(topoFace, curveSegments, surfaceSegments, faceGroup) {
     }
   }
 
+  // Tag every mesh face with its TopoFace origin so that
+  // assignCoplanarFaceGroups does not merge faces across STEP boundaries.
+  for (const f of meshFaces) {
+    f.topoFaceId = faceGroup;
+  }
+
   return { vertices: meshVertices, faces: meshFaces };
 }
 
@@ -759,12 +765,24 @@ function _tessellateLoop(topoLoop, curveSegments) {
       isArc = curvePoints.length > 2;
       edgePoints = forward ? curvePoints : [...curvePoints].reverse();
     } else {
-      // Straight edge: the edge's startVertex/endVertex were already
-      // ordered by _buildLoopTopology to match the loop traversal direction,
-      // so always traverse startVertex → endVertex.
-      const sp = edge.startVertex.point;
-      const ep = edge.endVertex.point;
-      edgePoints = [sp, ep];
+      // Straight edge: use the curve's natural endpoints to determine
+      // direction.  The NurbsCurve was built from the STEP EDGE_CURVE's
+      // start→end vertex, while edge.startVertex/endVertex may have been
+      // swapped during _buildLoopTopology.  When FACE_BOUND sense flips
+      // the coedge sameSense, the relationship between sv/ev and the
+      // curve direction can become inconsistent.  Using the curve's own
+      // control points (which always reflect the STEP curve direction)
+      // and applying the sameSense flag gives the correct loop direction.
+      if (curve) {
+        const cp = curve.controlPoints;
+        const p0 = cp[0];
+        const p1 = cp[cp.length - 1];
+        edgePoints = forward ? [p0, p1] : [p1, p0];
+      } else {
+        const sp = edge.startVertex.point;
+        const ep = edge.endVertex.point;
+        edgePoints = [sp, ep];
+      }
     }
 
     const edgeStart = polygon.length;
