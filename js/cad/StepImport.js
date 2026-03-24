@@ -1,7 +1,12 @@
 // js/cad/StepImport.js — STEP AP203/AP214/AP242 file import
 //
-// Parses ISO 10303 STEP files and builds exact B-Rep topology with
-// NurbsCurve / NurbsSurface geometry, plus tessellated mesh for display.
+// Parses ISO 10303 STEP files and extracts exact NURBS/B-Rep topology as
+// the primary output.  Tessellation is a separate post-processing step
+// used only for UI display — see ARCHITECTURE.md, Rules 1-4.
+//
+// Public API:
+//   parseSTEPTopology(stepString) → TopoBody   (exact topology, no mesh)
+//   importSTEP(stepString, opts)  → { body, vertices, faces }  (convenience)
 //
 // Supports:
 //   - MANIFOLD_SOLID_BREP / ADVANCED_BREP_SHAPE_REPRESENTATION
@@ -35,19 +40,17 @@ function _snapZero(v) { return Math.abs(v) < 1e-12 ? 0 : v; }
 function _snapPoint(p) { return { x: _snapZero(p.x), y: _snapZero(p.y), z: _snapZero(p.z) }; }
 
 /**
- * Parse a STEP file string and return tessellated mesh geometry plus
- * an optional exact B-Rep topology body.
+ * Parse a STEP file and extract the exact NURBS/B-Rep topology.
+ *
+ * This is the primary import entry point.  It builds a complete TopoBody
+ * with NurbsSurface on every face and NurbsCurve on every edge — no
+ * tessellation is performed.  Call {@link tessellateBody} afterwards to
+ * obtain a display mesh.
  *
  * @param {string} stepString - Contents of a STEP file
- * @param {Object} [opts]
- * @param {number} [opts.curveSegments=64] - Segments for curved edge tessellation
- * @param {number} [opts.surfaceSegments=16] - Segments for surface tessellation
- * @returns {{ vertices: {x,y,z}[], faces: {vertices:{x,y,z}[], normal:{x,y,z}}[], body: TopoBody|null }}
+ * @returns {TopoBody} Exact B-Rep topology body
  */
-export function importSTEP(stepString, opts = {}) {
-  const curveSegments = opts.curveSegments ?? 64;
-  const surfaceSegments = opts.surfaceSegments ?? 16;
-
+export function parseSTEPTopology(stepString) {
   // ------------------------------------------------------------------
   // 1. Parse all entities from the DATA section
   // ------------------------------------------------------------------
@@ -67,12 +70,9 @@ export function importSTEP(stepString, opts = {}) {
   }
 
   // ------------------------------------------------------------------
-  // 4. Build B-Rep topology and tessellate
+  // 4. Build exact B-Rep topology (no tessellation)
   // ------------------------------------------------------------------
-  const allVertices = [];
-  const allFaces = [];
   const topoShells = [];
-  let faceGroupCounter = 0;
 
   for (const shell of shells) {
     const faceRefs = Array.isArray(shell.args[1]) ? shell.args[1] : shell.args;
@@ -82,13 +82,8 @@ export function importSTEP(stepString, opts = {}) {
       const faceId = _refId(faceRef);
       if (faceId == null) continue;
 
-      const result = _buildFace(resolved, faceId, curveSegments, surfaceSegments, faceGroupCounter);
-      if (result) {
-        allVertices.push(...result.mesh.vertices);
-        allFaces.push(...result.mesh.faces);
-        if (result.topoFace) topoFaces.push(result.topoFace);
-      }
-      faceGroupCounter++;
+      const topoFace = _buildFaceTopology(resolved, faceId);
+      if (topoFace) topoFaces.push(topoFace);
     }
 
     const topoShell = new TopoShell(topoFaces);
@@ -96,9 +91,68 @@ export function importSTEP(stepString, opts = {}) {
     topoShells.push(topoShell);
   }
 
-  const body = topoShells.length > 0 ? new TopoBody(topoShells) : null;
+  if (topoShells.length === 0) {
+    throw new Error('No solid geometry found in STEP file. The file may contain only surface data or use an unsupported representation.');
+  }
 
-  return { vertices: allVertices, faces: allFaces, body };
+  return new TopoBody(topoShells);
+}
+
+/**
+ * Tessellate a STEP-imported TopoBody into a display mesh.
+ *
+ * This is a STEP-optimized tessellator that produces faceGroup indices,
+ * isCurved flags for smooth shading, and analytic per-vertex normals
+ * for curved surfaces.  For general B-Rep tessellation see
+ * {@link import('./Tessellation.js').tessellateBody}.
+ *
+ * The resulting mesh is suitable for rendering but must NOT be used
+ * for further feature operations — see ARCHITECTURE.md, Rule 2.
+ *
+ * @param {TopoBody} body - Exact B-Rep topology body
+ * @param {Object} [opts]
+ * @param {number} [opts.curveSegments=64] - Segments for curved edge tessellation
+ * @param {number} [opts.surfaceSegments=16] - Segments per axis for B-spline surface tessellation
+ * @returns {{ vertices: {x,y,z}[], faces: {vertices:{x,y,z}[], normal:{x,y,z}}[] }}
+ */
+function _tessellateSTEPBody(body, opts = {}) {
+  const curveSegments = opts.curveSegments ?? 64;
+  const surfaceSegments = opts.surfaceSegments ?? 16;
+
+  const allVertices = [];
+  const allFaces = [];
+  let faceGroupCounter = 0;
+
+  for (const topoFace of body.faces()) {
+    const result = _tessellateFace(topoFace, curveSegments, surfaceSegments, faceGroupCounter);
+    if (result) {
+      allVertices.push(...result.vertices);
+      allFaces.push(...result.faces);
+    }
+    faceGroupCounter++;
+  }
+
+  return { vertices: allVertices, faces: allFaces };
+}
+
+/**
+ * Parse a STEP file and return both exact B-Rep topology and a display mesh.
+ *
+ * Convenience wrapper that calls {@link parseSTEPTopology} to extract the
+ * complete topology, then tessellates it for display.  The `body` (TopoBody)
+ * is the primary output; `vertices` and `faces` are secondary display-only
+ * data — see ARCHITECTURE.md, Rule 2.
+ *
+ * @param {string} stepString - Contents of a STEP file
+ * @param {Object} [opts]
+ * @param {number} [opts.curveSegments=64] - Segments for curved edge tessellation
+ * @param {number} [opts.surfaceSegments=16] - Segments for surface tessellation
+ * @returns {{ body: TopoBody, vertices: {x,y,z}[], faces: {vertices:{x,y,z}[], normal:{x,y,z}}[] }}
+ */
+export function importSTEP(stepString, opts = {}) {
+  const body = parseSTEPTopology(stepString);
+  const mesh = _tessellateSTEPBody(body, opts);
+  return { body, vertices: mesh.vertices, faces: mesh.faces };
 }
 
 // =====================================================================
@@ -424,20 +478,23 @@ function _findShells(resolved) {
 }
 
 // =====================================================================
-// Face building — B-Rep topology + tessellated mesh
+// Face topology extraction (Phase 1 — no tessellation)
 // =====================================================================
 
 /**
- * Build a single ADVANCED_FACE into both B-Rep topology and mesh triangles.
+ * Build a TopoFace from a single ADVANCED_FACE entity.
+ *
+ * Extracts exact NURBS/B-Rep topology only — no mesh tessellation.
+ * The returned TopoFace carries:
+ *   - NurbsSurface (support surface)
+ *   - surfaceType / surfaceInfo for analytic surfaces
+ *   - TopoLoops with TopoCoEdges/TopoEdges carrying NurbsCurves
  *
  * @param {Map} resolved - Resolved entity map
  * @param {number} faceId - Entity ID of the ADVANCED_FACE
- * @param {number} curveSegments - Segments for curved edges
- * @param {number} surfaceSegments - Segments for surface tessellation
- * @param {number} faceGroup - Face group index for smooth shading
- * @returns {{ topoFace: TopoFace|null, mesh: { vertices:{x,y,z}[], faces:{vertices:{x,y,z}[], normal:{x,y,z}}[] } }|null}
+ * @returns {TopoFace|null}
  */
-function _buildFace(resolved, faceId, curveSegments, surfaceSegments, faceGroup) {
+function _buildFaceTopology(resolved, faceId) {
   const face = resolved.get(faceId);
   if (!face || face.type !== 'ADVANCED_FACE') return null;
 
@@ -453,14 +510,11 @@ function _buildFace(resolved, faceId, curveSegments, surfaceSegments, faceGroup)
   const nurbsSurface = surfResult ? surfResult.surface : null;
   const surfaceType = surfResult ? surfResult.type : SurfaceType.UNKNOWN;
 
-  // Extract surface normal from analytic surfaces for face winding
-  const surfaceNormal = _extractSurfaceNormal(resolved, surfaceRef);
-
-  // Extract surface geometric data for per-vertex normal computation
+  // Extract analytic surface geometry (axis, center, radius, etc.)
   const surfaceInfo = _extractSurfaceInfo(resolved, surfaceRef);
 
-  // Build topology loops and polygon loops
-  const loopData = [];
+  // Build topology loops
+  const loopEntries = [];
   for (const boundRef of boundsList) {
     const bound = _getEntity(resolved, boundRef);
     if (!bound) continue;
@@ -477,44 +531,115 @@ function _buildFace(resolved, faceId, curveSegments, surfaceSegments, faceGroup)
     const orientedEdgeRefs = loop.args[1];
     if (!Array.isArray(orientedEdgeRefs)) continue;
 
-    const loopResult = _buildLoop(resolved, orientedEdgeRefs, curveSegments);
-    if (!loopResult || loopResult.polygon.length < 3) continue;
+    const coedges = _buildLoopTopology(resolved, orientedEdgeRefs);
+    if (!coedges || coedges.length === 0) continue;
 
     if (!boundSense) {
-      loopResult.polygon.reverse();
-      loopResult.coedges.reverse();
-      for (const ce of loopResult.coedges) ce.sameSense = !ce.sameSense;
-      // Reverse edge bounds to match reversed polygon
-      const totalLen = loopResult.polygon.length;
-      const reversed = [];
-      for (let i = loopResult.edgeBounds.length - 1; i >= 0; i--) {
-        const eb = loopResult.edgeBounds[i];
-        reversed.push({ start: totalLen - eb.start - eb.count, count: eb.count, isArc: eb.isArc });
-      }
-      loopResult.edgeBounds = reversed;
+      coedges.reverse();
+      for (const ce of coedges) ce.sameSense = !ce.sameSense;
     }
 
-    loopData.push({
+    loopEntries.push({
       isOuter: bound.type === 'FACE_OUTER_BOUND',
-      polygon: loopResult.polygon,
-      edgeBounds: loopResult.edgeBounds,
-      topoLoop: new TopoLoop(loopResult.coedges),
+      topoLoop: new TopoLoop(coedges),
     });
   }
 
-  if (loopData.length === 0) return null;
+  if (loopEntries.length === 0) return null;
 
-  // Build TopoFace
+  // Build TopoFace with all topology data
   const topoFace = new TopoFace(nurbsSurface, surfaceType, sameSense);
-  const outerData = loopData.find(l => l.isOuter) || loopData[0];
-  topoFace.setOuterLoop(outerData.topoLoop);
-  for (const ld of loopData) {
-    if (ld !== outerData) topoFace.addInnerLoop(ld.topoLoop);
+  topoFace.surfaceInfo = surfaceInfo;
+
+  const outerEntry = loopEntries.find(l => l.isOuter) || loopEntries[0];
+  topoFace.setOuterLoop(outerEntry.topoLoop);
+  for (const le of loopEntries) {
+    if (le !== outerEntry) topoFace.addInnerLoop(le.topoLoop);
   }
 
-  // Tessellate: use parametric surface tessellation for curved surfaces with NURBS data
-  const polygon = outerData.polygon;
-  const edgeBounds = outerData.edgeBounds;
+  return topoFace;
+}
+
+/**
+ * Build topology coedges from an EDGE_LOOP's ORIENTED_EDGE references.
+ *
+ * Creates TopoVertex → TopoEdge (with NurbsCurve) → TopoCoEdge chain.
+ * No curve sampling or tessellation is performed.
+ *
+ * @param {Map} resolved - Resolved entity map
+ * @param {Array} orientedEdgeRefs - References to ORIENTED_EDGE entities
+ * @returns {TopoCoEdge[]}
+ */
+function _buildLoopTopology(resolved, orientedEdgeRefs) {
+  const coedges = [];
+
+  for (const oeRef of orientedEdgeRefs) {
+    const oe = _getEntity(resolved, oeRef);
+    if (!oe || oe.type !== 'ORIENTED_EDGE') continue;
+
+    const edgeCurveRef = oe.args[3];
+    const oeSense = oe.args[4] === '.T.';
+
+    const edgeCurve = _getEntity(resolved, edgeCurveRef);
+    if (!edgeCurve || edgeCurve.type !== 'EDGE_CURVE') continue;
+
+    const startVertexRef = edgeCurve.args[1];
+    const endVertexRef = edgeCurve.args[2];
+    const curveRef = edgeCurve.args[3];
+    const edgeSense = edgeCurve.args[4] === '.T.';
+
+    const startPt = _getVertexPoint(resolved, startVertexRef);
+    const endPt = _getVertexPoint(resolved, endVertexRef);
+    if (!startPt || !endPt) continue;
+
+    const forward = oeSense === edgeSense;
+
+    // Build NurbsCurve from the edge geometry (exact representation)
+    const nurbsCurve = _buildNurbsCurve(resolved, curveRef, startPt, endPt);
+
+    // Create topology elements
+    const sv = new TopoVertex(forward ? startPt : endPt);
+    const ev = new TopoVertex(forward ? endPt : startPt);
+    const topoEdge = new TopoEdge(sv, ev, nurbsCurve);
+    const coedge = new TopoCoEdge(topoEdge, forward);
+    coedges.push(coedge);
+  }
+
+  return coedges;
+}
+
+// =====================================================================
+// Face tessellation (Phase 2 — post-processing for display only)
+// =====================================================================
+
+/**
+ * Tessellate a TopoFace into display mesh triangles.
+ *
+ * Works entirely from the exact topology data stored on the TopoFace
+ * (NurbsSurface, NurbsCurves, surfaceInfo) — no STEP entity access.
+ *
+ * @param {TopoFace} topoFace - Exact B-Rep face
+ * @param {number} curveSegments - Segments for curved edges
+ * @param {number} surfaceSegments - Segments for surface tessellation
+ * @param {number} faceGroup - Face group index for smooth shading
+ * @returns {{ vertices:{x,y,z}[], faces:{vertices:{x,y,z}[], normal:{x,y,z}}[] }|null}
+ */
+function _tessellateFace(topoFace, curveSegments, surfaceSegments, faceGroup) {
+  const { surface: nurbsSurface, surfaceType, sameSense, surfaceInfo } = topoFace;
+
+  // Tessellate outer loop boundary polygon from topology curves
+  const outerLoop = topoFace.outerLoop;
+  if (!outerLoop) return null;
+
+  const outerTess = _tessellateLoop(outerLoop, curveSegments);
+  if (!outerTess || outerTess.polygon.length < 3) return null;
+
+  const polygon = outerTess.polygon;
+  const edgeBounds = outerTess.edgeBounds;
+
+  // Compute a surface normal for face winding
+  const surfaceNormal = _surfaceNormalFromTopology(topoFace, polygon);
+
   let meshFaces = [];
   let meshVertices = [];
 
@@ -596,59 +721,50 @@ function _buildFace(resolved, faceId, curveSegments, surfaceSegments, faceGroup)
     }
   }
 
-  return {
-    topoFace,
-    mesh: { vertices: meshVertices, faces: meshFaces },
-  };
+  return { vertices: meshVertices, faces: meshFaces };
 }
 
 /**
- * Build a TopoLoop with coedges and gather the tessellated polygon.
+ * Tessellate a TopoLoop into a polygon boundary and edge bounds.
+ *
+ * Samples each edge's NurbsCurve to produce display-quality polygon points.
+ * Works entirely from topology data — no STEP entity access.
+ *
+ * @param {TopoLoop} topoLoop
+ * @param {number} curveSegments - Segments for curved edge sampling
+ * @returns {{ polygon:{x,y,z}[], edgeBounds:{ start:number, count:number, isArc:boolean }[] }|null}
  */
-function _buildLoop(resolved, orientedEdgeRefs, curveSegments) {
+function _tessellateLoop(topoLoop, curveSegments) {
   const polygon = [];
-  const coedges = [];
-  const edgeBounds = []; // { start, count, isArc } for each edge in the polygon
+  const edgeBounds = [];
 
-  for (const oeRef of orientedEdgeRefs) {
-    const oe = _getEntity(resolved, oeRef);
-    if (!oe || oe.type !== 'ORIENTED_EDGE') continue;
+  for (const coedge of topoLoop.coedges) {
+    const edge = coedge.edge;
+    const forward = coedge.sameSense;
+    const curve = edge.curve;
 
-    const edgeCurveRef = oe.args[3];
-    const oeSense = oe.args[4] === '.T.';
+    // Determine if this is a non-linear curve that needs sampling
+    const isLinear = !curve ||
+      (curve.degree === 1 && curve.controlPoints.length === 2);
 
-    const edgeCurve = _getEntity(resolved, edgeCurveRef);
-    if (!edgeCurve || edgeCurve.type !== 'EDGE_CURVE') continue;
-
-    const startVertexRef = edgeCurve.args[1];
-    const endVertexRef = edgeCurve.args[2];
-    const curveRef = edgeCurve.args[3];
-    const edgeSense = edgeCurve.args[4] === '.T.';
-
-    const startPt = _getVertexPoint(resolved, startVertexRef);
-    const endPt = _getVertexPoint(resolved, endVertexRef);
-    if (!startPt || !endPt) continue;
-
-    const forward = oeSense === edgeSense;
-
-    // Build NurbsCurve from the edge geometry
-    const nurbsCurve = _buildNurbsCurve(resolved, curveRef, startPt, endPt);
-
-    // Create topology elements
-    const sv = new TopoVertex(forward ? startPt : endPt);
-    const ev = new TopoVertex(forward ? endPt : startPt);
-    const topoEdge = new TopoEdge(sv, ev, nurbsCurve);
-    const coedge = new TopoCoEdge(topoEdge, forward);
-    coedges.push(coedge);
-
-    // Tessellate for polygon
-    const curvePoints = _sampleCurvePoints(resolved, curveRef, startPt, endPt, curveSegments);
     let edgePoints;
-    const isArc = curvePoints && curvePoints.length > 2;
-    if (isArc) {
+    let isArc = false;
+
+    if (!isLinear) {
+      // Sample the NURBS curve from topology.
+      // The NurbsCurve is parameterized in the original STEP curve direction.
+      // When coedge.sameSense is false, the loop traverses the curve in
+      // reverse, so we reverse the sampled points.
+      const curvePoints = curve.tessellate(curveSegments);
+      isArc = curvePoints.length > 2;
       edgePoints = forward ? curvePoints : [...curvePoints].reverse();
     } else {
-      edgePoints = forward ? [startPt, endPt] : [endPt, startPt];
+      // Straight edge: the edge's startVertex/endVertex were already
+      // ordered by _buildLoopTopology to match the loop traversal direction,
+      // so always traverse startVertex → endVertex.
+      const sp = edge.startVertex.point;
+      const ep = edge.endVertex.point;
+      edgePoints = [sp, ep];
     }
 
     const edgeStart = polygon.length;
@@ -658,7 +774,28 @@ function _buildLoop(resolved, orientedEdgeRefs, curveSegments) {
     edgeBounds.push({ start: edgeStart, count: edgePoints.length - 1, isArc });
   }
 
-  return { polygon, coedges, edgeBounds };
+  return { polygon, edgeBounds };
+}
+
+/**
+ * Derive a surface normal from topology data for face winding.
+ * For planes, uses the NurbsSurface or surfaceInfo. For other types,
+ * returns null (polygon normal or per-vertex normals are used instead).
+ */
+function _surfaceNormalFromTopology(topoFace, polygon) {
+  const { surface, surfaceType } = topoFace;
+
+  if (surfaceType === SurfaceType.PLANE) {
+    // For plane surfaces, derive normal from the surface or polygon
+    if (surface) {
+      const midU = (surface.uMin + surface.uMax) / 2;
+      const midV = (surface.vMin + surface.vMax) / 2;
+      return surface.normal(midU, midV);
+    }
+    return _computePolygonNormal(polygon);
+  }
+  // For curved surfaces, return null — vertex normals are computed analytically
+  return null;
 }
 
 /**

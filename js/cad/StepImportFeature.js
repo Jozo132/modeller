@@ -1,9 +1,10 @@
 // js/cad/StepImportFeature.js — Imported STEP solid feature
 //
 // Represents geometry imported from a STEP file as a parametric solid.
-// The imported mesh has no internal feature tree, but can be used as a
-// base body for subsequent parametric operations (extrude-cut, chamfer,
-// fillet, boolean, etc.).
+// The primary output is the exact B-Rep topology (TopoBody) extracted
+// from the STEP file.  A tessellated display mesh is generated as a
+// secondary post-processing step for UI rendering only.
+// See ARCHITECTURE.md, Rules 1-4.
 
 import { Feature, claimFeatureId } from './Feature.js';
 import { importSTEP } from './StepImport.js';
@@ -11,7 +12,8 @@ import { computeFeatureEdges } from './CSG.js';
 
 /**
  * StepImportFeature represents a solid body imported from a STEP file.
- * It produces a 'solid' result that subsequent features can operate on.
+ * It produces a 'solid' result whose primary output is the exact
+ * TopoBody; the tessellated mesh is for display only.
  */
 export class StepImportFeature extends Feature {
   /**
@@ -37,8 +39,11 @@ export class StepImportFeature extends Feature {
   /**
    * Execute the feature: parse the STEP data and produce solid geometry.
    *
+   * The primary output is the exact B-Rep topology (TopoBody).
+   * The tessellated mesh is generated as post-processing for display only.
+   *
    * @param {Object} _context - Execution context (unused — no dependencies)
-   * @returns {{ type:'solid', geometry:Object, solid:Object, volume:number, boundingBox:Object }}
+   * @returns {{ type:'solid', geometry:Object, solid:Object, body:Object, volume:number, boundingBox:Object }}
    */
   execute(_context) {
     if (!this.stepData) {
@@ -51,6 +56,15 @@ export class StepImportFeature extends Feature {
       this._cachedMesh = { ...result, curveSegments: this.curveSegments };
     }
 
+    // Primary output: exact B-Rep topology
+    const body = this._cachedMesh.body;
+    if (body) {
+      for (const face of body.faces()) {
+        face.shared = { sourceFeatureId: this.id };
+      }
+    }
+
+    // Secondary output: tessellated display mesh
     const geometry = {
       vertices: this._cachedMesh.vertices,
       faces: this._cachedMesh.faces,
@@ -59,7 +73,7 @@ export class StepImportFeature extends Feature {
       visualEdges: [],
     };
 
-    // Tag faces with this feature's id
+    // Tag mesh faces with this feature's id
     for (const f of geometry.faces) {
       if (!f.shared) f.shared = { sourceFeatureId: this.id };
     }
@@ -72,14 +86,6 @@ export class StepImportFeature extends Feature {
 
     const volume = this._estimateVolume(geometry);
     const boundingBox = this._computeBoundingBox(geometry);
-
-    // If the import returned a TopoBody, tag its faces with this feature
-    const body = this._cachedMesh.body || null;
-    if (body) {
-      for (const face of body.faces()) {
-        face.shared = { sourceFeatureId: this.id };
-      }
-    }
 
     return {
       type: 'solid',

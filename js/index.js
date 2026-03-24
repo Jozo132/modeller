@@ -75,6 +75,7 @@ export {
   // STEP export & import
   exportSTEP,
   importSTEP,
+  parseSTEPTopology,
 } from './cad/index.js';
 
 // --- CMOD project file (headless, no DOM required) ---

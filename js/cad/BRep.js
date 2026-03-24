@@ -279,16 +279,18 @@ export class BRep {
 }
 
 /**
- * Convert a NURBS-annotated mesh geometry to purely tessellated mesh geometry.
+ * Convert a NURBS-annotated mesh geometry to a display-quality mesh.
  * Re-tessellates any face that has an attached BRep NURBS surface at the
  * requested resolution.
  *
- * This allows the rendering pipeline to work purely with mesh data while
+ * This allows the rendering pipeline to work with display mesh data while
  * the exact NURBS definitions are preserved in the brep property.
+ * The output mesh is for visualization only — feature operations must
+ * use the exact B-Rep topology (see ARCHITECTURE.md, Rule 2).
  *
  * @param {Object} geometry - Geometry with .faces[], optional .brep
  * @param {number} [segments=8] - Tessellation segments for NURBS surfaces
- * @returns {Object} Geometry with mesh faces (brep preserved as-is)
+ * @returns {Object} Geometry with display mesh faces (brep preserved as-is)
  */
 export function tessellateNurbsFaces(geometry, segments = 8) {
   if (!geometry || !geometry.brep || !geometry.brep.faces) {
