@@ -161,6 +161,13 @@ export class SceneRenderer {
     const camera = computeOrbitCameraPosition(this._orbitTheta, this._orbitPhi, this._orbitRadius, t);
     this.wasm.setCameraPosition(camera.x, camera.y, camera.z);
     this.wasm.setCameraTarget(t.x, t.y, t.z);
+    const dx = t.x - camera.x;
+    const dy = t.y - camera.y;
+    const dz = t.z - camera.z;
+    const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (len > 1e-8) {
+      this.executor.setViewDir(dx / len, dy / len, dz / len);
+    }
   }
 
   _buildMeshFromGeometry(geometry) {
