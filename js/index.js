@@ -24,6 +24,7 @@ export {
   Feature, resetFeatureIds, FeatureTree,
   SketchFeature, ExtrudeFeature, ExtrudeCutFeature, RevolveFeature,
   ChamferFeature, FilletFeature,
+  StepImportFeature,
 
   // Constraint solver
   solve,
@@ -71,8 +72,9 @@ export {
   stitchFaces, buildBody,
   exactBooleanOp, hasExactTopology,
 
-  // STEP export
+  // STEP export & import
   exportSTEP,
+  importSTEP,
 } from './cad/index.js';
 
 // --- CMOD project file (headless, no DOM required) ---

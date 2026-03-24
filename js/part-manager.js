@@ -144,6 +144,22 @@ export class PartManager {
   }
 
   /**
+   * Import a STEP file as a solid body feature.
+   * @param {string} stepData - Raw STEP file contents
+   * @param {Object} [options] - Import options (name, curveSegments)
+   */
+  importSTEP(stepData, options = {}) {
+    if (!this.part) {
+      this.createPart();
+    }
+
+    const feature = this.part.importSTEP(stepData, options);
+    this.activeFeature = feature;
+    this.notifyListeners();
+    return feature;
+  }
+
+  /**
    * Modify a feature's parameters
    * @param {string} featureId - Feature ID
    * @param {Function} modifyFn - Function to modify the feature
