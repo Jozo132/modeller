@@ -513,6 +513,63 @@ export class NurbsSurface {
     );
   }
 
+  static createCornerBlendPatch(top0, top1, side0Mid, side1Mid, apex, centerPoint = null, topMidPoint = null) {
+    const lerp = (a, b, t) => ({
+      x: a.x + (b.x - a.x) * t,
+      y: a.y + (b.y - a.y) * t,
+      z: a.z + (b.z - a.z) * t,
+    });
+    const solveMidCtrl = (p0, pm, p2) => ({
+      x: 2 * pm.x - 0.5 * (p0.x + p2.x),
+      y: 2 * pm.y - 0.5 * (p0.y + p2.y),
+      z: 2 * pm.z - 0.5 * (p0.z + p2.z),
+    });
+
+    const topMid = topMidPoint ? { ...topMidPoint } : lerp(top0, top1, 0.5);
+    const leftCtrl = solveMidCtrl(top0, side0Mid, apex);
+    const rightCtrl = solveMidCtrl(top1, side1Mid, apex);
+    const target = centerPoint || {
+      x: (topMid.x + side0Mid.x + side1Mid.x + apex.x) / 4,
+      y: (topMid.y + side0Mid.y + side1Mid.y + apex.y) / 4,
+      z: (topMid.z + side0Mid.z + side1Mid.z + apex.z) / 4,
+    };
+
+    const controlPoints = [
+      { ...top0 },
+      { ...topMid },
+      { ...top1 },
+      { ...leftCtrl },
+      { x: 0, y: 0, z: 0 },
+      { ...rightCtrl },
+      { ...apex },
+      { ...apex },
+      { ...apex },
+    ];
+
+    const bern = [1 / 16, 1 / 8, 1 / 16, 1 / 8, 1 / 4, 1 / 8, 1 / 16, 1 / 8, 1 / 16];
+    let sumX = 0;
+    let sumY = 0;
+    let sumZ = 0;
+    for (let i = 0; i < controlPoints.length; i++) {
+      if (i === 4) continue;
+      sumX += bern[i] * controlPoints[i].x;
+      sumY += bern[i] * controlPoints[i].y;
+      sumZ += bern[i] * controlPoints[i].z;
+    }
+    controlPoints[4] = {
+      x: (target.x - sumX) / bern[4],
+      y: (target.y - sumY) / bern[4],
+      z: (target.z - sumZ) / bern[4],
+    };
+
+    return new NurbsSurface(
+      2, 2, 3, 3,
+      controlPoints,
+      [0, 0, 0, 1, 1, 1],
+      [0, 0, 0, 1, 1, 1]
+    );
+  }
+
   /**
    * Create a degree (2,2) rational Bézier surface representing a spherical
    * triangle patch between three points on a sphere.

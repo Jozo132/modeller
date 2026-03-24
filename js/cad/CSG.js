@@ -1640,7 +1640,9 @@ function _computeOffsetDirs(face0, face1, edgeA, edgeB) {
   if (_vec3Dot(offsDir1, _vec3Sub(cen1, edgeA)) < 0) {
     offsDir1.x = -offsDir1.x; offsDir1.y = -offsDir1.y; offsDir1.z = -offsDir1.z;
   }
-  return { offsDir0, offsDir1, edgeDir };
+  // Detect concave (reflex) edge: offset into face0 aligns with face1 outward normal
+  const isConcave = _vec3Dot(offsDir0, n1) > 1e-6;
+  return { offsDir0, offsDir1, edgeDir, isConcave };
 }
 
 /**
@@ -2611,7 +2613,7 @@ function _precomputeChamferEdge(faces, edgeKey, dist) {
   const face0Keys = _collectFaceEdgeKeys(face0);
   const face1Keys = _collectFaceEdgeKeys(face1);
 
-  const { offsDir0, offsDir1 } = _computeOffsetDirs(face0, face1, edgeA, edgeB);
+  const { offsDir0, offsDir1, isConcave } = _computeOffsetDirs(face0, face1, edgeA, edgeB);
 
   const p0a = _vec3Add(edgeA, _vec3Scale(offsDir0, dist));
   const p0b = _vec3Add(edgeB, _vec3Scale(offsDir0, dist));
@@ -2622,6 +2624,7 @@ function _precomputeChamferEdge(faces, edgeKey, dist) {
     edgeKey, fi0, fi1, edgeA, edgeB,
     face0Keys, face1Keys,
     p0a, p0b, p1a, p1b,
+    isConcave,
     shared: face0.shared ? { ...face0.shared } : null,
   };
 }
@@ -2661,10 +2664,15 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8) {
   // --- Phase 2: Build vertex-sharing map ---
   const vertexEdgeMap = _buildVertexEdgeMap(edgeDataList);
 
+  // Merge common-face trim vertices before face trimming so the shared planar
+  // face uses the real fillet/fillet breakpoint instead of a legacy diagonal.
+  _mergeSharedVertexPositions(edgeDataList, vertexEdgeMap);
+
   // --- Phase 3: Apply batch face trimming ---
   _batchTrimFaces(faces, edgeDataList);
 
   _batchSplitVertices(faces, edgeDataList, vertexEdgeMap);
+  _applyTwoEdgeFilletSharedTrims(edgeDataList, origFaces, vertexEdgeMap);
 
   // --- Phase 4: Generate all fillet strip quads, endpoint fans, + NURBS ---
   const brep = new BRep();
@@ -2746,6 +2754,8 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8) {
     const shared = data.shared;
     const arcA = data.arcA;
     const arcB = data.arcB;
+    const trimA = data.sharedTrimA || arcA;
+    const trimB = data.sharedTrimB || arcB;
     const edgeDir = _vec3Normalize(_vec3Sub(data.edgeB, data.edgeA));
 
     // Create NURBS fillet surface for this edge
@@ -2755,7 +2765,7 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8) {
     const rail1 = [{ ...arcA[segments] }, { ...arcB[segments] }];
 
     // Compute arc centers at each endpoint for the NURBS definition
-    const { offsDir0, offsDir1 } = _computeOffsetDirs(
+    const { offsDir0, offsDir1, isConcave: _nc } = _computeOffsetDirs(
       faces[data.fi0], faces[data.fi1], data.edgeA, data.edgeB
     );
     const bisector = _vec3Normalize(_vec3Add(offsDir0, offsDir1));
@@ -2805,14 +2815,14 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8) {
       }
     }
 
-    // Create fillet strip quads (mesh tessellation — same as before)
+    // Create fillet strip quads (mesh tessellation)
     for (let s = 0; s < segments; s++) {
       const faceNormal = _vec3Normalize(_vec3Cross(
-        _vec3Sub(arcA[s + 1], arcA[s]),
-        _vec3Sub(arcB[s + 1], arcA[s])
+        _vec3Sub(trimA[s + 1], trimA[s]),
+        _vec3Sub(trimB[s + 1], trimA[s])
       ));
       faces.push({
-        vertices: [{ ...arcA[s] }, { ...arcA[s + 1] }, { ...arcB[s + 1] }, { ...arcB[s] }],
+        vertices: [{ ...trimA[s] }, { ...trimA[s + 1] }, { ...trimB[s + 1] }, { ...trimB[s] }],
         normal: faceNormal,
         shared,
         isFillet: true,
@@ -2820,16 +2830,23 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8) {
     }
 
     // Fan triangles at endpoint A — only if NOT a shared internal vertex
+    // For concave edges, skip splice (arc bows inward, would create ear) and use fan
     const vkA = _edgeVKey(data.edgeA);
     if (!sharedEndpoints.has(vkA)) {
-      const merged = trySpliceEndpointArcIntoFace(arcA, _vec3Scale(edgeDir, -1));
+      let merged = false;
+      if (!data.isConcave) {
+        merged = trySpliceEndpointArcIntoFace(arcA, _vec3Scale(edgeDir, -1));
+      }
       if (!merged) pushFallbackEndpointFan(arcA, true, shared);
     }
 
     // Fan triangles at endpoint B — only if NOT a shared internal vertex
     const vkB = _edgeVKey(data.edgeB);
     if (!sharedEndpoints.has(vkB)) {
-      const merged = trySpliceEndpointArcIntoFace(arcB, edgeDir);
+      let merged = false;
+      if (!data.isConcave) {
+        merged = trySpliceEndpointArcIntoFace(arcB, edgeDir);
+      }
       if (!merged) pushFallbackEndpointFan(arcB, false, shared);
     }
   }
@@ -2863,6 +2880,32 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8) {
     }
   }
 
+  {
+    const seen = new Set();
+    for (const face of faces) {
+      if (!face.isCorner || !face._cornerPatch || !face._cornerPatchKey) continue;
+      if (seen.has(face._cornerPatchKey)) continue;
+      seen.add(face._cornerPatchKey);
+      let nurbsSurf = null;
+      try {
+        nurbsSurf = NurbsSurface.createCornerBlendPatch(
+          face._cornerPatch.top0,
+          face._cornerPatch.top1,
+          face._cornerPatch.side0Mid,
+          face._cornerPatch.side1Mid,
+          face._cornerPatch.apex,
+          face._cornerPatch.centerPoint,
+          face._cornerPatch.topMid,
+        );
+      } catch (e) {
+        // Keep the exact corner grouped in BRep history even if patch fitting fails.
+      }
+      const brepFace = new BRepFace(nurbsSurf, 'fillet', face.shared);
+      brepFace.isCornerPatch = true;
+      brep.addFace(brepFace);
+    }
+  }
+
   // --- Phase 6: Heal boundary edges left by sequential fillet interactions ---
   _healBoundaryLoops(faces);
 
@@ -2870,6 +2913,7 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8) {
   _removeDegenerateFaces(faces);
   _mergeMixedSharedPlanarComponents(faces);
   _mergeAdjacentCoplanarFacePairs(faces);
+  _healBoundaryLoops(faces);
   _removeDegenerateFaces(faces);
   _recomputeFaceNormals(faces);
 
@@ -2897,7 +2941,7 @@ function _precomputeFilletEdge(faces, edgeKey, radius, segments) {
   const face0Keys = _collectFaceEdgeKeys(face0);
   const face1Keys = _collectFaceEdgeKeys(face1);
 
-  const { offsDir0, offsDir1 } = _computeOffsetDirs(face0, face1, edgeA, edgeB);
+  const { offsDir0, offsDir1, isConcave } = _computeOffsetDirs(face0, face1, edgeA, edgeB);
 
   const alpha = Math.acos(Math.max(-1, Math.min(1, _vec3Dot(offsDir0, offsDir1))));
   if (alpha < 1e-6) return null;
@@ -2943,6 +2987,7 @@ function _precomputeFilletEdge(faces, edgeKey, radius, segments) {
     face0Keys, face1Keys,
     p0a: t0a, p0b: t0b, p1a: t1a, p1b: t1b,
     arcA, arcB,
+    isConcave,
     shared: face0.shared ? { ...face0.shared } : null,
   };
 }
@@ -3031,6 +3076,131 @@ function _mergeSharedVertexPositions(edgeDataList, vertexEdgeMap) {
         }
       }
     }
+  }
+}
+
+function _solvePlanarCoefficients(axis0, axis1, rel) {
+  const g00 = _vec3Dot(axis0, axis0);
+  const g01 = _vec3Dot(axis0, axis1);
+  const g11 = _vec3Dot(axis1, axis1);
+  const rhs0 = _vec3Dot(rel, axis0);
+  const rhs1 = _vec3Dot(rel, axis1);
+  const det = g00 * g11 - g01 * g01;
+  if (Math.abs(det) < 1e-10) return null;
+  return {
+    u: (rhs0 * g11 - rhs1 * g01) / det,
+    v: (rhs1 * g00 - rhs0 * g01) / det,
+  };
+}
+
+function _samplePolyline(points, samples) {
+  if (!points || points.length === 0) return [];
+  if (points.length === 1 || samples <= 0) return [{ ...points[0] }];
+
+  const lengths = [0];
+  let total = 0;
+  for (let i = 1; i < points.length; i++) {
+    total += _vec3Len(_vec3Sub(points[i], points[i - 1]));
+    lengths.push(total);
+  }
+  if (total < 1e-10) {
+    return Array.from({ length: samples + 1 }, () => ({ ...points[0] }));
+  }
+
+  const result = [];
+  for (let i = 0; i <= samples; i++) {
+    const target = (i / samples) * total;
+    let seg = 1;
+    while (seg < lengths.length && lengths[seg] < target) seg++;
+    const lo = Math.max(0, seg - 1);
+    const hi = Math.min(points.length - 1, seg);
+    const segLen = lengths[hi] - lengths[lo];
+    const t = segLen > 1e-10 ? (target - lengths[lo]) / segLen : 0;
+    result.push(_vec3Lerp(points[lo], points[hi], t));
+  }
+  return result;
+}
+
+function _buildTwoEdgeFilletTrim(edgeInfo0, edgeInfo1, origFaces) {
+  const data0 = edgeInfo0.data;
+  const data1 = edgeInfo1.data;
+  const commonFaces = [];
+  for (const fi of [data0.fi0, data0.fi1]) {
+    if (fi === data1.fi0 || fi === data1.fi1) commonFaces.push(fi);
+  }
+  if (commonFaces.length !== 1) return null;
+
+  const commonFaceIndex = commonFaces[0];
+  const commonFace = origFaces[commonFaceIndex];
+  const faceNormal = _vec3Normalize(commonFace && commonFace.normal ? commonFace.normal : { x: 0, y: 0, z: 0 });
+  if (_vec3Len(faceNormal) < 1e-10) return null;
+
+  const orientedArc0 = commonFaceIndex === data0.fi0 ? edgeInfo0.arc : [...edgeInfo0.arc].reverse();
+  const orientedArc1 = commonFaceIndex === data1.fi0 ? edgeInfo1.arc : [...edgeInfo1.arc].reverse();
+  if (!orientedArc0 || !orientedArc1 || orientedArc0.length !== orientedArc1.length || orientedArc0.length < 2) {
+    return null;
+  }
+
+  const sharedVertex = edgeInfo0.isA ? data0.edgeA : data0.edgeB;
+  const other0 = edgeInfo0.isA ? data0.edgeB : data0.edgeA;
+  const other1 = edgeInfo1.isA ? data1.edgeB : data1.edgeA;
+
+  const axis0Raw = _vec3Sub(other0, sharedVertex);
+  const axis1Raw = _vec3Sub(other1, sharedVertex);
+  const axis0Plane = _vec3Sub(axis0Raw, _vec3Scale(faceNormal, _vec3Dot(axis0Raw, faceNormal)));
+  const axis1Plane = _vec3Sub(axis1Raw, _vec3Scale(faceNormal, _vec3Dot(axis1Raw, faceNormal)));
+  const axis0 = _vec3Normalize(axis0Plane);
+  const axis1 = _vec3Normalize(axis1Plane);
+  if (_vec3Len(axis0) < 1e-10 || _vec3Len(axis1) < 1e-10) return null;
+  if (_vec3Len(_vec3Cross(axis0, axis1)) < 1e-6) return null;
+
+  const trim = [];
+  for (let i = 0; i < orientedArc0.length; i++) {
+    const rel0 = _vec3Sub(orientedArc0[i], sharedVertex);
+    const rel1 = _vec3Sub(orientedArc1[i], sharedVertex);
+    const w0 = _vec3Dot(rel0, faceNormal);
+    const w1 = _vec3Dot(rel1, faceNormal);
+    const plane0 = _vec3Sub(rel0, _vec3Scale(faceNormal, w0));
+    const plane1 = _vec3Sub(rel1, _vec3Scale(faceNormal, w1));
+    const coeff0 = _solvePlanarCoefficients(axis0, axis1, plane0);
+    const coeff1 = _solvePlanarCoefficients(axis0, axis1, plane1);
+    if (!coeff0 || !coeff1) return null;
+    trim.push(_vec3Add(sharedVertex, _vec3Add(
+      _vec3Add(_vec3Scale(axis0, coeff1.u), _vec3Scale(axis1, coeff0.v)),
+      _vec3Scale(faceNormal, (w0 + w1) * 0.5)
+    )));
+  }
+
+  const trimFor0 = commonFaceIndex === data0.fi0 ? trim : [...trim].reverse();
+  const trimFor1 = commonFaceIndex === data1.fi0 ? trim : [...trim].reverse();
+  return { trimFor0, trimFor1 };
+}
+
+function _applyTwoEdgeFilletSharedTrims(edgeDataList, origFaces, vertexEdgeMap) {
+  for (const [vk, edgeIndices] of vertexEdgeMap) {
+    if (edgeIndices.length !== 2) continue;
+
+    const data0 = edgeDataList[edgeIndices[0]];
+    const data1 = edgeDataList[edgeIndices[1]];
+    const edgeInfo0 = {
+      data: data0,
+      isA: _edgeVKey(data0.edgeA) === vk,
+      arc: _edgeVKey(data0.edgeA) === vk ? data0.arcA : data0.arcB,
+    };
+    const edgeInfo1 = {
+      data: data1,
+      isA: _edgeVKey(data1.edgeA) === vk,
+      arc: _edgeVKey(data1.edgeA) === vk ? data1.arcA : data1.arcB,
+    };
+    if (!edgeInfo0.arc || !edgeInfo1.arc) continue;
+
+    const trimInfo = _buildTwoEdgeFilletTrim(edgeInfo0, edgeInfo1, origFaces);
+    if (!trimInfo) continue;
+
+    if (edgeInfo0.isA) edgeInfo0.data.sharedTrimA = trimInfo.trimFor0;
+    else edgeInfo0.data.sharedTrimB = trimInfo.trimFor0;
+    if (edgeInfo1.isA) edgeInfo1.data.sharedTrimA = trimInfo.trimFor1;
+    else edgeInfo1.data.sharedTrimB = trimInfo.trimFor1;
   }
 }
 
@@ -3187,6 +3357,7 @@ function _batchSplitVertices(faces, edgeDataList, vertexEdgeMap) {
     for (let fi = 0; fi < faces.length; fi++) {
       if (entry.fi0Set.has(fi) || entry.fi1Set.has(fi)) continue;
       const face = faces[fi];
+      if (face.isFillet || face.isCorner) continue;
       const verts = face.vertices;
 
       let vidx = -1;
@@ -3591,6 +3762,47 @@ function _deduplicatePolygon(verts) {
   return result;
 }
 
+function _splicePolylineIntoFaceEdge(faces, polyline) {
+  if (!polyline || polyline.length < 3) return false;
+
+  const startKey = _edgeVKey(polyline[0]);
+  const endKey = _edgeVKey(polyline[polyline.length - 1]);
+  const interior = polyline.slice(1, -1);
+
+  for (const face of faces) {
+    if (!face || !face.vertices || face.vertices.length < 3) continue;
+    if (face.isFillet || face.isCorner) continue;
+
+    const verts = face.vertices;
+    for (let i = 0; i < verts.length; i++) {
+      const aKey = _edgeVKey(verts[i]);
+      const bKey = _edgeVKey(verts[(i + 1) % verts.length]);
+      if ((aKey !== startKey || bKey !== endKey) && (aKey !== endKey || bKey !== startKey)) {
+        continue;
+      }
+
+      const insert = aKey === startKey ? interior : [...interior].reverse();
+      const newVerts = [];
+      for (let vi = 0; vi < verts.length; vi++) {
+        newVerts.push({ ...verts[vi] });
+        if (vi === i) {
+          for (const pt of insert) newVerts.push({ ...pt });
+        }
+      }
+
+      face.vertices = _deduplicatePolygon(newVerts);
+      const newNormal = _computePolygonNormal(face.vertices);
+      if (newNormal && _vec3Dot(newNormal, face.normal || newNormal) < 0) {
+        face.vertices.reverse();
+      }
+      face.normal = _computePolygonNormal(face.vertices) || face.normal;
+      return true;
+    }
+  }
+
+  return false;
+}
+
 /**
  * Generate a spherical triangle patch for a trihedron corner where 3+ fillet
  * edges meet at a single vertex.  The 3 fillet arcs at the vertex form the
@@ -3651,16 +3863,16 @@ function _generateTrihedronCorner(faces, edgeInfos, shared) {
   const arcRight  = findArc(triVerts[1], triVerts[2]);
   if (!arcBottom || !arcLeft || !arcRight) return false;
 
-  // Step 3: Compute the common sphere so interior points bulge correctly.
-  // All fillet arc points lie on a common sphere; find its center via circumsphere
-  // of 4 non-coplanar points (3 triangle vertices + 1 interior arc point).
+  // Keep the exact trihedron corner metadata for BRep output, but do not
+  // force the visualization mesh onto this sphere; that projection is what
+  // created the outward spikes at the corner.
   const midIdx = Math.max(1, Math.floor(segs / 2));
   const p3Arc = edgeInfos[0].arc[midIdx];
   const sphereCenter = _circumsphereCenter(triVerts[0].pos, triVerts[1].pos, triVerts[2].pos, p3Arc);
   const sphereRadius = sphereCenter ? _vec3Len(_vec3Sub(triVerts[0].pos, sphereCenter)) : 0;
   const useSphere = sphereCenter !== null && sphereRadius > 1e-10;
 
-  // Step 4: Build the triangular grid.
+  // Step 3: Build the triangular grid.
   //   Row 0 (bottom):  segs+1 points from arcBottom (V[0] → V[1])
   //   Row r:           segs-r+1 points; left = arcLeft[r], right = arcRight[r]
   //   Row segs (top):  1 point = V[2]
@@ -3685,21 +3897,37 @@ function _generateTrihedronCorner(faces, edgeInfos, shared) {
         grid[r][j] = { ...right };
       } else {
         const t = j / (count - 1);
-        let pt = _vec3Lerp(left, right, t);
-        // Project onto the common sphere for a rounder surface
-        if (useSphere) {
-          const dir = _vec3Sub(pt, sphereCenter);
-          const len = _vec3Len(dir);
-          if (len > 1e-10) {
-            pt = _vec3Add(sphereCenter, _vec3Scale(dir, sphereRadius / len));
-          }
-        }
-        grid[r][j] = pt;
+        grid[r][j] = _vec3Lerp(left, right, t);
       }
     }
   }
 
-  // Step 5: Determine correct winding by checking a boundary edge against the
+  // Fair the interior toward a smooth ball-like blend without forcing it onto
+  // the circumsphere through the trim vertices, which can protrude past the
+  // support faces and create the visible pineapple spikes.
+  for (let iter = 0; iter < 4; iter++) {
+    for (let r = 1; r < segs; r++) {
+      const row = grid[r];
+      for (let j = 1; j < row.length - 1; j++) {
+        const neighbors = [row[j - 1], row[j + 1]];
+        if (j < grid[r - 1].length) neighbors.push(grid[r - 1][j]);
+        if (j + 1 < grid[r - 1].length) neighbors.push(grid[r - 1][j + 1]);
+        if (j < grid[r + 1].length) neighbors.push(grid[r + 1][j]);
+        if (j - 1 >= 0 && j - 1 < grid[r + 1].length) neighbors.push(grid[r + 1][j - 1]);
+        let sx = 0;
+        let sy = 0;
+        let sz = 0;
+        for (const pt of neighbors) {
+          sx += pt.x;
+          sy += pt.y;
+          sz += pt.z;
+        }
+        row[j] = { x: sx / neighbors.length, y: sy / neighbors.length, z: sz / neighbors.length };
+      }
+    }
+  }
+
+  // Step 4: Determine correct winding by checking a boundary edge against the
   // adjacent fillet strip face.  The fillet strip quads already have consistent
   // winding; the trihedron must match by traversing shared boundary edges in
   // the opposite direction.
@@ -3748,33 +3976,6 @@ function _generateTrihedronCorner(faces, edgeInfos, shared) {
     }
   }
 
-  // Add the flat base triangle connecting the 3 trihedron vertices.
-  // This seals the small triangular boundary loop between the 3 trimmed box
-  // faces at the corner, preventing _healBoundaryLoops from creating an
-  // untagged face later.
-  const bk0 = _edgeVKey(triVerts[0].pos);
-  const bk1 = _edgeVKey(triVerts[1].pos);
-  let baseFlip = false;
-  for (let fi = 0; fi < faces.length && !baseFlip; fi++) {
-    const verts = faces[fi].vertices;
-    for (let i = 0; i < verts.length; i++) {
-      if (_edgeVKey(verts[i]) === bk0 &&
-          _edgeVKey(verts[(i + 1) % verts.length]) === bk1) {
-        baseFlip = true;
-        break;
-      }
-    }
-  }
-  const baseTri = baseFlip
-    ? [{ ...triVerts[0].pos }, { ...triVerts[2].pos }, { ...triVerts[1].pos }]
-    : [{ ...triVerts[0].pos }, { ...triVerts[1].pos }, { ...triVerts[2].pos }];
-  const baseN = _vec3Normalize(_vec3Cross(
-    _vec3Sub(baseTri[1], baseTri[0]), _vec3Sub(baseTri[2], baseTri[0])
-  ));
-  if (_vec3Len(baseN) > 1e-10) {
-    faces.push({ vertices: baseTri, normal: baseN, shared, isCorner: true });
-  }
-
   return true;
 }
 
@@ -3813,6 +4014,124 @@ function _shouldFlipTrihedronWinding(faces, grid) {
   return false;
 }
 
+function _emitTwoEdgeFilletCornerPatch(faces, arcLeft, arcRight, shared, trimCurve = null) {
+  if (!arcLeft || !arcRight || arcLeft.length !== arcRight.length || arcLeft.length < 2) {
+    return;
+  }
+
+  const segs = arcLeft.length - 1;
+  const top0 = arcLeft[0];
+  const top1 = arcRight[0];
+  const apex = arcLeft[segs];
+  const topMid = trimCurve && trimCurve.length > 0 ? trimCurve[0] : _vec3Lerp(top0, top1, 0.5);
+  const topBoundary = _edgeVKey(topMid) === _edgeVKey(top0) || _edgeVKey(topMid) === _edgeVKey(top1)
+    ? [{ ...top0 }, { ...top1 }]
+    : [{ ...top0 }, { ...topMid }, { ...top1 }];
+  const topRow = _samplePolyline(topBoundary, segs);
+  _splicePolylineIntoFaceEdge(faces, topBoundary);
+
+  const grid = [topRow];
+  for (let r = 1; r < segs; r++) {
+    const left = arcLeft[r];
+    const right = arcRight[r];
+    const count = segs - r + 1;
+    const row = [];
+    for (let j = 0; j < count; j++) {
+      row.push(_vec3Lerp(left, right, j / (count - 1 || 1)));
+    }
+    grid.push(row);
+  }
+  grid.push([{ ...apex }]);
+
+  for (let iter = 0; iter < 3; iter++) {
+    for (let r = 1; r < grid.length - 1; r++) {
+      for (let j = 1; j < grid[r].length - 1; j++) {
+        const neighbors = [];
+        neighbors.push(grid[r][j - 1], grid[r][j + 1]);
+        if (j < grid[r - 1].length) neighbors.push(grid[r - 1][j]);
+        if (j + 1 < grid[r - 1].length) neighbors.push(grid[r - 1][j + 1]);
+        if (j < grid[r + 1].length) neighbors.push(grid[r + 1][j]);
+        if (j - 1 >= 0 && j - 1 < grid[r + 1].length) neighbors.push(grid[r + 1][j - 1]);
+        if (neighbors.length === 0) continue;
+        let sx = 0;
+        let sy = 0;
+        let sz = 0;
+        for (const pt of neighbors) {
+          sx += pt.x;
+          sy += pt.y;
+          sz += pt.z;
+        }
+        grid[r][j] = { x: sx / neighbors.length, y: sy / neighbors.length, z: sz / neighbors.length };
+      }
+    }
+  }
+
+  const flip = _shouldFlipTrihedronWinding(faces, [topRow]);
+  const midRow = grid[Math.floor(segs / 2)] || grid[0];
+  const midPoint = midRow[Math.floor((midRow.length - 1) / 2)] || _vec3Lerp(top0, apex, 0.5);
+  const cornerPatch = {
+    top0: { ...top0 },
+    top1: { ...top1 },
+    topMid: { ...topMid },
+    side0Mid: { ...arcLeft[Math.floor(segs / 2)] },
+    side1Mid: { ...arcRight[Math.floor(segs / 2)] },
+    apex: { ...apex },
+    centerPoint: { ...midPoint },
+  };
+  const patchKey = [
+    _edgeVKey(cornerPatch.top0),
+    _edgeVKey(cornerPatch.top1),
+    _edgeVKey(cornerPatch.apex),
+  ].join('|');
+
+  for (let r = 0; r < segs; r++) {
+    const currRow = grid[r];
+    const nextRow = grid[r + 1];
+    const currLen = currRow.length;
+    const nextLen = nextRow.length;
+
+    for (let j = 0; j < currLen - 1; j++) {
+      const down = flip
+        ? [{ ...currRow[j] }, { ...nextRow[j] }, { ...currRow[j + 1] }]
+        : [{ ...currRow[j] }, { ...currRow[j + 1] }, { ...nextRow[j] }];
+      const downNormal = _vec3Normalize(_vec3Cross(
+        _vec3Sub(down[1], down[0]), _vec3Sub(down[2], down[0])
+      ));
+      if (_vec3Len(downNormal) > 1e-10) {
+        faces.push({
+          vertices: down,
+          normal: downNormal,
+          shared,
+          isFillet: true,
+          isCorner: true,
+          _cornerPatch: cornerPatch,
+          _cornerPatchKey: patchKey,
+        });
+      }
+
+      if (j < nextLen - 1) {
+        const up = flip
+          ? [{ ...currRow[j + 1] }, { ...nextRow[j] }, { ...nextRow[j + 1] }]
+          : [{ ...currRow[j + 1] }, { ...nextRow[j + 1] }, { ...nextRow[j] }];
+        const upNormal = _vec3Normalize(_vec3Cross(
+          _vec3Sub(up[1], up[0]), _vec3Sub(up[2], up[0])
+        ));
+        if (_vec3Len(upNormal) > 1e-10) {
+          faces.push({
+            vertices: up,
+            normal: upNormal,
+            shared,
+            isFillet: true,
+            isCorner: true,
+            _cornerPatch: cornerPatch,
+            _cornerPatchKey: patchKey,
+          });
+        }
+      }
+    }
+  }
+}
+
 /**
  * Generate fillet corner faces at a shared vertex using triangle fans.
  * The boundary of the gap consists of:
@@ -3849,57 +4168,13 @@ function _generateFilletCorner(faces, edgeInfos, shared) {
     const arcsMeet = _edgeVKey(lastCurr) === _edgeVKey(lastNext);
 
     if (arcsMeet && segs > 1) {
-      // Ruled surface between the two fillet cross-section arcs, split into
-      // triangles along the diagonal so each half can merge with the adjacent
-      // fillet strip group.  The diagonal becomes the feature line where the
-      // two fillets meet — no separate corner patch is needed.
-      //
-      // Winding: check a representative triangle against existing fillet
-      // faces to ensure consistent orientation.
-      const flip = _shouldFlipTrihedronWinding(faces, [
-        [arcCurr[0], arcCurr[1]],  // just need first 2 points in row 0
-      ]);
-
-      for (let s = 0; s < segs; s++) {
-        if (s < segs - 1) {
-          const v0 = arcCurr[s], v1 = arcCurr[s + 1];
-          const v2 = arcNext[s + 1], v3 = arcNext[s];
-
-          // Triangle along arcCurr side → merges with fillet strip 1
-          const tri1 = flip
-            ? [{ ...v0 }, { ...v2 }, { ...v1 }]
-            : [{ ...v0 }, { ...v1 }, { ...v2 }];
-          const n1 = _vec3Normalize(_vec3Cross(
-            _vec3Sub(tri1[1], tri1[0]), _vec3Sub(tri1[2], tri1[0])
-          ));
-          if (_vec3Len(n1) > 1e-10) {
-            faces.push({ vertices: tri1, normal: n1, shared, isFillet: true });
-          }
-
-          // Triangle along arcNext side → merges with fillet strip 2
-          const tri2 = flip
-            ? [{ ...v0 }, { ...v3 }, { ...v2 }]
-            : [{ ...v0 }, { ...v2 }, { ...v3 }];
-          const n2 = _vec3Normalize(_vec3Cross(
-            _vec3Sub(tri2[1], tri2[0]), _vec3Sub(tri2[2], tri2[0])
-          ));
-          if (_vec3Len(n2) > 1e-10) {
-            faces.push({ vertices: tri2, normal: n2, shared, isFillet: true });
-          }
-        } else {
-          // Last row: single triangle (both arcs converge to same endpoint)
-          const v0 = arcCurr[s], v1 = arcCurr[s + 1], v2 = arcNext[s];
-          const tri = flip
-            ? [{ ...v0 }, { ...v2 }, { ...v1 }]
-            : [{ ...v0 }, { ...v1 }, { ...v2 }];
-          const triNormal = _vec3Normalize(_vec3Cross(
-            _vec3Sub(tri[1], tri[0]), _vec3Sub(tri[2], tri[0])
-          ));
-          if (_vec3Len(triNormal) > 1e-10) {
-            faces.push({ vertices: tri, normal: triNormal, shared, isFillet: true });
-          }
-        }
+      const trimNext = next.isA ? next.data.sharedTrimA : next.data.sharedTrimB;
+      const trimCurr = curr.isA ? curr.data.sharedTrimA : curr.data.sharedTrimB;
+      if (edgeInfos.length === 2 && trimNext && trimCurr && trimNext.length === trimCurr.length) {
+        break;
       }
+      const trimCurve = trimNext && trimCurr && trimNext.length === trimCurr.length ? trimNext : null;
+      _emitTwoEdgeFilletCornerPatch(faces, arcNext, arcCurr, shared, trimCurve);
     } else {
       // Fallback: polygon fan approach for non-meeting arcs
       const cornerVerts = [];
@@ -3993,6 +4268,32 @@ export function expandPathEdgeKeys(geometry, edgeKeys) {
     }
   }
 
+  function pathExpansionSignature(pi) {
+    const path = geometry.paths[pi];
+    let hasFillet = false;
+    let hasNonFillet = false;
+    const featureIds = new Set();
+
+    for (const ei of path.edgeIndices) {
+      const edge = geometry.edges[ei];
+      for (const fi of edge.faceIndices || []) {
+        const face = geometry.faces && geometry.faces[fi];
+        if (!face) continue;
+        if (face.isFillet) hasFillet = true;
+        else hasNonFillet = true;
+        const featureId = face.shared && face.shared.sourceFeatureId;
+        if (featureId) featureIds.add(featureId);
+      }
+    }
+
+    const kind = hasFillet
+      ? (hasNonFillet ? 'blend-boundary' : 'blend-only')
+      : 'sharp-only';
+    return `${kind}|${[...featureIds].sort().join(',')}`;
+  }
+
+  const pathSignatures = geometry.paths.map((_, pi) => pathExpansionSignature(pi));
+
   // --- Tangent path expansion ---
   // Build path endpoint → path index map and endpoint edge directions
   const vKey = (v) => _edgeVKey(v);
@@ -4045,6 +4346,7 @@ export function expandPathEdgeKeys(geometry, edgeKeys) {
         if (!neighbors) continue;
         for (const neighbor of neighbors) {
           if (neighbor.pi === pi || touchedPaths.has(neighbor.pi)) continue;
+          if (pathSignatures[neighbor.pi] !== pathSignatures[pi]) continue;
 
           // Check tangency: find the direction at this endpoint for the current path
           let curDir;

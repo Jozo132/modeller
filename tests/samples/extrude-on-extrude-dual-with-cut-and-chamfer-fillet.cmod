@@ -639,9 +639,9 @@
       "chamfer",
       "fillet"
     ],
-    "faceCount": 376,
+    "faceCount": 98,
     "volume": 983.504668,
-    "surfaceArea": 659.837745,
+    "surfaceArea": 659.252514,
     "boundingBox": {
       "min": {
         "x": 0,
@@ -657,8 +657,8 @@
     "width": 10,
     "height": 12,
     "depth": 10,
-    "edgeCount": 158,
-    "pathCount": 68,
+    "edgeCount": 156,
+    "pathCount": 66,
     "bodyCount": 1,
     "bodySizes": [
       376

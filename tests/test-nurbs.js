@@ -44,6 +44,38 @@ function vecLen(v) {
   return Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
 }
 
+function collectMeshEdgeUsage(geometry) {
+  const fmt = (n) => (Math.abs(n) < 5e-6 ? 0 : n).toFixed(5);
+  const vk = (pt) => `${fmt(pt.x)},${fmt(pt.y)},${fmt(pt.z)}`;
+  const edgeMap = new Map();
+
+  for (const face of geometry.faces || []) {
+    const verts = face.vertices || [];
+    for (let i = 0; i < verts.length; i++) {
+      const a = vk(verts[i]);
+      const b = vk(verts[(i + 1) % verts.length]);
+      const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+      const fwd = a < b;
+      if (!edgeMap.has(key)) edgeMap.set(key, []);
+      edgeMap.get(key).push(fwd);
+    }
+  }
+
+  let boundaryEdges = 0;
+  let nonManifoldEdges = 0;
+  let windingErrors = 0;
+  for (const uses of edgeMap.values()) {
+    if (uses.length === 1) boundaryEdges++;
+    else if (uses.length === 2) {
+      if (uses[0] === uses[1]) windingErrors++;
+    } else {
+      nonManifoldEdges++;
+    }
+  }
+
+  return { boundaryEdges, nonManifoldEdges, windingErrors };
+}
+
 function makeRectSketch(x1, y1, x2, y2) {
   const s = new Sketch();
   s.addSegment(x1, y1, x2, y1);
@@ -514,6 +546,35 @@ test('Fillet BRep has arc edge curves', () => {
   assert.ok(brep.edges.length >= 2, 'BRep should have at least 2 edges');
   const curveEdges = brep.edges.filter(e => e.curve);
   assert.ok(curveEdges.length >= 2, 'Should have at least 2 edges with curves');
+});
+
+test('Two-edge fillet corner produces a closed mesh and exact corner patch', () => {
+  const part = new Part('NurbsFilletCorner2Edge');
+  const sf = part.addSketch(makeRectSketch(0, 0, 10, 10));
+  part.extrude(sf.id, 10);
+
+  const ek0 = makeEdgeKey({ x: 0, y: 0, z: 10 }, { x: 10, y: 0, z: 10 });
+  const ek1 = makeEdgeKey({ x: 10, y: 0, z: 10 }, { x: 10, y: 10, z: 10 });
+  part.fillet([ek0, ek1], 1, { segments: 8 });
+
+  const result = part.getFinalGeometry();
+  assert.ok(result && result.geometry, 'Expected final geometry');
+
+  const edgeUsage = collectMeshEdgeUsage(result.geometry);
+  assert.strictEqual(edgeUsage.boundaryEdges, 0, `Expected no boundary edges, got ${edgeUsage.boundaryEdges}`);
+  assert.strictEqual(edgeUsage.nonManifoldEdges, 0, `Expected no non-manifold edges, got ${edgeUsage.nonManifoldEdges}`);
+  assert.strictEqual(edgeUsage.windingErrors, 0, `Expected no winding errors, got ${edgeUsage.windingErrors}`);
+
+  const cornerFaces = result.geometry.faces.filter(f => f.isCorner);
+  assert.ok(cornerFaces.length > 0, 'Expected explicit corner patch faces for the two-edge fillet corner');
+
+  const brep = result.geometry.brep;
+  assert.ok(brep, 'Expected BRep on filleted geometry');
+  const cornerBrepFace = brep.faces.find(f => f.surfaceType === 'fillet' && f.isCornerPatch);
+  assert.ok(cornerBrepFace, 'Expected a dedicated BRep corner patch face');
+  assert.ok(cornerBrepFace.surface, 'Expected the corner patch face to carry a NURBS surface');
+  assert.strictEqual(cornerBrepFace.surface.degreeU, 2, 'Corner patch degreeU');
+  assert.strictEqual(cornerBrepFace.surface.degreeV, 2, 'Corner patch degreeV');
 });
 
 test('Chamfer: volume still correct with NURBS addition', () => {

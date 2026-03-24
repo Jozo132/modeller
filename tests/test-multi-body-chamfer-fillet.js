@@ -683,7 +683,7 @@ test('box-fillet-3: spherical corner has NURBS surface on sphere', () => {
 
 // --- 2-Edge Corner Fillet Tests ---
 
-test('box-fillet-2: manifold, corner faces merge with fillet groups', () => {
+test('box-fillet-2: manifold with explicit exact corner patch', () => {
   const part = new Part('T_bi1');
   const sf = part.addSketch(makeRectSketch(0, 0, 10, 10));
   part.extrude(sf.id, 10);
@@ -702,27 +702,33 @@ test('box-fillet-2: manifold, corner faces merge with fillet groups', () => {
   assert.strictEqual(m.nonManifoldEdges, 0, 'No non-manifold edges');
   assert.strictEqual(m.windingErrors, 0, 'No winding errors');
 
-  // Corner faces should be marked isFillet (not isCorner) so they merge
-  // with the adjacent fillet strip groups rather than forming a separate group.
   const filletFaces = geom.faces.filter(f => f.isFillet);
   assert.ok(filletFaces.length > 16, 'Should have >16 isFillet faces (2 strips + corner blend)');
 
-  // Should NOT have separate isCorner faces for the 2-edge case
   const cornerFaces = geom.faces.filter(f => f.isCorner);
-  assert.strictEqual(cornerFaces.length, 0, 'No isCorner faces for 2-edge case');
+  assert.ok(cornerFaces.length > 0, 'Expected explicit corner faces for the 2-edge case');
 
-  // Face groups: should have fillet groups that include corner blend faces
   const groups = {};
   for (const f of geom.faces) {
     const g = f.faceGroup !== undefined ? f.faceGroup : -1;
-    if (!groups[g]) groups[g] = { count: 0, isFillet: false };
+    if (!groups[g]) groups[g] = { count: 0, isFillet: false, isCorner: false };
     groups[g].count++;
     if (f.isFillet) groups[g].isFillet = true;
+    if (f.isCorner) groups[g].isCorner = true;
   }
   const filletGroups = Object.values(groups).filter(g => g.isFillet);
-  // Should have 2 fillet groups (one per edge), each with >8 faces
-  // (8 strip quads + some corner blend triangles)
   assert.ok(filletGroups.length >= 2, `Should have >=2 fillet face groups, got ${filletGroups.length}`);
+
+  const cornerGroups = Object.values(groups).filter(g => g.isCorner);
+  assert.ok(cornerGroups.length >= 1, 'Expected a dedicated corner face group');
+
+  const brep = geom.brep;
+  assert.ok(brep, 'Should have BRep data');
+  const cornerBrepFace = brep.faces.find(f => f.surfaceType === 'fillet' && f.isCornerPatch);
+  assert.ok(cornerBrepFace, 'Expected a dedicated BRep corner patch face');
+  assert.ok(cornerBrepFace.surface, 'Expected the corner patch BRep face to have a NURBS surface');
+  assert.strictEqual(cornerBrepFace.surface.degreeU, 2, 'Corner patch degreeU should be 2');
+  assert.strictEqual(cornerBrepFace.surface.degreeV, 2, 'Corner patch degreeV should be 2');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

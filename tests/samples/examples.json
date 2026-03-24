@@ -26,6 +26,15 @@
     ]
   },
   {
+    "file": "box-fillet-3-p.cmod",
+    "label": "Box Fillet 3 P",
+    "featureTypes": [
+      "sketch",
+      "extrude",
+      "fillet"
+    ]
+  },
+  {
     "file": "box-fillet-3.cmod",
     "label": "Box Fillet 3",
     "featureTypes": [
