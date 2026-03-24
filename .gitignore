@@ -3,3 +3,5 @@ node_modules/
 *.log
 test.html
 test-sketch.js
+out/*.png
+package-lock.json
