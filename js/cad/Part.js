@@ -14,6 +14,7 @@ import { ExtrudeCutFeature } from './ExtrudeCutFeature.js';
 import { RevolveFeature } from './RevolveFeature.js';
 import { ChamferFeature } from './ChamferFeature.js';
 import { FilletFeature } from './FilletFeature.js';
+import { StepImportFeature } from './StepImportFeature.js';
 
 function parseFeatureIdNumber(featureId) {
   if (typeof featureId !== 'string') return null;
@@ -510,6 +511,30 @@ export class Part {
     return feature;
   }
 
+  /**
+   * Import a STEP file as a solid body feature.
+   * The imported geometry becomes a base body that subsequent parametric
+   * operations (extrude-cut, chamfer, fillet, boolean) can act upon.
+   *
+   * @param {string} stepData - Raw STEP file contents
+   * @param {Object} [options]
+   * @param {string} [options.name] - Feature name (auto-generated if omitted)
+   * @param {number} [options.curveSegments=16] - Tessellation quality
+   * @returns {StepImportFeature} The created STEP import feature
+   */
+  importSTEP(stepData, options = {}) {
+    this.modified = new Date();
+
+    const name = options.name || this._nextTypeName('step-import', 'STEP Import');
+    const feature = new StepImportFeature(name, stepData, {
+      curveSegments: options.curveSegments,
+    });
+
+    this.featureTree.addFeature(feature);
+    this._checkAutoHidePlanes();
+    return feature;
+  }
+
   // -----------------------------------------------------------------------
   // Feature modification (triggers recalculation)
   // -----------------------------------------------------------------------
@@ -650,6 +675,8 @@ export class Part {
             return ChamferFeature.deserialize(featureData);
           case 'fillet':
             return FilletFeature.deserialize(featureData);
+          case 'step-import':
+            return StepImportFeature.deserialize(featureData);
           default:
             console.warn(`Unknown feature type: ${featureData.type}`);
             return null;

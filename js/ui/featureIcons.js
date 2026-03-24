@@ -12,6 +12,7 @@ const featureIconSVGs = {
   'extrude-cut': '<svg viewBox="0 0 20 20"><rect x="5" y="4" width="10" height="5" rx="0.5" fill="none"/><rect x="7" y="9" width="6" height="8" rx="0.5" fill="none"/><line x1="7" y1="9" x2="5" y2="9"/><line x1="13" y1="9" x2="15" y2="9"/><polyline points="8,18 10,20 12,18" fill="none"/></svg>',
   'chamfer': '<svg viewBox="0 0 20 20"><path d="M4 16L4 8L8 4L16 4" fill="none"/><line x1="4" y1="8" x2="8" y2="4" stroke-width="2"/></svg>',
   'fillet': '<svg viewBox="0 0 20 20"><path d="M4 16L4 8L16 4" fill="none"/><path d="M4 8 Q4 4 8 4" fill="none" stroke-width="2"/><line x1="8" y1="4" x2="16" y2="4" fill="none"/></svg>',
+  'step-import': '<svg viewBox="0 0 20 20"><path d="M4 16L4 4L12 4L16 8L16 16Z" fill="none"/><polyline points="12,4 12,8 16,8" fill="none"/></svg>',
 };
 
 const defaultIconSVG = '<svg viewBox="0 0 20 20"><rect x="4" y="4" width="12" height="12" rx="1" fill="none"/></svg>';
