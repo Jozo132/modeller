@@ -103,6 +103,77 @@ test('importSTEP: throws on invalid STEP content', () => {
 });
 
 // ============================================================
+console.log('\n=== STEP Import — Box-Fillet-3 Tests ===\n');
+// ============================================================
+
+// Load the box-fillet-3 STEP file (FreeCAD-generated: 10x10x10 box with 3 fillets + sphere corner)
+const boxFilletPath = new URL('./step/box-fillet-3.step', import.meta.url).pathname;
+const boxFilletData = readFileSync(boxFilletPath, 'utf-8');
+
+test('box-fillet-3: parses without errors', () => {
+  const mesh = importSTEP(boxFilletData, { curveSegments: 16 });
+  assert.ok(mesh, 'Should return a mesh object');
+  assert.ok(mesh.faces.length > 0, 'Should have faces');
+  assert.ok(mesh.body, 'Should have a B-Rep body');
+});
+
+test('box-fillet-3: produces all 10 faces', () => {
+  const mesh = importSTEP(boxFilletData, { curveSegments: 16 });
+  // 10 ADVANCED_FACEs: 6 planes + 3 cylinders + 1 sphere
+  const groups = new Set(mesh.faces.map(f => f.faceGroup));
+  assert.strictEqual(groups.size, 10, `Should have 10 face groups (got ${groups.size})`);
+});
+
+test('box-fillet-3: bounding box matches 10×10×10', () => {
+  const mesh = importSTEP(boxFilletData, { curveSegments: 16 });
+  let minX = Infinity, maxX = -Infinity;
+  let minY = Infinity, maxY = -Infinity;
+  let minZ = Infinity, maxZ = -Infinity;
+  for (const v of mesh.vertices) {
+    if (v.x < minX) minX = v.x; if (v.x > maxX) maxX = v.x;
+    if (v.y < minY) minY = v.y; if (v.y > maxY) maxY = v.y;
+    if (v.z < minZ) minZ = v.z; if (v.z > maxZ) maxZ = v.z;
+  }
+  assert.ok(Math.abs(maxX - minX - 10) < 0.01, `X extent should be ~10 (got ${maxX - minX})`);
+  assert.ok(Math.abs(maxY - minY - 10) < 0.01, `Y extent should be ~10 (got ${maxY - minY})`);
+  assert.ok(Math.abs(maxZ - minZ - 10) < 0.01, `Z extent should be ~10 (got ${maxZ - minZ})`);
+});
+
+test('box-fillet-3: curved faces have isCurved flag and varying normals', () => {
+  const mesh = importSTEP(boxFilletData, { curveSegments: 16 });
+  const curvedGroups = new Map();
+  for (const f of mesh.faces) {
+    if (f.isCurved) {
+      if (!curvedGroups.has(f.faceGroup)) curvedGroups.set(f.faceGroup, []);
+      curvedGroups.get(f.faceGroup).push(f.normal);
+    }
+  }
+  // Should have 4 curved face groups (3 cylinders + 1 sphere)
+  assert.ok(curvedGroups.size >= 4, `Should have at least 4 curved groups (got ${curvedGroups.size})`);
+
+  // Each curved group with >1 triangle should have varying normals
+  for (const [g, normals] of curvedGroups) {
+    if (normals.length > 1) {
+      const n0 = normals[0];
+      const allSame = normals.every(n =>
+        Math.abs(n.x - n0.x) < 0.001 && Math.abs(n.y - n0.y) < 0.001 && Math.abs(n.z - n0.z) < 0.001
+      );
+      assert.ok(!allSame, `Curved group ${g} should have varying normals for smooth shading`);
+    }
+  }
+});
+
+test('box-fillet-3: all normals are unit-length and finite', () => {
+  const mesh = importSTEP(boxFilletData, { curveSegments: 16 });
+  for (let i = 0; i < mesh.faces.length; i++) {
+    const n = mesh.faces[i].normal;
+    const len = Math.sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+    assert.ok(isFinite(len), `Face ${i} normal length should be finite`);
+    assert.ok(Math.abs(len - 1) < 0.01, `Face ${i} normal should be unit-length (got ${len.toFixed(4)})`);
+  }
+});
+
+// ============================================================
 console.log('\n=== STEP Import — Feature Tests ===\n');
 // ============================================================
 
