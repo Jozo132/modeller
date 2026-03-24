@@ -29,19 +29,24 @@ import {
   TopoBody,
 } from './BRepTopology.js';
 
+/** Snap a coordinate to 0 if it's within floating-point noise of zero. */
+function _snapZero(v) { return Math.abs(v) < 1e-12 ? 0 : v; }
+/** Snap an {x,y,z} point's coordinates to avoid -0 / tiny-epsilon issues. */
+function _snapPoint(p) { return { x: _snapZero(p.x), y: _snapZero(p.y), z: _snapZero(p.z) }; }
+
 /**
  * Parse a STEP file string and return tessellated mesh geometry plus
  * an optional exact B-Rep topology body.
  *
  * @param {string} stepString - Contents of a STEP file
  * @param {Object} [opts]
- * @param {number} [opts.curveSegments=16] - Segments for curved edge tessellation
- * @param {number} [opts.surfaceSegments=8] - Segments for surface tessellation
+ * @param {number} [opts.curveSegments=64] - Segments for curved edge tessellation
+ * @param {number} [opts.surfaceSegments=16] - Segments for surface tessellation
  * @returns {{ vertices: {x,y,z}[], faces: {vertices:{x,y,z}[], normal:{x,y,z}}[], body: TopoBody|null }}
  */
 export function importSTEP(stepString, opts = {}) {
-  const curveSegments = opts.curveSegments ?? 16;
-  const surfaceSegments = opts.surfaceSegments ?? 8;
+  const curveSegments = opts.curveSegments ?? 64;
+  const surfaceSegments = opts.surfaceSegments ?? 16;
 
   // ------------------------------------------------------------------
   // 1. Parse all entities from the DATA section
@@ -479,11 +484,20 @@ function _buildFace(resolved, faceId, curveSegments, surfaceSegments, faceGroup)
       loopResult.polygon.reverse();
       loopResult.coedges.reverse();
       for (const ce of loopResult.coedges) ce.sameSense = !ce.sameSense;
+      // Reverse edge bounds to match reversed polygon
+      const totalLen = loopResult.polygon.length;
+      const reversed = [];
+      for (let i = loopResult.edgeBounds.length - 1; i >= 0; i--) {
+        const eb = loopResult.edgeBounds[i];
+        reversed.push({ start: totalLen - eb.start - eb.count, count: eb.count, isArc: eb.isArc });
+      }
+      loopResult.edgeBounds = reversed;
     }
 
     loopData.push({
       isOuter: bound.type === 'FACE_OUTER_BOUND',
       polygon: loopResult.polygon,
+      edgeBounds: loopResult.edgeBounds,
       topoLoop: new TopoLoop(loopResult.coedges),
     });
   }
@@ -500,6 +514,7 @@ function _buildFace(resolved, faceId, curveSegments, surfaceSegments, faceGroup)
 
   // Tessellate: use parametric surface tessellation for curved surfaces with NURBS data
   const polygon = outerData.polygon;
+  const edgeBounds = outerData.edgeBounds;
   let meshFaces = [];
   let meshVertices = [];
 
@@ -528,58 +543,56 @@ function _buildFace(resolved, faceId, curveSegments, surfaceSegments, faceGroup)
     }
     meshFaces = tess.faces;
     meshVertices = tess.vertices;
-  } else {
-    // Polygon-based tessellation (planar, or curved surfaces where we sample edges)
-    let faceNormal;
-    if (surfaceNormal) {
-      faceNormal = sameSense
-        ? surfaceNormal
-        : { x: -surfaceNormal.x, y: -surfaceNormal.y, z: -surfaceNormal.z };
+  } else if (isCurvedFace && surfaceInfo) {
+    // Try strip tessellation for curved faces with paired arc edges
+    const stripResult = _tessellateStripFromEdgeBounds(polygon, edgeBounds, surfaceInfo, sameSense, faceGroup);
+    if (stripResult) {
+      meshFaces = stripResult.faces;
+      meshVertices = stripResult.vertices;
     } else {
-      // For curved surfaces without an extracted analytic normal, compute
-      // from the surface if available, otherwise from the polygon
-      if (nurbsSurface) {
-        const midU = (nurbsSurface.uMin + nurbsSurface.uMax) / 2;
-        const midV = (nurbsSurface.vMin + nurbsSurface.vMax) / 2;
-        const sn = nurbsSurface.normal(midU, midV);
-        faceNormal = sameSense ? sn : { x: -sn.x, y: -sn.y, z: -sn.z };
-      } else {
-        faceNormal = _computePolygonNormal(polygon);
-      }
-    }
-
-    // Triangulate the polygon with ear clipping
-    const triangles = _triangulatePolygon(polygon, faceNormal);
-
-    if (isCurvedFace && surfaceInfo) {
-      // For curved surfaces, compute per-triangle normals from vertex positions
-      // and the surface geometry (much better visual quality with smooth shading)
+      // Fall back to polygon-based tessellation with per-vertex normals
+      const faceNormal = _computeCurvedFaceNormal(surfaceNormal, nurbsSurface, polygon, sameSense);
+      const triangles = _triangulatePolygon(polygon, faceNormal);
       for (const tri of triangles) {
         const triNormals = tri.map(v => _computeVertexNormal(v, surfaceInfo, sameSense));
-        // Use centroid normal as the face normal for this triangle
         const cn = {
           x: (triNormals[0].x + triNormals[1].x + triNormals[2].x) / 3,
           y: (triNormals[0].y + triNormals[1].y + triNormals[2].y) / 3,
           z: (triNormals[0].z + triNormals[1].z + triNormals[2].z) / 3,
         };
-        const centroidNormal = _normalize(cn);
         meshFaces.push({
           vertices: [tri[0], tri[1], tri[2]],
-          normal: centroidNormal,
+          normal: _normalize(cn),
           isCurved: true,
           faceGroup,
         });
         meshVertices.push(tri[0], tri[1], tri[2]);
       }
+    }
+  } else {
+    // Polygon-based tessellation (planar faces)
+    let faceNormal;
+    if (surfaceNormal) {
+      faceNormal = sameSense
+        ? surfaceNormal
+        : { x: -surfaceNormal.x, y: -surfaceNormal.y, z: -surfaceNormal.z };
+    } else if (nurbsSurface) {
+      const midU = (nurbsSurface.uMin + nurbsSurface.uMax) / 2;
+      const midV = (nurbsSurface.vMin + nurbsSurface.vMax) / 2;
+      const sn = nurbsSurface.normal(midU, midV);
+      faceNormal = sameSense ? sn : { x: -sn.x, y: -sn.y, z: -sn.z };
     } else {
-      for (const tri of triangles) {
-        meshFaces.push({
-          vertices: [tri[0], tri[1], tri[2]],
-          normal: { ...faceNormal },
-          faceGroup,
-        });
-        meshVertices.push(tri[0], tri[1], tri[2]);
-      }
+      faceNormal = _computePolygonNormal(polygon);
+    }
+
+    const triangles = _triangulatePolygon(polygon, faceNormal);
+    for (const tri of triangles) {
+      meshFaces.push({
+        vertices: [tri[0], tri[1], tri[2]],
+        normal: { ...faceNormal },
+        faceGroup,
+      });
+      meshVertices.push(tri[0], tri[1], tri[2]);
     }
   }
 
@@ -595,6 +608,7 @@ function _buildFace(resolved, faceId, curveSegments, surfaceSegments, faceGroup)
 function _buildLoop(resolved, orientedEdgeRefs, curveSegments) {
   const polygon = [];
   const coedges = [];
+  const edgeBounds = []; // { start, count, isArc } for each edge in the polygon
 
   for (const oeRef of orientedEdgeRefs) {
     const oe = _getEntity(resolved, oeRef);
@@ -630,18 +644,21 @@ function _buildLoop(resolved, orientedEdgeRefs, curveSegments) {
     // Tessellate for polygon
     const curvePoints = _sampleCurvePoints(resolved, curveRef, startPt, endPt, curveSegments);
     let edgePoints;
-    if (curvePoints && curvePoints.length > 2) {
+    const isArc = curvePoints && curvePoints.length > 2;
+    if (isArc) {
       edgePoints = forward ? curvePoints : [...curvePoints].reverse();
     } else {
       edgePoints = forward ? [startPt, endPt] : [endPt, startPt];
     }
 
+    const edgeStart = polygon.length;
     for (let i = 0; i < edgePoints.length - 1; i++) {
       polygon.push(edgePoints[i]);
     }
+    edgeBounds.push({ start: edgeStart, count: edgePoints.length - 1, isArc });
   }
 
-  return { polygon, coedges };
+  return { polygon, coedges, edgeBounds };
 }
 
 /**
@@ -666,11 +683,11 @@ function _getCartesianPoint(resolved, ref) {
   const coords = cp.args[1];
   if (!Array.isArray(coords) || coords.length < 3) return null;
 
-  return {
+  return _snapPoint({
     x: Number(coords[0]) || 0,
     y: Number(coords[1]) || 0,
     z: Number(coords[2]) || 0,
-  };
+  });
 }
 
 /**
@@ -1001,11 +1018,11 @@ function _sampleCircle(resolved, entity, startPt, endPt, segments) {
     const angle = startAngle + sweep * t;
     const cos = Math.cos(angle);
     const sin = Math.sin(angle);
-    points.push({
+    points.push(_snapPoint({
       x: origin.x + radius * (cos * xDir.x + sin * yDir.x),
       y: origin.y + radius * (cos * xDir.y + sin * yDir.y),
       z: origin.z + radius * (cos * xDir.z + sin * yDir.z),
-    });
+    }));
   }
 
   return points;
@@ -1046,11 +1063,11 @@ function _sampleEllipse(resolved, entity, startPt, endPt, segments) {
     const angle = startAngle + sweep * t;
     const cos = Math.cos(angle);
     const sin = Math.sin(angle);
-    points.push({
+    points.push(_snapPoint({
       x: origin.x + semiA * cos * xDir.x + semiB * sin * yDir.x,
       y: origin.y + semiA * cos * xDir.y + semiB * sin * yDir.y,
       z: origin.z + semiA * cos * xDir.z + semiB * sin * yDir.z,
-    });
+    }));
   }
 
   return points;
@@ -1101,7 +1118,7 @@ function _sampleBSplineCurve(resolved, entity, startPt, endPt, segments) {
   for (let i = 0; i <= numPts; i++) {
     const t = tMin + (tMax - tMin) * (i / numPts);
     const pt = _evaluateBSpline(degree, knots, controlPoints, t);
-    points.push(pt);
+    points.push(_snapPoint(pt));
   }
 
   return points;
@@ -1159,7 +1176,7 @@ function _sampleRationalBSplineCurve(resolved, entity, startPt, endPt, segments)
   for (let i = 0; i <= numPts; i++) {
     const t = tMin + (tMax - tMin) * (i / numPts);
     const pt = _evaluateRationalBSpline(degree, knots, controlPoints, w, t);
-    points.push(pt);
+    points.push(_snapPoint(pt));
   }
 
   return points;
@@ -1515,6 +1532,160 @@ function _computePolygonNormal(polygon) {
     n.z += (curr.x - next.x) * (curr.y + next.y);
   }
   return _normalize(n);
+}
+
+/**
+ * Compute face normal for curved surfaces (helper to reduce code duplication).
+ */
+function _computeCurvedFaceNormal(surfaceNormal, nurbsSurface, polygon, sameSense) {
+  if (surfaceNormal) {
+    return sameSense
+      ? surfaceNormal
+      : { x: -surfaceNormal.x, y: -surfaceNormal.y, z: -surfaceNormal.z };
+  }
+  if (nurbsSurface) {
+    const midU = (nurbsSurface.uMin + nurbsSurface.uMax) / 2;
+    const midV = (nurbsSurface.vMin + nurbsSurface.vMax) / 2;
+    const sn = nurbsSurface.normal(midU, midV);
+    return sameSense ? sn : { x: -sn.x, y: -sn.y, z: -sn.z };
+  }
+  return _computePolygonNormal(polygon);
+}
+
+/**
+ * Attempt strip tessellation for a curved face by detecting paired arc edges.
+ *
+ * For a typical cylinder/cone face, the edge loop has the pattern:
+ *   [line, arc, line, arc] or a rotation thereof.
+ * The two arcs have the same number of sample points and run in opposite
+ * directions.  We pair corresponding points to create a quad strip.
+ *
+ * For sphere patches with 3+ arcs, we tessellate as a fan/strip from
+ * the common vertex.
+ *
+ * Returns { faces, vertices } or null if the edge structure doesn't match.
+ */
+function _tessellateStripFromEdgeBounds(polygon, edgeBounds, surfaceInfo, sameSense, faceGroup) {
+  if (!edgeBounds || edgeBounds.length < 2) return null;
+
+  // Identify arc edges and line edges
+  const arcEdges = [];
+  const lineEdges = [];
+  for (let i = 0; i < edgeBounds.length; i++) {
+    if (edgeBounds[i].isArc) arcEdges.push(i);
+    else lineEdges.push(i);
+  }
+
+  // Case 1: Two arcs + two lines (cylinder, cone) — strip between the arcs
+  if (arcEdges.length === 2 && lineEdges.length === 2) {
+    return _tessellateDoubleArcStrip(polygon, edgeBounds, arcEdges, surfaceInfo, sameSense, faceGroup);
+  }
+
+  // Case 2: Three or more arcs (sphere, torus patches) — try structured tessellation
+  if (arcEdges.length >= 3) {
+    return _tessellateMultiArcPatch(polygon, edgeBounds, arcEdges, surfaceInfo, sameSense, faceGroup);
+  }
+
+  return null;
+}
+
+/**
+ * Strip tessellation for a face with 2 arc edges + 2 line edges.
+ *
+ * Collects the full point strip for each arc (including end vertices
+ * from the adjacent line edges) then pairs them into quad strips.
+ */
+function _tessellateDoubleArcStrip(polygon, edgeBounds, arcIndices, surfaceInfo, sameSense, faceGroup) {
+  const [ai, bi] = arcIndices;
+  const arcA = edgeBounds[ai];
+  const arcB = edgeBounds[bi];
+
+  // Build full point sequences for each arc, including the first vertex
+  // of the next edge (which is the arc endpoint, shared with the line edge).
+  const totalPts = polygon.length;
+  const getPoint = idx => polygon[idx % totalPts];
+
+  const stripA = [];
+  for (let i = 0; i <= arcA.count; i++) stripA.push(getPoint(arcA.start + i));
+  const stripB = [];
+  for (let i = 0; i <= arcB.count; i++) stripB.push(getPoint(arcB.start + i));
+
+  // The two arcs traverse in opposite directions around the loop.
+  // Reverse stripB so corresponding parametric positions align.
+  stripB.reverse();
+
+  // Both strips should have the same length
+  if (stripA.length !== stripB.length || stripA.length < 2) return null;
+
+  const faces = [];
+  const vertices = [];
+  const n = stripA.length;
+
+  for (let i = 0; i < n - 1; i++) {
+    const a0 = stripA[i], a1 = stripA[i + 1];
+    const b0 = stripB[i], b1 = stripB[i + 1];
+
+    // Quad → 2 triangles with per-vertex normals
+    const tri1 = [a0, a1, b1];
+    const tri2 = [a0, b1, b0];
+
+    for (const tri of [tri1, tri2]) {
+      const triNormals = tri.map(v => _computeVertexNormal(v, surfaceInfo, sameSense));
+      const cn = {
+        x: (triNormals[0].x + triNormals[1].x + triNormals[2].x) / 3,
+        y: (triNormals[0].y + triNormals[1].y + triNormals[2].y) / 3,
+        z: (triNormals[0].z + triNormals[1].z + triNormals[2].z) / 3,
+      };
+      faces.push({
+        vertices: [tri[0], tri[1], tri[2]],
+        normal: _normalize(cn),
+        isCurved: true,
+        faceGroup,
+      });
+      vertices.push(tri[0], tri[1], tri[2]);
+    }
+  }
+
+  return { faces, vertices };
+}
+
+/**
+ * Structured tessellation for a face with 3+ arc edges (sphere/torus patches).
+ * Uses a simple fan from the polygon centroid to avoid twisted triangles.
+ */
+function _tessellateMultiArcPatch(polygon, edgeBounds, arcIndices, surfaceInfo, sameSense, faceGroup) {
+  if (polygon.length < 3) return null;
+
+  const faces = [];
+  const vertices = [];
+  const n = polygon.length;
+
+  // Fan triangulation from polygon centroid (avoids twist issues)
+  const cx = polygon.reduce((s, p) => s + p.x, 0) / n;
+  const cy = polygon.reduce((s, p) => s + p.y, 0) / n;
+  const cz = polygon.reduce((s, p) => s + p.z, 0) / n;
+  const centroid = _snapPoint({ x: cx, y: cy, z: cz });
+
+  for (let i = 0; i < n; i++) {
+    const a = polygon[i];
+    const b = polygon[(i + 1) % n];
+    const tri = [centroid, a, b];
+    const triNormals = tri.map(v => _computeVertexNormal(v, surfaceInfo, sameSense));
+    const cn = {
+      x: (triNormals[0].x + triNormals[1].x + triNormals[2].x) / 3,
+      y: (triNormals[0].y + triNormals[1].y + triNormals[2].y) / 3,
+      z: (triNormals[0].z + triNormals[1].z + triNormals[2].z) / 3,
+    };
+    faces.push({
+      vertices: [tri[0], tri[1], tri[2]],
+      normal: _normalize(cn),
+      isCurved: true,
+      faceGroup,
+    });
+    vertices.push(tri[0], tri[1], tri[2]);
+  }
+
+  return { faces, vertices };
 }
 
 /**

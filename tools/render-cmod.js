@@ -3,6 +3,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { writeCmodPng, writeCmodGalleryPng } from '../js/render/index.js';
+import { Part } from '../js/cad/Part.js';
+import { validateMesh } from '../js/cad/MeshValidator.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -147,13 +149,39 @@ export async function renderCmodScreenshot(options) {
     outputPath,
   });
 
+  // Run mesh validation diagnostic
+  const validation = validateCmodMesh(cmod);
+
   return {
     outputPath,
     orbit: result.orbit || orbit || null,
     metadata: result.metadata || cmod.metadata || null,
     hasGeometry: result.hasGeometry,
     viewport: { width: options.width, height: options.height },
+    validation,
   };
+}
+
+/**
+ * Validate the mesh geometry of a CMOD model.
+ *
+ * Deserializes the Part, evaluates the feature tree, and runs mesh
+ * validation (self-intersections, boundary edges, degenerate faces).
+ *
+ * @param {Object} cmod - Parsed .cmod JSON (must have .part)
+ * @returns {{ selfIntersections: number, boundaryEdges: number, degenerateFaces: number, isClean: boolean, details: Object } | null}
+ */
+export function validateCmodMesh(cmod) {
+  if (!cmod?.part) return null;
+  try {
+    const part = Part.deserialize(cmod.part);
+    part.featureTree.executeAll();
+    const geo = part.getFinalGeometry();
+    if (!geo || !geo.geometry || !geo.geometry.faces) return null;
+    return validateMesh(geo.geometry.faces);
+  } catch {
+    return null;
+  }
 }
 
 export async function renderCmodGalleryScreenshot(options) {
@@ -194,6 +222,11 @@ async function main() {
     console.log(`Rendered ${path.relative(REPO_ROOT, result.outputPath)} (${result.viewport.width}x${result.viewport.height})`);
     if (result.orbit) {
       console.log(`Orbit theta=${result.orbit.theta} phi=${result.orbit.phi} radius=${result.orbit.radius}`);
+    }
+    if (result.validation) {
+      const v = result.validation;
+      const status = v.isClean ? 'CLEAN' : 'ISSUES FOUND';
+      console.log(`Mesh validation: ${status} — self-intersections=${v.selfIntersections}, boundary-edges=${v.boundaryEdges}, degenerate-faces=${v.degenerateFaces}`);
     }
   }
 }

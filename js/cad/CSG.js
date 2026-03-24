@@ -639,10 +639,9 @@ function classifyFaceType(normal, vertices) {
  */
 function edgeKey(a, b) {
   const precision = 6;
-  const ax = a.x.toFixed(precision), ay = a.y.toFixed(precision), az = a.z.toFixed(precision);
-  const bx = b.x.toFixed(precision), by = b.y.toFixed(precision), bz = b.z.toFixed(precision);
-  const ka = `${ax},${ay},${az}`;
-  const kb = `${bx},${by},${bz}`;
+  const fmt = v => (+v.toFixed(precision) || 0).toFixed(precision);
+  const ka = `${fmt(a.x)},${fmt(a.y)},${fmt(a.z)}`;
+  const kb = `${fmt(b.x)},${fmt(b.y)},${fmt(b.z)}`;
   return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
 }
 
