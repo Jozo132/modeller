@@ -59,6 +59,27 @@ npm run start
 
 Then open [http://localhost:3000](http://localhost:3000) in your browser.
 
+## Backend CMOD Screenshots
+
+You can render a `.cmod` model to a PNG from a standalone Node renderer:
+
+```bash
+npm run render:cmod -- --input tests/samples/box-fillet-3-p.cmod --output out/box-fillet-3-p.png
+```
+
+The command uses the render library directly from Node with Canvas plus the existing WASM scene pipeline, so it respects the model's stored `.cmod` orbit by default. You can override the orbit explicitly:
+
+```bash
+npm run render:cmod -- --input tests/samples/box-fillet-3-p.cmod --output out/box.png --theta 0.8 --phi 1.1 --radius 30 --target 5,5,5
+```
+
+Available options:
+- `--width <px>` and `--height <px>` control image size.
+- `--fit-to-view` ignores the stored `.cmod` orbit and frames the current model bounds.
+- `--orbit '<json>'` supplies the full orbit object in one argument.
+
+The standalone render API lives under `js/render/`, so backend code can drive the scene directly while the frontend stays focused on UI and interaction.
+
 ## Testing
 
 Test the parametric 3D modeling system:

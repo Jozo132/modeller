@@ -1,0 +1,200 @@
+import * as defaultWasmModule from '../../build/release.js';
+import { renderBaseMeshOverlay } from './mesh-overlay-renderer.js';
+import {
+  buildMeshRenderData,
+  computeFitViewState,
+  computeOrbitCameraPosition,
+  computeOrbitMvp,
+} from './part-render-core.js';
+
+export class SceneRenderer {
+  constructor(options) {
+    this.canvas = options.canvas;
+    this.executor = options.executor;
+    this.wasm = options.wasmModule || defaultWasmModule;
+    this.mode = '3d';
+    this._ready = false;
+    this._fov = Math.PI / 4;
+    this._fovDegrees = 45;
+    this._orbitTheta = Math.PI / 4;
+    this._orbitPhi = Math.PI / 3;
+    this._orbitRadius = 25;
+    this._orbitTarget = { x: 0, y: 0, z: 0 };
+    this._orbitDirty = true;
+    this._partBounds = null;
+    this._meshTriangles = null;
+    this._meshTriangleCount = 0;
+    this._meshEdges = null;
+    this._meshEdgeVertexCount = 0;
+    this._meshVisualEdges = null;
+    this._meshVisualEdgeVertexCount = 0;
+    this._meshSilhouetteCandidates = null;
+  }
+
+  async init() {
+    this.wasm.init(this.canvas.width, this.canvas.height);
+    this._ready = true;
+    this.setMode('3d');
+  }
+
+  setSize(width, height) {
+    this.canvas.width = width;
+    this.canvas.height = height;
+    this.executor.resize(width, height);
+    if (this._ready) this.wasm.resize(width, height);
+  }
+
+  setMode(mode) {
+    this.mode = mode;
+    if (!this._ready) return;
+    if (mode === '2d') {
+      const aspect = this.canvas.width / this.canvas.height;
+      const viewSize = 500;
+      this.wasm.setCameraMode(0);
+      this.wasm.setOrthoBounds(-viewSize * aspect, viewSize * aspect, -viewSize, viewSize);
+      this.wasm.setCameraPosition(0, 0, 500);
+      this.wasm.setCameraTarget(0, 0, 0);
+      this.wasm.setCameraUp(0, 1, 0);
+      return;
+    }
+    this.wasm.setCameraMode(1);
+    this.wasm.setCameraUp(0, 0, 1);
+    this.wasm.setGridVisible(1);
+    this.wasm.setAxesVisible(1);
+    this.wasm.setGridSize(200, 20);
+    this.wasm.setAxesSize(50);
+    this.wasm.clearEntities();
+    this.wasm.resetEntityModelMatrix();
+    this._orbitDirty = true;
+    this._applyOrbitCamera();
+  }
+
+  getOrbitState() {
+    return {
+      theta: this._orbitTheta,
+      phi: this._orbitPhi,
+      radius: this._orbitRadius,
+      target: { ...this._orbitTarget },
+    };
+  }
+
+  setOrbitState(state) {
+    if (!state) return;
+    if (state.theta != null) this._orbitTheta = state.theta;
+    if (state.phi != null) this._orbitPhi = state.phi;
+    if (state.radius != null) this._orbitRadius = state.radius;
+    if (state.target) this._orbitTarget = { x: state.target.x || 0, y: state.target.y || 0, z: state.target.z || 0 };
+    this._orbitDirty = true;
+  }
+
+  fitToView() {
+    const fit = computeFitViewState(this._partBounds, 25);
+    this._orbitTarget = fit.target;
+    this._orbitRadius = fit.radius;
+    this.wasm.setGridSize(fit.gridSize, 20);
+    this.wasm.setAxesSize(fit.axesSize);
+    this._orbitTheta = Math.PI / 4;
+    this._orbitPhi = Math.PI / 3;
+    this._orbitDirty = true;
+    this._applyOrbitCamera();
+  }
+
+  renderPart(part) {
+    this.clearPartGeometry();
+    if (!part || !this._ready) return;
+
+    if (this.wasm.setOriginPlanesVisible) {
+      const planes = part.getOriginPlanes ? part.getOriginPlanes() : {};
+      let mask = 0;
+      if (!planes.XY || planes.XY.visible) mask |= 1;
+      if (!planes.XZ || planes.XZ.visible) mask |= 2;
+      if (!planes.YZ || planes.YZ.visible) mask |= 4;
+      this.wasm.setOriginPlanesVisible(mask);
+    }
+
+    const geo = part.getFinalGeometry();
+    if (geo?.type === 'solid' && geo.geometry) {
+      this._partBounds = geo.boundingBox || null;
+      this._buildMeshFromGeometry(geo.geometry);
+    }
+  }
+
+  renderFrame() {
+    if (!this._ready) return;
+    if (this.mode === '3d' && this._orbitDirty) {
+      this._applyOrbitCamera();
+      this._orbitDirty = false;
+    }
+    this.wasm.render();
+    const ptr = this.wasm.getCommandBufferPtr();
+    const len = this.wasm.getCommandBufferLen();
+    if (len > 0) {
+      const memory = this.wasm.memory || (this.wasm.__getMemory && this.wasm.__getMemory());
+      if (memory) {
+        const commandBuffer = new Float32Array(memory.buffer, ptr, len);
+        this.executor.execute(commandBuffer, len);
+      }
+    }
+    this._renderMeshOverlay();
+  }
+
+  hasGeometry() {
+    return !!(this._meshTriangles && this._meshTriangleCount > 0);
+  }
+
+  clearPartGeometry() {
+    this._partBounds = null;
+    this._meshTriangles = null;
+    this._meshTriangleCount = 0;
+    this._meshEdges = null;
+    this._meshEdgeVertexCount = 0;
+    this._meshVisualEdges = null;
+    this._meshVisualEdgeVertexCount = 0;
+    this._meshSilhouetteCandidates = null;
+  }
+
+  _applyOrbitCamera() {
+    if (!this._ready) return;
+    const t = this._orbitTarget;
+    const camera = computeOrbitCameraPosition(this._orbitTheta, this._orbitPhi, this._orbitRadius, t);
+    this.wasm.setCameraPosition(camera.x, camera.y, camera.z);
+    this.wasm.setCameraTarget(t.x, t.y, t.z);
+  }
+
+  _buildMeshFromGeometry(geometry) {
+    Object.assign(this, buildMeshRenderData(geometry));
+  }
+
+  _renderMeshOverlay() {
+    if (!this._meshTriangles || this._meshTriangleCount === 0) return;
+    const mvp = this._computeMvp();
+    if (!mvp) return;
+
+    renderBaseMeshOverlay(this.executor, {
+      meshTriangles: this._meshTriangles,
+      meshTriangleCount: this._meshTriangleCount,
+      meshVisualEdges: this._meshVisualEdges,
+      meshVisualEdgeVertexCount: this._meshVisualEdgeVertexCount,
+      meshEdges: this._meshEdges,
+      meshEdgeVertexCount: this._meshEdgeVertexCount,
+      meshSilhouetteCandidates: this._meshSilhouetteCandidates,
+      orbitState: this.getOrbitState(),
+      mvp,
+    });
+  }
+
+  _computeMvp() {
+    return computeOrbitMvp({
+      width: this.canvas.width,
+      height: this.canvas.height,
+      target: this._orbitTarget,
+      theta: this._orbitTheta,
+      phi: this._orbitPhi,
+      radius: this._orbitRadius,
+      fov: this._fov,
+      fovDegrees: this._fovDegrees,
+      ortho3D: false,
+      orthoBounds: null,
+    });
+  }
+}

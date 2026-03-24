@@ -681,6 +681,44 @@ test('box-fillet-3: spherical corner has NURBS surface on sphere', () => {
   }
 });
 
+test('box-fillet-3-p: sequential fillets stay closed and keep distinct feature ownership', () => {
+  const part = new Part('T_tri_seq');
+  const sf = part.addSketch(makeRectSketch(0, 0, 10, 10));
+  part.extrude(sf.id, 10);
+
+  const topEdge0 = makeEdgeKey({ x: 0, y: 0, z: 10 }, { x: 10, y: 0, z: 10 });
+  const topEdge1 = makeEdgeKey({ x: 10, y: 0, z: 10 }, { x: 10, y: 10, z: 10 });
+  const fillet0 = part.fillet([topEdge0, topEdge1], 1, { segments: 8 });
+
+  const verticalEdge = makeEdgeKey({ x: 10, y: 0, z: 0 }, { x: 10, y: 0, z: 9 });
+  const fillet1 = part.fillet([verticalEdge], 1, { segments: 8 });
+
+  const geom = part.getFinalGeometry().geometry;
+  const m = checkManifold(geom);
+  assert.strictEqual(m.boundaryEdges, 0, 'Sequential fillet corner should remain closed');
+  assert.strictEqual(m.nonManifoldEdges, 0, 'Sequential fillet corner should remain manifold');
+  assert.strictEqual(m.windingErrors, 0, 'Sequential fillet corner should keep consistent winding');
+
+  const blendFeatureIds = new Set(
+    geom.faces
+      .filter(f => f.isFillet || f.isCorner)
+      .map(f => f.shared && f.shared.sourceFeatureId)
+      .filter(Boolean)
+  );
+  assert.ok(blendFeatureIds.has(fillet0.id), 'Expected the first fillet feature to own blend faces');
+  assert.ok(blendFeatureIds.has(fillet1.id), 'Expected the second fillet feature to own blend faces');
+
+  const filletGroups = new Map();
+  for (const face of geom.faces) {
+    if (!face.isFillet || face.isCorner) continue;
+    const group = face.faceGroup;
+    if (!filletGroups.has(group)) filletGroups.set(group, new Set());
+    filletGroups.get(group).add(face.shared && face.shared.sourceFeatureId);
+  }
+  const ownedGroups = [...filletGroups.values()].filter(ids => ids.size === 1);
+  assert.ok(ownedGroups.length >= 3, `Expected separate fillet strip groups, got ${ownedGroups.length}`);
+});
+
 // --- 2-Edge Corner Fillet Tests ---
 
 test('box-fillet-2: manifold with explicit exact corner patch', () => {

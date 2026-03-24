@@ -175,6 +175,94 @@ export class WebGLExecutor {
     this.height = height;
   }
 
+  drawTriangleBuffer(data, vertexCount, options) {
+    const gl = this.gl;
+    const previousBlend = gl.isEnabled(gl.BLEND);
+    const previousCull = gl.isEnabled(gl.CULL_FACE);
+    const previousPolygonOffset = gl.isEnabled(gl.POLYGON_OFFSET_FILL);
+
+    gl.viewport(0, 0, this.width, this.height);
+    if ((options.color?.[3] ?? 1) < 1) {
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    } else if (!previousBlend) {
+      gl.disable(gl.BLEND);
+    }
+    gl.enable(gl.CULL_FACE);
+    gl.cullFace(gl.BACK);
+
+    if (options.polygonOffset) {
+      gl.enable(gl.POLYGON_OFFSET_FILL);
+      gl.polygonOffset(options.polygonOffset[0], options.polygonOffset[1]);
+    }
+
+    gl.useProgram(this.programs[0]);
+    gl.uniformMatrix4fv(this.uniforms[0].uMVP, false, options.mvp);
+    gl.uniform4f(this.uniforms[0].uColor, ...(options.color || [1, 1, 1, 1]));
+
+    gl.bindVertexArray(this.vaoSolid);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo);
+    gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
+    gl.drawArrays(gl.TRIANGLES, 0, vertexCount);
+    gl.bindVertexArray(null);
+
+    if (!previousPolygonOffset) gl.disable(gl.POLYGON_OFFSET_FILL);
+    if (!previousCull) gl.disable(gl.CULL_FACE);
+    if (!previousBlend) gl.disable(gl.BLEND);
+  }
+
+  drawLineBuffer(data, vertexCount, options) {
+    const gl = this.gl;
+    const previousBlend = gl.isEnabled(gl.BLEND);
+
+    gl.viewport(0, 0, this.width, this.height);
+    if ((options.color?.[3] ?? 1) < 1) {
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    } else if (!previousBlend) {
+      gl.disable(gl.BLEND);
+    }
+
+    gl.useProgram(this.programs[1]);
+    gl.uniformMatrix4fv(this.uniforms[1].uMVP, false, options.mvp);
+    gl.uniform4f(this.uniforms[1].uColor, ...(options.color || [1, 1, 1, 1]));
+    gl.lineWidth(options.lineWidth || 1);
+
+    gl.bindVertexArray(this.vaoLine);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo);
+    gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
+    gl.drawArrays(gl.LINES, 0, vertexCount);
+    gl.bindVertexArray(null);
+
+    if (!previousBlend) gl.disable(gl.BLEND);
+  }
+
+  drawPointBuffer(data, vertexCount, options) {
+    const gl = this.gl;
+    const previousBlend = gl.isEnabled(gl.BLEND);
+
+    gl.viewport(0, 0, this.width, this.height);
+    if ((options.color?.[3] ?? 1) < 1) {
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    } else if (!previousBlend) {
+      gl.disable(gl.BLEND);
+    }
+
+    gl.useProgram(this.programs[1]);
+    gl.uniformMatrix4fv(this.uniforms[1].uMVP, false, options.mvp);
+    gl.uniform4f(this.uniforms[1].uColor, ...(options.color || [1, 1, 1, 1]));
+    gl.uniform1f(this.uniforms[1].uPointSize, options.pointSize || 1);
+
+    gl.bindVertexArray(this.vaoLine);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo);
+    gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
+    gl.drawArrays(gl.POINTS, 0, vertexCount);
+    gl.bindVertexArray(null);
+
+    if (!previousBlend) gl.disable(gl.BLEND);
+  }
+
   execute(commandBuffer, length) {
     const gl = this.gl;
     const i32View = new Int32Array(commandBuffer.buffer, commandBuffer.byteOffset, length);

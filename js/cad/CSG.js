@@ -528,6 +528,10 @@ function assignCoplanarFaceGroups(faces) {
           if (!!fa.isFillet !== !!fb.isFillet) continue;
           // Don't merge corner faces with non-corner faces
           if (!!fa.isCorner !== !!fb.isCorner) continue;
+          // Keep neighboring blends from different features independently selectable.
+          const sourceA = fa.shared && fa.shared.sourceFeatureId ? fa.shared.sourceFeatureId : null;
+          const sourceB = fb.shared && fb.shared.sourceFeatureId ? fb.shared.sourceFeatureId : null;
+          if ((fa.isFillet || fa.isCorner || fb.isFillet || fb.isCorner) && sourceA !== sourceB) continue;
           unite(fis[i], fis[j]);
         }
       }
@@ -1666,6 +1670,7 @@ function _findAdjacentFaces(faces, edgeKey) {
   }
   if (adj.length >= 2) return adj;
 
+  const edgeOwnerMap = null; // Added edgeOwnerMap parameter
   // --- fuzzy fallback ---
   const sep = edgeKey.indexOf('|');
   if (sep < 0) return adj;
@@ -2633,7 +2638,7 @@ function _precomputeChamferEdge(faces, edgeKey, dist) {
 // Fillet geometry operation
 // -----------------------------------------------------------------------
 
-export function applyFillet(geometry, edgeKeys, radius, segments = 8) {
+export function applyFillet(geometry, edgeKeys, radius, segments = 8, edgeOwnerMap = null) {
   if (!geometry || !geometry.faces || edgeKeys.length === 0 || radius <= 0) {
     return geometry;
   }
@@ -2656,7 +2661,12 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8) {
   const edgeDataList = [];
   for (const ek of uniqueKeys) {
     const data = _precomputeFilletEdge(faces, ek, radius, segments);
-    if (data) edgeDataList.push(data);
+    if (!data) continue;
+    const ownerId = edgeOwnerMap && edgeOwnerMap[ek];
+    if (ownerId) {
+      data.shared = { ...(data.shared || {}), sourceFeatureId: ownerId };
+    }
+    edgeDataList.push(data);
   }
 
   if (edgeDataList.length === 0) return geometry;
@@ -2853,6 +2863,7 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8) {
 
   // --- Phase 5: Generate corner/blending faces at shared vertices ---
   _generateCornerFaces(faces, origFaces, edgeDataList, vertexEdgeMap);
+  _fixTJunctions(faces);
 
   // Add BRep faces for spherical corner patches (from _generateTrihedronCorner).
   // Build a NURBS surface using the Cobb octant construction so that the
@@ -2913,6 +2924,7 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8) {
   _removeDegenerateFaces(faces);
   _mergeMixedSharedPlanarComponents(faces);
   _mergeAdjacentCoplanarFacePairs(faces);
+  _fixTJunctions(faces);
   _healBoundaryLoops(faces);
   _removeDegenerateFaces(faces);
   _recomputeFaceNormals(faces);
@@ -3028,6 +3040,14 @@ function _buildVertexEdgeMap(edgeDataList) {
 function _mergeSharedVertexPositions(edgeDataList, vertexEdgeMap) {
   for (const [vk, edgeIndices] of vertexEdgeMap) {
     if (edgeIndices.length < 2) continue;
+
+    // Linear merged trim vertices are correct for chamfers and can help the
+    // 2-edge fillet case, but they are wrong for a 3-edge rolling-ball
+    // corner: they create fake planar points like (9,9,10) that leave a
+    // residual loop later healed into sliver faces. Let the trihedron be
+    // bounded only by the strip arcs in that case.
+    const hasFillet = edgeIndices.some((di) => !!edgeDataList[di].arcA);
+    if (hasFillet && edgeIndices.length >= 3) continue;
 
     // Get original vertex position
     const d0 = edgeDataList[edgeIndices[0]];
@@ -3863,6 +3883,13 @@ function _generateTrihedronCorner(faces, edgeInfos, shared) {
   const arcRight  = findArc(triVerts[1], triVerts[2]);
   if (!arcBottom || !arcLeft || !arcRight) return false;
 
+  // Replace the straight trim chords on the 3 support planes with the actual
+  // spherical boundary arcs so the corner patch closes directly against the
+  // planar faces instead of leaving a triangular hole for boundary healing.
+  _splicePolylineIntoFaceEdge(faces, arcBottom);
+  _splicePolylineIntoFaceEdge(faces, arcLeft);
+  _splicePolylineIntoFaceEdge(faces, arcRight);
+
   // Keep the exact trihedron corner metadata for BRep output, but do not
   // force the visualization mesh onto this sphere; that projection is what
   // created the outward spikes at the corner.
@@ -3902,9 +3929,10 @@ function _generateTrihedronCorner(faces, edgeInfos, shared) {
     }
   }
 
-  // Fair the interior toward a smooth ball-like blend without forcing it onto
-  // the circumsphere through the trim vertices, which can protrude past the
-  // support faces and create the visible pineapple spikes.
+  // Fair the interior toward a smooth ball-like blend and then project the
+  // interior back onto the common sphere defined by the trim boundaries.
+  // This preserves the round trihedron corner while the spliced boundary
+  // arcs and later T-junction repair keep the topology closed.
   for (let iter = 0; iter < 4; iter++) {
     for (let r = 1; r < segs; r++) {
       const row = grid[r];
@@ -3922,7 +3950,15 @@ function _generateTrihedronCorner(faces, edgeInfos, shared) {
           sy += pt.y;
           sz += pt.z;
         }
-        row[j] = { x: sx / neighbors.length, y: sy / neighbors.length, z: sz / neighbors.length };
+        let nextPt = { x: sx / neighbors.length, y: sy / neighbors.length, z: sz / neighbors.length };
+        if (useSphere) {
+          const dir = _vec3Sub(nextPt, sphereCenter);
+          const len = _vec3Len(dir);
+          if (len > 1e-10) {
+            nextPt = _vec3Add(sphereCenter, _vec3Scale(dir, sphereRadius / len));
+          }
+        }
+        row[j] = nextPt;
       }
     }
   }

@@ -15,7 +15,7 @@ export class FilletFeature extends Feature {
   }
 
   execute(context) {
-    const { solid, edgeKeys } = this._resolveFilletExecutionInput(context);
+    const { solid, edgeKeys, edgeOwnerMap } = this._resolveFilletExecutionInput(context);
     if (!solid || !solid.geometry || !solid.geometry.faces) {
       throw new Error('No solid body found to fillet');
     }
@@ -26,7 +26,12 @@ export class FilletFeature extends Feature {
 
     // Expand path-level keys to individual face-edge keys
     const resolvedKeys = expandPathEdgeKeys(solid.geometry, edgeKeys);
-    const geometry = applyFillet(solid.geometry, resolvedKeys, this.radius, this.segments);
+    const resolvedOwnerMap = {};
+    for (const key of resolvedKeys) {
+      const ownerId = edgeOwnerMap[key];
+      if (ownerId) resolvedOwnerMap[key] = ownerId;
+    }
+    const geometry = applyFillet(solid.geometry, resolvedKeys, this.radius, this.segments, resolvedOwnerMap);
 
     // Tag faces with source feature
     for (const f of geometry.faces) {
@@ -63,6 +68,8 @@ export class FilletFeature extends Feature {
   _resolveFilletExecutionInput(context) {
     const thisIndex = context.tree.getFeatureIndex(this.id);
     const mergedKeys = [...this.edgeKeys];
+    const edgeOwnerMap = {};
+    for (const key of this.edgeKeys) edgeOwnerMap[key] = this.id;
     let earliestMergeIndex = thisIndex;
     let mergedAny = false;
 
@@ -74,6 +81,9 @@ export class FilletFeature extends Feature {
       if ((feature.segments || 8) !== this.segments) break;
       if (!this._edgeSetsNearby(mergedKeys, feature.edgeKeys || [], this.radius * 1.5 + 1e-6)) break;
       mergedKeys.push(...feature.edgeKeys);
+      for (const key of feature.edgeKeys || []) {
+        if (!edgeOwnerMap[key]) edgeOwnerMap[key] = feature.id;
+      }
       earliestMergeIndex = i;
       mergedAny = true;
     }
@@ -85,6 +95,7 @@ export class FilletFeature extends Feature {
     return {
       solid,
       edgeKeys: [...new Set(mergedKeys)],
+      edgeOwnerMap,
     };
   }
 

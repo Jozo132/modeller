@@ -3,6 +3,14 @@
 // and uses WebGLExecutor to process batched WebGL commands.
 
 import { WebGLExecutor } from './webgl-executor.js';
+import {
+  buildMeshRenderData,
+  computeFitViewState,
+  computeOrbitCameraPosition,
+  computeOrbitMvp,
+  computeSilhouetteEdges,
+} from './render/part-render-core.js';
+import { renderBaseMeshOverlay } from './render/mesh-overlay-renderer.js';
 
 function _projectPolygon2D(verts, normal) {
   const an = {
@@ -362,16 +370,10 @@ export class WasmRenderer {
 
   _applyOrbitCamera() {
     if (!this._ready) return;
-    const theta = this._orbitTheta;
-    const phi = this._orbitPhi;
-    const r = this._orbitRadius;
     const t = this._orbitTarget;
+    const camera = computeOrbitCameraPosition(this._orbitTheta, this._orbitPhi, this._orbitRadius, t);
 
-    const camX = t.x + r * Math.sin(phi) * Math.cos(theta);
-    const camY = t.y + r * Math.sin(phi) * Math.sin(theta);
-    const camZ = t.z + r * Math.cos(phi);
-
-    this.wasm.setCameraPosition(camX, camY, camZ);
+    this.wasm.setCameraPosition(camera.x, camera.y, camera.z);
     this.wasm.setCameraTarget(t.x, t.y, t.z);
 
     // Apply orthographic or perspective projection for 3D mode
@@ -380,7 +382,7 @@ export class WasmRenderer {
       const w = this._cssWidth || this.container.clientWidth || 800;
       const h = this._cssHeight || this.container.clientHeight || 600;
       const aspect = w / h;
-      const halfH = r * 0.5;
+      const halfH = this._orbitRadius * 0.5;
       const halfW = halfH * aspect;
       // Ortho bounds must be view-space (centered at origin) since the
       // lookAt view matrix already positions the camera relative to target.
@@ -2136,219 +2138,7 @@ export class WasmRenderer {
    * Stores face metadata for selection/identification.
    */
   _buildMeshFromGeometry(geometry) {
-    const faces = geometry.faces || [];
-    const computePolygonNormal = (verts) => {
-      let nx = 0, ny = 0, nz = 0;
-      for (let i = 0; i < verts.length; i++) {
-        const curr = verts[i];
-        const next = verts[(i + 1) % verts.length];
-        nx += (curr.y - next.y) * (curr.z + next.z);
-        ny += (curr.z - next.z) * (curr.x + next.x);
-        nz += (curr.x - next.x) * (curr.y + next.y);
-      }
-      const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
-      if (len <= 1e-10) return null;
-      return { x: nx / len, y: ny / len, z: nz / len };
-    };
-    const isInvertedFace = (face) => {
-      const polygonNormal = computePolygonNormal(face.vertices || []);
-      const normal = face.normal;
-      if (!polygonNormal || !normal) return false;
-      const dot =
-        polygonNormal.x * normal.x +
-        polygonNormal.y * normal.y +
-        polygonNormal.z * normal.z;
-      return dot < -1e-5;
-    };
-
-    // Store face metadata for selection
-    this._meshFaces = faces.map((face, idx) => ({
-      index: idx,
-      faceGroup: face.faceGroup != null ? face.faceGroup : idx,
-      faceType: face.faceType || 'unknown',
-      isCurved: !!face.isCurved,
-      isInverted: isInvertedFace(face),
-      normal: face.normal || { x: 0, y: 0, z: 1 },
-      shared: face.shared || null,
-      vertices: face.vertices || [],
-      vertexCount: face.vertices.length,
-    }));
-
-    // Build per-vertex smooth normals for curved faces
-    // Key: vertex position string → {nx, ny, nz} accumulated normal
-    const smoothNormals = new Map();
-    const precision = 6;
-    const vKey = (v) => `${v.x.toFixed(precision)},${v.y.toFixed(precision)},${v.z.toFixed(precision)}`;
-
-    for (const face of faces) {
-      if (!face.isCurved) continue;
-      const n = face.normal || { x: 0, y: 0, z: 1 };
-      const g = face.faceGroup;
-      for (const v of face.vertices) {
-        const key = `${g}|${vKey(v)}`;
-        if (!smoothNormals.has(key)) {
-          smoothNormals.set(key, { x: 0, y: 0, z: 0 });
-        }
-        const sn = smoothNormals.get(key);
-        sn.x += n.x; sn.y += n.y; sn.z += n.z;
-      }
-    }
-    // Normalize accumulated normals
-    for (const sn of smoothNormals.values()) {
-      const len = Math.sqrt(sn.x * sn.x + sn.y * sn.y + sn.z * sn.z);
-      if (len > 1e-10) { sn.x /= len; sn.y /= len; sn.z /= len; }
-    }
-
-    // Count triangles needed (fan triangulation: n-gon → n-2 triangles)
-    let triCount = 0;
-    for (const face of faces) {
-      if (face.vertices.length >= 3) {
-        triCount += face.vertices.length - 2;
-      }
-    }
-
-    // Build interleaved triangle data: [x,y,z,nx,ny,nz] per vertex
-    const triData = new Float32Array(triCount * 3 * 6);
-    let ti = 0;
-    const problemVerts = [];
-
-    // Map triangle index → face index for hit testing
-    this._triFaceMap = new Int32Array(triCount);
-    let triIdx = 0;
-
-    for (let fi = 0; fi < faces.length; fi++) {
-      const face = faces[fi];
-      const verts = face.vertices;
-      const n = face.normal || { x: 0, y: 0, z: 1 };
-      const curved = face.isCurved;
-      const g = face.faceGroup;
-      const inverted = this._meshFaces[fi].isInverted;
-      if (verts.length < 3) continue;
-
-      // Fan triangulation from vertex 0
-      for (let i = 1; i < verts.length - 1; i++) {
-        const triVerts = [verts[0], verts[i], verts[i + 1]];
-        for (const v of triVerts) {
-          triData[ti++] = v.x; triData[ti++] = v.y; triData[ti++] = v.z;
-          if (curved) {
-            const sn = smoothNormals.get(`${g}|${vKey(v)}`);
-            triData[ti++] = sn.x; triData[ti++] = sn.y; triData[ti++] = sn.z;
-          } else {
-            triData[ti++] = n.x; triData[ti++] = n.y; triData[ti++] = n.z;
-          }
-          if (inverted) {
-            problemVerts.push(v.x, v.y, v.z, n.x, n.y, n.z);
-          }
-        }
-        this._triFaceMap[triIdx++] = fi;
-      }
-    }
-
-    this._meshTriangles = triData;
-    this._meshTriangleCount = triCount * 3; // vertex count
-    this._problemTriangles = problemVerts.length > 0 ? new Float32Array(problemVerts) : null;
-    this._problemTriangleCount = problemVerts.length / 6;
-
-    // Use deduplicated edges from CSG if available, otherwise compute feature edges
-    if (geometry.edges && geometry.edges.length > 0) {
-      const edgeData = new Float32Array(geometry.edges.length * 2 * 3);
-      let ei = 0;
-      for (const edge of geometry.edges) {
-        edgeData[ei++] = edge.start.x; edgeData[ei++] = edge.start.y; edgeData[ei++] = edge.start.z;
-        edgeData[ei++] = edge.end.x;   edgeData[ei++] = edge.end.y;   edgeData[ei++] = edge.end.z;
-      }
-      this._meshEdges = edgeData;
-      this._meshEdgeVertexCount = geometry.edges.length * 2;
-
-      // Store per-edge metadata for picking and chamfer/fillet
-      this._meshEdgeSegments = geometry.edges.map(e => ({
-        start: e.start,
-        end: e.end,
-        faceIndices: e.faceIndices || [],
-        normals: e.normals || [],
-      }));
-
-      // Store edge paths and build edge→path lookup
-      this._meshEdgePaths = geometry.paths || [];
-      this._edgeToPath = new Map();
-      if (this._meshEdgePaths) {
-        for (let pi = 0; pi < this._meshEdgePaths.length; pi++) {
-          for (const ei of this._meshEdgePaths[pi].edgeIndices) {
-            this._edgeToPath.set(ei, pi);
-          }
-        }
-      }
-
-      // Build silhouette candidates from face data for view-dependent outline edges
-      this._meshSilhouetteCandidates = this._buildSilhouetteCandidates(faces);
-    } else {
-      // Compute feature edges: only show edges where adjacent faces have different normals
-      const SHARP_COS = Math.cos(15 * Math.PI / 180);
-      const edgeMap = new Map();
-      const precision = 5;
-      const vKey = (v) => `${v.x.toFixed(precision)},${v.y.toFixed(precision)},${v.z.toFixed(precision)}`;
-      const eKey = (a, b) => { const ka = vKey(a), kb = vKey(b); return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`; };
-
-      for (const face of faces) {
-        const verts = face.vertices;
-        const n = face.normal || { x: 0, y: 0, z: 1 };
-        for (let i = 0; i < verts.length; i++) {
-          const a = verts[i], b = verts[(i + 1) % verts.length];
-          const key = eKey(a, b);
-          if (!edgeMap.has(key)) {
-            edgeMap.set(key, { a, b, normals: [] });
-          }
-          edgeMap.get(key).normals.push(n);
-        }
-      }
-
-      const featureEdges = [];
-      const silCandidates = [];
-      for (const [, info] of edgeMap) {
-        if (info.normals.length === 1) {
-          featureEdges.push(info);
-        } else if (info.normals.length >= 2) {
-          const n0 = info.normals[0];
-          const n1 = info.normals[1];
-          const dot = n0.x * n1.x + n0.y * n1.y + n0.z * n1.z;
-          if (dot < SHARP_COS) {
-            featureEdges.push(info);
-          } else if (dot < 1 - 1e-6) {
-            silCandidates.push(
-              info.a.x, info.a.y, info.a.z,
-              info.b.x, info.b.y, info.b.z,
-              n0.x, n0.y, n0.z,
-              n1.x, n1.y, n1.z
-            );
-          }
-        }
-      }
-
-      const edgeData = new Float32Array(featureEdges.length * 2 * 3);
-      let ei = 0;
-      for (const e of featureEdges) {
-        edgeData[ei++] = e.a.x; edgeData[ei++] = e.a.y; edgeData[ei++] = e.a.z;
-        edgeData[ei++] = e.b.x; edgeData[ei++] = e.b.y; edgeData[ei++] = e.b.z;
-      }
-      this._meshEdges = edgeData;
-      this._meshEdgeVertexCount = featureEdges.length * 2;
-      this._meshSilhouetteCandidates = silCandidates.length > 0 ? new Float32Array(silCandidates) : null;
-    }
-
-    // Build visual edges (curved surface tessellation lines — non-selectable wireframe grid)
-    if (geometry.visualEdges && geometry.visualEdges.length > 0) {
-      const vEdgeData = new Float32Array(geometry.visualEdges.length * 2 * 3);
-      let vi = 0;
-      for (const edge of geometry.visualEdges) {
-        vEdgeData[vi++] = edge.start.x; vEdgeData[vi++] = edge.start.y; vEdgeData[vi++] = edge.start.z;
-        vEdgeData[vi++] = edge.end.x;   vEdgeData[vi++] = edge.end.y;   vEdgeData[vi++] = edge.end.z;
-      }
-      this._meshVisualEdges = vEdgeData;
-      this._meshVisualEdgeVertexCount = geometry.visualEdges.length * 2;
-    } else {
-      this._meshVisualEdges = null;
-      this._meshVisualEdgeVertexCount = 0;
-    }
+    Object.assign(this, buildMeshRenderData(geometry));
   }
 
   /**
@@ -2391,43 +2181,6 @@ export class WasmRenderer {
       }
     }
     return candidates.length > 0 ? new Float32Array(candidates) : null;
-  }
-
-  /**
-   * Compute view-dependent silhouette edges from candidate data.
-   * An edge is a silhouette when one adjacent face is front-facing and the other is back-facing.
-   * @param {Float32Array} candidates - [ax,ay,az, bx,by,bz, n0x,n0y,n0z, n1x,n1y,n1z] per edge (12 floats)
-   * @returns {Float32Array|null} Line vertex data [ax,ay,az, bx,by,bz] per edge, or null
-   */
-  _computeSilhouetteEdges(candidates) {
-    if (!candidates || candidates.length === 0) return null;
-
-    const t = this._orbitTarget;
-    const theta = this._orbitTheta;
-    const phi = this._orbitPhi;
-    const rad = this._orbitRadius;
-    const eyeX = t.x + rad * Math.sin(phi) * Math.cos(theta);
-    const eyeY = t.y + rad * Math.sin(phi) * Math.sin(theta);
-    const eyeZ = t.z + rad * Math.cos(phi);
-
-    const count = candidates.length / 12;
-    const lines = [];
-    for (let i = 0; i < count; i++) {
-      const off = i * 12;
-      const ax = candidates[off], ay = candidates[off + 1], az = candidates[off + 2];
-      const bx = candidates[off + 3], by = candidates[off + 4], bz = candidates[off + 5];
-      // Edge midpoint → eye direction
-      const mx = (ax + bx) * 0.5, my = (ay + by) * 0.5, mz = (az + bz) * 0.5;
-      const vx = eyeX - mx, vy = eyeY - my, vz = eyeZ - mz;
-      // Dot with each normal
-      const d0 = candidates[off + 6] * vx + candidates[off + 7] * vy + candidates[off + 8] * vz;
-      const d1 = candidates[off + 9] * vx + candidates[off + 10] * vy + candidates[off + 11] * vz;
-      // Silhouette: one front-facing, one back-facing
-      if ((d0 > 0) !== (d1 > 0)) {
-        lines.push(ax, ay, az, bx, by, bz);
-      }
-    }
-    return lines.length > 0 ? new Float32Array(lines) : null;
   }
 
   /**
@@ -2715,21 +2468,22 @@ export class WasmRenderer {
     gl.cullFace(gl.BACK);
 
     if (hasMesh) {
-      // Draw solid triangles with polygon offset to avoid z-fighting with edges
-      gl.enable(gl.POLYGON_OFFSET_FILL);
-      gl.polygonOffset(1.0, 1.0);
-
-      gl.useProgram(exec.programs[0]);
-      gl.uniformMatrix4fv(exec.uniforms[0].uMVP, false, mvp);
-      gl.uniform4f(exec.uniforms[0].uColor, 0.65, 0.75, 0.65, 1.0);
-
-      gl.bindVertexArray(exec.vaoSolid);
-      gl.bindBuffer(gl.ARRAY_BUFFER, exec.vbo);
-      gl.bufferData(gl.ARRAY_BUFFER, this._meshTriangles, gl.DYNAMIC_DRAW);
-      gl.drawArrays(gl.TRIANGLES, 0, this._meshTriangleCount);
-      gl.bindVertexArray(null);
-
-      gl.disable(gl.POLYGON_OFFSET_FILL);
+      renderBaseMeshOverlay(exec, {
+        meshTriangles: this._meshTriangles,
+        meshTriangleCount: this._meshTriangleCount,
+        meshVisualEdges: this._meshVisualEdges,
+        meshVisualEdgeVertexCount: this._meshVisualEdgeVertexCount,
+        meshEdges: this._meshEdges,
+        meshEdgeVertexCount: this._meshEdgeVertexCount,
+        meshSilhouetteCandidates: this._meshSilhouetteCandidates,
+        orbitState: {
+          theta: this._orbitTheta,
+          phi: this._orbitPhi,
+          radius: this._orbitRadius,
+          target: this._orbitTarget,
+        },
+        mvp,
+      });
 
       if (this._diagnosticBackfaceHatchEnabled) {
         gl.enable(gl.BLEND);
@@ -2799,37 +2553,6 @@ export class WasmRenderer {
           gl.enable(gl.CULL_FACE);
           gl.cullFace(gl.BACK);
         }
-      }
-
-      // Draw visual edges (curved surface tessellation — non-selectable wireframe grid)
-      if (this._meshVisualEdges && this._meshVisualEdgeVertexCount > 0) {
-        gl.enable(gl.BLEND);
-        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-        gl.useProgram(exec.programs[1]);
-        gl.uniformMatrix4fv(exec.uniforms[1].uMVP, false, mvp);
-        gl.uniform4f(exec.uniforms[1].uColor, 0.25, 0.25, 0.25, 0.35);
-        gl.lineWidth(1.0);
-
-        gl.bindVertexArray(exec.vaoLine);
-        gl.bindBuffer(gl.ARRAY_BUFFER, exec.vbo);
-        gl.bufferData(gl.ARRAY_BUFFER, this._meshVisualEdges, gl.DYNAMIC_DRAW);
-        gl.drawArrays(gl.LINES, 0, this._meshVisualEdgeVertexCount);
-        gl.bindVertexArray(null);
-        gl.disable(gl.BLEND);
-      }
-
-      // Draw feature wireframe edges
-      if (this._meshEdges && this._meshEdgeVertexCount > 0) {
-        gl.useProgram(exec.programs[1]);
-        gl.uniformMatrix4fv(exec.uniforms[1].uMVP, false, mvp);
-        gl.uniform4f(exec.uniforms[1].uColor, 0.1, 0.1, 0.1, 1.0);
-        gl.lineWidth(1.0);
-
-        gl.bindVertexArray(exec.vaoLine);
-        gl.bindBuffer(gl.ARRAY_BUFFER, exec.vbo);
-        gl.bufferData(gl.ARRAY_BUFFER, this._meshEdges, gl.DYNAMIC_DRAW);
-        gl.drawArrays(gl.LINES, 0, this._meshEdgeVertexCount);
-        gl.bindVertexArray(null);
       }
 
       // Draw selected edge highlights (bright cyan)
@@ -2955,22 +2678,6 @@ export class WasmRenderer {
         }
       }
 
-      // Draw silhouette edges (view-dependent outline on curved surfaces)
-      if (this._meshSilhouetteCandidates) {
-        const silData = this._computeSilhouetteEdges(this._meshSilhouetteCandidates);
-        if (silData) {
-          gl.useProgram(exec.programs[1]);
-          gl.uniformMatrix4fv(exec.uniforms[1].uMVP, false, mvp);
-          gl.uniform4f(exec.uniforms[1].uColor, 0.1, 0.1, 0.1, 1.0);
-          gl.lineWidth(1.0);
-
-          gl.bindVertexArray(exec.vaoLine);
-          gl.bindBuffer(gl.ARRAY_BUFFER, exec.vbo);
-          gl.bufferData(gl.ARRAY_BUFFER, silData, gl.DYNAMIC_DRAW);
-          gl.drawArrays(gl.LINES, 0, silData.length / 3);
-          gl.bindVertexArray(null);
-        }
-      }
     }
 
     // Draw ghost preview (semi-transparent extrude preview)
@@ -3014,7 +2721,12 @@ export class WasmRenderer {
 
       // Ghost silhouette edges (view-dependent outline on curved surfaces)
       if (this._ghostSilhouetteCandidates) {
-        const ghostSilData = this._computeSilhouetteEdges(this._ghostSilhouetteCandidates);
+        const ghostSilData = computeSilhouetteEdges(this._ghostSilhouetteCandidates, {
+          theta: this._orbitTheta,
+          phi: this._orbitPhi,
+          radius: this._orbitRadius,
+          target: this._orbitTarget,
+        });
         if (ghostSilData) {
           gl.disable(gl.DEPTH_TEST);
           gl.useProgram(exec.programs[1]);
@@ -3492,28 +3204,11 @@ export class WasmRenderer {
   fitToView() {
     if (!this._ready) return;
     if (this.mode === '3d') {
-      const bb = this._partBounds;
-      if (bb) {
-        // Center the camera on the part
-        const cx = (bb.max.x + bb.min.x) / 2;
-        const cy = (bb.max.y + bb.min.y) / 2;
-        const cz = (bb.max.z + bb.min.z) / 2;
-        this._orbitTarget = { x: cx, y: cy, z: cz };
-
-        // Compute radius to fit the part in view
-        const sx = bb.max.x - bb.min.x;
-        const sy = bb.max.y - bb.min.y;
-        const sz = bb.max.z - bb.min.z;
-        const maxDim = Math.max(sx, sy, sz, 10);
-        this._orbitRadius = maxDim * 2.5;
-
-        // Scale grid and axes to match the part scale
-        this.wasm.setGridSize(maxDim * 3, 20);
-        this.wasm.setAxesSize(maxDim * 0.5);
-      } else {
-        this._orbitTarget = { x: 0, y: 0, z: 0 };
-        this._orbitRadius = 25;
-      }
+      const fit = computeFitViewState(this._partBounds, 25);
+      this._orbitTarget = fit.target;
+      this._orbitRadius = fit.radius;
+      this.wasm.setGridSize(fit.gridSize, 20);
+      this.wasm.setAxesSize(fit.axesSize);
       this._orbitTheta = Math.PI / 4;
       this._orbitPhi = Math.PI / 3;
       this._orbitDirty = true;
@@ -3602,45 +3297,18 @@ function _computeFullyConstrained(scene) {
     for (const c of scene.constraints) {
       switch (c.type) {
         case 'fixed': {
-          const s = ps.get(c.pt);
-          if (s && markFC(s)) changed = true;
-          break;
-        }
-        case 'coincident': {
-          const sa = ps.get(c.ptA), sb = ps.get(c.ptB);
-          if (sa && sb) {
-            if (sa.xLock && !sb.xLock) { sb.xLock = true; changed = true; }
-            if (sb.xLock && !sa.xLock) { sa.xLock = true; changed = true; }
-            if (sa.yLock && !sb.yLock) { sb.yLock = true; changed = true; }
-            if (sb.yLock && !sa.yLock) { sa.yLock = true; changed = true; }
-            if (isFC(sa) && !isFC(sb) && markFC(sb)) changed = true;
-            if (isFC(sb) && !isFC(sa) && markFC(sa)) changed = true;
-          }
-          break;
-        }
-        case 'horizontal': {
-          const si = ss.get(c.seg);
-          if (si && !si.dirKnown) { si.dirKnown = true; changed = true; }
-          const s1 = ps.get(c.seg.p1), s2 = ps.get(c.seg.p2);
-          if (s1 && s2) {
-            if (s1.yLock && !s2.yLock) { s2.yLock = true; changed = true; }
-            if (s2.yLock && !s1.yLock) { s1.yLock = true; changed = true; }
-          }
-          break;
-        }
-        case 'vertical': {
-          const si = ss.get(c.seg);
-          if (si && !si.dirKnown) { si.dirKnown = true; changed = true; }
-          const s1 = ps.get(c.seg.p1), s2 = ps.get(c.seg.p2);
-          if (s1 && s2) {
-            if (s1.xLock && !s2.xLock) { s2.xLock = true; changed = true; }
-            if (s2.xLock && !s1.xLock) { s1.xLock = true; changed = true; }
-          }
-          break;
-        }
-        case 'parallel':
-        case 'perpendicular':
-        case 'angle': {
+          return computeOrbitMvp({
+            width: this.canvas.width,
+            height: this.canvas.height,
+            target: this._orbitTarget,
+            theta: this._orbitTheta,
+            phi: this._orbitPhi,
+            radius: this._orbitRadius,
+            fov: this._fov,
+            fovDegrees: this._fovDegrees,
+            ortho3D: this._ortho3D,
+            orthoBounds: this._orthoBounds,
+          });
           const siA = ss.get(c.segA), siB = ss.get(c.segB);
           if (siA && siB) {
             if (siA.dirKnown && !siB.dirKnown) { siB.dirKnown = true; changed = true; }
