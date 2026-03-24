@@ -3883,12 +3883,54 @@ function _generateTrihedronCorner(faces, edgeInfos, shared) {
   const arcRight  = findArc(triVerts[1], triVerts[2]);
   if (!arcBottom || !arcLeft || !arcRight) return false;
 
-  // Replace the straight trim chords on the 3 support planes with the actual
-  // spherical boundary arcs so the corner patch closes directly against the
-  // planar faces instead of leaving a triangular hole for boundary healing.
-  _splicePolylineIntoFaceEdge(faces, arcBottom);
-  _splicePolylineIntoFaceEdge(faces, arcLeft);
-  _splicePolylineIntoFaceEdge(faces, arcRight);
+  // Do NOT splice boundary arcs into the planar faces here.
+  // The fillet strip quads share the arc boundary with the trihedron corner
+  // triangles (2 faces per edge, manifold).  The planar faces keep their
+  // straight trim chords, leaving 3 boundary edges.  Emit a fill triangle
+  // now (with proper corner metadata) so _healBoundaryLoops does not have
+  // to create an unattributed healing face later.
+  {
+    const p0 = triVerts[0].pos, p1 = triVerts[1].pos, p2 = triVerts[2].pos;
+    const fillVerts = [
+      { x: p0.x, y: p0.y, z: p0.z },
+      { x: p1.x, y: p1.y, z: p1.z },
+      { x: p2.x, y: p2.y, z: p2.z },
+    ];
+    const fillNormal = _computePolygonNormal(fillVerts);
+    if (fillNormal && _vec3Len(fillNormal) > 1e-10) {
+      // Determine correct winding: the fill triangle closes the planar-face
+      // chords.  Each chord is traversed by a planar face in one direction;
+      // the fill must traverse it in the opposite direction.
+      let windingScore = 0;
+      for (const face of faces) {
+        if (face.isFillet || face.isCorner) continue;
+        const verts = face.vertices;
+        for (let i = 0; i < verts.length; i++) {
+          const ak = _edgeVKey(verts[i]);
+          const bk = _edgeVKey(verts[(i + 1) % verts.length]);
+          if (ak === triVerts[0].vk && bk === triVerts[1].vk) windingScore++;
+          if (ak === triVerts[1].vk && bk === triVerts[0].vk) windingScore--;
+        }
+      }
+      if (windingScore > 0) {
+        fillVerts.reverse();
+      }
+      const n = _computePolygonNormal(fillVerts) || fillNormal;
+      faces.push({
+        vertices: fillVerts,
+        normal: n,
+        shared,
+        isCorner: true,
+        _sphereCenter: null,
+        _sphereRadius: 0,
+        _triVerts: [
+          { x: p0.x, y: p0.y, z: p0.z },
+          { x: p1.x, y: p1.y, z: p1.z },
+          { x: p2.x, y: p2.y, z: p2.z },
+        ],
+      });
+    }
+  }
 
   // Keep the exact trihedron corner metadata for BRep output, but do not
   // force the visualization mesh onto this sphere; that projection is what
