@@ -22,7 +22,7 @@ NURBS/B-Rep topology (`TopoBody` from `BRepTopology.js`). The topology graph
 TopoBody → TopoShell → TopoFace → TopoLoop → TopoCoEdge → TopoEdge → TopoVertex
 ```
 
-carries the mathematically exact geometry:
+carries the mathematically exact geometry (where `→` means "contains"):
 
 | Element    | Exact Data                                              |
 |------------|---------------------------------------------------------|

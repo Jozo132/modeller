@@ -92,7 +92,7 @@ export function parseSTEPTopology(stepString) {
   }
 
   if (topoShells.length === 0) {
-    throw new Error('No solid geometry found in STEP file');
+    throw new Error('No solid geometry found in STEP file. The file may contain only surface data or use an unsupported representation.');
   }
 
   return new TopoBody(topoShells);
@@ -745,7 +745,7 @@ function _tessellateLoop(topoLoop, curveSegments) {
 
     // Determine if this is a non-linear curve that needs sampling
     const isLinear = !curve ||
-      (curve.degree === 1 && curve.controlPoints.length <= 2);
+      (curve.degree === 1 && curve.controlPoints.length === 2);
 
     let edgePoints;
     let isArc = false;
