@@ -1277,6 +1277,142 @@ function _extractSurfaceNormal(resolved, surfaceRef) {
   }
 }
 
+/**
+ * Extract surface geometric info needed for per-vertex normal computation.
+ * Returns an object with { type, origin, axis, radius } for analytic surfaces,
+ * or null if the surface type is not supported for vertex normals.
+ */
+function _extractSurfaceInfo(resolved, surfaceRef) {
+  const surf = _getEntity(resolved, surfaceRef);
+  if (!surf) return null;
+
+  switch (surf.type) {
+    case 'CYLINDRICAL_SURFACE': {
+      const axis = _getAxis2Placement3D(resolved, surf.args[1]);
+      const radius = Number(surf.args[2]);
+      if (!axis || !radius) return null;
+      return { type: 'cylinder', origin: axis.origin, axis: axis.zDir, radius };
+    }
+    case 'SPHERICAL_SURFACE': {
+      const axis = _getAxis2Placement3D(resolved, surf.args[1]);
+      const radius = Number(surf.args[2]);
+      if (!axis || !radius) return null;
+      return { type: 'sphere', origin: axis.origin, radius };
+    }
+    case 'CONICAL_SURFACE': {
+      const axis = _getAxis2Placement3D(resolved, surf.args[1]);
+      const radius = Number(surf.args[2]);
+      const semiAngle = Number(surf.args[3]) || 0;
+      if (!axis) return null;
+      return { type: 'cone', origin: axis.origin, axis: axis.zDir, radius, semiAngle };
+    }
+    case 'TOROIDAL_SURFACE': {
+      const axis = _getAxis2Placement3D(resolved, surf.args[1]);
+      const majorR = Number(surf.args[2]);
+      const minorR = Number(surf.args[3]);
+      if (!axis || !majorR || !minorR) return null;
+      return { type: 'torus', origin: axis.origin, axis: axis.zDir, majorR, minorR };
+    }
+    default:
+      return null;
+  }
+}
+
+/**
+ * Compute the outward surface normal at a vertex position, using the
+ * analytic surface definition. For cylinder, it's the radial direction
+ * perpendicular to the axis. For sphere, it's the direction from center.
+ *
+ * @param {{x,y,z}} vertex - vertex position
+ * @param {Object} surfaceInfo - from _extractSurfaceInfo
+ * @param {boolean} sameSense - face orientation relative to surface
+ * @returns {{x,y,z}} unit normal
+ */
+function _computeVertexNormal(vertex, surfaceInfo, sameSense) {
+  let n;
+
+  switch (surfaceInfo.type) {
+    case 'cylinder': {
+      // Radial direction: project (vertex - origin) onto plane perpendicular to axis
+      const dx = vertex.x - surfaceInfo.origin.x;
+      const dy = vertex.y - surfaceInfo.origin.y;
+      const dz = vertex.z - surfaceInfo.origin.z;
+      const ax = surfaceInfo.axis.x, ay = surfaceInfo.axis.y, az = surfaceInfo.axis.z;
+      const dot = dx * ax + dy * ay + dz * az;
+      n = _normalize({ x: dx - dot * ax, y: dy - dot * ay, z: dz - dot * az });
+      break;
+    }
+    case 'sphere': {
+      // Direction from center to vertex
+      n = _normalize({
+        x: vertex.x - surfaceInfo.origin.x,
+        y: vertex.y - surfaceInfo.origin.y,
+        z: vertex.z - surfaceInfo.origin.z,
+      });
+      break;
+    }
+    case 'cone': {
+      // For a cone, the normal is perpendicular to the surface at the vertex
+      const dx = vertex.x - surfaceInfo.origin.x;
+      const dy = vertex.y - surfaceInfo.origin.y;
+      const dz = vertex.z - surfaceInfo.origin.z;
+      const ax = surfaceInfo.axis.x, ay = surfaceInfo.axis.y, az = surfaceInfo.axis.z;
+      const axialDist = dx * ax + dy * ay + dz * az;
+      // Radial component
+      const rx = dx - axialDist * ax;
+      const ry = dy - axialDist * ay;
+      const rz = dz - axialDist * az;
+      const radialLen = Math.sqrt(rx * rx + ry * ry + rz * rz);
+      if (radialLen < 1e-14) {
+        n = { x: ax, y: ay, z: az };
+      } else {
+        const cosA = Math.cos(surfaceInfo.semiAngle);
+        const sinA = Math.sin(surfaceInfo.semiAngle);
+        // Normal = radial * cos(semiAngle) - axis * sin(semiAngle)
+        n = _normalize({
+          x: (rx / radialLen) * cosA - ax * sinA,
+          y: (ry / radialLen) * cosA - ay * sinA,
+          z: (rz / radialLen) * cosA - az * sinA,
+        });
+      }
+      break;
+    }
+    case 'torus': {
+      // For a torus, project onto the major circle, then compute minor circle normal
+      const dx = vertex.x - surfaceInfo.origin.x;
+      const dy = vertex.y - surfaceInfo.origin.y;
+      const dz = vertex.z - surfaceInfo.origin.z;
+      const ax = surfaceInfo.axis.x, ay = surfaceInfo.axis.y, az = surfaceInfo.axis.z;
+      const axialDist = dx * ax + dy * ay + dz * az;
+      const rx = dx - axialDist * ax;
+      const ry = dy - axialDist * ay;
+      const rz = dz - axialDist * az;
+      const radialLen = Math.sqrt(rx * rx + ry * ry + rz * rz);
+      if (radialLen < 1e-14) {
+        n = { x: 0, y: 0, z: 1 };
+      } else {
+        // Center of the minor circle
+        const cx = surfaceInfo.origin.x + (rx / radialLen) * surfaceInfo.majorR;
+        const cy = surfaceInfo.origin.y + (ry / radialLen) * surfaceInfo.majorR;
+        const cz = surfaceInfo.origin.z + (rz / radialLen) * surfaceInfo.majorR;
+        n = _normalize({
+          x: vertex.x - cx,
+          y: vertex.y - cy,
+          z: vertex.z - cz,
+        });
+      }
+      break;
+    }
+    default:
+      return { x: 0, y: 0, z: 1 };
+  }
+
+  if (!sameSense) {
+    n = { x: -n.x, y: -n.y, z: -n.z };
+  }
+  return n;
+}
+
 // =====================================================================
 // AXIS2_PLACEMENT_3D helper
 // =====================================================================
