@@ -200,6 +200,87 @@ export class NurbsSurface {
   }
 
   /**
+   * Find the closest parametric coordinates (u, v) for a given 3D point.
+   *
+   * Uses a coarse grid search followed by Newton-Raphson refinement to
+   * minimise |S(u,v) - P|².  The target point is assumed to lie on or
+   * very close to the surface.
+   *
+   * @param {{x:number, y:number, z:number}} point - Target 3D point
+   * @param {number} [gridRes=16] - Coarse search grid resolution
+   * @returns {{u: number, v: number}}
+   */
+  closestPointUV(point, gridRes = 16) {
+    const px = point.x, py = point.y, pz = point.z;
+
+    // Coarse grid search
+    let bestU = (this.uMin + this.uMax) / 2;
+    let bestV = (this.vMin + this.vMax) / 2;
+    let bestDist2 = Infinity;
+
+    for (let i = 0; i <= gridRes; i++) {
+      const u = this.uMin + (i / gridRes) * (this.uMax - this.uMin);
+      for (let j = 0; j <= gridRes; j++) {
+        const v = this.vMin + (j / gridRes) * (this.vMax - this.vMin);
+        const p = this.evaluate(u, v);
+        const dx = p.x - px, dy = p.y - py, dz = p.z - pz;
+        const d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 < bestDist2) {
+          bestDist2 = d2;
+          bestU = u;
+          bestV = v;
+        }
+      }
+    }
+
+    // Newton-Raphson refinement
+    const uRange = this.uMax - this.uMin;
+    const vRange = this.vMax - this.vMin;
+    const eps = 1e-6;
+
+    for (let iter = 0; iter < 10; iter++) {
+      const s = this.evaluate(bestU, bestV);
+      const rx = s.x - px, ry = s.y - py, rz = s.z - pz;
+
+      if (rx * rx + ry * ry + rz * rz < 1e-24) break;
+
+      // Partial derivatives via central differences
+      const uLo = Math.max(this.uMin, bestU - eps * uRange);
+      const uHi = Math.min(this.uMax, bestU + eps * uRange);
+      const pULo = this.evaluate(uLo, bestV);
+      const pUHi = this.evaluate(uHi, bestV);
+      const hU = uHi - uLo;
+      const Su = { x: (pUHi.x - pULo.x) / hU, y: (pUHi.y - pULo.y) / hU, z: (pUHi.z - pULo.z) / hU };
+
+      const vLo = Math.max(this.vMin, bestV - eps * vRange);
+      const vHi = Math.min(this.vMax, bestV + eps * vRange);
+      const pVLo = this.evaluate(bestU, vLo);
+      const pVHi = this.evaluate(bestU, vHi);
+      const hV = vHi - vLo;
+      const Sv = { x: (pVHi.x - pVLo.x) / hV, y: (pVHi.y - pVLo.y) / hV, z: (pVHi.z - pVLo.z) / hV };
+
+      // Jacobian entries:  J = [[Su·Su, Su·Sv], [Su·Sv, Sv·Sv]]
+      // RHS:                r = [Su·R,  Sv·R]
+      const a = Su.x * Su.x + Su.y * Su.y + Su.z * Su.z;
+      const b = Su.x * Sv.x + Su.y * Sv.y + Su.z * Sv.z;
+      const d = Sv.x * Sv.x + Sv.y * Sv.y + Sv.z * Sv.z;
+      const ru = Su.x * rx + Su.y * ry + Su.z * rz;
+      const rv = Sv.x * rx + Sv.y * ry + Sv.z * rz;
+
+      const det = a * d - b * b;
+      if (Math.abs(det) < 1e-30) break;
+
+      const du = -(d * ru - b * rv) / det;
+      const dv = -(a * rv - b * ru) / det;
+
+      bestU = Math.max(this.uMin, Math.min(this.uMax, bestU + du));
+      bestV = Math.max(this.vMin, Math.min(this.vMax, bestV + dv));
+    }
+
+    return { u: bestU, v: bestV };
+  }
+
+  /**
    * Tessellate the surface into a mesh of triangles.
    *
    * @param {number} [segmentsU=8] - Subdivisions in u-direction
@@ -223,7 +304,8 @@ export class NurbsSurface {
       normals.push(normRow);
     }
 
-    // Generate quad faces (each split into 2 triangles for mesh compatibility)
+    // Generate triangle faces — split each quad into 2 triangles with
+    // averaged normals so smooth shading works correctly.
     const vertices = [];
     const faces = [];
 
@@ -234,13 +316,23 @@ export class NurbsSurface {
         const p11 = grid[i + 1][j + 1];
         const p01 = grid[i][j + 1];
 
-        // Quad face (consistent with existing geometry format)
-        const faceNormal = normals[i][j];
+        const n00 = normals[i][j];
+        const n10 = normals[i + 1][j];
+        const n11 = normals[i + 1][j + 1];
+        const n01 = normals[i][j + 1];
+
+        // Triangle 1: p00, p10, p11
+        const avg1 = _avgNormal(n00, n10, n11);
         faces.push({
-          vertices: [
-            { ...p00 }, { ...p10 }, { ...p11 }, { ...p01 }
-          ],
-          normal: { ...faceNormal },
+          vertices: [{ ...p00 }, { ...p10 }, { ...p11 }],
+          normal: avg1,
+        });
+
+        // Triangle 2: p00, p11, p01
+        const avg2 = _avgNormal(n00, n11, n01);
+        faces.push({
+          vertices: [{ ...p00 }, { ...p11 }, { ...p01 }],
+          normal: avg2,
         });
       }
     }
@@ -762,4 +854,14 @@ export class NurbsSurface {
 
     return new NurbsSurface(degreeU, degreeV, numRowsU, numColsV, controlPoints, knotsU, knotsV, weights);
   }
+}
+
+/** Average three unit normals and normalize the result. */
+function _avgNormal(a, b, c) {
+  const x = a.x + b.x + c.x;
+  const y = a.y + b.y + c.y;
+  const z = a.z + b.z + c.z;
+  const len = Math.sqrt(x * x + y * y + z * z);
+  if (len < 1e-14) return { x: 0, y: 0, z: 1 };
+  return { x: x / len, y: y / len, z: z / len };
 }

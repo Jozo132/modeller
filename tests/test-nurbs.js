@@ -275,10 +275,10 @@ test('NurbsSurface: tessellate produces correct face count', () => {
     { x: 0, y: 1, z: 0 }
   );
   const tess = plane.tessellate(4, 4);
-  assert.strictEqual(tess.faces.length, 16, 'Should have 4x4=16 faces');
-  // Each face should have 4 vertices (quads)
+  assert.strictEqual(tess.faces.length, 32, 'Should have 4x4x2=32 triangle faces');
+  // Each face should have 3 vertices (triangles)
   for (const face of tess.faces) {
-    assert.strictEqual(face.vertices.length, 4, 'Each face should be a quad');
+    assert.strictEqual(face.vertices.length, 3, 'Each face should be a triangle');
   }
 });
 
@@ -380,7 +380,7 @@ test('BRepFace: NURBS surface tessellation', () => {
   const f = new BRepFace(surface, 'planar');
   const tess = f.tessellate(4, 4);
   assert.ok(tess, 'Should produce tessellation');
-  assert.strictEqual(tess.faces.length, 16, 'Should have 16 faces');
+  assert.strictEqual(tess.faces.length, 32, 'Should have 32 triangle faces');
 });
 
 test('BRep: construct, add, and query', () => {
@@ -636,7 +636,7 @@ test('BRep tessellateAll produces mesh data', () => {
   assert.strictEqual(results.length, 2, 'Should have 2 results');
   assert.strictEqual(results[0], null, 'First face has no surface');
   assert.ok(results[1], 'Second face has tessellation');
-  assert.strictEqual(results[1].faces.length, 16, 'Tessellation has 16 faces');
+  assert.strictEqual(results[1].faces.length, 32, 'Tessellation has 32 triangle faces');
 });
 
 // ============================================================

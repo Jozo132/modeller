@@ -654,20 +654,29 @@ function _tessellateFace(topoFace, curveSegments, surfaceSegments, faceGroup) {
   );
 
   if (hasBSplineSurface && surfaceType === SurfaceType.BSPLINE) {
-    // Parametric tessellation of the full NURBS surface patch
-    const tess = nurbsSurface.tessellate(surfaceSegments, surfaceSegments);
-    if (!sameSense) {
-      for (const f of tess.faces) {
-        f.vertices.reverse();
-        f.normal = { x: -f.normal.x, y: -f.normal.y, z: -f.normal.z };
-      }
+    // Boundary-based tessellation: triangulate the trimmed boundary polygon
+    // and compute per-vertex normals from the NURBS surface.
+    const faceNormal = _computeCurvedFaceNormal(surfaceNormal, nurbsSurface, polygon, sameSense);
+    const triangles = _triangulatePolygon(polygon, faceNormal);
+    for (const tri of triangles) {
+      const triNormals = tri.map(v => {
+        const uv = nurbsSurface.closestPointUV(v);
+        const n = nurbsSurface.normal(uv.u, uv.v);
+        return sameSense ? n : { x: -n.x, y: -n.y, z: -n.z };
+      });
+      const cn = {
+        x: (triNormals[0].x + triNormals[1].x + triNormals[2].x) / 3,
+        y: (triNormals[0].y + triNormals[1].y + triNormals[2].y) / 3,
+        z: (triNormals[0].z + triNormals[1].z + triNormals[2].z) / 3,
+      };
+      meshFaces.push({
+        vertices: [tri[0], tri[1], tri[2]],
+        normal: _normalize(cn),
+        isCurved: true,
+        faceGroup,
+      });
+      meshVertices.push(tri[0], tri[1], tri[2]);
     }
-    for (const f of tess.faces) {
-      f.isCurved = true;
-      f.faceGroup = faceGroup;
-    }
-    meshFaces = tess.faces;
-    meshVertices = tess.vertices;
   } else if (isCurvedFace && surfaceInfo) {
     // Try strip tessellation for curved faces with paired arc edges
     const stripResult = _tessellateStripFromEdgeBounds(polygon, edgeBounds, surfaceInfo, sameSense, faceGroup);
