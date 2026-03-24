@@ -27,13 +27,16 @@ void main() {
 const SOLID_FS = `#version 300 es
 precision mediump float;
 uniform vec4 uColor;
+uniform vec3 uViewDir;
 in vec3 vNormal;
 out vec4 fragColor;
 void main() {
+  vec3 n = normalize(vNormal);
   vec3 lightDir = normalize(vec3(0.3, 0.5, 0.8));
   float ambient = 0.3;
-  float diffuse = max(dot(normalize(vNormal), lightDir), 0.0) * 0.7;
-  fragColor = vec4(uColor.rgb * (ambient + diffuse), uColor.a);
+  float diffuse = max(dot(n, lightDir), 0.0) * 0.7;
+  float camLight = max(dot(n, uViewDir), 0.0) * 0.2;
+  fragColor = vec4(uColor.rgb * (ambient + diffuse + camLight), uColor.a);
 }`;
 
 // Program 2: diagnostic solid shader with purple/yellow hatch overlay
@@ -50,13 +53,16 @@ void main() {
 
 const DIAG_SOLID_FS = `#version 300 es
 precision mediump float;
+uniform vec3 uViewDir;
 in vec3 vNormal;
 out vec4 fragColor;
 void main() {
+  vec3 n = normalize(vNormal);
   vec3 lightDir = normalize(vec3(0.3, 0.5, 0.8));
   float ambient = 0.35;
-  float diffuse = abs(dot(normalize(vNormal), lightDir)) * 0.65;
-  float shade = ambient + diffuse;
+  float diffuse = abs(dot(n, lightDir)) * 0.65;
+  float camLight = max(dot(n, uViewDir), 0.0) * 0.2;
+  float shade = ambient + diffuse + camLight;
 
   vec3 purple = vec3(0.38, 0.10, 0.52);
   vec3 yellow = vec3(0.97, 0.90, 0.16);
@@ -137,7 +143,11 @@ export class WebGLExecutor {
       uMVP: gl.getUniformLocation(p, 'uMVP'),
       uColor: gl.getUniformLocation(p, 'uColor'),
       uPointSize: gl.getUniformLocation(p, 'uPointSize'),
+      uViewDir: gl.getUniformLocation(p, 'uViewDir'),
     }));
+
+    // Default view direction (will be updated each frame)
+    this._viewDir = [0, 0, 1];
 
     // Dynamic VBO shared across draw calls
     this.vbo = gl.createBuffer();
@@ -175,6 +185,12 @@ export class WebGLExecutor {
     this.height = height;
   }
 
+  setViewDir(x, y, z) {
+    this._viewDir[0] = x;
+    this._viewDir[1] = y;
+    this._viewDir[2] = z;
+  }
+
   drawTriangleBuffer(data, vertexCount, options) {
     const gl = this.gl;
     const previousBlend = gl.isEnabled(gl.BLEND);
@@ -199,6 +215,9 @@ export class WebGLExecutor {
     gl.useProgram(this.programs[0]);
     gl.uniformMatrix4fv(this.uniforms[0].uMVP, false, options.mvp);
     gl.uniform4f(this.uniforms[0].uColor, ...(options.color || [1, 1, 1, 1]));
+    if (this.uniforms[0].uViewDir) {
+      gl.uniform3fv(this.uniforms[0].uViewDir, this._viewDir);
+    }
 
     gl.bindVertexArray(this.vaoSolid);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo);
@@ -294,6 +313,9 @@ export class WebGLExecutor {
           pos++;
           this.currentProgram = idx;
           gl.useProgram(this.programs[idx]);
+          if (this.uniforms[idx].uViewDir) {
+            gl.uniform3fv(this.uniforms[idx].uViewDir, this._viewDir);
+          }
           break;
         }
 
