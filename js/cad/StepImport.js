@@ -858,8 +858,9 @@ function _buildNurbsSurface(resolved, surfaceRef) {
  *   [12] weights_grid (only for rational)
  */
 function _buildBSplineSurfaceNurbs(resolved, entity, rational) {
-  // Detect offset: complex entities have no name at [0], so args[0] is a number (degree).
-  // Non-complex entities have name (string) at [0].
+  // Detect offset: non-complex entities have a name string at args[0] (e.g. ''),
+  // while complex entities (merged from sub-entities) start with degree (a number).
+  // If args is empty or firstArg is unexpected, default to offset 0 (complex).
   const firstArg = entity.args[0];
   const offset = (typeof firstArg === 'string') ? 1 : 0;
 
@@ -1389,7 +1390,7 @@ function _computeVertexNormal(vertex, surfaceInfo, sameSense) {
       const rz = dz - axialDist * az;
       const radialLen = Math.sqrt(rx * rx + ry * ry + rz * rz);
       if (radialLen < 1e-14) {
-        n = { x: 0, y: 0, z: 1 };
+        n = { x: ax, y: ay, z: az }; // Fallback to torus axis for degenerate case
       } else {
         // Center of the minor circle
         const cx = surfaceInfo.origin.x + (rx / radialLen) * surfaceInfo.majorR;
