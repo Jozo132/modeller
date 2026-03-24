@@ -10,6 +10,8 @@ import { getSnappedPosition } from './snap.js';
 import { undo, redo, takeSnapshot, setPartManager } from './history.js';
 import { downloadDXF, downloadFacesDXF } from './dxf/export.js';
 import { openDXFFile, pickDXFFile, addDXFToScene, dxfBounds } from './dxf/import.js';
+import { importSTEP } from './cad/StepImport.js';
+import { exportSTEP } from './cad/StepExport.js';
 import { downloadCMOD, openCMODFile, projectFromCMOD, setCmodViewport, setCmodPartManager, setCmodRenderer, setCmodWorkspaceModeGetter, setCmodSessionStateGetter, setCmodScenesGetter } from './cmod.js';
 import { debug, info, warn, error } from './logger.js';
 import { loadProject, debouncedSave, clearSavedProject, setViewport, setPartManagerForPersist, setRendererForPersist, setWorkspaceModeGetter, setSessionStateGetter, setScenesGetter } from './persist.js';
@@ -1573,6 +1575,8 @@ class App {
           case 'save-cmod': downloadCMOD?.(); break;
           case 'import-json': document.getElementById('btn-open')?.click(); break;
           case 'export-json': document.getElementById('btn-save')?.click(); break;
+          case 'import-step': this._importSTEPFile(); break;
+          case 'export-step': this._exportSTEPFile(); break;
           case 'import-dxf': this._importDXFToSketch(); break;
           case 'export-dxf': this._exportDXFFromFaces(); break;
           // Dynamic examples are handled via event delegation below
@@ -5452,6 +5456,95 @@ class App {
     a.click();
     document.body.removeChild(a);
     this.setStatus('Scene gallery downloaded');
+  }
+
+  // ---------------------------------------------------------------------------
+  // STEP Import / Export
+  // ---------------------------------------------------------------------------
+
+  async _importSTEPFile() {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.step,.stp,.STEP,.STP';
+    const file = await new Promise(resolve => {
+      input.addEventListener('change', () => resolve(input.files[0] || null));
+      input.click();
+    });
+    if (!file) return;
+
+    this.setStatus(`Reading ${file.name}...`);
+    const stepData = await file.text();
+    if (!stepData || !stepData.includes('ISO-10303')) {
+      this.setStatus('Not a valid STEP file');
+      return;
+    }
+
+    // Ask for tessellation quality
+    const segStr = await showPrompt({
+      title: 'Import STEP',
+      message: `File: ${file.name} (${(file.size / 1024).toFixed(1)} KB)\n\nCurve tessellation segments:`,
+      defaultValue: '16',
+    });
+    if (segStr === null || segStr === undefined) return;
+    const curveSegments = Math.max(3, parseInt(segStr, 10) || 16);
+
+    // Ensure Part Design workspace is active
+    if (this._workspaceMode !== 'part') {
+      this._enterWorkspace('part');
+    }
+
+    try {
+      this.setStatus(`Importing ${file.name}...`);
+      const feature = this._partManager.importSTEP(stepData, {
+        name: file.name.replace(/\.(step|stp)$/i, ''),
+        curveSegments,
+      });
+      takeSnapshot();
+      this._updateNodeTree();
+      this._update3DView();
+      this._updateOperationButtons();
+      this._scheduleRender();
+      debouncedSave();
+      const featureResult = feature.execute({});
+      const nFaces = featureResult?.geometry?.faces?.length || 0;
+      this.setStatus(`Imported ${file.name} — ${nFaces} faces (segments: ${curveSegments})`);
+    } catch (err) {
+      error('STEP import failed:', err);
+      this.setStatus(`STEP import failed: ${err.message}`);
+    }
+  }
+
+  _exportSTEPFile() {
+    if (this._workspaceMode !== 'part') {
+      this.setStatus('Enter Part Design mode first');
+      return;
+    }
+    const part = this._partManager.getPart();
+    if (!part) {
+      this.setStatus('No part to export');
+      return;
+    }
+    // Try to get the exact topology body for STEP export
+    const finalGeo = part.getFinalGeometry();
+    const body = finalGeo?.topoBody || finalGeo?.solid?.topoBody;
+    if (!body) {
+      this.setStatus('No exact B-Rep topology available for STEP export');
+      return;
+    }
+    try {
+      const stepString = exportSTEP(body);
+      const blob = new Blob([stepString], { type: 'application/step' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = (part.name || 'part') + '.step';
+      a.click();
+      URL.revokeObjectURL(url);
+      this.setStatus('STEP file exported');
+    } catch (err) {
+      error('STEP export failed:', err);
+      this.setStatus(`STEP export failed: ${err.message}`);
+    }
   }
 
   _exportDXFFromFaces() {

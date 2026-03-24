@@ -99,9 +99,11 @@ function _parseEntities(stepString) {
     let type, argsStr;
 
     if (body.startsWith('(')) {
-      // Complex entity like (GEOMETRIC_REPRESENTATION_CONTEXT(3)...)
-      type = '__COMPLEX__';
-      argsStr = body;
+      // Complex entity like (BOUNDED_CURVE() B_SPLINE_CURVE(...) ...)
+      // Extract the most specific type and merge args from sub-entities
+      const complexResult = _parseComplexEntity(body);
+      type = complexResult.type;
+      argsStr = complexResult.argsStr;
     } else {
       const parenIdx = body.indexOf('(');
       if (parenIdx < 0) {
@@ -122,6 +124,109 @@ function _parseEntities(stepString) {
   }
 
   return entities;
+}
+
+/**
+ * Parse a complex STEP entity body like:
+ *   ( BOUNDED_CURVE() B_SPLINE_CURVE(degree,(cps),form,closed,self_int)
+ *     B_SPLINE_CURVE_WITH_KNOTS((mults),(knots),knot_spec)
+ *     RATIONAL_B_SPLINE_CURVE((weights)) ... )
+ * Returns the most specific type and merged args string.
+ */
+function _parseComplexEntity(body) {
+  // Strip outer parens
+  let inner = body.trim();
+  if (inner.startsWith('(')) inner = inner.substring(1);
+  if (inner.endsWith(')')) inner = inner.substring(0, inner.length - 1);
+  inner = inner.trim();
+
+  // Extract sub-entities: TYPE(args) patterns
+  const subEntities = [];
+  const regex = /([A-Z_][A-Z0-9_]*)\s*\(([^)]*)\)/g;
+  // We need a more careful parser for nested parens
+  let pos = 0;
+  while (pos < inner.length) {
+    // Skip whitespace
+    while (pos < inner.length && /\s/.test(inner[pos])) pos++;
+    if (pos >= inner.length) break;
+
+    // Read type name
+    const nameStart = pos;
+    while (pos < inner.length && /[A-Z0-9_]/i.test(inner[pos])) pos++;
+    const name = inner.substring(nameStart, pos).trim();
+    if (!name) { pos++; continue; }
+
+    // Skip whitespace
+    while (pos < inner.length && /\s/.test(inner[pos])) pos++;
+
+    // Expect '('
+    if (pos >= inner.length || inner[pos] !== '(') {
+      subEntities.push({ name, args: '' });
+      continue;
+    }
+    pos++; // skip '('
+
+    // Read args, handling nested parens
+    let depth = 1;
+    const argsStart = pos;
+    while (pos < inner.length && depth > 0) {
+      if (inner[pos] === '(') depth++;
+      else if (inner[pos] === ')') depth--;
+      if (depth > 0) pos++;
+    }
+    const args = inner.substring(argsStart, pos);
+    pos++; // skip closing ')'
+    subEntities.push({ name: name.toUpperCase(), args });
+  }
+
+  // Priority: pick the most specific type
+  // For curves: RATIONAL_B_SPLINE_CURVE > B_SPLINE_CURVE_WITH_KNOTS > B_SPLINE_CURVE
+  // For surfaces: RATIONAL_B_SPLINE_SURFACE > B_SPLINE_SURFACE_WITH_KNOTS > B_SPLINE_SURFACE
+  const typeMap = new Map(subEntities.map(s => [s.name, s.args]));
+
+  // Curves
+  if (typeMap.has('B_SPLINE_CURVE_WITH_KNOTS') || typeMap.has('B_SPLINE_CURVE')) {
+    // Merge args: B_SPLINE_CURVE provides (degree, cps, form, closed, self_int)
+    // B_SPLINE_CURVE_WITH_KNOTS adds (mults, knots, knot_spec)
+    // RATIONAL_B_SPLINE_CURVE adds (weights)
+    const baseArgs = typeMap.get('B_SPLINE_CURVE') || '';
+    const knotArgs = typeMap.get('B_SPLINE_CURVE_WITH_KNOTS') || '';
+    const rationalArgs = typeMap.get('RATIONAL_B_SPLINE_CURVE') || '';
+
+    // Merge: base_args, knot_args, rational_weights
+    let merged = baseArgs;
+    if (knotArgs) merged += ',' + knotArgs;
+    if (rationalArgs) merged += ',' + rationalArgs;
+
+    return {
+      type: rationalArgs ? 'RATIONAL_B_SPLINE_CURVE' : 'B_SPLINE_CURVE_WITH_KNOTS',
+      argsStr: merged,
+    };
+  }
+
+  // Surfaces
+  if (typeMap.has('B_SPLINE_SURFACE_WITH_KNOTS') || typeMap.has('B_SPLINE_SURFACE')) {
+    const baseArgs = typeMap.get('B_SPLINE_SURFACE') || '';
+    const knotArgs = typeMap.get('B_SPLINE_SURFACE_WITH_KNOTS') || '';
+    const rationalArgs = typeMap.get('RATIONAL_B_SPLINE_SURFACE') || '';
+
+    let merged = baseArgs;
+    if (knotArgs) merged += ',' + knotArgs;
+    if (rationalArgs) merged += ',' + rationalArgs;
+
+    return {
+      type: rationalArgs ? 'RATIONAL_B_SPLINE_SURFACE' : 'B_SPLINE_SURFACE_WITH_KNOTS',
+      argsStr: merged,
+    };
+  }
+
+  // Geometric representation context or other complex types
+  if (typeMap.has('GEOMETRIC_REPRESENTATION_CONTEXT')) {
+    return { type: 'GEOMETRIC_REPRESENTATION_CONTEXT', argsStr: typeMap.get('GEOMETRIC_REPRESENTATION_CONTEXT') || '' };
+  }
+
+  // Fallback: return __COMPLEX__ with the full body
+  return { type: '__COMPLEX__', argsStr: body };
 }
 
 /**
@@ -350,16 +455,22 @@ function _tessellateFace(resolved, faceId, curveSegments) {
 
   let polygon = outerLoop.polygon;
 
-  // Apply face sense
-  if (!sameSense) {
-    polygon = [...polygon].reverse();
+  // The polygon winding after applying boundSense is CCW when viewed from
+  // the face normal direction. The face normal is:
+  //   sameSense ? surfaceNormal : -surfaceNormal
+  // We do NOT reverse the polygon for sameSense — the bound orientation
+  // already accounts for the face normal direction.
+  let faceNormal;
+  if (surfaceNormal) {
+    faceNormal = sameSense
+      ? surfaceNormal
+      : { x: -surfaceNormal.x, y: -surfaceNormal.y, z: -surfaceNormal.z };
+  } else {
+    faceNormal = _computePolygonNormal(polygon);
   }
 
-  // Compute face normal from polygon
-  const normal = surfaceNormal || _computePolygonNormal(polygon);
-
   // Triangulate the polygon
-  const triangles = _triangulatePolygon(polygon, normal);
+  const triangles = _triangulatePolygon(polygon, faceNormal);
 
   const vertices = [];
   const faces = [];
@@ -368,7 +479,7 @@ function _tessellateFace(resolved, faceId, curveSegments) {
     vertices.push(tri[0], tri[1], tri[2]);
     faces.push({
       vertices: [tri[0], tri[1], tri[2]],
-      normal: { ...normal },
+      normal: { ...faceNormal },
     });
   }
 
@@ -504,6 +615,9 @@ function _sampleCurvePoints(resolved, curveRef, startPt, endPt, segments) {
 
     case 'B_SPLINE_CURVE_WITH_KNOTS':
       return _sampleBSplineCurve(resolved, geomCurve, startPt, endPt, segments);
+
+    case 'RATIONAL_B_SPLINE_CURVE':
+      return _sampleRationalBSplineCurve(resolved, geomCurve, startPt, endPt, segments);
 
     default:
       return null; // Unknown: treat as straight
@@ -657,6 +771,64 @@ function _sampleBSplineCurve(resolved, entity, startPt, endPt, segments) {
 }
 
 /**
+ * Sample points along a RATIONAL_B_SPLINE_CURVE (NURBS).
+ * Complex entity with merged args:
+ *   [name, degree, cp_list, form, closed, self_int, mults, knots, knot_spec, weights]
+ */
+function _sampleRationalBSplineCurve(resolved, entity, startPt, endPt, segments) {
+  // args: [name, degree, cp_list, form, closed, self_int, mults, knots, knot_spec, weights]
+  const degree = Number(entity.args[1]) || 1;
+  const cpRefs = entity.args[2];
+  const knotMults = entity.args[6];
+  const knotVals = entity.args[7];
+  // weights is the last array arg (index 9 for rational)
+  const weights = entity.args[9];
+
+  if (!Array.isArray(cpRefs) || !Array.isArray(knotMults) || !Array.isArray(knotVals)) {
+    return null;
+  }
+
+  const controlPoints = [];
+  for (const cpRef of cpRefs) {
+    const pt = _getCartesianPoint(resolved, cpRef);
+    if (!pt) return null;
+    controlPoints.push(pt);
+  }
+
+  const knots = [];
+  for (let i = 0; i < knotVals.length; i++) {
+    const val = Number(knotVals[i]);
+    const mult = Number(knotMults[i]) || 1;
+    for (let m = 0; m < mult; m++) knots.push(val);
+  }
+
+  // Parse weights (default to 1.0 if not available)
+  const w = [];
+  if (Array.isArray(weights)) {
+    for (const wv of weights) w.push(Number(wv) || 1);
+  }
+  // If no valid weights or wrong count, fall back to non-rational
+  if (w.length !== controlPoints.length) {
+    return _sampleBSplineCurve(resolved, entity, startPt, endPt, segments);
+  }
+
+  const tMin = knots[degree];
+  const tMax = knots[knots.length - 1 - degree];
+  if (tMin >= tMax) return null;
+
+  const numPts = Math.max(segments, 4);
+  const points = [];
+
+  for (let i = 0; i <= numPts; i++) {
+    const t = tMin + (tMax - tMin) * (i / numPts);
+    const pt = _evaluateRationalBSpline(degree, knots, controlPoints, w, t);
+    points.push(pt);
+  }
+
+  return points;
+}
+
+/**
  * Evaluate a B-spline curve at parameter t using De Boor's algorithm.
  */
 function _evaluateBSpline(degree, knots, controlPoints, t) {
@@ -694,6 +866,51 @@ function _evaluateBSpline(degree, knots, controlPoints, t) {
   }
 
   return d[degree];
+}
+
+/**
+ * Evaluate a rational B-spline (NURBS) curve at parameter t.
+ * Uses the homogeneous De Boor algorithm.
+ */
+function _evaluateRationalBSpline(degree, knots, controlPoints, weights, t) {
+  const n = controlPoints.length - 1;
+
+  let k = degree;
+  for (let i = degree; i <= n; i++) {
+    if (t >= knots[i] && t < knots[i + 1]) { k = i; break; }
+  }
+  if (t >= knots[n + 1]) k = n;
+
+  // Lift to homogeneous coordinates: (w*x, w*y, w*z, w)
+  const d = [];
+  for (let j = 0; j <= degree; j++) {
+    const idx = Math.min(Math.max(k - degree + j, 0), n);
+    const w = weights[idx];
+    d.push({
+      x: controlPoints[idx].x * w,
+      y: controlPoints[idx].y * w,
+      z: controlPoints[idx].z * w,
+      w,
+    });
+  }
+
+  for (let r = 1; r <= degree; r++) {
+    for (let j = degree; j >= r; j--) {
+      const i = k - degree + j;
+      const denom = knots[i + degree - r + 1] - knots[i];
+      const alpha = denom > 1e-14 ? (t - knots[i]) / denom : 0;
+      d[j] = {
+        x: (1 - alpha) * d[j - 1].x + alpha * d[j].x,
+        y: (1 - alpha) * d[j - 1].y + alpha * d[j].y,
+        z: (1 - alpha) * d[j - 1].z + alpha * d[j].z,
+        w: (1 - alpha) * d[j - 1].w + alpha * d[j].w,
+      };
+    }
+  }
+
+  const result = d[degree];
+  const invW = result.w > 1e-14 ? 1 / result.w : 0;
+  return { x: result.x * invW, y: result.y * invW, z: result.z * invW };
 }
 
 // =====================================================================

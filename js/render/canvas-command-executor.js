@@ -56,6 +56,10 @@ export class CanvasCommandExecutor {
     this.canvas.height = height;
   }
 
+  setViewDir(_x, _y, _z) {
+    // No-op for canvas executor (lighting not used in 2D canvas rendering)
+  }
+
   clear(color = [0.93, 0.95, 0.97, 1]) {
     const ctx = this.ctx;
     ctx.save();
