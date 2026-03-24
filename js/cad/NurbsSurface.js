@@ -234,6 +234,8 @@ export class NurbsSurface {
     }
 
     // Newton-Raphson refinement
+    const CONVERGE_TOL2 = 1e-24;  // squared distance convergence threshold
+    const SINGULAR_TOL = 1e-30;   // Jacobian determinant singularity threshold
     const uRange = this.uMax - this.uMin;
     const vRange = this.vMax - this.vMin;
     const eps = 1e-6;
@@ -242,7 +244,7 @@ export class NurbsSurface {
       const s = this.evaluate(bestU, bestV);
       const rx = s.x - px, ry = s.y - py, rz = s.z - pz;
 
-      if (rx * rx + ry * ry + rz * rz < 1e-24) break;
+      if (rx * rx + ry * ry + rz * rz < CONVERGE_TOL2) break;
 
       // Partial derivatives via central differences
       const uLo = Math.max(this.uMin, bestU - eps * uRange);
@@ -268,7 +270,7 @@ export class NurbsSurface {
       const rv = Sv.x * rx + Sv.y * ry + Sv.z * rz;
 
       const det = a * d - b * b;
-      if (Math.abs(det) < 1e-30) break;
+      if (Math.abs(det) < SINGULAR_TOL) break;
 
       const du = -(d * ru - b * rv) / det;
       const dv = -(a * rv - b * ru) / det;
