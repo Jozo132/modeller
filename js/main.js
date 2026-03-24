@@ -367,45 +367,51 @@ class App {
    * Uses rayToPlane instead of 2D viewport screenToWorld, with full
    * snap, freehand, and ortho constraint support matching 2D behaviour.
    */
+  /** Process the latest stored sketch pointer — compute snapped position and forward to active tool. */
+  _processSketchPointer() {
+    if (!this._lastPointer) return;
+    const { sx, sy, ctrlKey } = this._lastPointer;
+
+    let world, snap;
+    const sketchVP = this._getSketchViewport();
+    if (this.activeTool.freehand) {
+      world = this._screenToSketchWorld(sx, sy);
+      snap = null;
+    } else if (sketchVP) {
+      const basePoint = this.activeTool._startX !== undefined && this.activeTool.step > 0
+        ? { x: this.activeTool._startX, y: this.activeTool._startY }
+        : null;
+      const result = getSnappedPosition(
+        sx, sy, sketchVP, basePoint,
+        { ignoreGridSnap: !!ctrlKey }
+      );
+      world = result.world;
+      snap = result.snap;
+    } else {
+      world = this._screenToSketchWorld(sx, sy);
+      snap = null;
+    }
+    if (!world) return;
+
+    this.renderer.cursorWorld = world;
+    this.renderer.snapPoint = snap;
+
+    const display = snap || world;
+    document.getElementById('status-coords').textContent =
+      `X: ${display.x.toFixed(2)}  Y: ${display.y.toFixed(2)}`;
+
+    this.activeTool.onMouseMove(world.x, world.y, sx, sy);
+    this._updateLeftPanelHighlights();
+  }
+
   _scheduleSketchPointerProcessing() {
     if (this._pointerFramePending || !this._lastPointer) return;
     this._pointerFramePending = true;
     requestAnimationFrame(() => {
       this._pointerFramePending = false;
-      if (!this._lastPointer) return;
-      const { sx, sy, ctrlKey } = this._lastPointer;
       const t0 = performance.now();
 
-      let world, snap;
-      const sketchVP = this._getSketchViewport();
-      if (this.activeTool.freehand) {
-        world = this._screenToSketchWorld(sx, sy);
-        snap = null;
-      } else if (sketchVP) {
-        const basePoint = this.activeTool._startX !== undefined && this.activeTool.step > 0
-          ? { x: this.activeTool._startX, y: this.activeTool._startY }
-          : null;
-        const result = getSnappedPosition(
-          sx, sy, sketchVP, basePoint,
-          { ignoreGridSnap: !!ctrlKey }
-        );
-        world = result.world;
-        snap = result.snap;
-      } else {
-        world = this._screenToSketchWorld(sx, sy);
-        snap = null;
-      }
-      if (!world) return;
-
-      this.renderer.cursorWorld = world;
-      this.renderer.snapPoint = snap;
-
-      const display = snap || world;
-      document.getElementById('status-coords').textContent =
-        `X: ${display.x.toFixed(2)}  Y: ${display.y.toFixed(2)}`;
-
-      this.activeTool.onMouseMove(world.x, world.y, sx, sy);
-      this._updateLeftPanelHighlights();
+      this._processSketchPointer();
 
       const dt = performance.now() - t0;
       if (dt > 12) {
@@ -413,6 +419,13 @@ class App {
       }
       this._scheduleRender();
     });
+  }
+
+  /** Flush any pending sketch pointer so the tool sees the latest position before mouseUp. */
+  _flushSketchPointer() {
+    if (!this._pointerFramePending) return;
+    this._pointerFramePending = false;
+    this._processSketchPointer();
   }
 
   // --- Tool switching ---
@@ -1099,6 +1112,12 @@ class App {
 
       if (this.activeTool.onMouseUp) {
         if (this._sketchingOnPlane) {
+          // Flush any pending sketch pointer so the tool sees the latest
+          // snapped position before processing mouseUp.  Without this,
+          // deferred requestAnimationFrame-based mousemove processing can
+          // leave the tool with stale drag-point positions and snap
+          // candidates, corrupting neighboring vertices on release.
+          this._flushSketchPointer();
           const world = this._screenToSketchWorld(sx, sy);
           if (world) this.activeTool.onMouseUp(world.x, world.y, e);
         } else {

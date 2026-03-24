@@ -64,6 +64,20 @@ export function union(scene, ptA, ptB) {
     if (a.center === ptB) a.center = ptA;
   }
 
+  // Remove degenerate segments (both endpoints now the same point)
+  const degenerateSegs = scene.segments.filter(s => s.p1 === s.p2);
+  if (degenerateSegs.length > 0) {
+    const degSet = new Set(degenerateSegs);
+    scene.segments = scene.segments.filter(s => !degSet.has(s));
+    // Remove constraints that referenced degenerate segments
+    scene.constraints = scene.constraints.filter(c => {
+      if (c.seg && degSet.has(c.seg)) return false;
+      if (c.segA && degSet.has(c.segA)) return false;
+      if (c.segB && degSet.has(c.segB)) return false;
+      return true;
+    });
+  }
+
   // Re-wire constraints from ptB → ptA, drop self-referencing coincidents
   for (const c of scene.constraints) {
     if (c.ptA === ptB) c.ptA = ptA;
