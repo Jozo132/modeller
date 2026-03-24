@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { writeCmodPng } from '../js/render/index.js';
+import { writeCmodPng, writeCmodGalleryPng } from '../js/render/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -21,6 +21,10 @@ Options:
   --phi <rad>          Override orbit phi
   --radius <units>     Override orbit radius
   --target <x,y,z>     Override orbit target
+  --gallery            Render all scenes as a gallery grid
+  --cell-width <px>    Gallery cell width. Default: 320
+  --cell-height <px>   Gallery cell height. Default: 240
+  --columns <n>        Gallery columns. Default: auto
 `);
 }
 
@@ -67,6 +71,18 @@ function parseArgs(argv) {
         break;
       case '--target':
         options.target = parseTarget(argv[++index]);
+        break;
+      case '--gallery':
+        options.gallery = true;
+        break;
+      case '--cell-width':
+        options.cellWidth = Number(argv[++index]);
+        break;
+      case '--cell-height':
+        options.cellHeight = Number(argv[++index]);
+        break;
+      case '--columns':
+        options.columns = Number(argv[++index]);
         break;
       default:
         throw new Error(`Unknown argument: ${arg}`);
@@ -140,6 +156,29 @@ export async function renderCmodScreenshot(options) {
   };
 }
 
+export async function renderCmodGalleryScreenshot(options) {
+  if (!options?.input) throw new Error('Missing --input');
+  if (!options?.output) throw new Error('Missing --output');
+
+  const inputPath = path.resolve(REPO_ROOT, options.input);
+  const outputPath = path.resolve(REPO_ROOT, options.output);
+  const cmod = await loadInputModel(inputPath);
+
+  const result = await writeCmodGalleryPng({
+    cmod,
+    cellWidth: options.cellWidth || 320,
+    cellHeight: options.cellHeight || 240,
+    columns: options.columns || undefined,
+    outputPath,
+  });
+
+  return {
+    outputPath,
+    sceneCount: result.sceneCount,
+    grid: result.grid,
+  };
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (options.help) {
@@ -147,10 +186,15 @@ async function main() {
     return;
   }
 
-  const result = await renderCmodScreenshot(options);
-  console.log(`Rendered ${path.relative(REPO_ROOT, result.outputPath)} (${result.viewport.width}x${result.viewport.height})`);
-  if (result.orbit) {
-    console.log(`Orbit theta=${result.orbit.theta} phi=${result.orbit.phi} radius=${result.orbit.radius}`);
+  if (options.gallery) {
+    const result = await renderCmodGalleryScreenshot(options);
+    console.log(`Gallery rendered ${path.relative(REPO_ROOT, result.outputPath)} (${result.grid.cols}x${result.grid.rows} cells, ${result.sceneCount} scenes)`);
+  } else {
+    const result = await renderCmodScreenshot(options);
+    console.log(`Rendered ${path.relative(REPO_ROOT, result.outputPath)} (${result.viewport.width}x${result.viewport.height})`);
+    if (result.orbit) {
+      console.log(`Orbit theta=${result.orbit.theta} phi=${result.orbit.phi} radius=${result.orbit.radius}`);
+    }
   }
 }
 

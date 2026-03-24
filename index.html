@@ -84,6 +84,11 @@
         <button data-action="tool-fillet">Fillet</button>
         <hr>
         <button id="menu-toggle-diagnostic-hatch" data-action="toggle-diagnostic-hatch">Show Inner Face Hatch</button>
+        <hr>
+        <button data-action="scene-manager">Scene Manager</button>
+        <hr>
+        <button id="menu-toggle-recording-bar" data-action="toggle-recording-bar">Show Recording Bar</button>
+        <button id="menu-toggle-command-bar" data-action="toggle-command-bar">Show Command Bar</button>
       </div>
     </div>
     <div class="menu-item" data-menu="help">
@@ -228,6 +233,19 @@
       <h3>Variables</h3>
       <div id="variables-list"></div>
       <button id="btn-add-variable" title="Add Variable">+ Variable</button>
+    </div>
+    <!-- Scene Manager Section (inside left panel) -->
+    <hr id="scene-manager-sep" style="display:none" />
+    <div id="scene-manager-panel" style="display:none">
+      <h3>Scenes <button id="scene-manager-close" class="lp-toggle-all" title="Close Scene Manager">&times;</button></h3>
+      <div class="scene-manager-actions">
+        <button id="scene-add" class="scene-manager-btn" title="Save current view as a new scene">+ Add Scene</button>
+        <button id="scene-download-image" class="scene-manager-btn accent" title="Download current view as PNG">&#128247; Download</button>
+        <button id="scene-gallery" class="scene-manager-btn" title="Preview all scenes in a grid">&#128444; Gallery</button>
+      </div>
+      <div id="scene-list" class="scene-list">
+        <p class="hint">No scenes saved yet</p>
+      </div>
     </div>
   </div>
 

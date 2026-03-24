@@ -554,7 +554,7 @@ export class WasmRenderer {
 
   /**
    * Save the current orbit camera state so it can be restored later.
-   * @returns {{theta: number, phi: number, radius: number, target: {x:number,y:number,z:number}}}
+   * @returns {{theta: number, phi: number, radius: number, target: {x:number,y:number,z:number}, fovDegrees: number, ortho3D: boolean}}
    */
   saveOrbitState() {
     return {
@@ -563,18 +563,20 @@ export class WasmRenderer {
       radius: this._orbitRadius,
       target: { ...this._orbitTarget },
       fovDegrees: this._fovDegrees,
+      ortho3D: this._ortho3D,
     };
   }
 
   /**
    * Restore a previously saved orbit camera state.
-   * @param {{theta: number, phi: number, radius: number, target: {x:number,y:number,z:number}}} state
+   * @param {{theta: number, phi: number, radius: number, target: {x:number,y:number,z:number}, fovDegrees?: number, ortho3D?: boolean}} state
    */
   restoreOrbitState(state) {
     if (!state) return;
     this._orbitTheta = state.theta;
     this._orbitPhi = state.phi;
     this._orbitTarget = { ...state.target };
+    if (state.ortho3D != null) this.setOrtho3D(state.ortho3D);
     if (state.fovDegrees != null) {
       // Set FOV first (which adjusts radius via compensation),
       // then override radius with the exact saved value.
@@ -1079,6 +1081,8 @@ export class WasmRenderer {
       phi: this._orbitPhi,
       radius: this._orbitRadius,
       target: { ...this._orbitTarget },
+      fovDegrees: this._fovDegrees,
+      ortho3D: this._ortho3D,
     };
   }
 
@@ -1089,6 +1093,10 @@ export class WasmRenderer {
     if (s.phi != null) this._orbitPhi = s.phi;
     if (s.radius != null) this._orbitRadius = s.radius;
     if (s.target) this._orbitTarget = { x: s.target.x || 0, y: s.target.y || 0, z: s.target.z || 0 };
+    if (s.fovDegrees != null) this.setFOV(s.fovDegrees);
+    if (s.ortho3D != null) this.setOrtho3D(s.ortho3D);
+    // Override radius again after setFOV (which adjusts radius for compensation)
+    if (s.radius != null) this._orbitRadius = s.radius;
     this._orbitDirty = true;
   }
 
@@ -3217,6 +3225,16 @@ export class WasmRenderer {
   }
 
   /**
+   * Reset to the "Home" camera: isometric perspective view, zoom to extents.
+   * Restores default FOV (45°) + perspective projection + iso angles.
+   */
+  homeCamera() {
+    this.setFOV(45);
+    this.setOrtho3D(false);
+    this.fitToView();
+  }
+
+  /**
    * Convert screen coordinates to world coordinates on the XY plane.
    */
   screenToWorld(screenX, screenY) {
@@ -3228,6 +3246,23 @@ export class WasmRenderer {
     const wx = bounds.left + (ndcX + 1) * 0.5 * (bounds.right - bounds.left);
     const wy = bounds.bottom + (ndcY + 1) * 0.5 * (bounds.top - bounds.bottom);
     return { x: wx, y: wy };
+  }
+
+  /**
+   * Capture the current 3D viewport as a PNG data URL.
+   * Composites the WebGL canvas with the 2D overlay canvas.
+   * @returns {string} PNG data URL
+   */
+  captureImage() {
+    const w = this.canvas.width;
+    const h = this.canvas.height;
+    const dest = document.createElement('canvas');
+    dest.width = w;
+    dest.height = h;
+    const ctx = dest.getContext('2d');
+    ctx.drawImage(this.canvas, 0, 0);
+    ctx.drawImage(this.overlayCanvas, 0, 0, w, h);
+    return dest.toDataURL('image/png');
   }
 
   dispose() {

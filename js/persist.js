@@ -12,6 +12,7 @@ let _partManager = null;
 let _renderer3d = null;
 let _getWorkspaceMode = null;
 let _getSessionState = null;
+let _getScenes = null;
 
 /** Register the viewport instance for persistence. */
 export function setViewport(vp) { _viewport = vp; }
@@ -27,6 +28,9 @@ export function setWorkspaceModeGetter(fn) { _getWorkspaceMode = fn; }
 
 /** Register a callback that returns transient session state needed for restore. */
 export function setSessionStateGetter(fn) { _getSessionState = fn; }
+
+/** Register a callback that returns named camera scenes. */
+export function setScenesGetter(fn) { _getScenes = fn; }
 
 /**
  * Serialize the full project (scene, layers, settings, part, orbit) to a plain object.
@@ -66,6 +70,11 @@ function projectToJSON() {
   // Transient UI/session state
   if (_getSessionState) {
     json.sessionState = _getSessionState();
+  }
+
+  // Named camera scenes
+  if (_getScenes) {
+    json.scenes = _getScenes();
   }
 
   return json;
@@ -117,6 +126,7 @@ function projectFromJSON(data) {
     hasViewport,
     part: data.part || null,
     orbit: data.orbit || null,
+    scenes: Array.isArray(data.scenes) ? data.scenes : [],
     workspaceMode: data.workspaceMode || null,
     sessionState: data.sessionState || null,
   };

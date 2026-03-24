@@ -9,9 +9,9 @@ import { getSnappedPosition } from './snap.js';
 import { undo, redo, takeSnapshot, setPartManager } from './history.js';
 import { downloadDXF, downloadFacesDXF } from './dxf/export.js';
 import { openDXFFile, pickDXFFile, addDXFToScene, dxfBounds } from './dxf/import.js';
-import { downloadCMOD, openCMODFile, projectFromCMOD, setCmodViewport, setCmodPartManager, setCmodRenderer, setCmodWorkspaceModeGetter, setCmodSessionStateGetter } from './cmod.js';
+import { downloadCMOD, openCMODFile, projectFromCMOD, setCmodViewport, setCmodPartManager, setCmodRenderer, setCmodWorkspaceModeGetter, setCmodSessionStateGetter, setCmodScenesGetter } from './cmod.js';
 import { debug, info, warn, error } from './logger.js';
-import { loadProject, debouncedSave, clearSavedProject, setViewport, setPartManagerForPersist, setRendererForPersist, setWorkspaceModeGetter, setSessionStateGetter } from './persist.js';
+import { loadProject, debouncedSave, clearSavedProject, setViewport, setPartManagerForPersist, setRendererForPersist, setWorkspaceModeGetter, setSessionStateGetter, setScenesGetter } from './persist.js';
 import { showConfirm, showPrompt, showDimensionInput, isModalOpen } from './ui/popup.js';
 import { DxfExportPanel } from './ui/dxfExportPanel.js';
 import { showContextMenu, closeContextMenu, isContextMenuOpen } from './ui/contextMenu.js';
@@ -39,6 +39,8 @@ const DIAGNOSTIC_HATCH_STORAGE_KEY = 'cad-modeller-diagnostic-backface-hatch';
 const DIAGNOSTIC_HATCH_MODE_AUTO = 'auto';
 const DIAGNOSTIC_HATCH_MODE_ON = 'on';
 const DIAGNOSTIC_HATCH_MODE_OFF = 'off';
+const RECORDING_BAR_VISIBLE_KEY = 'cad-modeller-recording-bar-visible';
+const COMMAND_BAR_VISIBLE_KEY = 'cad-modeller-command-bar-visible';
 
 class App {
   constructor() {
@@ -64,6 +66,10 @@ class App {
     this._extrudeArrowHoveredState = false;
     this._diagnosticBackfaceHatchMode = this._loadDiagnosticBackfaceHatchMode();
     this._diagnosticBackfaceHatchAuto = false;
+    this._scenes = []; // named camera presets for repeatable renders
+    this._sceneManagerOpen = false;
+    this._recordingBarVisible = localStorage.getItem(RECORDING_BAR_VISIBLE_KEY) === 'true';
+    this._commandBarVisible = localStorage.getItem(COMMAND_BAR_VISIBLE_KEY) === 'true';
 
     /** Returns true when any feature-editing mode is active (sketch, extrude, chamfer, fillet) */
     this._isEditingFeature = () => !!(this._sketchingOnPlane || this._extrudeMode || this._chamferMode || this._filletMode);
@@ -159,7 +165,9 @@ class App {
     this._bindExitSketchButton();
     this._bindExitExtrudeButton();
     this._bindRecordingControls();
+    this._bindSceneManagerEvents();
     this._syncDiagnosticHatchUI();
+    this._applyBarVisibility();
 
     // Register viewport, part manager, renderer, and workspace mode for persistence
     setViewport(this.viewport);
@@ -167,6 +175,7 @@ class App {
     setRendererForPersist(this._renderer3d);
     setWorkspaceModeGetter(() => this._workspaceMode);
     setSessionStateGetter(() => this._serializeSessionState());
+    setScenesGetter(() => this._scenes);
 
     // Register the same singletons for .cmod export/import
     setCmodViewport(this.viewport);
@@ -174,6 +183,7 @@ class App {
     setCmodRenderer(this._renderer3d);
     setCmodWorkspaceModeGetter(() => this._workspaceMode);
     setCmodSessionStateGetter(() => this._serializeSessionState());
+    setCmodScenesGetter(() => this._scenes);
 
     this._setStartupLoading(true, 'Loading renderer and project state...', 20);
 
@@ -197,6 +207,8 @@ class App {
         if (loaded.orbit && this._renderer3d && !this._sketchingOnPlane) {
           this._renderer3d.setOrbitState(loaded.orbit);
         }
+        // Restore named scenes
+        if (loaded.scenes) this._scenes = loaded.scenes;
         this._setStartupLoading(true, 'Preparing part workspace...', 72);
         const readyPromise = this._renderer3d && this._renderer3d._loadPromise
           ? this._renderer3d._loadPromise
@@ -991,6 +1003,9 @@ class App {
         return;
       }
 
+      // Scene manager active: suppress all part hover/pick interactions
+      if (this._sceneManagerOpen) return;
+
       // Plane hover highlight in Part mode 3D view
       if (this._workspaceMode === 'part' && this._renderer3d) {
         // Disable hover highlighting while rotating/panning (mouseDown)
@@ -1136,6 +1151,8 @@ class App {
 
       // In Part mode 3D view: handle sketch/face/geometry picking and plane clicking
       if (this._workspaceMode === 'part' && this._renderer3d) {
+        // Scene manager active: suppress all part picking interactions
+        if (this._sceneManagerOpen) return;
         // Edge/face picking for chamfer/fillet mode
         if ((this._chamferMode || this._filletMode) && this._renderer3d._edgeSelectionMode) {
           const edgeHit = this._renderer3d.pickEdge(e.clientX, e.clientY);
@@ -1551,6 +1568,9 @@ class App {
           case 'tool-chamfer': document.getElementById('btn-chamfer')?.click(); break;
           case 'tool-fillet': document.getElementById('btn-fillet')?.click(); break;
           case 'toggle-diagnostic-hatch': this._toggleDiagnosticBackfaceHatchPref(); break;
+          case 'scene-manager': this._toggleSceneManager(); break;
+          case 'toggle-recording-bar': this._toggleRecordingBar(); break;
+          case 'toggle-command-bar': this._toggleCommandBar(); break;
           case 'help-shortcuts': this.setStatus('Shortcuts: L=Line, R=Rect, C=Circle, Esc=Select, Del=Delete, Ctrl+Z=Undo, Ctrl+Y=Redo, F=Fit'); break;
           case 'help-about': this.setStatus('CAD Modeller v1.0.0 — Parametric 2D/3D CAD'); break;
         }
@@ -1885,6 +1905,12 @@ class App {
         case '0':
           this._orientToNormalView();
           break;
+        case 'Home':
+          if (this._workspaceMode === 'part' && this._renderer3d) {
+            this._renderer3d.homeCamera();
+            this._scheduleRender();
+          }
+          break;
         case 'q': case 'Q': {
           // If primitives are selected, toggle their construction flag
           const sel = state.selectedEntities.filter(e => e.type === 'segment' || e.type === 'circle' || e.type === 'arc');
@@ -1923,6 +1949,14 @@ class App {
           radius: parseFloat(args[2]),
           target: { x: parseFloat(args[3]), y: parseFloat(args[4]), z: parseFloat(args[5]) },
         });
+        this._scheduleRender();
+      }
+      return;
+    }
+
+    if (command === 'camera.home') {
+      if (this._renderer3d) {
+        this._renderer3d.homeCamera();
         this._scheduleRender();
       }
       return;
@@ -4736,6 +4770,55 @@ class App {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Recording Bar & Command Bar visibility toggles (localStorage-backed)
+  // ---------------------------------------------------------------------------
+
+  _applyBarVisibility() {
+    const recBar = document.getElementById('recording-bar');
+    const cmdBar = document.getElementById('command-line');
+    if (recBar) recBar.style.display = this._recordingBarVisible ? '' : 'none';
+    if (cmdBar) cmdBar.style.display = this._commandBarVisible ? '' : 'none';
+    this._syncBarToggleUI();
+    this._recalcBottomOffsets();
+  }
+
+  _recalcBottomOffsets() {
+    // Bottom layout stack (from bottom): command-line 28px → recording-bar 32px → status-bar 28px
+    const cmdH = this._commandBarVisible ? 28 : 0;
+    const recH = this._recordingBarVisible ? 32 : 0;
+    const statusH = 28; // always visible
+
+    const cmdBar = document.getElementById('command-line');
+    const recBar = document.getElementById('recording-bar');
+    const statusBar = document.getElementById('status-bar');
+
+    if (cmdBar) cmdBar.style.bottom = '0px';
+    if (recBar) recBar.style.bottom = cmdH + 'px';
+    if (statusBar) statusBar.style.bottom = (cmdH + recH) + 'px';
+
+    document.documentElement.style.setProperty('--bottom-offset', (cmdH + recH + statusH) + 'px');
+  }
+
+  _toggleRecordingBar() {
+    this._recordingBarVisible = !this._recordingBarVisible;
+    try { localStorage.setItem(RECORDING_BAR_VISIBLE_KEY, this._recordingBarVisible ? 'true' : 'false'); } catch {}
+    this._applyBarVisibility();
+  }
+
+  _toggleCommandBar() {
+    this._commandBarVisible = !this._commandBarVisible;
+    try { localStorage.setItem(COMMAND_BAR_VISIBLE_KEY, this._commandBarVisible ? 'true' : 'false'); } catch {}
+    this._applyBarVisibility();
+  }
+
+  _syncBarToggleUI() {
+    const recBtn = document.getElementById('menu-toggle-recording-bar');
+    const cmdBtn = document.getElementById('menu-toggle-command-bar');
+    if (recBtn) recBtn.textContent = this._recordingBarVisible ? 'Hide Recording Bar' : 'Show Recording Bar';
+    if (cmdBtn) cmdBtn.textContent = this._commandBarVisible ? 'Hide Command Bar' : 'Show Command Bar';
+  }
+
   _loadDiagnosticBackfaceHatchMode() {
     try {
       const stored = localStorage.getItem(DIAGNOSTIC_HATCH_STORAGE_KEY);
@@ -4921,6 +5004,8 @@ class App {
     this._hoveredPlane = null;
     this._activeSketchPlane = null;
     this._activeSketchPlaneDef = null;
+    this._scenes = [];
+    if (this._sceneManagerOpen) this._renderSceneList();
     this._editingSketchFeatureId = null;
     this._lastSketchFeatureId = null;
     this._savedOrbitState = null;
@@ -4987,6 +5072,10 @@ class App {
       this._renderer3d.setOrbitState(result.orbit);
     }
 
+    // Restore named scenes
+    this._scenes = result.scenes || [];
+    if (this._sceneManagerOpen) this._renderSceneList();
+
     // Rebuild UI
     this._rebuildLayersPanel();
     this._rebuildLeftPanel();
@@ -5035,6 +5124,8 @@ class App {
         if (result.sessionState) this._restoreSessionState(result.sessionState);
       }
       if (result.orbit && this._renderer3d && !this._sketchingOnPlane) this._renderer3d.setOrbitState(result.orbit);
+      this._scenes = result.scenes || [];
+      if (this._sceneManagerOpen) this._renderSceneList();
 
       this._rebuildLayersPanel();
       this._rebuildLeftPanel();
@@ -5050,6 +5141,291 @@ class App {
     } catch (err) {
       this.setStatus(`Failed to load example: ${err.message}`);
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Scene Manager
+  // ---------------------------------------------------------------------------
+
+  _bindSceneManagerEvents() {
+    const closeBtn = document.getElementById('scene-manager-close');
+    const addBtn = document.getElementById('scene-add');
+    const downloadBtn = document.getElementById('scene-download-image');
+    const galleryBtn = document.getElementById('scene-gallery');
+    if (closeBtn) closeBtn.addEventListener('click', () => this._toggleSceneManager());
+    if (addBtn) addBtn.addEventListener('click', () => this._addScene());
+    if (downloadBtn) downloadBtn.addEventListener('click', () => this._downloadViewportImage());
+    if (galleryBtn) galleryBtn.addEventListener('click', () => this.showSceneGallery());
+  }
+
+  _toggleSceneManager() {
+    const panel = document.getElementById('scene-manager-panel');
+    const sep = document.getElementById('scene-manager-sep');
+    if (!panel) return;
+    this._sceneManagerOpen = !this._sceneManagerOpen;
+    const show = this._sceneManagerOpen;
+    panel.style.display = show ? '' : 'none';
+    if (sep) sep.style.display = show ? '' : 'none';
+    document.body.classList.toggle('scene-manager-active', show);
+    if (show) {
+      // Clear all selection and hover highlights
+      this._selectedFaces.clear();
+      this._selectedPlane = null;
+      if (this._renderer3d) {
+        this._renderer3d.clearFaceSelection();
+        this._renderer3d.clearEdgeSelection();
+        this._renderer3d.setHoveredFace(-1);
+        this._renderer3d.setHoveredEdge(-1);
+        this._renderer3d.setSelectedPlane(null);
+        this._renderer3d.setHoveredPlane(null);
+        this._renderer3d.setSelectedFeature(null);
+      }
+      if (this._featurePanel) this._featurePanel.selectFeature(null);
+      if (this._parametersPanel) this._parametersPanel.clear();
+      this._hoveredPlane = null;
+      this._renderSceneList();
+      this._scheduleRender();
+    }
+  }
+
+  _renderSceneList() {
+    const list = document.getElementById('scene-list');
+    if (!list) return;
+    list.innerHTML = '';
+    if (this._scenes.length === 0) {
+      list.innerHTML = '<p class="hint">No scenes saved yet</p>';
+      return;
+    }
+    this._scenes.forEach((scene, i) => {
+      const item = document.createElement('div');
+      item.className = 'scene-item';
+      item.dataset.index = i;
+
+      const name = document.createElement('span');
+      name.className = 'scene-item-name';
+      name.textContent = scene.name;
+      name.title = 'Double-click to rename';
+      name.addEventListener('dblclick', () => {
+        name.contentEditable = 'true';
+        name.focus();
+        const sel = window.getSelection();
+        sel.selectAllChildren(name);
+      });
+      const commitRename = () => {
+        name.contentEditable = 'false';
+        const newName = name.textContent.trim();
+        if (newName && newName !== scene.name) {
+          scene.name = newName;
+          debouncedSave();
+        } else {
+          name.textContent = scene.name;
+        }
+      };
+      name.addEventListener('blur', commitRename);
+      name.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); name.blur(); }
+        if (e.key === 'Escape') { name.textContent = scene.name; name.blur(); }
+      });
+
+      const actions = document.createElement('span');
+      actions.className = 'scene-item-actions';
+
+      const applyBtn = document.createElement('button');
+      applyBtn.textContent = '▶';
+      applyBtn.title = 'Apply this scene';
+      applyBtn.addEventListener('click', (e) => { e.stopPropagation(); this._applyScene(i); });
+
+      const delBtn = document.createElement('button');
+      delBtn.textContent = '✕';
+      delBtn.title = 'Delete this scene';
+      delBtn.addEventListener('click', (e) => { e.stopPropagation(); this._deleteScene(i); });
+
+      actions.appendChild(applyBtn);
+      actions.appendChild(delBtn);
+      item.appendChild(name);
+      item.appendChild(actions);
+      item.addEventListener('click', () => this._applyScene(i));
+      list.appendChild(item);
+    });
+  }
+
+  _addScene() {
+    if (!this._renderer3d) return;
+    const defaultName = `Scene ${this._scenes.length + 1}`;
+    const name = prompt('Scene name:', defaultName);
+    if (!name) return;
+    const orbit = this._renderer3d.getOrbitState();
+    this._scenes.push({ name, orbit });
+    this._renderSceneList();
+    debouncedSave();
+    this.setStatus(`Scene "${name}" saved`);
+  }
+
+  _applyScene(index) {
+    const scene = this._scenes[index];
+    if (!scene || !this._renderer3d) return;
+    this._renderer3d.setOrbitState(scene.orbit);
+    this._scheduleRender();
+    // Highlight active item
+    const items = document.querySelectorAll('#scene-list .scene-item');
+    items.forEach((el, i) => el.classList.toggle('active', i === index));
+    this.setStatus(`Applied scene "${scene.name}"`);
+  }
+
+  _deleteScene(index) {
+    const scene = this._scenes[index];
+    if (!scene) return;
+    this._scenes.splice(index, 1);
+    this._renderSceneList();
+    debouncedSave();
+    this.setStatus(`Deleted scene "${scene.name}"`);
+  }
+
+  _downloadViewportImage() {
+    if (!this._renderer3d) { this.setStatus('3D renderer not available'); return; }
+    const dataUrl = this._renderer3d.captureImage();
+    const a = document.createElement('a');
+    a.href = dataUrl;
+    a.download = 'viewport.png';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    this.setStatus('Image downloaded');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Scene Gallery — render all scenes into a grid preview
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Render all saved scenes into a composite grid image.
+   * Each cell is rendered at the given cellWidth × cellHeight.
+   * Returns a PNG data URL of the full grid, or null if no scenes.
+   * @param {object} [opts]
+   * @param {number} [opts.cellWidth=320]  - width of each cell in px
+   * @param {number} [opts.cellHeight=240] - height of each cell in px
+   * @param {number} [opts.columns=0]      - columns (0 = auto sqrt)
+   * @returns {string|null} PNG data URL or null
+   */
+  renderSceneGallery(opts = {}) {
+    if (!this._renderer3d || this._scenes.length === 0) return null;
+
+    const cellW = opts.cellWidth || 320;
+    const cellH = opts.cellHeight || 240;
+    const count = this._scenes.length;
+    const cols = opts.columns || Math.ceil(Math.sqrt(count));
+    const rows = Math.ceil(count / cols);
+
+    const r = this._renderer3d;
+
+    // Save current state so we can restore after
+    const savedOrbit = r.getOrbitState();
+    const origW = r.canvas.width;
+    const origH = r.canvas.height;
+    const origCssW = r._cssWidth;
+    const origCssH = r._cssHeight;
+    const origOverW = r.overlayCanvas.width;
+    const origOverH = r.overlayCanvas.height;
+    const origStyleW = r.canvas.style.width;
+    const origStyleH = r.canvas.style.height;
+
+    // Resize renderer to cell dimensions through the proper pipeline
+    r.canvas.width = cellW;
+    r.canvas.height = cellH;
+    r.canvas.style.width = cellW + 'px';
+    r.canvas.style.height = cellH + 'px';
+    r.overlayCanvas.width = cellW;
+    r.overlayCanvas.height = cellH;
+    r.overlayCtx.setTransform(1, 0, 0, 1, 0, 0);
+    r._cssWidth = cellW;
+    r._cssHeight = cellH;
+    r.executor.resize(cellW, cellH);
+    if (r._ready) r.wasm.resize(cellW, cellH);
+
+    // Composite grid canvas
+    const grid = document.createElement('canvas');
+    grid.width = cols * cellW;
+    grid.height = rows * cellH;
+    const gctx = grid.getContext('2d');
+    gctx.fillStyle = '#1e1e1e';
+    gctx.fillRect(0, 0, grid.width, grid.height);
+
+    for (let i = 0; i < count; i++) {
+      const scene = this._scenes[i];
+      r.setOrbitState(scene.orbit);
+      r._renderFrame();
+
+      const col = i % cols;
+      const row = Math.floor(i / cols);
+      const x = col * cellW;
+      const y = row * cellH;
+
+      gctx.drawImage(r.canvas, x, y, cellW, cellH);
+      gctx.drawImage(r.overlayCanvas, x, y, cellW, cellH);
+
+      // Draw scene name label
+      gctx.save();
+      gctx.fillStyle = 'rgba(0,0,0,0.55)';
+      gctx.fillRect(x, y + cellH - 28, cellW, 28);
+      gctx.fillStyle = '#fff';
+      gctx.font = '13px Inter, system-ui, sans-serif';
+      gctx.fillText(scene.name, x + 8, y + cellH - 9);
+      gctx.restore();
+    }
+
+    // Restore original state through proper pipeline
+    const dpr = window.devicePixelRatio || 1;
+    r.canvas.width = origW;
+    r.canvas.height = origH;
+    r.canvas.style.width = origStyleW;
+    r.canvas.style.height = origStyleH;
+    r.overlayCanvas.width = origOverW;
+    r.overlayCanvas.height = origOverH;
+    r.overlayCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    r._cssWidth = origCssW;
+    r._cssHeight = origCssH;
+    r.executor.resize(origW, origH);
+    if (r._ready) r.wasm.resize(origW, origH);
+    r.setOrbitState(savedOrbit);
+    r._renderFrame();
+
+    return grid.toDataURL('image/png');
+  }
+
+  /**
+   * Open a gallery window/overlay showing all scenes in a grid.
+   */
+  showSceneGallery() {
+    const dataUrl = this.renderSceneGallery();
+    if (!dataUrl) {
+      this.setStatus('No scenes to preview');
+      return;
+    }
+    // Open in a new window so it doesn't obstruct the viewport
+    const w = window.open('', '_blank', 'width=900,height=700');
+    if (!w) { this.setStatus('Popup blocked — allow popups for gallery'); return; }
+    w.document.title = 'Scene Gallery';
+    w.document.body.style.cssText = 'margin:0;background:#1e1e1e;display:flex;align-items:center;justify-content:center;min-height:100vh';
+    const img = w.document.createElement('img');
+    img.src = dataUrl;
+    img.style.cssText = 'max-width:100%;height:auto';
+    w.document.body.appendChild(img);
+  }
+
+  /**
+   * Download the scene gallery grid as a PNG file.
+   * @param {object} [opts] - same options as renderSceneGallery
+   */
+  downloadSceneGallery(opts) {
+    const dataUrl = this.renderSceneGallery(opts);
+    if (!dataUrl) { this.setStatus('No scenes to preview'); return; }
+    const a = document.createElement('a');
+    a.href = dataUrl;
+    a.download = 'scene-gallery.png';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    this.setStatus('Scene gallery downloaded');
   }
 
   _exportDXFFromFaces() {

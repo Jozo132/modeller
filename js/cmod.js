@@ -21,6 +21,7 @@ let _partManager = null;
 let _renderer3d = null;
 let _getWorkspaceMode = null;
 let _getSessionState = null;
+let _getScenes = null;
 
 /** Register viewport for persistence. */
 export function setCmodViewport(vp) { _viewport = vp; }
@@ -36,6 +37,9 @@ export function setCmodWorkspaceModeGetter(fn) { _getWorkspaceMode = fn; }
 
 /** Register session state getter. */
 export function setCmodSessionStateGetter(fn) { _getSessionState = fn; }
+
+/** Register scenes getter (returns array of named camera presets). */
+export function setCmodScenesGetter(fn) { _getScenes = fn; }
 
 // -----------------------------------------------------------------------
 // Metadata computation
@@ -137,6 +141,11 @@ export function projectToCMOD() {
   }
   if (_getSessionState) {
     cmod.sessionState = _getSessionState();
+  }
+
+  // Named camera scenes (for repeatable renders)
+  if (_getScenes) {
+    cmod.scenes = _getScenes();
   }
 
   // Computed metadata (for debugging / validation)
@@ -244,6 +253,7 @@ export function projectFromCMOD(data) {
     hasViewport,
     part: data.part || null,
     orbit: data.orbit || null,
+    scenes: Array.isArray(data.scenes) ? data.scenes : [],
     workspaceMode: data.workspaceMode || null,
     sessionState: data.sessionState || null,
     metadata: data.metadata || null,
@@ -310,6 +320,7 @@ export function buildCMOD(part, options = {}) {
     viewport: null,
     part: part ? part.serialize() : null,
     orbit: options.orbit || null,
+    scenes: options.scenes || [],
     workspaceMode: 'part',
     sessionState: null,
     metadata: _computeMetadata(part),
@@ -331,4 +342,14 @@ export function parseCMOD(input) {
   const check = _validateCMOD(data);
   if (!check.ok) return check;
   return { ok: true, data };
+}
+
+/**
+ * Get the named scenes from a parsed .cmod object (headless).
+ * Each scene is { name, orbit: { theta, phi, radius, target, fovDegrees, ortho3D } }.
+ * @param {Object} cmodData - Parsed .cmod JSON (or the .data from parseCMOD).
+ * @returns {Array<{ name: string, orbit: Object }>}
+ */
+export function getScenesFromCMOD(cmodData) {
+  return Array.isArray(cmodData.scenes) ? cmodData.scenes : [];
 }

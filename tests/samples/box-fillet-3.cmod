@@ -228,14 +228,16 @@
     }
   },
   "orbit": {
-    "theta": 0.7853981633974483,
-    "phi": 1.0471975511965976,
-    "radius": 24.183794925399024,
+    "theta": 3.8703981633974416,
+    "phi": 0.7521975511965984,
+    "radius": 10.621702610701638,
     "target": {
-      "x": 0.6433218938273346,
-      "y": 0.38080271597600124,
-      "z": 5
-    }
+      "x": 7.116807268730025,
+      "y": 6.89111404370438,
+      "z": 6.758920458037779
+    },
+    "fovDegrees": 45,
+    "ortho3D": false
   },
   "workspaceMode": "part",
   "sessionState": {
@@ -247,18 +249,65 @@
     "expandedFolders": [],
     "rollbackIndex": -1
   },
+  "scenes": [
+    {
+      "name": "Scene 1",
+      "orbit": {
+        "theta": 0.7853981633974483,
+        "phi": 1.0471975511965976,
+        "radius": 17.987946638726545,
+        "target": {
+          "x": 0.6433218938273346,
+          "y": 0.38080271597600124,
+          "z": 5
+        },
+        "fovDegrees": 45,
+        "ortho3D": false
+      }
+    },
+    {
+      "name": "Scene 2",
+      "orbit": {
+        "theta": 1.8603981633974467,
+        "phi": 1.072197551196598,
+        "radius": 10.621702610701638,
+        "target": {
+          "x": 6.808017460253351,
+          "y": -0.33472824861231176,
+          "z": 6.468157013898484
+        },
+        "fovDegrees": 45,
+        "ortho3D": false
+      }
+    },
+    {
+      "name": "Scene 3",
+      "orbit": {
+        "theta": 3.8703981633974416,
+        "phi": 0.7521975511965984,
+        "radius": 10.621702610701638,
+        "target": {
+          "x": 7.116807268730025,
+          "y": 6.89111404370438,
+          "z": 6.758920458037779
+        },
+        "fovDegrees": 45,
+        "ortho3D": false
+      }
+    }
+  ],
   "metadata": {
     "createdWith": "CAD Modeller Open Design",
-    "exportedAt": "2026-03-23T07:32:52.270Z",
+    "exportedAt": "2026-03-24T10:10:33.611Z",
     "featureCount": 3,
     "featureTypes": [
       "sketch",
       "extrude",
       "fillet"
     ],
-    "faceCount": 94,
-    "volume": 1103.181246,
-    "surfaceArea": 703.877057,
+    "faceCount": 95,
+    "volume": 1098.251311,
+    "surfaceArea": 670.540333,
     "boundingBox": {
       "min": {
         "x": -4.83997231093613,
@@ -274,13 +323,14 @@
     "width": 10.966588,
     "height": 10.074846,
     "depth": 10,
-    "edgeCount": 79,
-    "pathCount": 45,
+    "edgeCount": 63,
+    "pathCount": 21,
     "bodyCount": 1,
     "bodySizes": [
-      94
+      95
     ],
-    "minWallThickness": 0.005774,
-    "maxWallThickness": 13.888398
+    "minWallThickness": 0.070044,
+    "maxWallThickness": 13.888398,
+    "invertedFaceCount": 0
   }
 }
