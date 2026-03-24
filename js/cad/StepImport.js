@@ -67,6 +67,7 @@ export function importSTEP(stepString, opts = {}) {
   const allVertices = [];
   const allFaces = [];
   const topoShells = [];
+  let faceGroupCounter = 0;
 
   for (const shell of shells) {
     const faceRefs = Array.isArray(shell.args[1]) ? shell.args[1] : shell.args;
@@ -76,12 +77,13 @@ export function importSTEP(stepString, opts = {}) {
       const faceId = _refId(faceRef);
       if (faceId == null) continue;
 
-      const result = _buildFace(resolved, faceId, curveSegments, surfaceSegments);
+      const result = _buildFace(resolved, faceId, curveSegments, surfaceSegments, faceGroupCounter);
       if (result) {
         allVertices.push(...result.mesh.vertices);
         allFaces.push(...result.mesh.faces);
         if (result.topoFace) topoFaces.push(result.topoFace);
       }
+      faceGroupCounter++;
     }
 
     const topoShell = new TopoShell(topoFaces);
@@ -427,9 +429,10 @@ function _findShells(resolved) {
  * @param {number} faceId - Entity ID of the ADVANCED_FACE
  * @param {number} curveSegments - Segments for curved edges
  * @param {number} surfaceSegments - Segments for surface tessellation
+ * @param {number} faceGroup - Face group index for smooth shading
  * @returns {{ topoFace: TopoFace|null, mesh: { vertices:{x,y,z}[], faces:{vertices:{x,y,z}[], normal:{x,y,z}}[] } }|null}
  */
-function _buildFace(resolved, faceId, curveSegments, surfaceSegments) {
+function _buildFace(resolved, faceId, curveSegments, surfaceSegments, faceGroup) {
   const face = resolved.get(faceId);
   if (!face || face.type !== 'ADVANCED_FACE') return null;
 
@@ -447,6 +450,9 @@ function _buildFace(resolved, faceId, curveSegments, surfaceSegments) {
 
   // Extract surface normal from analytic surfaces for face winding
   const surfaceNormal = _extractSurfaceNormal(resolved, surfaceRef);
+
+  // Extract surface geometric data for per-vertex normal computation
+  const surfaceInfo = _extractSurfaceInfo(resolved, surfaceRef);
 
   // Build topology loops and polygon loops
   const loopData = [];
@@ -497,12 +503,14 @@ function _buildFace(resolved, faceId, curveSegments, surfaceSegments) {
   let meshFaces = [];
   let meshVertices = [];
 
-  const hasBSplineSurface = nurbsSurface && (
-    surfaceType === SurfaceType.BSPLINE ||
-    surfaceType === SurfaceType.CYLINDER ||
+  const isCurvedFace = surfaceType === SurfaceType.CYLINDER ||
     surfaceType === SurfaceType.CONE ||
     surfaceType === SurfaceType.SPHERE ||
-    surfaceType === SurfaceType.TORUS
+    surfaceType === SurfaceType.TORUS;
+
+  const hasBSplineSurface = nurbsSurface && (
+    surfaceType === SurfaceType.BSPLINE ||
+    isCurvedFace
   );
 
   if (hasBSplineSurface && surfaceType === SurfaceType.BSPLINE) {
@@ -513,6 +521,10 @@ function _buildFace(resolved, faceId, curveSegments, surfaceSegments) {
         f.vertices.reverse();
         f.normal = { x: -f.normal.x, y: -f.normal.y, z: -f.normal.z };
       }
+    }
+    for (const f of tess.faces) {
+      f.isCurved = true;
+      f.faceGroup = faceGroup;
     }
     meshFaces = tess.faces;
     meshVertices = tess.vertices;
@@ -538,12 +550,36 @@ function _buildFace(resolved, faceId, curveSegments, surfaceSegments) {
 
     // Triangulate the polygon with ear clipping
     const triangles = _triangulatePolygon(polygon, faceNormal);
-    for (const tri of triangles) {
-      meshFaces.push({
-        vertices: [tri[0], tri[1], tri[2]],
-        normal: { ...faceNormal },
-      });
-      meshVertices.push(tri[0], tri[1], tri[2]);
+
+    if (isCurvedFace && surfaceInfo) {
+      // For curved surfaces, compute per-triangle normals from vertex positions
+      // and the surface geometry (much better visual quality with smooth shading)
+      for (const tri of triangles) {
+        const triNormals = tri.map(v => _computeVertexNormal(v, surfaceInfo, sameSense));
+        // Use centroid normal as the face normal for this triangle
+        const cn = {
+          x: (triNormals[0].x + triNormals[1].x + triNormals[2].x) / 3,
+          y: (triNormals[0].y + triNormals[1].y + triNormals[2].y) / 3,
+          z: (triNormals[0].z + triNormals[1].z + triNormals[2].z) / 3,
+        };
+        const centroidNormal = _normalize(cn);
+        meshFaces.push({
+          vertices: [tri[0], tri[1], tri[2]],
+          normal: centroidNormal,
+          isCurved: true,
+          faceGroup,
+        });
+        meshVertices.push(tri[0], tri[1], tri[2]);
+      }
+    } else {
+      for (const tri of triangles) {
+        meshFaces.push({
+          vertices: [tri[0], tri[1], tri[2]],
+          normal: { ...faceNormal },
+          faceGroup,
+        });
+        meshVertices.push(tri[0], tri[1], tri[2]);
+      }
     }
   }
 
@@ -790,32 +826,53 @@ function _buildNurbsSurface(resolved, surfaceRef) {
 /**
  * Build a NurbsSurface from a B_SPLINE_SURFACE_WITH_KNOTS or RATIONAL_B_SPLINE_SURFACE.
  *
- * Merged args layout:
+ * Non-complex (flat) entity args layout:
  *   [0] name
  *   [1] degree_u
  *   [2] degree_v
- *   [3] control_points_grid  — nested list ((row0_cps), (row1_cps), ...)
+ *   [3] control_points_grid
  *   [4] surface_form
  *   [5] u_closed
  *   [6] v_closed
  *   [7] self_intersect
  *   [8] u_knot_multiplicities
- *   [9] u_knot_values
- *   [10] v_knot_multiplicities
+ *   [9] v_knot_multiplicities
+ *   [10] u_knot_values
  *   [11] v_knot_values
  *   [12] knot_spec
  *   [13] weights_grid (only for rational)
+ *
+ * Complex (merged from B_SPLINE_SURFACE + B_SPLINE_SURFACE_WITH_KNOTS) args layout:
+ *   [0] degree_u            (no name — B_SPLINE_SURFACE sub-entity has no name)
+ *   [1] degree_v
+ *   [2] control_points_grid
+ *   [3] surface_form
+ *   [4] u_closed
+ *   [5] v_closed
+ *   [6] self_intersect
+ *   [7] u_knot_multiplicities
+ *   [8] v_knot_multiplicities
+ *   [9] u_knot_values
+ *   [10] v_knot_values
+ *   [11] knot_spec
+ *   [12] weights_grid (only for rational)
  */
 function _buildBSplineSurfaceNurbs(resolved, entity, rational) {
-  const degreeU = Number(entity.args[1]) || 1;
-  const degreeV = Number(entity.args[2]) || 1;
-  const cpGrid = entity.args[3];
+  // Detect offset: complex entities have no name at [0], so args[0] is a number (degree).
+  // Non-complex entities have name (string) at [0].
+  const firstArg = entity.args[0];
+  const offset = (typeof firstArg === 'string') ? 1 : 0;
 
-  // Knot data
-  const uKnotMults = entity.args[8];
-  const uKnotVals = entity.args[9];
-  const vKnotMults = entity.args[10];
-  const vKnotVals = entity.args[11];
+  const degreeU = Number(entity.args[offset]) || 1;
+  const degreeV = Number(entity.args[offset + 1]) || 1;
+  const cpGrid = entity.args[offset + 2];
+
+  // STEP B_SPLINE_SURFACE_WITH_KNOTS arg order:
+  //   u_multiplicities, v_multiplicities, u_knots, v_knots, knot_spec
+  const uKnotMults = entity.args[offset + 7];
+  const vKnotMults = entity.args[offset + 8];
+  const uKnotVals = entity.args[offset + 9];
+  const vKnotVals = entity.args[offset + 10];
 
   if (!Array.isArray(cpGrid) || !Array.isArray(uKnotMults) || !Array.isArray(uKnotVals) ||
       !Array.isArray(vKnotMults) || !Array.isArray(vKnotVals)) {
@@ -843,7 +900,7 @@ function _buildBSplineSurfaceNurbs(resolved, entity, rational) {
   // Weights for rational surfaces
   let weightsGrid = null;
   if (rational) {
-    const wGrid = entity.args[13];
+    const wGrid = entity.args[offset + 12];
     if (Array.isArray(wGrid) && wGrid.length === controlPointGrid.length) {
       weightsGrid = [];
       for (const row of wGrid) {
