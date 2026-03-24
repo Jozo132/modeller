@@ -50,7 +50,90 @@ The project features a modular architecture with three main design interfaces:
 See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed documentation.
 See [NURBS_BOOLEAN_UPGRADE.md](NURBS_BOOLEAN_UPGRADE.md) for the exact-geometry roadmap from mesh CSG to STEP-oriented B-Rep and NURBS booleans.
 
-## Getting Started
+## Library Usage (NPM package)
+
+The package can be imported as a reusable library in both **Node.js** (backend meshing, conversion, testing, server-side rendering) and **browser** (frontend 3D/2D viewer, parametric modelling):
+
+```bash
+npm install modeller
+```
+
+### Main entry point — all headless CAD APIs
+
+```js
+import {
+  Part, Sketch, Scene, Assembly,
+  SketchFeature, ExtrudeFeature, RevolveFeature, ChamferFeature, FilletFeature,
+  Constraint, Coincident, Distance, Fixed,
+  buildCMOD, parseCMOD, getScenesFromCMOD,
+  exportSTEP,
+  NurbsCurve, NurbsSurface,
+  calculateMeshVolume, calculateBoundingBox,
+  applyChamfer, applyFillet,
+} from 'modeller';
+```
+
+### Sub-path exports
+
+| Import path | Contents |
+|---|---|
+| `modeller` | All headless CAD APIs (geometry, constraints, features, NURBS, B-Rep, CSG) |
+| `modeller/cad` | Core CAD primitives, features, solver, B-Rep, CSG — same as `modeller` |
+| `modeller/render` | Node.js canvas renderer (`renderCmodToPngBuffer`, `SceneRenderer`, …) |
+| `modeller/cmod` | Full CMOD project import/export (includes browser helpers) |
+| `modeller/logger` | Lightweight logger (`debug`, `info`, `warn`, `error`, `setLogLevel`) |
+| `modeller/wasm` | Raw AssemblyScript WASM 2D/solver module |
+
+### Headless meshing example (Node.js)
+
+```js
+import { Part, Sketch, buildCMOD, parseCMOD } from 'modeller';
+
+const sketch = new Sketch();
+sketch.addSegment(0, 0, 100, 0);
+sketch.addSegment(100, 0, 100, 50);
+sketch.addSegment(100, 50, 0, 50);
+sketch.addSegment(0, 50, 0, 0);
+
+const part = new Part('Box');
+const sf = part.addSketch(sketch);
+part.extrude(sf.id, 25);
+
+const geo = part.getFinalGeometry();
+console.log('faces:', geo.geometry.faces.length);
+
+// Serialize to .cmod project file
+const cmod = buildCMOD(part);
+const json = JSON.stringify(cmod);
+
+// Parse it back and validate
+const result = parseCMOD(json);
+console.log('valid:', result.ok);
+```
+
+### Server-side PNG render (Node.js)
+
+```js
+import { renderCmodToPngBuffer } from 'modeller/render';
+import fs from 'node:fs/promises';
+
+const raw = await fs.readFile('model.cmod', 'utf8');
+const cmod = JSON.parse(raw);
+
+const { buffer } = await renderCmodToPngBuffer({ cmod, width: 1280, height: 720, fitToView: true });
+await fs.writeFile('model.png', buffer);
+```
+
+### STEP export (Node.js / browser)
+
+```js
+import { Part, Sketch, exportSTEP } from 'modeller';
+
+// … build part as above …
+const stepText = exportSTEP(part.getFinalGeometry()?.geometry);
+```
+
+## Getting Started (web app)
 
 ```bash
 npm install
@@ -97,7 +180,7 @@ This demonstrates:
 ## Parametric Modeling Example
 
 ```javascript
-import { Part, Sketch } from './js/cad/index.js';
+import { Part, Sketch } from 'modeller';
 
 // Create a part
 const part = new Part('MyPart');

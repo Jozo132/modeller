@@ -1,8 +1,16 @@
 {
-  "name": "cad-modeller",
+  "name": "modeller",
   "version": "1.0.0",
-  "description": "CAD Modeller",
+  "description": "Multipurpose parametric CAD modelling library — 3D viewer, 2D viewer, mesher, converter and tester in one. Usable as an NPM package for both Node.js (backend) and browser (frontend) environments.",
+  "keywords": [
+    "cad", "modeller", "3d", "2d", "parametric", "nurbs", "brep", "csg",
+    "mesh", "sketch", "extrude", "revolve", "fillet", "chamfer",
+    "viewer", "converter", "step", "dxf", "cmod"
+  ],
+  "author": "Jozo132 <jozo132@gmail.com>",
+  "license": "MIT",
   "type": "module",
+  "main": "./js/index.js",
   "scripts": {
     "start": "npx serve .",
     "test:parametric": "node test-parametric.js",
@@ -14,12 +22,34 @@
     "asbuild": "npm run asbuild:debug && npm run asbuild:release",
     "test": "node tests && node tests/test-multi-body-chamfer-fillet.js && node tests/test-coplanar-merge.js && node tests/test-face-selection.js && node tests/test-geometry-persistence.js && node tests/test-interaction-recorder.js && node tests/test-multi-sketch-planes.js && node tests/test-ui-workflow.js && node tests/test-workflow-recordings.js && node tests/test-cmod-import-export.js"
   },
+  "files": [
+    "js/",
+    "build/",
+    "README.md",
+    "LICENSE",
+    "ARCHITECTURE.md"
+  ],
   "devDependencies": {
     "@napi-rs/canvas": "^0.1.68",
     "assemblyscript": "^0.28.9"
   },
   "exports": {
     ".": {
+      "import": "./js/index.js"
+    },
+    "./cad": {
+      "import": "./js/cad/index.js"
+    },
+    "./render": {
+      "import": "./js/render/index.js"
+    },
+    "./cmod": {
+      "import": "./js/cmod.js"
+    },
+    "./logger": {
+      "import": "./js/logger.js"
+    },
+    "./wasm": {
       "import": "./build/release.js",
       "types": "./build/release.d.ts"
     }
