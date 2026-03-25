@@ -174,6 +174,184 @@ test('box-fillet-3: all normals are unit-length and finite', () => {
 });
 
 // ============================================================
+console.log('\n=== STEP Import — Deep Sphere Tessellation Tests ===\n');
+// ============================================================
+
+// The sphere face in box-fillet-3.step: center (9,1,9), radius 1, 3 arc edges.
+// Previously the centroid fan vertex was not projected onto the sphere surface,
+// causing a visible dent where the three cylindrical fillets meet.
+
+test('box-fillet-3: sphere face vertices lie on the sphere surface', () => {
+  const mesh = importSTEP(boxFilletData, { curveSegments: 16 });
+  // Identify sphere from BRep — faceGroup is the iteration index over body.faces()
+  const body = mesh.body;
+  assert.ok(body, 'Should have BRep body');
+  let sphereInfo = null;
+  let sphereFaceGroup = -1;
+  let faceIdx = 0;
+  for (const face of body.faces()) {
+    if (face.surfaceType === 'sphere') {
+      sphereInfo = face.surfaceInfo;
+      sphereFaceGroup = faceIdx;
+    }
+    faceIdx++;
+  }
+  assert.ok(sphereInfo, 'Should have a sphere surfaceInfo');
+  assert.ok(sphereFaceGroup >= 0, 'Should have a sphere faceGroup');
+  const { origin, radius } = sphereInfo;
+
+  // Collect the sphere face group from the tessellated mesh
+  const sphereFaces = mesh.faces.filter(f => f.faceGroup === sphereFaceGroup);
+  assert.ok(sphereFaces.length > 0, 'Sphere face group should have triangles');
+
+  const TOL = 0.002; // tolerance in model units (radius = 1 in this file)
+  for (let i = 0; i < sphereFaces.length; i++) {
+    for (const v of sphereFaces[i].vertices) {
+      const dx = v.x - origin.x, dy = v.y - origin.y, dz = v.z - origin.z;
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      assert.ok(
+        Math.abs(dist - radius) < TOL,
+        `Sphere face ${i} vertex (${v.x.toFixed(4)}, ${v.y.toFixed(4)}, ${v.z.toFixed(4)}) ` +
+        `dist from center = ${dist.toFixed(6)}, expected ${radius} ±${TOL}`
+      );
+    }
+  }
+});
+
+test('box-fillet-3: sphere face normals point outward from center', () => {
+  const mesh = importSTEP(boxFilletData, { curveSegments: 16 });
+  const body = mesh.body;
+  let sphereInfo = null;
+  let sphereSameSense = true;
+  let sphereFaceGroup = -1;
+  let faceIdx = 0;
+  for (const face of body.faces()) {
+    if (face.surfaceType === 'sphere') {
+      sphereInfo = face.surfaceInfo;
+      sphereSameSense = face.sameSense;
+      sphereFaceGroup = faceIdx;
+    }
+    faceIdx++;
+  }
+  const { origin } = sphereInfo;
+
+  // Get sphere triangles by faceGroup
+  const sphereFaces = mesh.faces.filter(f => f.faceGroup === sphereFaceGroup);
+  assert.ok(sphereFaces.length > 0, 'Should have sphere triangles');
+
+  // For each triangle, verify the face normal is consistent with
+  // the expected outward direction (center → centroid of triangle).
+  for (let i = 0; i < sphereFaces.length; i++) {
+    const f = sphereFaces[i];
+    const cx = (f.vertices[0].x + f.vertices[1].x + f.vertices[2].x) / 3;
+    const cy = (f.vertices[0].y + f.vertices[1].y + f.vertices[2].y) / 3;
+    const cz = (f.vertices[0].z + f.vertices[1].z + f.vertices[2].z) / 3;
+    const rx = cx - origin.x, ry = cy - origin.y, rz = cz - origin.z;
+    // Dot product of face normal with radial direction should be positive
+    // (for sameSense=true) or negative (for sameSense=false)
+    const dot = f.normal.x * rx + f.normal.y * ry + f.normal.z * rz;
+    const expectedSign = sphereSameSense ? 1 : -1;
+    assert.ok(
+      dot * expectedSign > 0,
+      `Sphere face ${i} normal should point ${sphereSameSense ? 'outward' : 'inward'} (dot=${dot.toFixed(4)})`
+    );
+  }
+});
+
+test('box-fillet-3: sphere face has no degenerate triangles', () => {
+  const mesh = importSTEP(boxFilletData, { curveSegments: 16 });
+  const body = mesh.body;
+  let sphereFaceGroup = -1;
+  let faceIdx = 0;
+  for (const face of body.faces()) {
+    if (face.surfaceType === 'sphere') sphereFaceGroup = faceIdx;
+    faceIdx++;
+  }
+
+  const sphereFaces = mesh.faces.filter(f => f.faceGroup === sphereFaceGroup);
+  assert.ok(sphereFaces.length > 0, 'Should have sphere triangles');
+
+  for (let i = 0; i < sphereFaces.length; i++) {
+    const [a, b, c] = sphereFaces[i].vertices;
+    // Cross product magnitude = 2× triangle area
+    const abx = b.x - a.x, aby = b.y - a.y, abz = b.z - a.z;
+    const acx = c.x - a.x, acy = c.y - a.y, acz = c.z - a.z;
+    const cx2 = aby * acz - abz * acy;
+    const cy2 = abz * acx - abx * acz;
+    const cz2 = abx * acy - aby * acx;
+    const area2 = Math.sqrt(cx2*cx2 + cy2*cy2 + cz2*cz2);
+    assert.ok(area2 > 1e-12, `Sphere triangle ${i} should not be degenerate (area²=${area2.toExponential(3)})`);
+  }
+});
+
+test('box-fillet-3: sphere BRep face has 3 arc coedges', () => {
+  const mesh = importSTEP(boxFilletData, { curveSegments: 16 });
+  const body = mesh.body;
+  let sphereFace = null;
+  for (const shell of body.shells) {
+    for (const face of shell.faces) {
+      if (face.surfaceType === 'sphere') sphereFace = face;
+    }
+  }
+  assert.ok(sphereFace, 'Should find the sphere BRep face');
+  assert.ok(sphereFace.outerLoop, 'Sphere face should have an outer loop');
+  assert.strictEqual(sphereFace.outerLoop.coedges.length, 3,
+    `Sphere should have 3 coedges (got ${sphereFace.outerLoop.coedges.length})`);
+
+  // All 3 edges should be degree-2 arcs (circular arcs on the sphere)
+  for (let i = 0; i < 3; i++) {
+    const edge = sphereFace.outerLoop.coedges[i].edge;
+    assert.ok(edge.curve, `Sphere coedge ${i} should have a curve`);
+    assert.strictEqual(edge.curve.degree, 2,
+      `Sphere coedge ${i} curve should be degree 2 (got ${edge.curve.degree})`);
+  }
+});
+
+test('box-fillet-3: sphere corner vertices match cylinder endpoints', () => {
+  const mesh = importSTEP(boxFilletData, { curveSegments: 16 });
+  const body = mesh.body;
+
+  // Collect all cylinder and sphere face data from BRep
+  const cylFaces = [];
+  let sphereFace = null;
+  for (const shell of body.shells) {
+    for (const face of shell.faces) {
+      if (face.surfaceType === 'cylinder') cylFaces.push(face);
+      if (face.surfaceType === 'sphere') sphereFace = face;
+    }
+  }
+
+  assert.strictEqual(cylFaces.length, 3, 'Should have 3 cylinder faces');
+  assert.ok(sphereFace, 'Should have a sphere face');
+
+  // The sphere's 3 edge endpoints should coincide with cylinder edge endpoints
+  const sphereVerts = new Set();
+  for (const ce of sphereFace.outerLoop.coedges) {
+    const sp = ce.edge.startVertex.point;
+    const ep = ce.edge.endVertex.point;
+    sphereVerts.add(`${sp.x.toFixed(4)},${sp.y.toFixed(4)},${sp.z.toFixed(4)}`);
+    sphereVerts.add(`${ep.x.toFixed(4)},${ep.y.toFixed(4)},${ep.z.toFixed(4)}`);
+  }
+
+  // Sphere should have exactly 3 unique corner vertices
+  assert.strictEqual(sphereVerts.size, 3,
+    `Sphere should have 3 unique corner vertices (got ${sphereVerts.size})`);
+
+  // Each cylinder should share at least one vertex with the sphere
+  for (let ci = 0; ci < cylFaces.length; ci++) {
+    let shared = false;
+    for (const ce of cylFaces[ci].outerLoop.coedges) {
+      const sp = ce.edge.startVertex.point;
+      const ep = ce.edge.endVertex.point;
+      const sk = `${sp.x.toFixed(4)},${sp.y.toFixed(4)},${sp.z.toFixed(4)}`;
+      const ek = `${ep.x.toFixed(4)},${ep.y.toFixed(4)},${ep.z.toFixed(4)}`;
+      if (sphereVerts.has(sk) || sphereVerts.has(ek)) { shared = true; break; }
+    }
+    assert.ok(shared, `Cylinder ${ci} should share at least one vertex with the sphere`);
+  }
+});
+
+// ============================================================
 console.log('\n=== STEP Import — Feature Tests ===\n');
 // ============================================================
 
