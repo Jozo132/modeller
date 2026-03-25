@@ -1855,26 +1855,90 @@ function _tessellateDoubleArcStrip(polygon, edgeBounds, arcIndices, surfaceInfo,
 }
 
 /**
+ * Project a 3D point onto an analytic surface defined by surfaceInfo.
+ * For spheres the point is pushed to the sphere surface along the radial
+ * direction from the center; for other surface types a straight-through
+ * return is used (no projection).
+ */
+function _projectOntoSurface(point, surfaceInfo) {
+  if (surfaceInfo.type === 'sphere') {
+    const ox = surfaceInfo.origin.x, oy = surfaceInfo.origin.y, oz = surfaceInfo.origin.z;
+    const dx = point.x - ox, dy = point.y - oy, dz = point.z - oz;
+    const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (len < 1e-14) return { x: ox + surfaceInfo.radius, y: oy, z: oz };
+    const s = surfaceInfo.radius / len;
+    return { x: ox + dx * s, y: oy + dy * s, z: oz + dz * s };
+  }
+  return point;
+}
+
+/**
  * Structured tessellation for a face with 3+ arc edges (sphere/torus patches).
- * Uses a simple fan from the polygon centroid to avoid twisted triangles.
+ * Creates a fan from the polygon centroid, then adaptively subdivides
+ * triangles so that all interior vertices lie on the analytic surface.
  */
 function _tessellateMultiArcPatch(polygon, edgeBounds, arcIndices, surfaceInfo, sameSense, faceGroup) {
   if (polygon.length < 3) return null;
 
-  const faces = [];
-  const vertices = [];
   const n = polygon.length;
 
-  // Fan triangulation from polygon centroid (avoids twist issues)
+  // Fan triangulation from polygon centroid projected onto the surface
   const cx = polygon.reduce((s, p) => s + p.x, 0) / n;
   const cy = polygon.reduce((s, p) => s + p.y, 0) / n;
   const cz = polygon.reduce((s, p) => s + p.z, 0) / n;
-  const centroid = _snapPoint({ x: cx, y: cy, z: cz });
+  const centroid = _projectOntoSurface(_snapPoint({ x: cx, y: cy, z: cz }), surfaceInfo);
 
+  // Build initial fan triangles
+  let triangles = [];
   for (let i = 0; i < n; i++) {
-    const a = polygon[i];
-    const b = polygon[(i + 1) % n];
-    const tri = [centroid, a, b];
+    triangles.push([centroid, polygon[i], polygon[(i + 1) % n]]);
+  }
+
+  // Adaptive subdivision: split the longest edge when its midpoint
+  // deviates from the analytic surface by more than a tolerance.
+  const maxDepth = Math.max(1, Math.ceil(Math.log2(Math.max(16, n))));
+  const deviationTol = 1e-3;
+
+  for (let depth = 0; depth < maxDepth; depth++) {
+    const next = [];
+    let anySplit = false;
+    for (const tri of triangles) {
+      const [a, b, c] = tri;
+      const dAB = _dist3D(a, b);
+      const dBC = _dist3D(b, c);
+      const dCA = _dist3D(c, a);
+
+      let mid, p0, p1, p2;
+      if (dAB >= dBC && dAB >= dCA) {
+        mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, z: (a.z + b.z) / 2 };
+        p0 = a; p1 = b; p2 = c;
+      } else if (dBC >= dCA) {
+        mid = { x: (b.x + c.x) / 2, y: (b.y + c.y) / 2, z: (b.z + c.z) / 2 };
+        p0 = b; p1 = c; p2 = a;
+      } else {
+        mid = { x: (c.x + a.x) / 2, y: (c.y + a.y) / 2, z: (c.z + a.z) / 2 };
+        p0 = c; p1 = a; p2 = b;
+      }
+
+      const surfPt = _projectOntoSurface(mid, surfaceInfo);
+      const dev = _dist3D(mid, surfPt);
+
+      if (dev > deviationTol) {
+        next.push([p0, surfPt, p2]);
+        next.push([surfPt, p1, p2]);
+        anySplit = true;
+      } else {
+        next.push(tri);
+      }
+    }
+    triangles = next;
+    if (!anySplit) break;
+  }
+
+  // Build output faces with per-vertex normals
+  const faces = [];
+  const vertices = [];
+  for (const tri of triangles) {
     const triNormals = tri.map(v => _computeVertexNormal(v, surfaceInfo, sameSense));
     const cn = {
       x: (triNormals[0].x + triNormals[1].x + triNormals[2].x) / 3,
