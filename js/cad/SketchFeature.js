@@ -101,8 +101,9 @@ export class SketchFeature extends Feature {
     const edgeId = e => e.id || e._arcId;
     
     let current = startEdge;
-    let currentEnd = current.p2;
-    let startPoint = current.p1;
+    let currentEnd = current.p2;      // PPoint: the end we're heading toward
+    let prevEnd = current.p1;         // PPoint: the end we came from
+    let startPoint = current.p1;      // PPoint: first point for closure check
     
     // Include the starting point of the profile
     points.push(startPoint);
@@ -113,8 +114,9 @@ export class SketchFeature extends Feature {
       
       visited.add(edgeId(current));
 
-      // Emit tessellated points for the edge (not just the endpoint)
-      const edgePoints = _tessellateEdge(current, current.p1 === (points.length > 1 ? points[points.length - 1] : startPoint));
+      // Determine forward direction: does prevEnd match p1?
+      const forward = (current.p1 === prevEnd);
+      const edgePoints = _tessellateEdge(current, forward);
       // Skip the first point of each edge (it's already in the profile as the previous endpoint)
       for (let i = 1; i < edgePoints.length; i++) {
         points.push(edgePoints[i]);
@@ -128,20 +130,22 @@ export class SketchFeature extends Feature {
       if (!connected) break;
       
       // Update for next iteration
+      prevEnd = currentEnd;
       current = connected;
-      currentEnd = (connected.p1 === currentEnd) ? connected.p2 : connected.p1;
+      currentEnd = (connected.p1 === prevEnd) ? connected.p2 : connected.p1;
       
       // Check if we closed the loop
       if (currentEnd === startPoint) {
         visited.add(edgeId(current));
-        const closingPoints = _tessellateEdge(current, current.p1 === points[points.length - 1]);
+        const closingForward = (current.p1 === prevEnd);
+        const closingPoints = _tessellateEdge(current, closingForward);
         for (let i = 1; i < closingPoints.length; i++) {
           points.push(closingPoints[i]);
         }
-        // Remove the duplicate closing point (same as startPoint)
+        // Remove the duplicate closing point if it matches startPoint
         if (points.length > 1) {
           const last = points[points.length - 1];
-          if (last === startPoint || (Math.abs(last.x - startPoint.x) < 1e-8 && Math.abs(last.y - startPoint.y) < 1e-8)) {
+          if (Math.abs(last.x - startPoint.x) < 1e-8 && Math.abs(last.y - startPoint.y) < 1e-8) {
             points.pop();
           }
         }
