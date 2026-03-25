@@ -420,6 +420,26 @@ export declare function resetEntityModelMatrix(): void;
  */
 export declare function getResultPtr(): number;
 /**
+ * assembly/nurbs/getTessVertsPtr
+ * @returns `usize`
+ */
+export declare function getTessVertsPtr(): number;
+/**
+ * assembly/nurbs/getTessNormalsPtr
+ * @returns `usize`
+ */
+export declare function getTessNormalsPtr(): number;
+/**
+ * assembly/nurbs/getTessFacesPtr
+ * @returns `usize`
+ */
+export declare function getTessFacesPtr(): number;
+/**
+ * assembly/nurbs/getCurvePtsPtr
+ * @returns `usize`
+ */
+export declare function getCurvePtsPtr(): number;
+/**
  * assembly/nurbs/nurbsCurveEvaluate
  * @param degree `i32`
  * @param nCtrl `i32`
@@ -437,9 +457,9 @@ export declare function nurbsCurveEvaluate(degree: number, nCtrl: number, ctrlPt
  * @param knots `~lib/typedarray/Float64Array`
  * @param weights `~lib/typedarray/Float64Array`
  * @param segments `i32`
- * @param outPts `~lib/typedarray/Float64Array`
+ * @returns `i32`
  */
-export declare function nurbsCurveTessellate(degree: number, nCtrl: number, ctrlPts: Float64Array, knots: Float64Array, weights: Float64Array, segments: number, outPts: Float64Array): void;
+export declare function nurbsCurveTessellate(degree: number, nCtrl: number, ctrlPts: Float64Array, knots: Float64Array, weights: Float64Array, segments: number): number;
 /**
  * assembly/nurbs/nurbsSurfaceEvaluate
  * @param degU `i32`
@@ -480,12 +500,9 @@ export declare function nurbsSurfaceNormal(degU: number, degV: number, nRowsU: n
  * @param weights `~lib/typedarray/Float64Array`
  * @param segsU `i32`
  * @param segsV `i32`
- * @param outVerts `~lib/typedarray/Float64Array`
- * @param outNormals `~lib/typedarray/Float64Array`
- * @param outFaces `~lib/typedarray/Uint32Array`
  * @returns `i32`
  */
-export declare function nurbsSurfaceTessellate(degU: number, degV: number, nRowsU: number, nColsV: number, ctrlPts: Float64Array, knotsU: Float64Array, knotsV: Float64Array, weights: Float64Array, segsU: number, segsV: number, outVerts: Float64Array, outNormals: Float64Array, outFaces: Uint32Array): number;
+export declare function nurbsSurfaceTessellate(degU: number, degV: number, nRowsU: number, nColsV: number, ctrlPts: Float64Array, knotsU: Float64Array, knotsV: Float64Array, weights: Float64Array, segsU: number, segsV: number): number;
 /**
  * assembly/tessellation/earClipTriangulate
  * @param coords `~lib/typedarray/Float64Array`

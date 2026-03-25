@@ -6,6 +6,7 @@ import { ConstraintSolver, CONSTRAINT_COINCIDENT, CONSTRAINT_HORIZONTAL, CONSTRA
 import { render2DEntities, renderOriginPlanes, setEntityModelMatrix, resetEntityModelMatrix } from "./render2d";
 import {
   getResultPtr,
+  getTessVertsPtr, getTessNormalsPtr, getTessFacesPtr, getCurvePtsPtr,
   nurbsCurveEvaluate, nurbsCurveTessellate,
   nurbsSurfaceEvaluate, nurbsSurfaceNormal, nurbsSurfaceTessellate,
 } from "./nurbs";
@@ -380,6 +381,7 @@ export const SOLVER_ANGLE: i32 = CONSTRAINT_ANGLE;
 // ─── Re-export NURBS tessellation API ─────────────────────────────────
 export {
   getResultPtr,
+  getTessVertsPtr, getTessNormalsPtr, getTessFacesPtr, getCurvePtsPtr,
   nurbsCurveEvaluate, nurbsCurveTessellate,
   nurbsSurfaceEvaluate, nurbsSurfaceNormal, nurbsSurfaceTessellate,
 };

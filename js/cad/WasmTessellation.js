@@ -3,6 +3,11 @@
 // Provides WASM-accelerated versions of NURBS curve/surface evaluation
 // and tessellation. Falls back to pure JS when WASM is not available.
 //
+// Data flow for tessellation:
+//   1. JS passes input arrays (ctrl pts, knots, weights) via __lowerTypedArray
+//   2. WASM writes results to internal output buffers
+//   3. JS reads results from WASM memory via exported buffer pointers
+//
 // Usage:
 //   import { wasmTessellation } from './WasmTessellation.js';
 //   await wasmTessellation.init();  // Load WASM module (once)
@@ -68,19 +73,20 @@ function tessellateCurve(curve, segments = 32) {
   const ctrlFlat = flattenControlPoints3D(curve.controlPoints);
   const knotsArr = new Float64Array(curve.knots);
   const weightsArr = new Float64Array(curve.weights);
-  const outPts = new Float64Array((segments + 1) * 3);
 
-  wasmModule.nurbsCurveTessellate(
+  const nPts = wasmModule.nurbsCurveTessellate(
     curve.degree,
     curve.controlPoints.length,
     ctrlFlat, knotsArr, weightsArr,
-    segments,
-    outPts
+    segments
   );
 
-  // Convert flat array back to point objects
+  // Read results from WASM memory
+  const ptr = wasmModule.getCurvePtsPtr();
+  const outPts = new Float64Array(wasmMemory.buffer, ptr, nPts * 3);
+
   const points = [];
-  for (let i = 0; i <= segments; i++) {
+  for (let i = 0; i < nPts; i++) {
     const oi = i * 3;
     points.push({ x: outPts[oi], y: outPts[oi + 1], z: outPts[oi + 2] });
   }
@@ -133,19 +139,22 @@ function tessellateSurface(surface, segsU = 8, segsV = 8) {
   const weights = new Float64Array(surface.weights);
 
   const nVertsTotal = (segsU + 1) * (segsV + 1);
-  const nTris = segsU * segsV * 2;
-
-  const outVerts = new Float64Array(nVertsTotal * 3);
-  const outNormals = new Float64Array(nVertsTotal * 3);
-  const outFaces = new Uint32Array(nTris * 3);
 
   const triCount = wasmModule.nurbsSurfaceTessellate(
     surface.degreeU, surface.degreeV,
     surface.numRowsU, surface.numColsV,
     ctrlFlat, knotsU, knotsV, weights,
-    segsU, segsV,
-    outVerts, outNormals, outFaces
+    segsU, segsV
   );
+
+  // Read results from WASM memory via buffer pointers
+  const vertsPtr = wasmModule.getTessVertsPtr();
+  const normalsPtr = wasmModule.getTessNormalsPtr();
+  const facesPtr = wasmModule.getTessFacesPtr();
+
+  const outVerts = new Float64Array(wasmMemory.buffer, vertsPtr, nVertsTotal * 3);
+  const outNormals = new Float64Array(wasmMemory.buffer, normalsPtr, nVertsTotal * 3);
+  const outFaces = new Uint32Array(wasmMemory.buffer, facesPtr, triCount * 3);
 
   // Convert to the mesh format expected by the rendering pipeline
   const vertices = [];
