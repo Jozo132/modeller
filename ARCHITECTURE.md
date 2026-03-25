@@ -2,496 +2,504 @@
 
 ## Overview
 
-This document describes the modular architecture with parametric 3D CAD capabilities.
+A parametric 3D CAD modeller built entirely in JavaScript (ES modules) with an
+AssemblyScript → WebAssembly acceleration layer. Runs both as a browser
+application and as a headless Node.js library for CAD kernel operations,
+mesh tessellation, STEP import/export, and offline rendering without a UI. The
+system follows a **topology-first** design: every solid is represented by an
+exact NURBS/B-Rep topology graph, and triangle meshes exist only for rendering.
 
 ---
 
-## ⚠️ Mandatory: Topology-First, Mesh Only for Visualization
-
-This project is a professional, fully featured CAD program. The following rules
-are **mandatory** and must be followed in all code contributions. Violating them
-will introduce precision loss that compounds over time and makes the system
-unsuitable for high-precision CAM operations on complex surfaces.
+## Mandatory Design Rules
 
 ### Rule 1 — B-Rep Topology Is the Source of Truth
 
-Every solid body in the feature tree **must** be represented by its exact
-NURBS/B-Rep topology (`TopoBody` from `BRepTopology.js`). The topology graph
+Every solid body in the feature tree is represented by its exact NURBS/B-Rep
+topology (`TopoBody` from `BRepTopology.js`):
 
 ```
 TopoBody → TopoShell → TopoFace → TopoLoop → TopoCoEdge → TopoEdge → TopoVertex
 ```
 
-carries the mathematically exact geometry (where `→` means "contains"):
+| Element    | Exact Data                                                       |
+|------------|------------------------------------------------------------------|
+| TopoFace   | `NurbsSurface`, `surfaceType`, `surfaceInfo`, UV bounds          |
+| TopoEdge   | `NurbsCurve` (exact 3D edge curve), tolerance                    |
+| TopoVertex | Exact 3D point `{x, y, z}`, tolerance                           |
 
-| Element    | Exact Data                                              |
-|------------|---------------------------------------------------------|
-| TopoFace   | `NurbsSurface` (support surface), `surfaceType`, `surfaceInfo` |
-| TopoEdge   | `NurbsCurve` (exact 3D edge curve)                      |
-| TopoVertex | Exact 3D point `{x, y, z}`                             |
-
-All feature operations (extrude, revolve, chamfer, fillet, boolean, etc.)
-**must** operate on this topology — never on tessellated mesh faces/vertices.
+All feature operations (extrude, revolve, chamfer, fillet, boolean) operate on
+this topology — never on tessellated mesh faces/vertices.
 
 ### Rule 2 — Tessellation Is Post-Processing Only
 
-Mesh tessellation (`vertices[]`, `faces[]`) exists **only** for rendering an
-approximate visualization in the UI. It is generated **after** the topology is
-fully computed and **must never** be fed back into feature operations.
+Mesh tessellation (`vertices[]`, `faces[]`) exists only for rendering. It is
+generated after topology is fully computed and must never be fed back into
+feature operations.
 
 ```
 STEP file  ──parse──►  TopoBody (exact)  ──tessellate──►  mesh (display only)
 Sketch     ──extrude──► TopoBody (exact)  ──tessellate──►  mesh (display only)
 ```
 
-- `parseSTEPTopology()` returns the exact `TopoBody`.
-- `tessellateBody()` converts a `TopoBody` into display mesh.
-- `importSTEP()` is a convenience wrapper that calls both.
+### Rule 3 — Features Propagate TopoBody
 
-### Rule 3 — Features Operate on TopoBody, Not on Mesh
-
-When a feature in the tree receives the result of a previous feature, it
-**must** use `solid.body` (the `TopoBody`) for its operations:
-
-```js
-// ✅ CORRECT — operate on exact topology
-const body = previousResult.solid.body;   // TopoBody
-const newBody = applyExactChamfer(body, edgeKeys, distance);
-
-// ❌ WRONG — operating on tessellated mesh loses precision
-const geometry = previousResult.solid.geometry;   // mesh
-const newGeom = applyChamfer(geometry, edgeKeys, distance);
-```
-
-Every feature's `execute()` method **must** produce and propagate a `TopoBody`
-in its result so downstream features can continue working on exact data:
+Every feature's `execute()` must produce and propagate a `TopoBody`:
 
 ```js
 return {
   type: 'solid',
-  geometry,                          // mesh — for display only
-  solid: { geometry, body: newBody }, // body is mandatory
+  geometry,                            // mesh — display only
+  solid: { geometry, body: newBody },  // body is mandatory
   body: newBody,
 };
 ```
 
-### Rule 4 — STEP Import Must Parse Full Topology First
+### Known Gaps
 
-When importing a STEP file, the parser **must** extract the complete,
-mathematically exact B-Rep topology **before** any tessellation occurs:
+- `applyChamfer()` / `applyFillet()` in `CSG.js` operate on mesh geometry,
+  not `TopoBody`. They return a minimal `BRep` but not a full `TopoBody`,
+  breaking the exact topology chain for downstream features.
 
-1. Parse all STEP entities from the DATA section.
-2. Resolve entity references into an object graph.
-3. Build the full `TopoBody` with `NurbsSurface` on every face and
-   `NurbsCurve` on every edge.
-4. **Only then** tessellate the topology for display.
+---
 
-The `TopoBody` returned from STEP import is **never** optional — it is the
-primary output. The mesh is secondary.
+## Project Structure
 
-### Current Known Gaps
-
-The following areas currently violate these rules and must be addressed:
-
-- **`applyChamfer()` / `applyFillet()` in `CSG.js`** operate on mesh geometry
-  (`geometry.faces`) instead of `TopoBody`. They return a minimal `BRep` object
-  but not a full `TopoBody`. This means any chamfer or fillet in the feature
-  tree **breaks the exact topology chain** for all downstream features.
-
-- **`ChamferFeature.execute()`** and **`FilletFeature.execute()`** discard the
-  incoming `solid.body` (`TopoBody`) and operate only on `solid.geometry`
-  (mesh). They do not propagate a `TopoBody` in their result.
-
-These gaps must be closed by implementing exact chamfer/fillet operations on
-`TopoBody` and ensuring they propagate the topology downstream.
-
-### Why This Matters
-
-- Mesh-based operations introduce **cumulative approximation error**. Each
-  feature that works on tessellated geometry degrades precision.
-- High-precision CNC/CAM toolpath generation requires exact NURBS surfaces —
-  not polygonal approximations.
-- Boolean operations on exact B-Rep topology are **geometrically correct**;
-  mesh-based BSP booleans produce artifacts and degenerate geometry.
-- STEP export of modified models requires the exact topology to produce
-  valid, standards-compliant output.
-
-**Do not take shortcuts that sacrifice long-term precision for short-term
-convenience.** We are building a professional CAD system.
+```
+assembly/           AssemblyScript WASM source (compiled to build/)
+build/              Compiled WASM binaries (debug + release)
+css/                Stylesheets
+js/
+  main.js           Application entry point & App class
+  state.js          Global singleton app state
+  viewport.js       2D canvas transform (pan/zoom)
+  wasm-renderer.js  WASM-backed 3D renderer
+  webgl-executor.js WebGL2 command processor
+  persist.js        LocalStorage persistence
+  history.js        Undo/redo snapshots
+  cmod.js           .cmod file format (project save/load)
+  part-manager.js   3D part workflow manager
+  snap.js           Snap-to-grid/objects
+  logger.js         Console logging
+  cad/              CAD kernel (45 modules)
+  dxf/              DXF import/export
+  render/           Rendering pipeline
+  ui/               UI panels and dialogs
+  tools/            2D sketch tools
+  entities/         Entity definitions
+  workers/          Web workers
+tests/              Test suite (25+ test files)
+tools/              CLI render tools
+```
 
 ---
 
 ## Design Hierarchy
 
-The project has three main design interfaces, organized in a hierarchy:
+```
+Assembly (3D, multi-part)
+  └─ Part (3D parametric solid)
+      ├─ FeatureTree — Ordered parametric operations
+      │   ├─ SketchFeature        2D sketch on a plane
+      │   ├─ ExtrudeFeature       Extrude sketch → solid
+      │   ├─ ExtrudeCutFeature    Extrude subtract
+      │   ├─ MultiSketchExtrudeFeature   Multi-plane extrude + union
+      │   ├─ RevolveFeature       Revolve sketch around axis
+      │   ├─ ChamferFeature       Flat bevel on edges
+      │   ├─ FilletFeature        Rounded blend on edges
+      │   └─ StepImportFeature    Import external STEP file
+      └─ TessellationConfig — Quality presets (draft/normal/fine/ultra)
+```
 
-```
-Assembly (3D)
-  └─ Part (3D) — Now with Parametric Feature Tree
-      ├─ FeatureTree — Ordered list of parametric features
-      │   ├─ SketchFeature — 2D sketch on a plane
-      │   ├─ ExtrudeFeature — Extrude sketch to 3D
-      │   ├─ RevolveFeature — Revolve sketch around axis
-      │   └─ Future: FilletFeature, ChamferFeature, etc.
-      └─ Scene (Internal)
-```
+---
 
 ## Parametric Feature System
 
-### Feature Tree Architecture
+### Feature (Base Class) — `js/cad/Feature.js`
 
-The parametric system is based on a **feature tree** that maintains an ordered list of modeling operations. Each feature:
-- Has explicit dependencies on previous features
-- Automatically recalculates when modified
-- Can be suppressed (temporarily disabled)
-- Can be reordered (with dependency validation)
-
-### Core Classes
-
-#### Feature (Base Class)
-**Location:** `js/cad/Feature.js`
-
-Abstract base class for all parametric features. Provides:
-- **Dependency tracking**: Features declare which other features they depend on
-- **Execution**: `execute(context)` method produces geometry
-- **State management**: Suppressed, error states
-- **Serialization**: Full save/load support
-
-#### FeatureTree
-**Location:** `js/cad/FeatureTree.js`
-
-Manages the ordered list of features and handles:
-- **Feature execution**: Runs features in dependency order
-- **Recursive recalculation**: When a feature changes, all dependent features automatically recalculate
-- **Dependency validation**: Ensures features are ordered correctly
-- **Feature reordering**: Move features with automatic dependency checking
-- **Result caching**: Stores execution results for each feature
-
-**Key Methods:**
-```javascript
-const tree = new FeatureTree();
-tree.addFeature(feature);              // Add feature to tree
-tree.removeFeature(featureId);         // Remove feature (checks dependencies)
-tree.reorderFeature(featureId, newIndex); // Reorder with validation
-tree.markModified(featureId);          // Trigger recalculation from this feature
-tree.executeAll();                      // Execute all features
 ```
+Feature
+  ├─ id: string (feature_N)
+  ├─ name, type, suppressed, visible
+  ├─ dependencies: string[]
+  ├─ children: string[]
+  ├─ execute(context) → result
+  └─ canExecute(context) → bool
+```
+
+### FeatureTree — `js/cad/FeatureTree.js`
+
+Manages ordered features with dependency-driven recalculation:
+
+- `addFeature(feature, index?)` — Insert with dependency validation
+- `removeFeature(featureId)` — Remove (blocks if others depend on it)
+- `recalculateFrom(featureId)` — Recompute this + all dependents
+- `executeAll()` — Full rebuild
 
 ### Feature Types
 
-#### SketchFeature
-**Location:** `js/cad/SketchFeature.js`
+| Feature | File | Params |
+|---------|------|--------|
+| SketchFeature | `SketchFeature.js` | plane (origin + axes), profile extraction |
+| ExtrudeFeature | `ExtrudeFeature.js` | distance, direction, symmetric, taper, operation (new/add/subtract/intersect) |
+| ExtrudeCutFeature | `ExtrudeCutFeature.js` | extends ExtrudeFeature, defaults to subtract |
+| MultiSketchExtrudeFeature | `MultiSketchExtrudeFeature.js` | array of {sketchId, distance, direction}, unions result |
+| RevolveFeature | `RevolveFeature.js` | angle, segments, axis, operation |
+| ChamferFeature | `ChamferFeature.js` | distance, edgeKeys[] |
+| FilletFeature | `FilletFeature.js` | radius, segments, edgeKeys[] |
+| StepImportFeature | `StepImportFeature.js` | STEP file data, parsed TopoBody |
 
-Represents a 2D sketch on a plane. Features:
-- Wraps a `Sketch` object with 2D geometry and constraints
-- Defines sketch plane in 3D space (origin, normal, axes)
-- Extracts closed profiles for use in 3D operations
-- No dependencies (base feature)
+### Part — `js/cad/Part.js`
 
-**Usage:**
-```javascript
-const sketchFeature = new SketchFeature('MySketch');
-sketchFeature.sketch.addSegment(0, 0, 100, 0);
-sketchFeature.sketch.addSegment(100, 0, 100, 50);
-// ... complete the profile
+Top-level container for parametric modeling:
+
+- `addSketch(sketch, plane)` → SketchFeature
+- `extrude(sketchId, distance, opts)` → ExtrudeFeature
+- `revolve(sketchId, angle, opts)` → RevolveFeature
+- `chamfer(edgeKeys, distance)` → ChamferFeature
+- `fillet(edgeKeys, radius)` → FilletFeature
+- `importSTEP(stepData)` → StepImportFeature
+- `getFinalGeometry()` → executes tree, returns combined solid
+
+State: featureTree, customPlanes, originPlanes (XY/XZ/YZ),
+tessellationConfig, material properties, computed mass/volume/centerOfMass.
+
+---
+
+## Exact Geometry Kernel
+
+### B-Rep Topology — `js/cad/BRepTopology.js`
+
+Production-grade topology graph:
+
+```
+TopoBody
+  └─ TopoShell (closed: bool)
+       └─ TopoFace
+            ├─ surface: NurbsSurface
+            ├─ surfaceType: PLANE | CYLINDER | CONE | SPHERE | TORUS |
+            │                EXTRUSION | REVOLUTION | BSPLINE
+            ├─ outerLoop: TopoLoop
+            │    └─ TopoCoEdge[] (oriented half-edges)
+            │         └─ TopoEdge
+            │              ├─ curve: NurbsCurve
+            │              ├─ startVertex: TopoVertex {x,y,z}
+            │              └─ endVertex: TopoVertex {x,y,z}
+            └─ innerLoops: TopoLoop[]
 ```
 
-#### ExtrudeFeature
-**Location:** `js/cad/ExtrudeFeature.js`
+### NURBS — `js/cad/NurbsCurve.js`, `js/cad/NurbsSurface.js`
 
-Extrudes a 2D sketch profile to create 3D solid geometry. Features:
-- Depends on a SketchFeature
-- Configurable distance, direction, and symmetry
-- Generates 3D vertices, faces, and edges
-- Supports boolean operations (new, add, subtract, intersect)
+**NurbsCurve**: degree, controlPoints, knots, weights. Methods: `evaluate(u)`,
+`evaluateDerivative(u)`, `tessellate(segments)`, `arcLength()`,
+`serialize()`/`deserialize()`. Cox-de Boor basis evaluation.
 
-**Usage:**
-```javascript
-const extrudeFeature = new ExtrudeFeature('Extrude1', sketchFeatureId, 25);
-extrudeFeature.setDistance(50); // Modify and trigger recalculation
+**NurbsSurface**: degreeU/V, control point grid (row-major), knotsU/V, weights.
+Methods: `evaluate(u,v)`, `normal(u,v)`, `closestPointUV(point, gridRes, uvHint)`,
+`tessellate(segsU, segsV)`, `serialize()`/`deserialize()`.
+
+Both support WASM-accelerated tessellation with automatic JS fallback.
+
+### Boolean Operations
+
+**Dual pipeline** dispatched by `CSG.js`:
+
+| Mode | Implementation | When Used |
+|------|----------------|-----------|
+| Exact B-Rep | `BooleanKernel.js` | Both operands have `TopoBody` |
+| Mesh BSP | `CSG.js` | Fallback for mesh-only geometry |
+
+Exact pipeline (`BooleanKernel.exactBooleanOp`):
+1. Intersect candidate face pairs → exact curves
+2. Split faces by intersection curves (`FaceSplitter.js`)
+3. Classify fragments as inside/outside
+4. Stitch into shells (`ShellBuilder.js`)
+5. Validate closure & orientation (`BRepValidator.js`)
+
+Supporting modules: `CurveCurveIntersect.js`, `CurveSurfaceIntersect.js`,
+`SurfaceSurfaceIntersect.js`, `Intersections.js` (dispatch).
+
+### Tessellation — `js/cad/Tessellation.js`
+
+Converts exact B-Rep to renderable triangle mesh:
+
+- `tessellateBody(body, config)` — Full body → mesh
+- `tessellateFace(face, config)` — Single face → triangles
+- `tessellateForSTL(body)` — Export-quality mesh
+
+Uses ear-clipping triangulation, adaptive subdivision for curved surfaces,
+and WASM-accelerated NURBS evaluation when available.
+
+**TessellationConfig** — `js/cad/TessellationConfig.js`:
+
+| Preset | curveSegments | surfaceSegments |
+|--------|---------------|-----------------|
+| draft  | 8             | 4               |
+| normal | 16            | 8               |
+| fine   | 32            | 16              |
+| ultra  | 64            | 32              |
+
+---
+
+## STEP Import/Export
+
+### Import — `js/cad/StepImport.js`
+
+Two-phase design: topology first, tessellation second.
+
+```
+parseSTEPTopology(stepString)         → TopoBody (exact, no mesh)
+  1. _parseEntities()                 Parse DATA section
+  2. _resolveEntities()               Resolve reference graph
+  3. _findShells()                    Find MANIFOLD_SOLID_BREP / CLOSED_SHELL
+  4. _buildFaceTopology()             Build TopoFace with NurbsSurface, NurbsCurve
+
+importSTEP(stepString, opts)          → { body, vertices, faces }
+  calls parseSTEPTopology() then tessellates for display
 ```
 
-#### RevolveFeature
-**Location:** `js/cad/RevolveFeature.js`
+Supported STEP entities: MANIFOLD_SOLID_BREP, CLOSED_SHELL, OPEN_SHELL,
+ADVANCED_FACE, FACE_BOUND, EDGE_LOOP, ORIENTED_EDGE, EDGE_CURVE, VERTEX_POINT,
+LINE, CIRCLE, ELLIPSE, B_SPLINE_CURVE_WITH_KNOTS, SURFACE_CURVE,
+PLANE, CYLINDRICAL_SURFACE, CONICAL_SURFACE, SPHERICAL_SURFACE,
+TOROIDAL_SURFACE, B_SPLINE_SURFACE_WITH_KNOTS.
 
-Revolves a 2D sketch profile around an axis to create 3D geometry. Features:
-- Depends on a SketchFeature
-- Configurable angle (partial or full 360°)
-- Configurable revolution axis
-- Generates 3D surface with specified segment count
+### Export — `js/cad/StepExport.js`
 
-**Usage:**
-```javascript
-const revolveFeature = new RevolveFeature('Revolve1', sketchFeatureId, Math.PI * 2);
-revolveFeature.setAngle(Math.PI); // 180° revolution
-revolveFeature.setAxis({x: 0, y: 0}, {x: 0, y: 1}); // Custom axis
-```
+`exportSTEP(body, opts)` → ISO 10303-21 string (AP203/AP214/AP242).
 
-### Parametric Behavior
+Writes complete entity graph: MANIFOLD_SOLID_BREP, ADVANCED_FACE, EDGE_CURVE,
+all surface types, B-spline curves/surfaces with rational variants.
 
-#### Automatic Recalculation
+---
 
-When a feature is modified, the system automatically:
-1. Marks the feature as modified
-2. Recalculates the feature
-3. Recalculates all features that depend on it (recursively)
-4. Updates the final geometry
-
-**Example:**
-```javascript
-// Modify a sketch
-part.modifyFeature(sketchFeature.id, (feature) => {
-  feature.sketch.addSegment(x1, y1, x2, y2);
-});
-// All operations using this sketch automatically recalculate!
-```
-
-#### Dependency Tracking
-
-Features explicitly declare their dependencies:
-```javascript
-const extrudeFeature = new ExtrudeFeature('Extrude1', sketchFeatureId, 50);
-// Automatically adds sketchFeatureId as a dependency
-```
-
-The system validates:
-- Dependencies exist before adding features
-- Reordering doesn't break dependencies
-- Features can't be deleted if others depend on them
-
-#### Feature Suppression
-
-Features can be temporarily disabled:
-```javascript
-feature.suppress();    // Disable feature
-feature.unsuppress();  // Re-enable feature
-```
-
-Suppressed features:
-- Don't execute
-- Don't produce geometry
-- Allow dependent features to execute if they have fallbacks
-
-### Sketch (2D Drawing Interface)
-
-**Location:** `js/cad/Sketch.js`
-
-The `Sketch` class represents a 2D drawing plane with geometric primitives and constraints. It wraps the existing `Scene` class and provides:
-
-- **Metadata**: Name, description, created/modified timestamps
-- **2D Geometry**: Points, segments, circles, arcs
-- **Constraints**: Parametric relationships between geometry
-- **Serialization**: Full save/load support
-
-**Usage:**
-```javascript
-import { Sketch } from './js/cad/Sketch.js';
-
-const sketch = new Sketch();
-sketch.name = 'MySketch';
-sketch.addSegment(0, 0, 100, 0);
-sketch.addCircle(50, 50, 25);
-
-// Serialize for storage
-const data = sketch.serialize();
-
-// Restore from data
-const restored = Sketch.deserialize(data);
-```
-
-### Part (3D Part Design with Parametric Features)
-
-**Location:** `js/cad/Part.js`
-
-The `Part` class now fully supports parametric 3D solid modeling with a feature tree:
-
-- **Feature Tree**: Ordered list of parametric features
-- **Sketches**: Multiple 2D sketches on different planes
-- **3D Operations**:
-  - ✅ Extrude - extrude 2D profiles to 3D
-  - ✅ Revolve - revolve profiles around an axis
-  - ⏳ Fillets, chamfers (future)
-  - ⏳ Boolean operations (future)
-- **Material Properties**: Density, color, texture
-- **Physical Properties**: Mass, volume, center of mass
-- **Recursive Recalculation**: Changing any feature automatically updates all dependent features
-
-**Usage:**
-```javascript
-import { Part } from './js/cad/Part.js';
-
-const part = new Part('MyPart');
-
-// Add a sketch
-const sketch = new Sketch();
-sketch.addSegment(0, 0, 100, 0);
-sketch.addSegment(100, 0, 100, 50);
-sketch.addSegment(100, 50, 0, 50);
-sketch.addSegment(0, 50, 0, 0);
-
-const sketchFeature = part.addSketch(sketch);
-
-// Extrude the sketch
-const extrudeFeature = part.extrude(sketchFeature.id, 25);
-
-// Modify and watch automatic recalculation
-part.modifyFeature(extrudeFeature.id, (feature) => {
-  feature.setDistance(50);
-});
-
-// Get final geometry
-const geometry = part.getFinalGeometry();
-console.log('Vertices:', geometry.geometry.vertices.length);
-console.log('Faces:', geometry.geometry.faces.length);
-```
-
-### Assembly (Multi-Part Design - Stub)
-
-**Location:** `js/cad/Assembly.js`
-
-The `Assembly` class supports multi-part assemblies with positioning and constraints. Currently a stub with planned features:
-
-- **Component Management**: Parts and sub-assemblies with transforms
-- **Assembly Constraints** (future):
-  - Mate, align, tangent constraints
-  - Distance, angle constraints
-- **Visualization** (future):
-  - Exploded views
-  - Section views
-- **BOM** (future): Bill of materials generation
-- **Analysis** (future): Interference detection, motion simulation
-
-**Usage (future):**
-```javascript
-import { Assembly } from './js/cad/Assembly.js';
-
-const assembly = new Assembly('MyAssembly');
-const part1 = new Part('Bracket');
-const part2 = new Part('Bolt');
-
-const comp1 = assembly.addComponent(part1);
-const comp2 = assembly.addComponent(part2, {
-  position: { x: 100, y: 0, z: 0 },
-  rotation: { x: 0, y: 0, z: 0 }
-});
-
-assembly.addMate(comp1, comp2, 'coincident'); // Future implementation
-```
-
-## Current State
-
-### What Works Now:
-- ✅ **Sketch**: Fully functional 2D drawing interface
-- ✅ **Part**: Parametric feature tree with dependency tracking
-- ✅ **SketchFeature**: 2D sketches as features
-- ✅ **ExtrudeFeature**: Extrude sketches to 3D solids
-- ✅ **RevolveFeature**: Revolve sketches around an axis
-- ✅ **Recursive Recalculation**: Modifying features triggers automatic updates
-- ✅ **Feature Management**: Add, remove, reorder, suppress features
-- ✅ **Serialization**: All classes support save/load
-- ✅ **Assembly**: Basic structure and component management
-
-### What's Coming:
-- ⏳ **More 3D Operations**: Fillet, chamfer, sweep, loft
-- ⏳ **Boolean Operations**: Union, subtract, intersect using CSG
-- ⏳ **Assembly Constraints**: Mates, alignments
-- ✅ **3D Rendering**: AssemblyScript WASM WebGL rendering engine
-- ⏳ **Export Formats**: STEP, IGES, STL
-
-## Integration with Existing Code
-
-The parametric system integrates with the existing application:
-
-- The `Scene` class remains unchanged and continues to work
-- The `Sketch` class wraps `Scene` without modifying it
-- All existing tools and features work exactly as before
-
-## WASM Rendering Engine
-
-The rendering engine uses a custom **AssemblyScript → WASM** pipeline that interfaces WebGL directly.
+## WASM Acceleration Layer
 
 ### Architecture
 
-```
-AssemblyScript (assembly/)     JS (js/)
-┌────────────────────┐     ┌──────────────────────┐
-│ Scene state         │     │ WasmRenderer          │
-│ Camera (ortho/persp)│◄────│ (wasm-renderer.js)    │
-│ Geometry generators │     │  - loads WASM module   │
-│ Command buffer      │────►│  - manages lifecycle   │
-│ (batched WebGL cmds)│     │  - 2D overlay canvas   │
-└────────────────────┘     └──────────┬───────────┘
-                                      │
-                           ┌──────────▼───────────┐
-                           │ WebGLExecutor         │
-                           │ (webgl-executor.js)   │
-                           │  - WebGL2 context     │
-                           │  - Shader programs    │
-                           │  - Executes batched   │
-                           │    draw commands       │
-                           └──────────────────────┘
-```
+The WASM module is compiled from AssemblyScript (`assembly/`) to `build/release.js`.
+It accelerates three areas:
 
-### Key Components
+| Area | JS Module | WASM Module | Functions |
+|------|-----------|-------------|-----------|
+| NURBS evaluation | NurbsCurve.js, NurbsSurface.js | assembly/nurbs.ts | tessellate, evaluate, normal |
+| 2D rendering | wasm-renderer.js | assembly/render2d.ts | Entity rendering, command buffer |
+| Constraint solving | Solver.js | assembly/solver.ts | Gauss-Seidel relaxation |
 
-- **`assembly/`** — AssemblyScript source compiled to WASM
-  - `math.ts` — Vec3, Mat4, Color types
-  - `camera.ts` — Perspective/orthographic camera
-  - `commands.ts` — Command buffer protocol (batched WebGL calls)
-  - `geometry.ts` — Geometry generators (box, grid, axes, lines)
-  - `scene.ts` — Scene graph with nodes
-  - `index.ts` — Exported WASM API functions
+### WASM Bridge — `js/cad/WasmTessellation.js`
 
-- **`js/webgl-executor.js`** — Processes the command buffer and executes WebGL2 calls
-- **`js/wasm-renderer.js`** — WASM-backed renderer for 2D and 3D views
+Singleton `wasmTessellation` object:
 
-### Command Protocol
+- `init()` — Load WASM module (async, call once at startup)
+- `isAvailable()` — Check if loaded
+- `tessellateCurve(curve, segments)` → point array
+- `tessellateSurface(surface, segsU, segsV)` → triangle mesh
+- `evaluateCurve(curve, u)` → single point
+- `evaluateSurfaceNormal(surface, u, v)` → unit normal
 
-The WASM module produces a flat `Float32Array` command buffer with encoded WebGL operations:
+Data marshalling: JS passes typed arrays (Float64Array) to WASM via
+`__lowerTypedArray`; results are read from WASM memory buffer pointers.
 
-| Command | ID | Data |
-|---------|-----|------|
-| END | 0 | — |
-| CLEAR | 1 | r, g, b, a |
-| SET_PROGRAM | 2 | program index |
-| SET_MATRIX | 3 | 16 floats (MVP) |
-| SET_COLOR | 4 | r, g, b, a |
-| DRAW_TRIANGLES | 5 | count, vertices+normals |
-| DRAW_LINES | 6 | count, vertices |
-| DRAW_POINTS | 7 | count, pointSize, vertices |
-| SET_LINE_DASH | 8 | dashSize, gapSize |
-| SET_DEPTH_TEST | 9 | enabled (0/1) |
-| SET_LINE_WIDTH | 10 | width |
+**Init sequencing** (`main.js`): WASM init is awaited before `new App()` to
+guarantee WASM is ready before any project restore triggers tessellation.
+
+### Assembly/ Source Files
+
+| File | Purpose |
+|------|---------|
+| index.ts | WASM entry point, exported API |
+| math.ts | Vec3, Mat4, Color structs |
+| camera.ts | Perspective/orthographic camera |
+| commands.ts | Command buffer protocol |
+| geometry.ts | Box, grid, axes generation |
+| scene.ts | Scene graph with nodes |
+| entities.ts | Entity storage with bitflags |
+| nurbs.ts | NURBS curve/surface evaluation & tessellation |
+| render2d.ts | 2D sketch rendering |
+| solver.ts | Constraint solver (10 constraint types) |
+| tessellation.ts | Ear-clipping triangulation, mesh metrics |
 
 ### Building
 
 ```bash
-npm run asbuild          # Build both debug and release WASM
+npm run asbuild          # Build debug + release WASM
 npm run asbuild:release  # Build optimized WASM only
 ```
 
+---
+
+## Rendering Pipeline
+
+### 3D Rendering
+
+```
+Part geometry (TopoBody + mesh)
+  ↓
+WasmRenderer.render()
+  ├─ buildMeshRenderData()      (silhouette edges, normals)
+  ├─ computeOrbitMvp()          (orbit camera → MVP matrix)
+  └─ emit command buffer
+     ↓
+WebGLExecutor.execute(commands)
+  ├─ Program 0: solid (vertex lighting + MVP + normal)
+  ├─ Program 1: line/point (no lighting)
+  └─ Program 2: diagnostic (backface overlay)
+```
+
+Command buffer protocol — flat `Float32Array` with encoded WebGL ops:
+
+| Command | ID |
+|---------|-----|
+| END | 0 |
+| CLEAR | 1 |
+| SET_PROGRAM | 2 |
+| SET_MATRIX | 3 |
+| SET_COLOR | 4 |
+| DRAW_TRIANGLES | 5 |
+| DRAW_LINES | 6 |
+| DRAW_POINTS | 7 |
+| SET_LINE_DASH | 8 |
+| SET_DEPTH_TEST | 9 |
+| SET_LINE_WIDTH | 10 |
+| SET_DEPTH_WRITE | 11 |
+
+### 2D Rendering
+
+2D sketch view uses the same WASM command buffer, rendered by `render2d.ts`.
+`Viewport` (`viewport.js`) handles pan/zoom transforms. Canvas 2D fallback
+available via `canvas-command-executor.js`.
+
+---
+
+## 2D Sketch System
+
+### Scene — `js/cad/Scene.js`
+
+Low-level 2D primitive manager: points (`PPoint`), segments (`PSegment`),
+circles (`PCircle`), arcs (`PArc`), splines (`PSpline`), text (`TextPrimitive`),
+dimensions (`DimensionPrimitive`). Manages constraint storage and solver integration.
+
+### Sketch — `js/cad/Sketch.js`
+
+High-level wrapper over `Scene` with:
+- Plane definition (origin, x/y/z axes)
+- `extractProfiles()` — trace closed loops for 3D operations
+- `solve()` — run constraint solver
+- Delegates to Scene for primitive management
+
+### Constraint Solver — `js/cad/Solver.js`
+
+Gauss-Seidel iterative relaxation (maxIter=200, tol=1e-6):
+
+10 constraint types: Coincident, Distance, Fixed, Horizontal, Vertical,
+Parallel, Perpendicular, EqualLength, Tangent, Angle.
+
+Parametric variables supported with formula evaluation (+, -, *, /, parens).
+WASM mirror in `assembly/solver.ts`.
+
+---
+
+## File Formats
+
+| Format | Import | Export | Module |
+|--------|--------|--------|--------|
+| STEP (ISO 10303) | `StepImport.js` | `StepExport.js` | Full B-Rep topology |
+| DXF | `dxf/import.js` | `dxf/export.js` | 2D geometry |
+| .cmod | `cmod.js` | `cmod.js` | Native project format (JSON) |
+
+**.cmod** (CAD Modeller Open Design): JSON-based project file containing feature
+tree, sketches, part state, camera, workspace mode, and metadata. Version 1.
+
+---
+
+## Persistence & History
+
+**persist.js**: Debounced (500ms) auto-save to LocalStorage. Serializes scene,
+part, orbit camera, workspace mode, named scenes. `loadProject()` restores on
+startup.
+
+**history.js**: Undo/redo via deep-copy JSON snapshots (max 50). Snapshot
+format: `{ scene, part }`.
+
+---
+
+## Application Shell — `js/main.js`
+
+The `App` class (~9K lines) is the top-level state machine managing:
+- Workspace modes (2D sketch, 3D part design)
+- Tool selection and dispatch
+- File operations (new, open, save, import/export)
+- UI panels (feature tree, parameters, layers, DXF export)
+- 3D orbit camera and face/edge selection
+- Interaction recording/playback
+
+Supporting modules: `part-manager.js` (workflow orchestration), `state.js`
+(global singleton), `snap.js` (grid/object snapping), `logger.js` (leveled
+console output).
+
+### UI Modules — `js/ui/`
+
+| Module | Purpose |
+|--------|---------|
+| featurePanel.js | Feature tree panel |
+| parametersPanel.js | Feature parameter editing |
+| featureIcons.js | SVG icons per feature type |
+| popup.js | Modal dialogs |
+| contextMenu.js | Right-click context menu |
+| dxfExportPanel.js | DXF export options |
+
+---
+
 ## Testing
 
-Run the parametric system test:
 ```bash
-npm run test:parametric
+npm test                  # Full test suite
+npm run test:parametric   # Parametric feature tests
 ```
 
-Run the WASM module test:
-```bash
-npm test
-```
+25+ test files covering:
 
-This demonstrates:
-- Creating sketches and adding them as features
-- Extruding and revolving sketches
-- Modifying features and triggering recalculation
-- Feature suppression
-- Dependency tracking
-- Serialization and deserialization
+| Area | Tests |
+|------|-------|
+| Geometry | test-nurbs, test-wasm-tessellation |
+| Features | test-exact-extrude, test-exact-revolve, test-multi-body-chamfer-fillet |
+| Booleans | test-boolean-analytic, test-boolean-nurbs, test-csg-tjunction-fix |
+| Topology | test-brep-topology, test-coplanar-merge |
+| STEP | test-step-import, test-step-export |
+| Sketching | test-sketch-drag, test-spline-multi-extrude, test-multi-sketch-planes |
+| I/O | test-cmod-import-export, test-geometry-persistence |
+| UI | test-ui-workflow, test-face-selection, test-interaction-recorder |
+| Patterns | test-mirror-pattern |
 
-## Development Roadmap
+---
 
-1. Application uses `Scene` directly through `state.scene` for 2D sketching
-2. Application uses `Part` with `FeatureTree` for 3D modeling
-3. 3D features will use `Part` and `Assembly` with multiple `Sketch` instances
+## Performance Architecture
+
+### STEP Import Optimizations
+
+Hot-path functions in `StepImport.js` and `CSG.js` use integer math for hash key
+generation (`Math.round(v * 1e6)` instead of `Number.toFixed()`) to avoid
+allocating formatted strings in inner loops.
+
+Adaptive subdivision (`_subdivideBSplineTriangles`) propagates UV coordinates on
+split vertices so that `closestPointUV` can skip its 289-point grid search and
+go directly to Newton-Raphson refinement via UV hints.
+
+`computeFeatureEdges` in `CSG.js` skips the O(n²) T-junction analysis for STEP
+topology faces (identified by `topoFaceId`) since their boundary edges are
+suppressed downstream anyway.
+
+### Tessellation
+
+WASM-accelerated NURBS evaluation (Cox-de Boor basis + tensor products) for
+curve and surface tessellation. Falls back to identical JS implementations when
+WASM is unavailable. The WASM module loads asynchronously at startup and is
+guaranteed ready before any tessellation occurs.
+
+---
+
+## Dependencies
+
+- **AssemblyScript** 0.28.9 — WASM compiler (devDependency)
+- **@napi-rs/canvas** 0.1.68 — Headless canvas for CLI tools (devDependency)
+- Zero runtime dependencies
