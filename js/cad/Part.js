@@ -11,6 +11,7 @@ import { FeatureTree } from './FeatureTree.js';
 import { SketchFeature } from './SketchFeature.js';
 import { ExtrudeFeature } from './ExtrudeFeature.js';
 import { ExtrudeCutFeature } from './ExtrudeCutFeature.js';
+import { MultiSketchExtrudeFeature } from './MultiSketchExtrudeFeature.js';
 import { RevolveFeature } from './RevolveFeature.js';
 import { ChamferFeature } from './ChamferFeature.js';
 import { FilletFeature } from './FilletFeature.js';
@@ -669,6 +670,8 @@ export class Part {
             return ExtrudeFeature.deserialize(featureData);
           case 'extrude-cut':
             return ExtrudeCutFeature.deserialize(featureData);
+          case 'multi-sketch-extrude':
+            return MultiSketchExtrudeFeature.deserialize(featureData);
           case 'revolve':
             return RevolveFeature.deserialize(featureData);
           case 'chamfer':

@@ -61,6 +61,11 @@ export class Sketch {
     return this.scene.addArc(cx, cy, radius, startAngle, endAngle, options);
   }
 
+  addSpline(controlCoords, options) {
+    this.modified = new Date();
+    return this.scene.addSpline(controlCoords, options);
+  }
+
   // Constraint management
   addConstraint(c) {
     this.modified = new Date();
@@ -95,6 +100,11 @@ export class Sketch {
   removeArc(arc) {
     this.modified = new Date();
     return this.scene.removeArc(arc);
+  }
+
+  removeSpline(spl) {
+    this.modified = new Date();
+    return this.scene.removeSpline(spl);
   }
 
   removePrimitive(prim) {
@@ -147,6 +157,7 @@ export class Sketch {
   get segments() { return this.scene.segments; }
   get arcs() { return this.scene.arcs; }
   get circles() { return this.scene.circles; }
+  get splines() { return this.scene.splines; }
   get constraints() { return this.scene.constraints; }
   get texts() { return this.scene.texts; }
   get dimensions() { return this.scene.dimensions; }

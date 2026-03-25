@@ -3,6 +3,7 @@ import { PPoint } from './Point.js';
 import { PSegment } from './Segment.js';
 import { PArc } from './ArcPrimitive.js';
 import { PCircle } from './CirclePrimitive.js';
+import { PSpline } from './SplinePrimitive.js';
 import { TextPrimitive } from './TextPrimitive.js';
 import { DimensionPrimitive } from './DimensionPrimitive.js';
 import { solve } from './Solver.js';
@@ -26,6 +27,7 @@ export class Scene {
     this.segments = [];     // PSegment[]
     this.arcs = [];         // PArc[]
     this.circles = [];      // PCircle[]
+    this.splines = [];      // PSpline[]
     this.constraints = [];  // Constraint[]
     this.texts = [];        // TextPrimitive[] (pass-through, non-constraint)
     this.dimensions = [];   // DimensionPrimitive[] (pass-through)
@@ -89,6 +91,24 @@ export class Scene {
     return a;
   }
 
+  /**
+   * Add a spline through the given control-point coordinates.
+   * @param {Array<{x: number, y: number}>} controlCoords - 2D coordinates for control points
+   * @param {Object} [opts] - Options (merge, layer, color, construction)
+   * @returns {PSpline}
+   */
+  addSpline(controlCoords, { merge = true, layer = '0', color = null, construction = false } = {}) {
+    const pts = controlCoords.map(c =>
+      merge ? this.getOrCreatePoint(c.x, c.y) : this.addPoint(c.x, c.y)
+    );
+    const spl = new PSpline(pts);
+    spl.layer = layer;
+    spl.color = color;
+    spl.construction = construction;
+    this.splines.push(spl);
+    return spl;
+  }
+
   // -----------------------------------------------------------------------
   // Constraint management
   // -----------------------------------------------------------------------
@@ -123,6 +143,7 @@ export class Scene {
     this.segments = this.segments.filter(s => s.p1 !== pt && s.p2 !== pt);
     this.circles = this.circles.filter(c => c.center !== pt);
     this.arcs = this.arcs.filter(a => a.center !== pt);
+    this.splines = this.splines.filter(spl => !spl.points.includes(pt));
     // Remove constraints referencing this point
     this.constraints = this.constraints.filter(c => !c.involvedPoints().includes(pt));
     // Remove the point itself
@@ -159,12 +180,22 @@ export class Scene {
     this._cleanOrphanPoints();
   }
 
+  removeSpline(spl) {
+    this.splines = this.splines.filter(s => s !== spl);
+    this.constraints = this.constraints.filter(c => {
+      if (c.sourceA === spl || c.sourceB === spl) return false;
+      return true;
+    });
+    this._cleanOrphanPoints();
+  }
+
   removePrimitive(prim) {
     switch (prim.type) {
       case 'point':     this.removePoint(prim); break;
       case 'segment':   this.removeSegment(prim); break;
       case 'circle':    this.removeCircle(prim); break;
       case 'arc':       this.removeArc(prim); break;
+      case 'spline':    this.removeSpline(prim); break;
       case 'dimension':
         this.dimensions = this.dimensions.filter(d => d !== prim);
         // Also remove from constraints if it was acting as one
@@ -179,6 +210,7 @@ export class Scene {
     for (const s of this.segments) { used.add(s.p1); used.add(s.p2); }
     for (const c of this.circles) { used.add(c.center); }
     for (const a of this.arcs) { used.add(a.center); }
+    for (const spl of this.splines) { for (const p of spl.points) used.add(p); }
     this.points = this.points.filter(p => used.has(p));
     this.constraints = this.constraints.filter(c =>
       c.involvedPoints().every(pt => this.points.includes(pt))
@@ -205,6 +237,7 @@ export class Scene {
     yield* this.segments;
     yield* this.circles;
     yield* this.arcs;
+    yield* this.splines;
     yield* this.texts;
     yield* this.dimensions;
   }
@@ -215,6 +248,7 @@ export class Scene {
     yield* this.segments;
     yield* this.circles;
     yield* this.arcs;
+    yield* this.splines;
     yield* this.texts;
     yield* this.dimensions;
   }
@@ -250,6 +284,7 @@ export class Scene {
     for (const s of this.segments) if (s.p1 === pt || s.p2 === pt) out.push(s);
     for (const c of this.circles) if (c.center === pt) out.push(c);
     for (const a of this.arcs) if (a.center === pt) out.push(a);
+    for (const spl of this.splines) if (spl.points.includes(pt)) out.push(spl);
     return out;
   }
 
@@ -301,6 +336,7 @@ export class Scene {
     this.segments = [];
     this.arcs = [];
     this.circles = [];
+    this.splines = [];
     this.constraints = [];
     this.texts = [];
     this.dimensions = [];
@@ -319,6 +355,7 @@ export class Scene {
       segments: this.segments.map(s => s.serialize()),
       circles: this.circles.map(c => c.serialize()),
       arcs: this.arcs.map(a => a.serialize()),
+      splines: this.splines.map(s => s.serialize()),
       // Exclude dimension-type constraints — they are serialized via dimensions[]
       constraints: this.constraints.filter(c => c.type !== 'dimension').map(c => c.serialize()),
       texts: this.texts.map(t => t.serialize()),
@@ -402,7 +439,24 @@ export class Scene {
       if (d.id > maxPrimId) maxPrimId = d.id;
     }
 
-    // 5. Rebuild texts
+    // 5. Rebuild splines
+    for (const d of (data.splines || [])) {
+      const cps = (d.controlPoints || []).map(id => ptMap.get(id));
+      if (cps.some(p => !p) || cps.length < 2) continue;
+      const spl = new PSpline(cps);
+      spl.id = d.id;
+      spl.layer = d.layer || '0';
+      spl.color = d.color || null;
+      if (d.construction) spl.construction = true;
+      if (d.constructionType) spl.constructionType = d.constructionType;
+      if (d.constructionDash) spl.constructionDash = d.constructionDash;
+      if (d.lineWidth != null) spl.lineWidth = d.lineWidth;
+      scene.splines.push(spl);
+      shapeMap.set(d.id, spl);
+      if (d.id > maxPrimId) maxPrimId = d.id;
+    }
+
+    // 6. Rebuild texts
     for (const d of (data.texts || [])) {
       const t = new TextPrimitive(d.x, d.y, d.text, d.height);
       t.id = d.id;
@@ -413,7 +467,7 @@ export class Scene {
       if (d.id > maxPrimId) maxPrimId = d.id;
     }
 
-    // 6. Rebuild dimensions
+    // 7. Rebuild dimensions
     for (const d of (data.dimensions || [])) {
       const dm = new DimensionPrimitive(d.x1, d.y1, d.x2, d.y2, d.offset, {
         dimType: d.dimType,
@@ -451,7 +505,7 @@ export class Scene {
       if (d.id > maxPrimId) maxPrimId = d.id;
     }
 
-    // 7. Rebuild constraints
+    // 8. Rebuild constraints
     let maxCId = 0;
     for (const d of (data.constraints || [])) {
       const c = Scene._deserializeConstraint(d, ptMap, shapeMap);
@@ -464,10 +518,10 @@ export class Scene {
       }
     }
 
-    // 8. Restore named variables
+    // 9. Restore named variables
     deserializeVariables(data.variables);
 
-    // 9. Reset counters so new primitives get unique IDs
+    // 10. Reset counters so new primitives get unique IDs
     resetPrimitiveIds(maxPrimId + 1);
     resetConstraintIds(maxCId + 1);
 
