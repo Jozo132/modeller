@@ -2836,3 +2836,144 @@ body.workspace-sketch .part-mode-only {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }
 }
+
+/* =========================================================================
+   File Drag-and-Drop overlay
+   ========================================================================= */
+.file-drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 500;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+  animation: drop-fade-in 0.15s ease-out;
+}
+
+.file-drop-overlay.hidden {
+  display: none;
+}
+
+@keyframes drop-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.file-drop-box {
+  border: 2px dashed var(--accent);
+  border-radius: 12px;
+  padding: 40px 60px;
+  text-align: center;
+  color: var(--text-primary);
+  background: var(--bg-panel);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  pointer-events: none;
+}
+
+.file-drop-box .drop-icon {
+  font-size: 48px;
+  margin-bottom: 12px;
+}
+
+.file-drop-box .drop-label {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.file-drop-box .drop-hint {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 6px;
+}
+
+/* DXF import plane selection panel */
+.dxf-import-panel {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 350;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 10px 24px rgba(0,0,0,0.5);
+  padding: 16px;
+  color: var(--text-primary);
+  min-width: 320px;
+}
+
+.dxf-import-panel .dxf-import-title {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
+.dxf-import-panel .dxf-import-info {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+  line-height: 1.4;
+}
+
+.dxf-import-panel .dxf-import-section {
+  margin-bottom: 10px;
+}
+
+.dxf-import-panel .dxf-import-section label {
+  font-size: 11px;
+  font-weight: 500;
+  display: block;
+  margin-bottom: 4px;
+  color: var(--text-secondary);
+}
+
+.dxf-import-panel .dxf-import-section select,
+.dxf-import-panel .dxf-import-section input {
+  width: 100%;
+  background: var(--bg-dark);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 5px 8px;
+  font-size: 12px;
+  outline: none;
+}
+
+.dxf-import-panel .dxf-import-section select:focus,
+.dxf-import-panel .dxf-import-section input:focus {
+  border-color: var(--accent);
+}
+
+.dxf-import-panel .dxf-import-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.dxf-import-panel .dxf-import-actions button {
+  background: transparent;
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 5px 12px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.dxf-import-panel .dxf-import-actions button:hover {
+  background: rgba(255,255,255,0.08);
+}
+
+.dxf-import-panel .dxf-import-actions button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.dxf-import-panel .dxf-import-actions button.primary:hover {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}

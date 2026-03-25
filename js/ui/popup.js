@@ -387,3 +387,59 @@ export function dismissDimensionInput() {
     _removeInlineWidget();
   }
 }
+
+/**
+ * Show a custom dialog with arbitrary buttons. Returns the key of the clicked button, or null if cancelled.
+ *
+ * @param {object} opts
+ * @param {string} opts.title       — Dialog title
+ * @param {string} opts.message     — Body message (supports \n for line breaks)
+ * @param {Array<{key:string, label:string, primary?:boolean}>} opts.buttons — Buttons to show
+ * @param {string} [opts.cancelText] — Cancel button label (default 'Cancel')
+ * @returns {Promise<string|null>}
+ */
+export function showCustomDialog({ title = 'Dialog', message = '', buttons = [], cancelText = 'Cancel' } = {}) {
+  return new Promise((resolve) => {
+    const ui = buildBase({ title, message });
+    if (!ui) { resolve(null); return; }
+
+    const { root, backdrop, modal } = ui;
+    const actions = document.createElement('div');
+    actions.className = 'app-modal-actions';
+    actions.style.flexWrap = 'wrap';
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'app-modal-btn';
+    cancelBtn.textContent = cancelText;
+    actions.appendChild(cancelBtn);
+
+    for (const btn of buttons) {
+      const el = document.createElement('button');
+      el.type = 'button';
+      el.className = 'app-modal-btn' + (btn.primary ? ' primary' : '');
+      el.textContent = btn.label;
+      el.addEventListener('click', () => finish(btn.key));
+      actions.appendChild(el);
+    }
+
+    modal.appendChild(actions);
+
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      document.removeEventListener('keydown', onKeyDown);
+      closeModal(root);
+      resolve(value);
+    };
+
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); finish(null); }
+    };
+
+    document.addEventListener('keydown', onKeyDown);
+    backdrop.addEventListener('click', () => finish(null));
+    cancelBtn.addEventListener('click', () => finish(null));
+  });
+}

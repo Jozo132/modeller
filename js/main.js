@@ -9,13 +9,13 @@ import { getFeatureIconSVG } from './ui/featureIcons.js';
 import { getSnappedPosition } from './snap.js';
 import { undo, redo, takeSnapshot, setPartManager } from './history.js';
 import { downloadDXF, downloadFacesDXF } from './dxf/export.js';
-import { openDXFFile, pickDXFFile, addDXFToScene, dxfBounds } from './dxf/import.js';
+import { openDXFFile, pickDXFFile, addDXFToScene, dxfBounds, parseDXFGeometry } from './dxf/import.js';
 import { importSTEP } from './cad/StepImport.js';
 import { exportSTEP } from './cad/StepExport.js';
 import { downloadCMOD, openCMODFile, projectFromCMOD, setCmodViewport, setCmodPartManager, setCmodRenderer, setCmodWorkspaceModeGetter, setCmodSessionStateGetter, setCmodScenesGetter } from './cmod.js';
 import { debug, info, warn, error } from './logger.js';
 import { loadProject, debouncedSave, clearSavedProject, setViewport, setPartManagerForPersist, setRendererForPersist, setWorkspaceModeGetter, setSessionStateGetter, setScenesGetter } from './persist.js';
-import { showConfirm, showPrompt, showDimensionInput, isModalOpen } from './ui/popup.js';
+import { showConfirm, showPrompt, showDimensionInput, isModalOpen, showCustomDialog } from './ui/popup.js';
 import { DxfExportPanel } from './ui/dxfExportPanel.js';
 import { showContextMenu, closeContextMenu, isContextMenuOpen } from './ui/contextMenu.js';
 import {
@@ -171,6 +171,7 @@ class App {
     this._bindSceneManagerEvents();
     this._syncDiagnosticHatchUI();
     this._applyBarVisibility();
+    this._bindDragDropEvents();
 
     // Register viewport, part manager, renderer, and workspace mode for persistence
     setViewport(this.viewport);
@@ -8647,6 +8648,437 @@ class App {
     this._updateOperationButtons();
     this._scheduleRender();
     this.setStatus('Edit Fillet: Modify edge selection, radius and segments, then Accept.');
+  }
+
+  // =========================================================================
+  // File Drag-and-Drop Import
+  // =========================================================================
+
+  _bindDragDropEvents() {
+    const overlay = document.getElementById('file-drop-overlay');
+    let dragCounter = 0; // track nested dragenter/dragleave
+
+    document.addEventListener('dragenter', (e) => {
+      e.preventDefault();
+      // Only show overlay when files are being dragged
+      if (!e.dataTransfer || !e.dataTransfer.types.includes('Files')) return;
+      dragCounter++;
+      if (dragCounter === 1 && overlay) overlay.classList.remove('hidden');
+    });
+
+    document.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+    });
+
+    document.addEventListener('dragleave', (e) => {
+      e.preventDefault();
+      dragCounter--;
+      if (dragCounter <= 0) {
+        dragCounter = 0;
+        if (overlay) overlay.classList.add('hidden');
+      }
+    });
+
+    document.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dragCounter = 0;
+      if (overlay) overlay.classList.add('hidden');
+
+      const files = e.dataTransfer?.files;
+      if (!files || files.length === 0) return;
+
+      // Process the first file
+      const file = files[0];
+      this._handleDroppedFile(file);
+    });
+  }
+
+  /**
+   * Dispatch a dropped file based on its extension.
+   * @param {File} file
+   */
+  async _handleDroppedFile(file) {
+    const name = file.name.toLowerCase();
+
+    if (name.endsWith('.dxf')) {
+      info('Dropped DXF file', { name: file.name, size: file.size });
+      await this._handleDroppedDXF(file);
+    } else if (name.endsWith('.step') || name.endsWith('.stp')) {
+      info('Dropped STEP file', { name: file.name, size: file.size });
+      await this._handleDroppedSTEP(file);
+    } else if (name.endsWith('.cmod')) {
+      info('Dropped CMOD file', { name: file.name, size: file.size });
+      await this._handleDroppedCMOD(file);
+    } else {
+      this.setStatus(`Unsupported file type: ${file.name}. Supported formats: DXF, STEP, CMOD.`);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Dropped DXF → Sketch creation flow
+  // ---------------------------------------------------------------------------
+
+  async _handleDroppedDXF(file) {
+    const text = await file.text();
+    const items = parseDXFGeometry(text);
+    if (!items || items.length === 0) {
+      this.setStatus('DXF file contains no geometry');
+      return;
+    }
+    const bounds = dxfBounds(items);
+
+    // Ensure Part workspace is active
+    if (this._workspaceMode !== 'part') {
+      this._enterWorkspace('part');
+    }
+
+    // If already sketching on a plane, just add to current sketch
+    if (this._sketchingOnPlane) {
+      await this._dxfImportToCurrentSketch(items, bounds, file.name);
+      return;
+    }
+
+    // Show DXF import panel: pick plane, scale
+    this._showDXFImportPanel(items, bounds, file.name);
+  }
+
+  /**
+   * Show the DXF import panel allowing plane/face selection, scale, then creates sketch.
+   */
+  _showDXFImportPanel(items, bounds, filename) {
+    // Remove any existing panel
+    const existing = document.getElementById('dxf-import-panel');
+    if (existing) existing.remove();
+
+    const panel = document.createElement('div');
+    panel.id = 'dxf-import-panel';
+    panel.className = 'dxf-import-panel';
+
+    // Build face options from current part
+    const part = this._partManager.getPart();
+    const faceOptions = [];
+    if (part) {
+      const geo = part.getFinalGeometry();
+      if (geo && geo.faces) {
+        geo.faces.forEach((face, idx) => {
+          if (!face.isCurved) {
+            const n = face.normal;
+            faceOptions.push({ index: idx, label: `Face ${idx} (${n.x.toFixed(2)}, ${n.y.toFixed(2)}, ${n.z.toFixed(2)})` });
+          }
+        });
+      }
+    }
+
+    panel.innerHTML = `
+      <div class="dxf-import-title">Import DXF to Sketch</div>
+      <div class="dxf-import-info">
+        File: ${filename}<br>
+        ${items.length} entities (${bounds.width.toFixed(1)} × ${bounds.height.toFixed(1)} units)
+      </div>
+      <div class="dxf-import-section">
+        <label>Sketch Plane</label>
+        <select id="dxf-plane-select">
+          <option value="XY">XY Plane (Top)</option>
+          <option value="XZ">XZ Plane (Front)</option>
+          <option value="YZ">YZ Plane (Right)</option>
+          ${faceOptions.map(f => `<option value="FACE:${f.index}">${f.label}</option>`).join('')}
+        </select>
+      </div>
+      <div class="dxf-import-section">
+        <label>Scale Factor</label>
+        <input type="number" id="dxf-scale-input" value="1" min="0.001" step="0.1" />
+      </div>
+      <div class="dxf-import-section">
+        <label>
+          <input type="checkbox" id="dxf-center-check" checked /> Center on origin
+        </label>
+      </div>
+      <div class="dxf-import-actions">
+        <button id="dxf-import-cancel">Cancel</button>
+        <button id="dxf-import-apply" class="primary">Create Sketch</button>
+      </div>
+    `;
+
+    document.body.appendChild(panel);
+
+    // Stop key events from propagating through to tools
+    panel.addEventListener('keydown', (e) => e.stopPropagation());
+    panel.addEventListener('keypress', (e) => e.stopPropagation());
+    panel.addEventListener('keyup', (e) => e.stopPropagation());
+
+    const closePanel = () => { panel.remove(); };
+
+    const cancelBtn = panel.querySelector('#dxf-import-cancel');
+    const applyBtn = panel.querySelector('#dxf-import-apply');
+
+    const onEsc = (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); closePanel(); document.removeEventListener('keydown', onEsc, true); }
+    };
+    document.addEventListener('keydown', onEsc, true);
+
+    cancelBtn.addEventListener('click', () => {
+      closePanel();
+      document.removeEventListener('keydown', onEsc, true);
+    });
+
+    applyBtn.addEventListener('click', () => {
+      const planeSelect = panel.querySelector('#dxf-plane-select');
+      const scaleInput = panel.querySelector('#dxf-scale-input');
+      const centerCheck = panel.querySelector('#dxf-center-check');
+
+      const planeValue = planeSelect.value;
+      const scale = parseFloat(scaleInput.value) || 1;
+      const center = centerCheck.checked;
+
+      document.removeEventListener('keydown', onEsc, true);
+      closePanel();
+
+      // Determine plane or face
+      if (planeValue.startsWith('FACE:')) {
+        const faceIdx = parseInt(planeValue.split(':')[1], 10);
+        this._createDXFSketchOnFace(items, faceIdx, scale, center, filename);
+      } else {
+        this._createDXFSketchOnPlane(items, planeValue, scale, center, filename);
+      }
+    });
+  }
+
+  /**
+   * Create a new sketch on a reference plane and populate with DXF geometry.
+   */
+  _createDXFSketchOnPlane(items, planeName, scale, centerOnOrigin, filename) {
+    // Enter sketch mode on the selected plane
+    this._startSketchOnPlane(planeName);
+
+    // Wait a tick for sketch mode to initialize, then add geometry
+    requestAnimationFrame(() => {
+      const count = addDXFToScene(items, { offsetX: 0, offsetY: 0, scale, centerOnOrigin });
+      takeSnapshot();
+      this._scheduleRender();
+      this.setStatus(`Imported ${count} entities from ${filename} to sketch on ${planeName} plane (scale ${scale})`);
+    });
+  }
+
+  /**
+   * Create a new sketch on a face and populate with DXF geometry.
+   */
+  _createDXFSketchOnFace(items, faceIndex, scale, centerOnOrigin, filename) {
+    const part = this._partManager.getPart();
+    if (!part) return;
+
+    // Build a synthetic face hit for _startSketchOnFace
+    const geo = part.getFinalGeometry();
+    if (!geo || !geo.faces || !geo.faces[faceIndex]) {
+      this.setStatus('Selected face no longer exists');
+      return;
+    }
+
+    const face = geo.faces[faceIndex];
+    // Compute face centroid for hit point
+    const centroid = { x: 0, y: 0, z: 0 };
+    if (face.vertices && face.vertices.length > 0) {
+      for (const v of face.vertices) {
+        centroid.x += v.x; centroid.y += v.y; centroid.z += v.z;
+      }
+      centroid.x /= face.vertices.length;
+      centroid.y /= face.vertices.length;
+      centroid.z /= face.vertices.length;
+    }
+
+    const faceHit = { face, point: centroid, faceIndex };
+    this._startSketchOnFace(faceHit);
+
+    requestAnimationFrame(() => {
+      const count = addDXFToScene(items, { offsetX: 0, offsetY: 0, scale, centerOnOrigin });
+      takeSnapshot();
+      this._scheduleRender();
+      this.setStatus(`Imported ${count} entities from ${filename} to sketch on Face ${faceIndex} (scale ${scale})`);
+    });
+  }
+
+  /**
+   * Add DXF geometry to the current active sketch (already in sketch mode).
+   */
+  async _dxfImportToCurrentSketch(items, bounds, filename) {
+    const scaleStr = await showPrompt({
+      title: 'Import DXF to Current Sketch',
+      message: `File: ${filename}\n${items.length} entities (${bounds.width.toFixed(1)} × ${bounds.height.toFixed(1)})\n\nScale factor:`,
+      defaultValue: '1',
+    });
+    if (scaleStr === null || scaleStr === undefined) return;
+    const scale = parseFloat(scaleStr) || 1;
+
+    const count = addDXFToScene(items, { offsetX: 0, offsetY: 0, scale, centerOnOrigin: true });
+    takeSnapshot();
+    this._scheduleRender();
+    this.setStatus(`Imported ${count} entities from ${filename} (scale ${scale})`);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Dropped STEP → Import as solid body
+  // ---------------------------------------------------------------------------
+
+  async _handleDroppedSTEP(file) {
+    const stepData = await file.text();
+    if (!stepData || !stepData.includes('ISO-10303')) {
+      this.setStatus('Not a valid STEP file');
+      return;
+    }
+
+    // Ask user: import into existing project or create a new project
+    const choice = await showCustomDialog({
+      title: 'Import STEP File',
+      message: `File: ${file.name} (${(file.size / 1024).toFixed(1)} KB)\n\nHow would you like to import this STEP file?`,
+      buttons: [
+        { key: 'new', label: 'New Project', primary: false },
+        { key: 'import', label: 'Import to Current', primary: true },
+      ],
+    });
+
+    if (!choice) return; // cancelled
+
+    if (choice === 'new') {
+      await this._stepImportNewProject(stepData, file.name);
+    } else if (choice === 'import') {
+      await this._stepImportToExisting(stepData, file.name);
+    }
+  }
+
+  /**
+   * Import STEP into a new project (clears existing work).
+   */
+  async _stepImportNewProject(stepData, filename) {
+    // Ask tessellation quality
+    const segStr = await showPrompt({
+      title: 'Import STEP — New Project',
+      message: `File: ${filename}\n\nCurve tessellation segments:`,
+      defaultValue: '16',
+    });
+    if (segStr === null || segStr === undefined) return;
+    const curveSegments = Math.max(3, parseInt(segStr, 10) || 16);
+
+    // Clear and start fresh
+    if (this._workspaceMode === 'part') {
+      this._partManager.createPart(filename.replace(/\.(step|stp)$/i, ''));
+    }
+    this._enterWorkspace('part');
+
+    try {
+      this.setStatus(`Importing ${filename}...`);
+      const feature = this._partManager.importSTEP(stepData, {
+        name: filename.replace(/\.(step|stp)$/i, ''),
+        curveSegments,
+      });
+      takeSnapshot();
+      this._updateNodeTree();
+      this._update3DView();
+      this._updateOperationButtons();
+      this._scheduleRender();
+      debouncedSave();
+      const featureResult = feature.execute({});
+      const nFaces = featureResult?.geometry?.faces?.length || 0;
+      this.setStatus(`Imported ${filename} as new project — ${nFaces} faces (segments: ${curveSegments})`);
+    } catch (err) {
+      error('STEP import failed:', err);
+      this.setStatus(`STEP import failed: ${err.message}`);
+    }
+  }
+
+  /**
+   * Import STEP as a floating solid body into the existing project.
+   * The imported body becomes a separate feature, enabling boolean operations.
+   */
+  async _stepImportToExisting(stepData, filename) {
+    // Ask tessellation quality
+    const segStr = await showPrompt({
+      title: 'Import STEP — Add to Current',
+      message: `File: ${filename}\nThe imported STEP geometry will be added as a floating solid body.\nYou can then use boolean operations to combine it with existing bodies.\n\nCurve tessellation segments:`,
+      defaultValue: '16',
+    });
+    if (segStr === null || segStr === undefined) return;
+    const curveSegments = Math.max(3, parseInt(segStr, 10) || 16);
+
+    // Ensure Part workspace
+    if (this._workspaceMode !== 'part') {
+      this._enterWorkspace('part');
+    }
+
+    try {
+      this.setStatus(`Importing ${filename} as floating body...`);
+      const feature = this._partManager.importSTEP(stepData, {
+        name: filename.replace(/\.(step|stp)$/i, '') + ' (imported)',
+        curveSegments,
+      });
+      takeSnapshot();
+      this._updateNodeTree();
+      this._update3DView();
+      this._updateOperationButtons();
+      this._scheduleRender();
+      debouncedSave();
+      const featureResult = feature.execute({});
+      const nFaces = featureResult?.geometry?.faces?.length || 0;
+      this.setStatus(`Imported ${filename} as floating body — ${nFaces} faces. Select bodies and use boolean operations to combine.`);
+    } catch (err) {
+      error('STEP import failed:', err);
+      this.setStatus(`STEP import failed: ${err.message}`);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Dropped CMOD
+  // ---------------------------------------------------------------------------
+
+  async _handleDroppedCMOD(file) {
+    const confirmed = await showConfirm({
+      title: 'Open CMOD File',
+      message: `Open ${file.name}? This will replace the current project.`,
+      okText: 'Open',
+      cancelText: 'Cancel',
+    });
+    if (!confirmed) return;
+
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      const result = projectFromCMOD(data);
+      if (!result || !result.ok) {
+        this.setStatus('Failed to parse CMOD file');
+        return;
+      }
+
+      // Apply the loaded project (mirror _openCMODProject flow)
+      if (result.part) {
+        this._partManager.deserialize(result.part);
+        if (!this._workspaceMode || this._workspaceMode !== 'part') {
+          this._enterWorkspace('part');
+        }
+        if (result.sessionState) {
+          this._restoreSessionState(result.sessionState);
+        }
+      }
+
+      if (result.orbit && this._renderer3d && !this._sketchingOnPlane) {
+        this._renderer3d.setOrbitState(result.orbit);
+      }
+
+      this._scenes = result.scenes || [];
+
+      this._rebuildLayersPanel();
+      this._rebuildLeftPanel();
+      if (!result.hasViewport && state.entities.length > 0) {
+        this.viewport.fitEntities(state.entities);
+      }
+      this._update3DView();
+      this._updateNodeTree();
+      this._updateOperationButtons();
+      this._scheduleRender();
+      debouncedSave();
+      this.setStatus(`Opened ${file.name}`);
+    } catch (err) {
+      error('CMOD import failed:', err);
+      this.setStatus(`Failed to open ${file.name}: ${err.message}`);
+    }
   }
 }
 
