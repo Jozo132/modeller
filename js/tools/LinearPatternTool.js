@@ -148,7 +148,7 @@ export class LinearPatternTool extends BaseTool {
       scene.addConstraint(new LinearPattern(pairs, seg, i, sp));
     }
 
-    // Mirror segments connecting selected source points
+    // Pattern segments connecting selected source points
     const selectedSet = new Set(this._selectedPoints);
     const segsToPattern = [...scene.segments].filter(s =>
       selectedSet.has(s.p1) && selectedSet.has(s.p2) && s !== seg
