@@ -824,11 +824,19 @@ function _surfaceNormalFromTopology(topoFace, polygon) {
   const { surface, surfaceType } = topoFace;
 
   if (surfaceType === SurfaceType.PLANE) {
-    // For plane surfaces, derive normal from the surface or polygon
+    // For plane surfaces, derive normal from the surface or surfaceInfo
     if (surface) {
       const midU = (surface.uMin + surface.uMax) / 2;
       const midV = (surface.vMin + surface.vMax) / 2;
       return surface.normal(midU, midV);
+    }
+    // Use the analytic plane normal extracted from the STEP PLANE entity.
+    // Do NOT fall back to _computePolygonNormal here — the polygon winding
+    // reflects the face orientation (including FACE_BOUND sense), not the
+    // raw surface normal.  Using the polygon normal and then applying
+    // sameSense in the caller would double-flip it.
+    if (topoFace.surfaceInfo && topoFace.surfaceInfo.type === 'plane') {
+      return { ...topoFace.surfaceInfo.normal };
     }
     return _computePolygonNormal(polygon);
   }
@@ -1489,6 +1497,11 @@ function _extractSurfaceInfo(resolved, surfaceRef) {
   if (!surf) return null;
 
   switch (surf.type) {
+    case 'PLANE': {
+      const axis = _getAxis2Placement3D(resolved, surf.args[1]);
+      if (!axis) return null;
+      return { type: 'plane', origin: axis.origin, normal: axis.zDir };
+    }
     case 'CYLINDRICAL_SURFACE': {
       const axis = _getAxis2Placement3D(resolved, surf.args[1]);
       const radius = Number(surf.args[2]);
