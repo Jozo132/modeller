@@ -1859,6 +1859,10 @@ function _tessellateDoubleArcStrip(polygon, edgeBounds, arcIndices, surfaceInfo,
  * For spheres the point is pushed to the sphere surface along the radial
  * direction from the center; for other surface types a straight-through
  * return is used (no projection).
+ *
+ * @param {{x:number, y:number, z:number}} point - 3D point to project
+ * @param {{type:string, origin:{x:number,y:number,z:number}, radius?:number}} surfaceInfo - Analytic surface definition
+ * @returns {{x:number, y:number, z:number}} Projected point on the surface
  */
 function _projectOntoSurface(point, surfaceInfo) {
   if (surfaceInfo.type === 'sphere') {
@@ -1896,7 +1900,10 @@ function _tessellateMultiArcPatch(polygon, edgeBounds, arcIndices, surfaceInfo, 
 
   // Adaptive subdivision: split the longest edge when its midpoint
   // deviates from the analytic surface by more than a tolerance.
+  // Max depth scales logarithmically; minimum base of 16 ensures at least
+  // 4 levels for small polygons so the sphere curvature is resolved.
   const maxDepth = Math.max(1, Math.ceil(Math.log2(Math.max(16, n))));
+  // Deviation tolerance in model units — matches _subdivideBSplineTriangles
   const deviationTol = 1e-3;
 
   for (let depth = 0; depth < maxDepth; depth++) {

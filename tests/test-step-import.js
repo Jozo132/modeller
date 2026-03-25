@@ -204,7 +204,7 @@ test('box-fillet-3: sphere face vertices lie on the sphere surface', () => {
   const sphereFaces = mesh.faces.filter(f => f.faceGroup === sphereFaceGroup);
   assert.ok(sphereFaces.length > 0, 'Sphere face group should have triangles');
 
-  const TOL = 0.002; // 0.2% of radius-1 tolerance
+  const TOL = 0.002; // tolerance in model units (radius = 1 in this file)
   for (let i = 0; i < sphereFaces.length; i++) {
     for (const v of sphereFaces[i].vertices) {
       const dx = v.x - origin.x, dy = v.y - origin.y, dz = v.z - origin.z;
