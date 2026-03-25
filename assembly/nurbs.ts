@@ -33,8 +33,9 @@ const tessVertsOut: StaticArray<f64> = new StaticArray<f64>(MAX_TESS_VERTS * 3);
 const tessNormalsOut: StaticArray<f64> = new StaticArray<f64>(MAX_TESS_VERTS * 3);
 const tessFacesOut: StaticArray<u32> = new StaticArray<u32>(MAX_TESS_TRIS * 3);
 
-// Curve output buffer: max 1024 points × 3 = 3072 f64
-const MAX_CURVE_PTS: i32 = 1025; // segments + 1, max 1024 segments
+  // Curve output buffer: max 1024 segments + 1 points × 3 = 3075 f64
+const MAX_CURVE_SEGS: i32 = 1024;
+const MAX_CURVE_PTS: i32 = MAX_CURVE_SEGS + 1;
 const curvePtsOut: StaticArray<f64> = new StaticArray<f64>(MAX_CURVE_PTS * 3);
 
 /** Get pointer to the 6-element result buffer (for single-point evaluations). */

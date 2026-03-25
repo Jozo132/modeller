@@ -32,6 +32,7 @@ self.onmessage = function (e) {
     self.postMessage({
       type: 'error',
       message: err.message || String(err),
+      stack: err.stack || '',
     });
   }
 };

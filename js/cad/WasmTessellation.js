@@ -41,6 +41,17 @@ function isAvailable() {
   return wasmModule !== null;
 }
 
+// ─── Constants ───────────────────────────────────────────────────────
+
+/** Tolerance for zero-length normal vectors. */
+const NORMAL_ZERO_TOL = 1e-14;
+
+/** Maximum WASM curve tessellation segments (buffer limit). */
+const MAX_CURVE_SEGMENTS = 1024;
+
+/** Maximum WASM surface tessellation segments per direction (buffer limit). */
+const MAX_SURFACE_SEGMENTS = 128;
+
 // ─── Typed array helpers ─────────────────────────────────────────────
 
 /**
@@ -62,13 +73,15 @@ function flattenControlPoints3D(controlPoints) {
 
 /**
  * Tessellate a NurbsCurve into a polyline using WASM.
+ * Segments are clamped to a maximum of 1024 (WASM buffer limit).
  *
  * @param {import('./NurbsCurve.js').NurbsCurve} curve
- * @param {number} segments
+ * @param {number} segments - Number of line segments (max 1024)
  * @returns {Array<{x:number, y:number, z:number}>} Array of points
  */
 function tessellateCurve(curve, segments = 32) {
   if (!wasmModule) return null;
+  segments = Math.min(segments, MAX_CURVE_SEGMENTS);
 
   const ctrlFlat = flattenControlPoints3D(curve.controlPoints);
   const knotsArr = new Float64Array(curve.knots);
@@ -124,14 +137,17 @@ function evaluateCurve(curve, t) {
 
 /**
  * Tessellate a NurbsSurface into a triangle mesh using WASM.
+ * Segments are clamped to a maximum of 128 per direction (WASM buffer limit).
  *
  * @param {import('./NurbsSurface.js').NurbsSurface} surface
- * @param {number} segsU - Subdivisions in u-direction
- * @param {number} segsV - Subdivisions in v-direction
+ * @param {number} segsU - Subdivisions in u-direction (max 128)
+ * @param {number} segsV - Subdivisions in v-direction (max 128)
  * @returns {{ vertices: Array<{x,y,z}>, faces: Array<{vertices: Array<{x,y,z}>, normal: {x,y,z}}> }}
  */
 function tessellateSurface(surface, segsU = 8, segsV = 8) {
   if (!wasmModule) return null;
+  segsU = Math.min(segsU, MAX_SURFACE_SEGMENTS);
+  segsV = Math.min(segsV, MAX_SURFACE_SEGMENTS);
 
   const ctrlFlat = flattenControlPoints3D(surface.controlPoints);
   const knotsU = new Float64Array(surface.knotsU);
@@ -181,7 +197,7 @@ function tessellateSurface(surface, segsU = 8, segsV = 8) {
     const ny = n0y + n1y + n2y;
     const nz = n0z + n1z + n2z;
     const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
-    const normal = len < 1e-14
+    const normal = len < NORMAL_ZERO_TOL
       ? { x: 0, y: 0, z: 1 }
       : { x: nx / len, y: ny / len, z: nz / len };
 

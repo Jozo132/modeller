@@ -49,7 +49,8 @@ export function earClipTriangulate(
 
   let triCount: i32 = 0;
   let guard: i32 = 0;
-  const maxGuard: i32 = nVerts * nVerts;
+  // Cap guard to prevent excessive iterations on malformed polygons
+  const maxGuard: i32 = min<i32>(nVerts * nVerts, 100000);
 
   while (remaining.length > 3 && guard < maxGuard) {
     let earFound: bool = false;
