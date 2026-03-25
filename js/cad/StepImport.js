@@ -634,7 +634,11 @@ function _tessellateFace(topoFace, curveSegments, surfaceSegments, faceGroup) {
   const outerTess = _tessellateLoop(outerLoop, curveSegments);
   if (!outerTess || outerTess.polygon.length < 3) return null;
 
-  const polygon = outerTess.polygon;
+  // Remove duplicate consecutive points that arise when adjacent edges
+  // share a vertex and both emit it (common with curve-less seam edges).
+  const polygon = _deduplicateConsecutive(outerTess.polygon);
+  if (polygon.length < 3) return null;
+
   const edgeBounds = outerTess.edgeBounds;
 
   // Compute a surface normal for face winding
@@ -917,8 +921,17 @@ function _buildNurbsCurve(resolved, curveRef, startPt, endPt) {
     case 'RATIONAL_B_SPLINE_CURVE':
       return _buildBSplineCurveNurbs(resolved, geomCurve, geomCurve.args[9]);
 
+    case 'ELLIPSE': {
+      // Represent the ellipse arc as a polyline NurbsCurve by sampling
+      const pts = _sampleEllipse(resolved, geomCurve, startPt, endPt, 64);
+      if (!pts || pts.length < 2) return NurbsCurve.createLine(startPt, endPt);
+      return NurbsCurve.createPolyline(pts);
+    }
+
     default:
-      return null;
+      // Fallback: create a straight line so the edge direction is handled
+      // correctly by _tessellateLoop (curve reversal via sameSense).
+      return NurbsCurve.createLine(startPt, endPt);
   }
 }
 
@@ -1644,6 +1657,25 @@ function _normalize(v) {
 function _dist3D(a, b) {
   const dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
   return Math.sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+/**
+ * Remove duplicate consecutive points from a polygon (including
+ * wrap-around: last point vs first point).
+ */
+function _deduplicateConsecutive(polygon) {
+  if (polygon.length < 2) return polygon;
+  const out = [];
+  const EPS = 1e-8;
+  for (let i = 0; i < polygon.length; i++) {
+    const prev = i === 0 ? polygon[polygon.length - 1] : polygon[i - 1];
+    const cur = polygon[i];
+    const dx = cur.x - prev.x, dy = cur.y - prev.y, dz = cur.z - prev.z;
+    if (dx * dx + dy * dy + dz * dz > EPS * EPS) {
+      out.push(cur);
+    }
+  }
+  return out;
 }
 
 function _perpendicular(n) {
