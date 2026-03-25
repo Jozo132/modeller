@@ -634,7 +634,11 @@ function _tessellateFace(topoFace, curveSegments, surfaceSegments, faceGroup) {
   const outerTess = _tessellateLoop(outerLoop, curveSegments);
   if (!outerTess || outerTess.polygon.length < 3) return null;
 
-  const polygon = outerTess.polygon;
+  // Remove duplicate consecutive points that arise when adjacent edges
+  // share a vertex and both emit it (common with curve-less seam edges).
+  const polygon = _deduplicateConsecutive(outerTess.polygon);
+  if (polygon.length < 3) return null;
+
   const edgeBounds = outerTess.edgeBounds;
 
   // Compute a surface normal for face winding
@@ -654,20 +658,36 @@ function _tessellateFace(topoFace, curveSegments, surfaceSegments, faceGroup) {
   );
 
   if (hasBSplineSurface && surfaceType === SurfaceType.BSPLINE) {
-    // Parametric tessellation of the full NURBS surface patch
-    const tess = nurbsSurface.tessellate(surfaceSegments, surfaceSegments);
-    if (!sameSense) {
-      for (const f of tess.faces) {
-        f.vertices.reverse();
-        f.normal = { x: -f.normal.x, y: -f.normal.y, z: -f.normal.z };
-      }
+    // Boundary-based tessellation: triangulate the trimmed boundary polygon,
+    // then subdivide large triangles so the mesh conforms to the curved
+    // surface instead of cutting across it in flat planes.
+    const faceNormal = _computeCurvedFaceNormal(surfaceNormal, nurbsSurface, polygon, sameSense);
+    let triangles = _triangulatePolygon(polygon, faceNormal);
+
+    // Subdivide: split triangles whose midpoint deviates from the surface.
+    // Each triangle midpoint is projected onto the NURBS surface; if the
+    // deviation exceeds a threshold the triangle is split into 4 sub-tris.
+    triangles = _subdivideBSplineTriangles(triangles, nurbsSurface, surfaceSegments);
+
+    for (const tri of triangles) {
+      const triNormals = tri.map(v => {
+        const uv = nurbsSurface.closestPointUV(v);
+        const n = nurbsSurface.normal(uv.u, uv.v);
+        return sameSense ? n : { x: -n.x, y: -n.y, z: -n.z };
+      });
+      const cn = {
+        x: (triNormals[0].x + triNormals[1].x + triNormals[2].x) / 3,
+        y: (triNormals[0].y + triNormals[1].y + triNormals[2].y) / 3,
+        z: (triNormals[0].z + triNormals[1].z + triNormals[2].z) / 3,
+      };
+      meshFaces.push({
+        vertices: [tri[0], tri[1], tri[2]],
+        normal: _normalize(cn),
+        isCurved: true,
+        faceGroup,
+      });
+      meshVertices.push(tri[0], tri[1], tri[2]);
     }
-    for (const f of tess.faces) {
-      f.isCurved = true;
-      f.faceGroup = faceGroup;
-    }
-    meshFaces = tess.faces;
-    meshVertices = tess.vertices;
   } else if (isCurvedFace && surfaceInfo) {
     // Try strip tessellation for curved faces with paired arc edges
     const stripResult = _tessellateStripFromEdgeBounds(polygon, edgeBounds, surfaceInfo, sameSense, faceGroup);
@@ -908,8 +928,17 @@ function _buildNurbsCurve(resolved, curveRef, startPt, endPt) {
     case 'RATIONAL_B_SPLINE_CURVE':
       return _buildBSplineCurveNurbs(resolved, geomCurve, geomCurve.args[9]);
 
+    case 'ELLIPSE': {
+      // Represent the ellipse arc as a polyline NurbsCurve by sampling
+      const pts = _sampleEllipse(resolved, geomCurve, startPt, endPt, 64);
+      if (!pts || pts.length < 2) return NurbsCurve.createLine(startPt, endPt);
+      return NurbsCurve.createPolyline(pts);
+    }
+
     default:
-      return null;
+      // Fallback: create a straight line so the edge direction is handled
+      // correctly by _tessellateLoop (curve reversal via sameSense).
+      return NurbsCurve.createLine(startPt, endPt);
   }
 }
 
@@ -1637,6 +1666,27 @@ function _dist3D(a, b) {
   return Math.sqrt(dx * dx + dy * dy + dz * dz);
 }
 
+/**
+ * Remove duplicate consecutive points from a polygon (including
+ * wrap-around: last point vs first point).
+ * Uses a squared-distance tolerance in model units to detect coincident vertices.
+ */
+function _deduplicateConsecutive(polygon) {
+  if (polygon.length < 2) return polygon;
+  const out = [];
+  // Coincident vertex tolerance (model units) — matches STEP geometry precision
+  const COINCIDENT_TOL = 1e-8;
+  for (let i = 0; i < polygon.length; i++) {
+    const prev = i === 0 ? polygon[polygon.length - 1] : polygon[i - 1];
+    const cur = polygon[i];
+    const dx = cur.x - prev.x, dy = cur.y - prev.y, dz = cur.z - prev.z;
+    if (dx * dx + dy * dy + dz * dz > COINCIDENT_TOL * COINCIDENT_TOL) {
+      out.push(cur);
+    }
+  }
+  return out;
+}
+
 function _perpendicular(n) {
   const ax = Math.abs(n.x), ay = Math.abs(n.y), az = Math.abs(n.z);
   let ref;
@@ -1841,6 +1891,76 @@ function _tessellateMultiArcPatch(polygon, edgeBounds, arcIndices, surfaceInfo, 
   }
 
   return { faces, vertices };
+}
+
+/**
+ * Subdivide B-spline face triangles so that the mesh conforms to the
+ * curved NURBS surface.  For each triangle, the midpoint of the longest
+ * edge is projected onto the surface.  If the projected point deviates
+ * from the linear midpoint beyond a threshold, the triangle is split.
+ *
+ * This produces an adaptive refinement: flat regions stay coarse while
+ * curved regions get more triangles.
+ *
+ * @param {Array} triangles - Input triangles from ear-clipping
+ * @param {NurbsSurface} surface - The NURBS surface to conform to
+ * @param {number} segments - Desired surface resolution (controls max depth)
+ * @returns {Array} Refined triangle list
+ */
+function _subdivideBSplineTriangles(triangles, surface, segments) {
+  // Max depth scales logarithmically with the requested segment count to
+  // limit exponential triangle growth (each level can at most double the
+  // triangle count). E.g. segments=16 → maxDepth=4, segments=64 → 6.
+  const maxDepth = Math.max(1, Math.ceil(Math.log2(segments)));
+  // Deviation tolerance in model units: if the NURBS surface point at a
+  // triangle edge midpoint differs from the linear midpoint by more than
+  // this, the triangle is split.
+  const deviationTol = 1e-3;
+
+  let current = triangles;
+  for (let depth = 0; depth < maxDepth; depth++) {
+    const next = [];
+    let anySplit = false;
+    for (const tri of current) {
+      const [a, b, c] = tri;
+
+      // Find the longest edge and its midpoints
+      const dAB = _dist3D(a, b);
+      const dBC = _dist3D(b, c);
+      const dCA = _dist3D(c, a);
+
+      // Compute midpoint of the longest edge
+      let mid, p0, p1, p2;
+      if (dAB >= dBC && dAB >= dCA) {
+        mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, z: (a.z + b.z) / 2 };
+        p0 = a; p1 = b; p2 = c;
+      } else if (dBC >= dCA) {
+        mid = { x: (b.x + c.x) / 2, y: (b.y + c.y) / 2, z: (b.z + c.z) / 2 };
+        p0 = b; p1 = c; p2 = a;
+      } else {
+        mid = { x: (c.x + a.x) / 2, y: (c.y + a.y) / 2, z: (c.z + a.z) / 2 };
+        p0 = c; p1 = a; p2 = b;
+      }
+
+      // Project midpoint onto the NURBS surface
+      const uv = surface.closestPointUV(mid);
+      const surfPt = surface.evaluate(uv.u, uv.v);
+      const dev = _dist3D(mid, surfPt);
+
+      if (dev > deviationTol) {
+        // Split: replace the triangle with two using the surface point
+        next.push([p0, surfPt, p2]);
+        next.push([surfPt, p1, p2]);
+        anySplit = true;
+      } else {
+        next.push(tri);
+      }
+    }
+    current = next;
+    if (!anySplit) break;
+  }
+
+  return current;
 }
 
 /**

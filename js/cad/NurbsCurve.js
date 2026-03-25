@@ -253,6 +253,25 @@ export class NurbsCurve {
   }
 
   /**
+   * Create a degree-1 NURBS polyline through a sequence of points.
+   * Useful for representing sampled curves (e.g. ellipse arcs).
+   *
+   * @param {Array<{x:number, y:number, z:number}>} points - Ordered points (at least 2)
+   * @returns {NurbsCurve}
+   */
+  static createPolyline(points) {
+    if (!points || points.length < 2) {
+      throw new Error('createPolyline requires at least 2 points');
+    }
+    const n = points.length;
+    // Degree-1 clamped B-spline: needs n+2 knots = [0, 0, 1, 2, ..., n-2, n-1, n-1]
+    const knots = [0]; // first clamped knot
+    for (let i = 0; i < n; i++) knots.push(i);
+    knots.push(n - 1); // last clamped knot
+    return new NurbsCurve(1, points, knots);
+  }
+
+  /**
    * Create a NURBS circular arc.
    *
    * Uses the standard rational quadratic representation. The arc is defined
