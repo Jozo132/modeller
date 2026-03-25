@@ -1669,16 +1669,18 @@ function _dist3D(a, b) {
 /**
  * Remove duplicate consecutive points from a polygon (including
  * wrap-around: last point vs first point).
+ * Uses a squared-distance tolerance in model units to detect coincident vertices.
  */
 function _deduplicateConsecutive(polygon) {
   if (polygon.length < 2) return polygon;
   const out = [];
-  const EPS = 1e-8;
+  // Coincident vertex tolerance (model units) — matches STEP geometry precision
+  const COINCIDENT_TOL = 1e-8;
   for (let i = 0; i < polygon.length; i++) {
     const prev = i === 0 ? polygon[polygon.length - 1] : polygon[i - 1];
     const cur = polygon[i];
     const dx = cur.x - prev.x, dy = cur.y - prev.y, dz = cur.z - prev.z;
-    if (dx * dx + dy * dy + dz * dz > EPS * EPS) {
+    if (dx * dx + dy * dy + dz * dz > COINCIDENT_TOL * COINCIDENT_TOL) {
       out.push(cur);
     }
   }
@@ -1906,10 +1908,14 @@ function _tessellateMultiArcPatch(polygon, edgeBounds, arcIndices, surfaceInfo, 
  * @returns {Array} Refined triangle list
  */
 function _subdivideBSplineTriangles(triangles, surface, segments) {
-  // Adaptive subdivision: split triangles whose edge midpoints deviate
-  // from the surface.  Max depth limits total expansion.
+  // Max depth scales logarithmically with the requested segment count to
+  // limit exponential triangle growth (each level can at most double the
+  // triangle count). E.g. segments=16 → maxDepth=4, segments=64 → 6.
   const maxDepth = Math.max(1, Math.ceil(Math.log2(segments)));
-  const deviationTol = 1e-3; // tolerance for surface deviation
+  // Deviation tolerance in model units: if the NURBS surface point at a
+  // triangle edge midpoint differs from the linear midpoint by more than
+  // this, the triangle is split.
+  const deviationTol = 1e-3;
 
   let current = triangles;
   for (let depth = 0; depth < maxDepth; depth++) {

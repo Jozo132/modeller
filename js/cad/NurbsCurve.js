@@ -264,13 +264,10 @@ export class NurbsCurve {
       throw new Error('createPolyline requires at least 2 points');
     }
     const n = points.length;
-    // Degree-1 B-spline with uniform knot vector: [0, 0, 1, 2, ..., n-2, n-1, n-1]
-    const knots = [0];
+    // Degree-1 clamped B-spline: needs n+2 knots = [0, 0, 1, 2, ..., n-2, n-1, n-1]
+    const knots = [0]; // first clamped knot
     for (let i = 0; i < n; i++) knots.push(i);
-    knots.push(n - 1);
-    // Clamp: first and last knots repeated
-    knots[0] = 0;
-    knots[knots.length - 1] = n - 1;
+    knots.push(n - 1); // last clamped knot
     return new NurbsCurve(1, points, knots);
   }
 
