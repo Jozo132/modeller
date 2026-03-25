@@ -126,8 +126,8 @@ function _tessellateSTEPBody(body, opts = {}) {
   for (const topoFace of body.faces()) {
     const result = _tessellateFace(topoFace, curveSegments, surfaceSegments, faceGroupCounter);
     if (result) {
-      allVertices.push(...result.vertices);
-      allFaces.push(...result.faces);
+      for (let i = 0; i < result.vertices.length; i++) allVertices.push(result.vertices[i]);
+      for (let i = 0; i < result.faces.length; i++) allFaces.push(result.faces[i]);
     }
     faceGroupCounter++;
   }
