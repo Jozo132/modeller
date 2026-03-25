@@ -2977,3 +2977,108 @@ body.workspace-sketch .part-mode-only {
   background: var(--accent-hover);
   border-color: var(--accent-hover);
 }
+
+/* ---- Pattern Tool Panels ---- */
+.pattern-tool-panel {
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background: rgba(0,122,204,0.06);
+}
+
+.pattern-tool-panel h3 {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--accent);
+  margin-bottom: 8px;
+}
+
+.pattern-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 5px;
+  font-size: 12px;
+}
+
+.pattern-field label {
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  margin-right: 8px;
+}
+
+.pattern-value {
+  color: var(--text-secondary);
+  font-style: italic;
+  text-align: right;
+}
+
+.pattern-value.pattern-ok {
+  color: rgba(0,230,118,0.9);
+  font-style: normal;
+}
+
+.pattern-input {
+  width: 70px;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg-dark);
+  color: var(--text-primary);
+  font-size: 12px;
+  text-align: right;
+}
+
+.pattern-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.pattern-tool-panel hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 6px 0;
+}
+
+.pattern-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.pattern-btn {
+  flex: 1;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.pattern-btn:hover {
+  background: rgba(255,255,255,0.06);
+}
+
+.pattern-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.pattern-btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.pattern-btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.pattern-btn-primary:disabled {
+  opacity: 0.4;
+}

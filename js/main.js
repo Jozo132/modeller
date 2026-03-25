@@ -34,6 +34,7 @@ import {
   CoincidentTool, HorizontalTool, VerticalTool,
   ParallelTool, PerpendicularTool, DistanceConstraintTool,
   LockTool, EqualTool, TangentTool, AngleTool,
+  MirrorTool, MidpointSnapTool, LinearPatternTool, RadialPatternTool,
 } from './tools/index.js';
 import { InteractionRecorder, PlaybackEngine } from './interaction-recorder.js';
 import { applyChamfer, applyFillet, expandPathEdgeKeys, makeEdgeKey, calculateMeshVolume, calculateBoundingBox, calculateSurfaceArea, detectDisconnectedBodies, calculateWallThickness, countInvertedFaces } from './cad/CSG.js';
@@ -134,6 +135,10 @@ class App {
       equal:         new EqualTool(this),
       tangent:       new TangentTool(this),
       angle:         new AngleTool(this),
+      mirror:        new MirrorTool(this),
+      midpoint_snap: new MidpointSnapTool(this),
+      linear_pattern: new LinearPatternTool(this),
+      radial_pattern: new RadialPatternTool(this),
     };
     this.activeTool = this.tools.select;
     this.activeTool.activate();
@@ -2950,6 +2955,7 @@ class App {
       radius: 'R', tangent: 'T',
       on_line: '—·', on_circle: '○·', midpoint: 'M',
       dimension: '📐',
+      mirror: '⬙', linear_pattern: '⫼', radial_pattern: '⊛',
     };
     return icons[type] || type;
   }
@@ -2979,7 +2985,13 @@ class App {
     }
     const t = c.type.replace(/_/g, ' ');
     let details = '';
-    if (c.value !== undefined) {
+    if (c.type === 'linear_pattern') {
+      const sp = typeof c.spacing === 'number' ? c.spacing.toFixed(2) : String(c.spacing);
+      details = ` (×${c.count}, ${sp})`;
+    } else if (c.type === 'radial_pattern') {
+      const a = typeof c.angle === 'number' ? (c.angle * 180 / Math.PI).toFixed(1) + '°' : String(c.angle);
+      details = ` (×${c.count}, ${a})`;
+    } else if (c.value !== undefined) {
       if (c.type === 'angle') {
         // Show angle in degrees
         if (typeof c.value === 'number') {
@@ -3021,6 +3033,13 @@ class App {
     if (c.segB) { ids.add(c.segB.id); ids.add(c.segB.p1.id); ids.add(c.segB.p2.id); }
     if (c.circle) { ids.add(c.circle.id); if (c.circle.center) ids.add(c.circle.center.id); }
     if (c.shape) { ids.add(c.shape.id); if (c.shape.center) ids.add(c.shape.center.id); }
+    if (c.center) ids.add(c.center.id);
+    if (c.pairs) {
+      for (const p of c.pairs) {
+        if (p.src) ids.add(p.src.id);
+        if (p.dst) ids.add(p.dst.id);
+      }
+    }
     return ids;
   }
 

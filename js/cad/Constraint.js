@@ -648,8 +648,175 @@ export class Midpoint extends Constraint {
 }
 
 // ---------------------------------------------------------------------------
+// Mirror – a point is the mirror of another point across a reference line (segment)
+// ---------------------------------------------------------------------------
+export class Mirror extends Constraint {
+  constructor(ptA, ptB, seg) {
+    super('mirror');
+    this.ptA = ptA;  // source point
+    this.ptB = ptB;  // mirrored point
+    this.seg = seg;   // mirror line
+  }
+  error() {
+    const m = _reflectPoint(this.ptA.x, this.ptA.y,
+      this.seg.x1, this.seg.y1, this.seg.x2, this.seg.y2);
+    return Math.hypot(this.ptB.x - m.x, this.ptB.y - m.y);
+  }
+  apply() {
+    if (this.ptB.fixed) return;
+    const m = _reflectPoint(this.ptA.x, this.ptA.y,
+      this.seg.x1, this.seg.y1, this.seg.x2, this.seg.y2);
+    this.ptB.x = m.x;
+    this.ptB.y = m.y;
+  }
+  involvedPoints() { return [this.ptA, this.ptB, this.seg.p1, this.seg.p2]; }
+  serialize() { return { ...super.serialize(), ptA: this.ptA.id, ptB: this.ptB.id, seg: this.seg.id }; }
+}
+
+// ---------------------------------------------------------------------------
+// LinearPattern – a set of points replicated along a direction (reference segment)
+// with configurable count and spacing
+// ---------------------------------------------------------------------------
+export class LinearPattern extends Constraint {
+  /**
+   * @param {Array<{src: PPoint, dst: PPoint}>} pairs - source→destination point pairs
+   * @param {import('./Segment.js').PSegment} seg - reference direction segment
+   * @param {number} count - number of copies (1-based index for each set)
+   * @param {number|string} spacing - distance between copies (or variable)
+   */
+  constructor(pairs, seg, count, spacing) {
+    super('linear_pattern');
+    this.pairs = pairs;       // [{src, dst}]
+    this.seg = seg;           // direction reference
+    this.count = count;       // which copy index this constraint represents (1-based)
+    this.spacing = spacing;   // number or variable name
+  }
+  get editable() { return true; }
+  get value() { return this.spacing; }
+  set value(v) { this.spacing = v; }
+  _resolvedSpacing() { return this.clampToRange(resolveValue(this.spacing)); }
+  error() {
+    const sp = this._resolvedSpacing();
+    if (isNaN(sp)) return 0;
+    const dx = this.seg.x2 - this.seg.x1, dy = this.seg.y2 - this.seg.y1;
+    const len = Math.hypot(dx, dy) || 1e-9;
+    const ux = dx / len, uy = dy / len;
+    let maxErr = 0;
+    for (const p of this.pairs) {
+      const tx = p.src.x + ux * sp * this.count;
+      const ty = p.src.y + uy * sp * this.count;
+      const e = Math.hypot(p.dst.x - tx, p.dst.y - ty);
+      if (e > maxErr) maxErr = e;
+    }
+    return maxErr;
+  }
+  apply() {
+    const sp = this._resolvedSpacing();
+    if (isNaN(sp)) return;
+    const dx = this.seg.x2 - this.seg.x1, dy = this.seg.y2 - this.seg.y1;
+    const len = Math.hypot(dx, dy) || 1e-9;
+    const ux = dx / len, uy = dy / len;
+    for (const p of this.pairs) {
+      if (p.dst.fixed) continue;
+      p.dst.x = p.src.x + ux * sp * this.count;
+      p.dst.y = p.src.y + uy * sp * this.count;
+    }
+  }
+  involvedPoints() {
+    const pts = [this.seg.p1, this.seg.p2];
+    for (const p of this.pairs) { pts.push(p.src); pts.push(p.dst); }
+    return pts;
+  }
+  serialize() {
+    return {
+      ...super.serialize(),
+      pairs: this.pairs.map(p => ({ src: p.src.id, dst: p.dst.id })),
+      seg: this.seg.id,
+      count: this.count,
+      spacing: this.spacing,
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// RadialPattern – a set of points replicated around a center (arc/circle)
+// with configurable count and angle increment
+// ---------------------------------------------------------------------------
+export class RadialPattern extends Constraint {
+  /**
+   * @param {Array<{src: PPoint, dst: PPoint}>} pairs - source→destination point pairs
+   * @param {PPoint} center - center of rotation
+   * @param {number} count - which copy index (1-based)
+   * @param {number|string} angle - angle increment per copy in radians (or variable)
+   */
+  constructor(pairs, center, count, angle) {
+    super('radial_pattern');
+    this.pairs = pairs;
+    this.center = center;
+    this.count = count;
+    this.angle = angle;       // radians, number or variable name
+  }
+  get editable() { return true; }
+  get value() { return this.angle; }
+  set value(v) { this.angle = v; }
+  _resolvedAngle() { return this.clampToRange(resolveValue(this.angle)); }
+  error() {
+    const a = this._resolvedAngle();
+    if (isNaN(a)) return 0;
+    const totalAngle = a * this.count;
+    const cos = Math.cos(totalAngle), sin = Math.sin(totalAngle);
+    let maxErr = 0;
+    for (const p of this.pairs) {
+      const dx = p.src.x - this.center.x, dy = p.src.y - this.center.y;
+      const tx = this.center.x + dx * cos - dy * sin;
+      const ty = this.center.y + dx * sin + dy * cos;
+      const e = Math.hypot(p.dst.x - tx, p.dst.y - ty);
+      if (e > maxErr) maxErr = e;
+    }
+    return maxErr;
+  }
+  apply() {
+    const a = this._resolvedAngle();
+    if (isNaN(a)) return;
+    const totalAngle = a * this.count;
+    const cos = Math.cos(totalAngle), sin = Math.sin(totalAngle);
+    for (const p of this.pairs) {
+      if (p.dst.fixed) continue;
+      const dx = p.src.x - this.center.x, dy = p.src.y - this.center.y;
+      p.dst.x = this.center.x + dx * cos - dy * sin;
+      p.dst.y = this.center.y + dx * sin + dy * cos;
+    }
+  }
+  involvedPoints() {
+    const pts = [this.center];
+    for (const p of this.pairs) { pts.push(p.src); pts.push(p.dst); }
+    return pts;
+  }
+  serialize() {
+    return {
+      ...super.serialize(),
+      pairs: this.pairs.map(p => ({ src: p.src.id, dst: p.dst.id })),
+      center: this.center.id,
+      count: this.count,
+      angle: this.angle,
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/** Reflect a point across the infinite line defined by (ax,ay)→(bx,by) */
+function _reflectPoint(px, py, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  if (len2 === 0) return { x: px, y: py };
+  const t = ((px - ax) * dx + (py - ay) * dy) / len2;
+  const fx = ax + t * dx, fy = ay + t * dy;
+  return { x: 2 * fx - px, y: 2 * fy - py };
+}
+
 function _scaleSegToLength(seg, target) {
   const dx = seg.x2 - seg.x1, dy = seg.y2 - seg.y1;
   const len = Math.hypot(dx, dy) || 1e-9;

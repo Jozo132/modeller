@@ -27,3 +27,9 @@ export { LockTool } from './LockTool.js';
 export { EqualTool } from './EqualTool.js';
 export { TangentTool } from './TangentTool.js';
 export { AngleTool } from './AngleTool.js';
+
+// Mirror & Pattern
+export { MirrorTool } from './MirrorTool.js';
+export { MidpointSnapTool } from './MidpointSnapTool.js';
+export { LinearPatternTool } from './LinearPatternTool.js';
+export { RadialPatternTool } from './RadialPatternTool.js';
