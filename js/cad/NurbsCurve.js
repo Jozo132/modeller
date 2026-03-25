@@ -8,6 +8,10 @@
 //   - "The NURBS Book" (Piegl & Tiller, 1997)
 //   - ISO 10303-42 (STEP geometry)
 
+import { wasmTessellation } from './WasmTessellation.js';
+
+let _loggedCurveTessBackend = false;
+
 /**
  * NURBS Curve class.
  *
@@ -174,10 +178,19 @@ export class NurbsCurve {
 
   /**
    * Tessellate the curve into a polyline with the given number of segments.
+   * Uses WASM acceleration when available, falls back to JS evaluation.
    * @param {number} [segments=32] - Number of line segments
    * @returns {Array<{x: number, y: number, z: number}>} Array of points
    */
   tessellate(segments = 32) {
+    if (wasmTessellation.isAvailable()) {
+      const result = wasmTessellation.tessellateCurve(this, segments);
+      if (result) {
+        if (!_loggedCurveTessBackend) { _loggedCurveTessBackend = true; console.log('[NurbsCurve.tessellate] using WASM'); }
+        return result;
+      }
+    }
+    if (!_loggedCurveTessBackend) { _loggedCurveTessBackend = true; console.log('[NurbsCurve.tessellate] using JS fallback'); }
     const points = [];
     for (let i = 0; i <= segments; i++) {
       const t = i / segments;

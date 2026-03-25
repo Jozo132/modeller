@@ -463,6 +463,17 @@ function assignCoplanarFaceGroups(faces) {
     if (ra !== rb) parent[ra] = rb;
   }
 
+  // Fast path: pre-unite faces sharing the same STEP topoFaceId so that
+  // the expensive O(n²) _coplanarFacesTouch analysis is skipped for them.
+  const topoRep = new Map();
+  for (let fi = 0; fi < faces.length; fi++) {
+    const tid = faces[fi].topoFaceId;
+    if (tid !== undefined) {
+      if (topoRep.has(tid)) unite(fi, topoRep.get(tid));
+      else topoRep.set(tid, fi);
+    }
+  }
+
   for (const [, group] of planeGroups) {
     if (group.length <= 1) continue;
 
@@ -864,6 +875,11 @@ export function computeFeatureEdges(faces) {
   const tJunctionEdgeKeys = new Set();
   for (const [, groupFaceIndices] of facesPerGroup) {
     if (groupFaceIndices.length <= 1) continue;
+
+    // Skip T-junction analysis for STEP topology faces — their boundary
+    // edges are suppressed later via the topoFaceId check, so the expensive
+    // O(n²) point-on-segment tests are unnecessary.
+    if (faces[groupFaceIndices[0]].topoFaceId !== undefined) continue;
 
     // Collect all edges of the group with pre-computed keys
     const groupEdges = [];

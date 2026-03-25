@@ -9,6 +9,9 @@
 //   - ISO 10303-42 (STEP geometry)
 
 import { NurbsCurve } from './NurbsCurve.js';
+import { wasmTessellation } from './WasmTessellation.js';
+
+let _loggedSurfaceTessBackend = false;
 
 /**
  * NURBS Surface class.
@@ -210,25 +213,33 @@ export class NurbsSurface {
    * @param {number} [gridRes=16] - Coarse search grid resolution
    * @returns {{u: number, v: number}}
    */
-  closestPointUV(point, gridRes = 16) {
+  closestPointUV(point, gridRes = 16, uvHint = null) {
     const px = point.x, py = point.y, pz = point.z;
 
-    // Coarse grid search
-    let bestU = (this.uMin + this.uMax) / 2;
-    let bestV = (this.vMin + this.vMax) / 2;
-    let bestDist2 = Infinity;
+    let bestU, bestV;
 
-    for (let i = 0; i <= gridRes; i++) {
-      const u = this.uMin + (i / gridRes) * (this.uMax - this.uMin);
-      for (let j = 0; j <= gridRes; j++) {
-        const v = this.vMin + (j / gridRes) * (this.vMax - this.vMin);
-        const p = this.evaluate(u, v);
-        const dx = p.x - px, dy = p.y - py, dz = p.z - pz;
-        const d2 = dx * dx + dy * dy + dz * dz;
-        if (d2 < bestDist2) {
-          bestDist2 = d2;
-          bestU = u;
-          bestV = v;
+    if (uvHint) {
+      // Skip grid search — use the provided hint directly
+      bestU = Math.max(this.uMin, Math.min(this.uMax, uvHint.u));
+      bestV = Math.max(this.vMin, Math.min(this.vMax, uvHint.v));
+    } else {
+      // Coarse grid search
+      bestU = (this.uMin + this.uMax) / 2;
+      bestV = (this.vMin + this.vMax) / 2;
+      let bestDist2 = Infinity;
+
+      for (let i = 0; i <= gridRes; i++) {
+        const u = this.uMin + (i / gridRes) * (this.uMax - this.uMin);
+        for (let j = 0; j <= gridRes; j++) {
+          const v = this.vMin + (j / gridRes) * (this.vMax - this.vMin);
+          const p = this.evaluate(u, v);
+          const dx = p.x - px, dy = p.y - py, dz = p.z - pz;
+          const d2 = dx * dx + dy * dy + dz * dz;
+          if (d2 < bestDist2) {
+            bestDist2 = d2;
+            bestU = u;
+            bestV = v;
+          }
         }
       }
     }
@@ -284,13 +295,22 @@ export class NurbsSurface {
 
   /**
    * Tessellate the surface into a mesh of triangles.
+   * Uses WASM acceleration when available, falls back to JS evaluation.
    *
    * @param {number} [segmentsU=8] - Subdivisions in u-direction
    * @param {number} [segmentsV=8] - Subdivisions in v-direction
    * @returns {{ vertices: Array<{x,y,z}>, faces: Array<{vertices: Array<{x,y,z}>, normal: {x,y,z}}> }}
    */
   tessellate(segmentsU = 8, segmentsV = 8) {
-    // Build grid of evaluated points and normals
+    if (wasmTessellation.isAvailable()) {
+      const result = wasmTessellation.tessellateSurface(this, segmentsU, segmentsV);
+      if (result) {
+        if (!_loggedSurfaceTessBackend) { _loggedSurfaceTessBackend = true; console.log('[NurbsSurface.tessellate] using WASM'); }
+        return result;
+      }
+    }
+    if (!_loggedSurfaceTessBackend) { _loggedSurfaceTessBackend = true; console.log('[NurbsSurface.tessellate] using JS fallback'); }
+    // JS fallback: build grid of evaluated points and normals
     const grid = [];
     const normals = [];
     for (let i = 0; i <= segmentsU; i++) {

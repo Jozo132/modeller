@@ -667,11 +667,27 @@ function _tessellateFace(topoFace, curveSegments, surfaceSegments, faceGroup) {
     // Subdivide: split triangles whose midpoint deviates from the surface.
     // Each triangle midpoint is projected onto the NURBS surface; if the
     // deviation exceeds a threshold the triangle is split into 4 sub-tris.
+    // Pre-compute UVs for the original polygon vertices so that
+    // subdivision can use UV averaging for midpoint hints.
+    for (const v of polygon) {
+      if (v._u === undefined) {
+        const uv = nurbsSurface.closestPointUV(v);
+        v._u = uv.u;
+        v._v = uv.v;
+      }
+    }
+
     triangles = _subdivideBSplineTriangles(triangles, nurbsSurface, surfaceSegments);
+
+    // Subdivision midpoints carry _u/_v; polygon vertices were tagged above.
+    function cachedUV(v) {
+      if (v._u !== undefined) return { u: v._u, v: v._v };
+      return nurbsSurface.closestPointUV(v);
+    }
 
     for (const tri of triangles) {
       const triNormals = tri.map(v => {
-        const uv = nurbsSurface.closestPointUV(v);
+        const uv = cachedUV(v);
         const n = nurbsSurface.normal(uv.u, uv.v);
         return sameSense ? n : { x: -n.x, y: -n.y, z: -n.z };
       });
@@ -1953,8 +1969,7 @@ function _tessellateMultiArcPatch(polygon, edgeBounds, arcIndices, surfaceInfo, 
   // Build boundary edge set from the original polygon so that subdivision
   // never splits boundary edges.  This keeps boundary vertices aligned with
   // the adjacent face tessellation, enabling proper edge matching in CSG.
-  const precision = 8;
-  const pKey = (v) => `${v.x.toFixed(precision)},${v.y.toFixed(precision)},${v.z.toFixed(precision)}`;
+  const pKey = (v) => `${Math.round(v.x * 1e8)},${Math.round(v.y * 1e8)},${Math.round(v.z * 1e8)}`;
   const boundaryEdges = new Set();
   for (let i = 0; i < n; i++) {
     const ka = pKey(polygon[i]), kb = pKey(polygon[(i + 1) % n]);
@@ -2161,9 +2176,15 @@ function _subdivideBSplineTriangles(triangles, surface, segments) {
         p0 = c; p1 = a; p2 = b;
       }
 
-      // Project midpoint onto the NURBS surface
-      const uv = surface.closestPointUV(mid);
+      // Project midpoint onto the NURBS surface, using averaged parent
+      // UVs as a hint to skip the expensive 289-point grid search.
+      const hint = (p0._u !== undefined && p1._u !== undefined)
+        ? { u: (p0._u + p1._u) / 2, v: (p0._v + p1._v) / 2 }
+        : null;
+      const uv = surface.closestPointUV(mid, 16, hint);
       const surfPt = surface.evaluate(uv.u, uv.v);
+      surfPt._u = uv.u;
+      surfPt._v = uv.v;
       const dev = _dist3D(mid, surfPt);
 
       if (dev > deviationTol) {
