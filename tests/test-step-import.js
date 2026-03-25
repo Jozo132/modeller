@@ -390,9 +390,9 @@ test('box-fillet-3: sphere mesh has no stray boundary edges (conforming mesh)', 
   }
 
   // The sphere patch has 3 arcs with curveSegments=16 → 3*16=48 boundary
-  // edge segments.  Allow a small tolerance for edge-sharing variations.
-  assert.ok(boundaryEdges.length <= 48 + 6,
-    `Sphere mesh should have ≤54 boundary edges (got ${boundaryEdges.length}) — ` +
+  // edge segments.  With a conforming mesh there should be exactly 48.
+  assert.strictEqual(boundaryEdges.length, 48,
+    `Sphere mesh should have exactly 48 boundary edges (got ${boundaryEdges.length}) — ` +
     `extra edges indicate T-junction artifacts from non-conforming subdivision`);
 });
 
@@ -447,9 +447,13 @@ test('box-fillet-3: no visual edges within sphere face', () => {
   // Visual edges should NOT include edges that lie entirely on the sphere
   // (those are internal tessellation edges).
   const { origin, radius } = sphereInfo;
+  // Tolerance: 1% of the sphere radius — generous enough to catch
+  // subdivision vertices that are slightly off-surface, but tight enough
+  // to exclude edges on adjacent cylinder faces.
+  const SPHERE_SURFACE_TOL = radius * 0.01;
   const onSphere = (v) => {
     const dx = v.x - origin.x, dy = v.y - origin.y, dz = v.z - origin.z;
-    return Math.abs(Math.sqrt(dx * dx + dy * dy + dz * dz) - radius) < 0.01;
+    return Math.abs(Math.sqrt(dx * dx + dy * dy + dz * dz) - radius) < SPHERE_SURFACE_TOL;
   };
 
   const sphereVisualEdges = result.geometry.visualEdges.filter(e =>
