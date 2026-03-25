@@ -1608,6 +1608,22 @@ export class WasmRenderer {
       });
     }
 
+    // --- Push splines to WASM (tessellated as line segments) ---
+    if (scene.splines) {
+      scene.splines.forEach((spl) => {
+        if (!spl.visible || !isLayerVisible(spl.layer)) return;
+        let flags = F_VISIBLE;
+        if (spl.selected) flags |= F_SELECTED;
+        if (spl.construction) flags |= F_CONSTRUCTION;
+        if (hoverEntity && hoverEntity.id === spl.id) flags |= F_HOVER;
+        const [r, g, b, a] = entityColor(spl);
+        const pts = spl.tessellate2D(32);
+        for (let i = 0; i < pts.length - 1; i++) {
+          wasm.addEntitySegment(pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y, flags, r, g, b, a);
+        }
+      });
+    }
+
     // --- Push points to WASM ---
     if (scene.points) {
       scene.points.forEach((point) => {
@@ -1677,6 +1693,12 @@ export class WasmRenderer {
           wasm.addEntityCircle(entity.center.x, entity.center.y, entity.radius, flags, 0, 0.749, 1, 1);
         } else if (entity.type === 'arc' && entity.center) {
           wasm.addEntityArc(entity.center.x, entity.center.y, entity.radius, entity.startAngle, entity.endAngle, flags, 0, 0.749, 1, 1);
+        } else if (entity.type === 'spline' && entity.points && entity.points.length >= 2) {
+          // Tessellate spline into line segments for WASM rendering
+          const pts = entity.tessellate2D(32);
+          for (let i = 0; i < pts.length - 1; i++) {
+            wasm.addEntitySegment(pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y, flags, 0, 0.749, 1, 1);
+          }
         }
       });
     }
@@ -2266,6 +2288,19 @@ export class WasmRenderer {
       }
     }
 
+    if (scene.splines) {
+      for (const spl of scene.splines) {
+        if (!spl.visible) continue;
+        const numSegs = 32;
+        const pts = spl.tessellate2D(numSegs);
+        for (let i = 0; i < pts.length - 1; i++) {
+          const p1 = toWorld(pts[i].x, pts[i].y);
+          const p2 = toWorld(pts[i + 1].x, pts[i + 1].y);
+          lines.push(p1.x, p1.y, p1.z, p2.x, p2.y, p2.z);
+        }
+      }
+    }
+
     // Include preview entities (lines being drawn interactively but not yet committed)
     if (previewEntities && previewEntities.length > 0) {
       for (const entity of previewEntities) {
@@ -2307,6 +2342,14 @@ export class WasmRenderer {
               entity.center.y + Math.sin(a2) * entity.radius
             );
             lines.push(p1.x, p1.y, p1.z, p2.x, p2.y, p2.z);
+          }
+        } else if (entity.type === 'spline' && entity.points && entity.points.length >= 2) {
+          const numSegs = 32;
+          const pts = entity.tessellate2D(numSegs);
+          for (let i = 0; i < pts.length - 1; i++) {
+            const wp1 = toWorld(pts[i].x, pts[i].y);
+            const wp2 = toWorld(pts[i + 1].x, pts[i + 1].y);
+            lines.push(wp1.x, wp1.y, wp1.z, wp2.x, wp2.y, wp2.z);
           }
         }
       }
