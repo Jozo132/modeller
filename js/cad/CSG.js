@@ -915,12 +915,21 @@ export function computeFeatureEdges(faces) {
   for (const [key, info] of edgeNormals) {
     if (info.normals.length === 1) {
       // Boundary edge — only suppress if it's a confirmed T-junction
+      // Also suppress boundary edges from STEP topology faces: in a
+      // properly closed B-Rep solid, every edge is shared by two faces,
+      // so a boundary (1-face) edge within a STEP mesh is always an
+      // internal tessellation artifact (e.g. from adaptive subdivision).
       if (!tJunctionEdgeKeys.has(key)) {
-        edges.push({
-          start: info.start, end: info.end,
-          faceIndices: info.faceIndices,
-          normals: info.normals,
-        });
+        const fi0 = info.faceIndices[0];
+        if (faces[fi0].topoFaceId !== undefined) {
+          // STEP artifact — suppress
+        } else {
+          edges.push({
+            start: info.start, end: info.end,
+            faceIndices: info.faceIndices,
+            normals: info.normals,
+          });
+        }
       }
     } else if (info.normals.length >= 2) {
       // Determine if both faces belong to the same logical surface
@@ -987,7 +996,13 @@ export function computeFeatureEdges(faces) {
         // Only include if faces are in different coplanar groups
         const groups = new Set(info.faceIndices.map(fi => faces[fi].faceGroup));
         if (groups.size > 1) {
-          visualEdges.push({ start: info.start, end: info.end });
+          // Suppress visual edges between faces from the same STEP topology
+          // face — these are internal subdivision artifacts on curved surfaces
+          // (e.g. sphere patches) that should never show wireframe lines.
+          const topoIds = new Set(info.faceIndices.map(fi => faces[fi].topoFaceId).filter(id => id !== undefined));
+          if (topoIds.size > 1 || topoIds.size === 0) {
+            visualEdges.push({ start: info.start, end: info.end });
+          }
         }
       }
     }

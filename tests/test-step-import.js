@@ -351,6 +351,119 @@ test('box-fillet-3: sphere corner vertices match cylinder endpoints', () => {
   }
 });
 
+test('box-fillet-3: sphere mesh has no stray boundary edges (conforming mesh)', () => {
+  const mesh = importSTEP(boxFilletData, { curveSegments: 16 });
+  const body = mesh.body;
+  let sphereFaceGroup = -1;
+  let faceIdx = 0;
+  for (const face of body.faces()) {
+    if (face.surfaceType === 'sphere') sphereFaceGroup = faceIdx;
+    faceIdx++;
+  }
+
+  const sphereFaces = mesh.faces.filter(f => f.faceGroup === sphereFaceGroup);
+  assert.ok(sphereFaces.length > 0, 'Should have sphere triangles');
+
+  // Build edge → face count map for the sphere mesh
+  const precision = 6;
+  const vKey = (v) => `${v.x.toFixed(precision)},${v.y.toFixed(precision)},${v.z.toFixed(precision)}`;
+  const eKey = (a, b) => {
+    const ka = vKey(a), kb = vKey(b);
+    return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+  };
+  const edgeCounts = new Map();
+  for (const f of sphereFaces) {
+    const v = f.vertices;
+    for (let i = 0; i < v.length; i++) {
+      const key = eKey(v[i], v[(i + 1) % v.length]);
+      edgeCounts.set(key, (edgeCounts.get(key) || 0) + 1);
+    }
+  }
+
+  // In a conforming mesh, interior edges have 2 adjacent faces and
+  // boundary edges (shared with cylinders) have 1.  Stray T-junction
+  // boundary edges would appear as 1-face edges that aren't on the
+  // original polygon boundary.
+  const boundaryEdges = [];
+  for (const [key, count] of edgeCounts) {
+    if (count === 1) boundaryEdges.push(key);
+  }
+
+  // The sphere patch has 3 arcs with curveSegments=16 → 3*16=48 boundary
+  // edge segments.  With a conforming mesh there should be exactly 48.
+  assert.strictEqual(boundaryEdges.length, 48,
+    `Sphere mesh should have exactly 48 boundary edges (got ${boundaryEdges.length}) — ` +
+    `extra edges indicate T-junction artifacts from non-conforming subdivision`);
+});
+
+test('box-fillet-3: sphere feature edges form 3 arc paths', () => {
+  resetFeatureIds();
+  const feature = new StepImportFeature('Test Import', boxFilletData, { curveSegments: 16 });
+  const result = feature.execute({ results: {}, tree: { getFeatureIndex: () => 0, features: [] } });
+  const { edges, paths } = result.geometry;
+
+  // Find edges adjacent to sphere faces
+  const body = importSTEP(boxFilletData, { curveSegments: 16 }).body;
+  let sphereFaceGroup = -1;
+  let faceIdx = 0;
+  for (const face of body.faces()) {
+    if (face.surfaceType === 'sphere') sphereFaceGroup = faceIdx;
+    faceIdx++;
+  }
+
+  // The sphere patch borders 3 cylinder faces, so there should be
+  // 3 feature edge paths along the arc boundaries.
+  const sphereTopoId = sphereFaceGroup;
+  const sphereEdgeIndices = new Set();
+  for (let ei = 0; ei < edges.length; ei++) {
+    const e = edges[ei];
+    if (!e.faceIndices || e.faceIndices.length < 2) continue;
+    const faces = result.geometry.faces;
+    const hasSphere = e.faceIndices.some(fi => faces[fi].topoFaceId === sphereTopoId);
+    if (hasSphere) sphereEdgeIndices.add(ei);
+  }
+
+  // Count paths that contain sphere-adjacent edges
+  const spherePaths = paths.filter(p =>
+    p.edgeIndices.some(ei => sphereEdgeIndices.has(ei))
+  );
+
+  assert.strictEqual(spherePaths.length, 3,
+    `Sphere boundary should form exactly 3 edge paths (got ${spherePaths.length})`);
+});
+
+test('box-fillet-3: no visual edges within sphere face', () => {
+  resetFeatureIds();
+  const feature = new StepImportFeature('Test Import', boxFilletData, { curveSegments: 16 });
+  const result = feature.execute({ results: {}, tree: { getFeatureIndex: () => 0, features: [] } });
+
+  const body = importSTEP(boxFilletData, { curveSegments: 16 }).body;
+  let sphereInfo = null;
+  for (const face of body.faces()) {
+    if (face.surfaceType === 'sphere') sphereInfo = face.surfaceInfo;
+  }
+  assert.ok(sphereInfo, 'Should have sphere info');
+
+  // Visual edges should NOT include edges that lie entirely on the sphere
+  // (those are internal tessellation edges).
+  const { origin, radius } = sphereInfo;
+  // Tolerance: 1% of the sphere radius — generous enough to catch
+  // subdivision vertices that are slightly off-surface, but tight enough
+  // to exclude edges on adjacent cylinder faces.
+  const SPHERE_SURFACE_TOL = radius * 0.01;
+  const onSphere = (v) => {
+    const dx = v.x - origin.x, dy = v.y - origin.y, dz = v.z - origin.z;
+    return Math.abs(Math.sqrt(dx * dx + dy * dy + dz * dz) - radius) < SPHERE_SURFACE_TOL;
+  };
+
+  const sphereVisualEdges = result.geometry.visualEdges.filter(e =>
+    onSphere(e.start) && onSphere(e.end)
+  );
+
+  assert.strictEqual(sphereVisualEdges.length, 0,
+    `Should have no visual edges on sphere surface (got ${sphereVisualEdges.length})`);
+});
+
 // ============================================================
 console.log('\n=== STEP Import — Feature Tests ===\n');
 // ============================================================
