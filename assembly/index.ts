@@ -4,6 +4,16 @@ import { Scene, SceneNode } from "./scene";
 import { EntityStore, FLAG_VISIBLE, FLAG_SELECTED, FLAG_CONSTRUCTION, FLAG_HOVER, FLAG_FIXED, FLAG_PREVIEW } from "./entities";
 import { ConstraintSolver, CONSTRAINT_COINCIDENT, CONSTRAINT_HORIZONTAL, CONSTRAINT_VERTICAL, CONSTRAINT_DISTANCE, CONSTRAINT_FIXED, CONSTRAINT_PARALLEL, CONSTRAINT_PERPENDICULAR, CONSTRAINT_EQUAL_LENGTH, CONSTRAINT_TANGENT, CONSTRAINT_ANGLE } from "./solver";
 import { render2DEntities, renderOriginPlanes, setEntityModelMatrix, resetEntityModelMatrix } from "./render2d";
+import {
+  getResultPtr,
+  getTessVertsPtr, getTessNormalsPtr, getTessFacesPtr, getCurvePtsPtr,
+  nurbsCurveEvaluate, nurbsCurveTessellate,
+  nurbsSurfaceEvaluate, nurbsSurfaceNormal, nurbsSurfaceTessellate,
+} from "./nurbs";
+import {
+  earClipTriangulate,
+  computeTriangleNormal, computeBoundingBox, computeMeshVolume,
+} from "./tessellation";
 
 // Global state — initialized in init()
 let scene: Scene = new Scene();
@@ -367,3 +377,15 @@ export const SOLVER_PERPENDICULAR: i32 = CONSTRAINT_PERPENDICULAR;
 export const SOLVER_EQUAL_LENGTH: i32 = CONSTRAINT_EQUAL_LENGTH;
 export const SOLVER_TANGENT: i32 = CONSTRAINT_TANGENT;
 export const SOLVER_ANGLE: i32 = CONSTRAINT_ANGLE;
+
+// ─── Re-export NURBS tessellation API ─────────────────────────────────
+export {
+  getResultPtr,
+  getTessVertsPtr, getTessNormalsPtr, getTessFacesPtr, getCurvePtsPtr,
+  nurbsCurveEvaluate, nurbsCurveTessellate,
+  nurbsSurfaceEvaluate, nurbsSurfaceNormal, nurbsSurfaceTessellate,
+};
+export {
+  earClipTriangulate,
+  computeTriangleNormal, computeBoundingBox, computeMeshVolume,
+};
