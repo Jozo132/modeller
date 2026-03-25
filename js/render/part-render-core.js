@@ -117,20 +117,29 @@ function buildSilhouetteCandidates(faces) {
     const verts = face.vertices || [];
     const n = face.normal || { x: 0, y: 0, z: 1 };
     const g = face.faceGroup != null ? face.faceGroup : fi;
+    const tid = face.topoFaceId;
     for (let i = 0; i < verts.length; i++) {
       const a = verts[i];
       const b = verts[(i + 1) % verts.length];
       const key = eKey(a, b);
-      if (!edgeMap.has(key)) edgeMap.set(key, { a, b, normals: [], groups: [] });
+      if (!edgeMap.has(key)) edgeMap.set(key, { a, b, normals: [], groups: [], topoFaceIds: [] });
       const entry = edgeMap.get(key);
       entry.normals.push(n);
       entry.groups.push(g);
+      entry.topoFaceIds.push(tid);
     }
   }
 
   const candidates = [];
   for (const [, info] of edgeMap) {
     if (info.normals.length >= 2) {
+      // Suppress silhouette candidates between faces from the same STEP
+      // topology face — internal tessellation edges on curved surfaces
+      // (e.g. sphere patches) should never produce contour lines.
+      const tid0 = info.topoFaceIds[0];
+      const tid1 = info.topoFaceIds[1];
+      if (tid0 !== undefined && tid0 === tid1) continue;
+
       const n0 = info.normals[0];
       const n1 = info.normals[1];
       const dot = n0.x * n1.x + n0.y * n1.y + n0.z * n1.z;

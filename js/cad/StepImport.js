@@ -1971,33 +1971,52 @@ function _tessellateMultiArcPatch(polygon, edgeBounds, arcIndices, surfaceInfo, 
     return pt;
   }
 
-  // Adaptive subdivision preserving boundary edges.  For each triangle,
-  // only non-boundary edges are checked for deviation and split.
+  // Adaptive subdivision preserving boundary edges.  Uses a two-phase
+  // approach per pass: first mark all non-boundary edges whose midpoint
+  // deviates from the surface, then split every triangle that has at
+  // least one marked edge.  Because edge marks are global, adjacent
+  // triangles sharing a marked edge are always split together, producing
+  // a conforming mesh without T-junctions.
   const deviationTol = 1e-3;
   const maxPasses = 5;
 
+  function _edgeKey(a, b) {
+    const ka = pKey(a), kb = pKey(b);
+    return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+  }
+
   for (let pass = 0; pass < maxPasses; pass++) {
-    let anySplit = false;
-    const next = [];
+    // Phase 1 — mark edges whose midpoint deviates from the surface.
+    const edgeSplitSet = new Set();
     for (const { verts: [a, b, c], bnd: [abB, bcB, caB] } of triangles) {
-      // Compute deviation only for non-boundary edges
-      let maxDev = 0;
       if (!abB) {
         const raw = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, z: (a.z + b.z) / 2 };
-        maxDev = Math.max(maxDev, _dist3D(raw, _projectOntoSurface(raw, surfaceInfo)));
+        if (_dist3D(raw, _projectOntoSurface(raw, surfaceInfo)) > deviationTol) {
+          edgeSplitSet.add(_edgeKey(a, b));
+        }
       }
       if (!bcB) {
         const raw = { x: (b.x + c.x) / 2, y: (b.y + c.y) / 2, z: (b.z + c.z) / 2 };
-        maxDev = Math.max(maxDev, _dist3D(raw, _projectOntoSurface(raw, surfaceInfo)));
+        if (_dist3D(raw, _projectOntoSurface(raw, surfaceInfo)) > deviationTol) {
+          edgeSplitSet.add(_edgeKey(b, c));
+        }
       }
       if (!caB) {
         const raw = { x: (c.x + a.x) / 2, y: (c.y + a.y) / 2, z: (c.z + a.z) / 2 };
-        maxDev = Math.max(maxDev, _dist3D(raw, _projectOntoSurface(raw, surfaceInfo)));
+        if (_dist3D(raw, _projectOntoSurface(raw, surfaceInfo)) > deviationTol) {
+          edgeSplitSet.add(_edgeKey(c, a));
+        }
       }
+    }
+    if (edgeSplitSet.size === 0) break;
 
-      if (maxDev <= deviationTol) { next.push({ verts: [a, b, c], bnd: [abB, bcB, caB] }); continue; }
-
-      const splitAB = !abB, splitBC = !bcB, splitCA = !caB;
+    // Phase 2 — split every triangle that has at least one marked edge.
+    let anySplit = false;
+    const next = [];
+    for (const { verts: [a, b, c], bnd: [abB, bcB, caB] } of triangles) {
+      const splitAB = !abB && edgeSplitSet.has(_edgeKey(a, b));
+      const splitBC = !bcB && edgeSplitSet.has(_edgeKey(b, c));
+      const splitCA = !caB && edgeSplitSet.has(_edgeKey(c, a));
       const splitCount = (splitAB ? 1 : 0) + (splitBC ? 1 : 0) + (splitCA ? 1 : 0);
       if (splitCount === 0) { next.push({ verts: [a, b, c], bnd: [abB, bcB, caB] }); continue; }
 
@@ -2013,31 +2032,32 @@ function _tessellateMultiArcPatch(polygon, edgeBounds, arcIndices, surfaceInfo, 
         next.push({ verts: [mCA, mBC, c], bnd: [false, false, false] });
         next.push({ verts: [mAB, mBC, mCA], bnd: [false, false, false] });
       } else if (splitCount === 2) {
-        // Two splittable edges.  Keep one boundary edge intact.
-        if (abB) {
-          // boundary [a,b]; split [b,c] and [c,a]
+        // Two edges split.  Determine which edge is kept (not split)
+        // and preserve its original boundary flag.
+        if (!splitAB) {
+          // keep AB; split BC and CA
           const mBC = sharedMidpoint(b, c);
           const mCA = sharedMidpoint(c, a);
-          next.push({ verts: [a, b, mBC],   bnd: [true, false, false] });
+          next.push({ verts: [a, b, mBC],   bnd: [abB, false, false] });
           next.push({ verts: [a, mBC, mCA],  bnd: [false, false, false] });
           next.push({ verts: [mCA, mBC, c],  bnd: [false, false, false] });
-        } else if (bcB) {
-          // boundary [b,c]; split [a,b] and [c,a]
+        } else if (!splitBC) {
+          // keep BC; split AB and CA
           const mAB = sharedMidpoint(a, b);
           const mCA = sharedMidpoint(c, a);
-          next.push({ verts: [mAB, b, c],    bnd: [false, true, false] });
+          next.push({ verts: [mAB, b, c],    bnd: [false, bcB, false] });
           next.push({ verts: [mAB, c, mCA],  bnd: [false, false, false] });
           next.push({ verts: [a, mAB, mCA],  bnd: [false, false, false] });
         } else {
-          // boundary [c,a]; split [a,b] and [b,c]
+          // keep CA; split AB and BC
           const mAB = sharedMidpoint(a, b);
           const mBC = sharedMidpoint(b, c);
           next.push({ verts: [a, mAB, mBC],  bnd: [false, false, false] });
-          next.push({ verts: [a, mBC, c],    bnd: [false, false, true] });
+          next.push({ verts: [a, mBC, c],    bnd: [false, false, caB] });
           next.push({ verts: [mAB, b, mBC],  bnd: [false, false, false] });
         }
       } else {
-        // Only 1 splittable edge — the other 2 are boundary.
+        // Only 1 edge split — preserve original boundary flags on the other two.
         if (splitAB) {
           const mAB = sharedMidpoint(a, b);
           next.push({ verts: [a, mAB, c],  bnd: [false, false, caB] });
