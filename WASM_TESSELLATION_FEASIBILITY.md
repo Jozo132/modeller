@@ -260,10 +260,14 @@ Segment counts are configured per-feature in at least 4 separate places:
 3. **Revolve** — `segments` property per RevolveFeature
 4. **Tessellation.js** — `surfaceSegments` (8) and `edgeSegments` (16) hardcoded defaults
 
+The defaults are also inconsistent across features — STEP import defaults to 16 curve
+segments, fillets default to 8, and surface tessellation defaults to 8, meaning features
+within the same scene render at visibly different quality levels with no user intervention.
+
 This means:
 - Users are asked about segments during STEP import (an implementation detail they shouldn't
   need to think about)
-- Different features in the same scene can have different tessellation quality
+- Different features in the same scene have different tessellation quality by default
 - Changing resolution requires editing each feature individually
 - There's no way to "re-mesh the whole scene at higher quality for export"
 
@@ -315,7 +319,9 @@ class TessellationConfig {
 **On change:**
 1. Update `scene.tessellationConfig.curveSegments`
 2. For each feature in the feature tree: `feature.execute()` (topology is cached, only
-   re-tessellates)
+   re-tessellates). Features are re-executed serially in dependency order since each may
+   depend on the previous feature's result. However, the tessellation of independent bodies
+   (e.g., separate STEP imports) can be parallelized across Web Workers in Phase 2+.
 3. Update 3D view
 
 With WASM tessellation + Web Worker, this re-tessellation could complete in <1 second
