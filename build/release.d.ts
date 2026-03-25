@@ -414,3 +414,107 @@ export declare function setEntityModelMatrix(m00: number, m01: number, m02: numb
  * assembly/render2d/resetEntityModelMatrix
  */
 export declare function resetEntityModelMatrix(): void;
+/**
+ * assembly/nurbs/getResultPtr
+ * @returns `usize`
+ */
+export declare function getResultPtr(): number;
+/**
+ * assembly/nurbs/nurbsCurveEvaluate
+ * @param degree `i32`
+ * @param nCtrl `i32`
+ * @param ctrlPts `~lib/typedarray/Float64Array`
+ * @param knots `~lib/typedarray/Float64Array`
+ * @param weights `~lib/typedarray/Float64Array`
+ * @param t `f64`
+ */
+export declare function nurbsCurveEvaluate(degree: number, nCtrl: number, ctrlPts: Float64Array, knots: Float64Array, weights: Float64Array, t: number): void;
+/**
+ * assembly/nurbs/nurbsCurveTessellate
+ * @param degree `i32`
+ * @param nCtrl `i32`
+ * @param ctrlPts `~lib/typedarray/Float64Array`
+ * @param knots `~lib/typedarray/Float64Array`
+ * @param weights `~lib/typedarray/Float64Array`
+ * @param segments `i32`
+ * @param outPts `~lib/typedarray/Float64Array`
+ */
+export declare function nurbsCurveTessellate(degree: number, nCtrl: number, ctrlPts: Float64Array, knots: Float64Array, weights: Float64Array, segments: number, outPts: Float64Array): void;
+/**
+ * assembly/nurbs/nurbsSurfaceEvaluate
+ * @param degU `i32`
+ * @param degV `i32`
+ * @param nRowsU `i32`
+ * @param nColsV `i32`
+ * @param ctrlPts `~lib/typedarray/Float64Array`
+ * @param knotsU `~lib/typedarray/Float64Array`
+ * @param knotsV `~lib/typedarray/Float64Array`
+ * @param weights `~lib/typedarray/Float64Array`
+ * @param u `f64`
+ * @param v `f64`
+ */
+export declare function nurbsSurfaceEvaluate(degU: number, degV: number, nRowsU: number, nColsV: number, ctrlPts: Float64Array, knotsU: Float64Array, knotsV: Float64Array, weights: Float64Array, u: number, v: number): void;
+/**
+ * assembly/nurbs/nurbsSurfaceNormal
+ * @param degU `i32`
+ * @param degV `i32`
+ * @param nRowsU `i32`
+ * @param nColsV `i32`
+ * @param ctrlPts `~lib/typedarray/Float64Array`
+ * @param knotsU `~lib/typedarray/Float64Array`
+ * @param knotsV `~lib/typedarray/Float64Array`
+ * @param weights `~lib/typedarray/Float64Array`
+ * @param u `f64`
+ * @param v `f64`
+ */
+export declare function nurbsSurfaceNormal(degU: number, degV: number, nRowsU: number, nColsV: number, ctrlPts: Float64Array, knotsU: Float64Array, knotsV: Float64Array, weights: Float64Array, u: number, v: number): void;
+/**
+ * assembly/nurbs/nurbsSurfaceTessellate
+ * @param degU `i32`
+ * @param degV `i32`
+ * @param nRowsU `i32`
+ * @param nColsV `i32`
+ * @param ctrlPts `~lib/typedarray/Float64Array`
+ * @param knotsU `~lib/typedarray/Float64Array`
+ * @param knotsV `~lib/typedarray/Float64Array`
+ * @param weights `~lib/typedarray/Float64Array`
+ * @param segsU `i32`
+ * @param segsV `i32`
+ * @param outVerts `~lib/typedarray/Float64Array`
+ * @param outNormals `~lib/typedarray/Float64Array`
+ * @param outFaces `~lib/typedarray/Uint32Array`
+ * @returns `i32`
+ */
+export declare function nurbsSurfaceTessellate(degU: number, degV: number, nRowsU: number, nColsV: number, ctrlPts: Float64Array, knotsU: Float64Array, knotsV: Float64Array, weights: Float64Array, segsU: number, segsV: number, outVerts: Float64Array, outNormals: Float64Array, outFaces: Uint32Array): number;
+/**
+ * assembly/tessellation/earClipTriangulate
+ * @param coords `~lib/typedarray/Float64Array`
+ * @param nVerts `i32`
+ * @param outTris `~lib/typedarray/Uint32Array`
+ * @returns `i32`
+ */
+export declare function earClipTriangulate(coords: Float64Array, nVerts: number, outTris: Uint32Array): number;
+/**
+ * assembly/tessellation/computeTriangleNormal
+ * @param verts `~lib/typedarray/Float64Array`
+ * @param i0 `i32`
+ * @param i1 `i32`
+ * @param i2 `i32`
+ * @param outNormal `~lib/typedarray/Float64Array`
+ */
+export declare function computeTriangleNormal(verts: Float64Array, i0: number, i1: number, i2: number, outNormal: Float64Array): void;
+/**
+ * assembly/tessellation/computeBoundingBox
+ * @param verts `~lib/typedarray/Float64Array`
+ * @param nVerts `i32`
+ * @param outBox `~lib/typedarray/Float64Array`
+ */
+export declare function computeBoundingBox(verts: Float64Array, nVerts: number, outBox: Float64Array): void;
+/**
+ * assembly/tessellation/computeMeshVolume
+ * @param verts `~lib/typedarray/Float64Array`
+ * @param faces `~lib/typedarray/Uint32Array`
+ * @param nTris `i32`
+ * @returns `f64`
+ */
+export declare function computeMeshVolume(verts: Float64Array, faces: Uint32Array, nTris: number): number;

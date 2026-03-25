@@ -16,6 +16,7 @@ import { RevolveFeature } from './RevolveFeature.js';
 import { ChamferFeature } from './ChamferFeature.js';
 import { FilletFeature } from './FilletFeature.js';
 import { StepImportFeature } from './StepImportFeature.js';
+import { TessellationConfig } from './TessellationConfig.js';
 
 function parseFeatureIdNumber(featureId) {
   if (typeof featureId !== 'string') return null;
@@ -133,6 +134,9 @@ export class Part {
     this.mass = 0;
     this.volume = 0;
     this.centerOfMass = { x: 0, y: 0, z: 0 };
+
+    // Global tessellation quality config — all features inherit from this
+    this.tessellationConfig = new TessellationConfig();
   }
   
   // -----------------------------------------------------------------------
@@ -488,7 +492,11 @@ export class Part {
 
     const feature = new FilletFeature(this._nextTypeName('fillet', 'Fillet'), radius);
     feature.setEdgeKeys(edgeKeys);
-    if (options.segments) feature.setSegments(options.segments);
+    if (options.segments) {
+      feature.setSegments(options.segments);
+    } else {
+      feature.setSegments(this.tessellationConfig.curveSegments);
+    }
 
     this.featureTree.addFeature(feature);
     this._checkAutoHidePlanes();
@@ -520,7 +528,7 @@ export class Part {
    * @param {string} stepData - Raw STEP file contents
    * @param {Object} [options]
    * @param {string} [options.name] - Feature name (auto-generated if omitted)
-   * @param {number} [options.curveSegments=16] - Tessellation quality
+   * @param {number} [options.curveSegments] - Tessellation quality (defaults to global config)
    * @returns {StepImportFeature} The created STEP import feature
    */
   importSTEP(stepData, options = {}) {
@@ -528,7 +536,7 @@ export class Part {
 
     const name = options.name || this._nextTypeName('step-import', 'STEP Import');
     const feature = new StepImportFeature(name, stepData, {
-      curveSegments: options.curveSegments,
+      curveSegments: options.curveSegments ?? this.tessellationConfig.curveSegments,
     });
 
     this.featureTree.addFeature(feature);
@@ -646,6 +654,7 @@ export class Part {
       mass: this.mass,
       volume: this.volume,
       centerOfMass: this.centerOfMass,
+      tessellationConfig: this.tessellationConfig.serialize(),
     };
   }
 
@@ -707,6 +716,9 @@ export class Part {
     part._originPlanesAutoHidden = data.originPlanesAutoHidden !== undefined
       ? data.originPlanesAutoHidden
       : (part.featureTree.features.length > 0);
+
+    // Restore global tessellation config (falls back to defaults for old files)
+    part.tessellationConfig = TessellationConfig.deserialize(data.tessellationConfig);
 
     return part;
   }
