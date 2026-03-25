@@ -2156,19 +2156,24 @@ export class WasmRenderer {
    */
   _buildSilhouetteCandidates(faces) {
     const SHARP_COS = Math.cos(15 * Math.PI / 180);
+    const SAME_GROUP_MIN_COS = Math.cos(30 * Math.PI / 180);
     const precision = 5;
     const vKey = (v) => `${v.x.toFixed(precision)},${v.y.toFixed(precision)},${v.z.toFixed(precision)}`;
     const eKey = (a, b) => { const ka = vKey(a), kb = vKey(b); return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`; };
 
     const edgeMap = new Map();
-    for (const face of faces) {
+    for (let fi = 0; fi < faces.length; fi++) {
+      const face = faces[fi];
       const verts = face.vertices;
       const n = face.normal || { x: 0, y: 0, z: 1 };
+      const g = face.faceGroup != null ? face.faceGroup : fi;
       for (let i = 0; i < verts.length; i++) {
         const a = verts[i], b = verts[(i + 1) % verts.length];
         const key = eKey(a, b);
-        if (!edgeMap.has(key)) edgeMap.set(key, { a, b, normals: [] });
-        edgeMap.get(key).normals.push(n);
+        if (!edgeMap.has(key)) edgeMap.set(key, { a, b, normals: [], groups: [] });
+        const entry = edgeMap.get(key);
+        entry.normals.push(n);
+        entry.groups.push(g);
       }
     }
 
@@ -2177,8 +2182,10 @@ export class WasmRenderer {
       if (info.normals.length >= 2) {
         const n0 = info.normals[0], n1 = info.normals[1];
         const dot = n0.x * n1.x + n0.y * n1.y + n0.z * n1.z;
+        const sameGroup = info.groups[0] === info.groups[1];
+        const sharpCos = sameGroup ? SAME_GROUP_MIN_COS : SHARP_COS;
         // Smooth edges only (not sharp feature, not coplanar)
-        if (dot >= SHARP_COS && dot < 1 - 1e-6) {
+        if (dot >= sharpCos && dot < 1 - 1e-6) {
           candidates.push(
             info.a.x, info.a.y, info.a.z,
             info.b.x, info.b.y, info.b.z,

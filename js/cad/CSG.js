@@ -573,6 +573,24 @@ function assignCoplanarFaceGroups(faces) {
     for (let i = 1; i < fis.length; i++) unite(fis[0], fis[i]);
   }
 
+  // Force-merge faces from the same STEP topological face.
+  // A single B-Rep surface tessellated into many mesh triangles must
+  // remain in one group — internal tessellation edges (e.g. on a
+  // spherical corner) should never produce visible feature lines.
+  // Use direct face-index grouping (not edge-based) to handle adaptive
+  // subdivision that may create T-junctions between adjacent triangles.
+  const topoFaceGroups = new Map();
+  for (let fi = 0; fi < faces.length; fi++) {
+    const tid = faces[fi].topoFaceId;
+    if (tid !== undefined) {
+      if (!topoFaceGroups.has(tid)) topoFaceGroups.set(tid, []);
+      topoFaceGroups.get(tid).push(fi);
+    }
+  }
+  for (const [, fis] of topoFaceGroups) {
+    for (let i = 1; i < fis.length; i++) unite(fis[0], fis[i]);
+  }
+
   // Assign final faceGroup from union-find
   for (let fi = 0; fi < faces.length; fi++) {
     faces[fi].faceGroup = find(fi);
@@ -886,6 +904,11 @@ export function computeFeatureEdges(faces) {
   // Build feature edges: boundary edges or sharp edges
   // Also build visual edges: tessellation edges on curved surfaces (non-selectable wireframe)
   const SHARP_THRESHOLD = Math.cos(15 * Math.PI / 180); // ~0.966
+  // Relaxed threshold for edges within the same face group / topo face:
+  // coarsely tessellated smooth surfaces (e.g. spherical corners) can have
+  // adjacent triangle normals diverging beyond 15° but are still part of one
+  // continuous surface.  Use 30° so only genuinely sharp creases register.
+  const SAME_FACE_SHARP_THRESHOLD = Math.cos(30 * Math.PI / 180); // ~0.866
   const COPLANAR_THRESHOLD = 1 - 1e-6;
   let edges = [];
   const visualEdges = [];
@@ -900,6 +923,11 @@ export function computeFeatureEdges(faces) {
         });
       }
     } else if (info.normals.length >= 2) {
+      // Determine if both faces belong to the same logical surface
+      const sameGroup = info.faceIndices.length >= 2 &&
+        new Set(info.faceIndices.map(fi => faces[fi].faceGroup)).size === 1;
+      const threshold = sameGroup ? SAME_FACE_SHARP_THRESHOLD : SHARP_THRESHOLD;
+
       // Check if any pair of adjacent normals differs significantly
       const n0 = info.normals[0];
       let isFeature = false;
@@ -908,7 +936,7 @@ export function computeFeatureEdges(faces) {
         const n1 = info.normals[i];
         const dot = n0.x * n1.x + n0.y * n1.y + n0.z * n1.z;
         if (dot < minDot) minDot = dot;
-        if (dot < SHARP_THRESHOLD) {
+        if (dot < threshold) {
           isFeature = true;
           break;
         }
@@ -919,6 +947,17 @@ export function computeFeatureEdges(faces) {
         const hasNF = info.faceIndices.some(fi => !faces[fi].isFillet);
         if (hasF && hasNF) isFeature = true;
       }
+      // Force feature edge at STEP topology face boundaries: edges between
+      // different topoFaceId values represent B-Rep surface seams that should
+      // always be selectable, even when the normals are nearly continuous
+      // (e.g. tangent-continuous fillet-to-corner transitions).
+      if (!isFeature && info.faceIndices.length >= 2) {
+        const topoIds = new Set();
+        for (const fi of info.faceIndices) {
+          if (faces[fi].topoFaceId !== undefined) topoIds.add(faces[fi].topoFaceId);
+        }
+        if (topoIds.size > 1) isFeature = true;
+      }
       // Suppress feature edges at the corner base seam: the flat base triangle
       // connecting the spherical corner to the trimmed box faces is a geometric
       // necessity for manifold closure but should not produce visible feature lines.
@@ -926,6 +965,16 @@ export function computeFeatureEdges(faces) {
         const hasCorner = info.faceIndices.some(fi => faces[fi].isCorner);
         const allNonFillet = info.faceIndices.every(fi => !faces[fi].isFillet);
         if (hasCorner && allNonFillet) isFeature = false;
+      }
+      // Suppress feature edges between faces from the same STEP topology
+      // face — these are internal tessellation artifacts, never real B-Rep
+      // seams.  This overrides angle thresholds so that coarse subdivision
+      // on a spherical corner never shows internal lines.
+      if (isFeature && info.faceIndices.length >= 2) {
+        const fa = faces[info.faceIndices[0]], fb = faces[info.faceIndices[1]];
+        if (fa.topoFaceId !== undefined && fa.topoFaceId === fb.topoFaceId) {
+          isFeature = false;
+        }
       }
       if (isFeature) {
         edges.push({

@@ -1873,13 +1873,58 @@ function _projectOntoSurface(point, surfaceInfo) {
     const s = surfaceInfo.radius / len;
     return { x: ox + dx * s, y: oy + dy * s, z: oz + dz * s };
   }
+  if (surfaceInfo.type === 'cylinder') {
+    const ox = surfaceInfo.origin.x, oy = surfaceInfo.origin.y, oz = surfaceInfo.origin.z;
+    const ax = surfaceInfo.axis.x, ay = surfaceInfo.axis.y, az = surfaceInfo.axis.z;
+    const dx = point.x - ox, dy = point.y - oy, dz = point.z - oz;
+    const axial = dx * ax + dy * ay + dz * az;
+    const rx = dx - axial * ax, ry = dy - axial * ay, rz = dz - axial * az;
+    const rLen = Math.sqrt(rx * rx + ry * ry + rz * rz);
+    if (rLen < 1e-14) return point;
+    const s = surfaceInfo.radius / rLen;
+    return { x: ox + axial * ax + rx * s, y: oy + axial * ay + ry * s, z: oz + axial * az + rz * s };
+  }
+  if (surfaceInfo.type === 'cone') {
+    const ox = surfaceInfo.origin.x, oy = surfaceInfo.origin.y, oz = surfaceInfo.origin.z;
+    const ax = surfaceInfo.axis.x, ay = surfaceInfo.axis.y, az = surfaceInfo.axis.z;
+    const dx = point.x - ox, dy = point.y - oy, dz = point.z - oz;
+    const axial = dx * ax + dy * ay + dz * az;
+    const rx = dx - axial * ax, ry = dy - axial * ay, rz = dz - axial * az;
+    const rLen = Math.sqrt(rx * rx + ry * ry + rz * rz);
+    if (rLen < 1e-14) return point;
+    const targetR = surfaceInfo.radius + axial * Math.tan(surfaceInfo.semiAngle);
+    const s = targetR / rLen;
+    return { x: ox + axial * ax + rx * s, y: oy + axial * ay + ry * s, z: oz + axial * az + rz * s };
+  }
+  if (surfaceInfo.type === 'torus') {
+    const ox = surfaceInfo.origin.x, oy = surfaceInfo.origin.y, oz = surfaceInfo.origin.z;
+    const ax = surfaceInfo.axis.x, ay = surfaceInfo.axis.y, az = surfaceInfo.axis.z;
+    const dx = point.x - ox, dy = point.y - oy, dz = point.z - oz;
+    const axial = dx * ax + dy * ay + dz * az;
+    const rx = dx - axial * ax, ry = dy - axial * ay, rz = dz - axial * az;
+    const rLen = Math.sqrt(rx * rx + ry * ry + rz * rz);
+    if (rLen < 1e-14) return point;
+    // Center of the minor circle on the major ring
+    const mcx = ox + (rx / rLen) * surfaceInfo.majorR;
+    const mcy = oy + (ry / rLen) * surfaceInfo.majorR;
+    const mcz = oz + (rz / rLen) * surfaceInfo.majorR;
+    const mx = point.x - mcx, my = point.y - mcy, mz = point.z - mcz;
+    const mLen = Math.sqrt(mx * mx + my * my + mz * mz);
+    if (mLen < 1e-14) return point;
+    const s = surfaceInfo.minorR / mLen;
+    return { x: mcx + mx * s, y: mcy + my * s, z: mcz + mz * s };
+  }
   return point;
 }
 
 /**
  * Structured tessellation for a face with 3+ arc edges (sphere/torus patches).
- * Creates a fan from the polygon centroid, then adaptively subdivides
- * triangles so that all interior vertices lie on the analytic surface.
+ * Uses centroid-fan initial triangulation then uniform 4-way subdivision
+ * (split all 3 edges at midpoints → 4 sub-triangles per triangle) to produce
+ * evenly-sized, well-shaped triangles across the curved surface.
+ *
+ * A shared midpoint cache ensures adjacent triangles share split vertices,
+ * producing a conforming mesh with no T-junctions.
  */
 function _tessellateMultiArcPatch(polygon, edgeBounds, arcIndices, surfaceInfo, sameSense, faceGroup) {
   if (polygon.length < 3) return null;
@@ -1892,50 +1937,120 @@ function _tessellateMultiArcPatch(polygon, edgeBounds, arcIndices, surfaceInfo, 
   const cz = polygon.reduce((s, p) => s + p.z, 0) / n;
   const centroid = _projectOntoSurface(_snapPoint({ x: cx, y: cy, z: cz }), surfaceInfo);
 
-  // Build initial fan triangles
-  let triangles = [];
+  // Build boundary edge set from the original polygon so that subdivision
+  // never splits boundary edges.  This keeps boundary vertices aligned with
+  // the adjacent face tessellation, enabling proper edge matching in CSG.
+  const precision = 8;
+  const pKey = (v) => `${v.x.toFixed(precision)},${v.y.toFixed(precision)},${v.z.toFixed(precision)}`;
+  const boundaryEdges = new Set();
   for (let i = 0; i < n; i++) {
-    triangles.push([centroid, polygon[i], polygon[(i + 1) % n]]);
+    const ka = pKey(polygon[i]), kb = pKey(polygon[(i + 1) % n]);
+    boundaryEdges.add(ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`);
+  }
+  function isBoundary(a, b) {
+    const ka = pKey(a), kb = pKey(b);
+    return boundaryEdges.has(ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`);
   }
 
-  // Adaptive subdivision: split the longest edge when its midpoint
-  // deviates from the analytic surface by more than a tolerance.
-  // Max depth scales logarithmically; minimum base of 16 ensures at least
-  // 4 levels for small polygons so the sphere curvature is resolved.
-  const maxDepth = Math.max(1, Math.ceil(Math.log2(Math.max(16, n))));
-  // Deviation tolerance in model units — matches _subdivideBSplineTriangles
+  // Each triangle tracks which edges are boundary: [ab, bc, ca]
+  let triangles = [];
+  for (let i = 0; i < n; i++) {
+    const bnd = [false, isBoundary(polygon[i], polygon[(i + 1) % n]), false];
+    triangles.push({ verts: [centroid, polygon[i], polygon[(i + 1) % n]], bnd });
+  }
+
+  // Shared edge-midpoint cache to produce a conforming mesh.
+  const midCache = new Map();
+  function sharedMidpoint(a, b) {
+    const ka = pKey(a), kb = pKey(b);
+    const key = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+    if (midCache.has(key)) return midCache.get(key);
+    const raw = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, z: (a.z + b.z) / 2 };
+    const pt = _projectOntoSurface(raw, surfaceInfo);
+    midCache.set(key, pt);
+    return pt;
+  }
+
+  // Adaptive subdivision preserving boundary edges.  For each triangle,
+  // only non-boundary edges are checked for deviation and split.
   const deviationTol = 1e-3;
+  const maxPasses = 5;
 
-  for (let depth = 0; depth < maxDepth; depth++) {
-    const next = [];
+  for (let pass = 0; pass < maxPasses; pass++) {
     let anySplit = false;
-    for (const tri of triangles) {
-      const [a, b, c] = tri;
-      const dAB = _dist3D(a, b);
-      const dBC = _dist3D(b, c);
-      const dCA = _dist3D(c, a);
-
-      let mid, p0, p1, p2;
-      if (dAB >= dBC && dAB >= dCA) {
-        mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, z: (a.z + b.z) / 2 };
-        p0 = a; p1 = b; p2 = c;
-      } else if (dBC >= dCA) {
-        mid = { x: (b.x + c.x) / 2, y: (b.y + c.y) / 2, z: (b.z + c.z) / 2 };
-        p0 = b; p1 = c; p2 = a;
-      } else {
-        mid = { x: (c.x + a.x) / 2, y: (c.y + a.y) / 2, z: (c.z + a.z) / 2 };
-        p0 = c; p1 = a; p2 = b;
+    const next = [];
+    for (const { verts: [a, b, c], bnd: [abB, bcB, caB] } of triangles) {
+      // Compute deviation only for non-boundary edges
+      let maxDev = 0;
+      if (!abB) {
+        const raw = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, z: (a.z + b.z) / 2 };
+        maxDev = Math.max(maxDev, _dist3D(raw, _projectOntoSurface(raw, surfaceInfo)));
+      }
+      if (!bcB) {
+        const raw = { x: (b.x + c.x) / 2, y: (b.y + c.y) / 2, z: (b.z + c.z) / 2 };
+        maxDev = Math.max(maxDev, _dist3D(raw, _projectOntoSurface(raw, surfaceInfo)));
+      }
+      if (!caB) {
+        const raw = { x: (c.x + a.x) / 2, y: (c.y + a.y) / 2, z: (c.z + a.z) / 2 };
+        maxDev = Math.max(maxDev, _dist3D(raw, _projectOntoSurface(raw, surfaceInfo)));
       }
 
-      const surfPt = _projectOntoSurface(mid, surfaceInfo);
-      const dev = _dist3D(mid, surfPt);
+      if (maxDev <= deviationTol) { next.push({ verts: [a, b, c], bnd: [abB, bcB, caB] }); continue; }
 
-      if (dev > deviationTol) {
-        next.push([p0, surfPt, p2]);
-        next.push([surfPt, p1, p2]);
-        anySplit = true;
+      const splitAB = !abB, splitBC = !bcB, splitCA = !caB;
+      const splitCount = (splitAB ? 1 : 0) + (splitBC ? 1 : 0) + (splitCA ? 1 : 0);
+      if (splitCount === 0) { next.push({ verts: [a, b, c], bnd: [abB, bcB, caB] }); continue; }
+
+      anySplit = true;
+
+      if (splitCount === 3) {
+        // Full 4-way split — no boundary edges
+        const mAB = sharedMidpoint(a, b);
+        const mBC = sharedMidpoint(b, c);
+        const mCA = sharedMidpoint(c, a);
+        next.push({ verts: [a, mAB, mCA], bnd: [false, false, false] });
+        next.push({ verts: [mAB, b, mBC], bnd: [false, false, false] });
+        next.push({ verts: [mCA, mBC, c], bnd: [false, false, false] });
+        next.push({ verts: [mAB, mBC, mCA], bnd: [false, false, false] });
+      } else if (splitCount === 2) {
+        // Two splittable edges.  Keep one boundary edge intact.
+        if (abB) {
+          // boundary [a,b]; split [b,c] and [c,a]
+          const mBC = sharedMidpoint(b, c);
+          const mCA = sharedMidpoint(c, a);
+          next.push({ verts: [a, b, mBC],   bnd: [true, false, false] });
+          next.push({ verts: [a, mBC, mCA],  bnd: [false, false, false] });
+          next.push({ verts: [mCA, mBC, c],  bnd: [false, false, false] });
+        } else if (bcB) {
+          // boundary [b,c]; split [a,b] and [c,a]
+          const mAB = sharedMidpoint(a, b);
+          const mCA = sharedMidpoint(c, a);
+          next.push({ verts: [mAB, b, c],    bnd: [false, true, false] });
+          next.push({ verts: [mAB, c, mCA],  bnd: [false, false, false] });
+          next.push({ verts: [a, mAB, mCA],  bnd: [false, false, false] });
+        } else {
+          // boundary [c,a]; split [a,b] and [b,c]
+          const mAB = sharedMidpoint(a, b);
+          const mBC = sharedMidpoint(b, c);
+          next.push({ verts: [a, mAB, mBC],  bnd: [false, false, false] });
+          next.push({ verts: [a, mBC, c],    bnd: [false, false, true] });
+          next.push({ verts: [mAB, b, mBC],  bnd: [false, false, false] });
+        }
       } else {
-        next.push(tri);
+        // Only 1 splittable edge — the other 2 are boundary.
+        if (splitAB) {
+          const mAB = sharedMidpoint(a, b);
+          next.push({ verts: [a, mAB, c],  bnd: [false, false, caB] });
+          next.push({ verts: [mAB, b, c],  bnd: [false, bcB, false] });
+        } else if (splitBC) {
+          const mBC = sharedMidpoint(b, c);
+          next.push({ verts: [a, b, mBC],  bnd: [abB, false, false] });
+          next.push({ verts: [a, mBC, c],  bnd: [false, false, caB] });
+        } else {
+          const mCA = sharedMidpoint(c, a);
+          next.push({ verts: [a, b, mCA],  bnd: [abB, false, false] });
+          next.push({ verts: [mCA, b, c],  bnd: [false, bcB, false] });
+        }
       }
     }
     triangles = next;
@@ -1945,7 +2060,7 @@ function _tessellateMultiArcPatch(polygon, edgeBounds, arcIndices, surfaceInfo, 
   // Build output faces with per-vertex normals
   const faces = [];
   const vertices = [];
-  for (const tri of triangles) {
+  for (const { verts: tri } of triangles) {
     const triNormals = tri.map(v => _computeVertexNormal(v, surfaceInfo, sameSense));
     const cn = {
       x: (triNormals[0].x + triNormals[1].x + triNormals[2].x) / 3,
