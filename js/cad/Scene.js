@@ -15,6 +15,7 @@ import {
   EqualLength, Length,
   RadiusConstraint, Tangent,
   OnLine, OnCircle, Midpoint,
+  Mirror, LinearPattern, RadialPattern,
 } from './Constraint.js';
 
 const MERGE_TOLERANCE = 1e-4; // world units — points closer than this auto-merge
@@ -491,6 +492,17 @@ export class Scene {
       case 'on_line':      return new OnLine(ptMap.get(d.pt), shapeMap.get(d.seg));
       case 'on_circle':    return new OnCircle(ptMap.get(d.pt), shapeMap.get(d.circle));
       case 'midpoint':     return new Midpoint(ptMap.get(d.pt), shapeMap.get(d.seg));
+      case 'mirror':       return new Mirror(ptMap.get(d.ptA), ptMap.get(d.ptB), shapeMap.get(d.seg));
+      case 'linear_pattern': {
+        const pairs = (d.pairs || []).map(p => ({ src: ptMap.get(p.src), dst: ptMap.get(p.dst) }));
+        if (pairs.some(p => !p.src || !p.dst)) return null;
+        return new LinearPattern(pairs, shapeMap.get(d.seg), d.count, d.spacing);
+      }
+      case 'radial_pattern': {
+        const pairs = (d.pairs || []).map(p => ({ src: ptMap.get(p.src), dst: ptMap.get(p.dst) }));
+        if (pairs.some(p => !p.src || !p.dst)) return null;
+        return new RadialPattern(pairs, ptMap.get(d.center), d.count, d.angle);
+      }
       default:             return null;
     }
   }
