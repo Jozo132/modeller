@@ -409,10 +409,8 @@ class CSGSolid {
 function assignCoplanarFaceGroups(faces) {
   // Build a plane key for grouping: quantized normal + plane distance
   function planeKey(normal, vertices) {
-    const quantize = (value, digits = 4) => {
-      const clamped = Math.abs(value) < 1e-10 ? 0 : value;
-      const text = clamped.toFixed(digits);
-      return text === '-0.0000' ? '0.0000' : text;
+    const quantize = (value) => {
+      return Math.abs(value) < 1e-10 ? 0 : Math.round(value * 1e4);
     };
     const n = Vec3.from(normal).unit();
     // Ensure consistent normal direction (flip so largest component is positive)
@@ -473,7 +471,7 @@ function assignCoplanarFaceGroups(faces) {
       const verts = faces[fi].vertices;
       for (let i = 0; i < verts.length; i++) {
         const v = verts[i];
-        const key = `${v.x.toFixed(6)},${v.y.toFixed(6)},${v.z.toFixed(6)}`;
+        const key = `${Math.round(v.x * 1e6)},${Math.round(v.y * 1e6)},${Math.round(v.z * 1e6)}`;
         if (!vertexFaces.has(key)) vertexFaces.set(key, []);
         vertexFaces.get(key).push(fi);
       }
@@ -491,6 +489,7 @@ function assignCoplanarFaceGroups(faces) {
     for (let gi = 0; gi < group.length - 1; gi++) {
       const fa = faces[group[gi]];
       for (let gj = gi + 1; gj < group.length; gj++) {
+        if (find(group[gi]) === find(group[gj])) continue; // already merged
         const fb = faces[group[gj]];
         if (_coplanarFacesTouch(fa, fb)) unite(group[gi], group[gj]);
       }
@@ -498,9 +497,15 @@ function assignCoplanarFaceGroups(faces) {
   }
 
   // --- Curved face grouping: merge non-planar faces connected by smooth edges ---
-  const precision = 6;
-  function vKey(v) { return `${v.x.toFixed(precision)},${v.y.toFixed(precision)},${v.z.toFixed(precision)}`; }
-  function eKey(a, b) { const ka = vKey(a), kb = vKey(b); return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`; }
+  function vKey(v) { return `${Math.round(v.x * 1e6)},${Math.round(v.y * 1e6)},${Math.round(v.z * 1e6)}`; }
+  function eKey(a, b) {
+    const ax = Math.round(a.x * 1e6), ay = Math.round(a.y * 1e6), az = Math.round(a.z * 1e6);
+    const bx = Math.round(b.x * 1e6), by = Math.round(b.y * 1e6), bz = Math.round(b.z * 1e6);
+    if (ax < bx || (ax === bx && (ay < by || (ay === by && az < bz)))) {
+      return `${ax},${ay},${az}|${bx},${by},${bz}`;
+    }
+    return `${bx},${by},${bz}|${ax},${ay},${az}`;
+  }
 
   // Build edge → face indices map
   const edgeFaces = new Map();
@@ -661,11 +666,12 @@ function classifyFaceType(normal, vertices) {
  * Create a unique edge key from two vertex positions (order-independent).
  */
 function edgeKey(a, b) {
-  const precision = 6;
-  const fmt = v => (+v.toFixed(precision) || 0).toFixed(precision);
-  const ka = `${fmt(a.x)},${fmt(a.y)},${fmt(a.z)}`;
-  const kb = `${fmt(b.x)},${fmt(b.y)},${fmt(b.z)}`;
-  return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+  const ax = Math.round(a.x * 1e6), ay = Math.round(a.y * 1e6), az = Math.round(a.z * 1e6);
+  const bx = Math.round(b.x * 1e6), by = Math.round(b.y * 1e6), bz = Math.round(b.z * 1e6);
+  if (ax < bx || (ax === bx && (ay < by || (ay === by && az < bz)))) {
+    return `${ax},${ay},${az}|${bx},${by},${bz}`;
+  }
+  return `${bx},${by},${bz}|${ax},${ay},${az}`;
 }
 
 // -----------------------------------------------------------------------
@@ -684,9 +690,8 @@ function edgeKey(a, b) {
  * producing a manifold mesh.
  */
 function _fixTJunctions(faces) {
-  const precision = 6;
   function vKey(v) {
-    return `${v.x.toFixed(precision)},${v.y.toFixed(precision)},${v.z.toFixed(precision)}`;
+    return `${Math.round(v.x * 1e6)},${Math.round(v.y * 1e6)},${Math.round(v.z * 1e6)}`;
   }
 
   // Collect all unique vertex positions
@@ -752,9 +757,9 @@ function _fixTJunctions(faces) {
 
     // Remove consecutive duplicate vertices that may appear when a T-junction
     // vertex coincides with an existing endpoint at the joining precision.
-    const dedupPrec = 5;
+    const dedupPrec = 1e5;
     function dvKey(v) {
-      return `${(Math.abs(v.x) < 5e-6 ? 0 : v.x).toFixed(dedupPrec)},${(Math.abs(v.y) < 5e-6 ? 0 : v.y).toFixed(dedupPrec)},${(Math.abs(v.z) < 5e-6 ? 0 : v.z).toFixed(dedupPrec)}`;
+      return `${Math.round((Math.abs(v.x) < 5e-6 ? 0 : v.x) * dedupPrec)},${Math.round((Math.abs(v.y) < 5e-6 ? 0 : v.y) * dedupPrec)},${Math.round((Math.abs(v.z) < 5e-6 ? 0 : v.z) * dedupPrec)}`;
     }
     for (let fi = 0; fi < faces.length; fi++) {
       const verts = faces[fi].vertices;
@@ -822,20 +827,26 @@ export function computeFeatureEdges(faces) {
 
   // Build edge → normal/face tracking
   const edgeNormals = new Map();
+  // Cache edge keys per face: edgeKeysPerFace[fi][i] = key for edge i→(i+1)
+  const edgeKeysPerFace = new Array(faces.length);
   for (let fi = 0; fi < faces.length; fi++) {
     const face = faces[fi];
     const faceVerts = face.vertices;
     const normal = face.normal;
+    const keys = new Array(faceVerts.length);
     for (let i = 0; i < faceVerts.length; i++) {
       const a = faceVerts[i];
       const b = faceVerts[(i + 1) % faceVerts.length];
       const key = edgeKey(a, b);
+      keys[i] = key;
       if (!edgeNormals.has(key)) {
         edgeNormals.set(key, { start: a, end: b, normals: [], faceIndices: [] });
       }
-      edgeNormals.get(key).normals.push(normal);
-      edgeNormals.get(key).faceIndices.push(fi);
+      const entry = edgeNormals.get(key);
+      entry.normals.push(normal);
+      entry.faceIndices.push(fi);
     }
+    edgeKeysPerFace[fi] = keys;
   }
 
   // Collect faces per group (only groups with multiple faces need T-junction analysis)
@@ -854,18 +865,19 @@ export function computeFeatureEdges(faces) {
   for (const [, groupFaceIndices] of facesPerGroup) {
     if (groupFaceIndices.length <= 1) continue;
 
-    // Collect all edges of the group
+    // Collect all edges of the group with pre-computed keys
     const groupEdges = [];
     for (const fi of groupFaceIndices) {
       const verts = faces[fi].vertices;
+      const keys = edgeKeysPerFace[fi];
       for (let i = 0; i < verts.length; i++) {
-        groupEdges.push({ a: verts[i], b: verts[(i + 1) % verts.length], fi });
+        groupEdges.push({ a: verts[i], b: verts[(i + 1) % verts.length], fi, key: keys[i] });
       }
     }
 
     // Check each edge against vertices/edges of other faces in the same group
     for (const edge of groupEdges) {
-      const ek = edgeKey(edge.a, edge.b);
+      const ek = edge.key;
       if (tJunctionEdgeKeys.has(ek)) continue; // already marked
       // Only process boundary edges (we only suppress boundary edges)
       const info = edgeNormals.get(ek);
@@ -1032,7 +1044,7 @@ export function computeFeatureEdges(faces) {
 function _chainEdgePaths(edges) {
   if (edges.length === 0) return [];
 
-  const vKey = (v) => `${v.x.toFixed(5)},${v.y.toFixed(5)},${v.z.toFixed(5)}`;
+  const vKey = (v) => `${Math.round(v.x * 1e5)},${Math.round(v.y * 1e5)},${Math.round(v.z * 1e5)}`;
 
   // Build vertex → [edge index] adjacency
   const vertexEdges = new Map();
