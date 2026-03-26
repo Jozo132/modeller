@@ -12,12 +12,14 @@ import { transformPoint } from './Transform3D.js';
  * Transforms all 8 corners of the local AABB and takes the min/max.
  *
  * @param {import('./PartInstance.js').PartInstance} instance
+ * @param {Float64Array} [overrideTransform] - optional transform to use instead of the instance's own
  * @returns {{ min: {x,y,z}, max: {x,y,z} } | null}
  */
-export function computeWorldAABB(instance) {
+export function computeWorldAABB(instance, overrideTransform) {
   const bb = instance.definition.boundingBox;
   if (!bb) return null;
 
+  const t = overrideTransform || instance.transform;
   const { min, max } = bb;
   const corners = [
     { x: min.x, y: min.y, z: min.z },
@@ -30,12 +32,12 @@ export function computeWorldAABB(instance) {
     { x: max.x, y: max.y, z: max.z },
   ];
 
-  const first = transformPoint(instance.transform, corners[0]);
+  const first = transformPoint(t, corners[0]);
   const wMin = { x: first.x, y: first.y, z: first.z };
   const wMax = { x: first.x, y: first.y, z: first.z };
 
   for (let i = 1; i < 8; i++) {
-    const p = transformPoint(instance.transform, corners[i]);
+    const p = transformPoint(t, corners[i]);
     wMin.x = Math.min(wMin.x, p.x);
     wMin.y = Math.min(wMin.y, p.y);
     wMin.z = Math.min(wMin.z, p.z);
@@ -91,13 +93,8 @@ export function broadphaseCollisions(instances, solvedTransforms) {
   const aabbs = [];
   for (const inst of instances) {
     if (!inst.definition.boundingBox) continue;
-    // Use solved transform if available
-    const saved = inst.transform;
-    if (solvedTransforms && solvedTransforms.has(inst.id)) {
-      inst.transform = solvedTransforms.get(inst.id);
-    }
-    const box = computeWorldAABB(inst);
-    inst.transform = saved;
+    const t = (solvedTransforms && solvedTransforms.get(inst.id)) || undefined;
+    const box = computeWorldAABB(inst, t);
     if (box) aabbs.push({ id: inst.id, box });
   }
 
@@ -128,12 +125,8 @@ export function clearanceQuery(instances, solvedTransforms) {
   const aabbs = [];
   for (const inst of instances) {
     if (!inst.definition.boundingBox) continue;
-    const saved = inst.transform;
-    if (solvedTransforms && solvedTransforms.has(inst.id)) {
-      inst.transform = solvedTransforms.get(inst.id);
-    }
-    const box = computeWorldAABB(inst);
-    inst.transform = saved;
+    const t = (solvedTransforms && solvedTransforms.get(inst.id)) || undefined;
+    const box = computeWorldAABB(inst, t);
     if (box) aabbs.push({ id: inst.id, box });
   }
 

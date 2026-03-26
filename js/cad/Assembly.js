@@ -140,7 +140,10 @@ export class Assembly {
   // ── Solver ────────────────────────────────────────────────────────
 
   /**
-   * Solve all mates and update instance transforms.
+   * Solve all mates and update instance transforms in place.
+   * Returns the full solver result including diagnostics.
+   * Note: this mutates instance transforms. To inspect results without
+   * mutation, call solveAssembly(this.instances, this.mates, opts) directly.
    * @param {Object} [opts] - Solver options (maxIterations, tolerance)
    * @returns {import('./assembly/AssemblySolver.js').SolverResult}
    */
