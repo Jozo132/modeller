@@ -1,0 +1,52 @@
+name: workflow-replay
+
+on:
+  push:
+    paths:
+      - 'js/cad/history/**'
+      - 'js/cad/ChamferFeature.js'
+      - 'js/cad/FilletFeature.js'
+      - 'js/cad/FeatureTree.js'
+      - 'js/cad/Feature.js'
+      - 'js/cmod.js'
+      - 'tests/test-history-replay.js'
+      - 'tests/test-workflow-recordings.js'
+      - 'tests/samples/**'
+  pull_request:
+    paths:
+      - 'js/cad/history/**'
+      - 'js/cad/ChamferFeature.js'
+      - 'js/cad/FilletFeature.js'
+      - 'js/cad/FeatureTree.js'
+      - 'js/cad/Feature.js'
+      - 'js/cmod.js'
+      - 'tests/test-history-replay.js'
+      - 'tests/test-workflow-recordings.js'
+      - 'tests/samples/**'
+
+permissions:
+  contents: read
+
+jobs:
+  workflow-replay:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: npx asc assembly/index.ts --target debug && npx asc assembly/index.ts --target release
+      - name: History replay tests
+        run: node tests/test-history-replay.js
+      - name: Workflow recording replay tests
+        run: node tests/test-workflow-recordings.js
+      - name: CMOD import/export tests
+        run: node tests/test-cmod-import-export.js
+      - name: Upload replay diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow-replay-diagnostics
+          path: /tmp/replay-diagnostics.json
+          if-no-files-found: ignore
