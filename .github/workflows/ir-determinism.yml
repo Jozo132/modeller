@@ -23,6 +23,9 @@ on:
       - 'tests/test-ir-determinism.js'
       - 'tests/step/**'
 
+permissions:
+  contents: read
+
 jobs:
   ir-determinism:
     runs-on: ubuntu-latest
