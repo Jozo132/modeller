@@ -2,6 +2,11 @@
 //
 // Generates renderable triangle/quad meshes from exact B-Rep data.
 // Supports tolerance-controlled tessellation for both display and STL export.
+//
+// The default tessellation path now uses the robust Tessellator2 pipeline
+// when CAD_USE_ROBUST_TESSELLATOR is enabled (the new default).  The legacy
+// ear-clipping path is retained as _legacyTessellateBody() for fallback and
+// backward compatibility but should not be used directly by new code.
 
 import { DEFAULT_TOLERANCE } from './Tolerance.js';
 import { getFlag } from '../featureFlags.js';
@@ -99,6 +104,11 @@ function triangulatePolygonIndices(verts, normal) {
  * Tessellate a TopoBody into a mesh geometry object compatible with the
  * existing rendering pipeline.
  *
+ * When CAD_USE_ROBUST_TESSELLATOR is enabled (the default), this delegates
+ * to the robust Tessellator2 pipeline.  If the robust path fails or
+ * produces an empty mesh, the legacy ear-clipping path is used as a
+ * fallback and the result is tagged with `_tessellator = 'legacy-fallback'`.
+ *
  * @param {import('./BRepTopology.js').TopoBody} body
  * @param {Object} [opts]
  * @param {number} [opts.chordalDeviation=0.01] - Max chordal deviation for curved surfaces
@@ -108,6 +118,62 @@ function triangulatePolygonIndices(verts, normal) {
  * @returns {{ vertices: Array<{x,y,z}>, faces: Array<{vertices: Array<{x,y,z}>, normal: {x,y,z}, shared: Object}>, edges: Array }}
  */
 export function tessellateBody(body, opts = {}) {
+  if (getFlag('CAD_USE_ROBUST_TESSELLATOR')) {
+    try {
+      const result = robustTessellateBody(body, { ...opts, validate: true });
+      const validation = result.validation ?? validateMesh(result.faces);
+      if (result.faces.length > 0 && validation.isClean && !_hasInvertedNormals(result.faces)) {
+        result._tessellator = 'robust';
+        return result;
+      }
+      // Robust produced empty, non-clean, or inverted-normal mesh — fall through to legacy
+    } catch (_e) {
+      // Robust tessellation failed — fall through to legacy
+    }
+    const fallback = _legacyTessellateBody(body, opts);
+    fallback._tessellator = 'legacy-fallback';
+    return fallback;
+  }
+  return _legacyTessellateBody(body, opts);
+}
+
+/**
+ * Quick check for inverted face normals in a tessellated mesh.
+ * Returns true if more than 10% of faces have normals that disagree
+ * with the winding order of their vertices (cross-product test).
+ *
+ * @param {Array<{vertices: Array<{x,y,z}>, normal?: {x,y,z}}>} faces
+ * @returns {boolean}
+ */
+function _hasInvertedNormals(faces) {
+  if (faces.length === 0) return false;
+  let checked = 0;
+  let inverted = 0;
+  for (const f of faces) {
+    const v = f.vertices;
+    const n = f.normal;
+    if (!n || !v || v.length < 3) continue;
+    checked++;
+    const ux = v[1].x - v[0].x, uy = v[1].y - v[0].y, uz = v[1].z - v[0].z;
+    const wx = v[2].x - v[0].x, wy = v[2].y - v[0].y, wz = v[2].z - v[0].z;
+    const cx = uy * wz - uz * wy;
+    const cy = uz * wx - ux * wz;
+    const cz = ux * wy - uy * wx;
+    if (cx * n.x + cy * n.y + cz * n.z < 0) inverted++;
+  }
+  return checked > 0 && inverted / checked > 0.1;
+}
+
+/**
+ * Legacy ear-clipping tessellation path.
+ *
+ * @deprecated Prefer the robust Tessellator2 pipeline via tessellateBody()
+ *             with CAD_USE_ROBUST_TESSELLATOR enabled (now the default).
+ * @param {import('./BRepTopology.js').TopoBody} body
+ * @param {Object} [opts]
+ * @returns {{ vertices: Array, faces: Array, edges: Array }}
+ */
+export function _legacyTessellateBody(body, opts = {}) {
   const surfSegs = opts.surfaceSegments ?? 8;
   const edgeSegs = opts.edgeSegments ?? 16;
 
@@ -213,9 +279,9 @@ export function tessellateFace(face, segments = 8) {
 /**
  * Tessellate a TopoBody for STL export with controlled tolerance.
  *
- * When CAD_USE_ROBUST_TESSELLATOR is enabled, the robust tessellator
- * runs first as a canary: if its mesh passes validation, it is used;
- * otherwise the legacy tessellator provides the fallback.
+ * When CAD_USE_ROBUST_TESSELLATOR is enabled (the default), the robust
+ * tessellator runs first with validation.  If its mesh passes validation
+ * it is used; otherwise the legacy tessellator provides the fallback.
  *
  * @param {import('./BRepTopology.js').TopoBody} body
  * @param {Object} [opts]
@@ -231,7 +297,7 @@ export function tessellateForSTL(body, opts = {}) {
   // Higher precision → more segments
   const segments = Math.max(4, Math.min(64, Math.ceil(1.0 / chordalDev)));
 
-  // --- Canary mode: try robust tessellator first ---
+  // --- Robust path: try robust tessellator first when enabled ---
   const useRobust = getFlag('CAD_USE_ROBUST_TESSELLATOR');
   if (useRobust) {
     try {
@@ -243,7 +309,7 @@ export function tessellateForSTL(body, opts = {}) {
       if (validation.isClean && robustMesh.faces.length > 0) {
         const triangles = _meshToTriangles(robustMesh);
         if (triangles.length > 0) {
-          triangles._tessellator = 'robust-canary';
+          triangles._tessellator = 'robust';
           return triangles;
         }
       }
@@ -253,7 +319,7 @@ export function tessellateForSTL(body, opts = {}) {
     }
   }
 
-  const mesh = tessellateBody(body, { surfaceSegments: segments });
+  const mesh = _legacyTessellateBody(body, { surfaceSegments: segments });
   const triangles = _meshToTriangles(mesh);
   return triangles;
 }

@@ -562,9 +562,10 @@ test('getShadowDisagreements: returns empty by default', () => {
   assert.strictEqual(d.length, 0);
 });
 
-test('shadow mode: runs both paths when flag enabled', () => {
+test('shadow mode: runs both paths when flag enabled (default)', () => {
   clearShadowDisagreements();
-  setFlag('CAD_USE_GWN_CONTAINMENT', true);
+  // GWN containment is now enabled by default — just verify behavior
+  resetFlags();
   try {
     const box = makeBox(0, 0, 0, 10, 10, 10);
     // Clear point inside — both paths should agree
@@ -575,7 +576,6 @@ test('shadow mode: runs both paths when flag enabled', () => {
     // Disagreements are only logged when fast and robust disagree on state
     assert.ok(Array.isArray(d));
   } finally {
-    resetFlags();
     clearShadowDisagreements();
   }
 });

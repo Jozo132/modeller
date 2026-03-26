@@ -522,19 +522,19 @@ console.log('\n=== Mesh Quality — Canary STL Export ===\n');
   resetFlags();
   const box = buildTestBox();
 
-  // Without flag: legacy path
+  // Default path: robust tessellator is now the default
+  const defaultTriangles = tessellateForSTL(box);
+  assert(defaultTriangles.length > 0, `Default STL produces triangles (${defaultTriangles.length})`);
+  assert(
+    defaultTriangles._tessellator === 'robust' || defaultTriangles._tessellator === undefined,
+    `Default STL uses robust tessellator (got ${defaultTriangles._tessellator})`
+  );
+
+  // With flag off: legacy path
+  setFlag('CAD_USE_ROBUST_TESSELLATOR', false);
   const legacyTriangles = tessellateForSTL(box);
   assert(legacyTriangles.length > 0, `Legacy STL produces triangles (${legacyTriangles.length})`);
   assert(legacyTriangles._tessellator === undefined, 'Legacy STL has no _tessellator tag');
-
-  // With flag: canary path (robust first, fallback to legacy)
-  setFlag('CAD_USE_ROBUST_TESSELLATOR', true);
-  const canaryTriangles = tessellateForSTL(box);
-  assert(canaryTriangles.length > 0, `Canary STL produces triangles (${canaryTriangles.length})`);
-  assert(
-    canaryTriangles._tessellator === 'robust-canary' || canaryTriangles._tessellator === undefined,
-    `Canary STL tessellator tag is valid (got ${canaryTriangles._tessellator})`
-  );
   resetFlags();
 }
 

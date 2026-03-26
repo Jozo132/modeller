@@ -1,13 +1,14 @@
 // js/workers/tessellation-worker.js — Web Worker for off-main-thread tessellation
 //
 // Receives a TopoBody (structured-cloned) and tessellation options,
-// runs tessellateBody / tessellateForSTL, and returns the resulting mesh
-// with typed-array buffers transferred (zero-copy) back to the caller.
+// runs tessellation using the robust pipeline by default, and returns
+// the resulting mesh with typed-array buffers transferred (zero-copy)
+// back to the caller.
 //
 // Message protocol:
 //   Request:  { body, options, mode: 'display'|'stl', _dispatchId }
 //   Response: { type: 'result', vertices: Float32Array, indices: Uint32Array,
-//               normals: Float32Array, faceCount, _dispatchId }
+//               normals: Float32Array, faceCount, _tessellator, _dispatchId }
 //   Error:    { type: 'error', message, stack, _dispatchId }
 
 import { tessellateBody, tessellateForSTL } from '../cad/Tessellation.js';
@@ -79,6 +80,7 @@ self.onmessage = function (e) {
         vertices: packed.vertices,
         normals: packed.normals,
         faceCount: packed.faceCount,
+        _tessellator: mesh._tessellator || 'unknown',
         duration,
         _dispatchId,
       },

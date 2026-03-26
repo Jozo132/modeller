@@ -3,7 +3,7 @@
 // Provides a conservative routing policy that decides whether to attempt
 // the discrete fallback lane when the exact boolean pipeline fails.
 //
-// Gated behind CAD_ALLOW_DISCRETE_FALLBACK=1 environment variable.
+// Controlled via the CAD_ALLOW_DISCRETE_FALLBACK feature flag (default: ON).
 //
 // Operation policy modes:
 //   - 'exact-only':      Never fall back; throw on exact failure.
@@ -11,6 +11,7 @@
 //   - 'force-fallback':  Skip exact path; always use discrete fallback.
 
 import { ResultGrade, FallbackDiagnostics } from './FallbackDiagnostics.js';
+import { getFlag } from '../../featureFlags.js';
 
 /**
  * Known trigger reasons that activate the fallback lane.
@@ -38,18 +39,13 @@ export const OperationPolicy = Object.freeze({
 });
 
 /**
- * Check whether discrete fallback is enabled via environment variable.
+ * Check whether discrete fallback is enabled via the feature flag module.
+ * Uses the centralized getFlag() API so that programmatic overrides,
+ * environment variables, and the new default (ON) are all respected.
  * @returns {boolean}
  */
 export function isFallbackEnabled() {
-  try {
-    // Works in Node.js; returns false in browsers where process is undefined
-    return (typeof process !== 'undefined' &&
-            process.env &&
-            process.env.CAD_ALLOW_DISCRETE_FALLBACK === '1');
-  } catch {
-    return false;
-  }
+  return !!getFlag('CAD_ALLOW_DISCRETE_FALLBACK');
 }
 
 /**

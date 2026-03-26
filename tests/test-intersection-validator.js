@@ -400,9 +400,16 @@ test('exactBooleanOp: overlapping union produces valid result', () => {
   const boxA = makeBox(0, 0, 0, 10, 10, 10);
   const boxB = makeBox(5, 0, 0, 10, 10, 10);
   const result = exactBooleanOp(boxA, boxB, 'union');
-  assert.ok(result.body, 'Should produce a body');
-  assert.ok(result.mesh, 'Should produce a mesh');
+  // With allow-fallback policy (now the default), the exact path may detect
+  // invariant violations and route to the discrete fallback, returning a mesh
+  // instead of an exact body.  Both outcomes are valid.
+  const hasBody = !!result.body;
+  const hasMesh = !!result.mesh;
+  assert.ok(hasBody || hasMesh, 'Should produce a body or fallback mesh');
   assert.ok(result.diagnostics, 'Should include diagnostics');
+  if (!hasBody) {
+    assert.strictEqual(result.resultGrade, 'fallback', 'No body → grade must be fallback');
+  }
 });
 
 test('exactBooleanOp: subtract produces valid result', () => {
@@ -410,7 +417,9 @@ test('exactBooleanOp: subtract produces valid result', () => {
   const boxA = makeBox(0, 0, 0, 10, 10, 10);
   const boxB = makeBox(5, 0, 0, 10, 10, 10);
   const result = exactBooleanOp(boxA, boxB, 'subtract');
-  assert.ok(result.body, 'Should produce a body');
+  const hasBody = !!result.body;
+  const hasMesh = !!result.mesh;
+  assert.ok(hasBody || hasMesh, 'Should produce a body or fallback mesh');
   assert.ok(result.diagnostics, 'Should include diagnostics');
 });
 
@@ -419,7 +428,9 @@ test('exactBooleanOp: intersect produces valid result', () => {
   const boxA = makeBox(0, 0, 0, 10, 10, 10);
   const boxB = makeBox(5, 0, 0, 10, 10, 10);
   const result = exactBooleanOp(boxA, boxB, 'intersect');
-  assert.ok(result.body, 'Should produce a body');
+  const hasBody = !!result.body;
+  const hasMesh = !!result.mesh;
+  assert.ok(hasBody || hasMesh, 'Should produce a body or fallback mesh');
   assert.ok(result.diagnostics, 'Should include diagnostics');
 });
 
