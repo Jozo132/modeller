@@ -25,10 +25,19 @@ function bench(name, fn, iterations) {
 /**
  * Measure allocation counts using V8's gc() if exposed, or
  * approximate via heapUsed delta.
+ *
+ * For accurate results, run Node.js with --expose-gc flag:
+ *   node --expose-gc tests/bench/evaluator-bench.js
+ *
+ * Without --expose-gc, results are approximate heap deltas.
  */
 function measureAllocations(name, fn, iterations) {
   const gc = globalThis.gc;
   if (gc) gc();
+  else if (!measureAllocations._warned) {
+    measureAllocations._warned = true;
+    console.log('  (Note: run with --expose-gc for more accurate allocation tracking)');
+  }
 
   const before = process.memoryUsage();
   for (let i = 0; i < iterations; i++) fn();

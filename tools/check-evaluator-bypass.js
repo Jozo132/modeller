@@ -66,22 +66,44 @@ for (const relPath of CORE_GLOBS) {
   const lines = content.split('\n');
 
   // Track catch block depth: lines inside catch blocks are allowed
-  // (they represent last-resort fallback for degenerate geometry)
-  let catchDepth = 0;
+  // (they represent last-resort fallback for degenerate geometry).
+  // Simple heuristic: once we see `catch (`, we count braces to
+  // track the block scope. This covers the common pattern:
+  //   } catch (_e) {
+  //     // fallback code
+  //   }
+  let inCatchBlock = false;
+  let catchBraceDepth = 0;
 
   for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
     const line = lines[lineIdx];
     const trimmed = line.trim();
 
-    // Track catch blocks (simple brace counting after catch)
-    if (/\bcatch\s*\(/.test(line)) catchDepth++;
-    if (catchDepth > 0) {
-      const opens = (line.match(/\{/g) || []).length;
-      const closes = (line.match(/\}/g) || []).length;
-      // When we see the closing brace that ends the catch block, decrement
-      if (closes > opens) catchDepth = Math.max(0, catchDepth - 1);
-      // Skip lines inside catch blocks (intentional fallback)
+    // Detect entering a catch block
+    if (!inCatchBlock && /\bcatch\s*\(/.test(line)) {
+      // Find the opening brace of the catch block on this line or next
+      const openIdx = line.indexOf('{', line.indexOf('catch'));
+      if (openIdx >= 0) {
+        inCatchBlock = true;
+        catchBraceDepth = 1;
+        // Count any additional braces on the same line
+        for (let ci = openIdx + 1; ci < line.length; ci++) {
+          if (line[ci] === '{') catchBraceDepth++;
+          if (line[ci] === '}') catchBraceDepth--;
+        }
+        if (catchBraceDepth <= 0) inCatchBlock = false;
+      }
       continue;
+    }
+
+    // Track brace depth inside catch block
+    if (inCatchBlock) {
+      for (let ci = 0; ci < line.length; ci++) {
+        if (line[ci] === '{') catchBraceDepth++;
+        if (line[ci] === '}') catchBraceDepth--;
+      }
+      if (catchBraceDepth <= 0) inCatchBlock = false;
+      continue;  // Skip all lines inside catch blocks
     }
 
     // Skip pure comment lines
