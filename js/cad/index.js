@@ -53,6 +53,10 @@ export { curveSurfaceIntersect } from './CurveSurfaceIntersect.js';
 export { surfaceSurfaceIntersect } from './SurfaceSurfaceIntersect.js';
 export { intersectCurves, intersectCurveSurface, intersectSurfaces, intersectBodies } from './Intersections.js';
 export { splitFace, classifyPointOnFace, classifyFragment } from './FaceSplitter.js';
+export {
+  classifyPoint, classifyPoints, classifyFragment as containmentClassifyFragment,
+  isPointOnFace, maybeResolveUncertain,
+} from './Containment.js';
 export { stitchFaces, buildBody } from './ShellBuilder.js';
 export { exactBooleanOp, hasExactTopology } from './BooleanKernel.js';
 export { exportSTEP } from './StepExport.js';

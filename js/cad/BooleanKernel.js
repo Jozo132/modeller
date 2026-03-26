@@ -17,6 +17,7 @@
 
 import { intersectBodies } from './Intersections.js';
 import { splitFace, classifyFragment } from './FaceSplitter.js';
+import { classifyPoint as containmentClassifyPoint } from './Containment.js';
 import { buildBody } from './ShellBuilder.js';
 import { tessellateBody } from './Tessellation.js';
 import { DEFAULT_TOLERANCE, Tolerance } from './Tolerance.js';
@@ -280,7 +281,14 @@ function _classifyPlanarPolygon(poly, body, tol) {
     y: c.y + n.y * (tol.pointCoincidence * 10),
     z: c.z + n.z * (tol.pointCoincidence * 10),
   };
-  return _rayCastClassifyPoint(p, body, tol);
+  const result = containmentClassifyPoint(body, p, { tolerance: tol });
+  // Map Containment state to legacy classification strings
+  switch (result.state) {
+    case 'inside': return 'inside';
+    case 'on': return 'inside'; // on-boundary treated as inside for planar classification
+    case 'uncertain': return _rayCastClassifyPoint(p, body, tol); // fallback
+    default: return 'outside';
+  }
 }
 
 function _rayCastClassifyPoint(point, body, tol) {

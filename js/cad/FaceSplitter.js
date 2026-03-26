@@ -9,6 +9,7 @@
 import { NurbsCurve } from './NurbsCurve.js';
 import { TopoFace, TopoLoop, TopoCoEdge, TopoEdge, TopoVertex, SurfaceType } from './BRepTopology.js';
 import { DEFAULT_TOLERANCE } from './Tolerance.js';
+import { classifyFragment as _containmentClassifyFragment } from './Containment.js';
 
 /**
  * Split a face by a set of intersection curves.
@@ -232,17 +233,36 @@ export function classifyPointOnFace(point, face, tol = DEFAULT_TOLERANCE) {
  * Classify a face fragment as inside, outside, or coincident
  * relative to a solid body.
  *
+ * Delegates to the authoritative Containment engine.
+ *
  * @param {import('./BRepTopology.js').TopoFace} fragment
  * @param {import('./BRepTopology.js').TopoBody} body
  * @param {import('./Tolerance.js').Tolerance} [tol]
  * @returns {'inside'|'outside'|'coincident'}
  */
 export function classifyFragment(fragment, body, tol = DEFAULT_TOLERANCE) {
-  // Sample a point in the interior of the fragment
+  const result = _containmentClassifyFragment(body, fragment, { tolerance: tol });
+
+  // Map the Containment result states back to the legacy string API
+  switch (result.state) {
+    case 'inside': return 'inside';
+    case 'outside': return 'outside';
+    case 'on': return 'coincident';
+    case 'uncertain':
+      // For uncertain cases, fall back to legacy ray-cast to preserve
+      // existing behavior while the robust path matures
+      return _legacyRayCastClassify(fragment, body, tol);
+    default: return 'outside';
+  }
+}
+
+/**
+ * Legacy ray-cast fallback for uncertain Containment results.
+ * Preserves prior behavior: single +Z ray, parity-based.
+ */
+function _legacyRayCastClassify(fragment, body, tol) {
   const testPoint = _sampleInteriorPoint(fragment);
   if (!testPoint) return 'outside';
-
-  // Ray-cast against the body to determine inside/outside
   return _rayCastClassify(testPoint, body, tol);
 }
 

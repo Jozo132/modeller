@@ -1,0 +1,43 @@
+name: containment-regression
+
+on:
+  push:
+    paths:
+      - 'js/cad/Containment.js'
+      - 'js/cad/FaceSplitter.js'
+      - 'js/cad/BooleanKernel.js'
+      - 'tests/test-containment.js'
+      - 'tests/test-boolean-analytic.js'
+      - 'tests/test-boolean-nurbs.js'
+  pull_request:
+    paths:
+      - 'js/cad/Containment.js'
+      - 'js/cad/FaceSplitter.js'
+      - 'js/cad/BooleanKernel.js'
+      - 'tests/test-containment.js'
+      - 'tests/test-boolean-analytic.js'
+      - 'tests/test-boolean-nurbs.js'
+
+jobs:
+  containment-regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: npx asc assembly/index.ts --target debug && npx asc assembly/index.ts --target release
+      - name: Deterministic containment suite
+        run: node tests/test-containment.js
+      - name: Boolean analytic tests
+        run: node tests/test-boolean-analytic.js
+      - name: Boolean NURBS tests
+        run: node tests/test-boolean-nurbs.js
+      - name: Upload failing cases
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: containment-failure-logs
+          path: /tmp/containment-failures/
+          if-no-files-found: ignore
