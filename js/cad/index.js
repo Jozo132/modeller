@@ -11,6 +11,24 @@ export { Scene } from './Scene.js';
 export { Sketch } from './Sketch.js';
 export { Part } from './Part.js';
 export { Assembly } from './Assembly.js';
+
+// --- Assembly design ---
+export {
+  PartDefinition, resetPartDefinitionIds,
+  PartInstance, resetPartInstanceIds,
+  Mate, MateType, resetMateIds,
+  pointFeature, axisFeature, planeFeature,
+  solveMate, mateResidual, solveAssembly,
+  computeWorldAABB, aabbOverlap, aabbClearance,
+  broadphaseCollisions, clearanceQuery,
+  generateBOM, bomSummary,
+  identity as mat4Identity, fromTranslation as mat4FromTranslation,
+  fromRotationX, fromRotationY, fromRotationZ,
+  fromAxisAngle, compose as mat4Compose, multiply as mat4Multiply,
+  invertRigid, transformPoint as mat4TransformPoint,
+  transformDirection as mat4TransformDirection,
+  extractPosition, transformsEqual,
+} from './assembly/index.js';
 export { Feature, resetFeatureIds } from './Feature.js';
 export { FeatureTree } from './FeatureTree.js';
 export { SketchFeature } from './SketchFeature.js';
