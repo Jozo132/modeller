@@ -11,7 +11,7 @@
 import { DEFAULT_TOLERANCE } from './Tolerance.js';
 import { getFlag } from '../featureFlags.js';
 import { robustTessellateBody } from './Tessellator2/index.js';
-import { validateMesh } from './MeshValidator.js';
+import { warnOnceForFallback } from './fallback/warnOnce.js';
 
 function projectPolygon2D(verts, normal) {
   const an = {
@@ -121,15 +121,24 @@ export function tessellateBody(body, opts = {}) {
   if (getFlag('CAD_USE_ROBUST_TESSELLATOR')) {
     try {
       const result = robustTessellateBody(body, { ...opts, validate: true });
-      const validation = result.validation ?? validateMesh(result.faces);
-      if (result.faces.length > 0 && validation.isClean && !_hasInvertedNormals(result.faces)) {
+      if (result.faces.length > 0) {
+        // The robust tessellator is the authoritative new-stack path.
+        // Accept its output when it produces a non-empty mesh.  Validation
+        // diagnostics are preserved for downstream inspection but do NOT
+        // trigger a legacy fallback — the legacy path had known bugs.
         result._tessellator = 'robust';
         return result;
       }
-      // Robust produced empty, non-clean, or inverted-normal mesh — fall through to legacy
+      // Robust produced an empty mesh — fall through to legacy compatibility shim
     } catch (_e) {
-      // Robust tessellation failed — fall through to legacy
+      // Robust tessellation threw — fall through to legacy compatibility shim
     }
+    warnOnceForFallback({
+      id: 'tessellation:compat-legacy',
+      policy: 'allow-fallback',
+      reason: 'robust tessellator produced empty mesh or threw; using legacy ear-clipping compatibility shim',
+      kind: 'compatibility-shim',
+    });
     const fallback = _legacyTessellateBody(body, opts);
     fallback._tessellator = 'legacy-fallback';
     return fallback;
@@ -305,18 +314,25 @@ export function tessellateForSTL(body, opts = {}) {
         surfaceSegments: segments,
         validate: true,
       });
-      const validation = robustMesh.validation ?? validateMesh(robustMesh.faces);
-      if (validation.isClean && robustMesh.faces.length > 0) {
+      if (robustMesh.faces.length > 0) {
+        // The robust tessellator is authoritative.  Accept its output
+        // whenever it produces a non-empty mesh.
         const triangles = _meshToTriangles(robustMesh);
         if (triangles.length > 0) {
           triangles._tessellator = 'robust';
           return triangles;
         }
       }
-      // Robust produced a non-clean mesh — fall through to legacy
+      // Robust produced an empty mesh — fall through to legacy compatibility shim
     } catch (_e) {
-      // Robust tessellation failed — fall through to legacy
+      // Robust tessellation threw — fall through to legacy compatibility shim
     }
+    warnOnceForFallback({
+      id: 'tessellation:compat-legacy',
+      policy: 'allow-fallback',
+      reason: 'robust tessellator produced empty mesh or threw; using legacy ear-clipping compatibility shim',
+      kind: 'compatibility-shim',
+    });
   }
 
   const mesh = _legacyTessellateBody(body, { surfaceSegments: segments });

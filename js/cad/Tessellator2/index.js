@@ -18,6 +18,7 @@ import { recommendEdgeSegments, detectCriticalRegions } from './Refinement.js';
 import { validateMesh, detectBoundaryEdges, detectSelfIntersections, checkWatertight } from '../MeshValidator.js';
 import { _legacyTessellateBody as legacyTessellateBody } from '../Tessellation.js';
 import { getFlag } from '../../featureFlags.js';
+import { warnOnceForFallback } from '../fallback/warnOnce.js';
 
 // ── Shadow tessellation disagreement log ────────────────────────────
 /** @type {Array<Object>} */
@@ -227,6 +228,12 @@ export function tessellateBodyRouted(body, opts = {}) {
       // Fall through to legacy if robust produced empty mesh
     } catch (err) {
       // Robust tessellation failed — fall back to legacy with diagnostic
+      warnOnceForFallback({
+        id: 'tessellation:compat-legacy',
+        policy: 'allow-fallback',
+        reason: 'robust tessellator failed; using legacy ear-clipping compatibility shim',
+        kind: 'compatibility-shim',
+      });
       const fallback = legacyTessellateBody(body, opts);
       fallback._tessellator = 'legacy-fallback';
       fallback._robustError = err.message;
@@ -234,6 +241,14 @@ export function tessellateBodyRouted(body, opts = {}) {
     }
   }
 
+  if (mode === 'legacy') {
+    warnOnceForFallback({
+      id: 'tessellation:compat-legacy',
+      policy: 'force-fallback',
+      reason: 'explicit legacy tessellator requested via tessellator option',
+      kind: 'compatibility-shim',
+    });
+  }
   const result = legacyTessellateBody(body, opts);
   result._tessellator = 'legacy';
   return result;
