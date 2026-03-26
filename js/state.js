@@ -28,6 +28,9 @@ class AppState {
     // Selection (primitives)
     this.selectedEntities = [];
 
+    // Stable selection keys — entity keys persisted across recompute
+    this._stableSelectionKeys = [];
+
     // History (undo/redo)
     this._undoStack = [];
     this._redoStack = [];
