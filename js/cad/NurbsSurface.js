@@ -10,6 +10,7 @@
 
 import { NurbsCurve } from './NurbsCurve.js';
 import { wasmTessellation } from './WasmTessellation.js';
+import { GeometryEvaluator } from './GeometryEvaluator.js';
 
 let _loggedSurfaceTessBackend = false;
 
@@ -166,40 +167,20 @@ export class NurbsSurface {
   }
 
   /**
-   * Compute the surface normal at parameters (u, v) via finite differences.
-   * Normal = normalize(dS/du × dS/dv)
+   * Compute the surface normal at parameters (u, v) via analytical derivatives.
+   * Normal = normalize(∂S/∂u × ∂S/∂v)
+   *
+   * Uses the GeometryEvaluator which provides exact basis function derivatives
+   * (Piegl & Tiller Algorithm A2.3) instead of finite differences. Falls back
+   * to z-up in degenerate cases where the cross product is near-zero.
    *
    * @param {number} u
    * @param {number} v
    * @returns {{x: number, y: number, z: number}} Unit normal
    */
   normal(u, v) {
-    const eps = 1e-6;
-    const uRange = this.uMax - this.uMin;
-    const vRange = this.vMax - this.vMin;
-
-    // Partial derivative in u via central differences
-    const uLo = Math.max(this.uMin, u - eps * uRange);
-    const uHi = Math.min(this.uMax, u + eps * uRange);
-    const pULo = this.evaluate(uLo, v);
-    const pUHi = this.evaluate(uHi, v);
-    const du = { x: pUHi.x - pULo.x, y: pUHi.y - pULo.y, z: pUHi.z - pULo.z };
-
-    // Partial derivative in v via central differences
-    const vLo = Math.max(this.vMin, v - eps * vRange);
-    const vHi = Math.min(this.vMax, v + eps * vRange);
-    const pVLo = this.evaluate(u, vLo);
-    const pVHi = this.evaluate(u, vHi);
-    const dv = { x: pVHi.x - pVLo.x, y: pVHi.y - pVLo.y, z: pVHi.z - pVLo.z };
-
-    // Cross product du × dv
-    const nx = du.y * dv.z - du.z * dv.y;
-    const ny = du.z * dv.x - du.x * dv.z;
-    const nz = du.x * dv.y - du.y * dv.x;
-    const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
-
-    if (len < 1e-14) return { x: 0, y: 0, z: 1 };
-    return { x: nx / len, y: ny / len, z: nz / len };
+    const result = GeometryEvaluator.evalSurface(this, u, v);
+    return result.n;
   }
 
   /**

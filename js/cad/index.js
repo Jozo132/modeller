@@ -59,4 +59,5 @@ export { exportSTEP } from './StepExport.js';
 export { importSTEP, parseSTEPTopology } from './StepImport.js';
 export { TessellationConfig } from './TessellationConfig.js';
 export { wasmTessellation } from './WasmTessellation.js';
+export { GeometryEvaluator } from './GeometryEvaluator.js';
 

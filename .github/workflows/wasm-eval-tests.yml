@@ -1,0 +1,52 @@
+name: WASM Evaluator Tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'assembly/**'
+      - 'js/cad/GeometryEvaluator.js'
+      - 'js/cad/WasmTessellation.js'
+      - 'js/cad/NurbsCurve.js'
+      - 'js/cad/NurbsSurface.js'
+      - 'tests/test-geometry-evaluator.js'
+      - 'tests/test-wasm-tessellation.js'
+      - 'tests/test-nurbs.js'
+  pull_request:
+    paths:
+      - 'assembly/**'
+      - 'js/cad/GeometryEvaluator.js'
+      - 'js/cad/WasmTessellation.js'
+      - 'js/cad/NurbsCurve.js'
+      - 'js/cad/NurbsSurface.js'
+      - 'tests/test-geometry-evaluator.js'
+      - 'tests/test-wasm-tessellation.js'
+      - 'tests/test-nurbs.js'
+
+jobs:
+  wasm-eval-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build WASM module
+        run: npm run asbuild
+
+      - name: Run evaluator regression tests
+        run: node tests/test-geometry-evaluator.js
+
+      - name: Run JS-vs-WASM parity tests (WASM tessellation)
+        run: node tests/test-wasm-tessellation.js
+
+      - name: Run NURBS tests
+        run: node tests/test-nurbs.js
+
+      - name: Run evaluator benchmark
+        run: node tests/bench/evaluator-bench.js

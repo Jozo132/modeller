@@ -9,6 +9,7 @@
 //   - ISO 10303-42 (STEP geometry)
 
 import { wasmTessellation } from './WasmTessellation.js';
+import { GeometryEvaluator } from './GeometryEvaluator.js';
 
 let _loggedCurveTessBackend = false;
 
@@ -145,35 +146,16 @@ export class NurbsCurve {
   }
 
   /**
-   * Evaluate the first derivative (tangent) at parameter u using central
-   * finite differences on the evaluated curve. This is robust for all degrees
-   * and avoids issues with the analytical basis function derivative computation
-   * at knot boundaries.
+   * Evaluate the first derivative (tangent) at parameter u using analytical
+   * basis function derivatives (Piegl & Tiller Algorithm A2.3). For rational
+   * curves, applies the quotient rule for the first derivative.
    *
    * @param {number} u - Parameter value
    * @returns {{x: number, y: number, z: number}} Tangent vector (not normalized)
    */
   derivative(u) {
-    u = Math.max(this.uMin, Math.min(this.uMax, u));
-    const range = this.uMax - this.uMin;
-    const eps = range * 1e-6;
-
-    const uLo = Math.max(this.uMin, u - eps);
-    const uHi = Math.min(this.uMax, u + eps);
-    const h = uHi - uLo;
-
-    if (h < 1e-14) return { x: 0, y: 0, z: 0 };
-
-    const pLo = this.evaluate(uLo);
-    const pHi = this.evaluate(uHi);
-
-    // Scale to actual parameter-space derivative
-    const scale = range / h;
-    return {
-      x: (pHi.x - pLo.x) * scale,
-      y: (pHi.y - pLo.y) * scale,
-      z: (pHi.z - pLo.z) * scale,
-    };
+    const result = GeometryEvaluator.evalCurve(this, u);
+    return result.d1;
   }
 
   /**
