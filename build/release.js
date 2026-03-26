@@ -107,6 +107,70 @@ async function instantiate(module, imports = {}) {
         __release(knotsV);
       }
     },
+    getDerivBufPtr() {
+      // assembly/nurbs/getDerivBufPtr() => usize
+      return exports.getDerivBufPtr() >>> 0;
+    },
+    getBatchBufPtr() {
+      // assembly/nurbs/getBatchBufPtr() => usize
+      return exports.getBatchBufPtr() >>> 0;
+    },
+    nurbsCurveDerivEval(degree, nCtrl, ctrlPts, knots, weights, t) {
+      // assembly/nurbs/nurbsCurveDerivEval(i32, i32, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, f64) => void
+      ctrlPts = __retain(__lowerTypedArray(Float64Array, 32, 3, ctrlPts) || __notnull());
+      knots = __retain(__lowerTypedArray(Float64Array, 32, 3, knots) || __notnull());
+      weights = __lowerTypedArray(Float64Array, 32, 3, weights) || __notnull();
+      try {
+        exports.nurbsCurveDerivEval(degree, nCtrl, ctrlPts, knots, weights, t);
+      } finally {
+        __release(ctrlPts);
+        __release(knots);
+      }
+    },
+    nurbsCurveBatchDerivEval(degree, nCtrl, ctrlPts, knots, weights, params, count) {
+      // assembly/nurbs/nurbsCurveBatchDerivEval(i32, i32, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, i32) => i32
+      ctrlPts = __retain(__lowerTypedArray(Float64Array, 32, 3, ctrlPts) || __notnull());
+      knots = __retain(__lowerTypedArray(Float64Array, 32, 3, knots) || __notnull());
+      weights = __retain(__lowerTypedArray(Float64Array, 32, 3, weights) || __notnull());
+      params = __lowerTypedArray(Float64Array, 32, 3, params) || __notnull();
+      try {
+        return exports.nurbsCurveBatchDerivEval(degree, nCtrl, ctrlPts, knots, weights, params, count);
+      } finally {
+        __release(ctrlPts);
+        __release(knots);
+        __release(weights);
+      }
+    },
+    nurbsSurfaceDerivEval(degU, degV, nRowsU, nColsV, ctrlPts, knotsU, knotsV, weights, u, v) {
+      // assembly/nurbs/nurbsSurfaceDerivEval(i32, i32, i32, i32, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, f64, f64) => void
+      ctrlPts = __retain(__lowerTypedArray(Float64Array, 32, 3, ctrlPts) || __notnull());
+      knotsU = __retain(__lowerTypedArray(Float64Array, 32, 3, knotsU) || __notnull());
+      knotsV = __retain(__lowerTypedArray(Float64Array, 32, 3, knotsV) || __notnull());
+      weights = __lowerTypedArray(Float64Array, 32, 3, weights) || __notnull();
+      try {
+        exports.nurbsSurfaceDerivEval(degU, degV, nRowsU, nColsV, ctrlPts, knotsU, knotsV, weights, u, v);
+      } finally {
+        __release(ctrlPts);
+        __release(knotsU);
+        __release(knotsV);
+      }
+    },
+    nurbsSurfaceBatchDerivEval(degU, degV, nRowsU, nColsV, ctrlPts, knotsU, knotsV, weights, params, count) {
+      // assembly/nurbs/nurbsSurfaceBatchDerivEval(i32, i32, i32, i32, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, i32) => i32
+      ctrlPts = __retain(__lowerTypedArray(Float64Array, 32, 3, ctrlPts) || __notnull());
+      knotsU = __retain(__lowerTypedArray(Float64Array, 32, 3, knotsU) || __notnull());
+      knotsV = __retain(__lowerTypedArray(Float64Array, 32, 3, knotsV) || __notnull());
+      weights = __retain(__lowerTypedArray(Float64Array, 32, 3, weights) || __notnull());
+      params = __lowerTypedArray(Float64Array, 32, 3, params) || __notnull();
+      try {
+        return exports.nurbsSurfaceBatchDerivEval(degU, degV, nRowsU, nColsV, ctrlPts, knotsU, knotsV, weights, params, count);
+      } finally {
+        __release(ctrlPts);
+        __release(knotsU);
+        __release(knotsV);
+        __release(weights);
+      }
+    },
     earClipTriangulate(coords, nVerts, outTris) {
       // assembly/tessellation/earClipTriangulate(~lib/typedarray/Float64Array, i32, ~lib/typedarray/Uint32Array) => i32
       coords = __retain(__lowerTypedArray(Float64Array, 32, 3, coords) || __notnull());
@@ -277,6 +341,15 @@ export const {
   nurbsSurfaceEvaluate,
   nurbsSurfaceNormal,
   nurbsSurfaceTessellate,
+  getDerivBufPtr,
+  getBatchBufPtr,
+  getBatchBufLen,
+  getMaxTessSegs,
+  getMaxCurveSegs,
+  nurbsCurveDerivEval,
+  nurbsCurveBatchDerivEval,
+  nurbsSurfaceDerivEval,
+  nurbsSurfaceBatchDerivEval,
   earClipTriangulate,
   computeTriangleNormal,
   computeBoundingBox,

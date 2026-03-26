@@ -504,6 +504,82 @@ export declare function nurbsSurfaceNormal(degU: number, degV: number, nRowsU: n
  */
 export declare function nurbsSurfaceTessellate(degU: number, degV: number, nRowsU: number, nColsV: number, ctrlPts: Float64Array, knotsU: Float64Array, knotsV: Float64Array, weights: Float64Array, segsU: number, segsV: number): number;
 /**
+ * assembly/nurbs/getDerivBufPtr
+ * @returns `usize`
+ */
+export declare function getDerivBufPtr(): number;
+/**
+ * assembly/nurbs/getBatchBufPtr
+ * @returns `usize`
+ */
+export declare function getBatchBufPtr(): number;
+/**
+ * assembly/nurbs/getBatchBufLen
+ * @returns `i32`
+ */
+export declare function getBatchBufLen(): number;
+/**
+ * assembly/nurbs/getMaxTessSegs
+ * @returns `i32`
+ */
+export declare function getMaxTessSegs(): number;
+/**
+ * assembly/nurbs/getMaxCurveSegs
+ * @returns `i32`
+ */
+export declare function getMaxCurveSegs(): number;
+/**
+ * assembly/nurbs/nurbsCurveDerivEval
+ * @param degree `i32`
+ * @param nCtrl `i32`
+ * @param ctrlPts `~lib/typedarray/Float64Array`
+ * @param knots `~lib/typedarray/Float64Array`
+ * @param weights `~lib/typedarray/Float64Array`
+ * @param t `f64`
+ */
+export declare function nurbsCurveDerivEval(degree: number, nCtrl: number, ctrlPts: Float64Array, knots: Float64Array, weights: Float64Array, t: number): void;
+/**
+ * assembly/nurbs/nurbsCurveBatchDerivEval
+ * @param degree `i32`
+ * @param nCtrl `i32`
+ * @param ctrlPts `~lib/typedarray/Float64Array`
+ * @param knots `~lib/typedarray/Float64Array`
+ * @param weights `~lib/typedarray/Float64Array`
+ * @param params `~lib/typedarray/Float64Array`
+ * @param count `i32`
+ * @returns `i32`
+ */
+export declare function nurbsCurveBatchDerivEval(degree: number, nCtrl: number, ctrlPts: Float64Array, knots: Float64Array, weights: Float64Array, params: Float64Array, count: number): number;
+/**
+ * assembly/nurbs/nurbsSurfaceDerivEval
+ * @param degU `i32`
+ * @param degV `i32`
+ * @param nRowsU `i32`
+ * @param nColsV `i32`
+ * @param ctrlPts `~lib/typedarray/Float64Array`
+ * @param knotsU `~lib/typedarray/Float64Array`
+ * @param knotsV `~lib/typedarray/Float64Array`
+ * @param weights `~lib/typedarray/Float64Array`
+ * @param u `f64`
+ * @param v `f64`
+ */
+export declare function nurbsSurfaceDerivEval(degU: number, degV: number, nRowsU: number, nColsV: number, ctrlPts: Float64Array, knotsU: Float64Array, knotsV: Float64Array, weights: Float64Array, u: number, v: number): void;
+/**
+ * assembly/nurbs/nurbsSurfaceBatchDerivEval
+ * @param degU `i32`
+ * @param degV `i32`
+ * @param nRowsU `i32`
+ * @param nColsV `i32`
+ * @param ctrlPts `~lib/typedarray/Float64Array`
+ * @param knotsU `~lib/typedarray/Float64Array`
+ * @param knotsV `~lib/typedarray/Float64Array`
+ * @param weights `~lib/typedarray/Float64Array`
+ * @param params `~lib/typedarray/Float64Array`
+ * @param count `i32`
+ * @returns `i32`
+ */
+export declare function nurbsSurfaceBatchDerivEval(degU: number, degV: number, nRowsU: number, nColsV: number, ctrlPts: Float64Array, knotsU: Float64Array, knotsV: Float64Array, weights: Float64Array, params: Float64Array, count: number): number;
+/**
  * assembly/tessellation/earClipTriangulate
  * @param coords `~lib/typedarray/Float64Array`
  * @param nVerts `i32`

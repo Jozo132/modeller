@@ -16,11 +16,29 @@ const basisN: StaticArray<f64> = new StaticArray<f64>(MAX_DEGREE + 1);
 const basisLeft: StaticArray<f64> = new StaticArray<f64>(MAX_DEGREE + 1);
 const basisRight: StaticArray<f64> = new StaticArray<f64>(MAX_DEGREE + 1);
 
+// Scratch arrays for basis function derivative computation (Algorithm A2.3).
+const _ndu: StaticArray<f64> = new StaticArray<f64>((MAX_DEGREE + 1) * (MAX_DEGREE + 1));
+const _a: StaticArray<f64> = new StaticArray<f64>(2 * (MAX_DEGREE + 1));
+// Derivative output for u- and v-directions: up to 2nd derivative × (degree+1)
+const _dersU: StaticArray<f64> = new StaticArray<f64>(3 * (MAX_DEGREE + 1));
+const _dersV: StaticArray<f64> = new StaticArray<f64>(3 * (MAX_DEGREE + 1));
+
 // ─── Output buffers ──────────────────────────────────────────────────
 // Pre-allocated output buffers in WASM memory. JS reads from these via pointers.
 
 // Small result buffer for single-point evaluations: [x, y, z, nx, ny, nz]
 const resultBuf: StaticArray<f64> = new StaticArray<f64>(6);
+
+// Derivative result buffer for single-point derivative evaluations:
+//   curve:   [px,py,pz, d1x,d1y,d1z, d2x,d2y,d2z] = 9 f64
+//   surface: [px,py,pz, dux,duy,duz, dvx,dvy,dvz,
+//             duux,duuy,duuz, duvx,duvy,duvz, dvvx,dvvy,dvvz,
+//             nx,ny,nz] = 21 f64
+const derivBuf: StaticArray<f64> = new StaticArray<f64>(21);
+
+// Dynamic batch output buffer — allocated on demand by batch functions.
+let batchBuf: StaticArray<f64> | null = null;
+let batchBufLen: i32 = 0;
 
 // Large output buffer for tessellation results.
 // Max capacity: 128×128 grid = 16384 verts × 3 = 49152 f64 for verts,
@@ -61,6 +79,39 @@ export function getTessFacesPtr(): usize {
 /** Get pointer to the curve points output buffer. */
 export function getCurvePtsPtr(): usize {
   return changetype<usize>(curvePtsOut);
+}
+
+/** Get pointer to the 21-element derivative result buffer. */
+export function getDerivBufPtr(): usize {
+  return changetype<usize>(derivBuf);
+}
+
+/** Get pointer to the dynamically-allocated batch output buffer. */
+export function getBatchBufPtr(): usize {
+  return batchBuf ? changetype<usize>(batchBuf!) : 0;
+}
+
+/** Get the current batch buffer length (number of f64 elements). */
+export function getBatchBufLen(): i32 {
+  return batchBufLen;
+}
+
+/** Get the maximum tessellation segments per direction (buffer limit). */
+export function getMaxTessSegs(): i32 {
+  return 128;
+}
+
+/** Get the maximum curve tessellation segments (buffer limit). */
+export function getMaxCurveSegs(): i32 {
+  return MAX_CURVE_SEGS;
+}
+
+/** Ensure the batch buffer has at least `minLen` f64 capacity. */
+function ensureBatchBuf(minLen: i32): void {
+  if (batchBuf === null || batchBufLen < minLen) {
+    batchBuf = new StaticArray<f64>(minLen);
+    batchBufLen = minLen;
+  }
 }
 
 // ─── B-spline basis functions (Cox-de Boor) ──────────────────────────
@@ -113,6 +164,119 @@ function computeBasis(span: i32, t: f64, degree: i32, knots: Float64Array, kOff:
       }
     }
     unchecked(basisN[j] = saved);
+  }
+}
+
+/**
+ * Compute B-spline basis functions and their derivatives up to order nDerivs.
+ * Implements Piegl & Tiller Algorithm A2.3 (The NURBS Book).
+ *
+ * Output: dersOut[k * (degree+1) + j] = d^k/du^k N_{span-degree+j, degree}(u)
+ * for k = 0..nDerivs, j = 0..degree.
+ *
+ * The left/right scratch arrays are passed explicitly so that u- and v-direction
+ * computations can use separate scratch space.
+ */
+function computeBasisDerivs(
+  span: i32, u: f64, degree: i32,
+  knots: Float64Array, kOff: i32,
+  nDerivs: i32,
+  left: StaticArray<f64>, right: StaticArray<f64>,
+  dersOut: StaticArray<f64>
+): void {
+  const p: i32 = degree;
+  const P1: i32 = p + 1;
+
+  // Step 1: Build ndu table
+  // ndu[r * P1 + j] — upper triangle stores basis values, lower triangle stores knot diffs
+  unchecked(_ndu[0] = 1.0);
+
+  for (let j: i32 = 1; j <= p; j++) {
+    unchecked(left[j] = u - knots[kOff + span + 1 - j]);
+    unchecked(right[j] = knots[kOff + span + j] - u);
+    let saved: f64 = 0.0;
+
+    for (let r: i32 = 0; r < j; r++) {
+      // Lower triangle: ndu[j][r] = knot difference
+      const denom: f64 = unchecked(right[r + 1]) + unchecked(left[j - r]);
+      unchecked(_ndu[j * P1 + r] = denom);
+
+      let temp: f64;
+      if (abs<f64>(denom) < 1e-14) {
+        temp = 0.0;
+      } else {
+        temp = unchecked(_ndu[r * P1 + (j - 1)]) / denom;
+      }
+
+      // Upper triangle: ndu[r][j] = basis function value
+      unchecked(_ndu[r * P1 + j] = saved + unchecked(right[r + 1]) * temp);
+      saved = unchecked(left[j - r]) * temp;
+    }
+    unchecked(_ndu[j * P1 + j] = saved);
+  }
+
+  // Step 2: Load 0th-derivative values (basis functions) from row of ndu
+  for (let j: i32 = 0; j <= p; j++) {
+    unchecked(dersOut[j] = _ndu[j * P1 + p]);
+  }
+
+  // Step 3: Compute higher derivatives using the a[][] alternating rows
+  for (let r: i32 = 0; r <= p; r++) {
+    let s1: i32 = 0, s2: i32 = 1;
+    unchecked(_a[0] = 1.0);
+
+    for (let k: i32 = 1; k <= nDerivs; k++) {
+      let d: f64 = 0.0;
+      const rk: i32 = r - k;
+      const pk: i32 = p - k;
+
+      if (r >= k) {
+        const denom: f64 = unchecked(_ndu[(pk + 1) * P1 + rk]);
+        if (abs<f64>(denom) < 1e-14) {
+          unchecked(_a[s2 * P1 + 0] = 0.0);
+        } else {
+          unchecked(_a[s2 * P1 + 0] = unchecked(_a[s1 * P1 + 0]) / denom);
+        }
+        d = unchecked(_a[s2 * P1 + 0]) * unchecked(_ndu[rk * P1 + pk]);
+      }
+
+      const j1: i32 = rk >= -1 ? 1 : -rk;
+      const j2: i32 = (r - 1) <= pk ? k - 1 : p - r;
+
+      for (let j: i32 = j1; j <= j2; j++) {
+        const denom: f64 = unchecked(_ndu[(pk + 1) * P1 + (rk + j)]);
+        if (abs<f64>(denom) < 1e-14) {
+          unchecked(_a[s2 * P1 + j] = 0.0);
+        } else {
+          unchecked(_a[s2 * P1 + j] = (unchecked(_a[s1 * P1 + j]) - unchecked(_a[s1 * P1 + (j - 1)])) / denom);
+        }
+        d += unchecked(_a[s2 * P1 + j]) * unchecked(_ndu[(rk + j) * P1 + pk]);
+      }
+
+      if (r <= pk) {
+        const denom: f64 = unchecked(_ndu[(pk + 1) * P1 + r]);
+        if (abs<f64>(denom) < 1e-14) {
+          unchecked(_a[s2 * P1 + k] = 0.0);
+        } else {
+          unchecked(_a[s2 * P1 + k] = -unchecked(_a[s1 * P1 + (k - 1)]) / denom);
+        }
+        d += unchecked(_a[s2 * P1 + k]) * unchecked(_ndu[r * P1 + pk]);
+      }
+
+      unchecked(dersOut[k * P1 + r] = d);
+
+      // Swap alternating rows
+      const tmp: i32 = s1; s1 = s2; s2 = tmp;
+    }
+  }
+
+  // Step 4: Multiply by correct factors: p! / (p-k)!
+  let fac: f64 = <f64>p;
+  for (let k: i32 = 1; k <= nDerivs; k++) {
+    for (let j: i32 = 0; j <= p; j++) {
+      unchecked(dersOut[k * P1 + j] *= fac);
+    }
+    fac *= <f64>(p - k);
   }
 }
 
@@ -204,7 +368,8 @@ function _evalCurve(
 /**
  * Tessellate a NURBS curve into a polyline.
  * Output written to curvePtsOut buffer. Read via getCurvePtsPtr().
- * @returns number of points written (segments + 1)
+ * Returns -1 if the requested segments exceed the static buffer capacity (1024).
+ * @returns number of points written (segments + 1), or -1 if buffer exceeded
  */
 export function nurbsCurveTessellate(
   degree: i32,
@@ -214,10 +379,13 @@ export function nurbsCurveTessellate(
   weights: Float64Array,
   segments: i32
 ): i32 {
+  // Return error instead of silently clamping
+  if (segments > MAX_CURVE_SEGS) return -1;
+
   const tMin: f64 = unchecked(knots[degree]);
   const tMax: f64 = unchecked(knots[nCtrl]);
   const range: f64 = tMax - tMin;
-  const nPts: i32 = min<i32>(segments + 1, MAX_CURVE_PTS);
+  const nPts: i32 = segments + 1;
 
   for (let i: i32 = 0; i < nPts; i++) {
     const frac: f64 = <f64>i / <f64>segments;
@@ -232,6 +400,120 @@ export function nurbsCurveTessellate(
   }
 
   return nPts;
+}
+
+/**
+ * Evaluate a NURBS curve at parameter t with first and second derivatives.
+ * Uses analytical basis function derivatives (Algorithm A2.3).
+ *
+ * Result stored in derivBuf:
+ *   [0..2] = point {x, y, z}
+ *   [3..5] = first derivative {d1x, d1y, d1z}
+ *   [6..8] = second derivative {d2x, d2y, d2z}
+ *
+ * For rational curves C(t) = A(t)/w(t):
+ *   C'  = (A' - w'·C) / w
+ *   C'' = (A'' - 2·w'·C' - w''·C) / w
+ */
+export function nurbsCurveDerivEval(
+  degree: i32,
+  nCtrl: i32,
+  ctrlPts: Float64Array,
+  knots: Float64Array,
+  weights: Float64Array,
+  t: f64
+): void {
+  const tMin: f64 = unchecked(knots[degree]);
+  const tMax: f64 = unchecked(knots[nCtrl]);
+  t = max<f64>(tMin, min<f64>(tMax, t));
+
+  const span: i32 = findSpan(t, degree, nCtrl, knots, 0);
+  computeBasisDerivs(span, t, degree, knots, 0, 2, basisLeft, basisRight, _dersU);
+
+  const P1: i32 = degree + 1;
+
+  // Accumulate weighted sums for derivative orders 0, 1, 2
+  let Ax: f64 = 0, Ay: f64 = 0, Az: f64 = 0, w0: f64 = 0;
+  let A1x: f64 = 0, A1y: f64 = 0, A1z: f64 = 0, w1: f64 = 0;
+  let A2x: f64 = 0, A2y: f64 = 0, A2z: f64 = 0, w2: f64 = 0;
+
+  for (let i: i32 = 0; i <= degree; i++) {
+    const idx: i32 = span - degree + i;
+    const ci: i32 = idx * 3;
+    const w: f64 = unchecked(weights[idx]);
+    const px: f64 = unchecked(ctrlPts[ci]);
+    const py: f64 = unchecked(ctrlPts[ci + 1]);
+    const pz: f64 = unchecked(ctrlPts[ci + 2]);
+
+    const N0: f64 = unchecked(_dersU[i]) * w;
+    Ax += N0 * px; Ay += N0 * py; Az += N0 * pz; w0 += N0;
+
+    const N1: f64 = unchecked(_dersU[P1 + i]) * w;
+    A1x += N1 * px; A1y += N1 * py; A1z += N1 * pz; w1 += N1;
+
+    const N2: f64 = unchecked(_dersU[2 * P1 + i]) * w;
+    A2x += N2 * px; A2y += N2 * py; A2z += N2 * pz; w2 += N2;
+  }
+
+  if (abs<f64>(w0) < 1e-14) {
+    for (let k: i32 = 0; k < 9; k++) unchecked(derivBuf[k] = 0);
+    return;
+  }
+
+  const invW: f64 = 1.0 / w0;
+
+  // C(t) = A(t) / w(t)
+  const cx: f64 = Ax * invW;
+  const cy: f64 = Ay * invW;
+  const cz: f64 = Az * invW;
+
+  // C'(t) = (A' - w'·C) / w
+  const d1x: f64 = (A1x - w1 * cx) * invW;
+  const d1y: f64 = (A1y - w1 * cy) * invW;
+  const d1z: f64 = (A1z - w1 * cz) * invW;
+
+  // C''(t) = (A'' - 2·w'·C' - w''·C) / w
+  const d2x: f64 = (A2x - 2.0 * w1 * d1x - w2 * cx) * invW;
+  const d2y: f64 = (A2y - 2.0 * w1 * d1y - w2 * cy) * invW;
+  const d2z: f64 = (A2z - 2.0 * w1 * d1z - w2 * cz) * invW;
+
+  unchecked(derivBuf[0] = cx);
+  unchecked(derivBuf[1] = cy);
+  unchecked(derivBuf[2] = cz);
+  unchecked(derivBuf[3] = d1x);
+  unchecked(derivBuf[4] = d1y);
+  unchecked(derivBuf[5] = d1z);
+  unchecked(derivBuf[6] = d2x);
+  unchecked(derivBuf[7] = d2y);
+  unchecked(derivBuf[8] = d2z);
+}
+
+/**
+ * Batch evaluate a NURBS curve with derivatives at multiple parameter values.
+ * Output written to dynamic batch buffer: batchBuf[i*9 + 0..8].
+ * Read via getBatchBufPtr().
+ *
+ * @param params - Float64Array of t values (length >= count)
+ * @param count - number of parameter values to evaluate
+ * @returns count on success
+ */
+export function nurbsCurveBatchDerivEval(
+  degree: i32, nCtrl: i32,
+  ctrlPts: Float64Array, knots: Float64Array, weights: Float64Array,
+  params: Float64Array, count: i32
+): i32 {
+  ensureBatchBuf(count * 9);
+
+  for (let k: i32 = 0; k < count; k++) {
+    const t: f64 = unchecked(params[k]);
+    nurbsCurveDerivEval(degree, nCtrl, ctrlPts, knots, weights, t);
+    const off: i32 = k * 9;
+    for (let j: i32 = 0; j < 9; j++) {
+      unchecked(batchBuf![off + j] = derivBuf[j]);
+    }
+  }
+
+  return count;
 }
 
 // ─── NURBS Surface Evaluation ────────────────────────────────────────
@@ -367,10 +649,54 @@ function _evalSurf(
 }
 
 /**
- * Compute surface normal at (u, v) via central finite differences.
+ * Compute surface normal at (u, v) via analytical basis function derivatives.
  * Result: resultBuf[0..2] = point {x,y,z}, resultBuf[3..5] = normal {nx,ny,nz}.
+ *
+ * This replaces the former finite-difference implementation with exact
+ * derivative-based normals: n = normalize(∂S/∂u × ∂S/∂v).
+ * Falls back to z-up in degenerate cases (zero cross product).
  */
 export function nurbsSurfaceNormal(
+  degU: i32, degV: i32,
+  nRowsU: i32, nColsV: i32,
+  ctrlPts: Float64Array,
+  knotsU: Float64Array, knotsV: Float64Array,
+  weights: Float64Array,
+  u: f64, v: f64
+): void {
+  // Delegate to the full derivative evaluator
+  nurbsSurfaceDerivEval(degU, degV, nRowsU, nColsV, ctrlPts, knotsU, knotsV, weights, u, v);
+  // Copy point and normal to resultBuf for backward compatibility
+  unchecked(resultBuf[0] = derivBuf[0]);
+  unchecked(resultBuf[1] = derivBuf[1]);
+  unchecked(resultBuf[2] = derivBuf[2]);
+  unchecked(resultBuf[3] = derivBuf[18]);
+  unchecked(resultBuf[4] = derivBuf[19]);
+  unchecked(resultBuf[5] = derivBuf[20]);
+}
+
+/**
+ * Evaluate a NURBS surface at (u, v) with first and second partial derivatives.
+ * Uses analytical basis function derivatives (Algorithm A2.3 tensor product).
+ *
+ * Result stored in derivBuf:
+ *   [0..2]   = point S(u,v)
+ *   [3..5]   = ∂S/∂u
+ *   [6..8]   = ∂S/∂v
+ *   [9..11]  = ∂²S/∂u²
+ *   [12..14] = ∂²S/∂u∂v
+ *   [15..17] = ∂²S/∂v²
+ *   [18..20] = unit normal n = normalize(∂S/∂u × ∂S/∂v)
+ *
+ * Rational surface derivative formulas:
+ *   S    = A^{00} / w^{00}
+ *   S_u  = (A^{10} - w^{10}·S) / w^{00}
+ *   S_v  = (A^{01} - w^{01}·S) / w^{00}
+ *   S_uu = (A^{20} - 2·w^{10}·S_u - w^{20}·S) / w^{00}
+ *   S_uv = (A^{11} - w^{10}·S_v - w^{01}·S_u - w^{11}·S) / w^{00}
+ *   S_vv = (A^{02} - 2·w^{01}·S_v - w^{02}·S) / w^{00}
+ */
+export function nurbsSurfaceDerivEval(
   degU: i32, degV: i32,
   nRowsU: i32, nColsV: i32,
   ctrlPts: Float64Array,
@@ -385,59 +711,167 @@ export function nurbsSurfaceNormal(
   u = max<f64>(uMin, min<f64>(uMax, u));
   v = max<f64>(vMin, min<f64>(vMax, v));
 
-  const eps: f64 = 1e-6;
-  const uRange: f64 = uMax - uMin;
-  const vRange: f64 = vMax - vMin;
+  const spanU: i32 = findSpan(u, degU, nRowsU, knotsU, 0);
+  computeBasisDerivs(spanU, u, degU, knotsU, 0, 2, basisLeft, basisRight, _dersU);
 
-  // Evaluate point at (u, v)
-  _evalSurf(degU, degV, nRowsU, nColsV, ctrlPts, knotsU, knotsV, weights, u, v);
-  const px: f64 = unchecked(resultBuf[0]);
-  const py: f64 = unchecked(resultBuf[1]);
-  const pz: f64 = unchecked(resultBuf[2]);
+  const spanV: i32 = findSpan(v, degV, nColsV, knotsV, 0);
+  computeBasisDerivs(spanV, v, degV, knotsV, 0, 2, basisLeftV, basisRightV, _dersV);
 
-  // dS/du via central differences
-  const uLo: f64 = max<f64>(uMin, u - eps * uRange);
-  const uHi: f64 = min<f64>(uMax, u + eps * uRange);
-  _evalSurf(degU, degV, nRowsU, nColsV, ctrlPts, knotsU, knotsV, weights, uLo, v);
-  const uLoX: f64 = unchecked(resultBuf[0]);
-  const uLoY: f64 = unchecked(resultBuf[1]);
-  const uLoZ: f64 = unchecked(resultBuf[2]);
-  _evalSurf(degU, degV, nRowsU, nColsV, ctrlPts, knotsU, knotsV, weights, uHi, v);
-  const duX: f64 = unchecked(resultBuf[0]) - uLoX;
-  const duY: f64 = unchecked(resultBuf[1]) - uLoY;
-  const duZ: f64 = unchecked(resultBuf[2]) - uLoZ;
+  const PU1: i32 = degU + 1;
+  const PV1: i32 = degV + 1;
 
-  // dS/dv via central differences
-  const vLo: f64 = max<f64>(vMin, v - eps * vRange);
-  const vHi: f64 = min<f64>(vMax, v + eps * vRange);
-  _evalSurf(degU, degV, nRowsU, nColsV, ctrlPts, knotsU, knotsV, weights, u, vLo);
-  const vLoX: f64 = unchecked(resultBuf[0]);
-  const vLoY: f64 = unchecked(resultBuf[1]);
-  const vLoZ: f64 = unchecked(resultBuf[2]);
-  _evalSurf(degU, degV, nRowsU, nColsV, ctrlPts, knotsU, knotsV, weights, u, vHi);
-  const dvX: f64 = unchecked(resultBuf[0]) - vLoX;
-  const dvY: f64 = unchecked(resultBuf[1]) - vLoY;
-  const dvZ: f64 = unchecked(resultBuf[2]) - vLoZ;
+  // Accumulate tensor product sums A^{(k,l)} and w^{(k,l)}
+  let A00x: f64 = 0, A00y: f64 = 0, A00z: f64 = 0, w00: f64 = 0;
+  let A10x: f64 = 0, A10y: f64 = 0, A10z: f64 = 0, w10: f64 = 0;
+  let A01x: f64 = 0, A01y: f64 = 0, A01z: f64 = 0, w01: f64 = 0;
+  let A20x: f64 = 0, A20y: f64 = 0, A20z: f64 = 0, w20: f64 = 0;
+  let A11x: f64 = 0, A11y: f64 = 0, A11z: f64 = 0, w11: f64 = 0;
+  let A02x: f64 = 0, A02y: f64 = 0, A02z: f64 = 0, w02: f64 = 0;
 
-  // Cross product du × dv
-  const nx: f64 = duY * dvZ - duZ * dvY;
-  const ny: f64 = duZ * dvX - duX * dvZ;
-  const nz: f64 = duX * dvY - duY * dvX;
-  const len: f64 = sqrt(nx * nx + ny * ny + nz * nz);
+  for (let i: i32 = 0; i <= degU; i++) {
+    const rowIdx: i32 = spanU - degU + i;
+    const Nu0: f64 = unchecked(_dersU[i]);
+    const Nu1: f64 = unchecked(_dersU[PU1 + i]);
+    const Nu2: f64 = unchecked(_dersU[2 * PU1 + i]);
 
-  unchecked(resultBuf[0] = px);
-  unchecked(resultBuf[1] = py);
-  unchecked(resultBuf[2] = pz);
-  if (len < 1e-14) {
-    unchecked(resultBuf[3] = 0);
-    unchecked(resultBuf[4] = 0);
-    unchecked(resultBuf[5] = 1);
-  } else {
-    const invLen: f64 = 1.0 / len;
-    unchecked(resultBuf[3] = nx * invLen);
-    unchecked(resultBuf[4] = ny * invLen);
-    unchecked(resultBuf[5] = nz * invLen);
+    for (let j: i32 = 0; j <= degV; j++) {
+      const colIdx: i32 = spanV - degV + j;
+      const cpIdx: i32 = rowIdx * nColsV + colIdx;
+      const ci: i32 = cpIdx * 3;
+      const w: f64 = unchecked(weights[cpIdx]);
+      const px: f64 = unchecked(ctrlPts[ci]);
+      const py: f64 = unchecked(ctrlPts[ci + 1]);
+      const pz: f64 = unchecked(ctrlPts[ci + 2]);
+
+      const Nv0: f64 = unchecked(_dersV[j]);
+      const Nv1: f64 = unchecked(_dersV[PV1 + j]);
+      const Nv2: f64 = unchecked(_dersV[2 * PV1 + j]);
+
+      const b00: f64 = Nu0 * Nv0 * w;
+      A00x += b00 * px; A00y += b00 * py; A00z += b00 * pz; w00 += b00;
+
+      const b10: f64 = Nu1 * Nv0 * w;
+      A10x += b10 * px; A10y += b10 * py; A10z += b10 * pz; w10 += b10;
+
+      const b01: f64 = Nu0 * Nv1 * w;
+      A01x += b01 * px; A01y += b01 * py; A01z += b01 * pz; w01 += b01;
+
+      const b20: f64 = Nu2 * Nv0 * w;
+      A20x += b20 * px; A20y += b20 * py; A20z += b20 * pz; w20 += b20;
+
+      const b11: f64 = Nu1 * Nv1 * w;
+      A11x += b11 * px; A11y += b11 * py; A11z += b11 * pz; w11 += b11;
+
+      const b02: f64 = Nu0 * Nv2 * w;
+      A02x += b02 * px; A02y += b02 * py; A02z += b02 * pz; w02 += b02;
+    }
   }
+
+  if (abs<f64>(w00) < 1e-14) {
+    for (let k: i32 = 0; k < 21; k++) unchecked(derivBuf[k] = 0);
+    unchecked(derivBuf[20] = 1.0); // fallback normal z=1
+    return;
+  }
+
+  const invW: f64 = 1.0 / w00;
+
+  // S(u,v) = A^{00} / w^{00}
+  const sx: f64 = A00x * invW;
+  const sy: f64 = A00y * invW;
+  const sz: f64 = A00z * invW;
+
+  // S_u = (A^{10} - w^{10}·S) / w^{00}
+  const sux: f64 = (A10x - w10 * sx) * invW;
+  const suy: f64 = (A10y - w10 * sy) * invW;
+  const suz: f64 = (A10z - w10 * sz) * invW;
+
+  // S_v = (A^{01} - w^{01}·S) / w^{00}
+  const svx: f64 = (A01x - w01 * sx) * invW;
+  const svy: f64 = (A01y - w01 * sy) * invW;
+  const svz: f64 = (A01z - w01 * sz) * invW;
+
+  // S_uu = (A^{20} - 2·w^{10}·S_u - w^{20}·S) / w^{00}
+  const suux: f64 = (A20x - 2.0 * w10 * sux - w20 * sx) * invW;
+  const suuy: f64 = (A20y - 2.0 * w10 * suy - w20 * sy) * invW;
+  const suuz: f64 = (A20z - 2.0 * w10 * suz - w20 * sz) * invW;
+
+  // S_uv = (A^{11} - w^{10}·S_v - w^{01}·S_u - w^{11}·S) / w^{00}
+  const suvx: f64 = (A11x - w10 * svx - w01 * sux - w11 * sx) * invW;
+  const suvy: f64 = (A11y - w10 * svy - w01 * suy - w11 * sy) * invW;
+  const suvz: f64 = (A11z - w10 * svz - w01 * suz - w11 * sz) * invW;
+
+  // S_vv = (A^{02} - 2·w^{01}·S_v - w^{02}·S) / w^{00}
+  const svvx: f64 = (A02x - 2.0 * w01 * svx - w02 * sx) * invW;
+  const svvy: f64 = (A02y - 2.0 * w01 * svy - w02 * sy) * invW;
+  const svvz: f64 = (A02z - 2.0 * w01 * svz - w02 * sz) * invW;
+
+  // Normal = normalize(S_u × S_v)
+  const nx: f64 = suy * svz - suz * svy;
+  const ny: f64 = suz * svx - sux * svz;
+  const nz: f64 = sux * svy - suy * svx;
+  const nLen: f64 = sqrt(nx * nx + ny * ny + nz * nz);
+
+  unchecked(derivBuf[0] = sx);
+  unchecked(derivBuf[1] = sy);
+  unchecked(derivBuf[2] = sz);
+  unchecked(derivBuf[3] = sux);
+  unchecked(derivBuf[4] = suy);
+  unchecked(derivBuf[5] = suz);
+  unchecked(derivBuf[6] = svx);
+  unchecked(derivBuf[7] = svy);
+  unchecked(derivBuf[8] = svz);
+  unchecked(derivBuf[9] = suux);
+  unchecked(derivBuf[10] = suuy);
+  unchecked(derivBuf[11] = suuz);
+  unchecked(derivBuf[12] = suvx);
+  unchecked(derivBuf[13] = suvy);
+  unchecked(derivBuf[14] = suvz);
+  unchecked(derivBuf[15] = svvx);
+  unchecked(derivBuf[16] = svvy);
+  unchecked(derivBuf[17] = svvz);
+
+  if (nLen < 1e-14) {
+    unchecked(derivBuf[18] = 0);
+    unchecked(derivBuf[19] = 0);
+    unchecked(derivBuf[20] = 1);
+  } else {
+    const invNLen: f64 = 1.0 / nLen;
+    unchecked(derivBuf[18] = nx * invNLen);
+    unchecked(derivBuf[19] = ny * invNLen);
+    unchecked(derivBuf[20] = nz * invNLen);
+  }
+}
+
+/**
+ * Batch evaluate a NURBS surface with derivatives at multiple (u,v) pairs.
+ * Output written to dynamic batch buffer: batchBuf[i*21 + 0..20].
+ * Read via getBatchBufPtr().
+ *
+ * @param params - Float64Array of interleaved [u0,v0, u1,v1, ...] (length >= count*2)
+ * @param count - number of (u,v) pairs to evaluate
+ * @returns count on success
+ */
+export function nurbsSurfaceBatchDerivEval(
+  degU: i32, degV: i32,
+  nRowsU: i32, nColsV: i32,
+  ctrlPts: Float64Array,
+  knotsU: Float64Array, knotsV: Float64Array,
+  weights: Float64Array,
+  params: Float64Array, count: i32
+): i32 {
+  ensureBatchBuf(count * 21);
+
+  for (let k: i32 = 0; k < count; k++) {
+    const u: f64 = unchecked(params[k * 2]);
+    const v: f64 = unchecked(params[k * 2 + 1]);
+    nurbsSurfaceDerivEval(degU, degV, nRowsU, nColsV, ctrlPts, knotsU, knotsV, weights, u, v);
+    const off: i32 = k * 21;
+    for (let j: i32 = 0; j < 21; j++) {
+      unchecked(batchBuf![off + j] = derivBuf[j]);
+    }
+  }
+
+  return count;
 }
 
 // ─── Surface Grid Tessellation ───────────────────────────────────────
@@ -447,7 +881,12 @@ export function nurbsSurfaceNormal(
  * Output written to tessVertsOut, tessNormalsOut, tessFacesOut.
  * Read via getTessVertsPtr(), getTessNormalsPtr(), getTessFacesPtr().
  *
- * @returns number of triangles written
+ * Normals are computed via analytical derivatives (not finite differences).
+ * Returns -1 if the requested segments exceed the static buffer capacity
+ * (128 per direction). The JS side should fall back to JS tessellation
+ * or chunk the work when -1 is returned.
+ *
+ * @returns number of triangles written, or -1 if buffer capacity exceeded
  */
 export function nurbsSurfaceTessellate(
   degU: i32, degV: i32,
@@ -457,9 +896,8 @@ export function nurbsSurfaceTessellate(
   weights: Float64Array,
   segsU: i32, segsV: i32
 ): i32 {
-  // Clamp to max buffer capacity
-  segsU = min<i32>(segsU, 128);
-  segsV = min<i32>(segsV, 128);
+  // Return error instead of silently clamping
+  if (segsU > 128 || segsV > 128) return -1;
 
   const uMin: f64 = unchecked(knotsU[degU]);
   const uMax: f64 = unchecked(knotsU[nRowsU]);
@@ -468,59 +906,22 @@ export function nurbsSurfaceTessellate(
   const uRange: f64 = uMax - uMin;
   const vRange: f64 = vMax - vMin;
 
-  const eps: f64 = 1e-6;
-
-  // Evaluate grid of points + normals
+  // Evaluate grid of points + normals using analytical derivatives
   for (let i: i32 = 0; i <= segsU; i++) {
     const u: f64 = uMin + (<f64>i / <f64>segsU) * uRange;
     for (let j: i32 = 0; j <= segsV; j++) {
       const v: f64 = vMin + (<f64>j / <f64>segsV) * vRange;
       const vi: i32 = (i * (segsV + 1) + j) * 3;
 
-      // Evaluate point
-      _evalSurf(degU, degV, nRowsU, nColsV, ctrlPts, knotsU, knotsV, weights, u, v);
-      unchecked(tessVertsOut[vi] = resultBuf[0]);
-      unchecked(tessVertsOut[vi + 1] = resultBuf[1]);
-      unchecked(tessVertsOut[vi + 2] = resultBuf[2]);
+      // Use analytical derivative evaluation — computes point + normal in one pass
+      nurbsSurfaceDerivEval(degU, degV, nRowsU, nColsV, ctrlPts, knotsU, knotsV, weights, u, v);
 
-      // Compute normal via central differences
-      const uLo: f64 = max<f64>(uMin, u - eps * uRange);
-      const uHi: f64 = min<f64>(uMax, u + eps * uRange);
-      _evalSurf(degU, degV, nRowsU, nColsV, ctrlPts, knotsU, knotsV, weights, uLo, v);
-      const uLoX: f64 = unchecked(resultBuf[0]);
-      const uLoY: f64 = unchecked(resultBuf[1]);
-      const uLoZ: f64 = unchecked(resultBuf[2]);
-      _evalSurf(degU, degV, nRowsU, nColsV, ctrlPts, knotsU, knotsV, weights, uHi, v);
-      const duX: f64 = unchecked(resultBuf[0]) - uLoX;
-      const duY: f64 = unchecked(resultBuf[1]) - uLoY;
-      const duZ: f64 = unchecked(resultBuf[2]) - uLoZ;
-
-      const vLo: f64 = max<f64>(vMin, v - eps * vRange);
-      const vHi: f64 = min<f64>(vMax, v + eps * vRange);
-      _evalSurf(degU, degV, nRowsU, nColsV, ctrlPts, knotsU, knotsV, weights, u, vLo);
-      const vLoX: f64 = unchecked(resultBuf[0]);
-      const vLoY: f64 = unchecked(resultBuf[1]);
-      const vLoZ: f64 = unchecked(resultBuf[2]);
-      _evalSurf(degU, degV, nRowsU, nColsV, ctrlPts, knotsU, knotsV, weights, u, vHi);
-      const dvX: f64 = unchecked(resultBuf[0]) - vLoX;
-      const dvY: f64 = unchecked(resultBuf[1]) - vLoY;
-      const dvZ: f64 = unchecked(resultBuf[2]) - vLoZ;
-
-      const nx: f64 = duY * dvZ - duZ * dvY;
-      const ny: f64 = duZ * dvX - duX * dvZ;
-      const nz: f64 = duX * dvY - duY * dvX;
-      const nLen: f64 = sqrt(nx * nx + ny * ny + nz * nz);
-
-      if (nLen < 1e-14) {
-        unchecked(tessNormalsOut[vi] = 0);
-        unchecked(tessNormalsOut[vi + 1] = 0);
-        unchecked(tessNormalsOut[vi + 2] = 1);
-      } else {
-        const invNLen: f64 = 1.0 / nLen;
-        unchecked(tessNormalsOut[vi] = nx * invNLen);
-        unchecked(tessNormalsOut[vi + 1] = ny * invNLen);
-        unchecked(tessNormalsOut[vi + 2] = nz * invNLen);
-      }
+      unchecked(tessVertsOut[vi] = derivBuf[0]);
+      unchecked(tessVertsOut[vi + 1] = derivBuf[1]);
+      unchecked(tessVertsOut[vi + 2] = derivBuf[2]);
+      unchecked(tessNormalsOut[vi] = derivBuf[18]);
+      unchecked(tessNormalsOut[vi + 1] = derivBuf[19]);
+      unchecked(tessNormalsOut[vi + 2] = derivBuf[20]);
     }
   }
 
