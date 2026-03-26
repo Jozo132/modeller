@@ -108,34 +108,37 @@ export class StepImportFeature extends Feature {
    * Shadow-write canonical IR to cache (fire-and-forget).
    * Gated by CAD_USE_IR_CACHE flag. Errors are silently ignored so
    * the legacy return path is never affected.
+   *
+   * On completion, sets:
+   *   this._irHash  {string}      — 16-char hex content hash
+   *   this._irBytes {ArrayBuffer} — canonical CBREP v0 payload
+   *
    * @param {Object} body - TopoBody to serialize
    */
   _shadowWriteIR(body) {
-    Promise.resolve().then(async () => {
-      try {
-        const { canonicalize } = await import('../../packages/ir/canonicalize.js');
-        const { writeCbrep } = await import('../../packages/ir/writer.js');
-        const { hashCbrep } = await import('../../packages/ir/hash.js');
-        const canon = canonicalize(body);
-        const buf = writeCbrep(canon);
-        const hash = hashCbrep(buf);
-        this._irHash = hash;
-        this._irBytes = buf;
+    (async () => {
+      const { canonicalize } = await import('../../packages/ir/canonicalize.js');
+      const { writeCbrep } = await import('../../packages/ir/writer.js');
+      const { hashCbrep } = await import('../../packages/ir/hash.js');
+      const canon = canonicalize(body);
+      const buf = writeCbrep(canon);
+      const hash = hashCbrep(buf);
+      this._irHash = hash;
+      this._irBytes = buf;
 
-        const mode = getFlag('CAD_IR_CACHE_MODE');
-        if (mode === 'fs') {
-          const { NodeFsCacheStore } = await import('../../packages/cache/NodeFsCacheStore.js');
-          const store = new NodeFsCacheStore('.cbrep-cache');
-          await store.put(hash, buf);
-        } else if (mode === 'idb') {
-          const { BrowserIdbCacheStore } = await import('../../packages/cache/BrowserIdbCacheStore.js');
-          const store = new BrowserIdbCacheStore();
-          await store.put(hash, buf);
-        }
-        // 'memory' and 'none': IR bytes kept on this._irBytes only
-      } catch {
-        // Shadow-write must never break the legacy path
+      const mode = getFlag('CAD_IR_CACHE_MODE');
+      if (mode === 'fs') {
+        const { NodeFsCacheStore } = await import('../../packages/cache/NodeFsCacheStore.js');
+        const store = new NodeFsCacheStore('.cbrep-cache');
+        await store.put(hash, buf);
+      } else if (mode === 'idb') {
+        const { BrowserIdbCacheStore } = await import('../../packages/cache/BrowserIdbCacheStore.js');
+        const store = new BrowserIdbCacheStore();
+        await store.put(hash, buf);
       }
+      // 'memory' and 'none': IR bytes kept on this._irBytes only
+    })().catch(() => {
+      // Shadow-write must never break the legacy path
     });
   }
 

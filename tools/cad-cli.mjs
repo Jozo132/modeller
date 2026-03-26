@@ -35,6 +35,11 @@ const topoDeps = {
 };
 setTopoDeps(topoDeps);
 
+// Helper: extract a clean ArrayBuffer from a Node.js Buffer
+function toArrayBuffer(data) {
+  return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+}
+
 // ── Command dispatch ──
 
 const [cmd, ...args] = process.argv.slice(2);
@@ -88,7 +93,7 @@ function cbrep2step(inputPath, outputPath) {
     process.exit(1);
   }
   const data = readFileSync(resolve(inputPath));
-  const buf = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+  const buf = toArrayBuffer(data);
   resetTopoIds();
   const body = readCbrep(buf, topoDeps);
   const stepStr = exportSTEP(body, { filename: 'cbrep-export' });
@@ -118,7 +123,7 @@ function cmod2cbrep(inputPath, outputPath) {
   // Check for embedded CBREP payload first
   if (cmod._cbrepPayload) {
     const binary = Buffer.from(cmod._cbrepPayload, 'base64');
-    const buf = binary.buffer.slice(binary.byteOffset, binary.byteOffset + binary.byteLength);
+    const buf = toArrayBuffer(binary);
     const result = validateCbrep(buf);
     if (result.ok) {
       writeFileSync(resolve(outputPath), binary);
@@ -158,7 +163,7 @@ function validateCbrepCmd(inputPath) {
     process.exit(1);
   }
   const data = readFileSync(resolve(inputPath));
-  const buf = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+  const buf = toArrayBuffer(data);
   const result = validateCbrep(buf);
   if (result.ok) {
     const hash = hashCbrep(buf);
@@ -175,7 +180,7 @@ function hashCmd(inputPath) {
     process.exit(1);
   }
   const data = readFileSync(resolve(inputPath));
-  const buf = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+  const buf = toArrayBuffer(data);
   const result = validateCbrep(buf);
   if (!result.ok) {
     console.error(`✗ Invalid CBREP: ${result.error}`);
