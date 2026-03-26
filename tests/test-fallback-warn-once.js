@@ -293,11 +293,12 @@ test('exact boolean on non-overlapping boxes: exact result', () => {
   captureWarns();
   const result = exactBooleanOp(boxA, boxB, 'union');
   restoreWarns();
-  // Non-overlapping boxes should produce exact result
-  assert.ok(
-    result.resultGrade === 'exact' || result.resultGrade === 'fallback',
-    `expected exact or fallback, got ${result.resultGrade}`
-  );
+  // Non-overlapping boxes with no shared geometry should produce an exact
+  // result from the new kernel.  The exact path handles the simple
+  // disjoint-body case without needing intersection curves.
+  assert.strictEqual(result.resultGrade, 'exact',
+    'non-overlapping boxes should produce exact grade from the new kernel');
+  assert.strictEqual(result._isFallback, false);
 });
 
 test('force-fallback policy emits boolean:exact-to-discrete warn', () => {
@@ -458,16 +459,16 @@ test('default containment path uses GWN (not ray-cast only)', () => {
     'GWN shadow mode should correctly classify interior point');
 });
 
-test('default boolean policy with allow-fallback preserves grading', () => {
+test('default boolean on non-overlapping boxes produces exact grade', () => {
   setFlag('CAD_ALLOW_DISCRETE_FALLBACK', true);
   const boxA = makeBox(0, 0, 0, 10, 10, 10);
   const boxB = makeBox(20, 0, 0, 10, 10, 10);
   const result = exactBooleanOp(boxA, boxB, 'union');
   assert.ok(result.resultGrade, 'should have resultGrade');
-  assert.ok(
-    result.resultGrade === 'exact' || result.resultGrade === 'fallback' || result.resultGrade === 'failed',
-    'resultGrade should be one of exact/fallback/failed'
-  );
+  // Non-overlapping boxes should always produce exact results from the new kernel.
+  // The allow-fallback policy does not change the outcome for clean disjoint inputs.
+  assert.strictEqual(result.resultGrade, 'exact',
+    'non-overlapping boxes with allow-fallback policy should still be exact');
 });
 
 test('tessellation fallback always warns when it occurs', () => {
