@@ -9,6 +9,7 @@
 
 import assert from 'assert';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { importSTEP } from '../js/cad/StepImport.js';
@@ -147,7 +148,7 @@ test('diagnostic payloads are JSON-serializable', () => {
 
 // Write diagnostics to temp file for CI artifact consumption
 if (failureDiagnostics.length > 0) {
-  const diagPath = path.join('/tmp', 'kernel-invariant-diagnostics.json');
+  const diagPath = path.join(os.tmpdir(), 'kernel-invariant-diagnostics.json');
   try {
     fs.writeFileSync(diagPath, JSON.stringify(failureDiagnostics, null, 2));
     console.log(`  Diagnostics written to ${diagPath}`);

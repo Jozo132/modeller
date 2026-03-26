@@ -97,8 +97,12 @@ function _mergeCoincidentVertices(fragments, tol, report) {
     }
   }
 
-  // Spatial hash for fast neighborhood lookup
-  const cellSize = Math.max(tol.pointCoincidence * 10, 1e-8);
+  // Spatial hash for fast neighborhood lookup.
+  // Cell size is 10× the coincidence tolerance so that nearby vertices fall into
+  // the same or adjacent buckets.  Minimum cell size prevents degenerate hashing.
+  const SPATIAL_HASH_CELL_MULTIPLIER = 10;
+  const MIN_CELL_SIZE = 1e-8;
+  const cellSize = Math.max(tol.pointCoincidence * SPATIAL_HASH_CELL_MULTIPLIER, MIN_CELL_SIZE);
   const buckets = new Map();
   const hashKey = (p) => {
     const ix = Math.round(p.x / cellSize);
@@ -159,9 +163,12 @@ function _mergeCoincidentVertices(fragments, tol, report) {
 function _collapseTinyEdges(fragments, tol, report) {
   for (const frag of fragments) {
     for (const loop of _allLoops(frag)) {
+      // Safety limit prevents infinite loops in pathological cases where
+      // collapsing one tiny edge creates another (e.g., fan-like topologies).
+      const MAX_COLLAPSE_ITERATIONS = 100;
       let changed = true;
       let safety = 0;
-      while (changed && safety++ < 100) {
+      while (changed && safety++ < MAX_COLLAPSE_ITERATIONS) {
         changed = false;
         const coedges = loop.coedges;
         for (let i = 0; i < coedges.length; i++) {

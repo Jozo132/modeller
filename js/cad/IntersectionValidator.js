@@ -195,7 +195,10 @@ function _checkParamDomain(params, face, prefix, key, ids, tol, result) {
   const uMax = surf.uMax ?? 1;
   const vMin = surf.vMin ?? 0;
   const vMax = surf.vMax ?? 1;
-  const slack = tol.intersection * 100; // allow small overshoot
+  // Allow parameter overshoot up to 100× intersection tolerance to accommodate
+  // numeric marching and projection error near domain boundaries.
+  const DOMAIN_SLACK_MULTIPLIER = 100;
+  const slack = tol.intersection * DOMAIN_SLACK_MULTIPLIER;
 
   for (let pi = 0; pi < params.length; pi++) {
     const p = params[pi];
