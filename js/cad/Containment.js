@@ -17,7 +17,7 @@ import { GeometryEvaluator } from './GeometryEvaluator.js';
 import { getFlag } from '../featureFlags.js';
 
 // ---------------------------------------------------------------------------
-// Shadow-mode disagreement log (module-level, never cleared automatically)
+// Shadow-mode disagreement log (cleared only via explicit clearShadowDisagreements() call)
 // ---------------------------------------------------------------------------
 
 /** @type {Array<{point: Object, fast: Object, robust: Object, chosen: Object}>} */

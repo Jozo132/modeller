@@ -714,36 +714,23 @@ function _computeBodyHashes(bodyA, bodyB, resultBody) {
 
 /**
  * Write a diagnostic JSON artifact to CAD_DIAGNOSTICS_DIR when configured.
- * Fire-and-forget — never throws.
+ * Fire-and-forget — never throws. Uses async dynamic import for browser safety.
  *
  * @param {string} operation
  * @param {Object} diagnostics
  */
 function _writeDiagnosticArtifact(operation, diagnostics) {
-  try {
-    const dir = getFlag('CAD_DIAGNOSTICS_DIR');
-    if (!dir) return;
-    // Dynamic import to avoid hard dependency in browser bundles
-    const fs = _requireFs();
-    if (!fs) return;
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const dir = getFlag('CAD_DIAGNOSTICS_DIR');
+  if (!dir) return;
+  // Fire-and-forget async write — must never break the boolean path
+  (async () => {
+    const fs = await import('fs');
+    const timestamp = new Date().toISOString().slice(0, 19).replace(/[:.]/g, '-');
     const filename = `boolean-${operation}-${timestamp}.json`;
     const filepath = dir.endsWith('/') ? dir + filename : dir + '/' + filename;
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(filepath, JSON.stringify(diagnostics, null, 2));
-  } catch {
+  })().catch(() => {
     // Silently ignored: browser or restricted environment
-  }
-}
-
-function _requireFs() {
-  try {
-    if (typeof process !== 'undefined' && process.versions && process.versions.node) {
-      // eslint-disable-next-line no-eval
-      return eval("require('fs')");
-    }
-  } catch {
-    // Not available
-  }
-  return null;
+  });
 }
