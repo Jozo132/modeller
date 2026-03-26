@@ -1,0 +1,69 @@
+name: boolean-corpus
+
+on:
+  push:
+    paths:
+      - 'js/cad/BooleanKernel.js'
+      - 'js/cad/BooleanInvariantValidator.js'
+      - 'js/cad/IntersectionValidator.js'
+      - 'js/cad/Healing.js'
+      - 'js/cad/ShellBuilder.js'
+      - 'js/cad/FaceSplitter.js'
+      - 'js/cad/Containment.js'
+      - 'js/cad/fallback/**'
+      - 'tests/test-boolean-analytic.js'
+      - 'tests/test-boolean-nurbs.js'
+      - 'tests/test-boolean-corpus.js'
+      - 'tests/step/**'
+      - 'tools/boolean-corpus-report.js'
+  pull_request:
+    paths:
+      - 'js/cad/BooleanKernel.js'
+      - 'js/cad/BooleanInvariantValidator.js'
+      - 'js/cad/IntersectionValidator.js'
+      - 'js/cad/Healing.js'
+      - 'js/cad/ShellBuilder.js'
+      - 'js/cad/FaceSplitter.js'
+      - 'js/cad/Containment.js'
+      - 'js/cad/fallback/**'
+      - 'tests/test-boolean-analytic.js'
+      - 'tests/test-boolean-nurbs.js'
+      - 'tests/test-boolean-corpus.js'
+      - 'tests/step/**'
+      - 'tools/boolean-corpus-report.js'
+
+permissions:
+  contents: read
+
+jobs:
+  boolean-corpus:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: npx asc assembly/index.ts --target debug && npx asc assembly/index.ts --target release
+      - name: Boolean analytic tests
+        run: node tests/test-boolean-analytic.js
+      - name: Boolean NURBS tests
+        run: node tests/test-boolean-nurbs.js
+      - name: Boolean corpus regression
+        run: node tests/test-boolean-corpus.js
+      - name: Generate corpus report
+        run: node tools/boolean-corpus-report.js --outfile /tmp/boolean-corpus-report.json
+      - name: Upload corpus report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: boolean-corpus-report
+          path: /tmp/boolean-corpus-report.json
+          if-no-files-found: ignore
+      - name: Upload corpus test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: boolean-corpus-results
+          path: /tmp/boolean-corpus-results.json
+          if-no-files-found: ignore

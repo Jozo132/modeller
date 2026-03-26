@@ -105,6 +105,24 @@ export function evaluateExactResult(diagnostics) {
     }
   }
 
+  // Check BooleanInvariantValidator results
+  if (diagnostics.invariantValidation) {
+    const iv = diagnostics.invariantValidation;
+    if (iv.diagnosticCount > 0 && !iv.valid) {
+      // Determine specific trigger from invariant names
+      const hasShellClosed = iv.diagnostics.some(d =>
+        d.invariant === 'shell-closed');
+      const trigger = hasShellClosed
+        ? FallbackTrigger.NON_CLOSED_SHELL
+        : FallbackTrigger.INVARIANT_VALIDATION_FAILURE;
+      return {
+        shouldFallback: true,
+        trigger,
+        stage: 'invariant_validation',
+      };
+    }
+  }
+
   return { shouldFallback: false, trigger: null, stage: null };
 }
 
