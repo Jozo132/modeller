@@ -144,6 +144,74 @@ test('Custom tolerance overrides', () => {
 });
 
 // ============================================================
+console.log('\n=== Invariant Validation Tests ===\n');
+// ============================================================
+
+import { validateBooleanResult } from '../js/cad/BooleanInvariantValidator.js';
+import {
+  TopoBody, TopoShell, TopoFace, TopoLoop, TopoCoEdge, TopoEdge, TopoVertex,
+  buildTopoBody,
+} from '../js/cad/BRepTopology.js';
+
+function makeBox(x, y, z, w, h, d) {
+  const c = [
+    { x, y, z },
+    { x: x + w, y, z },
+    { x: x + w, y: y + h, z },
+    { x, y: y + h, z },
+    { x, y, z: z + d },
+    { x: x + w, y, z: z + d },
+    { x: x + w, y: y + h, z: z + d },
+    { x, y: y + h, z: z + d },
+  ];
+  return buildTopoBody([
+    { surfaceType: SurfaceType.PLANE, vertices: [c[3], c[2], c[1], c[0]], surface: null, edgeCurves: null, shared: null },
+    { surfaceType: SurfaceType.PLANE, vertices: [c[4], c[5], c[6], c[7]], surface: null, edgeCurves: null, shared: null },
+    { surfaceType: SurfaceType.PLANE, vertices: [c[0], c[1], c[5], c[4]], surface: null, edgeCurves: null, shared: null },
+    { surfaceType: SurfaceType.PLANE, vertices: [c[2], c[3], c[7], c[6]], surface: null, edgeCurves: null, shared: null },
+    { surfaceType: SurfaceType.PLANE, vertices: [c[3], c[0], c[4], c[7]], surface: null, edgeCurves: null, shared: null },
+    { surfaceType: SurfaceType.PLANE, vertices: [c[1], c[2], c[6], c[5]], surface: null, edgeCurves: null, shared: null },
+  ]);
+}
+
+test('validateBooleanResult: null body produces body-present diagnostic', () => {
+  const result = validateBooleanResult(null, { operation: 'union' });
+  assert.strictEqual(result.isValid, false);
+  assert.ok(result.diagnostics.some(d => d.invariant === 'body-present'));
+});
+
+test('validateBooleanResult: empty body produces body-has-shells diagnostic', () => {
+  const result = validateBooleanResult(new TopoBody(), { operation: 'union' });
+  assert.strictEqual(result.isValid, false);
+  assert.ok(result.diagnostics.some(d => d.invariant === 'body-has-shells'));
+});
+
+test('validateBooleanResult: valid box body', () => {
+  resetTopoIds();
+  const box = makeBox(0, 0, 0, 10, 10, 10);
+  const result = validateBooleanResult(box, { operation: 'union' });
+  // A valid box should have some topology counts
+  assert.ok(result.shellCount >= 1, 'Should have at least 1 shell');
+  assert.ok(result.faceCount >= 6, 'Should have at least 6 faces');
+  assert.ok(result.edgeCount > 0, 'Should have edges');
+  assert.ok(result.vertexCount > 0, 'Should have vertices');
+});
+
+test('validateBooleanResult: toJSON produces valid JSON', () => {
+  resetTopoIds();
+  const box = makeBox(0, 0, 0, 10, 10, 10);
+  const result = validateBooleanResult(box, { operation: 'intersect' });
+  const json = result.toJSON();
+  assert.strictEqual(json.operation, 'intersect');
+  assert.ok(typeof json.valid === 'boolean');
+  assert.ok(typeof json.diagnosticCount === 'number');
+  assert.ok(Array.isArray(json.diagnostics));
+  // Round-trip through JSON.stringify/parse
+  const roundTrip = JSON.parse(JSON.stringify(json));
+  assert.strictEqual(roundTrip.operation, 'intersect');
+});
+
+// ============================================================
 console.log('\n=== Results ===\n');
 console.log(`${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
