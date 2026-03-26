@@ -336,6 +336,43 @@ test('fillet feature serializes stableEdgeKeys', () => {
   }
 });
 
+test('Part.chamfer auto-populates stableEdgeKeys for new features', () => {
+  resetFeatureIds();
+  const part = makeBoxPart();
+  const edgeKeys = getEdgeKeysFromPart(part);
+  if (edgeKeys.length > 0) {
+    const chamfer = part.chamfer([edgeKeys[0]], 0.5);
+    assert.strictEqual(chamfer.stableEdgeKeys.length, 1, 'Expected 1 stable edge key');
+    assert.ok(isStableKey(chamfer.stableEdgeKeys[0]), 'Expected a stable key');
+    assert.ok(!chamfer._legacySelection, 'Should not be legacy since stable keys exist');
+  }
+});
+
+test('Part.fillet auto-populates stableEdgeKeys for new features', () => {
+  resetFeatureIds();
+  const part = makeBoxPart();
+  const edgeKeys = getEdgeKeysFromPart(part);
+  if (edgeKeys.length > 0) {
+    const fillet = part.fillet([edgeKeys[0]], 0.5);
+    assert.strictEqual(fillet.stableEdgeKeys.length, 1, 'Expected 1 stable edge key');
+    assert.ok(isStableKey(fillet.stableEdgeKeys[0]), 'Expected a stable key');
+    assert.ok(!fillet._legacySelection, 'Should not be legacy since stable keys exist');
+  }
+});
+
+test('Part.chamfer with multiple edges populates matching stableEdgeKeys', () => {
+  resetFeatureIds();
+  const part = makeBoxPart();
+  const edgeKeys = getEdgeKeysFromPart(part);
+  if (edgeKeys.length >= 2) {
+    const chamfer = part.chamfer([edgeKeys[0], edgeKeys[1]], 0.5);
+    assert.strictEqual(chamfer.stableEdgeKeys.length, 2, 'Expected 2 stable edge keys');
+    for (const sk of chamfer.stableEdgeKeys) {
+      assert.ok(isStableKey(sk), `Expected stable key, got ${sk}`);
+    }
+  }
+});
+
 test('ChamferFeature.deserialize marks legacy selection', () => {
   const feature = ChamferFeature.deserialize({
     id: 'feature_99',
@@ -356,6 +393,43 @@ test('FilletFeature.deserialize marks legacy selection', () => {
     // no stableEdgeKeys → legacy
   });
   assert.ok(feature._legacySelection);
+});
+
+test('ChamferFeature.deserialize migrates legacy keys to stable keys', () => {
+  const feature = ChamferFeature.deserialize({
+    id: 'feature_101',
+    type: 'chamfer',
+    distance: 2,
+    edgeKeys: ['0.00000,0.00000,0.00000|1.00000,0.00000,0.00000'],
+  });
+  assert.ok(feature._legacySelection, 'Should be flagged as legacy');
+  assert.strictEqual(feature.stableEdgeKeys.length, 1, 'Should have migrated 1 stable key');
+  assert.ok(isStableKey(feature.stableEdgeKeys[0]), 'Migrated key should be a stable key');
+});
+
+test('FilletFeature.deserialize migrates legacy keys to stable keys', () => {
+  const feature = FilletFeature.deserialize({
+    id: 'feature_102',
+    type: 'fillet',
+    radius: 1,
+    edgeKeys: ['0.00000,0.00000,0.00000|1.00000,0.00000,0.00000'],
+  });
+  assert.ok(feature._legacySelection, 'Should be flagged as legacy');
+  assert.strictEqual(feature.stableEdgeKeys.length, 1, 'Should have migrated 1 stable key');
+  assert.ok(isStableKey(feature.stableEdgeKeys[0]), 'Migrated key should be a stable key');
+});
+
+test('migration preserves provenance from feature id', () => {
+  const feature = ChamferFeature.deserialize({
+    id: 'feature_200',
+    type: 'chamfer',
+    distance: 1,
+    edgeKeys: ['1.00000,2.00000,3.00000|4.00000,5.00000,6.00000'],
+  });
+  assert.strictEqual(feature.stableEdgeKeys.length, 1);
+  const parsed = parseKey(feature.stableEdgeKeys[0]);
+  assert.ok(parsed, 'Stable key should be parseable');
+  assert.strictEqual(parsed.provenance, 'feature_200');
 });
 
 // -----------------------------------------------------------------------
@@ -561,7 +635,7 @@ test('old v1 cmod data parses and loads successfully', () => {
   assert.ok(result.data.part);
 });
 
-test('chamfer deserialized from v1 data (no stableEdgeKeys) has legacy flag', () => {
+test('chamfer deserialized from v1 data (no stableEdgeKeys) has legacy flag and migrated keys', () => {
   const feature = ChamferFeature.deserialize({
     id: 'feature_50',
     type: 'chamfer',
@@ -569,7 +643,9 @@ test('chamfer deserialized from v1 data (no stableEdgeKeys) has legacy flag', ()
     edgeKeys: ['1,2,3|4,5,6'],
   });
   assert.ok(feature._legacySelection, 'Legacy selection flag should be set');
-  assert.strictEqual(feature.stableEdgeKeys.length, 0);
+  // Migration populates stableEdgeKeys from legacy keys
+  assert.strictEqual(feature.stableEdgeKeys.length, 1, 'Should have migrated 1 stable key');
+  assert.ok(isStableKey(feature.stableEdgeKeys[0]), 'Migrated key should be stable');
 });
 
 test('chamfer deserialized from v2 data (with stableEdgeKeys) has no legacy flag', () => {
@@ -651,6 +727,98 @@ test('replayFeatureTree dryRun does not execute', () => {
   const result = replayFeatureTree(part.featureTree, { dryRun: true });
   assert.ok(result);
   assert.strictEqual(result.overallStatus, ReplayStatus.EXACT);
+});
+
+// -----------------------------------------------------------------------
+// 9) End-to-end .cmod roundtrip with stable keys
+// -----------------------------------------------------------------------
+
+group('9) End-to-end .cmod roundtrip with stable keys');
+
+test('new chamfer roundtrip preserves auto-populated stableEdgeKeys', () => {
+  resetFeatureIds();
+  const part = makeBoxPart();
+  const edgeKeys = getEdgeKeysFromPart(part);
+  if (edgeKeys.length > 0) {
+    part.chamfer([edgeKeys[0]], 0.5);
+    const cmod = buildCMOD(part);
+    const json = JSON.stringify(cmod);
+    const parsed = parseCMOD(json);
+    assert.strictEqual(parsed.ok, true);
+
+    const restored = Part.deserialize(parsed.data.part);
+    const chamfer = restored.getFeatures().find(f => f.type === 'chamfer');
+    assert.ok(chamfer, 'Chamfer feature found after roundtrip');
+    assert.strictEqual(chamfer.stableEdgeKeys.length, 1, 'stableEdgeKeys preserved');
+    assert.ok(isStableKey(chamfer.stableEdgeKeys[0]), 'Key is stable after roundtrip');
+    assert.ok(!chamfer._legacySelection, 'Not legacy after roundtrip with stable keys');
+  }
+});
+
+test('new fillet roundtrip preserves auto-populated stableEdgeKeys', () => {
+  resetFeatureIds();
+  const part = makeBoxPart();
+  const edgeKeys = getEdgeKeysFromPart(part);
+  if (edgeKeys.length > 0) {
+    part.fillet([edgeKeys[0]], 0.5);
+    const cmod = buildCMOD(part);
+    const json = JSON.stringify(cmod);
+    const parsed = parseCMOD(json);
+    assert.strictEqual(parsed.ok, true);
+
+    const restored = Part.deserialize(parsed.data.part);
+    const fillet = restored.getFeatures().find(f => f.type === 'fillet');
+    assert.ok(fillet, 'Fillet feature found after roundtrip');
+    assert.strictEqual(fillet.stableEdgeKeys.length, 1, 'stableEdgeKeys preserved');
+    assert.ok(isStableKey(fillet.stableEdgeKeys[0]), 'Key is stable after roundtrip');
+    assert.ok(!fillet._legacySelection, 'Not legacy after roundtrip with stable keys');
+  }
+});
+
+test('v1 cmod with legacy chamfer keys migrates on load', () => {
+  resetFeatureIds();
+  const part = makeBoxPart();
+  const edgeKeys = getEdgeKeysFromPart(part);
+  if (edgeKeys.length > 0) {
+    part.chamfer([edgeKeys[0]], 0.5);
+    // Simulate v1 save: serialize then strip stableEdgeKeys
+    const partData = part.serialize();
+    const chamferData = partData.featureTree.features.find(f => f.type === 'chamfer');
+    delete chamferData.stableEdgeKeys;
+
+    const v1cmod = {
+      format: 'CAD Modeller Open Design',
+      version: 1,
+      part: partData,
+    };
+    const parsed = parseCMOD(v1cmod);
+    assert.strictEqual(parsed.ok, true);
+
+    const restored = Part.deserialize(parsed.data.part);
+    const chamfer = restored.getFeatures().find(f => f.type === 'chamfer');
+    assert.ok(chamfer, 'Chamfer found after migration');
+    assert.ok(chamfer._legacySelection, 'Flagged as legacy');
+    assert.ok(chamfer.stableEdgeKeys.length > 0, 'Legacy keys migrated to stable keys');
+    assert.ok(isStableKey(chamfer.stableEdgeKeys[0]), 'Migrated key is stable');
+  }
+});
+
+test('stableEdgeKeys are deterministic across repeated creates', () => {
+  resetFeatureIds();
+  const part1 = makeBoxPart();
+  const keys1 = getEdgeKeysFromPart(part1);
+  if (keys1.length > 0) {
+    const chamfer1 = part1.chamfer([keys1[0]], 0.5);
+    const stableKeys1 = [...chamfer1.stableEdgeKeys];
+
+    resetFeatureIds();
+    const part2 = makeBoxPart();
+    const keys2 = getEdgeKeysFromPart(part2);
+    const chamfer2 = part2.chamfer([keys2[0]], 0.5);
+    const stableKeys2 = [...chamfer2.stableEdgeKeys];
+
+    assert.deepStrictEqual(stableKeys1, stableKeys2, 'Stable keys should be deterministic');
+  }
 });
 
 // -----------------------------------------------------------------------

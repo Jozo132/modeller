@@ -17,6 +17,7 @@ import { ChamferFeature } from './ChamferFeature.js';
 import { FilletFeature } from './FilletFeature.js';
 import { StepImportFeature } from './StepImportFeature.js';
 import { TessellationConfig } from './TessellationConfig.js';
+import { isLegacyEdgeKey, legacyEdgeKeyToStable } from './history/StableEntityKey.js';
 
 function parseFeatureIdNumber(featureId) {
   if (typeof featureId !== 'string') return null;
@@ -498,6 +499,12 @@ export class Part {
       feature.setSegments(this.tessellationConfig.curveSegments);
     }
 
+    // Auto-populate stable entity keys for new features
+    feature.stableEdgeKeys = edgeKeys
+      .filter(k => isLegacyEdgeKey(k))
+      .map(k => legacyEdgeKeyToStable(k, feature.id))
+      .filter(k => k !== null);
+
     this.featureTree.addFeature(feature);
     this._checkAutoHidePlanes();
     return feature;
@@ -514,6 +521,12 @@ export class Part {
 
     const feature = new ChamferFeature(this._nextTypeName('chamfer', 'Chamfer'), distance);
     feature.setEdgeKeys(edgeKeys);
+
+    // Auto-populate stable entity keys for new features
+    feature.stableEdgeKeys = edgeKeys
+      .filter(k => isLegacyEdgeKey(k))
+      .map(k => legacyEdgeKeyToStable(k, feature.id))
+      .filter(k => k !== null);
 
     this.featureTree.addFeature(feature);
     this._checkAutoHidePlanes();
