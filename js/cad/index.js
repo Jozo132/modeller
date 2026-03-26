@@ -109,6 +109,7 @@ export {
 export { buildConformingMesh, mergeVertexSpaces } from './fallback/ConformingSurfaceMesh.js';
 export { meshBooleanOp } from './fallback/MeshBoolean.js';
 export { reconstructAdjacency, extractFeatureEdges } from './fallback/AdjacencyReconstruction.js';
+export { FallbackKind, warnOnceForFallback, _resetWarnOnce, getWarnedFallbackIds } from './fallback/warnOnce.js';
 
 // --- Diagnostic / result schemas ---
 export { BooleanResult, TessellationResult, ContainmentResult } from './diagnostics.js';

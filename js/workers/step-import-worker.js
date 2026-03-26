@@ -17,6 +17,7 @@
 import { importSTEP } from '../cad/StepImport.js';
 import { telemetry } from '../telemetry.js';
 import { getFlag } from '../featureFlags.js';
+import { warnOnceForFallback } from '../cad/fallback/warnOnce.js';
 
 /**
  * Pack vertex data from faces into a flat Float32Array for GPU upload.
@@ -73,6 +74,12 @@ async function cacheToIdb(body) {
     }
   } catch {
     // Cache write must never break the import path
+    warnOnceForFallback({
+      id: 'cache:ir-recompute',
+      policy: 'allow-fallback',
+      reason: 'IR cache write to IndexedDB failed; import proceeds without caching',
+      kind: 'degraded-result',
+    });
   }
 }
 

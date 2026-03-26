@@ -37,6 +37,7 @@ import {
 import { meshBooleanOp } from './fallback/MeshBoolean.js';
 import { validateBooleanResult } from './BooleanInvariantValidator.js';
 import { getFlag } from '../featureFlags.js';
+import { warnOnceForFallback } from './fallback/warnOnce.js';
 
 /**
  * Perform an exact boolean operation on two TopoBody operands.
@@ -100,6 +101,12 @@ export function exactBooleanOp(bodyA, bodyB, operation, tol = DEFAULT_TOLERANCE,
  * @private
  */
 function _runFallback(bodyA, bodyB, operation, trigger, stage, exactDiagnostics, policy) {
+  warnOnceForFallback({
+    id: 'boolean:exact-to-discrete',
+    policy,
+    reason: `exact boolean failed at ${stage} (trigger: ${trigger}); using discrete mesh fallback`,
+    kind: 'new-stack-fallback',
+  });
   _writeDiagnosticArtifact(operation, { trigger, stage, exactDiagnostics, path: 'fallback', policy });
   try {
     const fbResult = meshBooleanOp(bodyA, bodyB, operation);

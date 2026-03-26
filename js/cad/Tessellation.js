@@ -12,6 +12,7 @@ import { DEFAULT_TOLERANCE } from './Tolerance.js';
 import { getFlag } from '../featureFlags.js';
 import { robustTessellateBody } from './Tessellator2/index.js';
 import { validateMesh } from './MeshValidator.js';
+import { warnOnceForFallback } from './fallback/warnOnce.js';
 
 function projectPolygon2D(verts, normal) {
   const an = {
@@ -126,10 +127,40 @@ export function tessellateBody(body, opts = {}) {
         result._tessellator = 'robust';
         return result;
       }
-      // Robust produced empty, non-clean, or inverted-normal mesh — fall through to legacy
+      // Robust produced non-clean or inverted-normal mesh — try robust retry with relaxed config
+      if (result.faces.length > 0) {
+        try {
+          const retryOpts = {
+            ...opts,
+            surfaceSegments: (opts.surfaceSegments ?? 8) * 2,
+            edgeSegments: (opts.edgeSegments ?? 16) * 2,
+            validate: true,
+          };
+          const retry = robustTessellateBody(body, retryOpts);
+          const retryValidation = retry.validation ?? validateMesh(retry.faces);
+          if (retry.faces.length > 0 && retryValidation.isClean && !_hasInvertedNormals(retry.faces)) {
+            warnOnceForFallback({
+              id: 'tessellation:robust-retry',
+              policy: 'allow-fallback',
+              reason: 'robust tessellator required retry with relaxed tolerances',
+              kind: 'new-stack-fallback',
+            });
+            retry._tessellator = 'robust-retry';
+            return retry;
+          }
+        } catch (_retryErr) {
+          // Retry also failed — fall through to legacy compatibility shim
+        }
+      }
     } catch (_e) {
-      // Robust tessellation failed — fall through to legacy
+      // Robust tessellation failed — fall through to legacy compatibility shim
     }
+    warnOnceForFallback({
+      id: 'tessellation:compat-legacy',
+      policy: 'allow-fallback',
+      reason: 'robust tessellator failed; using legacy ear-clipping compatibility shim',
+      kind: 'compatibility-shim',
+    });
     const fallback = _legacyTessellateBody(body, opts);
     fallback._tessellator = 'legacy-fallback';
     return fallback;
@@ -313,10 +344,40 @@ export function tessellateForSTL(body, opts = {}) {
           return triangles;
         }
       }
-      // Robust produced a non-clean mesh — fall through to legacy
+      // Robust produced a non-clean mesh — try retry with higher segments
+      if (robustMesh.faces.length > 0) {
+        try {
+          const retryMesh = robustTessellateBody(body, {
+            surfaceSegments: segments * 2,
+            validate: true,
+          });
+          const retryValidation = retryMesh.validation ?? validateMesh(retryMesh.faces);
+          if (retryValidation.isClean && retryMesh.faces.length > 0) {
+            const triangles = _meshToTriangles(retryMesh);
+            if (triangles.length > 0) {
+              warnOnceForFallback({
+                id: 'tessellation:robust-retry',
+                policy: 'allow-fallback',
+                reason: 'robust tessellator required retry with relaxed tolerances',
+                kind: 'new-stack-fallback',
+              });
+              triangles._tessellator = 'robust-retry';
+              return triangles;
+            }
+          }
+        } catch (_retryErr) {
+          // Retry also failed — fall through to legacy compatibility shim
+        }
+      }
     } catch (_e) {
-      // Robust tessellation failed — fall through to legacy
+      // Robust tessellation failed — fall through to legacy compatibility shim
     }
+    warnOnceForFallback({
+      id: 'tessellation:compat-legacy',
+      policy: 'allow-fallback',
+      reason: 'robust tessellator failed; using legacy ear-clipping compatibility shim',
+      kind: 'compatibility-shim',
+    });
   }
 
   const mesh = _legacyTessellateBody(body, { surfaceSegments: segments });
