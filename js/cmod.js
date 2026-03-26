@@ -38,7 +38,7 @@ export function isIrCacheEnabled() { return _irCacheEnabled; }
 export function setIrCacheEnabled(enabled) { _irCacheEnabled = enabled; }
 
 const FORMAT_ID = 'CAD Modeller Open Design';
-const FORMAT_VERSION = 1;
+const FORMAT_VERSION = 2; // v2 adds stable entity keys + replay metadata (backward-compat)
 
 // External dependencies injected at startup
 let _viewport = null;
@@ -350,6 +350,14 @@ export function buildCMOD(part, options = {}) {
     sessionState: null,
     metadata: _computeMetadata(part),
   };
+
+  // v2: embed replay metadata (stable keys are stored per-feature via serialize)
+  if (options.replayDiagnostics) {
+    cmod._replayDiagnostics = options.replayDiagnostics;
+  }
+  if (options.cacheStats) {
+    cmod._cacheStats = options.cacheStats;
+  }
 
   // Optionally embed CBREP payload (gated by CAD_USE_IR_CACHE=1)
   if (_irCacheEnabled) {

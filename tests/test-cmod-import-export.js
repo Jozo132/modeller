@@ -159,8 +159,8 @@ console.log('--- Test 1: Export format ---');
     assert.strictEqual(cmod.format, 'CAD Modeller Open Design');
   });
 
-  test('version field is 1', () => {
-    assert.strictEqual(cmod.version, 1);
+  test('version field is 2', () => {
+    assert.strictEqual(cmod.version, 2);
   });
 
   test('has part data', () => {
@@ -227,7 +227,7 @@ console.log('--- Test 2: JSON round-trip ---');
 
   test('round-trip preserves format', () => {
     assert.strictEqual(parsed.data.format, 'CAD Modeller Open Design');
-    assert.strictEqual(parsed.data.version, 1);
+    assert.strictEqual(parsed.data.version, 2);
   });
 
   test('round-trip preserves part', () => {

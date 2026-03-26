@@ -85,3 +85,19 @@ export { buildConformingMesh, mergeVertexSpaces } from './fallback/ConformingSur
 export { meshBooleanOp } from './fallback/MeshBoolean.js';
 export { reconstructAdjacency, extractFeatureEdges } from './fallback/AdjacencyReconstruction.js';
 
+// --- History / replay / stable keys ---
+export {
+  EntityType, RemapStatus,
+  vertexKey, edgeKey, faceKey,
+  parseKey, isStableKey, isLegacyEdgeKey,
+  legacyEdgeKeyToStable,
+  keyBody, resolveKey,
+  serializeKeys, deserializeKeys,
+} from './history/StableEntityKey.js';
+export { buildCacheKey, HistoryCache } from './history/HistoryCache.js';
+export {
+  ReplayStatus, DiagnosticReason,
+  FeatureReplayDiagnostic, FeatureReplayResult,
+  resolveEdgeSelections, replayFeatureTree,
+} from './history/FeatureReplay.js';
+
