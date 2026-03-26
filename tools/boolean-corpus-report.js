@@ -184,4 +184,5 @@ if (outfile) {
 // Exit with non-zero if any hard failures
 if (failCount > 0) {
   console.error(`\n${failCount} failure(s) detected.`);
+  process.exit(1);
 }

@@ -193,10 +193,11 @@ for (const filename of stepFiles) {
     resetTopoIds();
     const stepData = fs.readFileSync(filepath, 'utf-8');
     const imported = importSTEP(stepData);
-    if (!imported) return;
+    assert.ok(imported, `${filename}: STEP import should succeed`);
 
     const body = imported.body || imported;
-    if (!body || !body.shells || body.shells.length === 0) return;
+    assert.ok(body && body.shells && body.shells.length > 0,
+      `${filename}: imported body should have shells`);
 
     // Use a small box as second operand for a simple boolean
     const box = makeBox(0, 0, 0, 1, 1, 1);
