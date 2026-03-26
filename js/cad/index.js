@@ -84,7 +84,8 @@ export { BooleanInvariantResult, validateBooleanResult } from './BooleanInvarian
 // --- Fallback lane ---
 export { ResultGrade, FallbackDiagnostics } from './fallback/FallbackDiagnostics.js';
 export {
-  FallbackTrigger, isFallbackEnabled, shouldTriggerFallback,
+  FallbackTrigger, OperationPolicy,
+  isFallbackEnabled, resolvePolicy, shouldTriggerFallback,
   evaluateExactResult, wrapResult,
 } from './fallback/FallbackPolicy.js';
 export { buildConformingMesh, mergeVertexSpaces } from './fallback/ConformingSurfaceMesh.js';
