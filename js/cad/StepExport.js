@@ -24,6 +24,11 @@ import { SurfaceType } from './BRepTopology.js';
  * @returns {string} STEP file contents
  */
 export function exportSTEP(body, opts = {}) {
+  // Block STEP export for fallback solids — they are discrete representations
+  // and cannot be faithfully serialized as exact B-Rep STEP geometry.
+  if (opts._isFallback || (body && body._isFallback)) {
+    throw new Error('STEP export is not supported for fallback (discrete) solids. Fallback results are mesh-only representations.');
+  }
   const filename = opts.filename ?? 'export';
   const author = opts.author ?? 'CAD Modeller';
   const schema = opts.schema ?? 'AUTOMOTIVE_DESIGN';
