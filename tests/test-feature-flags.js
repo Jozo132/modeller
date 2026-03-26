@@ -1,7 +1,8 @@
 // tests/test-feature-flags.js — Tests for the centralized feature-flag module
 //
 // Verifies:
-//   - All flags default to OFF / safe values
+//   - Kernel-stack flags default to ON (new integrated stack)
+//   - Safety flags (strict invariants, diagnostics) default to OFF
 //   - Boolean parsing accepts '1', 'true', 'yes' (case-insensitive)
 //   - Programmatic override via setFlag / resetFlags
 //   - allFlags() snapshot reflects overrides
@@ -32,34 +33,34 @@ console.log('Feature-flag tests');
 
 // ── Defaults ────────────────────────────────────────────────────────
 
-test('CAD_USE_IR_CACHE defaults to false', () => {
+test('CAD_USE_IR_CACHE defaults to true', () => {
   resetFlags();
-  assert.strictEqual(getFlag('CAD_USE_IR_CACHE'), false);
+  assert.strictEqual(getFlag('CAD_USE_IR_CACHE'), true);
 });
 
-test('CAD_IR_CACHE_MODE defaults to "none"', () => {
+test('CAD_IR_CACHE_MODE defaults to "memory"', () => {
   resetFlags();
-  assert.strictEqual(getFlag('CAD_IR_CACHE_MODE'), 'none');
+  assert.strictEqual(getFlag('CAD_IR_CACHE_MODE'), 'memory');
 });
 
-test('CAD_USE_WASM_EVAL defaults to false', () => {
+test('CAD_USE_WASM_EVAL defaults to true', () => {
   resetFlags();
-  assert.strictEqual(getFlag('CAD_USE_WASM_EVAL'), false);
+  assert.strictEqual(getFlag('CAD_USE_WASM_EVAL'), true);
 });
 
-test('CAD_USE_GWN_CONTAINMENT defaults to false', () => {
+test('CAD_USE_GWN_CONTAINMENT defaults to true', () => {
   resetFlags();
-  assert.strictEqual(getFlag('CAD_USE_GWN_CONTAINMENT'), false);
+  assert.strictEqual(getFlag('CAD_USE_GWN_CONTAINMENT'), true);
 });
 
-test('CAD_USE_ROBUST_TESSELLATOR defaults to false', () => {
+test('CAD_USE_ROBUST_TESSELLATOR defaults to true', () => {
   resetFlags();
-  assert.strictEqual(getFlag('CAD_USE_ROBUST_TESSELLATOR'), false);
+  assert.strictEqual(getFlag('CAD_USE_ROBUST_TESSELLATOR'), true);
 });
 
-test('CAD_ALLOW_DISCRETE_FALLBACK defaults to false', () => {
+test('CAD_ALLOW_DISCRETE_FALLBACK defaults to true', () => {
   resetFlags();
-  assert.strictEqual(getFlag('CAD_ALLOW_DISCRETE_FALLBACK'), false);
+  assert.strictEqual(getFlag('CAD_ALLOW_DISCRETE_FALLBACK'), true);
 });
 
 test('CAD_STRICT_INVARIANTS defaults to false', () => {
@@ -95,17 +96,17 @@ test('setFlag overrides a string flag', () => {
 
 test('setFlag(name, undefined) clears override', () => {
   resetFlags();
-  setFlag('CAD_USE_IR_CACHE', true);
-  assert.strictEqual(getFlag('CAD_USE_IR_CACHE'), true);
-  setFlag('CAD_USE_IR_CACHE', undefined);
+  setFlag('CAD_USE_IR_CACHE', false);
   assert.strictEqual(getFlag('CAD_USE_IR_CACHE'), false);
+  setFlag('CAD_USE_IR_CACHE', undefined);
+  assert.strictEqual(getFlag('CAD_USE_IR_CACHE'), true);
 });
 
 test('resetFlags clears all overrides', () => {
-  setFlag('CAD_USE_IR_CACHE', true);
+  setFlag('CAD_USE_IR_CACHE', false);
   setFlag('CAD_STRICT_INVARIANTS', true);
   resetFlags();
-  assert.strictEqual(getFlag('CAD_USE_IR_CACHE'), false);
+  assert.strictEqual(getFlag('CAD_USE_IR_CACHE'), true);
   assert.strictEqual(getFlag('CAD_STRICT_INVARIANTS'), false);
 });
 
@@ -207,15 +208,15 @@ test('allFlags() returns snapshot of all 8 flags', () => {
   resetFlags();
   const snap = allFlags();
   assert.strictEqual(Object.keys(snap).length, 8);
-  assert.strictEqual(snap.CAD_USE_IR_CACHE, false);
-  assert.strictEqual(snap.CAD_IR_CACHE_MODE, 'none');
+  assert.strictEqual(snap.CAD_USE_IR_CACHE, true);
+  assert.strictEqual(snap.CAD_IR_CACHE_MODE, 'memory');
   assert.strictEqual(snap.CAD_DIAGNOSTICS_DIR, '');
 });
 
 test('allFlags() snapshot is frozen', () => {
   resetFlags();
   const snap = allFlags();
-  assert.throws(() => { snap.CAD_USE_IR_CACHE = true; }, TypeError);
+  assert.throws(() => { snap.CAD_USE_IR_CACHE = false; }, TypeError);
 });
 
 // ── flagDefinitions ─────────────────────────────────────────────────

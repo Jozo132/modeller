@@ -16,6 +16,7 @@
 
 import { importSTEP } from '../cad/StepImport.js';
 import { telemetry } from '../telemetry.js';
+import { getFlag } from '../featureFlags.js';
 
 /**
  * Pack vertex data from faces into a flat Float32Array for GPU upload.
@@ -86,8 +87,11 @@ self.onmessage = function (e) {
 
     const duration = telemetry.endTimer('import');
 
-    // Fire-and-forget: cache the IR to IndexedDB when requested
-    if (cacheMode === 'idb' && result.body) {
+    // Fire-and-forget: cache the IR to IndexedDB when requested or when
+    // the IR cache flag is enabled.  Explicit cacheMode takes precedence;
+    // if omitted, the flag decides the default storage mode.
+    const effectiveCacheMode = cacheMode ?? (getFlag('CAD_USE_IR_CACHE') ? 'idb' : undefined);
+    if (effectiveCacheMode === 'idb' && result.body) {
       cacheToIdb(result.body);
     }
 

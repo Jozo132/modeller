@@ -1,7 +1,9 @@
 // js/featureFlags.js — Centralized feature-flag module
 //
-// All CAD-kernel feature flags live here. Every flag defaults to OFF so
-// existing behaviour is never changed by simply importing this module.
+// All CAD-kernel feature flags live here. Flags that correspond to the
+// new integrated kernel stack default to ON so the robust pipeline is
+// used by default.  Safety/diagnostics-only flags (strict invariants,
+// diagnostics directory) still default to OFF.
 //
 // Flags can be set via:
 //   1. Environment variables  (Node.js: process.env.CAD_*)
@@ -30,37 +32,37 @@ const FLAG_DEFS = [
   {
     name: 'CAD_USE_IR_CACHE',
     type: 'boolean',
-    defaultValue: false,
+    defaultValue: true,
     description: 'Enable CBREP IR cache embedding in .cmod files.',
   },
   {
     name: 'CAD_IR_CACHE_MODE',
     type: 'string',
-    defaultValue: 'none',
+    defaultValue: 'memory',
     description: "IR cache storage mode: 'none' | 'memory' | 'fs' | 'idb'.",
   },
   {
     name: 'CAD_USE_WASM_EVAL',
     type: 'boolean',
-    defaultValue: false,
+    defaultValue: true,
     description: 'Prefer WASM evaluator for NURBS curve/surface evaluation.',
   },
   {
     name: 'CAD_USE_GWN_CONTAINMENT',
     type: 'boolean',
-    defaultValue: false,
+    defaultValue: true,
     description: 'Use generalized winding number for containment classification.',
   },
   {
     name: 'CAD_USE_ROBUST_TESSELLATOR',
     type: 'boolean',
-    defaultValue: false,
+    defaultValue: true,
     description: 'Use the Tessellator2 robust tessellation pipeline.',
   },
   {
     name: 'CAD_ALLOW_DISCRETE_FALLBACK',
     type: 'boolean',
-    defaultValue: false,
+    defaultValue: true,
     description: 'Allow discrete mesh fallback when exact boolean path fails.',
   },
   {

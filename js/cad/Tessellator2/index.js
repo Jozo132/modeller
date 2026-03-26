@@ -16,7 +16,7 @@ import { MeshStitcher } from './MeshStitcher.js';
 import { computeMeshHash, meshSummary } from './MeshHash.js';
 import { recommendEdgeSegments, detectCriticalRegions } from './Refinement.js';
 import { validateMesh, detectBoundaryEdges, detectSelfIntersections, checkWatertight } from '../MeshValidator.js';
-import { tessellateBody as legacyTessellateBody } from '../Tessellation.js';
+import { _legacyTessellateBody as legacyTessellateBody } from '../Tessellation.js';
 import { getFlag } from '../../featureFlags.js';
 
 // ── Shadow tessellation disagreement log ────────────────────────────
@@ -213,8 +213,8 @@ function _collectLoopPoints(loop, edgeSampler, edgeSegs) {
  * @returns {Object} Mesh result
  */
 export function tessellateBodyRouted(body, opts = {}) {
-  // Default to 'legacy'; unrecognized values also fall through to legacy
-  const mode = opts.tessellator ?? 'legacy';
+  // Default to 'robust'; unrecognized values also fall through to legacy
+  const mode = opts.tessellator ?? 'robust';
 
   if (mode === 'robust') {
     try {
