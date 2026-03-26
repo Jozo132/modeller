@@ -357,7 +357,7 @@ test('Part save/load with .cmod sample file works', () => {
   const files = fs.readdirSync(sampleDir).filter(f => f.endsWith('.cmod'));
   assert.ok(files.length > 0, 'Should have sample .cmod files');
 
-  // Load first sample
+  // Load first sample and verify full round-trip
   const sample = JSON.parse(
     fs.readFileSync(new URL(`./samples/${files[0]}`, import.meta.url), 'utf8')
   );
@@ -365,6 +365,17 @@ test('Part save/load with .cmod sample file works', () => {
 
   const restored = Part.deserialize(sample.part);
   assert.ok(restored.featureTree.features.length > 0, 'Should have features');
+
+  // Verify geometry is produced
+  const geom = restored.getFinalGeometry();
+  assert.ok(geom, 'Deserialized part should produce geometry');
+  assert.ok(geom.geometry, 'Geometry object should exist');
+  assert.ok(geom.geometry.faces.length > 0, 'Geometry should have faces');
+
+  // Re-serialize and verify round-trip stability
+  const reserialized = restored.serialize();
+  assert.ok(reserialized.featureTree.features.length === sample.part.featureTree.features.length,
+    'Re-serialized feature count should match original');
 });
 
 // ====================================================================
@@ -419,7 +430,7 @@ await asyncTest('Assembly uses current kernel-aware APIs', async () => {
   const {
     PartDefinition, PartInstance,
   } = await import('../js/cad/assembly/index.js');
-  const { identity } = await import('../js/cad/assembly/Transform3D.js');
+  const { identity, fromTranslation, multiply } = await import('../js/cad/assembly/Transform3D.js');
 
   const partDef = new PartDefinition('box');
   assert.ok(partDef, 'PartDefinition should be creatable');
@@ -429,6 +440,20 @@ await asyncTest('Assembly uses current kernel-aware APIs', async () => {
   // Transform is a Float64Array (4×4 matrix), not a class instance
   assert.ok(inst.transform instanceof Float64Array, 'Instance should have a Float64Array transform');
   assert.strictEqual(inst.transform.length, 16, 'Transform should be 4×4 = 16 elements');
+
+  // Verify transform operations work correctly
+  const t1 = fromTranslation(10, 20, 30);
+  const t2 = fromTranslation(1, 2, 3);
+  const composed = multiply(t1, t2);
+  assert.ok(composed instanceof Float64Array, 'Composed transform should be Float64Array');
+  // Translation components at [3], [7], [11] in row-major layout
+  assert.strictEqual(composed[3], 11, 'X translation should compose');
+  assert.strictEqual(composed[7], 22, 'Y translation should compose');
+  assert.strictEqual(composed[11], 33, 'Z translation should compose');
+
+  // Apply transform to instance
+  inst.setTransform(t1);
+  assert.strictEqual(inst.transform[3], 10, 'Instance X translation applied');
 });
 
 // ====================================================================
