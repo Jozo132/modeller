@@ -5,9 +5,12 @@ import { WasmRenderer } from './wasm-renderer.js';
 import { PartManager } from './part-manager.js';
 import { FeaturePanel } from './ui/featurePanel.js';
 import { ParametersPanel } from './ui/parametersPanel.js';
+import { HistoryTree } from './ui/historyTree.js';
+import { FeatureEditSession, EditSessionState } from './ui/featureEditSession.js';
+import { DiagnosticsPanel } from './ui/diagnosticsPanel.js';
 import { getFeatureIconSVG } from './ui/featureIcons.js';
 import { getSnappedPosition } from './snap.js';
-import { undo, redo, takeSnapshot, setPartManager } from './history.js';
+import { undo, redo, takeSnapshot, setPartManager, getHistoryInfo, movePointer } from './history.js';
 import { downloadDXF, downloadFacesDXF } from './dxf/export.js';
 import { openDXFFile, pickDXFFile, addDXFToScene, dxfBounds, parseDXFGeometry } from './dxf/import.js';
 import { importSTEP } from './cad/StepImport.js';
@@ -4524,6 +4527,32 @@ class App {
     this._featurePanel.isLocked = () => this._isEditingFeature();
     this._parametersPanel = new ParametersPanel(parametersPanelContainer, this._partManager);
 
+    // History tree panel
+    const historyTreeContainer = document.getElementById('history-tree-panel');
+    if (historyTreeContainer) {
+      this._historyTree = new HistoryTree(historyTreeContainer, this._partManager);
+      this._historyTree.isLocked = () => this._isEditingFeature();
+      this._historyTree.onFeatureSelect = (feature) => {
+        if (feature && feature.type === 'sketch') this._lastSketchFeatureId = feature.id;
+        this._parametersPanel.showFeature(feature);
+        this._showLeftFeatureParams(feature);
+      };
+      this._historyTree.onFeatureEdit = (feature) => {
+        // Enter edit session on double-click
+        if (feature) this._featurePanel.selectFeature(feature.id);
+      };
+      this._historyTree.onPointerMove = (index) => {
+        movePointer(index);
+        this._scheduleRender();
+      };
+    }
+
+    // Diagnostics panel
+    const diagnosticsContainer = document.getElementById('diagnostics-panel');
+    if (diagnosticsContainer) {
+      this._diagnosticsPanel = new DiagnosticsPanel(diagnosticsContainer);
+    }
+
     // Record sidebar parameter edits
     this._parametersPanel.setOnParameterChange((featureId, paramName, value) => {
       this._recorder.featureModified(featureId, paramName, value);
@@ -4551,6 +4580,7 @@ class App {
     // Listen to part changes
     this._partManager.addListener((part) => {
       this._featurePanel.update();
+      if (this._historyTree) this._historyTree.update();
       this._updateNodeTree();
       this._update3DView();
       this._updateOperationButtons();

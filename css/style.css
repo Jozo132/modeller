@@ -2116,6 +2116,257 @@ select.parameter-input {
   border-color: rgba(244, 67, 54, 0.4);
 }
 
+/* ================================================================
+   History Tree Panel
+   ================================================================ */
+
+.history-tree-header {
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-toolbar);
+}
+
+.history-tree-header h3 {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.history-tree-list {
+  padding: 4px 8px;
+  position: relative;
+}
+
+.history-node {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  margin: 2px 0;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.12s;
+  font-size: 12px;
+  border-left: 3px solid transparent;
+}
+
+.history-node:hover {
+  background: rgba(255,255,255,0.06);
+}
+
+.history-node.selected {
+  background: rgba(0, 122, 204, 0.2);
+  border-left-color: var(--accent);
+}
+
+.history-node.editing {
+  background: rgba(255, 193, 7, 0.15);
+  border-left-color: #ffc107;
+}
+
+.history-node.rolled-back {
+  opacity: 0.35;
+}
+
+.history-node.status-suppressed {
+  opacity: 0.45;
+  text-decoration: line-through;
+}
+
+.history-node.status-failed {
+  border-left-color: #f44336;
+}
+
+.history-node.status-non-exact {
+  border-left-color: #ff9800;
+}
+
+.history-node-icon {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  width: 16px;
+  height: 16px;
+}
+
+.history-node-icon svg {
+  width: 16px;
+  height: 16px;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  fill: none;
+}
+
+.history-node-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
+.history-node-badge {
+  flex-shrink: 0;
+  font-size: 11px;
+}
+
+.history-key-count {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--text-secondary);
+  opacity: 0.7;
+}
+
+.badge-exact  { color: #4caf50; }
+.badge-nonexact { color: #ff9800; }
+.badge-failed { color: #f44336; }
+.badge-suppressed { color: var(--text-secondary); }
+.badge-error { color: #f44336; }
+
+.history-pointer-bar {
+  height: 2px;
+  background: var(--accent);
+  margin: 4px 0;
+  border-radius: 1px;
+}
+
+/* ================================================================
+   Diagnostics Panel
+   ================================================================ */
+
+.diag-panel-header {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-toolbar);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.diag-panel-header h3 {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.diag-toggle {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 4px;
+}
+
+.diag-panel-body {
+  padding: 6px 10px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.diag-empty {
+  text-align: center;
+  padding: 8px 0;
+}
+
+.diag-entry {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 4px 0;
+  font-size: 11px;
+  line-height: 1.4;
+  border-bottom: 1px solid rgba(255,255,255,0.03);
+}
+
+.diag-entry:last-child {
+  border-bottom: none;
+}
+
+.diag-icon {
+  flex-shrink: 0;
+  width: 14px;
+  text-align: center;
+}
+
+.diag-message {
+  flex: 1;
+  color: var(--text-primary);
+  word-break: break-word;
+}
+
+.diag-category {
+  flex-shrink: 0;
+  font-size: 9px;
+  color: var(--text-secondary);
+  opacity: 0.6;
+  text-transform: uppercase;
+}
+
+.diag-info .diag-icon { color: var(--accent); }
+.diag-warning .diag-icon { color: #ff9800; }
+.diag-error .diag-icon { color: #f44336; }
+
+/* ================================================================
+   Feature Edit Session Overlay
+   ================================================================ */
+
+.edit-session-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: rgba(255, 193, 7, 0.1);
+  border: 1px solid rgba(255, 193, 7, 0.3);
+  border-radius: 4px;
+  margin: 8px;
+  font-size: 12px;
+}
+
+.edit-session-bar .session-label {
+  flex: 1;
+  color: var(--text-primary);
+}
+
+.edit-session-bar .session-cache-info {
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+
+.edit-session-bar button {
+  padding: 4px 10px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  cursor: pointer;
+  background: var(--bg-dark);
+  color: var(--text-primary);
+  transition: background 0.15s;
+}
+
+.edit-session-bar button:hover {
+  background: rgba(255,255,255,0.08);
+}
+
+.edit-session-bar button.commit-btn {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+
+.edit-session-bar button.commit-btn:hover {
+  background: rgba(0, 122, 204, 0.85);
+}
+
+.edit-session-bar button.cancel-btn {
+  border-color: rgba(244, 67, 54, 0.4);
+}
+
+.edit-session-bar button.cancel-btn:hover {
+  background: rgba(244, 67, 54, 0.15);
+  color: #f44336;
+}
+
 /* In Part mode, hide the right sidebar parameters panel (it lives in the left panel now) */
 body.workspace-part #parameters-panel {
   display: none !important;
