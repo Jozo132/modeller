@@ -16,6 +16,7 @@ import { openDXFFile, pickDXFFile, addDXFToScene, dxfBounds, parseDXFGeometry } 
 import { importSTEP } from './cad/StepImport.js';
 import { exportSTEP } from './cad/StepExport.js';
 import { wasmTessellation } from './cad/WasmTessellation.js';
+import { GeometryEvaluator } from './cad/GeometryEvaluator.js';
 import { downloadCMOD, openCMODFile, projectFromCMOD, setCmodViewport, setCmodPartManager, setCmodRenderer, setCmodWorkspaceModeGetter, setCmodSessionStateGetter, setCmodScenesGetter } from './cmod.js';
 import { debug, info, warn, error } from './logger.js';
 import { loadProject, debouncedSave, clearSavedProject, setViewport, setPartManagerForPersist, setRendererForPersist, setWorkspaceModeGetter, setSessionStateGetter, setScenesGetter } from './persist.js';
@@ -9136,9 +9137,15 @@ class App {
 
 // Bootstrap — ensure WASM is ready before the app starts restoring saved
 // projects (which triggers tessellation).
-const wasmReady = wasmTessellation.init()
-  .then(() => console.log('[WASM] tessellation module loaded'))
-  .catch(() => console.warn('[WASM] tessellation module unavailable — using JS fallback'));
+const wasmReady = Promise.all([
+  wasmTessellation.init()
+    .then(() => console.log('[WASM] tessellation module loaded'))
+    .catch(() => console.warn('[WASM] tessellation module unavailable — using JS fallback')),
+  GeometryEvaluator.initWasm()
+    .then(ok => ok
+      ? console.log('[WASM] geometry evaluator loaded')
+      : console.warn('[WASM] geometry evaluator unavailable — using JS fallback'))
+]);
 window.addEventListener('DOMContentLoaded', async () => {
   await wasmReady;
   window.cadApp = new App();

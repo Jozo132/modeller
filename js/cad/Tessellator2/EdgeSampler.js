@@ -18,6 +18,8 @@ export class EdgeSampler {
   constructor() {
     /** @type {Map<string, Array<{x:number,y:number,z:number}>>} */
     this._cache = new Map();
+    this._hits = 0;
+    this._misses = 0;
   }
 
   /**
@@ -37,8 +39,12 @@ export class EdgeSampler {
    */
   sampleEdge(edge, segments) {
     const key = edgeCacheKey(edge.id, segments);
-    if (this._cache.has(key)) return this._cache.get(key);
+    if (this._cache.has(key)) {
+      this._hits++;
+      return this._cache.get(key);
+    }
 
+    this._misses++;
     let points;
     if (edge.curve) {
       points = this._sampleCurve(edge.curve, segments);
@@ -48,6 +54,11 @@ export class EdgeSampler {
 
     this._cache.set(key, points);
     return points;
+  }
+
+  /** Return cache statistics. */
+  get stats() {
+    return { hits: this._hits, misses: this._misses, cached: this._cache.size };
   }
 
   /**

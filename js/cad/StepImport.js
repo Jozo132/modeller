@@ -23,6 +23,7 @@
 
 import { NurbsCurve } from './NurbsCurve.js';
 import { NurbsSurface } from './NurbsSurface.js';
+import { tessellateBodyRouted } from './Tessellator2/index.js';
 import {
   SurfaceType,
   TopoVertex,
@@ -151,7 +152,11 @@ function _tessellateSTEPBody(body, opts = {}) {
  */
 export function importSTEP(stepString, opts = {}) {
   const body = parseSTEPTopology(stepString);
-  const mesh = _tessellateSTEPBody(body, opts);
+  const mesh = tessellateBodyRouted(body, {
+    tessellator: 'robust',
+    edgeSegments: opts.curveSegments ?? 64,
+    surfaceSegments: opts.surfaceSegments ?? 16,
+  });
   return { body, vertices: mesh.vertices, faces: mesh.faces };
 }
 

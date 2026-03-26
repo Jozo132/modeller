@@ -91,7 +91,7 @@ export function robustTessellateBody(body, opts = {}) {
         faceMesh = _triangulateFace(face, edgeSampler, triangulator, surfSegs, edgeSegs);
       } catch (err) {
         // If robust triangulation fails for a face, produce empty mesh
-        // Diagnostics are captured below
+        console.error(`[robust-tessellate] face triangulation failed (type=${face.surfaceType}, sameSense=${face.sameSense}):`, err.message, err.stack);
         faceMesh = { vertices: [], faces: [], _error: err.message };
       }
 
@@ -115,6 +115,10 @@ export function robustTessellateBody(body, opts = {}) {
   // Stage 3: Stitch face meshes into a single body mesh
   const result = stitcher.stitch(faceMeshes);
   result.edges = edgeResults;
+
+  // Log edge cache stats
+  const es = edgeSampler.stats;
+  console.log(`[robust-tessellate] edges: ${es.misses} sampled, ${es.hits} cache-hits (${es.cached} cached) | faces: ${result.faces.length} triangles from ${faceMeshes.length} B-Rep faces`);
 
   // Stage 5: Optional validation
   if (doValidate && result.faces.length > 0) {
@@ -153,7 +157,7 @@ function _triangulateFace(face, edgeSampler, triangulator, surfSegs, edgeSegs) {
     return triangulator.triangulateSurface(face, outerPts, surfSegs, face.sameSense);
   }
 
-  // Planar face: ear-clip triangulate from boundary
+  // Planar face: CDT triangulate from boundary
   return triangulator.triangulatePlanar(outerPts, holePts, null, face.sameSense);
 }
 
