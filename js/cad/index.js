@@ -64,4 +64,8 @@ export { importSTEP, parseSTEPTopology } from './StepImport.js';
 export { TessellationConfig } from './TessellationConfig.js';
 export { wasmTessellation } from './WasmTessellation.js';
 export { GeometryEvaluator } from './GeometryEvaluator.js';
+export {
+  IntersectionValidation, validateIntersections, validateFragments, validateFinalBody,
+} from './IntersectionValidator.js';
+export { HealingReport, healFragments } from './Healing.js';
 

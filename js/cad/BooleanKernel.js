@@ -24,6 +24,8 @@ import { DEFAULT_TOLERANCE, Tolerance } from './Tolerance.js';
 import { SurfaceType, TopoFace, TopoLoop, TopoCoEdge, TopoEdge, TopoVertex } from './BRepTopology.js';
 import { NurbsSurface } from './NurbsSurface.js';
 import { NurbsCurve } from './NurbsCurve.js';
+import { validateIntersections, validateFragments, validateFinalBody } from './IntersectionValidator.js';
+import { healFragments } from './Healing.js';
 
 /**
  * Perform an exact boolean operation on two TopoBody operands.
@@ -46,22 +48,61 @@ export function exactBooleanOp(bodyA, bodyB, operation, tol = DEFAULT_TOLERANCE)
   // Step 1-2: Intersect candidate face pairs and compute intersection curves
   const intersections = intersectBodies(bodyA, bodyB, tol);
 
+  // Step 2b: Validate intersections — fail fast with diagnostics
+  const ixValidation = validateIntersections(intersections, tol);
+  const diagnostics = { intersectionValidation: ixValidation.toJSON() };
+  if (!ixValidation.isValid) {
+    // Route to discrete fallback: skip invalid exact intersections and
+    // proceed with only the valid subset (non-empty-curves entries that passed).
+    // Attach diagnostic report for downstream inspection.
+    const validIx = intersections.filter((ix, i) => {
+      // Keep entries that didn't produce diagnostics referencing their index
+      return !ixValidation.diagnostics.some(d => d.detail.startsWith(`intersection[${i}]`));
+    });
+    if (validIx.length === 0 && intersections.length > 0) {
+      // All intersections invalid — return bodies unmodified via fallback
+      const fallbackBody = buildBody([...bodyA.faces(), ...bodyB.faces()], tol);
+      const mesh = tessellateBody(fallbackBody);
+      return { body: fallbackBody, mesh, diagnostics };
+    }
+    // Use only valid intersections
+    intersections.length = 0;
+    intersections.push(...validIx);
+    diagnostics.filteredIntersections = true;
+  }
+
   // Step 3-4: Split faces by intersection curves
   const fragmentsA = _splitAllFaces(bodyA, intersections, 'A', tol);
   const fragmentsB = _splitAllFaces(bodyB, intersections, 'B', tol);
 
-  // Step 5-6: Classify and select fragments
-  const keptFragments = _classifyAndSelect(fragmentsA, fragmentsB, bodyA, bodyB, operation, tol);
+  // Step 4b: Validate split fragments
+  const fragValidationA = validateFragments(fragmentsA, tol);
+  const fragValidationB = validateFragments(fragmentsB, tol);
+  diagnostics.fragmentValidationA = fragValidationA.toJSON();
+  diagnostics.fragmentValidationB = fragValidationB.toJSON();
 
-  // Step 7-8: Stitch fragments into a result body
+  // Step 4c: Heal fragments before classification
+  const healedA = healFragments(fragmentsA, tol);
+  const healedB = healFragments(fragmentsB, tol);
+  diagnostics.healingA = healedA.report.toJSON();
+  diagnostics.healingB = healedB.report.toJSON();
+
+  // Step 5-6: Classify and select fragments
+  const keptFragments = _classifyAndSelect(
+    healedA.fragments, healedB.fragments, bodyA, bodyB, operation, tol,
+  );
+
+  // Step 7-8: Stitch fragments into a result body (includes sewing)
   const resultBody = buildBody(keptFragments, tol);
 
-  // Step 9: Validate (caller can use BRepValidator)
+  // Step 9: Validate final body — attach diagnostics
+  const bodyValidation = validateFinalBody(resultBody, tol);
+  diagnostics.finalBodyValidation = bodyValidation.toJSON();
 
   // Step 10: Tessellate for rendering
   const mesh = tessellateBody(resultBody);
 
-  return { body: resultBody, mesh };
+  return { body: resultBody, mesh, diagnostics };
 }
 
 function _isPlanarBody(body) {
