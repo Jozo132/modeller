@@ -18,6 +18,9 @@ on:
       - 'tests/test-boolean-analytic.js'
       - 'tests/test-boolean-nurbs.js'
 
+permissions:
+  contents: read
+
 jobs:
   containment-regression:
     runs-on: ubuntu-latest
