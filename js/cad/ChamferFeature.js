@@ -7,7 +7,7 @@
 
 import { Feature } from './Feature.js';
 import { applyChamfer, calculateMeshVolume, calculateBoundingBox, expandPathEdgeKeys } from './CSG.js';
-import { isLegacyEdgeKey } from './history/StableEntityKey.js';
+import { isLegacyEdgeKey, legacyEdgeKeyToStable } from './history/StableEntityKey.js';
 
 export class ChamferFeature extends Feature {
   constructor(name = 'Chamfer', distance = 1) {
@@ -102,6 +102,11 @@ export class ChamferFeature extends Feature {
     // Mark legacy projects (no stable keys) so downstream can detect non-exact provenance
     if (feature.stableEdgeKeys.length === 0 && feature.edgeKeys.length > 0) {
       feature._legacySelection = true;
+      // Migration: convert legacy edge keys to stable keys on load
+      feature.stableEdgeKeys = feature.edgeKeys
+        .filter(k => isLegacyEdgeKey(k))
+        .map(k => legacyEdgeKeyToStable(k, feature.id || ''))
+        .filter(k => k !== null);
     }
     return feature;
   }
