@@ -14,6 +14,14 @@
 
 import { DEFAULT_TOLERANCE } from './Tolerance.js';
 import { GeometryEvaluator } from './GeometryEvaluator.js';
+import { getFlag } from '../featureFlags.js';
+
+// ---------------------------------------------------------------------------
+// Shadow-mode disagreement log (cleared only via explicit clearShadowDisagreements() call)
+// ---------------------------------------------------------------------------
+
+/** @type {Array<{point: Object, fast: Object, robust: Object, chosen: Object}>} */
+const _shadowDisagreements = [];
 
 // ---------------------------------------------------------------------------
 // Tolerance constants — centralized for determinism
@@ -88,6 +96,26 @@ export function classifyPoint(body, p, opts = {}) {
   // --- Fast path: multi-ray parity vote ---
   const nearField = bnd.distance < tol.classification * NEAR_FIELD_FACTOR;
   const fastResult = _fastPathClassify(body, p, tol);
+
+  // --- Shadow mode: always run robust path and record disagreements ---
+  const shadowMode = getFlag('CAD_USE_GWN_CONTAINMENT');
+  if (shadowMode) {
+    const robustResult = _robustPathClassify(body, p, tol);
+    const chosen = (robustResult.confidence > fastResult.confidence)
+      ? robustResult : fastResult;
+    if (fastResult.state !== robustResult.state &&
+        fastResult.state !== 'uncertain' &&
+        robustResult.state !== 'uncertain') {
+      _shadowDisagreements.push({
+        point: { x: p.x, y: p.y, z: p.z },
+        fast: { ...fastResult },
+        robust: { ...robustResult },
+        chosen: { ...chosen },
+      });
+    }
+    if (chosen.state !== 'uncertain') return chosen;
+    return { state: 'uncertain', confidence: chosen.confidence, detail: 'shadow-ambiguous' };
+  }
 
   if (fastResult.confidence >= MIN_FAST_CONFIDENCE && !nearField) {
     return fastResult;
@@ -754,4 +782,26 @@ function _sampleInteriorPoint(face) {
   }
 
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Shadow-mode diagnostics API
+// ---------------------------------------------------------------------------
+
+/**
+ * Return a snapshot of shadow-mode disagreements recorded so far.
+ * Each entry records the query point, fast-path result, robust-path result,
+ * and which one was ultimately chosen.
+ *
+ * @returns {ReadonlyArray<{point: Object, fast: Object, robust: Object, chosen: Object}>}
+ */
+export function getShadowDisagreements() {
+  return Object.freeze([..._shadowDisagreements]);
+}
+
+/**
+ * Clear the accumulated shadow disagreement log.
+ */
+export function clearShadowDisagreements() {
+  _shadowDisagreements.length = 0;
 }
