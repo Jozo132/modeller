@@ -30,6 +30,7 @@
     "test": "node tests && node tests/test-multi-body-chamfer-fillet.js && node tests/test-coplanar-merge.js && node tests/test-face-selection.js && node tests/test-geometry-persistence.js && node tests/test-interaction-recorder.js && node tests/test-multi-sketch-planes.js && node tests/test-ui-workflow.js && node tests/test-workflow-recordings.js && node tests/test-cmod-import-export.js && node tests/test-history-replay.js && node tests/test-feature-editor-ux.js",
     "test:workers": "node tests/test-worker-dispatcher.js",
     "test:telemetry": "node tests/test-telemetry.js",
+    "test:assembly": "node tests/test-assembly-design.js",
     "test:e2e": "npx playwright test"
   },
   "files": [

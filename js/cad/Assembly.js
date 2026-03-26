@@ -1,16 +1,24 @@
-// js/cad/Assembly.js — Assembly design stub for future multi-part assemblies
-// This class will eventually support assembly design including:
-// - Multiple parts positioned and oriented in 3D space
-// - Assembly constraints (mate, align, etc.)
-// - Exploded views
-// - Bill of materials (BOM)
-// - Interference detection
+// js/cad/Assembly.js — Assembly design: multi-part assembly with mate constraints
+//
+// Supports:
+//   - Part definitions and instances (definition/instance split)
+//   - Insert part / place-instance workflows
+//   - Five mate types: coincident, concentric, distance, angle, planar
+//   - Deterministic hybrid solver (grounded + spanning-tree + loop correction)
+//   - DOF diagnostics (under/over-constrained detection)
+//   - AABB broadphase collision detection
+//   - BOM roll-up
 
-import { Part } from './Part.js';
+import { PartDefinition } from './assembly/PartDefinition.js';
+import { PartInstance } from './assembly/PartInstance.js';
+import { Mate } from './assembly/Mate.js';
+import { solveAssembly } from './assembly/AssemblySolver.js';
+import { broadphaseCollisions, clearanceQuery } from './assembly/CollisionDetection.js';
+import { generateBOM, bomSummary } from './assembly/BOM.js';
+import { identity, fromTranslation } from './assembly/Transform3D.js';
 
 /**
- * Assembly represents a collection of parts positioned and constrained in 3D space.
- * Currently a stub for future implementation.
+ * Assembly — collection of part instances constrained by mates.
  */
 export class Assembly {
   constructor(name = 'Assembly1') {
@@ -18,115 +26,174 @@ export class Assembly {
     this.description = '';
     this.created = new Date();
     this.modified = new Date();
-    
-    // Collection of component instances (parts or sub-assemblies)
-    this.components = [];
-    
-    // Future: Assembly constraints (mates, alignments, etc.)
-    this.constraints = [];
-    
-    // Future: BOM (Bill of Materials)
-    this.bom = [];
+
+    /** @type {Map<string, PartDefinition>} */
+    this.definitions = new Map();
+
+    /** @type {PartInstance[]} */
+    this.instances = [];
+
+    /** @type {Mate[]} */
+    this.mates = [];
+
+    /** Last solver result (populated after solve()) */
+    this._solverResult = null;
   }
 
-  // -----------------------------------------------------------------------
-  // Component management
-  // -----------------------------------------------------------------------
+  // ── Definition management ─────────────────────────────────────────
 
   /**
-   * Add a component (part or sub-assembly) to this assembly
-   * @param {Part|Assembly} component - The component to add
-   * @param {Object} transform - Position and orientation transform
-   * @returns {Object} Component instance
+   * Register a part definition in the assembly.
+   * @param {PartDefinition} def
+   * @returns {PartDefinition}
    */
-  addComponent(component, transform = null) {
+  addDefinition(def) {
+    this.definitions.set(def.id, def);
     this.modified = new Date();
-    const instance = {
-      id: `component_${this.components.length + 1}`,
-      component,
-      transform: transform || { 
-        position: { x: 0, y: 0, z: 0 },
-        rotation: { x: 0, y: 0, z: 0 },
-      },
-      visible: true,
-    };
-    this.components.push(instance);
-    return instance;
+    return def;
   }
 
   /**
-   * Remove a component from this assembly
-   * @param {Object} instance - The component instance to remove
+   * Get a definition by ID.
+   * @param {string} id
+   * @returns {PartDefinition|undefined}
    */
-  removeComponent(instance) {
-    this.modified = new Date();
-    const idx = this.components.indexOf(instance);
-    if (idx >= 0) {
-      this.components.splice(idx, 1);
+  getDefinition(id) {
+    return this.definitions.get(id);
+  }
+
+  // ── Instance management (insert / place) ──────────────────────────
+
+  /**
+   * Insert a part into the assembly by creating a new instance of a definition.
+   * @param {PartDefinition} definition
+   * @param {Object} [opts]
+   * @param {string}       [opts.name]
+   * @param {Float64Array} [opts.transform]
+   * @param {boolean}      [opts.grounded]
+   * @returns {PartInstance}
+   */
+  insertPart(definition, opts = {}) {
+    if (!this.definitions.has(definition.id)) {
+      this.addDefinition(definition);
     }
-  }
-
-  /**
-   * Get a component by ID
-   * @param {string} id - The component ID
-   * @returns {Object|null} The component instance or null if not found
-   */
-  getComponentById(id) {
-    return this.components.find(c => c.id === id) || null;
-  }
-
-  // -----------------------------------------------------------------------
-  // Future: Assembly constraint operations (stubs)
-  // -----------------------------------------------------------------------
-
-  /**
-   * Future: Add a mate constraint between two components
-   * @param {Object} componentA - First component instance
-   * @param {Object} componentB - Second component instance
-   * @param {string} mateType - Type of mate (coincident, parallel, etc.)
-   * @returns {Object} Constraint object (stub)
-   */
-  addMate(componentA, componentB, mateType) {
+    const inst = new PartInstance(definition, opts);
+    this.instances.push(inst);
     this.modified = new Date();
-    console.warn('Assembly.addMate() is not yet implemented');
-    // Future implementation
-    return { type: 'mate', componentA, componentB, mateType };
+    return inst;
   }
 
   /**
-   * Future: Create an exploded view
-   * @param {number} explosionFactor - How far to explode the components
-   * @returns {Object} Exploded view configuration (stub)
+   * Place an instance at a specific transform.
+   * @param {PartInstance} instance
+   * @param {Float64Array} transform - 4×4 world transform
    */
-  createExplodedView(explosionFactor = 1.0) {
-    console.warn('Assembly.createExplodedView() is not yet implemented');
-    // Future implementation
-    return { type: 'explodedView', factor: explosionFactor };
+  placeInstance(instance, transform) {
+    instance.setTransform(transform);
+    this.modified = new Date();
   }
 
   /**
-   * Future: Generate Bill of Materials
-   * @returns {Array} BOM entries (stub)
+   * Remove an instance from the assembly.
+   * Also removes any mates referencing it.
+   * @param {string} instanceId
+   */
+  removeInstance(instanceId) {
+    this.instances = this.instances.filter(i => i.id !== instanceId);
+    this.mates = this.mates.filter(
+      m => m.instanceA !== instanceId && m.instanceB !== instanceId,
+    );
+    this.modified = new Date();
+  }
+
+  /**
+   * Get an instance by ID.
+   * @param {string} id
+   * @returns {PartInstance|undefined}
+   */
+  getInstance(id) {
+    return this.instances.find(i => i.id === id);
+  }
+
+  // ── Mate management ───────────────────────────────────────────────
+
+  /**
+   * Add a mate constraint between two instances.
+   * @param {Mate} mate
+   * @returns {Mate}
+   */
+  addMate(mate) {
+    this.mates.push(mate);
+    this.modified = new Date();
+    return mate;
+  }
+
+  /**
+   * Remove a mate by ID.
+   * @param {string} mateId
+   */
+  removeMate(mateId) {
+    this.mates = this.mates.filter(m => m.id !== mateId);
+    this.modified = new Date();
+  }
+
+  // ── Solver ────────────────────────────────────────────────────────
+
+  /**
+   * Solve all mates and update instance transforms.
+   * @param {Object} [opts] - Solver options (maxIterations, tolerance)
+   * @returns {import('./assembly/AssemblySolver.js').SolverResult}
+   */
+  solve(opts) {
+    const result = solveAssembly(this.instances, this.mates, opts);
+    this._solverResult = result;
+
+    // Apply solved transforms back to instances
+    for (const inst of this.instances) {
+      if (result.transforms.has(inst.id)) {
+        inst.setTransform(result.transforms.get(inst.id));
+      }
+    }
+    return result;
+  }
+
+  // ── Collision detection ───────────────────────────────────────────
+
+  /**
+   * Run broadphase collision detection.
+   * @returns {Array<{ a: string, b: string, clearance: Object }>}
+   */
+  detectCollisions() {
+    return broadphaseCollisions(this.instances);
+  }
+
+  /**
+   * Query clearances between all instance pairs.
+   * @returns {Array<{ a: string, b: string, clearance: Object }>}
+   */
+  queryClearances() {
+    return clearanceQuery(this.instances);
+  }
+
+  // ── BOM ───────────────────────────────────────────────────────────
+
+  /**
+   * Generate Bill of Materials.
+   * @returns {import('./assembly/BOM.js').BOMEntry[]}
    */
   generateBOM() {
-    console.warn('Assembly.generateBOM() is not yet implemented');
-    // Future implementation
-    return [];
+    return generateBOM(Array.from(this.definitions.values()), this.instances);
   }
 
   /**
-   * Future: Detect interferences between components
-   * @returns {Array} List of interference pairs (stub)
+   * Get BOM summary statistics.
+   * @returns {{ totalParts: number, uniqueParts: number, totalMass: number }}
    */
-  detectInterferences() {
-    console.warn('Assembly.detectInterferences() is not yet implemented');
-    // Future implementation
-    return [];
+  getBOMSummary() {
+    return bomSummary(this.generateBOM());
   }
 
-  // -----------------------------------------------------------------------
-  // Serialization
-  // -----------------------------------------------------------------------
+  // ── Serialization ─────────────────────────────────────────────────
 
   serialize() {
     return {
@@ -135,42 +202,43 @@ export class Assembly {
       description: this.description,
       created: this.created.toISOString(),
       modified: this.modified.toISOString(),
-      components: this.components.map(c => ({
-        id: c.id,
-        component: c.component.serialize(),
-        transform: c.transform,
-        visible: c.visible,
-      })),
-      constraints: this.constraints,
+      definitions: Array.from(this.definitions.values()).map(d => d.serialize()),
+      instances: this.instances.map(i => i.serialize()),
+      mates: this.mates.map(m => m.serialize()),
     };
   }
 
   static deserialize(data) {
-    const assembly = new Assembly();
-    if (!data) return assembly;
+    const asm = new Assembly(data.name);
+    asm.description = data.description || '';
+    asm.created = data.created ? new Date(data.created) : new Date();
+    asm.modified = data.modified ? new Date(data.modified) : new Date();
 
-    assembly.name = data.name || 'Assembly1';
-    assembly.description = data.description || '';
-    assembly.created = data.created ? new Date(data.created) : new Date();
-    assembly.modified = data.modified ? new Date(data.modified) : new Date();
-    
-    // Deserialize components
-    if (data.components) {
-      assembly.components = data.components.map(c => ({
-        id: c.id,
-        component: c.component.type === 'Part' 
-          ? Part.deserialize(c.component)
-          : Assembly.deserialize(c.component),
-        transform: c.transform,
-        visible: c.visible !== false,
-      }));
-    }
-    
-    // Future: Deserialize constraints
-    if (data.constraints) {
-      assembly.constraints = data.constraints;
+    // Definitions
+    const defMap = new Map();
+    if (data.definitions) {
+      for (const d of data.definitions) {
+        const def = PartDefinition.deserialize(d);
+        asm.definitions.set(def.id, def);
+        defMap.set(def.id, def);
+      }
     }
 
-    return assembly;
+    // Instances
+    if (data.instances) {
+      for (const i of data.instances) {
+        const inst = PartInstance.deserialize(i, defMap);
+        asm.instances.push(inst);
+      }
+    }
+
+    // Mates
+    if (data.mates) {
+      for (const m of data.mates) {
+        asm.mates.push(Mate.deserialize(m));
+      }
+    }
+
+    return asm;
   }
 }
