@@ -2,14 +2,16 @@
 // tools/cad-cli.mjs — CLI entrypoint for CBREP operations
 //
 // Commands:
-//   step2cbrep  <input.step> <output.cbrep>  — Convert STEP → CBREP v0
-//   cbrep2step  <input.cbrep> <output.step>  — Convert CBREP v0 → STEP
-//   cbrep2stl   <input.cbrep> <output.stl>   — Convert CBREP v0 → STL
-//   cmod2cbrep  <input.cmod>  <output.cbrep>  — Extract/convert .cmod → CBREP v0
-//   validate-cbrep <input.cbrep>              — Validate a CBREP file
+//   step2cbrep     <input.step> <output.cbrep>  — Convert STEP → CBREP v0
+//   cbrep2step     <input.cbrep> <output.step>  — Convert CBREP v0 → STEP
+//   cbrep2stl      <input.cbrep> <output.stl>   — Convert CBREP v0 → STL
+//   cmod2cbrep     <input.cmod>  <output.cbrep>  — Extract/convert .cmod → CBREP v0
+//   validate-cbrep <input.cbrep>                — Validate a CBREP file
+//   hash           <input.cbrep>                — Compute content hash
+//   snapshot       <dir>                        — Hash all .step files → corpus manifest
 
-import { readFileSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { readFileSync, writeFileSync, readdirSync } from 'node:fs';
+import { resolve, join, basename } from 'node:path';
 
 import { canonicalize } from '../packages/ir/canonicalize.js';
 import { writeCbrep } from '../packages/ir/writer.js';
@@ -43,6 +45,8 @@ const commands = {
   cbrep2stl,
   cmod2cbrep,
   'validate-cbrep': validateCbrepCmd,
+  hash: hashCmd,
+  snapshot: snapshotCmd,
 };
 
 if (!cmd || !commands[cmd]) {
@@ -163,4 +167,50 @@ function validateCbrepCmd(inputPath) {
     console.error(`✗ Invalid CBREP: ${result.error}`);
     process.exit(1);
   }
+}
+
+function hashCmd(inputPath) {
+  if (!inputPath) {
+    console.error('Usage: hash <input.cbrep>');
+    process.exit(1);
+  }
+  const data = readFileSync(resolve(inputPath));
+  const buf = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+  const result = validateCbrep(buf);
+  if (!result.ok) {
+    console.error(`✗ Invalid CBREP: ${result.error}`);
+    process.exit(1);
+  }
+  console.log(hashCbrep(buf));
+}
+
+function snapshotCmd(dirPath) {
+  if (!dirPath) {
+    console.error('Usage: snapshot <dir>');
+    process.exit(1);
+  }
+  const dir = resolve(dirPath);
+  const files = readdirSync(dir).filter(f => f.endsWith('.step')).sort();
+  if (files.length === 0) {
+    console.error(`No .step files found in ${dir}`);
+    process.exit(1);
+  }
+  const manifest = {};
+  for (const file of files) {
+    const stepStr = readFileSync(join(dir, file), 'utf-8');
+    resetTopoIds();
+    try {
+      const body = parseSTEPTopology(stepStr);
+      if (!body || !body.shells || body.shells.length === 0) {
+        manifest[file] = { error: 'No valid topology found' };
+        continue;
+      }
+      const canon = canonicalize(body);
+      const buf = writeCbrep(canon);
+      manifest[file] = { hash: hashCbrep(buf), bytes: buf.byteLength };
+    } catch (err) {
+      manifest[file] = { error: err.message };
+    }
+  }
+  console.log(JSON.stringify(manifest, null, 2));
 }
