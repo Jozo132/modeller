@@ -220,7 +220,11 @@ test('evaluateExactResult: null diagnostics → no fallback', () => {
 });
 
 test('wrapResult attaches grade and flag', () => {
-  const result = wrapResult({ body: null, mesh: { faces: [] } }, ResultGrade.FALLBACK, FallbackDiagnostics.fallback('test', 'test'));
+  const result = wrapResult(
+    { body: null, mesh: { faces: [] } },
+    ResultGrade.FALLBACK,
+    FallbackDiagnostics.fallback('test', 'test', null, null, null),
+  );
   assert.strictEqual(result.resultGrade, 'fallback');
   assert.strictEqual(result._isFallback, true);
   assert.ok(result.fallbackDiagnostics);

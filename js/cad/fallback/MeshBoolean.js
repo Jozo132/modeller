@@ -31,7 +31,7 @@ export function meshBooleanOp(bodyA, bodyB, operation, opts = {}) {
   const cmB = buildConformingMesh(bodyB, { snapTolerance: snapTol });
 
   // Merge vertex spaces for consistent indexing
-  mergeVertexSpaces(cmA, cmB, { snapTolerance: snapTol });
+  const { sharedVertexIndex } = mergeVertexSpaces(cmA, cmB, { snapTolerance: snapTol });
 
   // Tag faces by operand for later classification
   const taggedA = cmA.faces.map(f => ({ ...f, operand: 'A' }));

@@ -126,7 +126,7 @@ function _runFallback(bodyA, bodyB, operation, trigger, stage, exactDiagnostics)
 function _exactBooleanOpInner(bodyA, bodyB, operation, tol) {
   if (_isPlanarBody(bodyA) && _isPlanarBody(bodyB)) {
     const planar = _exactPlanarBoolean(bodyA, bodyB, operation, tol);
-    if (planar) return planar;
+    if (planar) return { ...planar, diagnostics: planar.diagnostics || {} };
   }
 
   // Step 1-2: Intersect candidate face pairs and compute intersection curves
