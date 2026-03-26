@@ -12,6 +12,7 @@
 import { NurbsCurve } from './NurbsCurve.js';
 import { DEFAULT_TOLERANCE } from './Tolerance.js';
 import { SurfaceType } from './BRepTopology.js';
+import { GeometryEvaluator } from './GeometryEvaluator.js';
 
 /**
  * Compute intersection curve(s) between two surfaces.
@@ -50,8 +51,8 @@ export function surfaceSurfaceIntersect(surfA, typeA, surfB, typeB, tol = DEFAUL
 
 function _planePlane(planeA, planeB, tol) {
   // Evaluate normals from the planar surfaces
-  const nA = planeA.normal(0.5, 0.5);
-  const nB = planeB.normal(0.5, 0.5);
+  const nA = GeometryEvaluator.evalSurface(planeA, 0.5, 0.5).n;
+  const nB = GeometryEvaluator.evalSurface(planeB, 0.5, 0.5).n;
 
   // Cross product = line direction
   const dx = nA.y * nB.z - nA.z * nB.y;
@@ -68,8 +69,8 @@ function _planePlane(planeA, planeB, tol) {
 
   // Find a point on the intersection line
   // Use the average of surface origins as a starting guess
-  const pA = planeA.evaluate(0.5, 0.5);
-  const pB = planeB.evaluate(0.5, 0.5);
+  const pA = GeometryEvaluator.evalSurface(planeA, 0.5, 0.5).p;
+  const pB = GeometryEvaluator.evalSurface(planeB, 0.5, 0.5).p;
   const origin = {
     x: (pA.x + pB.x) / 2,
     y: (pA.y + pB.y) / 2,
@@ -169,7 +170,7 @@ function _findSeeds(surfA, surfB, samples, eps) {
     const uA = surfA.uMin + (i / samples) * (surfA.uMax - surfA.uMin);
     for (let j = 0; j <= samples; j++) {
       const vA = surfA.vMin + (j / samples) * (surfA.vMax - surfA.vMin);
-      const pA = surfA.evaluate(uA, vA);
+      const pA = GeometryEvaluator.evalSurface(surfA, uA, vA).p;
 
       // Find closest point on surfB
       let bestDist = Infinity;
@@ -179,7 +180,7 @@ function _findSeeds(surfA, surfB, samples, eps) {
         const uB = surfB.uMin + (ii / samples) * (surfB.uMax - surfB.uMin);
         for (let jj = 0; jj <= samples; jj++) {
           const vB = surfB.vMin + (jj / samples) * (surfB.vMax - surfB.vMin);
-          const pB = surfB.evaluate(uB, vB);
+          const pB = GeometryEvaluator.evalSurface(surfB, uB, vB).p;
           const dx = pA.x - pB.x, dy = pA.y - pB.y, dz = pA.z - pB.z;
           const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
           if (dist < bestDist) {
@@ -221,8 +222,8 @@ function _traceIntersection(surfA, surfB, seed, eps) {
     let curUA = uA, curVA = vA, curUB = uB, curVB = vB;
 
     for (let step = 0; step < maxSteps; step++) {
-      const pA = surfA.evaluate(curUA, curVA);
-      const pB = surfB.evaluate(curUB, curVB);
+      const pA = GeometryEvaluator.evalSurface(surfA, curUA, curVA).p;
+      const pB = GeometryEvaluator.evalSurface(surfB, curUB, curVB).p;
       const midPt = {
         x: (pA.x + pB.x) / 2,
         y: (pA.y + pB.y) / 2,
@@ -240,8 +241,8 @@ function _traceIntersection(surfA, surfB, seed, eps) {
       }
 
       // Compute marching direction using surface normals
-      const nA = surfA.normal(curUA, curVA);
-      const nB = surfB.normal(curUB, curVB);
+      const nA = GeometryEvaluator.evalSurface(surfA, curUA, curVA).n;
+      const nB = GeometryEvaluator.evalSurface(surfB, curUB, curVB).n;
 
       // Cross product of normals gives tangent to intersection curve
       const tx = nA.y * nB.z - nA.z * nB.y;
@@ -285,15 +286,17 @@ function _traceIntersection(surfA, surfB, seed, eps) {
  */
 function _refinePoint(surfA, uA, vA, surfB, uB, vB, eps) {
   for (let iter = 0; iter < 10; iter++) {
-    const pA = surfA.evaluate(uA, vA);
-    const pB = surfB.evaluate(uB, vB);
+    const rA = GeometryEvaluator.evalSurface(surfA, uA, vA);
+    const rB = GeometryEvaluator.evalSurface(surfB, uB, vB);
+    const pA = rA.p;
+    const pB = rB.p;
     const dx = pA.x - pB.x, dy = pA.y - pB.y, dz = pA.z - pB.z;
     const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
     if (dist < eps) break;
 
     // Simple steepest descent toward the other surface
-    const nA = surfA.normal(uA, vA);
-    const nB = surfB.normal(uB, vB);
+    const nA = rA.n;
+    const nB = rB.n;
 
     // Move uA,vA along -distance*nA (projected to surface)
     const dotA = dx * nA.x + dy * nA.y + dz * nA.z;
@@ -320,12 +323,13 @@ function _projectOntoSurface(surface, u0, v0, point, eps) {
   let u = u0, v = v0;
 
   for (let iter = 0; iter < 10; iter++) {
-    const p = surface.evaluate(u, v);
+    const r = GeometryEvaluator.evalSurface(surface, u, v);
+    const p = r.p;
     const dx = point.x - p.x, dy = point.y - p.y, dz = point.z - p.z;
     const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
     if (dist < eps) break;
 
-    const n = surface.normal(u, v);
+    const n = r.n;
     const dot = dx * n.x + dy * n.y + dz * n.z;
 
     // Simple step in UV space

@@ -177,7 +177,7 @@ export class NurbsCurve {
     for (let i = 0; i <= segments; i++) {
       const t = i / segments;
       const u = this.uMin + t * (this.uMax - this.uMin);
-      points.push(this.evaluate(u));
+      points.push(GeometryEvaluator.evalCurve(this, u).p);
     }
     return points;
   }

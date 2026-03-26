@@ -617,4 +617,9 @@ export const GeometryEvaluator = {
   WEIGHT_ZERO_TOL,
   NORMAL_ZERO_TOL,
   FALLBACK_NORMAL,
+  // Exposed for parity testing — force a specific backend
+  _jsEvalCurve,
+  _jsEvalSurface,
+  _wasmEvalCurve,
+  _wasmEvalSurface,
 };

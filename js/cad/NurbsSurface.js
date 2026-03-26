@@ -213,7 +213,7 @@ export class NurbsSurface {
         const u = this.uMin + (i / gridRes) * (this.uMax - this.uMin);
         for (let j = 0; j <= gridRes; j++) {
           const v = this.vMin + (j / gridRes) * (this.vMax - this.vMin);
-          const p = this.evaluate(u, v);
+          const p = GeometryEvaluator.evalSurface(this, u, v).p;
           const dx = p.x - px, dy = p.y - py, dz = p.z - pz;
           const d2 = dx * dx + dy * dy + dz * dz;
           if (d2 < bestDist2) {
@@ -225,33 +225,20 @@ export class NurbsSurface {
       }
     }
 
-    // Newton-Raphson refinement
+    // Newton-Raphson refinement using analytical derivatives from GeometryEvaluator
     const CONVERGE_TOL2 = 1e-24;  // squared distance convergence threshold
     const SINGULAR_TOL = 1e-30;   // Jacobian determinant singularity threshold
-    const uRange = this.uMax - this.uMin;
-    const vRange = this.vMax - this.vMin;
-    const eps = 1e-6;
 
     for (let iter = 0; iter < 10; iter++) {
-      const s = this.evaluate(bestU, bestV);
+      const r = GeometryEvaluator.evalSurface(this, bestU, bestV);
+      const s = r.p;
       const rx = s.x - px, ry = s.y - py, rz = s.z - pz;
 
       if (rx * rx + ry * ry + rz * rz < CONVERGE_TOL2) break;
 
-      // Partial derivatives via central differences
-      const uLo = Math.max(this.uMin, bestU - eps * uRange);
-      const uHi = Math.min(this.uMax, bestU + eps * uRange);
-      const pULo = this.evaluate(uLo, bestV);
-      const pUHi = this.evaluate(uHi, bestV);
-      const hU = uHi - uLo;
-      const Su = { x: (pUHi.x - pULo.x) / hU, y: (pUHi.y - pULo.y) / hU, z: (pUHi.z - pULo.z) / hU };
-
-      const vLo = Math.max(this.vMin, bestV - eps * vRange);
-      const vHi = Math.min(this.vMax, bestV + eps * vRange);
-      const pVLo = this.evaluate(bestU, vLo);
-      const pVHi = this.evaluate(bestU, vHi);
-      const hV = vHi - vLo;
-      const Sv = { x: (pVHi.x - pVLo.x) / hV, y: (pVHi.y - pVLo.y) / hV, z: (pVHi.z - pVLo.z) / hV };
+      // Analytical partial derivatives from GeometryEvaluator
+      const Su = r.du;
+      const Sv = r.dv;
 
       // Jacobian entries:  J = [[Su·Su, Su·Sv], [Su·Sv, Sv·Sv]]
       // RHS:                r = [Su·R,  Sv·R]
@@ -291,7 +278,7 @@ export class NurbsSurface {
       }
     }
     if (!_loggedSurfaceTessBackend) { _loggedSurfaceTessBackend = true; console.log('[NurbsSurface.tessellate] using JS fallback'); }
-    // JS fallback: build grid of evaluated points and normals
+    // JS fallback: build grid of evaluated points and normals via GeometryEvaluator
     const grid = [];
     const normals = [];
     for (let i = 0; i <= segmentsU; i++) {
@@ -300,8 +287,9 @@ export class NurbsSurface {
       const u = this.uMin + (i / segmentsU) * (this.uMax - this.uMin);
       for (let j = 0; j <= segmentsV; j++) {
         const v = this.vMin + (j / segmentsV) * (this.vMax - this.vMin);
-        row.push(this.evaluate(u, v));
-        normRow.push(this.normal(u, v));
+        const r = GeometryEvaluator.evalSurface(this, u, v);
+        row.push(r.p);
+        normRow.push(r.n);
       }
       grid.push(row);
       normals.push(normRow);

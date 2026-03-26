@@ -3,8 +3,11 @@
 // Computes intersections between two NURBS curves in 3D space.
 // Uses a subdivision approach: bisect parameter intervals and check
 // bounding-box overlap, then Newton–Raphson refinement.
+//
+// All curve evaluation goes through GeometryEvaluator for WASM/JS parity.
 
 import { DEFAULT_TOLERANCE } from './Tolerance.js';
+import { GeometryEvaluator } from './GeometryEvaluator.js';
 
 /**
  * Compute intersections between two NURBS curves.
@@ -50,8 +53,8 @@ function _subdivideCurveCurve(cA, aMin, aMax, cB, bMin, bMax, eps, results, dept
     // Midpoint approximation
     const uA = (aMin + aMax) / 2;
     const uB = (bMin + bMax) / 2;
-    const pA = cA.evaluate(uA);
-    const pB = cB.evaluate(uB);
+    const pA = GeometryEvaluator.evalCurve(cA, uA).p;
+    const pB = GeometryEvaluator.evalCurve(cB, uB).p;
     const dx = pA.x - pB.x, dy = pA.y - pB.y, dz = pA.z - pB.z;
     const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
     if (dist < eps * 1000) {
@@ -60,7 +63,7 @@ function _subdivideCurveCurve(cA, aMin, aMax, cB, bMin, bMax, eps, results, dept
       results.push({
         paramA: refined.uA,
         paramB: refined.uB,
-        point: cA.evaluate(refined.uA),
+        point: GeometryEvaluator.evalCurve(cA, refined.uA).p,
       });
     }
     return;
@@ -83,15 +86,17 @@ function _subdivideCurveCurve(cA, aMin, aMax, cB, bMin, bMax, eps, results, dept
  */
 function _newtonRefine(cA, uA, cB, uB, eps) {
   for (let iter = 0; iter < 20; iter++) {
-    const pA = cA.evaluate(uA);
-    const pB = cB.evaluate(uB);
+    const rA = GeometryEvaluator.evalCurve(cA, uA);
+    const rB = GeometryEvaluator.evalCurve(cB, uB);
+    const pA = rA.p;
+    const pB = rB.p;
     const diff = { x: pA.x - pB.x, y: pA.y - pB.y, z: pA.z - pB.z };
 
     const dist = Math.sqrt(diff.x * diff.x + diff.y * diff.y + diff.z * diff.z);
     if (dist < eps) break;
 
-    const dA = cA.derivative(uA);
-    const dB = cB.derivative(uB);
+    const dA = rA.d1;
+    const dB = rB.d1;
 
     // Solve 2x2 least-squares: dA * duA - dB * duB ≈ -(pA - pB)
     const a11 = dA.x * dA.x + dA.y * dA.y + dA.z * dA.z;
@@ -123,7 +128,7 @@ function _curveBBox(curve, uMin, uMax, samples) {
   for (let i = 0; i <= samples; i++) {
     const t = i / samples;
     const u = uMin + t * (uMax - uMin);
-    const p = curve.evaluate(u);
+    const p = GeometryEvaluator.evalCurve(curve, u).p;
     if (p.x < minX) minX = p.x;
     if (p.y < minY) minY = p.y;
     if (p.z < minZ) minZ = p.z;

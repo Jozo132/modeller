@@ -4,6 +4,8 @@
 // tessellation results. Structured so stricter intersection-free
 // refinement can be added without redesigning the pipeline.
 
+import { GeometryEvaluator } from '../GeometryEvaluator.js';
+
 /**
  * Compute the chordal error between a straight edge (p0→p1) and the
  * midpoint of the underlying curve at parameter tMid.
@@ -44,7 +46,7 @@ export function angularError(n0, n1) {
  * straight-line approximation exceeds the tolerance. Returns a segment
  * count that keeps the chordal error below the threshold.
  *
- * @param {import('../GeometryEvaluator.js').GeometryEvaluator} evaluator - Not used directly; curve.evaluate is used
+ * @param {import('../GeometryEvaluator.js').GeometryEvaluator} evaluator - GeometryEvaluator instance (unused — evaluation delegated internally)
  * @param {import('../NurbsCurve.js').NurbsCurve} curve
  * @param {number} baseSegments - Initial segment count
  * @param {number} [maxSegments=256] - Upper limit
@@ -70,9 +72,9 @@ export function recommendEdgeSegments(evaluator, curve, baseSegments, maxSegment
       const u1 = uMin + t1 * (uMax - uMin);
       const uMid = uMin + tMid * (uMax - uMin);
 
-      const p0 = curve.evaluate(u0);
-      const p1 = curve.evaluate(u1);
-      const pMid = curve.evaluate(uMid);
+      const p0 = GeometryEvaluator.evalCurve(curve, u0).p;
+      const p1 = GeometryEvaluator.evalCurve(curve, u1).p;
+      const pMid = GeometryEvaluator.evalCurve(curve, uMid).p;
 
       const err = chordalError(p0, p1, pMid);
       if (err > maxError) maxError = err;

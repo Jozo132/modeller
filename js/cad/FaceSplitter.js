@@ -10,6 +10,7 @@ import { NurbsCurve } from './NurbsCurve.js';
 import { TopoFace, TopoLoop, TopoCoEdge, TopoEdge, TopoVertex, SurfaceType } from './BRepTopology.js';
 import { DEFAULT_TOLERANCE } from './Tolerance.js';
 import { classifyFragment as _containmentClassifyFragment } from './Containment.js';
+import { GeometryEvaluator } from './GeometryEvaluator.js';
 
 /**
  * Split a face by a set of intersection curves.
@@ -77,8 +78,8 @@ function _splitPlanarFaceByCurve(face, curve, tol) {
   if (boundary3D.length < 3) return [face];
 
   const planeNormal = _faceNormal(face);
-  const lineStart = curve.evaluate(curve.uMin);
-  const lineEnd = curve.evaluate(curve.uMax);
+  const lineStart = GeometryEvaluator.evalCurve(curve, curve.uMin).p;
+  const lineEnd = GeometryEvaluator.evalCurve(curve, curve.uMax).p;
   const projected = _project3Dto2D(boundary3D, lineStart, planeNormal, lineEnd);
   const polygon2D = projected.pts2D;
   const line2D0 = projected.pt2D;
@@ -137,8 +138,8 @@ function _findBoundaryIntersections(face, curve, paramsOnFace, tol) {
   const results = [];
 
   // Check if start/end of curve are on the face boundary
-  const startPt = curve.evaluate(curve.uMin);
-  const endPt = curve.evaluate(curve.uMax);
+  const startPt = GeometryEvaluator.evalCurve(curve, curve.uMin).p;
+  const endPt = GeometryEvaluator.evalCurve(curve, curve.uMax).p;
 
   results.push({ point: startPt, param: curve.uMin });
   results.push({ point: endPt, param: curve.uMax });
@@ -219,7 +220,7 @@ export function classifyPointOnFace(point, face, tol = DEFAULT_TOLERANCE) {
 
   // Get face normal
   const normal = face.surface
-    ? face.surface.normal(0.5, 0.5)
+    ? GeometryEvaluator.evalSurface(face.surface, 0.5, 0.5).n
     : _polyNormal(boundary);
 
   // Project to 2D and use ray casting
@@ -290,7 +291,7 @@ function _sampleInteriorPoint(face) {
   if (face.surface) {
     const uMid = (face.surface.uMin + face.surface.uMax) / 2;
     const vMid = (face.surface.vMin + face.surface.vMax) / 2;
-    const point = face.surface.evaluate(uMid, vMid);
+    const point = GeometryEvaluator.evalSurface(face.surface, uMid, vMid).p;
     const n = _faceNormal(face);
     return {
       x: point.x + n.x * 1e-5,
@@ -539,10 +540,10 @@ function _faceNormal(face) {
     if (pts.length >= 3) n = _polyNormal(pts);
   }
   if (!n && face.surface) {
-    n = face.surface.normal(
+    n = GeometryEvaluator.evalSurface(face.surface,
       (face.surface.uMin + face.surface.uMax) / 2,
       (face.surface.vMin + face.surface.vMax) / 2,
-    );
+    ).n;
   }
   if (!n) n = { x: 0, y: 0, z: 1 };
   if (face.sameSense === false) {
