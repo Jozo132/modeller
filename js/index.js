@@ -90,3 +90,6 @@ export { PartManager } from './part-manager.js';
 
 // --- Logger utility ---
 export { setLogEnabled, setLogLevel, debug, info, warn, error } from './logger.js';
+
+// --- Telemetry ---
+export { Telemetry, telemetry } from './telemetry.js';

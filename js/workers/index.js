@@ -7,5 +7,10 @@
 // rather than direct import, but this barrel lets bundlers tree-shake and
 // provides a single discovery point for the public worker surface.
 
-// We export the module path constant so callers can reference it:
+// We export the module path constants so callers can reference them:
 export const STEP_IMPORT_WORKER_PATH = new URL('./step-import-worker.js', import.meta.url).href;
+export const KERNEL_WORKER_PATH = new URL('./kernel-worker.js', import.meta.url).href;
+export const TESSELLATION_WORKER_PATH = new URL('./tessellation-worker.js', import.meta.url).href;
+
+// Dispatcher utility for structured clone / transfer discipline
+export { WorkerDispatcher, collectTransferables } from './WorkerDispatcher.js';
