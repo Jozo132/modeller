@@ -61,7 +61,7 @@ export class FeatureReplayDiagnostic {
   constructor(opts) {
     this.featureIndex = opts.featureIndex;
     this.featureId = opts.featureId;
-    this.featureType = opts.featureType ?? '';
+    this.featureType = opts.featureType || '';
     this.status = opts.status;
     this.selectionKeys = opts.selectionKeys || [];
     this.remapOutcome = opts.remapOutcome || '';

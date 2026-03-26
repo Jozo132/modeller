@@ -91,10 +91,10 @@ function getEdgeKeysFromPart(part) {
   if (!geo || !geo.geometry || !geo.geometry.edges) return [];
   const keys = [];
   const prec = 5;
-  const vk = (v) => `${v.x.toFixed(prec)},${v.y.toFixed(prec)},${v.z.toFixed(prec)}`;
+  const formatVertex = (v) => `${v.x.toFixed(prec)},${v.y.toFixed(prec)},${v.z.toFixed(prec)}`;
   for (const edge of geo.geometry.edges) {
     if (edge.start && edge.end) {
-      keys.push(`${vk(edge.start)}|${vk(edge.end)}`);
+      keys.push(`${formatVertex(edge.start)}|${formatVertex(edge.end)}`);
     }
   }
   return keys;
@@ -154,6 +154,11 @@ test('legacyEdgeKeyToStable converts correctly', () => {
   assert.ok(isStableKey(stable));
   const parsed = parseKey(stable);
   assert.strictEqual(parsed.entityType, EntityType.EDGE);
+});
+
+test('legacyEdgeKeyToStable returns null for invalid input', () => {
+  const result = legacyEdgeKeyToStable('not-a-valid-key');
+  assert.strictEqual(result, null);
 });
 
 test('keys are stable across repeated Part recompute', () => {

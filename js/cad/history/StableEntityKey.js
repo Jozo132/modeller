@@ -273,11 +273,11 @@ export function resolveKey(storedKey, bodyKeyMap) {
  * Convert a legacy position-based edge key to a stable edge key.
  * @param {string} legacyKey - "x1,y1,z1|x2,y2,z2"
  * @param {string} [provenance='']
- * @returns {string} Stable edge key
+ * @returns {string|null} Stable edge key, or null if the input is not a valid legacy key
  */
 export function legacyEdgeKeyToStable(legacyKey, provenance = '') {
   const sep = legacyKey.indexOf('|');
-  if (sep < 0) return legacyKey; // can't convert
+  if (sep < 0) return null;
   const a = legacyKey.slice(0, sep);
   const b = legacyKey.slice(sep + 1);
   // Re-sort for canonical order
