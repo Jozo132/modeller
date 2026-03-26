@@ -4,6 +4,9 @@
 // Supports tolerance-controlled tessellation for both display and STL export.
 
 import { DEFAULT_TOLERANCE } from './Tolerance.js';
+import { getFlag } from '../featureFlags.js';
+import { robustTessellateBody } from './Tessellator2/index.js';
+import { validateMesh } from './MeshValidator.js';
 
 function projectPolygon2D(verts, normal) {
   const an = {
@@ -210,6 +213,10 @@ export function tessellateFace(face, segments = 8) {
 /**
  * Tessellate a TopoBody for STL export with controlled tolerance.
  *
+ * When CAD_USE_ROBUST_TESSELLATOR is enabled, the robust tessellator
+ * runs first as a canary: if its mesh passes validation, it is used;
+ * otherwise the legacy tessellator provides the fallback.
+ *
  * @param {import('./BRepTopology.js').TopoBody} body
  * @param {Object} [opts]
  * @param {number} [opts.chordalDeviation=0.01] - Max chord deviation
@@ -224,38 +231,30 @@ export function tessellateForSTL(body, opts = {}) {
   // Higher precision → more segments
   const segments = Math.max(4, Math.min(64, Math.ceil(1.0 / chordalDev)));
 
-  const mesh = tessellateBody(body, { surfaceSegments: segments });
-
-  // Convert to triangles
-  const triangles = [];
-  for (const f of mesh.faces) {
-    const verts = f.vertices;
-    if (verts.length === 3) {
-      triangles.push({
-        vertices: [{ ...verts[0] }, { ...verts[1] }, { ...verts[2] }],
-        normal: f.normal ? { ...f.normal } : calculateNormal(verts[0], verts[1], verts[2]),
+  // --- Canary mode: try robust tessellator first ---
+  const useRobust = getFlag('CAD_USE_ROBUST_TESSELLATOR');
+  if (useRobust) {
+    try {
+      const robustMesh = robustTessellateBody(body, {
+        surfaceSegments: segments,
+        validate: true,
       });
-    } else if (verts.length === 4) {
-      // Split quad into 2 triangles
-      triangles.push({
-        vertices: [{ ...verts[0] }, { ...verts[1] }, { ...verts[2] }],
-        normal: f.normal ? { ...f.normal } : calculateNormal(verts[0], verts[1], verts[2]),
-      });
-      triangles.push({
-        vertices: [{ ...verts[0] }, { ...verts[2] }, { ...verts[3] }],
-        normal: f.normal ? { ...f.normal } : calculateNormal(verts[0], verts[2], verts[3]),
-      });
-    } else if (verts.length > 4) {
-      // Fan triangulation
-      for (let i = 1; i < verts.length - 1; i++) {
-        triangles.push({
-          vertices: [{ ...verts[0] }, { ...verts[i] }, { ...verts[i + 1] }],
-          normal: f.normal ? { ...f.normal } : calculateNormal(verts[0], verts[i], verts[i + 1]),
-        });
+      const validation = robustMesh.validation ?? validateMesh(robustMesh.faces);
+      if (validation.isClean && robustMesh.faces.length > 0) {
+        const triangles = _meshToTriangles(robustMesh);
+        if (triangles.length > 0) {
+          triangles._tessellator = 'robust-canary';
+          return triangles;
+        }
       }
+      // Robust produced a non-clean mesh — fall through to legacy
+    } catch (_e) {
+      // Robust tessellation failed — fall through to legacy
     }
   }
 
+  const mesh = tessellateBody(body, { surfaceSegments: segments });
+  const triangles = _meshToTriangles(mesh);
   return triangles;
 }
 
@@ -275,4 +274,39 @@ function calculateNormal(p0, p1, p2) {
   const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
   if (len < 1e-14) return { x: 0, y: 0, z: 1 };
   return { x: nx / len, y: ny / len, z: nz / len };
+}
+
+/**
+ * Convert a mesh result (vertices + faces) to an array of triangles.
+ * @param {{ faces: Array<{vertices: Array<{x:number,y:number,z:number}>, normal?: {x:number,y:number,z:number}}> }} mesh
+ * @returns {Array<{vertices: Array<{x:number,y:number,z:number}>, normal: {x:number,y:number,z:number}}>}
+ */
+function _meshToTriangles(mesh) {
+  const triangles = [];
+  for (const f of mesh.faces) {
+    const verts = f.vertices;
+    if (verts.length === 3) {
+      triangles.push({
+        vertices: [{ ...verts[0] }, { ...verts[1] }, { ...verts[2] }],
+        normal: f.normal ? { ...f.normal } : calculateNormal(verts[0], verts[1], verts[2]),
+      });
+    } else if (verts.length === 4) {
+      triangles.push({
+        vertices: [{ ...verts[0] }, { ...verts[1] }, { ...verts[2] }],
+        normal: f.normal ? { ...f.normal } : calculateNormal(verts[0], verts[1], verts[2]),
+      });
+      triangles.push({
+        vertices: [{ ...verts[0] }, { ...verts[2] }, { ...verts[3] }],
+        normal: f.normal ? { ...f.normal } : calculateNormal(verts[0], verts[2], verts[3]),
+      });
+    } else if (verts.length > 4) {
+      for (let i = 1; i < verts.length - 1; i++) {
+        triangles.push({
+          vertices: [{ ...verts[0] }, { ...verts[i] }, { ...verts[i + 1] }],
+          normal: f.normal ? { ...f.normal } : calculateNormal(verts[0], verts[i], verts[i + 1]),
+        });
+      }
+    }
+  }
+  return triangles;
 }

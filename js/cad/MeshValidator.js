@@ -112,6 +112,24 @@ export function detectDegenerateFaces(faces, areaThreshold = 1e-12) {
 }
 
 /**
+ * Check whether a triangle mesh is watertight (closed manifold).
+ *
+ * A mesh is watertight when every edge is shared by exactly two triangles
+ * and there are no boundary (open) edges.
+ *
+ * @param {{ vertices: {x,y,z}[] }[]} faces
+ * @returns {{ watertight: boolean, boundaryCount: number, edges: Array }}
+ */
+export function checkWatertight(faces) {
+  const be = detectBoundaryEdges(faces);
+  return {
+    watertight: be.count === 0,
+    boundaryCount: be.count,
+    edges: be.edges,
+  };
+}
+
+/**
  * Run all mesh validations and return a summary.
  *
  * @param {{ vertices: {x,y,z}[], normal?: {x,y,z} }[]} faces

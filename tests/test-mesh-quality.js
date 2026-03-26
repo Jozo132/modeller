@@ -9,26 +9,32 @@
 //   6. Existing regression compatibility — legacy tessellator still works
 //   7. Config routing — tessellator mode switching
 
-import { readFileSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { tmpdir } from 'os';
 import { fileURLToPath } from 'url';
 import {
   TopoBody, TopoShell, TopoFace, TopoLoop, TopoCoEdge, TopoEdge, TopoVertex,
   SurfaceType, buildTopoBody, resetTopoIds,
 } from '../js/cad/BRepTopology.js';
 import { TessellationConfig } from '../js/cad/TessellationConfig.js';
-import { tessellateBody } from '../js/cad/Tessellation.js';
+import { tessellateBody, tessellateForSTL } from '../js/cad/Tessellation.js';
 import {
   robustTessellateBody, tessellateBodyRouted,
+  shadowTessellateBody,
+  getShadowTessDisagreements, clearShadowTessDisagreements,
   EdgeSampler, FaceTriangulator, MeshStitcher,
   computeMeshHash, meshSummary,
 } from '../js/cad/Tessellator2/index.js';
 import { chordalError, angularError } from '../js/cad/Tessellator2/Refinement.js';
 import {
   validateMesh, detectBoundaryEdges, detectSelfIntersections, detectDegenerateFaces,
+  checkWatertight,
 } from '../js/cad/MeshValidator.js';
 import { NurbsSurface } from '../js/cad/NurbsSurface.js';
 import { NurbsCurve } from '../js/cad/NurbsCurve.js';
 import { importSTEP } from '../js/cad/StepImport.js';
+import { setFlag, resetFlags } from '../js/featureFlags.js';
+import { TessellationResult } from '../js/cad/diagnostics.js';
 
 let passed = 0;
 let failed = 0;
@@ -459,6 +465,125 @@ console.log('\n=== Mesh Quality — No Degenerate Faces ===\n');
   const mesh = robustTessellateBody(box, { surfaceSegments: 4, edgeSegments: 4 });
   const df = detectDegenerateFaces(mesh.faces);
   assert(df.count === 0, `Box mesh has no degenerate faces (got ${df.count})`);
+}
+
+// ============================================================
+console.log('\n=== Mesh Quality — checkWatertight ===\n');
+// ============================================================
+
+{
+  const box = buildTestBox();
+  const mesh = robustTessellateBody(box, { surfaceSegments: 4, edgeSegments: 4 });
+  const wt = checkWatertight(mesh.faces);
+  assert(wt.watertight === true, 'Box mesh is watertight');
+  assert(wt.boundaryCount === 0, `No boundary edges (got ${wt.boundaryCount})`);
+}
+
+{
+  // Single triangle (open mesh) should NOT be watertight
+  const openFaces = [{ vertices: [{ x: 0, y: 0, z: 0 }, { x: 1, y: 0, z: 0 }, { x: 0, y: 1, z: 0 }] }];
+  const wt = checkWatertight(openFaces);
+  assert(wt.watertight === false, 'Single triangle is not watertight');
+  assert(wt.boundaryCount > 0, `Open mesh has boundary edges (got ${wt.boundaryCount})`);
+}
+
+// ============================================================
+console.log('\n=== Mesh Quality — Shadow Tessellation ===\n');
+// ============================================================
+
+{
+  clearShadowTessDisagreements();
+
+  const box = buildTestBox();
+  const result = shadowTessellateBody(box, { surfaceSegments: 4, edgeSegments: 4 });
+
+  assert(result._tessellator === 'legacy', 'Shadow mode returns legacy result');
+  assert(result._shadowComparison !== undefined, 'Shadow comparison is attached');
+  assert(typeof result._shadowComparison.legacyHash === 'string', 'Legacy hash recorded');
+  assert(typeof result._shadowComparison.robustHash === 'string', 'Robust hash recorded');
+  assert(typeof result._shadowComparison.legacyFaces === 'number', 'Legacy face count recorded');
+  assert(typeof result._shadowComparison.robustFaces === 'number', 'Robust face count recorded');
+  assert(result._shadowComparison.robustError === null, 'No robust error in shadow mode');
+}
+
+{
+  // Shadow disagreement log is queryable and clearable
+  const initialCount = getShadowTessDisagreements().length;
+  clearShadowTessDisagreements();
+  const afterClear = getShadowTessDisagreements().length;
+  assert(afterClear === 0, 'Shadow disagreement log cleared');
+}
+
+// ============================================================
+console.log('\n=== Mesh Quality — Canary STL Export ===\n');
+// ============================================================
+
+{
+  resetFlags();
+  const box = buildTestBox();
+
+  // Without flag: legacy path
+  const legacyTriangles = tessellateForSTL(box);
+  assert(legacyTriangles.length > 0, `Legacy STL produces triangles (${legacyTriangles.length})`);
+  assert(legacyTriangles._tessellator === undefined, 'Legacy STL has no _tessellator tag');
+
+  // With flag: canary path (robust first, fallback to legacy)
+  setFlag('CAD_USE_ROBUST_TESSELLATOR', true);
+  const canaryTriangles = tessellateForSTL(box);
+  assert(canaryTriangles.length > 0, `Canary STL produces triangles (${canaryTriangles.length})`);
+  assert(
+    canaryTriangles._tessellator === 'robust-canary' || canaryTriangles._tessellator === undefined,
+    `Canary STL tessellator tag is valid (got ${canaryTriangles._tessellator})`
+  );
+  resetFlags();
+}
+
+// ============================================================
+console.log('\n=== Mesh Quality — TessellationResult Schema ===\n');
+// ============================================================
+
+{
+  const result = new TessellationResult({
+    ok: true,
+    vertexCount: 8,
+    faceCount: 12,
+    tessellator: 'robust',
+    hash: 'abcd1234',
+    shadowComparison: { hashMatch: true },
+  });
+
+  assert(result.tessellator === 'robust', 'TessellationResult.tessellator');
+  assert(result.hash === 'abcd1234', 'TessellationResult.hash');
+  assert(result.shadowComparison !== null, 'TessellationResult.shadowComparison');
+
+  const json = result.toJSON();
+  assert(json.tessellator === 'robust', 'TessellationResult.toJSON() includes tessellator');
+  assert(json.hash === 'abcd1234', 'TessellationResult.toJSON() includes hash');
+  assert(json.shadowComparison !== undefined, 'TessellationResult.toJSON() includes shadowComparison');
+}
+
+// ============================================================
+console.log('\n=== Mesh Quality — Diagnostic Artifact Write ===\n');
+// ============================================================
+
+{
+  // Verify that shadow comparison data can be serialized to JSON for artifact upload
+  const box = buildTestBox();
+  const result = shadowTessellateBody(box, { surfaceSegments: 4, edgeSegments: 4 });
+  const comparison = result._shadowComparison;
+
+  try {
+    const json = JSON.stringify(comparison);
+    assert(typeof json === 'string' && json.length > 0, 'Shadow comparison is JSON-serializable');
+
+    // Write diagnostic artifact to temp directory
+    const diagDir = `${tmpdir()}/mesh-quality-diagnostics`;
+    mkdirSync(diagDir, { recursive: true });
+    writeFileSync(`${diagDir}/shadow-comparison.json`, JSON.stringify(comparison, null, 2));
+    assert(true, `Diagnostic artifact written to ${diagDir}/`);
+  } catch (err) {
+    assert(false, `Diagnostic serialization failed: ${err.message}`);
+  }
 }
 
 // ============================================================

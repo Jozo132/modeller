@@ -8,6 +8,7 @@ on:
       - 'js/cad/TessellationConfig.js'
       - 'js/cad/MeshValidator.js'
       - 'js/cad/WasmTessellation.js'
+      - 'js/cad/diagnostics.js'
       - 'tests/test-mesh-quality.js'
       - 'tests/step/**'
   pull_request:
@@ -17,6 +18,7 @@ on:
       - 'js/cad/TessellationConfig.js'
       - 'js/cad/MeshValidator.js'
       - 'js/cad/WasmTessellation.js'
+      - 'js/cad/diagnostics.js'
       - 'tests/test-mesh-quality.js'
       - 'tests/step/**'
 
@@ -33,16 +35,16 @@ jobs:
           node-version: 20
       - run: npm ci
       - run: npx asc assembly/index.ts --target debug && npx asc assembly/index.ts --target release
-      - name: Mesh quality tests
+      - name: Mesh quality tests (includes shadow + canary)
         run: node tests/test-mesh-quality.js
       - name: STEP import regression
         run: node tests/test-step-import.js
       - name: WASM tessellation regression
         run: node tests/test-wasm-tessellation.js
-      - name: Upload diagnostics
+      - name: Upload mesh diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: mesh-quality-diagnostics
-          path: /tmp/mesh-quality-diagnostics.json
+          path: /tmp/mesh-quality-diagnostics/
           if-no-files-found: ignore
