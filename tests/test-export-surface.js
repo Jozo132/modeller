@@ -5,7 +5,6 @@
 // behaviour — only that the module graph resolves without errors.
 
 import assert from 'assert';
-import { pathToFileURL } from 'url';
 import { readFileSync } from 'fs';
 
 const pkgPath = new URL('../package.json', import.meta.url);
@@ -59,9 +58,7 @@ for (const [subpath, spec] of exportEntries) {
     continue;
   }
 
-  const resolvedURL = pathToFileURL(
-    new URL(importPath, pathToFileURL(process.cwd() + '/package.json')).pathname
-  ).href;
+  const resolvedURL = new URL(importPath, import.meta.url.replace(/tests\/[^/]+$/, '')).href;
 
   // eslint-disable-next-line no-await-in-loop
   await asyncTest(`${subpath} — resolves (${importPath})`, async () => {

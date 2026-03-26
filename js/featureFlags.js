@@ -105,7 +105,9 @@ function readEnv(name) {
     if (typeof process !== 'undefined' && process.env) {
       return process.env[name];
     }
-  } catch { /* browser or restricted env */ }
+  } catch {
+    // Silently ignored: browser or restricted env where `process` access throws
+  }
   return undefined;
 }
 
