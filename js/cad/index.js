@@ -66,7 +66,12 @@ export { TessellationConfig } from './TessellationConfig.js';
 export { wasmTessellation } from './WasmTessellation.js';
 export { GeometryEvaluator } from './GeometryEvaluator.js';
 export {
-  robustTessellateBody, tessellateBodyRouted,
+  validateMesh, detectBoundaryEdges, detectSelfIntersections,
+  detectDegenerateFaces, checkWatertight,
+} from './MeshValidator.js';
+export {
+  robustTessellateBody, tessellateBodyRouted, shadowTessellateBody,
+  getShadowTessDisagreements, clearShadowTessDisagreements,
   EdgeSampler, FaceTriangulator, MeshStitcher,
   computeMeshHash, meshSummary,
 } from './Tessellator2/index.js';

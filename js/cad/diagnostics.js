@@ -74,6 +74,9 @@ export class TessellationResult {
    * @param {number}   [opts.degenerateFaces=0]
    * @param {string[]} [opts.warnings]
    * @param {Object}   [opts.mesh]  Tessellated mesh (opaque)
+   * @param {string}   [opts.tessellator]  'legacy' | 'robust' | 'robust-canary' | 'legacy-fallback'
+   * @param {string}   [opts.hash]  Deterministic mesh hash
+   * @param {Object}   [opts.shadowComparison]  Shadow comparison data (if shadow mode)
    */
   constructor(opts = {}) {
     /** @type {boolean} */
@@ -88,6 +91,12 @@ export class TessellationResult {
     this.warnings = opts.warnings ?? [];
     /** @type {Object|null} */
     this.mesh = opts.mesh ?? null;
+    /** @type {string} */
+    this.tessellator = opts.tessellator ?? '';
+    /** @type {string} */
+    this.hash = opts.hash ?? '';
+    /** @type {Object|null} */
+    this.shadowComparison = opts.shadowComparison ?? null;
   }
 
   toJSON() {
@@ -97,6 +106,9 @@ export class TessellationResult {
       faceCount: this.faceCount,
       degenerateFaces: this.degenerateFaces,
       warnings: this.warnings,
+      tessellator: this.tessellator || undefined,
+      hash: this.hash || undefined,
+      shadowComparison: this.shadowComparison || undefined,
     };
   }
 }

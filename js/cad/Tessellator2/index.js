@@ -15,8 +15,30 @@ import { FaceTriangulator } from './FaceTriangulator.js';
 import { MeshStitcher } from './MeshStitcher.js';
 import { computeMeshHash, meshSummary } from './MeshHash.js';
 import { recommendEdgeSegments, detectCriticalRegions } from './Refinement.js';
-import { validateMesh, detectBoundaryEdges, detectSelfIntersections } from '../MeshValidator.js';
+import { validateMesh, detectBoundaryEdges, detectSelfIntersections, checkWatertight } from '../MeshValidator.js';
 import { tessellateBody as legacyTessellateBody } from '../Tessellation.js';
+import { getFlag } from '../../featureFlags.js';
+
+// ── Shadow tessellation disagreement log ────────────────────────────
+/** @type {Array<Object>} */
+const _shadowDisagreements = [];
+
+/**
+ * Return a frozen snapshot of all shadow-mode tessellation disagreements
+ * recorded since the last clear.
+ *
+ * @returns {ReadonlyArray<Object>}
+ */
+export function getShadowTessDisagreements() {
+  return Object.freeze([..._shadowDisagreements]);
+}
+
+/**
+ * Clear the shadow tessellation disagreement log.
+ */
+export function clearShadowTessDisagreements() {
+  _shadowDisagreements.length = 0;
+}
 
 /**
  * Robust tessellation of a TopoBody using the edge-first pipeline.
@@ -215,6 +237,60 @@ export function tessellateBodyRouted(body, opts = {}) {
   const result = legacyTessellateBody(body, opts);
   result._tessellator = 'legacy';
   return result;
+}
+
+/**
+ * Shadow tessellation: run both legacy and robust tessellators, compare
+ * outputs, and record disagreements.  Returns the legacy result by default
+ * (shadow mode is observation-only).
+ *
+ * When CAD_USE_ROBUST_TESSELLATOR is true this function is called
+ * automatically by tessellateBodyRouted() instead of the normal path.
+ *
+ * @param {import('../BRepTopology.js').TopoBody} body
+ * @param {Object} [opts]
+ * @returns {Object} The primary mesh result (legacy by default, robust if clean)
+ */
+export function shadowTessellateBody(body, opts = {}) {
+  const legacyResult = legacyTessellateBody(body, opts);
+  legacyResult._tessellator = 'legacy';
+
+  let robustResult;
+  let robustError = null;
+  try {
+    robustResult = robustTessellateBody(body, { ...opts, validate: true });
+    robustResult._tessellator = 'robust';
+  } catch (err) {
+    robustError = err.message;
+  }
+
+  const legacyHash = computeMeshHash(legacyResult);
+  const robustHash = robustResult ? computeMeshHash(robustResult) : null;
+
+  const legacyValidation = validateMesh(legacyResult.faces);
+  const robustValidation = robustResult ? robustResult.validation ?? validateMesh(robustResult.faces) : null;
+
+  const disagreement = {
+    timestamp: Date.now(),
+    legacyHash,
+    robustHash,
+    hashMatch: legacyHash === robustHash,
+    legacyFaces: legacyResult.faces.length,
+    robustFaces: robustResult ? robustResult.faces.length : 0,
+    legacyClean: legacyValidation.isClean,
+    robustClean: robustValidation ? robustValidation.isClean : false,
+    robustError,
+  };
+
+  // Record if there is any disagreement
+  if (!disagreement.hashMatch || robustError || !disagreement.robustClean) {
+    _shadowDisagreements.push(disagreement);
+  }
+
+  // Attach shadow comparison to the primary result
+  legacyResult._shadowComparison = disagreement;
+
+  return legacyResult;
 }
 
 // Re-export sub-modules for direct access
