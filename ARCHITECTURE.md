@@ -503,3 +503,53 @@ guaranteed ready before any tessellation occurs.
 - **AssemblyScript** 0.28.9 — WASM compiler (devDependency)
 - **@napi-rs/canvas** 0.1.68 — Headless canvas for CLI tools (devDependency)
 - Zero runtime dependencies
+
+---
+
+## Feature Flags
+
+All CAD-kernel feature flags are defined in `js/featureFlags.js` (import path
+`modeller/flags`).  Every flag defaults to **OFF** so importing the module
+never changes existing behaviour.
+
+Flags are resolved in this priority order:
+
+1. **Programmatic override** — `setFlag(name, value)` / `resetFlags()`
+2. **Environment variable** — `process.env.CAD_*` (Node.js only)
+3. **Default** — defined in the flag table below
+
+Boolean flags accept `'1'`, `'true'`, `'yes'` (case-insensitive) as truthy.
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `CAD_USE_IR_CACHE` | boolean | `false` | Enable CBREP IR cache embedding in `.cmod` files |
+| `CAD_IR_CACHE_MODE` | string | `'none'` | IR cache storage mode: `'none'` \| `'memory'` \| `'fs'` \| `'idb'` |
+| `CAD_USE_WASM_EVAL` | boolean | `false` | Prefer WASM evaluator for NURBS curve/surface evaluation |
+| `CAD_USE_GWN_CONTAINMENT` | boolean | `false` | Use generalized winding number for containment |
+| `CAD_USE_ROBUST_TESSELLATOR` | boolean | `false` | Use the Tessellator2 robust tessellation pipeline |
+| `CAD_ALLOW_DISCRETE_FALLBACK` | boolean | `false` | Allow discrete mesh fallback when exact boolean fails |
+| `CAD_STRICT_INVARIANTS` | boolean | `false` | Throw on invariant violations instead of warning |
+| `CAD_DIAGNOSTICS_DIR` | string | `''` | Directory path for diagnostic JSON output (empty = disabled) |
+
+---
+
+## Module Boundaries (Package Exports)
+
+The `package.json` `"exports"` map defines the public API surface:
+
+| Import path | Module | Description |
+|---|---|---|
+| `modeller` | `js/index.js` | All headless CAD APIs (geometry, constraints, features, NURBS, B-Rep, CSG) |
+| `modeller/cad` | `js/cad/index.js` | Core CAD kernel — primitives, features, solver, B-Rep, booleans, diagnostics |
+| `modeller/render` | `js/render/index.js` | Node.js canvas renderer |
+| `modeller/cmod` | `js/cmod.js` | CMOD project file import/export |
+| `modeller/logger` | `js/logger.js` | Lightweight leveled logger |
+| `modeller/wasm` | `build/release.js` | Raw AssemblyScript WASM module |
+| `modeller/flags` | `js/featureFlags.js` | Centralized feature-flag registry |
+| `modeller/ir` | `js/ir/index.js` | CBREP binary IR (schema, canonicalize, read/write, hash) |
+| `modeller/cache` | `js/cache/index.js` | Cache store interface + Node.js/browser implementations |
+| `modeller/workers` | `js/workers/index.js` | Web Worker entry points |
+
+Internal modules (`packages/ir/*`, `packages/cache/*`) are implementation
+details and may change without notice.  Always import through the `js/`
+barrel modules above.

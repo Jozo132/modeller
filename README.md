@@ -83,6 +83,10 @@ import {
 | `modeller/cmod` | Full CMOD project import/export (includes browser helpers) |
 | `modeller/logger` | Lightweight logger (`debug`, `info`, `warn`, `error`, `setLogLevel`) |
 | `modeller/wasm` | Raw AssemblyScript WASM 2D/solver module |
+| `modeller/flags` | Feature-flag registry (`getFlag`, `setFlag`, `allFlags`, `flagDefinitions`) |
+| `modeller/ir` | CBREP binary IR — schema, canonicalize, read/write, hash |
+| `modeller/cache` | Cache store interface + Node.js (fs) and browser (IndexedDB) stores |
+| `modeller/workers` | Web Worker entry points (STEP import worker) |
 
 ### Headless meshing example (Node.js)
 

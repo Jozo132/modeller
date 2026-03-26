@@ -85,6 +85,9 @@ export { buildConformingMesh, mergeVertexSpaces } from './fallback/ConformingSur
 export { meshBooleanOp } from './fallback/MeshBoolean.js';
 export { reconstructAdjacency, extractFeatureEdges } from './fallback/AdjacencyReconstruction.js';
 
+// --- Diagnostic / result schemas ---
+export { BooleanResult, TessellationResult, ContainmentResult } from './diagnostics.js';
+
 // --- History / replay / stable keys ---
 export {
   EntityType, RemapStatus,

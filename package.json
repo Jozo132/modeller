@@ -25,6 +25,7 @@
   },
   "files": [
     "js/",
+    "packages/",
     "build/",
     "README.md",
     "LICENSE",
@@ -53,6 +54,18 @@
     "./wasm": {
       "import": "./build/release.js",
       "types": "./build/release.d.ts"
+    },
+    "./flags": {
+      "import": "./js/featureFlags.js"
+    },
+    "./ir": {
+      "import": "./js/ir/index.js"
+    },
+    "./cache": {
+      "import": "./js/cache/index.js"
+    },
+    "./workers": {
+      "import": "./js/workers/index.js"
     }
   }
 }

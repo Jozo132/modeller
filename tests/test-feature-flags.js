@@ -1,0 +1,246 @@
+// tests/test-feature-flags.js — Tests for the centralized feature-flag module
+//
+// Verifies:
+//   - All flags default to OFF / safe values
+//   - Boolean parsing accepts '1', 'true', 'yes' (case-insensitive)
+//   - Programmatic override via setFlag / resetFlags
+//   - allFlags() snapshot reflects overrides
+//   - flagDefinitions() returns expected entries
+//   - Unknown flag names return undefined
+
+import assert from 'assert';
+import {
+  getFlag, setFlag, resetFlags, allFlags, flagDefinitions,
+} from '../js/featureFlags.js';
+
+let passed = 0;
+let failed = 0;
+
+function test(label, fn) {
+  try {
+    fn();
+    passed++;
+    console.log(`  ✓ ${label}`);
+  } catch (err) {
+    failed++;
+    console.log(`  ✗ ${label}`);
+    console.log(`    ${err.message}`);
+  }
+}
+
+console.log('Feature-flag tests');
+
+// ── Defaults ────────────────────────────────────────────────────────
+
+test('CAD_USE_IR_CACHE defaults to false', () => {
+  resetFlags();
+  assert.strictEqual(getFlag('CAD_USE_IR_CACHE'), false);
+});
+
+test('CAD_IR_CACHE_MODE defaults to "none"', () => {
+  resetFlags();
+  assert.strictEqual(getFlag('CAD_IR_CACHE_MODE'), 'none');
+});
+
+test('CAD_USE_WASM_EVAL defaults to false', () => {
+  resetFlags();
+  assert.strictEqual(getFlag('CAD_USE_WASM_EVAL'), false);
+});
+
+test('CAD_USE_GWN_CONTAINMENT defaults to false', () => {
+  resetFlags();
+  assert.strictEqual(getFlag('CAD_USE_GWN_CONTAINMENT'), false);
+});
+
+test('CAD_USE_ROBUST_TESSELLATOR defaults to false', () => {
+  resetFlags();
+  assert.strictEqual(getFlag('CAD_USE_ROBUST_TESSELLATOR'), false);
+});
+
+test('CAD_ALLOW_DISCRETE_FALLBACK defaults to false', () => {
+  resetFlags();
+  assert.strictEqual(getFlag('CAD_ALLOW_DISCRETE_FALLBACK'), false);
+});
+
+test('CAD_STRICT_INVARIANTS defaults to false', () => {
+  resetFlags();
+  assert.strictEqual(getFlag('CAD_STRICT_INVARIANTS'), false);
+});
+
+test('CAD_DIAGNOSTICS_DIR defaults to empty string', () => {
+  resetFlags();
+  assert.strictEqual(getFlag('CAD_DIAGNOSTICS_DIR'), '');
+});
+
+// ── Unknown flag ────────────────────────────────────────────────────
+
+test('Unknown flag returns undefined', () => {
+  resetFlags();
+  assert.strictEqual(getFlag('CAD_NONEXISTENT'), undefined);
+});
+
+// ── Programmatic override ───────────────────────────────────────────
+
+test('setFlag overrides a boolean flag', () => {
+  resetFlags();
+  setFlag('CAD_USE_IR_CACHE', true);
+  assert.strictEqual(getFlag('CAD_USE_IR_CACHE'), true);
+});
+
+test('setFlag overrides a string flag', () => {
+  resetFlags();
+  setFlag('CAD_DIAGNOSTICS_DIR', '/tmp/diag');
+  assert.strictEqual(getFlag('CAD_DIAGNOSTICS_DIR'), '/tmp/diag');
+});
+
+test('setFlag(name, undefined) clears override', () => {
+  resetFlags();
+  setFlag('CAD_USE_IR_CACHE', true);
+  assert.strictEqual(getFlag('CAD_USE_IR_CACHE'), true);
+  setFlag('CAD_USE_IR_CACHE', undefined);
+  assert.strictEqual(getFlag('CAD_USE_IR_CACHE'), false);
+});
+
+test('resetFlags clears all overrides', () => {
+  setFlag('CAD_USE_IR_CACHE', true);
+  setFlag('CAD_STRICT_INVARIANTS', true);
+  resetFlags();
+  assert.strictEqual(getFlag('CAD_USE_IR_CACHE'), false);
+  assert.strictEqual(getFlag('CAD_STRICT_INVARIANTS'), false);
+});
+
+// ── Environment variable parsing (boolean) ──────────────────────────
+
+test('Env "1" → true for boolean flag', () => {
+  resetFlags();
+  const orig = process.env.CAD_USE_WASM_EVAL;
+  try {
+    process.env.CAD_USE_WASM_EVAL = '1';
+    assert.strictEqual(getFlag('CAD_USE_WASM_EVAL'), true);
+  } finally {
+    if (orig === undefined) delete process.env.CAD_USE_WASM_EVAL;
+    else process.env.CAD_USE_WASM_EVAL = orig;
+  }
+});
+
+test('Env "true" → true for boolean flag', () => {
+  resetFlags();
+  const orig = process.env.CAD_USE_WASM_EVAL;
+  try {
+    process.env.CAD_USE_WASM_EVAL = 'true';
+    assert.strictEqual(getFlag('CAD_USE_WASM_EVAL'), true);
+  } finally {
+    if (orig === undefined) delete process.env.CAD_USE_WASM_EVAL;
+    else process.env.CAD_USE_WASM_EVAL = orig;
+  }
+});
+
+test('Env "YES" → true for boolean flag (case-insensitive)', () => {
+  resetFlags();
+  const orig = process.env.CAD_USE_WASM_EVAL;
+  try {
+    process.env.CAD_USE_WASM_EVAL = 'YES';
+    assert.strictEqual(getFlag('CAD_USE_WASM_EVAL'), true);
+  } finally {
+    if (orig === undefined) delete process.env.CAD_USE_WASM_EVAL;
+    else process.env.CAD_USE_WASM_EVAL = orig;
+  }
+});
+
+test('Env "0" → false for boolean flag', () => {
+  resetFlags();
+  const orig = process.env.CAD_USE_WASM_EVAL;
+  try {
+    process.env.CAD_USE_WASM_EVAL = '0';
+    assert.strictEqual(getFlag('CAD_USE_WASM_EVAL'), false);
+  } finally {
+    if (orig === undefined) delete process.env.CAD_USE_WASM_EVAL;
+    else process.env.CAD_USE_WASM_EVAL = orig;
+  }
+});
+
+test('Env "random" → false for boolean flag', () => {
+  resetFlags();
+  const orig = process.env.CAD_USE_WASM_EVAL;
+  try {
+    process.env.CAD_USE_WASM_EVAL = 'random';
+    assert.strictEqual(getFlag('CAD_USE_WASM_EVAL'), false);
+  } finally {
+    if (orig === undefined) delete process.env.CAD_USE_WASM_EVAL;
+    else process.env.CAD_USE_WASM_EVAL = orig;
+  }
+});
+
+// ── Environment variable parsing (string) ───────────────────────────
+
+test('Env value used as-is for string flag', () => {
+  resetFlags();
+  const orig = process.env.CAD_IR_CACHE_MODE;
+  try {
+    process.env.CAD_IR_CACHE_MODE = 'memory';
+    assert.strictEqual(getFlag('CAD_IR_CACHE_MODE'), 'memory');
+  } finally {
+    if (orig === undefined) delete process.env.CAD_IR_CACHE_MODE;
+    else process.env.CAD_IR_CACHE_MODE = orig;
+  }
+});
+
+// ── Override wins over env ──────────────────────────────────────────
+
+test('Programmatic override takes precedence over env', () => {
+  const orig = process.env.CAD_USE_WASM_EVAL;
+  try {
+    process.env.CAD_USE_WASM_EVAL = '1';
+    resetFlags();
+    setFlag('CAD_USE_WASM_EVAL', false);
+    assert.strictEqual(getFlag('CAD_USE_WASM_EVAL'), false);
+  } finally {
+    resetFlags();
+    if (orig === undefined) delete process.env.CAD_USE_WASM_EVAL;
+    else process.env.CAD_USE_WASM_EVAL = orig;
+  }
+});
+
+// ── allFlags snapshot ───────────────────────────────────────────────
+
+test('allFlags() returns snapshot of all 8 flags', () => {
+  resetFlags();
+  const snap = allFlags();
+  assert.strictEqual(Object.keys(snap).length, 8);
+  assert.strictEqual(snap.CAD_USE_IR_CACHE, false);
+  assert.strictEqual(snap.CAD_IR_CACHE_MODE, 'none');
+  assert.strictEqual(snap.CAD_DIAGNOSTICS_DIR, '');
+});
+
+test('allFlags() snapshot is frozen', () => {
+  resetFlags();
+  const snap = allFlags();
+  assert.throws(() => { snap.CAD_USE_IR_CACHE = true; }, TypeError);
+});
+
+// ── flagDefinitions ─────────────────────────────────────────────────
+
+test('flagDefinitions() returns 8 entries', () => {
+  const defs = flagDefinitions();
+  assert.strictEqual(defs.length, 8);
+});
+
+test('flagDefinitions() entries have expected shape', () => {
+  const defs = flagDefinitions();
+  for (const d of defs) {
+    assert.ok(typeof d.name === 'string' && d.name.startsWith('CAD_'), `${d.name} starts with CAD_`);
+    assert.ok(d.type === 'boolean' || d.type === 'string', `${d.name} type`);
+    assert.ok(typeof d.description === 'string' && d.description.length > 0, `${d.name} description`);
+  }
+});
+
+test('flagDefinitions() entries are frozen', () => {
+  const defs = flagDefinitions();
+  assert.throws(() => { defs[0].name = 'X'; }, TypeError);
+});
+
+// ── Summary ─────────────────────────────────────────────────────────
+
+resetFlags(); // Clean up
+console.log(`\n${passed} passed, ${failed} failed`);
+if (failed > 0) process.exit(1);
