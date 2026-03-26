@@ -6,3 +6,5 @@ test-sketch.js
 out/*.png
 tests/samples/*.png
 tests/step/*.png
+playwright-report/
+test-results/
