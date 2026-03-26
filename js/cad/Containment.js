@@ -496,11 +496,13 @@ function _nearestBoundaryDistance(body, p, tol) {
         if (_pointInPolygon2D(pt2D, pts2D)) {
           // Check inner loops — if inside a hole, it's not on the face
           let inHole = false;
-          for (const innerLoop of face.innerLoops) {
-            const hPts = innerLoop.points();
-            if (hPts.length < 3) continue;
-            const { pts2D: hPts2D, pt2D: hPt2D } = _project3Dto2D(hPts, p, normal);
-            if (_pointInPolygon2D(hPt2D, hPts2D)) { inHole = true; break; }
+          if (face.innerLoops) {
+            for (const innerLoop of face.innerLoops) {
+              const hPts = innerLoop.points();
+              if (hPts.length < 3) continue;
+              const { pts2D: hPts2D, pt2D: hPt2D } = _project3Dto2D(hPts, p, normal);
+              if (_pointInPolygon2D(hPt2D, hPts2D)) { inHole = true; break; }
+            }
           }
           if (!inHole) {
             minDist = planeDist;
@@ -526,14 +528,16 @@ function _nearestBoundaryDistance(body, p, tol) {
       }
 
       // Check inner loops too
-      for (const innerLoop of face.innerLoops) {
-        const hPts = innerLoop.points();
-        for (const bp of hPts) {
-          const d2 = _dist3(p, bp);
-          if (d2 < minDist) { minDist = d2; detail = 'near-hole-vertex'; }
+      if (face.innerLoops) {
+        for (const innerLoop of face.innerLoops) {
+          const hPts = innerLoop.points();
+          for (const bp of hPts) {
+            const d2 = _dist3(p, bp);
+            if (d2 < minDist) { minDist = d2; detail = 'near-hole-vertex'; }
+          }
+          const d3 = _distanceToPolygonEdges(p, hPts);
+          if (d3 < minDist) { minDist = d3; detail = 'near-hole-edge'; }
         }
-        const d3 = _distanceToPolygonEdges(p, hPts);
-        if (d3 < minDist) { minDist = d3; detail = 'near-hole-edge'; }
       }
     }
   }

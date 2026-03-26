@@ -498,6 +498,11 @@ test('isPointOnFace: face with inner loop (hole)', () => {
   // Point outside face entirely
   const r3 = isPointOnFace(face, { x: 30, y: 30, z: 0 });
   assert.strictEqual(r3.on, false, `Expected on=false outside face, got ${r3.on} (${r3.detail})`);
+
+  // Point on hole edge boundary
+  const r4 = isPointOnFace(face, { x: 10, y: 8, z: 0 });
+  assert.strictEqual(r4.on, true, `Expected on=true for hole edge, got ${r4.on} (${r4.detail})`);
+  assert.strictEqual(r4.detail, 'on-hole-edge');
 });
 
 // ============================================================
