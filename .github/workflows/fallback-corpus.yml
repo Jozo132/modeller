@@ -1,0 +1,50 @@
+name: fallback-corpus
+
+on:
+  schedule:
+    - cron: '0 3 * * *' # Nightly at 03:00 UTC
+  push:
+    paths:
+      - 'js/cad/fallback/**'
+      - 'js/cad/BooleanKernel.js'
+      - 'tests/test-fallback-boolean.js'
+  pull_request:
+    paths:
+      - 'js/cad/fallback/**'
+      - 'js/cad/BooleanKernel.js'
+      - 'tests/test-fallback-boolean.js'
+
+permissions:
+  contents: read
+
+jobs:
+  fallback-corpus:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: npx asc assembly/index.ts --target debug && npx asc assembly/index.ts --target release
+      - name: Fallback boolean tests (disabled)
+        run: node tests/test-fallback-boolean.js
+      - name: Fallback boolean tests (enabled)
+        run: node tests/test-fallback-boolean.js
+        env:
+          CAD_ALLOW_DISCRETE_FALLBACK: '1'
+      - name: Boolean analytic regression (with fallback)
+        run: node tests/test-boolean-analytic.js
+        env:
+          CAD_ALLOW_DISCRETE_FALLBACK: '1'
+      - name: Boolean NURBS regression (with fallback)
+        run: node tests/test-boolean-nurbs.js
+        env:
+          CAD_ALLOW_DISCRETE_FALLBACK: '1'
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fallback-corpus-diagnostics
+          path: /tmp/fallback-diagnostics.json
+          if-no-files-found: ignore

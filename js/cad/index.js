@@ -74,3 +74,13 @@ export {
 } from './IntersectionValidator.js';
 export { HealingReport, healFragments } from './Healing.js';
 
+// --- Fallback lane ---
+export { ResultGrade, FallbackDiagnostics } from './fallback/FallbackDiagnostics.js';
+export {
+  FallbackTrigger, isFallbackEnabled, shouldTriggerFallback,
+  evaluateExactResult, wrapResult,
+} from './fallback/FallbackPolicy.js';
+export { buildConformingMesh, mergeVertexSpaces } from './fallback/ConformingSurfaceMesh.js';
+export { meshBooleanOp } from './fallback/MeshBoolean.js';
+export { reconstructAdjacency, extractFeatureEdges } from './fallback/AdjacencyReconstruction.js';
+

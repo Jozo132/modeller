@@ -14,6 +14,9 @@
 //   8. Sew vertices and edges within tolerance
 //   9. Validate shell orientation and closure
 //  10. Tessellate the result for rendering
+//
+// When CAD_ALLOW_DISCRETE_FALLBACK=1, a discrete fallback lane activates
+// on exact-path failure.  Fallback results are always explicitly flagged.
 
 import { intersectBodies } from './Intersections.js';
 import { splitFace, classifyFragment } from './FaceSplitter.js';
@@ -26,20 +29,101 @@ import { NurbsSurface } from './NurbsSurface.js';
 import { NurbsCurve } from './NurbsCurve.js';
 import { validateIntersections, validateFragments, validateFinalBody } from './IntersectionValidator.js';
 import { healFragments } from './Healing.js';
+import { ResultGrade, FallbackDiagnostics } from './fallback/FallbackDiagnostics.js';
+import {
+  isFallbackEnabled, shouldTriggerFallback, evaluateExactResult,
+  wrapResult, FallbackTrigger,
+} from './fallback/FallbackPolicy.js';
+import { meshBooleanOp } from './fallback/MeshBoolean.js';
 
 /**
  * Perform an exact boolean operation on two TopoBody operands.
+ *
+ * When CAD_ALLOW_DISCRETE_FALLBACK=1 and the exact path fails invariants,
+ * the discrete fallback lane activates automatically.  Fallback results
+ * carry resultGrade === 'fallback' and _isFallback === true.
  *
  * @param {import('./BRepTopology.js').TopoBody} bodyA
  * @param {import('./BRepTopology.js').TopoBody} bodyB
  * @param {'union'|'subtract'|'intersect'} operation
  * @param {import('./Tolerance.js').Tolerance} [tol]
  * @returns {{
- *   body: import('./BRepTopology.js').TopoBody,
- *   mesh: {vertices: Array, faces: Array, edges: Array}
+ *   body: import('./BRepTopology.js').TopoBody|null,
+ *   mesh: {vertices: Array, faces: Array, edges: Array},
+ *   diagnostics: Object,
+ *   resultGrade?: string,
+ *   _isFallback?: boolean,
+ *   fallbackDiagnostics?: Object,
  * }}
  */
 export function exactBooleanOp(bodyA, bodyB, operation, tol = DEFAULT_TOLERANCE) {
+  // Try exact path first; catch unexpected errors to route to fallback
+  try {
+    const result = _exactBooleanOpInner(bodyA, bodyB, operation, tol);
+
+    // Evaluate whether exact result has concerning diagnostics
+    const evaluation = evaluateExactResult(result.diagnostics);
+    if (evaluation.shouldFallback && shouldTriggerFallback(evaluation.trigger)) {
+      return _runFallback(bodyA, bodyB, operation, evaluation.trigger, evaluation.stage, result.diagnostics);
+    }
+
+    // Exact path succeeded — return with explicit grade
+    return wrapResult(result, ResultGrade.EXACT, FallbackDiagnostics.exact(result.diagnostics));
+  } catch (err) {
+    // Uncaught exception in exact path — route to fallback if enabled
+    if (shouldTriggerFallback(FallbackTrigger.UNCAUGHT_EXCEPTION)) {
+      return _runFallback(bodyA, bodyB, operation, FallbackTrigger.UNCAUGHT_EXCEPTION, 'exact_pipeline', { error: err.message });
+    }
+    // Fallback not enabled — rethrow
+    throw err;
+  }
+}
+
+/**
+ * Run the discrete fallback lane.
+ * @private
+ */
+function _runFallback(bodyA, bodyB, operation, trigger, stage, exactDiagnostics) {
+  try {
+    const fbResult = meshBooleanOp(bodyA, bodyB, operation);
+    const diag = FallbackDiagnostics.fallback(
+      trigger, stage,
+      {
+        meshValidation: fbResult.validation,
+        adjacency: {
+          boundaryEdgeCount: fbResult.adjacency.boundaryEdgeCount,
+          nonManifoldEdgeCount: fbResult.adjacency.nonManifoldEdgeCount,
+          isManifold: fbResult.adjacency.isManifold,
+          isClosed: fbResult.adjacency.isClosed,
+          eulerCharacteristic: fbResult.adjacency.eulerCharacteristic,
+        },
+        manifoldRepairAttempted: fbResult.manifoldRepairAttempted,
+      },
+      exactDiagnostics,
+    );
+    return wrapResult(
+      { body: null, mesh: fbResult.mesh, diagnostics: exactDiagnostics },
+      ResultGrade.FALLBACK,
+      diag,
+    );
+  } catch (fbErr) {
+    // Both exact and fallback failed
+    const diag = FallbackDiagnostics.failed(
+      trigger, stage, exactDiagnostics,
+    );
+    return wrapResult(
+      { body: null, mesh: { vertices: [], faces: [], edges: [] }, diagnostics: exactDiagnostics },
+      ResultGrade.FAILED,
+      diag,
+    );
+  }
+}
+
+/**
+ * Inner exact boolean pipeline (original logic, extracted for fallback wrapping).
+ * @private
+ */
+function _exactBooleanOpInner(bodyA, bodyB, operation, tol) {
   if (_isPlanarBody(bodyA) && _isPlanarBody(bodyB)) {
     const planar = _exactPlanarBoolean(bodyA, bodyB, operation, tol);
     if (planar) return planar;
