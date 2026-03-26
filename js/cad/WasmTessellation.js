@@ -73,12 +73,12 @@ function flattenControlPoints3D(controlPoints) {
 
 /**
  * Tessellate a NurbsCurve into a polyline using WASM.
- * Falls back to null if WASM returns -1 (buffer capacity exceeded),
- * allowing the caller to use the JS fallback path.
+ * Returns null if WASM is unavailable or returns -1 (buffer capacity exceeded),
+ * signaling the caller to use the JS fallback path.
  *
  * @param {import('./NurbsCurve.js').NurbsCurve} curve
  * @param {number} segments - Number of line segments
- * @returns {Array<{x:number, y:number, z:number}>|null} Array of points, or null on failure
+ * @returns {Array<{x:number, y:number, z:number}>|null} Array of points, or null if WASM unavailable/exceeded
  */
 function tessellateCurve(curve, segments = 32) {
   if (!wasmModule) return null;
@@ -140,8 +140,8 @@ function evaluateCurve(curve, t) {
 
 /**
  * Tessellate a NurbsSurface into a triangle mesh using WASM.
- * Falls back to null if WASM returns -1 (buffer capacity exceeded),
- * allowing the caller to use the JS fallback path.
+ * Returns null if WASM is unavailable or returns -1 (buffer capacity exceeded),
+ * signaling the caller to use the JS fallback path.
  *
  * @param {import('./NurbsSurface.js').NurbsSurface} surface
  * @param {number} segsU - Subdivisions in u-direction
