@@ -23,6 +23,9 @@ on:
       - 'tests/test-wasm-tessellation.js'
       - 'tests/test-nurbs.js'
 
+permissions:
+  contents: read
+
 jobs:
   wasm-eval-tests:
     runs-on: ubuntu-latest
