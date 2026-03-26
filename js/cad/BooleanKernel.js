@@ -35,6 +35,7 @@ import {
   wrapResult, FallbackTrigger,
 } from './fallback/FallbackPolicy.js';
 import { meshBooleanOp } from './fallback/MeshBoolean.js';
+import { validateBooleanResult } from './BooleanInvariantValidator.js';
 
 /**
  * Perform an exact boolean operation on two TopoBody operands.
@@ -182,6 +183,14 @@ function _exactBooleanOpInner(bodyA, bodyB, operation, tol) {
   // Step 9: Validate final body — attach diagnostics
   const bodyValidation = validateFinalBody(resultBody, tol);
   diagnostics.finalBodyValidation = bodyValidation.toJSON();
+
+  // Step 9b: Run BooleanInvariantValidator — comprehensive post-condition check
+  const invariantValidation = validateBooleanResult(resultBody, {
+    operation,
+    tolerance: tol,
+    expectClosed: true,
+  });
+  diagnostics.invariantValidation = invariantValidation.toJSON();
 
   // Step 10: Tessellate for rendering
   const mesh = tessellateBody(resultBody);

@@ -73,6 +73,7 @@ export {
   IntersectionValidation, validateIntersections, validateFragments, validateFinalBody,
 } from './IntersectionValidator.js';
 export { HealingReport, healFragments } from './Healing.js';
+export { BooleanInvariantResult, validateBooleanResult } from './BooleanInvariantValidator.js';
 
 // --- Fallback lane ---
 export { ResultGrade, FallbackDiagnostics } from './fallback/FallbackDiagnostics.js';
