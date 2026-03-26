@@ -1,0 +1,54 @@
+name: kernel-invariants
+
+on:
+  push:
+    paths:
+      - 'js/cad/BooleanKernel.js'
+      - 'js/cad/IntersectionValidator.js'
+      - 'js/cad/Healing.js'
+      - 'js/cad/ShellBuilder.js'
+      - 'js/cad/FaceSplitter.js'
+      - 'js/cad/Intersections.js'
+      - 'js/cad/SurfaceSurfaceIntersect.js'
+      - 'tests/test-intersection-validator.js'
+      - 'tests/test-kernel-invariants.js'
+      - 'tests/step/**'
+  pull_request:
+    paths:
+      - 'js/cad/BooleanKernel.js'
+      - 'js/cad/IntersectionValidator.js'
+      - 'js/cad/Healing.js'
+      - 'js/cad/ShellBuilder.js'
+      - 'js/cad/FaceSplitter.js'
+      - 'js/cad/Intersections.js'
+      - 'js/cad/SurfaceSurfaceIntersect.js'
+      - 'tests/test-intersection-validator.js'
+      - 'tests/test-kernel-invariants.js'
+      - 'tests/step/**'
+
+permissions:
+  contents: read
+
+jobs:
+  kernel-invariants:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: npx asc assembly/index.ts --target debug && npx asc assembly/index.ts --target release
+      - name: Intersection validator tests
+        run: node tests/test-intersection-validator.js
+      - name: Boolean analytic regression
+        run: node tests/test-boolean-analytic.js
+      - name: Kernel invariants on STEP corpus
+        run: node tests/test-kernel-invariants.js
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-invariant-diagnostics
+          path: /tmp/kernel-invariant-diagnostics.json
+          if-no-files-found: ignore
