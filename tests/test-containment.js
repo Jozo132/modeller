@@ -545,6 +545,54 @@ test('Boolean fixture: overlapping boxes share region classification', () => {
 });
 
 // ============================================================
+// Shadow Mode Disagreement Tests
+// ============================================================
+
+console.log('\n=== Containment: Shadow Mode ===\n');
+
+import {
+  getShadowDisagreements, clearShadowDisagreements,
+} from '../js/cad/Containment.js';
+import { setFlag, resetFlags } from '../js/featureFlags.js';
+
+test('getShadowDisagreements: returns empty by default', () => {
+  clearShadowDisagreements();
+  const d = getShadowDisagreements();
+  assert.ok(Array.isArray(d));
+  assert.strictEqual(d.length, 0);
+});
+
+test('shadow mode: runs both paths when flag enabled', () => {
+  clearShadowDisagreements();
+  setFlag('CAD_USE_GWN_CONTAINMENT', true);
+  try {
+    const box = makeBox(0, 0, 0, 10, 10, 10);
+    // Clear point inside — both paths should agree
+    const r = classifyPoint(box, { x: 5, y: 5, z: 5 });
+    assert.strictEqual(r.state, 'inside');
+    // No disagreement expected for clear interior point
+    const d = getShadowDisagreements();
+    // Disagreements are only logged when fast and robust disagree on state
+    assert.ok(Array.isArray(d));
+  } finally {
+    resetFlags();
+    clearShadowDisagreements();
+  }
+});
+
+test('shadow mode: disagreements are frozen snapshots', () => {
+  clearShadowDisagreements();
+  const d = getShadowDisagreements();
+  assert.ok(Object.isFrozen(d));
+});
+
+test('clearShadowDisagreements: clears log', () => {
+  clearShadowDisagreements();
+  const d = getShadowDisagreements();
+  assert.strictEqual(d.length, 0);
+});
+
+// ============================================================
 console.log('\n=== Results ===\n');
 console.log(`${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

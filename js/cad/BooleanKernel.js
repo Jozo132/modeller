@@ -36,6 +36,7 @@ import {
 } from './fallback/FallbackPolicy.js';
 import { meshBooleanOp } from './fallback/MeshBoolean.js';
 import { validateBooleanResult } from './BooleanInvariantValidator.js';
+import { getFlag } from '../featureFlags.js';
 
 /**
  * Perform an exact boolean operation on two TopoBody operands.
@@ -85,6 +86,7 @@ export function exactBooleanOp(bodyA, bodyB, operation, tol = DEFAULT_TOLERANCE)
  * @private
  */
 function _runFallback(bodyA, bodyB, operation, trigger, stage, exactDiagnostics) {
+  _writeDiagnosticArtifact(operation, { trigger, stage, exactDiagnostics, path: 'fallback' });
   try {
     const fbResult = meshBooleanOp(bodyA, bodyB, operation);
     const diag = FallbackDiagnostics.fallback(
@@ -109,6 +111,7 @@ function _runFallback(bodyA, bodyB, operation, trigger, stage, exactDiagnostics)
     );
   } catch (fbErr) {
     // Both exact and fallback failed
+    _writeDiagnosticArtifact(operation, { trigger, stage, exactDiagnostics, path: 'failed', error: fbErr.message });
     const diag = FallbackDiagnostics.failed(
       trigger, stage, exactDiagnostics,
     );
@@ -192,8 +195,22 @@ function _exactBooleanOpInner(bodyA, bodyB, operation, tol) {
   });
   diagnostics.invariantValidation = invariantValidation.toJSON();
 
+  // Step 9c: Fail closed when strict invariants are enabled
+  if (getFlag('CAD_STRICT_INVARIANTS') && !invariantValidation.isValid) {
+    _writeDiagnosticArtifact(operation, diagnostics);
+    const err = new Error(
+      `Boolean invariant violation (strict mode): ${invariantValidation.diagnostics.length} issue(s) detected`
+    );
+    err.diagnostics = diagnostics;
+    throw err;
+  }
+
   // Step 10: Tessellate for rendering
   const mesh = tessellateBody(resultBody);
+
+  // Step 11: Compute content hashes for auditability
+  const hashes = _computeBodyHashes(bodyA, bodyB, resultBody);
+  diagnostics.hashes = hashes;
 
   return { body: resultBody, mesh, diagnostics };
 }
@@ -638,4 +655,95 @@ export function hasExactTopology(body) {
     }
   }
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// Content hashing for auditability
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute a deterministic content hash for a TopoBody.
+ * Uses face/edge/vertex counts and vertex coordinate sums for a lightweight
+ * fingerprint (not cryptographic — just for deduplication / auditing).
+ *
+ * @param {import('./BRepTopology.js').TopoBody|null} body
+ * @returns {string} hex hash string
+ */
+function _hashBody(body) {
+  if (!body || !body.shells) return '0';
+  let h = 0x811c9dc5; // FNV-1a offset
+  const faces = body.faces();
+  h = _fnv1aStep(h, faces.length);
+  for (const face of faces) {
+    if (!face.outerLoop) continue;
+    const pts = face.outerLoop.points();
+    h = _fnv1aStep(h, pts.length);
+    for (const p of pts) {
+      h = _fnv1aStep(h, _quantize(p.x));
+      h = _fnv1aStep(h, _quantize(p.y));
+      h = _fnv1aStep(h, _quantize(p.z));
+    }
+  }
+  return (h >>> 0).toString(16).padStart(8, '0');
+}
+
+function _fnv1aStep(h, val) {
+  h ^= (val & 0xffff);
+  h = Math.imul(h, 0x01000193);
+  h ^= ((val >>> 16) & 0xffff);
+  h = Math.imul(h, 0x01000193);
+  return h;
+}
+
+function _quantize(v) {
+  // Quantize to 6 decimal places for determinism
+  return Math.round(v * 1e6) | 0;
+}
+
+function _computeBodyHashes(bodyA, bodyB, resultBody) {
+  return {
+    operandA: _hashBody(bodyA),
+    operandB: _hashBody(bodyB),
+    result: _hashBody(resultBody),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostic JSON artifact writer
+// ---------------------------------------------------------------------------
+
+/**
+ * Write a diagnostic JSON artifact to CAD_DIAGNOSTICS_DIR when configured.
+ * Fire-and-forget — never throws.
+ *
+ * @param {string} operation
+ * @param {Object} diagnostics
+ */
+function _writeDiagnosticArtifact(operation, diagnostics) {
+  try {
+    const dir = getFlag('CAD_DIAGNOSTICS_DIR');
+    if (!dir) return;
+    // Dynamic import to avoid hard dependency in browser bundles
+    const fs = _requireFs();
+    if (!fs) return;
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const filename = `boolean-${operation}-${timestamp}.json`;
+    const filepath = dir.endsWith('/') ? dir + filename : dir + '/' + filename;
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(filepath, JSON.stringify(diagnostics, null, 2));
+  } catch {
+    // Silently ignored: browser or restricted environment
+  }
+}
+
+function _requireFs() {
+  try {
+    if (typeof process !== 'undefined' && process.versions && process.versions.node) {
+      // eslint-disable-next-line no-eval
+      return eval("require('fs')");
+    }
+  } catch {
+    // Not available
+  }
+  return null;
 }

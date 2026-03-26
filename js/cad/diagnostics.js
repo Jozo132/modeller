@@ -24,6 +24,10 @@ export class BooleanResult {
    * @param {Object}   [opts.mesh]          Tessellated mesh (opaque)
    * @param {Object}   [opts.diagnostics]   Pipeline diagnostics (opaque)
    * @param {string[]} [opts.warnings]
+   * @param {Object}   [opts.hashes]        Operand/result content hashes
+   * @param {string}   [opts.hashes.operandA]
+   * @param {string}   [opts.hashes.operandB]
+   * @param {string}   [opts.hashes.result]
    */
   constructor(opts = {}) {
     /** @type {'exact'|'fallback'|'failed'} */
@@ -40,6 +44,8 @@ export class BooleanResult {
     this.diagnostics = opts.diagnostics ?? null;
     /** @type {string[]} */
     this.warnings = opts.warnings ?? [];
+    /** @type {{operandA?: string, operandB?: string, result?: string}|null} */
+    this.hashes = opts.hashes ?? null;
   }
 
   toJSON() {
@@ -49,6 +55,7 @@ export class BooleanResult {
       operation: this.operation,
       warnings: this.warnings,
       diagnostics: this.diagnostics,
+      hashes: this.hashes,
     };
   }
 }
@@ -102,13 +109,13 @@ export class TessellationResult {
 export class ContainmentResult {
   /**
    * @param {Object} opts
-   * @param {'inside'|'outside'|'boundary'|'uncertain'} [opts.state='uncertain']
+   * @param {'inside'|'outside'|'on'|'boundary'|'uncertain'} [opts.state='uncertain']
    * @param {number}   [opts.confidence=0]   0..1
    * @param {string}   [opts.detail]         Human-readable extra info
    * @param {string}   [opts.method]         'analytic' | 'gwn' | 'rayCast'
    */
   constructor(opts = {}) {
-    /** @type {'inside'|'outside'|'boundary'|'uncertain'} */
+    /** @type {'inside'|'outside'|'on'|'boundary'|'uncertain'} */
     this.state = opts.state ?? 'uncertain';
     /** @type {number} */
     this.confidence = opts.confidence ?? 0;

@@ -56,6 +56,7 @@ export { splitFace, classifyPointOnFace, classifyFragment } from './FaceSplitter
 export {
   classifyPoint, classifyPoints, classifyFragment as containmentClassifyFragment,
   isPointOnFace, maybeResolveUncertain,
+  getShadowDisagreements, clearShadowDisagreements,
 } from './Containment.js';
 export { stitchFaces, buildBody } from './ShellBuilder.js';
 export { exactBooleanOp, hasExactTopology } from './BooleanKernel.js';
