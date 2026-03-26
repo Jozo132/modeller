@@ -4,6 +4,5 @@ node_modules/
 test.html
 test-sketch.js
 out/*.png
-package-lock.json
 tests/samples/*.png
 tests/step/*.png
