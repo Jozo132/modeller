@@ -13,6 +13,7 @@
 // Used by:  BooleanKernel, FaceSplitter, picking, feature selection, validation
 
 import { DEFAULT_TOLERANCE } from './Tolerance.js';
+import { GeometryEvaluator } from './GeometryEvaluator.js';
 
 // ---------------------------------------------------------------------------
 // Tolerance constants — centralized for determinism
@@ -691,10 +692,10 @@ function _faceNormal(face, boundaryPts) {
     n = _polyNormal(boundaryPts);
   }
   if (!n && face.surface) {
-    n = face.surface.normal(
+    n = GeometryEvaluator.evalSurface(face.surface,
       (face.surface.uMin + face.surface.uMax) / 2,
       (face.surface.vMin + face.surface.vMax) / 2,
-    );
+    ).n;
   }
   if (!n) n = { x: 0, y: 0, z: 1 };
   if (face.sameSense === false) {
@@ -743,7 +744,7 @@ function _sampleInteriorPoint(face) {
   if (face.surface) {
     const uMid = (face.surface.uMin + face.surface.uMax) / 2;
     const vMid = (face.surface.vMin + face.surface.vMax) / 2;
-    const point = face.surface.evaluate(uMid, vMid);
+    const point = GeometryEvaluator.evalSurface(face.surface, uMid, vMid).p;
     const n = _faceNormal(face, null);
     return {
       x: point.x + n.x * 1e-5,

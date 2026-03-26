@@ -10,6 +10,7 @@ import { NurbsCurve } from './NurbsCurve.js';
 import { TopoFace, TopoLoop, TopoCoEdge, TopoEdge, TopoVertex, SurfaceType } from './BRepTopology.js';
 import { DEFAULT_TOLERANCE } from './Tolerance.js';
 import { classifyFragment as _containmentClassifyFragment } from './Containment.js';
+import { GeometryEvaluator } from './GeometryEvaluator.js';
 
 /**
  * Split a face by a set of intersection curves.
@@ -77,8 +78,8 @@ function _splitPlanarFaceByCurve(face, curve, tol) {
   if (boundary3D.length < 3) return [face];
 
   const planeNormal = _faceNormal(face);
-  const lineStart = curve.evaluate(curve.uMin);
-  const lineEnd = curve.evaluate(curve.uMax);
+  const lineStart = GeometryEvaluator.evalCurve(curve, curve.uMin).p;
+  const lineEnd = GeometryEvaluator.evalCurve(curve, curve.uMax).p;
   const projected = _project3Dto2D(boundary3D, lineStart, planeNormal, lineEnd);
   const polygon2D = projected.pts2D;
   const line2D0 = projected.pt2D;
@@ -137,8 +138,8 @@ function _findBoundaryIntersections(face, curve, paramsOnFace, tol) {
   const results = [];
 
   // Check if start/end of curve are on the face boundary
-  const startPt = curve.evaluate(curve.uMin);
-  const endPt = curve.evaluate(curve.uMax);
+  const startPt = GeometryEvaluator.evalCurve(curve, curve.uMin).p;
+  const endPt = GeometryEvaluator.evalCurve(curve, curve.uMax).p;
 
   results.push({ point: startPt, param: curve.uMin });
   results.push({ point: endPt, param: curve.uMax });

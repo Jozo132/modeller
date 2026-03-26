@@ -2,8 +2,11 @@
 //
 // Computes intersections between a NURBS curve and a NURBS surface.
 // Uses a marching approach with Newton–Raphson refinement.
+//
+// All evaluation goes through GeometryEvaluator for WASM/JS parity.
 
 import { DEFAULT_TOLERANCE } from './Tolerance.js';
+import { GeometryEvaluator } from './GeometryEvaluator.js';
 
 /**
  * Compute intersections between a NURBS curve and a NURBS surface.
@@ -23,7 +26,7 @@ export function curveSurfaceIntersect(curve, surface, tol = DEFAULT_TOLERANCE) {
 
   for (let i = 0; i <= numSamples; i++) {
     const t = curve.uMin + (i / numSamples) * (curve.uMax - curve.uMin);
-    const pt = curve.evaluate(t);
+    const pt = GeometryEvaluator.evalCurve(curve, t).p;
 
     // Find closest point on surface by sampling
     const { u, v, dist } = _closestSurfacePoint(surface, pt, 16);
@@ -36,8 +39,8 @@ export function curveSurfaceIntersect(curve, surface, tol = DEFAULT_TOLERANCE) {
   for (const cand of candidates) {
     const refined = _newtonCurveSurface(curve, cand.t, surface, cand.u, cand.v, eps);
     if (refined) {
-      const pt = curve.evaluate(refined.t);
-      const sp = surface.evaluate(refined.u, refined.v);
+      const pt = GeometryEvaluator.evalCurve(curve, refined.t).p;
+      const sp = GeometryEvaluator.evalSurface(surface, refined.u, refined.v).p;
       const dx = pt.x - sp.x, dy = pt.y - sp.y, dz = pt.z - sp.z;
       const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
       if (dist < eps * 100) {
@@ -65,7 +68,7 @@ function _closestSurfacePoint(surface, point, samples) {
     const u = surface.uMin + (i / samples) * (surface.uMax - surface.uMin);
     for (let j = 0; j <= samples; j++) {
       const v = surface.vMin + (j / samples) * (surface.vMax - surface.vMin);
-      const sp = surface.evaluate(u, v);
+      const sp = GeometryEvaluator.evalSurface(surface, u, v).p;
       const dx = sp.x - point.x, dy = sp.y - point.y, dz = sp.z - point.z;
       const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
       if (dist < bestDist) {
@@ -85,40 +88,18 @@ function _closestSurfacePoint(surface, point, samples) {
  */
 function _newtonCurveSurface(curve, t, surface, u, v, eps) {
   for (let iter = 0; iter < 30; iter++) {
-    const pc = curve.evaluate(t);
-    const ps = surface.evaluate(u, v);
+    const rC = GeometryEvaluator.evalCurve(curve, t);
+    const rS = GeometryEvaluator.evalSurface(surface, u, v);
+    const pc = rC.p;
+    const ps = rS.p;
     const diff = { x: pc.x - ps.x, y: pc.y - ps.y, z: pc.z - ps.z };
     const dist = Math.sqrt(diff.x * diff.x + diff.y * diff.y + diff.z * diff.z);
     if (dist < eps) return { t, u, v };
 
-    // Derivatives
-    const dCdt = curve.derivative(t);
-
-    const uRange = surface.uMax - surface.uMin;
-    const vRange = surface.vMax - surface.vMin;
-    const epsU = uRange * 1e-6;
-    const epsV = vRange * 1e-6;
-
-    const uLo = Math.max(surface.uMin, u - epsU);
-    const uHi = Math.min(surface.uMax, u + epsU);
-    const vLo = Math.max(surface.vMin, v - epsV);
-    const vHi = Math.min(surface.vMax, v + epsV);
-
-    const pULo = surface.evaluate(uLo, v);
-    const pUHi = surface.evaluate(uHi, v);
-    const dSdu = {
-      x: (pUHi.x - pULo.x) / (uHi - uLo || 1e-14),
-      y: (pUHi.y - pULo.y) / (uHi - uLo || 1e-14),
-      z: (pUHi.z - pULo.z) / (uHi - uLo || 1e-14),
-    };
-
-    const pVLo = surface.evaluate(u, vLo);
-    const pVHi = surface.evaluate(u, vHi);
-    const dSdv = {
-      x: (pVHi.x - pVLo.x) / (vHi - vLo || 1e-14),
-      y: (pVHi.y - pVLo.y) / (vHi - vLo || 1e-14),
-      z: (pVHi.z - pVLo.z) / (vHi - vLo || 1e-14),
-    };
+    // Analytical derivatives from GeometryEvaluator
+    const dCdt = rC.d1;
+    const dSdu = rS.du;
+    const dSdv = rS.dv;
 
     // Solve 3x3: [dCdt | -dSdu | -dSdv] * [dt, du, dv]^T = -diff
     // Using least-squares 3x3 approach
