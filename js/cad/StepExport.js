@@ -29,6 +29,13 @@ export function exportSTEP(body, opts = {}) {
   if (opts._isFallback || (body && body._isFallback)) {
     throw new Error('STEP export is not supported for fallback (discrete) solids. Fallback results are mesh-only representations.');
   }
+  // Also block when resultGrade explicitly marks a non-exact result
+  if (opts.resultGrade && opts.resultGrade !== 'exact') {
+    throw new Error(`STEP export is not supported for results with grade '${opts.resultGrade}'. Only exact results may be exported as STEP.`);
+  }
+  if (body && body.resultGrade && body.resultGrade !== 'exact') {
+    throw new Error(`STEP export is not supported for results with grade '${body.resultGrade}'. Only exact results may be exported as STEP.`);
+  }
   const filename = opts.filename ?? 'export';
   const author = opts.author ?? 'CAD Modeller';
   const schema = opts.schema ?? 'AUTOMOTIVE_DESIGN';

@@ -4,6 +4,11 @@
 // the discrete fallback lane when the exact boolean pipeline fails.
 //
 // Gated behind CAD_ALLOW_DISCRETE_FALLBACK=1 environment variable.
+//
+// Operation policy modes:
+//   - 'exact-only':      Never fall back; throw on exact failure.
+//   - 'allow-fallback':  Attempt exact first; fall back on failure (default when enabled).
+//   - 'force-fallback':  Skip exact path; always use discrete fallback.
 
 import { ResultGrade, FallbackDiagnostics } from './FallbackDiagnostics.js';
 
@@ -22,6 +27,17 @@ export const FallbackTrigger = Object.freeze({
 });
 
 /**
+ * Operation policy modes that control fallback routing.
+ * @readonly
+ * @enum {string}
+ */
+export const OperationPolicy = Object.freeze({
+  EXACT_ONLY: 'exact-only',
+  ALLOW_FALLBACK: 'allow-fallback',
+  FORCE_FALLBACK: 'force-fallback',
+});
+
+/**
  * Check whether discrete fallback is enabled via environment variable.
  * @returns {boolean}
  */
@@ -37,15 +53,35 @@ export function isFallbackEnabled() {
 }
 
 /**
+ * Resolve the effective operation policy.
+ *
+ * Priority: explicit policy parameter → environment variable → 'exact-only'.
+ *
+ * @param {string} [policy] - One of OperationPolicy values, or undefined
+ * @returns {string} Resolved OperationPolicy value
+ */
+export function resolvePolicy(policy) {
+  const validPolicies = Object.values(OperationPolicy);
+  if (policy && validPolicies.includes(policy)) return policy;
+  if (isFallbackEnabled()) return OperationPolicy.ALLOW_FALLBACK;
+  return OperationPolicy.EXACT_ONLY;
+}
+
+/**
  * Evaluate whether a given failure reason should trigger the fallback lane.
  *
  * @param {string} triggerReason - One of FallbackTrigger values
  * @param {Object} [opts]
  * @param {string[]} [opts.allowlist] - If provided, only these triggers are allowed
+ * @param {string}   [opts.policy]    - OperationPolicy value (overrides env check)
  * @returns {boolean}
  */
 export function shouldTriggerFallback(triggerReason, opts = {}) {
-  if (!isFallbackEnabled()) return false;
+  const policy = resolvePolicy(opts.policy);
+  if (policy === OperationPolicy.EXACT_ONLY) return false;
+  if (policy === OperationPolicy.FORCE_FALLBACK) return true;
+  // allow-fallback: check env gate + valid trigger
+  if (!isFallbackEnabled() && !opts.policy) return false;
   const validTriggers = Object.values(FallbackTrigger);
   if (!validTriggers.includes(triggerReason)) return false;
   if (opts.allowlist && !opts.allowlist.includes(triggerReason)) return false;

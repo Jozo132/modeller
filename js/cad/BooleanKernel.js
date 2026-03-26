@@ -32,7 +32,7 @@ import { healFragments } from './Healing.js';
 import { ResultGrade, FallbackDiagnostics } from './fallback/FallbackDiagnostics.js';
 import {
   isFallbackEnabled, shouldTriggerFallback, evaluateExactResult,
-  wrapResult, FallbackTrigger,
+  wrapResult, FallbackTrigger, OperationPolicy, resolvePolicy,
 } from './fallback/FallbackPolicy.js';
 import { meshBooleanOp } from './fallback/MeshBoolean.js';
 import { validateBooleanResult } from './BooleanInvariantValidator.js';
@@ -45,10 +45,17 @@ import { getFlag } from '../featureFlags.js';
  * the discrete fallback lane activates automatically.  Fallback results
  * carry resultGrade === 'fallback' and _isFallback === true.
  *
+ * The optional `opts.policy` parameter controls fallback routing:
+ *   - 'exact-only':      Never fall back; throw on exact failure.
+ *   - 'allow-fallback':  Attempt exact first; fall back on failure (default when enabled).
+ *   - 'force-fallback':  Skip exact path; always use discrete fallback.
+ *
  * @param {import('./BRepTopology.js').TopoBody} bodyA
  * @param {import('./BRepTopology.js').TopoBody} bodyB
  * @param {'union'|'subtract'|'intersect'} operation
  * @param {import('./Tolerance.js').Tolerance} [tol]
+ * @param {Object} [opts]
+ * @param {string} [opts.policy] - One of OperationPolicy values
  * @returns {{
  *   body: import('./BRepTopology.js').TopoBody|null,
  *   mesh: {vertices: Array, faces: Array, edges: Array},
@@ -58,25 +65,32 @@ import { getFlag } from '../featureFlags.js';
  *   fallbackDiagnostics?: Object,
  * }}
  */
-export function exactBooleanOp(bodyA, bodyB, operation, tol = DEFAULT_TOLERANCE) {
+export function exactBooleanOp(bodyA, bodyB, operation, tol = DEFAULT_TOLERANCE, opts = {}) {
+  const policy = resolvePolicy(opts.policy);
+
+  // force-fallback: skip exact path entirely
+  if (policy === OperationPolicy.FORCE_FALLBACK) {
+    return _runFallback(bodyA, bodyB, operation, 'force_fallback', 'policy', {}, policy);
+  }
+
   // Try exact path first; catch unexpected errors to route to fallback
   try {
     const result = _exactBooleanOpInner(bodyA, bodyB, operation, tol);
 
     // Evaluate whether exact result has concerning diagnostics
     const evaluation = evaluateExactResult(result.diagnostics);
-    if (evaluation.shouldFallback && shouldTriggerFallback(evaluation.trigger)) {
-      return _runFallback(bodyA, bodyB, operation, evaluation.trigger, evaluation.stage, result.diagnostics);
+    if (evaluation.shouldFallback && shouldTriggerFallback(evaluation.trigger, { policy })) {
+      return _runFallback(bodyA, bodyB, operation, evaluation.trigger, evaluation.stage, result.diagnostics, policy);
     }
 
     // Exact path succeeded — return with explicit grade
     return wrapResult(result, ResultGrade.EXACT, FallbackDiagnostics.exact(result.diagnostics));
   } catch (err) {
-    // Uncaught exception in exact path — route to fallback if enabled
-    if (shouldTriggerFallback(FallbackTrigger.UNCAUGHT_EXCEPTION)) {
-      return _runFallback(bodyA, bodyB, operation, FallbackTrigger.UNCAUGHT_EXCEPTION, 'exact_pipeline', { error: err.message });
+    // Uncaught exception in exact path — route to fallback if policy allows
+    if (shouldTriggerFallback(FallbackTrigger.UNCAUGHT_EXCEPTION, { policy })) {
+      return _runFallback(bodyA, bodyB, operation, FallbackTrigger.UNCAUGHT_EXCEPTION, 'exact_pipeline', { error: err.message }, policy);
     }
-    // Fallback not enabled — rethrow
+    // exact-only or fallback not enabled — rethrow
     throw err;
   }
 }
@@ -85,8 +99,8 @@ export function exactBooleanOp(bodyA, bodyB, operation, tol = DEFAULT_TOLERANCE)
  * Run the discrete fallback lane.
  * @private
  */
-function _runFallback(bodyA, bodyB, operation, trigger, stage, exactDiagnostics) {
-  _writeDiagnosticArtifact(operation, { trigger, stage, exactDiagnostics, path: 'fallback' });
+function _runFallback(bodyA, bodyB, operation, trigger, stage, exactDiagnostics, policy) {
+  _writeDiagnosticArtifact(operation, { trigger, stage, exactDiagnostics, path: 'fallback', policy });
   try {
     const fbResult = meshBooleanOp(bodyA, bodyB, operation);
     const diag = FallbackDiagnostics.fallback(
