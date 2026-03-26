@@ -9,6 +9,7 @@
 
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join, basename } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 import { canonicalize, snapFloat, snapPoint } from '../packages/ir/canonicalize.js';
@@ -66,7 +67,7 @@ function assertClose(a, b, eps, msg) {
 }
 
 // ── Artifact output directory ──
-const ARTIFACT_DIR = '/tmp/cbrep-test-artifacts';
+const ARTIFACT_DIR = join(tmpdir(), 'cbrep-test-artifacts');
 try { mkdirSync(ARTIFACT_DIR, { recursive: true }); } catch {}
 
 function writeArtifact(name, buf) {

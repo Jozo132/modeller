@@ -443,8 +443,10 @@ function _extractTopoBody(part) {
 let _irModules = {};
 function _requireIR(name) {
   if (!_irModules[name]) {
-    // Synchronous approach: preload modules if IR cache is enabled
-    throw new Error(`IR module '${name}' not preloaded. Call preloadIrModules() first.`);
+    throw new Error(
+      `IR module '${name}' not preloaded. Call preloadIrModules() first ` +
+      `(only needed when CAD_USE_IR_CACHE=1 is set).`
+    );
   }
   return _irModules[name];
 }

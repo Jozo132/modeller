@@ -97,16 +97,10 @@ function cbrep2stl(inputPath, outputPath) {
     console.error('Usage: cbrep2stl <input.cbrep> <output.stl>');
     process.exit(1);
   }
-  const data = readFileSync(resolve(inputPath));
-  const buf = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
-  resetTopoIds();
-  const body = readCbrep(buf, topoDeps);
-
-  // Import tessellation
-  const { tessellateForSTL } = await_import('../js/cad/Tessellation.js');
-  const stl = tessellateForSTL(body);
-  writeFileSync(resolve(outputPath), stl, 'utf-8');
-  console.log(`Written STL → ${outputPath}`);
+  // Stub: tessellation integration is not yet available in CLI context.
+  // Future: import tessellateForSTL from js/cad/Tessellation.js and wire it here.
+  console.error('Error: cbrep2stl is not yet implemented (requires tessellation module integration)');
+  process.exit(1);
 }
 
 function cmod2cbrep(inputPath, outputPath) {
@@ -169,10 +163,4 @@ function validateCbrepCmd(inputPath) {
     console.error(`✗ Invalid CBREP: ${result.error}`);
     process.exit(1);
   }
-}
-
-// Helper for dynamic import (since cbrep2stl needs tessellation which may not be available)
-function await_import(path) {
-  console.error(`Note: cbrep2stl requires tessellation module — not yet implemented`);
-  process.exit(1);
 }
