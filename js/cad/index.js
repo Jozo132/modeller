@@ -65,6 +65,11 @@ export { TessellationConfig } from './TessellationConfig.js';
 export { wasmTessellation } from './WasmTessellation.js';
 export { GeometryEvaluator } from './GeometryEvaluator.js';
 export {
+  robustTessellateBody, tessellateBodyRouted,
+  EdgeSampler, FaceTriangulator, MeshStitcher,
+  computeMeshHash, meshSummary,
+} from './Tessellator2/index.js';
+export {
   IntersectionValidation, validateIntersections, validateFragments, validateFinalBody,
 } from './IntersectionValidator.js';
 export { HealingReport, healFragments } from './Healing.js';

@@ -4,7 +4,11 @@
 // the entire CAD scene. All features inherit these settings instead of
 // maintaining per-feature segment counts.
 //
-// See WASM_TESSELLATION_FEASIBILITY.md, Section 5.
+// Tessellator modes:
+//   - 'legacy'  — Independent per-face tessellation (default, original behavior)
+//   - 'robust'  — Edge-first shared-boundary pipeline (Tessellator2)
+//
+// Quality presets: draft, normal, fine, ultra
 
 /**
  * Global tessellation quality configuration.
@@ -20,12 +24,15 @@ export class TessellationConfig {
    * @param {number} [opts.surfaceSegments=8]  - NURBS surface U/V subdivisions
    * @param {number} [opts.edgeSegments=16]    - Edge wireframe tessellation segments
    * @param {boolean} [opts.adaptiveSubdivision=true] - Enable adaptive refinement
+   * @param {'legacy'|'robust'} [opts.tessellator='legacy'] - Tessellation pipeline selection
    */
   constructor(opts = {}) {
     this.curveSegments = opts.curveSegments ?? 16;
     this.surfaceSegments = opts.surfaceSegments ?? 8;
     this.edgeSegments = opts.edgeSegments ?? 16;
     this.adaptiveSubdivision = opts.adaptiveSubdivision !== false;
+    /** @type {'legacy'|'robust'} */
+    this.tessellator = opts.tessellator ?? 'legacy';
   }
 
   /**
@@ -80,6 +87,7 @@ export class TessellationConfig {
       surfaceSegments: this.surfaceSegments,
       edgeSegments: this.edgeSegments,
       adaptiveSubdivision: this.adaptiveSubdivision,
+      tessellator: this.tessellator,
     };
   }
 

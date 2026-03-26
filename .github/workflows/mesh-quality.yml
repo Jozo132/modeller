@@ -1,0 +1,48 @@
+name: mesh-quality
+
+on:
+  push:
+    paths:
+      - 'js/cad/Tessellator2/**'
+      - 'js/cad/Tessellation.js'
+      - 'js/cad/TessellationConfig.js'
+      - 'js/cad/MeshValidator.js'
+      - 'js/cad/WasmTessellation.js'
+      - 'tests/test-mesh-quality.js'
+      - 'tests/step/**'
+  pull_request:
+    paths:
+      - 'js/cad/Tessellator2/**'
+      - 'js/cad/Tessellation.js'
+      - 'js/cad/TessellationConfig.js'
+      - 'js/cad/MeshValidator.js'
+      - 'js/cad/WasmTessellation.js'
+      - 'tests/test-mesh-quality.js'
+      - 'tests/step/**'
+
+permissions:
+  contents: read
+
+jobs:
+  mesh-quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: npx asc assembly/index.ts --target debug && npx asc assembly/index.ts --target release
+      - name: Mesh quality tests
+        run: node tests/test-mesh-quality.js
+      - name: STEP import regression
+        run: node tests/test-step-import.js
+      - name: WASM tessellation regression
+        run: node tests/test-wasm-tessellation.js
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mesh-quality-diagnostics
+          path: /tmp/mesh-quality-diagnostics.json
+          if-no-files-found: ignore

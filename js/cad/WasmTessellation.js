@@ -49,7 +49,12 @@ const NORMAL_ZERO_TOL = 1e-14;
 /** Maximum WASM curve tessellation segments (buffer limit). */
 const MAX_CURVE_SEGMENTS = 1024;
 
-/** Maximum WASM surface tessellation segments per direction (buffer limit). */
+/**
+ * Maximum WASM surface tessellation segments per direction (buffer limit).
+ * The WASM buffers support (128+1)² = 16641 vertices. Requests exceeding
+ * this fall back to JS evaluation. The robust tessellator (Tessellator2)
+ * evaluates point-by-point through GeometryEvaluator, bypassing this cap.
+ */
 const MAX_SURFACE_SEGMENTS = 128;
 
 // ─── Typed array helpers ─────────────────────────────────────────────
