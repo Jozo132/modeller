@@ -10,6 +10,7 @@
 //   7. Config routing — tessellator mode switching
 
 import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
 import {
   TopoBody, TopoShell, TopoFace, TopoLoop, TopoCoEdge, TopoEdge, TopoVertex,
   SurfaceType, buildTopoBody, resetTopoIds,
@@ -409,7 +410,7 @@ console.log('\n=== Mesh Quality — STEP Corpus Validation ===\n');
 {
   // Test on the reference STEP file
   try {
-    const stepFilePath = new URL('./step/Unnamed-Body.step', import.meta.url).pathname;
+    const stepFilePath = fileURLToPath(new URL('./step/Unnamed-Body.step', import.meta.url));
     const stepData = readFileSync(stepFilePath, 'utf-8');
     const mesh = importSTEP(stepData);
 

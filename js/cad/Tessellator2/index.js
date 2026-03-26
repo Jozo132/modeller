@@ -191,6 +191,7 @@ function _collectLoopPoints(loop, edgeSampler, edgeSegs) {
  * @returns {Object} Mesh result
  */
 export function tessellateBodyRouted(body, opts = {}) {
+  // Default to 'legacy'; unrecognized values also fall through to legacy
   const mode = opts.tessellator ?? 'legacy';
 
   if (mode === 'robust') {

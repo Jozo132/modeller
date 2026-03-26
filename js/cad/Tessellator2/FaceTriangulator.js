@@ -315,7 +315,9 @@ export class FaceTriangulator {
           vertices.push({ x: result.p.x, y: result.p.y, z: result.p.z });
           normals.push(result.n || { x: 0, y: 0, z: 1 });
         } catch (_e) {
-          // Fallback: evaluate point only
+          // GeometryEvaluator.evalSurface may fail for degenerate surface
+          // patches or when WASM + JS fallback both fail. Fall back to
+          // direct surface.evaluate() without derivatives/normals.
           const pt = surface.evaluate(u, v);
           vertices.push(pt);
           normals.push({ x: 0, y: 0, z: 1 });
