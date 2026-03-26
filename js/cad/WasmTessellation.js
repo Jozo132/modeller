@@ -73,15 +73,15 @@ function flattenControlPoints3D(controlPoints) {
 
 /**
  * Tessellate a NurbsCurve into a polyline using WASM.
- * Segments are clamped to a maximum of 1024 (WASM buffer limit).
+ * Returns null if WASM is unavailable or returns -1 (buffer capacity exceeded),
+ * signaling the caller to use the JS fallback path.
  *
  * @param {import('./NurbsCurve.js').NurbsCurve} curve
- * @param {number} segments - Number of line segments (max 1024)
- * @returns {Array<{x:number, y:number, z:number}>} Array of points
+ * @param {number} segments - Number of line segments
+ * @returns {Array<{x:number, y:number, z:number}>|null} Array of points, or null if WASM unavailable/exceeded
  */
 function tessellateCurve(curve, segments = 32) {
   if (!wasmModule) return null;
-  segments = Math.min(segments, MAX_CURVE_SEGMENTS);
 
   const ctrlFlat = flattenControlPoints3D(curve.controlPoints);
   const knotsArr = new Float64Array(curve.knots);
@@ -93,6 +93,9 @@ function tessellateCurve(curve, segments = 32) {
     ctrlFlat, knotsArr, weightsArr,
     segments
   );
+
+  // WASM returns -1 if buffer capacity exceeded — fall back to JS
+  if (nPts < 0) return null;
 
   // Read results from WASM memory
   const ptr = wasmModule.getCurvePtsPtr();
@@ -137,17 +140,16 @@ function evaluateCurve(curve, t) {
 
 /**
  * Tessellate a NurbsSurface into a triangle mesh using WASM.
- * Segments are clamped to a maximum of 128 per direction (WASM buffer limit).
+ * Returns null if WASM is unavailable or returns -1 (buffer capacity exceeded),
+ * signaling the caller to use the JS fallback path.
  *
  * @param {import('./NurbsSurface.js').NurbsSurface} surface
- * @param {number} segsU - Subdivisions in u-direction (max 128)
- * @param {number} segsV - Subdivisions in v-direction (max 128)
- * @returns {{ vertices: Array<{x,y,z}>, faces: Array<{vertices: Array<{x,y,z}>, normal: {x,y,z}}> }}
+ * @param {number} segsU - Subdivisions in u-direction
+ * @param {number} segsV - Subdivisions in v-direction
+ * @returns {{ vertices: Array<{x,y,z}>, faces: Array<{vertices: Array<{x,y,z}>, normal: {x,y,z}}> }|null}
  */
 function tessellateSurface(surface, segsU = 8, segsV = 8) {
   if (!wasmModule) return null;
-  segsU = Math.min(segsU, MAX_SURFACE_SEGMENTS);
-  segsV = Math.min(segsV, MAX_SURFACE_SEGMENTS);
 
   const ctrlFlat = flattenControlPoints3D(surface.controlPoints);
   const knotsU = new Float64Array(surface.knotsU);
@@ -162,6 +164,9 @@ function tessellateSurface(surface, segsU = 8, segsV = 8) {
     ctrlFlat, knotsU, knotsV, weights,
     segsU, segsV
   );
+
+  // WASM returns -1 if buffer capacity exceeded — fall back to JS
+  if (triCount < 0) return null;
 
   // Read results from WASM memory via buffer pointers
   const vertsPtr = wasmModule.getTessVertsPtr();

@@ -9,6 +9,11 @@ import {
   getTessVertsPtr, getTessNormalsPtr, getTessFacesPtr, getCurvePtsPtr,
   nurbsCurveEvaluate, nurbsCurveTessellate,
   nurbsSurfaceEvaluate, nurbsSurfaceNormal, nurbsSurfaceTessellate,
+  getDerivBufPtr,
+  getBatchBufPtr, getBatchBufLen,
+  getMaxTessSegs, getMaxCurveSegs,
+  nurbsCurveDerivEval, nurbsCurveBatchDerivEval,
+  nurbsSurfaceDerivEval, nurbsSurfaceBatchDerivEval,
 } from "./nurbs";
 import {
   earClipTriangulate,
@@ -385,6 +390,16 @@ export {
   nurbsCurveEvaluate, nurbsCurveTessellate,
   nurbsSurfaceEvaluate, nurbsSurfaceNormal, nurbsSurfaceTessellate,
 };
+
+// ─── Re-export NURBS derivative evaluator API ──────────────────────────
+export {
+  getDerivBufPtr,
+  getBatchBufPtr, getBatchBufLen,
+  getMaxTessSegs, getMaxCurveSegs,
+  nurbsCurveDerivEval, nurbsCurveBatchDerivEval,
+  nurbsSurfaceDerivEval, nurbsSurfaceBatchDerivEval,
+};
+
 export {
   earClipTriangulate,
   computeTriangleNormal, computeBoundingBox, computeMeshVolume,
