@@ -1,7 +1,7 @@
 # .github/workflows/ir-determinism.yml — CBREP v0 determinism CI stub
 #
-# Runs the IR determinism and roundtrip tests. Uploads failing .cbrep
-# blobs as artifacts for debugging.
+# Runs the IR determinism, cache store, and roundtrip tests. Uploads
+# failing .cbrep blobs as artifacts for debugging.
 #
 # Non-blocking for the first week (continue-on-error: true).
 # Switch to blocking by removing continue-on-error.
@@ -15,13 +15,17 @@ on:
       - 'packages/ir/**'
       - 'packages/cache/**'
       - 'tests/test-ir-determinism.js'
+      - 'tests/test-cache-stores.js'
       - 'tests/step/**'
+      - 'tools/cad-cli.mjs'
   pull_request:
     paths:
       - 'packages/ir/**'
       - 'packages/cache/**'
       - 'tests/test-ir-determinism.js'
+      - 'tests/test-cache-stores.js'
       - 'tests/step/**'
+      - 'tools/cad-cli.mjs'
 
 permissions:
   contents: read
@@ -41,6 +45,12 @@ jobs:
 
       - name: Run CBREP determinism tests
         run: node tests/test-ir-determinism.js
+
+      - name: Run cache store tests
+        run: node tests/test-cache-stores.js
+
+      - name: Run determinism snapshot
+        run: node tools/cad-cli.mjs snapshot tests/step
 
       - name: Upload failing CBREP artifacts
         if: failure()

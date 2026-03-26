@@ -9,6 +9,7 @@
 import { Feature, claimFeatureId } from './Feature.js';
 import { importSTEP } from './StepImport.js';
 import { computeFeatureEdges } from './CSG.js';
+import { getFlag } from '../featureFlags.js';
 
 /**
  * StepImportFeature represents a solid body imported from a STEP file.
@@ -62,6 +63,12 @@ export class StepImportFeature extends Feature {
       for (const face of body.faces()) {
         face.shared = { sourceFeatureId: this.id };
       }
+
+      // Shadow-write: canonicalize and cache the IR when flag is enabled.
+      // Fire-and-forget — does not block the return path.
+      if (getFlag('CAD_USE_IR_CACHE')) {
+        this._shadowWriteIR(body);
+      }
     }
 
     // Secondary output: tessellated display mesh
@@ -95,6 +102,44 @@ export class StepImportFeature extends Feature {
       volume,
       boundingBox,
     };
+  }
+
+  /**
+   * Shadow-write canonical IR to cache (fire-and-forget).
+   * Gated by CAD_USE_IR_CACHE flag. Errors are silently ignored so
+   * the legacy return path is never affected.
+   *
+   * On completion, sets:
+   *   this._irHash  {string}      — 16-char hex content hash
+   *   this._irBytes {ArrayBuffer} — canonical CBREP v0 payload
+   *
+   * @param {Object} body - TopoBody to serialize
+   */
+  _shadowWriteIR(body) {
+    (async () => {
+      const { canonicalize } = await import('../../packages/ir/canonicalize.js');
+      const { writeCbrep } = await import('../../packages/ir/writer.js');
+      const { hashCbrep } = await import('../../packages/ir/hash.js');
+      const canon = canonicalize(body);
+      const buf = writeCbrep(canon);
+      const hash = hashCbrep(buf);
+      this._irHash = hash;
+      this._irBytes = buf;
+
+      const mode = getFlag('CAD_IR_CACHE_MODE');
+      if (mode === 'fs') {
+        const { NodeFsCacheStore } = await import('../../packages/cache/NodeFsCacheStore.js');
+        const store = new NodeFsCacheStore('.cbrep-cache');
+        await store.put(hash, buf);
+      } else if (mode === 'idb') {
+        const { BrowserIdbCacheStore } = await import('../../packages/cache/BrowserIdbCacheStore.js');
+        const store = new BrowserIdbCacheStore();
+        await store.put(hash, buf);
+      }
+      // 'memory' and 'none': IR bytes kept on this._irBytes only
+    })().catch(() => {
+      // Shadow-write must never break the legacy path
+    });
   }
 
   /**
