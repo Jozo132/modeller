@@ -271,7 +271,7 @@ export function shadowTessellateBody(body, opts = {}) {
   const robustValidation = robustResult ? robustResult.validation ?? validateMesh(robustResult.faces) : null;
 
   const disagreement = {
-    timestamp: Date.now(),
+    timestamp: new Date().toISOString(),
     legacyHash,
     robustHash,
     hashMatch: legacyHash === robustHash,

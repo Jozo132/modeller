@@ -10,6 +10,7 @@
 //   7. Config routing — tessellator mode switching
 
 import { readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { tmpdir } from 'os';
 import { fileURLToPath } from 'url';
 import {
   TopoBody, TopoShell, TopoFace, TopoLoop, TopoCoEdge, TopoEdge, TopoVertex,
@@ -575,11 +576,11 @@ console.log('\n=== Mesh Quality — Diagnostic Artifact Write ===\n');
     const json = JSON.stringify(comparison);
     assert(typeof json === 'string' && json.length > 0, 'Shadow comparison is JSON-serializable');
 
-    // Write diagnostic artifact
-    const diagDir = '/tmp/mesh-quality-diagnostics';
+    // Write diagnostic artifact to temp directory
+    const diagDir = `${tmpdir()}/mesh-quality-diagnostics`;
     mkdirSync(diagDir, { recursive: true });
     writeFileSync(`${diagDir}/shadow-comparison.json`, JSON.stringify(comparison, null, 2));
-    assert(true, 'Diagnostic artifact written to /tmp/mesh-quality-diagnostics/');
+    assert(true, `Diagnostic artifact written to ${diagDir}/`);
   } catch (err) {
     assert(false, `Diagnostic serialization failed: ${err.message}`);
   }
