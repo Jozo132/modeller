@@ -250,7 +250,7 @@ test('commit() populates cache', () => {
   session.preview({ distance: 33 });
   session.commit();
   // Cache should have at least one entry after commit
-  assert.ok(cache.stats().size >= 0, 'cache size should be non-negative');
+  assert.ok(cache.stats().size > 0, 'cache should contain at least one entry after commit');
 });
 
 test('cancel on non-previewing returns false', () => {
