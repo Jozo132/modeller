@@ -152,6 +152,86 @@ function _triangleArea3D(a, b, c) {
 }
 
 /**
+ * Check if segment [p0,p1] intersects the interior of triangle [v0,v1,v2].
+ * Uses Moller–Trumbore algorithm. Returns true for proper interior crossings.
+ */
+function _segTriIntersect(p0, p1, v0, v1, v2) {
+  const dx = p1.x - p0.x, dy = p1.y - p0.y, dz = p1.z - p0.z;
+  const e1x = v1.x - v0.x, e1y = v1.y - v0.y, e1z = v1.z - v0.z;
+  const e2x = v2.x - v0.x, e2y = v2.y - v0.y, e2z = v2.z - v0.z;
+  const hx = dy * e2z - dz * e2y;
+  const hy = dz * e2x - dx * e2z;
+  const hz = dx * e2y - dy * e2x;
+  const a = e1x * hx + e1y * hy + e1z * hz;
+  if (Math.abs(a) < 1e-10) return false;
+  const f = 1 / a;
+  const sx = p0.x - v0.x, sy = p0.y - v0.y, sz = p0.z - v0.z;
+  const u = f * (sx * hx + sy * hy + sz * hz);
+  if (u < 1e-8 || u > 1 - 1e-8) return false;
+  const qx = sy * e1z - sz * e1y;
+  const qy = sz * e1x - sx * e1z;
+  const qz = sx * e1y - sy * e1x;
+  const v = f * (dx * qx + dy * qy + dz * qz);
+  if (v < 1e-8 || u + v > 1 - 1e-8) return false;
+  const t = f * (e2x * qx + e2y * qy + e2z * qz);
+  return t > 1e-8 && t < 1 - 1e-8;
+}
+
+/**
+ * Check if two 3D triangles properly intersect (edge of one passes through interior of other).
+ * Triangles sharing a vertex (within eps) are skipped.
+ */
+function _trisOverlap(t1, t2) {
+  // Skip adjacent triangles (shared vertex)
+  const EPS = 1e-10;
+  for (const a of t1) {
+    for (const b of t2) {
+      if (Math.abs(a.x - b.x) < EPS && Math.abs(a.y - b.y) < EPS && Math.abs(a.z - b.z) < EPS) {
+        return false;
+      }
+    }
+  }
+  for (const [ta, tb] of [[t1, t2], [t2, t1]]) {
+    for (let i = 0; i < 3; i++) {
+      if (_segTriIntersect(ta[i], ta[(i + 1) % 3], tb[0], tb[1], tb[2])) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Post-CDT cleanup: detect and remove overlapping triangles.
+ *
+ * On complex curved surfaces, the CDT (valid in 2D projected space) can
+ * produce triangles that overlap when back-projected to 3D.  This function
+ * detects such pairs and removes the smaller triangle from each pair.
+ *
+ * @param {Array<[{x,y,z},{x,y,z},{x,y,z}]>} triangles
+ * @returns {Array<[{x,y,z},{x,y,z},{x,y,z}]>}
+ */
+function _removeOverlappingTriangles(triangles) {
+  const n = triangles.length;
+  if (n < 2) return triangles;
+
+  const removed = new Set();
+  for (let i = 0; i < n; i++) {
+    if (removed.has(i)) continue;
+    for (let j = i + 1; j < n; j++) {
+      if (removed.has(j)) continue;
+      if (_trisOverlap(triangles[i], triangles[j])) {
+        // Remove the smaller triangle
+        const aI = _triangleArea3D(triangles[i][0], triangles[i][1], triangles[i][2]);
+        const aJ = _triangleArea3D(triangles[j][0], triangles[j][1], triangles[j][2]);
+        removed.add(aI <= aJ ? i : j);
+      }
+    }
+  }
+
+  if (removed.size === 0) return triangles;
+  return triangles.filter((_, i) => !removed.has(i));
+}
+
+/**
  * Remove consecutive collinear points from a closed polygon.
  * This prevents degenerate triangles from ear-clipping when
  * intermediate edge samples lie on straight segments.
@@ -533,6 +613,11 @@ export class FaceTriangulator {
       const n = calculateNormal(a, b, c);
       return (n.x * outX + n.y * outY + n.z * outZ) > 0;
     });
+
+    // Post-CDT overlap cleanup: the CDT is valid in 2D projected space,
+    // but on complex curved surfaces, triangles can overlap in 3D.
+    // Detect and remove the smaller triangle from each overlapping pair.
+    triangles = _removeOverlappingTriangles(triangles);
 
     // --- Step 3: Adaptive subdivision using UV interpolation ---
     // When UV coordinates are valid, use full adaptive subdivision.
