@@ -187,6 +187,14 @@ export class WasmRenderer {
     this._fov = Math.PI / 4; // field of view in radians (default 45°)
     this._fovDegrees = 45;   // FOV in degrees for UI
 
+    // Touch gesture state for 3D controls
+    this._touchCount = 0;
+    this._touchOrbiting = false;
+    this._touchPanning = false;
+    this._lastTouchX = 0;
+    this._lastTouchY = 0;
+    this._lastPinchDist = 0;
+
     // Callback for camera change events (used by interaction recorder)
     this.onCameraInteraction = null; // (type: 'orbit_start'|'pan_start'|'orbit_end'|'zoom', state) => void
 
@@ -382,6 +390,122 @@ export class WasmRenderer {
       this._orbitDirty = true;
       if (this.onCameraInteraction) this.onCameraInteraction('zoom', this.getOrbitState());
     }, { passive: false });
+
+    // --- Touch gesture controls for 3D orbit/pan/zoom ---
+
+    canvas.addEventListener('touchstart', (e) => {
+      if (this.mode !== '3d') return;
+      // Let the host (App) handle sketch-mode single-touch drawing;
+      // only handle multi-touch or 3D-navigation single-touch here.
+      if (this.onTouchStart && this.onTouchStart(e)) return;
+
+      e.preventDefault();
+      this._touchCount = e.touches.length;
+
+      if (e.touches.length === 1) {
+        // Single finger: orbit
+        this._touchOrbiting = true;
+        this._touchPanning = false;
+        this._lastTouchX = e.touches[0].clientX;
+        this._lastTouchY = e.touches[0].clientY;
+        if (this.onCameraInteraction) this.onCameraInteraction('orbit_start', this.getOrbitState());
+      } else if (e.touches.length === 2) {
+        // Two fingers: pan + pinch zoom
+        this._touchOrbiting = false;
+        this._touchPanning = true;
+        const t0 = e.touches[0], t1 = e.touches[1];
+        this._lastPinchCenterX = (t0.clientX + t1.clientX) / 2;
+        this._lastPinchCenterY = (t0.clientY + t1.clientY) / 2;
+        this._lastTouchX = this._lastPinchCenterX;
+        this._lastTouchY = this._lastPinchCenterY;
+        this._lastPinchDist = Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY);
+        if (this.onCameraInteraction) this.onCameraInteraction('pan_start', this.getOrbitState());
+      }
+    }, { passive: false });
+
+    canvas.addEventListener('touchmove', (e) => {
+      if (this.mode !== '3d') return;
+      if (this.onTouchMove && this.onTouchMove(e)) return;
+
+      e.preventDefault();
+
+      if (e.touches.length === 1 && this._touchOrbiting) {
+        // Single finger orbit
+        const dx = e.touches[0].clientX - this._lastTouchX;
+        const dy = e.touches[0].clientY - this._lastTouchY;
+        this._lastTouchX = e.touches[0].clientX;
+        this._lastTouchY = e.touches[0].clientY;
+
+        this._orbitTheta -= dx * 0.005;
+        this._orbitPhi -= dy * 0.005;
+        this._orbitPhi = Math.max(0.05, Math.min(Math.PI - 0.05, this._orbitPhi));
+        this._orbitDirty = true;
+      } else if (e.touches.length === 2) {
+        // Two-finger pan + pinch zoom
+        const t0 = e.touches[0], t1 = e.touches[1];
+        const cx = (t0.clientX + t1.clientX) / 2;
+        const cy = (t0.clientY + t1.clientY) / 2;
+        const dist = Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY);
+
+        // Pinch zoom
+        if (this._lastPinchDist > 0 && dist > 0) {
+          const scale = this._lastPinchDist / dist;
+          this._orbitRadius *= scale;
+          this._orbitRadius = Math.max(10, Math.min(5000, this._orbitRadius));
+          this._orbitDirty = true;
+        }
+
+        // Pan
+        const dx = cx - this._lastTouchX;
+        const dy = cy - this._lastTouchY;
+        if (Math.abs(dx) > 0.1 || Math.abs(dy) > 0.1) {
+          const panSpeed = this._orbitRadius * 0.001;
+          const theta = this._orbitTheta;
+          const phi = this._orbitPhi;
+          const rightX = -Math.sin(theta);
+          const rightY = Math.cos(theta);
+          const upX = -Math.cos(theta) * Math.cos(phi);
+          const upY = -Math.sin(theta) * Math.cos(phi);
+          const upZ = Math.sin(phi);
+
+          this._orbitTarget.x += (-dx * rightX + dy * upX) * panSpeed;
+          this._orbitTarget.y += (-dx * rightY + dy * upY) * panSpeed;
+          this._orbitTarget.z += dy * upZ * panSpeed;
+          this._orbitDirty = true;
+        }
+
+        this._lastTouchX = cx;
+        this._lastTouchY = cy;
+        this._lastPinchDist = dist;
+      }
+    }, { passive: false });
+
+    canvas.addEventListener('touchend', (e) => {
+      if (this.mode !== '3d') return;
+      if (this.onTouchEnd && this.onTouchEnd(e)) return;
+
+      const wasTouching = this._touchOrbiting || this._touchPanning;
+      if (e.touches.length === 0) {
+        this._touchOrbiting = false;
+        this._touchPanning = false;
+        this._touchCount = 0;
+        if (wasTouching && this.onCameraInteraction) this.onCameraInteraction('orbit_end', this.getOrbitState());
+      } else if (e.touches.length === 1) {
+        // Went from 2 fingers to 1: switch to orbit
+        this._touchPanning = false;
+        this._touchOrbiting = true;
+        this._touchCount = 1;
+        this._lastTouchX = e.touches[0].clientX;
+        this._lastTouchY = e.touches[0].clientY;
+      }
+    }, { passive: false });
+
+    canvas.addEventListener('touchcancel', () => {
+      this._touchOrbiting = false;
+      this._touchPanning = false;
+      this._touchCount = 0;
+      this._lastPinchDist = 0;
+    });
   }
 
   _applyOrbitCamera() {
