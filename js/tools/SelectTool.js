@@ -371,8 +371,15 @@ export class SelectTool extends BaseTool {
         this._dragPoint.y = wy;
         const wasFixed = this._dragPoint.fixed;
         this._dragPoint.fixed = true;
-        state.scene.solve();
+        const result = state.scene.solve();
         this._dragPoint.fixed = wasFixed;
+
+        // If the solver didn't converge (cursor position is beyond
+        // constraint limits), re-solve with the point unfixed so
+        // constraints pull it back to the nearest valid position.
+        if (!result.converged) {
+          state.scene.solve();
+        }
 
         // Snap-to-coincidence detection for the single dragged point
         if (state.autoCoincidence) {
@@ -424,9 +431,16 @@ export class SelectTool extends BaseTool {
         // Update reference so delta is cumulative
         this._dragStart.wx = wx;
         this._dragStart.wy = wy;
-        state.scene.solve();
+        const result = state.scene.solve();
         for (let i = 0; i < this._dragShapePts.length; i++) {
           this._dragShapePts[i].fixed = savedFixed[i];
+        }
+
+        // If the solver didn't converge (shape dragged beyond
+        // constraint limits), re-solve with points unfixed so
+        // constraints pull them back to the nearest valid positions.
+        if (!result.converged) {
+          state.scene.solve();
         }
 
         // Snap-to-coincidence detection for all movable points of the shape

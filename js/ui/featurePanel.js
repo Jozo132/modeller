@@ -28,6 +28,14 @@ export class FeaturePanel {
     `;
 
     this.listElement = this.container.querySelector('#feature-list');
+
+    // Mobile: click header to collapse/expand
+    const header = this.container.querySelector('.feature-panel-header');
+    if (header) {
+      header.addEventListener('click', () => {
+        this.container.classList.toggle('collapsed');
+      });
+    }
   }
 
   /**

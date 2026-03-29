@@ -1994,6 +1994,32 @@ export class WasmRenderer {
         ctx.lineTo(sd2.x, sd2.y);
         ctx.stroke();
 
+        // Arrowheads — scale with zoom, capped at a max size
+        const pixelDist = Math.hypot(sd2.x - sd1.x, sd2.y - sd1.y);
+        const baseArrowLen = 8;
+        const ARROW_HEAD_ANGLE = 0.35; // half-angle of arrowhead in radians (~20°)
+        const arrowLen = Math.min(baseArrowLen, pixelDist / 4);
+        if (arrowLen > 1) {
+          const angle = Math.atan2(sd2.y - sd1.y, sd2.x - sd1.x);
+          // Use outside arrows when distance is too small to fit two inside
+          const useOutside = pixelDist < baseArrowLen * 4;
+          const drawArrow = (ax, ay, aAngle) => {
+            ctx.beginPath();
+            ctx.moveTo(ax, ay);
+            ctx.lineTo(ax - arrowLen * Math.cos(aAngle - ARROW_HEAD_ANGLE), ay - arrowLen * Math.sin(aAngle - ARROW_HEAD_ANGLE));
+            ctx.lineTo(ax - arrowLen * Math.cos(aAngle + ARROW_HEAD_ANGLE), ay - arrowLen * Math.sin(aAngle + ARROW_HEAD_ANGLE));
+            ctx.closePath();
+            ctx.fill();
+          };
+          if (useOutside) {
+            drawArrow(sd1.x, sd1.y, angle);
+            drawArrow(sd2.x, sd2.y, angle + Math.PI);
+          } else {
+            drawArrow(sd1.x, sd1.y, angle + Math.PI);
+            drawArrow(sd2.x, sd2.y, angle);
+          }
+        }
+
         const mx = (d1.x + d2.x) / 2;
         const my = (d1.y + d2.y) / 2 + 12 * wpp;
         const mpt = sketchPtToScreen(mx, my);
@@ -2026,6 +2052,57 @@ export class WasmRenderer {
         ctx.translate(tpt.x, tpt.y);
         if (text.rotation) ctx.rotate(-text.rotation * Math.PI / 180);
         ctx.fillText(text.text, 0, 0);
+        ctx.restore();
+      });
+    }
+
+    // --- Spline control point handles (overlay, shown when selected) ---
+    if (scene.splines) {
+      scene.splines.forEach((spl) => {
+        if (!spl.visible || !isLayerVisible(spl.layer)) return;
+        if (!spl.selected) return; // only show handles for selected splines
+        const pts = spl.points;
+        if (!pts || pts.length < 2) return;
+
+        // Draw control polygon (dashed lines connecting control points)
+        ctx.save();
+        ctx.setLineDash([4, 4]);
+        ctx.strokeStyle = 'rgba(255, 180, 50, 0.5)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        const sp0 = sketchPtToScreen(pts[0].x, pts[0].y);
+        ctx.moveTo(sp0.x, sp0.y);
+        for (let i = 1; i < pts.length; i++) {
+          const sp = sketchPtToScreen(pts[i].x, pts[i].y);
+          ctx.lineTo(sp.x, sp.y);
+        }
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Draw control point handles (small diamonds)
+        for (let i = 0; i < pts.length; i++) {
+          const cp = pts[i];
+          const sp = sketchPtToScreen(cp.x, cp.y);
+          const isEndpoint = i === 0 || i === pts.length - 1;
+          const handleSize = isEndpoint ? 4 : 3;
+          ctx.fillStyle = isEndpoint ? '#00bfff' : '#ffb432';
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 1;
+          // Diamond shape for interior control points, square for endpoints
+          if (isEndpoint) {
+            ctx.fillRect(sp.x - handleSize, sp.y - handleSize, handleSize * 2, handleSize * 2);
+            ctx.strokeRect(sp.x - handleSize, sp.y - handleSize, handleSize * 2, handleSize * 2);
+          } else {
+            ctx.beginPath();
+            ctx.moveTo(sp.x, sp.y - handleSize - 1);
+            ctx.lineTo(sp.x + handleSize + 1, sp.y);
+            ctx.lineTo(sp.x, sp.y + handleSize + 1);
+            ctx.lineTo(sp.x - handleSize - 1, sp.y);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+          }
+        }
         ctx.restore();
       });
     }

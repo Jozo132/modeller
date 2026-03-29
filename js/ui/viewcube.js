@@ -12,9 +12,15 @@
 //   TOP    = +Z
 //   BOTTOM = -Z
 
-const CUBE_SIZE = 120;         // widget pixel size
+const CUBE_SIZE_DEFAULT = 120;  // widget pixel size (desktop)
+const CUBE_SIZE_MOBILE  = 70;   // widget pixel size (mobile)
 const MARGIN    = 12;          // distance from viewport edges
 const CHAMFER   = 0.25;        // chamfer ratio (0–0.5)
+
+/** Return the cube size, reduced on small (mobile) screens. */
+function getCubeSize() {
+  return (typeof window !== 'undefined' && window.innerWidth < 780) ? CUBE_SIZE_MOBILE : CUBE_SIZE_DEFAULT;
+}
 
 // Face label definitions: name → outward normal (world space)
 const FACE_DEFS = [
@@ -192,14 +198,15 @@ export class ViewCube {
 
     // Create canvas
     const dpr = window.devicePixelRatio || 1;
+    const size = getCubeSize();
     const canvas = document.createElement('canvas');
-    canvas.width = CUBE_SIZE * dpr;
-    canvas.height = CUBE_SIZE * dpr;
+    canvas.width = size * dpr;
+    canvas.height = size * dpr;
     canvas.style.position = 'absolute';
     canvas.style.top = MARGIN + 'px';
     canvas.style.right = MARGIN + 'px';
-    canvas.style.width = CUBE_SIZE + 'px';
-    canvas.style.height = CUBE_SIZE + 'px';
+    canvas.style.width = size + 'px';
+    canvas.style.height = size + 'px';
     canvas.style.zIndex = '50';
     canvas.style.cursor = 'pointer';
     canvas.style.pointerEvents = 'auto';
@@ -208,6 +215,7 @@ export class ViewCube {
     this._canvas = canvas;
     this._ctx = canvas.getContext('2d');
     this._dpr = dpr;
+    this._size = size;
 
     // Interaction
     canvas.addEventListener('mousemove', (e) => this._onMouseMove(e));
@@ -226,7 +234,7 @@ export class ViewCube {
 
     const dpr = this._dpr;
     const ctx = this._ctx;
-    const size = CUBE_SIZE;
+    const size = this._size;
     const cx = size / 2;
     const cy = size / 2;
     const scale = size * 0.3;

@@ -512,9 +512,11 @@ export class DimensionPrimitive extends Primitive {
     ctx.moveTo(d1.x, d1.y); ctx.lineTo(d2.x, d2.y);
     ctx.stroke();
 
-    const arrowLen = 8;
     const angle = Math.atan2(d2.y - d1.y, d2.x - d1.x);
     const pixelDist = Math.hypot(d2.x - d1.x, d2.y - d1.y);
+    const baseArrowLen = 8;
+    // Scale arrow length with zoom; cap so arrows don't overflow when zoomed in close
+    const arrowLen = Math.min(baseArrowLen, pixelDist / 4);
     const style = this.arrowStyle || 'auto';
     // 'auto': inside if enough room, outside if too tight; 'inside'/'outside' forced; 'none' = no arrows
     if (style !== 'none') {

@@ -1369,6 +1369,26 @@ html, body {
     border-top: 1px solid var(--border);
   }
 
+  /* Collapsible sidebar sections on mobile */
+  #properties-panel .sidebar-section.collapsed > :not(.history-tree-header):not(.feature-panel-header) {
+    display: none;
+  }
+  .history-tree-header,
+  .feature-panel-header {
+    cursor: pointer;
+    user-select: none;
+  }
+  .history-tree-header h3::after,
+  .feature-panel-header h3::after {
+    content: ' ▾';
+    font-size: 10px;
+    opacity: 0.6;
+  }
+  .sidebar-section.collapsed .history-tree-header h3::after,
+  .sidebar-section.collapsed .feature-panel-header h3::after {
+    content: ' ▸';
+  }
+
   #cad-canvas {
     left: 0;
     right: 0;
@@ -1379,6 +1399,23 @@ html, body {
     left: 0;
     right: 0;
     bottom: calc(var(--bottom-offset) + 36vh);
+  }
+
+  /* Hide SNAP/AUTO/ORTHO on mobile — not useful for touch */
+  #status-snap,
+  #status-autocoincidence,
+  #status-ortho {
+    display: none;
+  }
+
+  /* Smaller font for status bar on mobile */
+  #status-bar {
+    gap: 6px;
+    padding: 0 6px;
+    font-size: 10px;
+  }
+  #status-bar .fov-group {
+    display: none;
   }
 }
 
