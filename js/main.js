@@ -1548,8 +1548,8 @@ class App {
 
       // Single finger
       if (!this._sketchingOnPlane) {
-        // Record touch start for tap detection (plane/face picking)
-        if (this._awaitingSketchPlane && e.touches.length === 1) {
+        // Record touch start for tap detection (plane/face/edge picking)
+        if (e.touches.length === 1) {
           this._touchTapStart = { x: e.touches[0].clientX, y: e.touches[0].clientY, time: Date.now() };
         }
         // Not sketching — WasmRenderer handles single-finger orbit
@@ -1608,8 +1608,8 @@ class App {
       if (e.touches.length === 0) {
         // All fingers lifted
 
-        // Detect tap for plane/face picking on mobile
-        if (this._awaitingSketchPlane && this._touchTapStart && !touchWasMulti) {
+        // Detect tap for plane/face/edge picking on mobile
+        if (this._touchTapStart && !touchWasMulti && this._workspaceMode === 'part' && this._renderer3d) {
           const ct = e.changedTouches[0];
           if (ct) {
             const dx = ct.clientX - this._touchTapStart.x;
@@ -1617,33 +1617,150 @@ class App {
             const elapsed = Date.now() - this._touchTapStart.time;
             // Treat as tap if finger didn't move much and was short
             if (Math.hypot(dx, dy) < TAP_MOVE_THRESHOLD && elapsed < TAP_TIME_THRESHOLD) {
-              const faceHit = this._renderer3d.pickFace(ct.clientX, ct.clientY);
-              if (faceHit && faceHit.face) {
-                if (faceHit.face.isCurved) {
-                  this.setStatus('Cannot sketch on a curved surface. Select a flat face or reference plane.');
-                } else {
+
+              // Awaiting sketch plane: prioritise face/plane for sketch start
+              if (this._awaitingSketchPlane) {
+                const faceHit = this._renderer3d.pickFace(ct.clientX, ct.clientY);
+                if (faceHit && faceHit.face) {
+                  if (faceHit.face.isCurved) {
+                    this.setStatus('Cannot sketch on a curved surface. Select a flat face or reference plane.');
+                  } else {
+                    this._awaitingSketchPlane = false;
+                    const btn = document.getElementById('btn-sketch-on-plane');
+                    if (btn) btn.classList.remove('awaiting');
+                    this._startSketchOnFace(faceHit);
+                  }
+                  this._touchTapStart = null;
+                  this._scheduleRender();
+                  touchWasMulti = false;
+                  touchStartedDrawing = false;
+                  return;
+                }
+                const planeHit = this._renderer3d.pickPlane(ct.clientX, ct.clientY);
+                if (planeHit) {
                   this._awaitingSketchPlane = false;
                   const btn = document.getElementById('btn-sketch-on-plane');
                   if (btn) btn.classList.remove('awaiting');
-                  this._startSketchOnFace(faceHit);
+                  this._startSketchOnPlane(planeHit.name);
+                  this._touchTapStart = null;
+                  this._scheduleRender();
+                  touchWasMulti = false;
+                  touchStartedDrawing = false;
+                  return;
                 }
-                this._touchTapStart = null;
-                this._scheduleRender();
-                touchWasMulti = false;
-                touchStartedDrawing = false;
-                return;
               }
-              const planeHit = this._renderer3d.pickPlane(ct.clientX, ct.clientY);
-              if (planeHit) {
-                this._awaitingSketchPlane = false;
-                const btn = document.getElementById('btn-sketch-on-plane');
-                if (btn) btn.classList.remove('awaiting');
-                this._startSketchOnPlane(planeHit.name);
-                this._touchTapStart = null;
-                this._scheduleRender();
-                touchWasMulti = false;
-                touchStartedDrawing = false;
-                return;
+
+              // General tap selection (faces, edges, planes, sketches)
+              if (!this._sketchingOnPlane && !this._extrudeMode && !this._sceneManagerOpen) {
+                // Edge picking
+                const edgeHit = this._renderer3d.pickEdge(ct.clientX, ct.clientY);
+                if (edgeHit) {
+                  this._renderer3d.setHoveredEdge(-1);
+                  this._selectedFaces.clear();
+                  this._selectedPlane = null;
+                  this._renderer3d.clearFaceSelection();
+                  this._renderer3d.setSelectedPlane(null);
+                  this._renderer3d.clearEdgeSelection();
+                  if (this._featurePanel) this._featurePanel.selectFeature(null);
+                  this._renderer3d.setSelectedFeature(null);
+                  if (this._parametersPanel) this._parametersPanel.clear();
+                  this._renderer3d.addEdgeSelection(edgeHit.edgeIndex);
+                  const seg = edgeHit.edge;
+                  const prec = 2;
+                  const fmt = (v) => `(${v.x.toFixed(prec)}, ${v.y.toFixed(prec)}, ${v.z.toFixed(prec)})`;
+                  this.setStatus(`Edge: ${fmt(seg.start)} \u2192 ${fmt(seg.end)}`);
+                  this._onEdgeSelectionChanged();
+                  this._touchTapStart = null;
+                  this._scheduleRender();
+                  this._updateNodeTree();
+                  this._updateOperationButtons();
+                  touchWasMulti = false;
+                  touchStartedDrawing = false;
+                  return;
+                }
+
+                // Sketch picking
+                const sketchHit = this._renderer3d.pickSketch(ct.clientX, ct.clientY);
+                if (sketchHit) {
+                  this._selectedFaces.clear();
+                  this._renderer3d.clearFaceSelection();
+                  this._selectedPlane = null;
+                  this._renderer3d.setSelectedPlane(null);
+                  this._renderer3d.clearEdgeSelection();
+                  this._renderer3d.setSelectedFeature(sketchHit.featureId);
+                  const feature = this._partManager.getFeatures().find(f => f.id === sketchHit.featureId);
+                  if (feature) {
+                    if (this._featurePanel) this._featurePanel.selectFeature(feature.id);
+                    if (this._parametersPanel) this._parametersPanel.showFeature(feature);
+                    this._showLeftFeatureParams(feature);
+                  }
+                  this.setStatus(`Selected sketch ${sketchHit.featureId}`);
+                  this._touchTapStart = null;
+                  this._scheduleRender();
+                  this._updateNodeTree();
+                  this._updateOperationButtons();
+                  touchWasMulti = false;
+                  touchStartedDrawing = false;
+                  return;
+                }
+
+                // Face picking
+                const hit = this._renderer3d.pickFace(ct.clientX, ct.clientY);
+                if (hit) {
+                  this._selectedPlane = null;
+                  this._renderer3d.setSelectedPlane(null);
+                  this._renderer3d.clearEdgeSelection();
+                  if (this._featurePanel) this._featurePanel.selectFeature(null);
+                  this._renderer3d.setSelectedFeature(null);
+                  if (this._parametersPanel) this._parametersPanel.clear();
+                  this._selectedFaces.clear();
+                  this._selectedFaces.set(hit.faceIndex, hit);
+                  this._renderer3d.selectFace(hit.faceIndex);
+                  this._showLeftFeatureParams(null);
+                  this.setStatus(`Selected face ${hit.faceIndex}`);
+                  this._touchTapStart = null;
+                  this._scheduleRender();
+                  this._updateNodeTree();
+                  this._updateOperationButtons();
+                  touchWasMulti = false;
+                  touchStartedDrawing = false;
+                  return;
+                }
+
+                // Plane picking
+                const planeHit = this._renderer3d.pickPlane(ct.clientX, ct.clientY);
+                if (planeHit) {
+                  this._selectedFaces.clear();
+                  this._renderer3d.clearFaceSelection();
+                  this._renderer3d.clearEdgeSelection();
+                  if (this._featurePanel) this._featurePanel.selectFeature(null);
+                  this._renderer3d.setSelectedFeature(null);
+                  if (this._parametersPanel) this._parametersPanel.clear();
+                  this._selectedPlane = planeHit.name;
+                  this._renderer3d.setSelectedPlane(this._selectedPlane);
+                  this._showLeftFeatureParams(null);
+                  this.setStatus(`Selected ${this._selectedPlane} plane`);
+                  this._touchTapStart = null;
+                  this._scheduleRender();
+                  this._updateNodeTree();
+                  this._updateOperationButtons();
+                  touchWasMulti = false;
+                  touchStartedDrawing = false;
+                  return;
+                }
+
+                // Tapped empty space: deselect all
+                this._selectedFaces.clear();
+                this._selectedPlane = null;
+                this._renderer3d.clearFaceSelection();
+                this._renderer3d.clearEdgeSelection();
+                if (this._featurePanel) this._featurePanel.selectFeature(null);
+                this._renderer3d.setSelectedFeature(null);
+                if (this._parametersPanel) this._parametersPanel.clear();
+                this._renderer3d.setSelectedPlane(null);
+                this._showLeftFeatureParams(null);
+                this._updateNodeTree();
+                this._updateOperationButtons();
               }
             }
           }
