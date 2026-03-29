@@ -36,4 +36,21 @@ export class BaseTool {
   setStatus(msg) {
     this.app.setStatus(msg);
   }
+
+  /**
+   * Returns the effective pixels-per-world-unit for tolerance calculations.
+   * In 3D sketch mode the 2D viewport zoom is not updated to match the 3D
+   * camera, so we derive the scale from the 3D projection instead.
+   */
+  _effectiveZoom() {
+    if (this.app._sketchingOnPlane && this.app._renderer3d) {
+      const s0 = this.app._renderer3d.sketchToScreen(0, 0);
+      const s1 = this.app._renderer3d.sketchToScreen(1, 0);
+      if (s0 && s1) {
+        const ppu = Math.hypot(s1.x - s0.x, s1.y - s0.y);
+        if (ppu > 1e-3) return ppu;
+      }
+    }
+    return this.app.viewport.zoom;
+  }
 }

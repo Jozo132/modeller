@@ -25,7 +25,7 @@ export class TangentTool extends BaseTool {
   }
 
   onMouseMove(wx, wy) {
-    const tol = 12 / this.app.viewport.zoom;
+    const tol = 12 / this._effectiveZoom();
     const hit = state.scene.findClosestShape(wx, wy, tol);
     if (this.step === 0) {
       this.app.renderer.hoverEntity = (hit && hit.type === 'segment') ? hit : null;
@@ -35,7 +35,7 @@ export class TangentTool extends BaseTool {
   }
 
   onClick(wx, wy) {
-    const tol = 12 / this.app.viewport.zoom;
+    const tol = 12 / this._effectiveZoom();
     const hit = state.scene.findClosestShape(wx, wy, tol);
     if (!hit) return;
 

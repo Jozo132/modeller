@@ -40,12 +40,12 @@ export class LinearPatternTool extends BaseTool {
   }
 
   _findPoint(wx, wy) {
-    const tol = PT_PX / this.app.viewport.zoom;
+    const tol = PT_PX / this._effectiveZoom();
     return state.scene.findClosestPoint(wx, wy, tol);
   }
 
   _findSegment(wx, wy) {
-    const tol = SEG_PX / this.app.viewport.zoom;
+    const tol = SEG_PX / this._effectiveZoom();
     const hit = state.scene.findClosestShape(wx, wy, tol);
     return (hit && hit.type === 'segment') ? hit : null;
   }

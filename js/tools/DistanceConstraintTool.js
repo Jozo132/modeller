@@ -26,13 +26,13 @@ export class DistanceConstraintTool extends BaseTool {
   }
 
   onMouseMove(wx, wy) {
-    const tol = 10 / this.app.viewport.zoom;
+    const tol = 10 / this._effectiveZoom();
     const pt = state.scene.findClosestPoint(wx, wy, tol);
     this.app.renderer.hoverEntity = pt;
   }
 
   async onClick(wx, wy) {
-    const tol = 10 / this.app.viewport.zoom;
+    const tol = 10 / this._effectiveZoom();
     const pt = state.scene.findClosestPoint(wx, wy, tol);
     if (!pt) { this.setStatus('No point found — click closer to a point'); return; }
 

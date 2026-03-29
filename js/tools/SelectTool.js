@@ -77,13 +77,13 @@ export class SelectTool extends BaseTool {
 
   /** Find closest point (vertex) near screen position */
   _findClosestPoint(wx, wy, pixelTolerance = PICK_PT_PX) {
-    const worldTol = pixelTolerance / this.app.viewport.zoom;
+    const worldTol = pixelTolerance / this._effectiveZoom();
     return state.scene.findClosestPoint(wx, wy, worldTol);
   }
 
   /** Find closest shape (segment/circle/arc/text/dim) near screen position */
   _findClosestEntity(wx, wy, pixelTolerance = PICK_PX) {
-    const worldTolerance = pixelTolerance / this.app.viewport.zoom;
+    const worldTolerance = pixelTolerance / this._effectiveZoom();
     let hit = null;
     let minDist = Infinity;
 
@@ -118,7 +118,7 @@ export class SelectTool extends BaseTool {
    * Each target point is only used once (closest drag point wins).
    */
   _findSnapCandidates(dragPts) {
-    const snapTol = PICK_PT_PX / this.app.viewport.zoom;
+    const snapTol = PICK_PT_PX / this._effectiveZoom();
     const scene = state.scene;
     const dragSet = new Set(dragPts);
 
@@ -178,7 +178,7 @@ export class SelectTool extends BaseTool {
    * Returns array of {dragPt, seg, x, y} where (x,y) is the projection.
    */
   _findLineSnapCandidates(dragPts) {
-    const snapTol = PICK_PX / this.app.viewport.zoom;
+    const snapTol = PICK_PX / this._effectiveZoom();
     const scene = state.scene;
     const dragSet = new Set(dragPts);
     // Points that already have a coincident snap — skip line snap for those
@@ -239,7 +239,7 @@ export class SelectTool extends BaseTool {
    * Only visual — no constraints applied.
    */
   _findAlignmentGuides(dragPts) {
-    const alignTol = ALIGN_TOL_PX / this.app.viewport.zoom;
+    const alignTol = ALIGN_TOL_PX / this._effectiveZoom();
     const scene = state.scene;
     const dragSet = new Set(dragPts);
     const guides = [];

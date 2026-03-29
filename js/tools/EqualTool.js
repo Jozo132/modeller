@@ -25,13 +25,13 @@ export class EqualTool extends BaseTool {
   }
 
   onMouseMove(wx, wy) {
-    const tol = 12 / this.app.viewport.zoom;
+    const tol = 12 / this._effectiveZoom();
     const hit = state.scene.findClosestShape(wx, wy, tol);
     this.app.renderer.hoverEntity = (hit && hit.type === 'segment') ? hit : null;
   }
 
   onClick(wx, wy) {
-    const tol = 12 / this.app.viewport.zoom;
+    const tol = 12 / this._effectiveZoom();
     const hit = state.scene.findClosestShape(wx, wy, tol);
     if (!hit || hit.type !== 'segment') { this.setStatus('Click on a segment'); return; }
 

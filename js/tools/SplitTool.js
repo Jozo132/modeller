@@ -23,7 +23,7 @@ export class SplitTool extends BaseTool {
   }
 
   onMouseMove(wx, wy) {
-    const tol = 12 / this.app.viewport.zoom;
+    const tol = 12 / this._effectiveZoom();
     const hit = state.scene.findClosestShape(wx, wy, tol);
     this._hover = (hit && hit.type === 'segment') ? hit : null;
     this.app.renderer.hoverEntity = this._hover;

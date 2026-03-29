@@ -46,7 +46,7 @@ export class DimensionTool extends BaseTool {
   }
 
   _findEntity(wx, wy) {
-    const tol = 12 / this.app.viewport.zoom;
+    const tol = 12 / this._effectiveZoom();
     // Try closest point first
     const pt = state.scene.findClosestPoint(wx, wy, tol);
     if (pt) return pt;

@@ -46,7 +46,7 @@ export class TrimTool extends BaseTool {
     if (!this._drawing) return;
     const prev = this._path[this._path.length - 1];
     // Skip tiny moves
-    if (Math.hypot(wx - prev.x, wy - prev.y) < 1 / this.app.viewport.zoom) return;
+    if (Math.hypot(wx - prev.x, wy - prev.y) < 1 / this._effectiveZoom()) return;
 
     const a = prev;
     const b = { x: wx, y: wy };

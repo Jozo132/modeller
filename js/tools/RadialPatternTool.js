@@ -40,12 +40,12 @@ export class RadialPatternTool extends BaseTool {
   }
 
   _findPoint(wx, wy) {
-    const tol = PT_PX / this.app.viewport.zoom;
+    const tol = PT_PX / this._effectiveZoom();
     return state.scene.findClosestPoint(wx, wy, tol);
   }
 
   _findArcOrCircle(wx, wy) {
-    const tol = SHAPE_PX / this.app.viewport.zoom;
+    const tol = SHAPE_PX / this._effectiveZoom();
     const hit = state.scene.findClosestShape(wx, wy, tol);
     return (hit && (hit.type === 'arc' || hit.type === 'circle')) ? hit : null;
   }
