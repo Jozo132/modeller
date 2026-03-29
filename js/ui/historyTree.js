@@ -79,6 +79,14 @@ export class HistoryTree {
       <div class="history-tree-list"></div>
     `;
     this.listEl = this.container.querySelector('.history-tree-list');
+
+    // Mobile: click header to collapse/expand
+    const header = this.container.querySelector('.history-tree-header');
+    if (header) {
+      header.addEventListener('click', () => {
+        this.container.classList.toggle('collapsed');
+      });
+    }
   }
 
   // -------------------------------------------------------------------

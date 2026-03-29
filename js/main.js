@@ -1546,6 +1546,10 @@ class App {
 
       // Single finger
       if (!this._sketchingOnPlane) {
+        // Record touch start for tap detection (plane/face picking)
+        if (this._awaitingSketchPlane && e.touches.length === 1) {
+          this._touchTapStart = { x: e.touches[0].clientX, y: e.touches[0].clientY, time: Date.now() };
+        }
         // Not sketching — WasmRenderer handles single-finger orbit
         touchWasMulti = false;
         touchStartedDrawing = false;
@@ -1601,6 +1605,49 @@ class App {
     canvas.addEventListener('touchend', (e) => {
       if (e.touches.length === 0) {
         // All fingers lifted
+
+        // Detect tap for plane/face picking on mobile
+        if (this._awaitingSketchPlane && this._touchTapStart && !touchWasMulti) {
+          const ct = e.changedTouches[0];
+          if (ct) {
+            const dx = ct.clientX - this._touchTapStart.x;
+            const dy = ct.clientY - this._touchTapStart.y;
+            const elapsed = Date.now() - this._touchTapStart.time;
+            // Treat as tap if finger didn't move much and was short
+            if (Math.hypot(dx, dy) < 15 && elapsed < 400) {
+              const faceHit = this._renderer3d.pickFace(ct.clientX, ct.clientY);
+              if (faceHit && faceHit.face) {
+                if (faceHit.face.isCurved) {
+                  this.setStatus('Cannot sketch on a curved surface. Select a flat face or reference plane.');
+                } else {
+                  this._awaitingSketchPlane = false;
+                  const btn = document.getElementById('btn-sketch-on-plane');
+                  if (btn) btn.classList.remove('awaiting');
+                  this._startSketchOnFace(faceHit);
+                }
+                this._touchTapStart = null;
+                this._scheduleRender();
+                touchWasMulti = false;
+                touchStartedDrawing = false;
+                return;
+              }
+              const planeHit = this._renderer3d.pickPlane(ct.clientX, ct.clientY);
+              if (planeHit) {
+                this._awaitingSketchPlane = false;
+                const btn = document.getElementById('btn-sketch-on-plane');
+                if (btn) btn.classList.remove('awaiting');
+                this._startSketchOnPlane(planeHit.name);
+                this._touchTapStart = null;
+                this._scheduleRender();
+                touchWasMulti = false;
+                touchStartedDrawing = false;
+                return;
+              }
+            }
+          }
+          this._touchTapStart = null;
+        }
+
         if (touchStartedDrawing && this._sketchingOnPlane) {
           // Complete the drag by firing onMouseUp
           if (this.activeTool.onMouseUp) {
@@ -5301,6 +5348,10 @@ class App {
       this.viewport.fitEntities(state.entities);
     }
     this._update3DView();
+    // On mobile or when no orbit was saved, auto-fit camera to model extents
+    if (this._renderer3d && (!result.orbit || (typeof window !== 'undefined' && window.innerWidth < 780))) {
+      this._renderer3d.fitToView();
+    }
     this._updateNodeTree();
     this._updateOperationButtons();
     this._scheduleRender();
@@ -5351,6 +5402,10 @@ class App {
         this.viewport.fitEntities(state.entities);
       }
       this._update3DView();
+      // On mobile or when no orbit was saved, auto-fit camera to model extents
+      if (this._renderer3d && (!result.orbit || (typeof window !== 'undefined' && window.innerWidth < 780))) {
+        this._renderer3d.fitToView();
+      }
       this._updateNodeTree();
       this._updateOperationButtons();
       this._scheduleRender();
