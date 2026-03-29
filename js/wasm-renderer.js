@@ -194,8 +194,6 @@ export class WasmRenderer {
     this._lastTouchX = 0;
     this._lastTouchY = 0;
     this._lastPinchDist = 0;
-    this._lastPinchCenterX = 0;
-    this._lastPinchCenterY = 0;
 
     // Callback for camera change events (used by interaction recorder)
     this.onCameraInteraction = null; // (type: 'orbit_start'|'pan_start'|'orbit_end'|'zoom', state) => void

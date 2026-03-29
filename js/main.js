@@ -1524,7 +1524,7 @@ class App {
           : null;
         const result = getSnappedPosition(sx, sy, sketchVP, basePoint);
         world = result.world;
-        snap = result.snap || null;
+        snap = result.snap;
       } else {
         world = this._screenToSketchWorld(sx, sy);
         snap = null;

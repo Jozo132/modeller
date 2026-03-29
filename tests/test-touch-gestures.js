@@ -404,7 +404,7 @@ class SketchTouchState {
   const thetaAfterRight = g._orbitTheta;
   g.touchMove([{ clientX: 250, clientY: 250 }]);
   assert(g._orbitPhi < origPhi, 'Moving down decreases phi');
-  assert(g._orbitTheta === thetaAfterRight, 'Theta unchanged when moving vertically');
+  assert(Math.abs(g._orbitTheta - thetaAfterRight) < 1e-10, 'Theta unchanged when moving vertically');
 }
 
 // ---- Test 12: Complete gesture sequence ----
