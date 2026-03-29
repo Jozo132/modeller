@@ -68,8 +68,14 @@ export class MeshStitcher {
           normal: face.normal ? { ...face.normal } : { x: 0, y: 0, z: 1 },
           shared,
         };
-        if (topoFaceId !== undefined) out.topoFaceId = topoFaceId;
-        if (faceType) out.faceType = faceType;
+        if (topoFaceId !== undefined) {
+          out.topoFaceId = topoFaceId;
+          out.faceGroup = topoFaceId;
+        }
+        if (faceType) {
+          out.faceType = faceType;
+          out.isCurved = faceType !== 'planar';
+        }
         allFaces.push(out);
       }
     }

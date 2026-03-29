@@ -21,6 +21,7 @@ export function detectSelfIntersections(faces, opts = {}) {
   const pairs = [];
   const n = faces.length;
   const sameGroupOnly = opts.sameGroupOnly || false;
+  const sameTopoFaceOnly = opts.sameTopoFaceOnly || false;
 
   for (let i = 0; i < n; i++) {
     const fa = faces[i];
@@ -29,6 +30,7 @@ export function detectSelfIntersections(faces, opts = {}) {
       const fb = faces[j];
       if (fb.vertices.length !== 3) continue;
       if (sameGroupOnly && fa.faceGroup !== fb.faceGroup) continue;
+      if (sameTopoFaceOnly && fa.topoFaceId !== undefined && fb.topoFaceId !== undefined && fa.topoFaceId !== fb.topoFaceId) continue;
 
       // Skip triangles that share an edge or vertex (neighbours)
       if (_sharesVertexOrEdge(fa.vertices, fb.vertices)) continue;
