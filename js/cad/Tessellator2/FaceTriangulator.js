@@ -492,6 +492,14 @@ export class FaceTriangulator {
     const combinedPts = [...allPts, ...steiner3D];
     const triIndices = constrainedTriangulate(pts2d, [], steiner2D);
 
+    // Track original boundary edges so adaptive subdivision skips them.
+    // Boundary edges are shared with adjacent B-Rep faces and must not be
+    // split to avoid T-junctions at face boundaries.
+    const boundaryEdgeSet = new Set();
+    for (let i = 0; i < allPts.length; i++) {
+      boundaryEdgeSet.add(_edgeKey(allPts[i], allPts[(i + 1) % allPts.length]));
+    }
+
     let triangles = [];
     for (const [a, b, c] of triIndices) {
       const pa = combinedPts[a], pb = combinedPts[b], pc = combinedPts[c];
@@ -503,13 +511,12 @@ export class FaceTriangulator {
     // Global winding check: CDT produces consistent winding, but the
     // projection direction may not agree with the face outward normal.
     // Check one representative triangle and flip ALL if needed.
+    const outX = sameSense ? surfNormal.x : -surfNormal.x;
+    const outY = sameSense ? surfNormal.y : -surfNormal.y;
+    const outZ = sameSense ? surfNormal.z : -surfNormal.z;
     if (triangles.length > 0) {
       const [ta, tb, tc] = triangles[0];
       const triN = calculateNormal(ta, tb, tc);
-      // The desired outward direction: surfNormal for sameSense=true, -surfNormal otherwise
-      const outX = sameSense ? surfNormal.x : -surfNormal.x;
-      const outY = sameSense ? surfNormal.y : -surfNormal.y;
-      const outZ = sameSense ? surfNormal.z : -surfNormal.z;
       const dot = triN.x * outX + triN.y * outY + triN.z * outZ;
       if (dot < 0) {
         for (let i = 0; i < triangles.length; i++) {
@@ -519,10 +526,22 @@ export class FaceTriangulator {
       }
     }
 
+    // Remove any CDT artifact triangles that face the wrong direction.
+    // On complex curved surfaces, the 2D projection can create triangles
+    // whose 3D geometry is inverted relative to the face outward normal.
+    triangles = triangles.filter(([a, b, c]) => {
+      const n = calculateNormal(a, b, c);
+      return (n.x * outX + n.y * outY + n.z * outZ) > 0;
+    });
+
     // --- Step 3: Adaptive subdivision using UV interpolation ---
-    // Only possible when UV coordinates are valid.  Without valid UVs,
-    // we still get a correct (but faceted) triangulation from CDT.
-    const maxPasses = uvValid ? Math.min(surfaceSegments, 4) : 0;
+    // When UV coordinates are valid, use full adaptive subdivision.
+    // For periodic surfaces, allow limited subdivision on interior edges
+    // only (boundary edges are protected above to prevent T-junctions).
+    // The surfaceMidpoint() handles seam-crossing via closestPointUV.
+    const maxPasses = uvValid
+      ? Math.min(surfaceSegments, 4)
+      : 0;
 
     // Scale deviation tolerance relative to face bounding box diagonal.
     // An absolute tolerance (e.g. 1e-3) causes explosive subdivision on
@@ -593,12 +612,32 @@ export class FaceTriangulator {
       return Math.sqrt(dx * dx + dy * dy + dz * dz);
     }
 
+    // Reference outward direction for fold detection.
+    // Sub-triangles whose normal opposes this direction are "folded".
+    const refNX = sameSense ? surfNormal.x : -surfNormal.x;
+    const refNY = sameSense ? surfNormal.y : -surfNormal.y;
+    const refNZ = sameSense ? surfNormal.z : -surfNormal.z;
+
+    /** Return true if the triangle [a,b,c] faces the same way as the reference normal. */
+    function _triAligned(a, b, c) {
+      const v1x = b.x - a.x, v1y = b.y - a.y, v1z = b.z - a.z;
+      const v2x = c.x - a.x, v2y = c.y - a.y, v2z = c.z - a.z;
+      const nx = v1y * v2z - v1z * v2y;
+      const ny = v1z * v2x - v1x * v2z;
+      const nz = v1x * v2y - v1y * v2x;
+      return (nx * refNX + ny * refNY + nz * refNZ) >= 0;
+    }
+
     for (let pass = 0; pass < maxPasses; pass++) {
       const edgeSplitSet = new Set();
       for (const [a, b, c] of triangles) {
         for (const [p, q] of [[a, b], [b, c], [c, a]]) {
+          const ek = _edgeKey(p, q);
+          // Never split original boundary edges — they are shared with
+          // adjacent B-Rep faces and splitting would create T-junctions.
+          if (boundaryEdgeSet.has(ek)) continue;
           if (edgeDeviation(p, q) > deviationTol) {
-            edgeSplitSet.add(_edgeKey(p, q));
+            edgeSplitSet.add(ek);
           }
         }
       }
@@ -613,32 +652,42 @@ export class FaceTriangulator {
         const splitCount = (splitAB ? 1 : 0) + (splitBC ? 1 : 0) + (splitCA ? 1 : 0);
 
         if (splitCount === 0) { next.push([a, b, c]); continue; }
-        anySplit = true;
 
+        // Compute candidate sub-triangles
+        let subs;
         if (splitCount === 3) {
           const mAB = surfaceMidpoint(a, b);
           const mBC = surfaceMidpoint(b, c);
           const mCA = surfaceMidpoint(c, a);
-          next.push([a, mAB, mCA], [mAB, b, mBC], [mCA, mBC, c], [mAB, mBC, mCA]);
+          subs = [[a, mAB, mCA], [mAB, b, mBC], [mCA, mBC, c], [mAB, mBC, mCA]];
         } else if (splitCount === 2) {
           if (!splitAB) {
             const mBC = surfaceMidpoint(b, c), mCA = surfaceMidpoint(c, a);
-            next.push([a, b, mBC], [a, mBC, mCA], [mCA, mBC, c]);
+            subs = [[a, b, mBC], [a, mBC, mCA], [mCA, mBC, c]];
           } else if (!splitBC) {
             const mAB = surfaceMidpoint(a, b), mCA = surfaceMidpoint(c, a);
-            next.push([mAB, b, c], [mAB, c, mCA], [a, mAB, mCA]);
+            subs = [[mAB, b, c], [mAB, c, mCA], [a, mAB, mCA]];
           } else {
             const mAB = surfaceMidpoint(a, b), mBC = surfaceMidpoint(b, c);
-            next.push([a, mAB, mBC], [a, mBC, c], [mAB, b, mBC]);
+            subs = [[a, mAB, mBC], [a, mBC, c], [mAB, b, mBC]];
           }
         } else {
           if (splitAB) {
-            const m = surfaceMidpoint(a, b); next.push([a, m, c], [m, b, c]);
+            const m = surfaceMidpoint(a, b); subs = [[a, m, c], [m, b, c]];
           } else if (splitBC) {
-            const m = surfaceMidpoint(b, c); next.push([a, b, m], [a, m, c]);
+            const m = surfaceMidpoint(b, c); subs = [[a, b, m], [a, m, c]];
           } else {
-            const m = surfaceMidpoint(c, a); next.push([a, b, m], [m, b, c]);
+            const m = surfaceMidpoint(c, a); subs = [[a, b, m], [m, b, c]];
           }
+        }
+
+        // Fold guard: if any sub-triangle has a flipped normal, keep original
+        const folded = subs.some(([sa, sb, sc]) => !_triAligned(sa, sb, sc));
+        if (folded) {
+          next.push([a, b, c]);
+        } else {
+          anySplit = true;
+          for (const s of subs) next.push(s);
         }
       }
       triangles = next;
@@ -650,7 +699,10 @@ export class FaceTriangulator {
     const meshFaces = [];
     const meshVertices = [];
     for (const [a, b, c] of triangles) {
-      if (_triangleArea3D(a, b, c) < 1e-14) continue;
+      // Skip near-degenerate triangles: use a relative threshold based on
+      // face diagonal to catch CDT micro-artifacts on complex curved faces.
+      const areaThreshold = faceDiag > 0 ? faceDiag * faceDiag * 1e-8 : 1e-14;
+      if (_triangleArea3D(a, b, c) < areaThreshold) continue;
 
       // Per-vertex surface normals for shading
       let nx = 0, ny = 0, nz = 0;

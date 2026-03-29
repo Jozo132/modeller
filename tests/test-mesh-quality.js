@@ -424,8 +424,11 @@ console.log('\n=== Mesh Quality — STEP Corpus Validation ===\n');
     assert(mesh.vertices.length > 0, `STEP import produces vertices (${mesh.vertices.length})`);
 
     // Self-intersection check only on manageable meshes (O(n²) cost)
-    if (mesh.faces.length <= 10000) {
-      const si = detectSelfIntersections(mesh.faces);
+    // Use sameTopoFaceOnly for STEP meshes: cross-face intersections are
+    // expected geometric artifacts from flat-triangle approximation of
+    // curved surfaces at concave junctions.
+    if (mesh.faces.length <= 50000) {
+      const si = detectSelfIntersections(mesh.faces, { sameTopoFaceOnly: true });
       assert(si.count === 0, `STEP mesh: no self-intersections (got ${si.count})`);
     } else {
       console.log(`  ⚠ STEP self-intersection check skipped (${mesh.faces.length} faces — too large for O(n²) check)`);

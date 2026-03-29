@@ -1358,6 +1358,7 @@ html, body {
     display: none;
   }
 
+  /* ── Collapsible lower sidebar on mobile ── */
   #properties-panel {
     right: 0;
     left: 0;
@@ -1367,6 +1368,40 @@ html, body {
     width: auto;
     border-left: none;
     border-top: 1px solid var(--border);
+    transition: height 0.2s ease;
+  }
+
+  /* When the entire sidebar is collapsed, shrink to just the toggle bar */
+  #properties-panel.mobile-collapsed {
+    height: 32px;
+    min-height: 32px;
+    overflow: hidden;
+  }
+
+  /* Toggle bar for collapsing/expanding the entire sidebar */
+  .mobile-sidebar-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 32px;
+    background: var(--bg-toolbar);
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    user-select: none;
+    font-size: 11px;
+    color: var(--text-secondary);
+    gap: 6px;
+    flex-shrink: 0;
+  }
+  .mobile-sidebar-toggle:active {
+    background: rgba(255,255,255,0.06);
+  }
+  .mobile-sidebar-toggle-arrow {
+    font-size: 10px;
+    transition: transform 0.2s ease;
+  }
+  #properties-panel.mobile-collapsed .mobile-sidebar-toggle-arrow {
+    transform: rotate(180deg);
   }
 
   /* Collapsible sidebar sections on mobile */
@@ -1401,6 +1436,38 @@ html, body {
     bottom: calc(var(--bottom-offset) + 36vh);
   }
 
+  /* When sidebar is collapsed, viewport expands to fill */
+  #properties-panel.mobile-collapsed ~ #cad-canvas,
+  body:has(#properties-panel.mobile-collapsed) #cad-canvas {
+    bottom: calc(var(--bottom-offset) + 32px);
+  }
+  body:has(#properties-panel.mobile-collapsed) #view-3d {
+    bottom: calc(var(--bottom-offset) + 32px);
+  }
+
+  /* ── Collapsible node tree on mobile ── */
+  .node-tree {
+    width: 180px;
+    max-height: calc(100vh - 142px);
+  }
+  .node-tree-header {
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .node-tree-header::after {
+    content: '▾';
+    font-size: 10px;
+    opacity: 0.6;
+  }
+  .node-tree.mobile-collapsed .node-tree-header::after {
+    content: '▸';
+  }
+  .node-tree.mobile-collapsed .node-tree-content {
+    display: none;
+  }
+
   /* Hide SNAP/AUTO/ORTHO on mobile — not useful for touch */
   #status-snap,
   #status-autocoincidence,
@@ -1416,6 +1483,14 @@ html, body {
   }
   #status-bar .fov-group {
     display: none;
+  }
+
+  /* Even smaller status message text on mobile */
+  #status-message {
+    font-size: 8px;
+    line-height: 1.2;
+    max-height: 28px;
+    overflow: hidden;
   }
 }
 

@@ -157,7 +157,52 @@ export function importSTEP(stepString, opts = {}) {
     edgeSegments: opts.curveSegments ?? 64,
     surfaceSegments: opts.surfaceSegments ?? 16,
   });
+
+  // Post-process: apply analytic per-vertex normals and surface projection
+  // for faces that have surfaceInfo but no NurbsSurface (sphere, cylinder, etc.)
+  _applyAnalyticNormals(body, mesh);
+
   return { body, vertices: mesh.vertices, faces: mesh.faces };
+}
+
+/**
+ * For each B-Rep face that has a surfaceInfo but no NurbsSurface, compute
+ * per-vertex normals from the analytic surface definition.  Vertices are
+ * NOT moved so shared-edge vertex positions remain consistent with adjacent
+ * faces for correct feature-edge detection.
+ *
+ * @param {TopoBody} body
+ * @param {{ faces: Array }} mesh
+ */
+function _applyAnalyticNormals(body, mesh) {
+  // Build a map: topoFaceId -> { surfaceInfo, sameSense }
+  const faceInfos = [];
+  for (const face of body.faces()) {
+    faceInfos.push({
+      surfaceInfo: face.surfaceInfo,
+      sameSense: face.sameSense,
+      hasSurface: !!face.surface,
+    });
+  }
+
+  for (const tri of mesh.faces) {
+    const id = tri.topoFaceId;
+    if (id === undefined || id >= faceInfos.length) continue;
+    const info = faceInfos[id];
+    if (!info.surfaceInfo || info.hasSurface) continue;
+
+    // Compute per-vertex averaged normal from analytic surface
+    let nx = 0, ny = 0, nz = 0;
+    for (const v of tri.vertices) {
+      const vn = _computeVertexNormal(v, info.surfaceInfo, info.sameSense);
+      nx += vn.x; ny += vn.y; nz += vn.z;
+    }
+    nx /= 3; ny /= 3; nz /= 3;
+    const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+    if (len > 1e-14) {
+      tri.normal = { x: nx / len, y: ny / len, z: nz / len };
+    }
+  }
 }
 
 // =====================================================================

@@ -200,6 +200,7 @@ class App {
     this._syncDiagnosticHatchUI();
     this._applyBarVisibility();
     this._bindDragDropEvents();
+    this._setupMobileUI();
 
     // Register viewport, part manager, renderer, and workspace mode for persistence
     setViewport(this.viewport);
@@ -267,6 +268,41 @@ class App {
   }
 
   // --- Rendering ---
+  /** Set up mobile-specific UI: collapsible sidebar and node tree. */
+  _setupMobileUI() {
+    const isMobile = typeof window !== 'undefined' && window.innerWidth <= 780;
+    if (!isMobile) return;
+
+    // ── Collapsible properties panel ──
+    const panel = document.getElementById('properties-panel');
+    if (panel && !panel.querySelector('.mobile-sidebar-toggle')) {
+      const toggle = document.createElement('div');
+      toggle.className = 'mobile-sidebar-toggle';
+      toggle.innerHTML = '<span class="mobile-sidebar-toggle-arrow">▾</span> <span>Sidebar</span>';
+      panel.prepend(toggle);
+      toggle.addEventListener('click', () => {
+        panel.classList.toggle('mobile-collapsed');
+        // Trigger resize so the 3D viewport recalculates
+        if (this._renderer3d) requestAnimationFrame(() => this._renderer3d.onWindowResize());
+      });
+      // Start collapsed on mobile so the scene is visible
+      panel.classList.add('mobile-collapsed');
+    }
+
+    // ── Collapsible node tree ──
+    const nodeTree = document.getElementById('node-tree');
+    if (nodeTree) {
+      const header = nodeTree.querySelector('.node-tree-header');
+      if (header) {
+        header.addEventListener('click', () => {
+          nodeTree.classList.toggle('mobile-collapsed');
+        });
+      }
+      // Start collapsed on mobile
+      nodeTree.classList.add('mobile-collapsed');
+    }
+  }
+
   _syncFovSlider(degrees) {
     const slider = document.getElementById('fov-slider');
     const label = document.getElementById('fov-value');
