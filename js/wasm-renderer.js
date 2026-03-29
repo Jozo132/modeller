@@ -556,7 +556,14 @@ export class WasmRenderer {
     // phi is angle from Z axis: acos(nz)
     this._orbitPhi = Math.acos(Math.max(-1, Math.min(1, dnz)));
     // theta is angle in XY plane: atan2(ny, nx)
-    this._orbitTheta = Math.atan2(dny, dnx);
+    // For normals aligned with Z axis, atan2(0,0)=0 which differs from
+    // orientToPlane('XY') convention of theta=-π/2. Use the same value
+    // so that reload and initial entry produce the same view.
+    if (Math.abs(dnx) < 1e-6 && Math.abs(dny) < 1e-6) {
+      this._orbitTheta = -Math.PI / 2;
+    } else {
+      this._orbitTheta = Math.atan2(dny, dnx);
+    }
 
     // Clamp phi to avoid degeneracies
     if (this._orbitPhi < 0.001) this._orbitPhi = 0.001;
@@ -1717,6 +1724,20 @@ export class WasmRenderer {
           for (let i = 0; i < pts.length - 1; i++) {
             wasm.addEntitySegment(pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y, flags, 0, 0.749, 1, 1);
           }
+        } else if (entity.type === 'dimension' && wasm.addEntityDimension) {
+          const DIM_LINEAR = 0, DIM_HORIZONTAL = 1, DIM_VERTICAL = 2, DIM_ANGLE = 3;
+          let dimType = DIM_LINEAR;
+          if (entity.dimType === 'dx') dimType = DIM_HORIZONTAL;
+          else if (entity.dimType === 'dy') dimType = DIM_VERTICAL;
+          else if (entity.dimType === 'angle') dimType = DIM_ANGLE;
+          const angleStart = entity._angleStart != null ? entity._angleStart : 0;
+          const angleSweep = entity._angleSweep != null ? entity._angleSweep : 0;
+          wasm.addEntityDimension(
+            entity.x1, entity.y1, entity.x2, entity.y2,
+            entity.offset || 20, dimType,
+            angleStart, angleSweep,
+            flags, 0, 0.749, 1, 0.7
+          );
         }
       });
     }

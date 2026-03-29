@@ -14,7 +14,7 @@
 
 const CUBE_SIZE = 120;         // widget pixel size
 const MARGIN    = 12;          // distance from viewport edges
-const CHAMFER   = 0.15;        // chamfer ratio (0–0.5)
+const CHAMFER   = 0.25;        // chamfer ratio (0–0.5)
 
 // Face label definitions: name → outward normal (world space)
 const FACE_DEFS = [
@@ -309,8 +309,8 @@ export class ViewCube {
       ctx.fillText(fd.name, center.x, center.y);
     }
 
-    // Draw axis indicators below/left of cube
-    this._drawAxisIndicators(ctx, cam, cx, cy + size * 0.38, size * 0.12);
+    // Draw axis indicators at bottom-left of cube
+    this._drawAxisIndicators(ctx, cam, size * 0.15, size - size * 0.15, size * 0.12);
   }
 
   _drawAxisIndicators(ctx, cam, cx, cy, len) {
@@ -353,7 +353,7 @@ export class ViewCube {
       ctx.moveTo(face.pts[0].x, face.pts[0].y);
       for (let i = 1; i < face.pts.length; i++) ctx.lineTo(face.pts[i].x, face.pts[i].y);
       ctx.closePath();
-      if (ctx.isPointInPath(mx, my)) {
+      if (ctx.isPointInPath(mx * this._dpr, my * this._dpr)) {
         return face.region;
       }
     }

@@ -233,7 +233,7 @@ class App {
         this._partManager.deserialize(loaded.part);
         this._enterWorkspace('part');
         if (loaded.sessionState) {
-          this._restoreSessionState(loaded.sessionState);
+          this._restoreSessionState(loaded.sessionState, loaded.orbit);
         }
         // Restore orbit camera (skip if sketch mode — normal view was set by restore)
         if (loaded.orbit && this._renderer3d && !this._sketchingOnPlane) {
@@ -2511,6 +2511,7 @@ class App {
       this._sceneVersion += 1;
       this._updatePropertiesPanel(sel);
       this._rebuildLeftPanel();
+      this._scheduleRender();
     });
     state.on('layers:change', () => {
       this._sceneVersion += 1;
@@ -5044,7 +5045,7 @@ class App {
     };
   }
 
-  _restoreSessionState(sessionState) {
+  _restoreSessionState(sessionState, orbitHint) {
     if (!sessionState) return;
 
     this._expandedFolders = new Set(Array.isArray(sessionState.expandedFolders) ? sessionState.expandedFolders : []);
@@ -5103,8 +5104,20 @@ class App {
 
     this.setActiveTool('select');
 
-    // Orient camera to the sketch plane normal
+    // Lock to orthographic for sketch precision and orient camera to the sketch plane
+    if (this._renderer3d) {
+      this._renderer3d.setFOV(0);
+      this._syncFovSlider(0);
+    }
     this._orientToNormalView();
+
+    // Restore zoom (radius) and pan (target) from the persisted orbit so the
+    // camera recovers the same framing the user had before the page reload.
+    if (orbitHint && this._renderer3d) {
+      if (orbitHint.radius != null) this._renderer3d._orbitRadius = orbitHint.radius;
+      if (orbitHint.target) this._renderer3d._orbitTarget = { ...orbitHint.target };
+      this._renderer3d._orbitDirty = true;
+    }
   }
 
   _createNewDrawing() {
@@ -5180,7 +5193,7 @@ class App {
         this._enterWorkspace('part');
       }
       if (result.sessionState) {
-        this._restoreSessionState(result.sessionState);
+        this._restoreSessionState(result.sessionState, result.orbit);
       }
     }
 
@@ -5238,7 +5251,7 @@ class App {
       if (result.part) {
         this._partManager.deserialize(result.part);
         if (this._workspaceMode !== 'part') this._enterWorkspace('part');
-        if (result.sessionState) this._restoreSessionState(result.sessionState);
+        if (result.sessionState) this._restoreSessionState(result.sessionState, result.orbit);
       }
       if (result.orbit && this._renderer3d && !this._sketchingOnPlane) this._renderer3d.setOrbitState(result.orbit);
       this._scenes = result.scenes || [];
@@ -7458,18 +7471,12 @@ class App {
     if (this._editingSketchFeatureId && part) {
       const sketchFeature = part.getFeature(this._editingSketchFeatureId);
       if (sketchFeature && sketchFeature.type === 'sketch' && state.entities.length > 0) {
-        // Rebuild the sketch from the current 2D scene
+        // Rebuild the sketch from the current 2D scene (full-fidelity: geometry + constraints + dimensions)
         const { Sketch } = await import('./cad/Sketch.js');
         const sketch = new Sketch();
         sketch.name = sketchFeature.sketch.name;
-        for (const seg of state.scene.segments) {
-          const s = seg.p1 || seg.start;
-          const e = seg.p2 || seg.end;
-          if (s && e) sketch.addSegment(s.x, s.y, e.x, e.y);
-        }
-        for (const circle of state.scene.circles) {
-          sketch.addCircle(circle.center.x, circle.center.y, circle.radius);
-        }
+        const { Scene } = await import('./cad/Scene.js');
+        sketch.scene = Scene.deserialize(state.scene.serialize());
         sketchFeature.sketch = sketch;
         sketchFeature.modified = new Date();
         // Recalculate the feature tree from this sketch forward
@@ -7536,23 +7543,17 @@ class App {
    * Loads the sketch geometry back into the 2D scene, enters sketch-on-plane
    * mode, and marks the sketch for in-place update on exit.
    */
-  _editExistingSketch(sketchFeature) {
+  async _editExistingSketch(sketchFeature) {
     if (this._sketchingOnPlane) return;
     if (!sketchFeature || sketchFeature.type !== 'sketch') return;
 
     const sketch = sketchFeature.sketch;
     if (!sketch) return;
 
-    // Clear the 2D scene and load sketch geometry into it
-    state.scene.clear();
+    // Clear the 2D scene and load full sketch data (geometry + constraints + dimensions)
     state.selectedEntities = [];
-
-    for (const seg of sketch.segments) {
-      state.scene.addSegment(seg.p1.x, seg.p1.y, seg.p2.x, seg.p2.y);
-    }
-    for (const circle of sketch.circles) {
-      state.scene.addCircle(circle.center.x, circle.center.y, circle.radius);
-    }
+    const { Scene } = await import('./cad/Scene.js');
+    state.scene = Scene.deserialize(sketch.scene.serialize());
 
     // Determine plane name from the sketch feature's plane
     const plane = sketchFeature.plane;
@@ -9187,7 +9188,7 @@ class App {
           this._enterWorkspace('part');
         }
         if (result.sessionState) {
-          this._restoreSessionState(result.sessionState);
+          this._restoreSessionState(result.sessionState, result.orbit);
         }
       }
 

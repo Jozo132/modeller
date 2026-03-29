@@ -2,6 +2,7 @@
 
 import { Part } from './cad/Part.js';
 import { Sketch } from './cad/Sketch.js';
+import { Scene } from './cad/Scene.js';
 
 /**
  * PartManager - Handles 3D part creation and feature management
@@ -44,41 +45,8 @@ export class PartManager {
     const sketch = new Sketch();
     sketch.name = name;
     
-    // Copy segments from the scene
-    if (scene.segments && scene.segments.length > 0) {
-      scene.segments.forEach(seg => {
-        const s = seg.p1 || seg.start;
-        const e = seg.p2 || seg.end;
-        if (s && e) {
-          sketch.addSegment(s.x, s.y, e.x, e.y);
-        }
-      });
-    }
-
-    // Copy circles
-    if (scene.circles && scene.circles.length > 0) {
-      scene.circles.forEach(circle => {
-        sketch.addCircle(circle.center.x, circle.center.y, circle.radius);
-      });
-    }
-
-    // Copy arcs
-    if (scene.arcs && scene.arcs.length > 0) {
-      scene.arcs.forEach(arc => {
-        // Convert arc to segments (8-segment approximation)
-        const numSegments = 8;
-        const totalAngle = arc.endAngle - arc.startAngle;
-        for (let i = 0; i < numSegments; i++) {
-          const angle1 = arc.startAngle + (i / numSegments) * totalAngle;
-          const angle2 = arc.startAngle + ((i + 1) / numSegments) * totalAngle;
-          const x1 = arc.center.x + Math.cos(angle1) * arc.radius;
-          const y1 = arc.center.y + Math.sin(angle1) * arc.radius;
-          const x2 = arc.center.x + Math.cos(angle2) * arc.radius;
-          const y2 = arc.center.y + Math.sin(angle2) * arc.radius;
-          sketch.addSegment(x1, y1, x2, y2);
-        }
-      });
-    }
+    // Full-fidelity copy: serialize → deserialize preserves geometry, constraints, and dimensions
+    sketch.scene = Scene.deserialize(scene.serialize());
 
     const sketchFeature = this.part.addSketch(sketch, plane);
     this.activeFeature = sketchFeature;

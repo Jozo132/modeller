@@ -369,7 +369,10 @@ export class SelectTool extends BaseTool {
       if (this._isDragging) {
         this._dragPoint.x = wx;
         this._dragPoint.y = wy;
+        const wasFixed = this._dragPoint.fixed;
+        this._dragPoint.fixed = true;
         state.scene.solve();
+        this._dragPoint.fixed = wasFixed;
 
         // Snap-to-coincidence detection for the single dragged point
         if (state.autoCoincidence) {
@@ -412,14 +415,19 @@ export class SelectTool extends BaseTool {
       if (this._isDragging) {
         const wdx = wx - this._dragStart.wx;
         const wdy = wy - this._dragStart.wy;
+        const savedFixed = this._dragShapePts.map(p => p.fixed);
         for (const p of this._dragShapePts) {
           p.x += wdx;
           p.y += wdy;
+          p.fixed = true;
         }
         // Update reference so delta is cumulative
         this._dragStart.wx = wx;
         this._dragStart.wy = wy;
         state.scene.solve();
+        for (let i = 0; i < this._dragShapePts.length; i++) {
+          this._dragShapePts[i].fixed = savedFixed[i];
+        }
 
         // Snap-to-coincidence detection for all movable points of the shape
         if (state.autoCoincidence) {
