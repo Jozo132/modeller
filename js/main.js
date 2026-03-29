@@ -1504,38 +1504,16 @@ class App {
       this._scheduleRender();
     }, { passive: false });
 
-    // Touch events for sketch-on-plane interaction
-    canvas.addEventListener('touchstart', (e) => {
-      if (!this._sketchingOnPlane) return;
-      if (e.touches.length !== 1) return;
-      e.preventDefault();
-      const rect = canvas.getBoundingClientRect();
-      const touch = e.touches[0];
-      const sx = touch.clientX - rect.left;
-      const sy = touch.clientY - rect.top;
-      const sketchVP = this._getSketchViewport();
-      let world;
-      if (sketchVP) {
-        const basePoint = this.activeTool._startX !== undefined && this.activeTool.step > 0
-          ? { x: this.activeTool._startX, y: this.activeTool._startY }
-          : null;
-        const result = getSnappedPosition(sx, sy, sketchVP, basePoint);
-        world = result.world;
-      } else {
-        world = this._screenToSketchWorld(sx, sy);
-      }
-      if (world && this.activeTool.onClick) {
-        this.activeTool.onClick(world.x, world.y, e);
-      }
-      this._scheduleRender();
-    }, { passive: false });
+    // Touch events for mobile gesture interaction
+    // Tracks whether the current touch sequence is a multi-touch gesture
+    // (pan/zoom) so that single-finger drawing is not triggered after a
+    // two-finger gesture lifts one finger.
+    let touchWasMulti = false;
+    let touchStartedDrawing = false;
 
-    canvas.addEventListener('touchmove', (e) => {
-      if (!this._sketchingOnPlane) return;
-      if (e.touches.length !== 1) return;
-      e.preventDefault();
+    // Helper: convert a single touch to snapped sketch-world coordinates
+    const touchToSketchWorld = (touch) => {
       const rect = canvas.getBoundingClientRect();
-      const touch = e.touches[0];
       const sx = touch.clientX - rect.left;
       const sy = touch.clientY - rect.top;
       const sketchVP = this._getSketchViewport();
@@ -1546,11 +1524,72 @@ class App {
           : null;
         const result = getSnappedPosition(sx, sy, sketchVP, basePoint);
         world = result.world;
-        snap = result.snap;
+        snap = result.snap || null;
       } else {
         world = this._screenToSketchWorld(sx, sy);
         snap = null;
       }
+      return { sx, sy, world, snap };
+    };
+
+    canvas.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+
+      if (e.touches.length >= 2) {
+        // Multi-touch: mark gesture so single-finger events are suppressed
+        // after one finger lifts.  Let WasmRenderer handle pan/zoom for
+        // both sketch and non-sketch modes.
+        touchWasMulti = true;
+        touchStartedDrawing = false;
+        return; // WasmRenderer touchstart handles pinch/pan setup
+      }
+
+      // Single finger
+      if (!this._sketchingOnPlane) {
+        // Not sketching — WasmRenderer handles single-finger orbit
+        touchWasMulti = false;
+        touchStartedDrawing = false;
+        return;
+      }
+
+      // Sketch mode: single finger → drawing interaction
+      if (touchWasMulti) {
+        // Don't start drawing if this finger came from a multi-touch
+        // gesture (user lifting one finger from a two-finger pan/zoom).
+        return;
+      }
+
+      touchStartedDrawing = true;
+      const { sx, sy, world } = touchToSketchWorld(e.touches[0]);
+
+      // Trigger onMouseDown for tools that support drag (e.g. SelectTool)
+      if (world && this.activeTool.onMouseDown) {
+        this.activeTool.onMouseDown(world.x, world.y, sx, sy, e);
+      }
+      // Also trigger onClick for click-based tools (line, circle, etc.)
+      if (world && this.activeTool.onClick) {
+        this.activeTool.onClick(world.x, world.y, e);
+      }
+      this._scheduleRender();
+    }, { passive: false });
+
+    canvas.addEventListener('touchmove', (e) => {
+      e.preventDefault();
+
+      if (e.touches.length >= 2) {
+        // Multi-touch pan/zoom — WasmRenderer handles it
+        return;
+      }
+
+      if (!this._sketchingOnPlane) {
+        // Non-sketch single finger — WasmRenderer handles orbit
+        return;
+      }
+
+      // Single finger sketch drawing/drag — only if we started drawing
+      if (!touchStartedDrawing) return;
+
+      const { sx, sy, world, snap } = touchToSketchWorld(e.touches[0]);
       if (world) {
         this.renderer.cursorWorld = world;
         this.renderer.snapPoint = snap;
@@ -1558,6 +1597,55 @@ class App {
         this._scheduleRender();
       }
     }, { passive: false });
+
+    canvas.addEventListener('touchend', (e) => {
+      if (e.touches.length === 0) {
+        // All fingers lifted
+        if (touchStartedDrawing && this._sketchingOnPlane) {
+          // Complete the drag by firing onMouseUp
+          if (this.activeTool.onMouseUp) {
+            const ct = e.changedTouches[0];
+            if (ct) {
+              const { world } = touchToSketchWorld(ct);
+              if (world) {
+                this._flushSketchPointer();
+                this.activeTool.onMouseUp(world.x, world.y, e);
+              }
+            }
+          }
+          this._scheduleRender();
+        }
+        touchWasMulti = false;
+        touchStartedDrawing = false;
+      } else if (e.touches.length === 1 && touchWasMulti) {
+        // Went from 2 fingers to 1: still in gesture mode, don't start drawing
+      }
+    }, { passive: false });
+
+    // Hook into WasmRenderer's touch callbacks so we can intercept
+    // sketch-mode single-finger touches (handled above) while letting
+    // multi-touch and non-sketch gestures pass through to the renderer.
+    if (this._renderer3d) {
+      this._renderer3d.onTouchStart = (e) => {
+        if (this._sketchingOnPlane && e.touches.length === 1 && !touchWasMulti) {
+          // Sketch single-finger — handled by App, don't let renderer orbit
+          return true; // consumed
+        }
+        return false; // let renderer handle
+      };
+      this._renderer3d.onTouchMove = (e) => {
+        if (this._sketchingOnPlane && e.touches.length === 1 && touchStartedDrawing) {
+          return true; // consumed by sketch drawing
+        }
+        return false;
+      };
+      this._renderer3d.onTouchEnd = (e) => {
+        if (this._sketchingOnPlane && touchStartedDrawing && e.touches.length === 0) {
+          return true; // consumed
+        }
+        return false;
+      };
+    }
   }
 
   // --- Toolbar ---
