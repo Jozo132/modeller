@@ -42,6 +42,7 @@ import {
   MirrorTool, MidpointSnapTool, LinearPatternTool, RadialPatternTool,
 } from './tools/index.js';
 import { InteractionRecorder, PlaybackEngine } from './interaction-recorder.js';
+import { ViewCube } from './ui/viewcube.js';
 import { applyChamfer, applyFillet, expandPathEdgeKeys, makeEdgeKey, calculateMeshVolume, calculateBoundingBox, calculateSurfaceArea, detectDisconnectedBodies, calculateWallThickness, countInvertedFaces } from './cad/CSG.js';
 
 const DIAGNOSTIC_HATCH_STORAGE_KEY = 'cad-modeller-diagnostic-backface-hatch';
@@ -103,6 +104,14 @@ class App {
         this._scheduleRender();
       });
     }
+
+    // Navigation ViewCube — visible only in part (3D) mode
+    this._viewCube = new ViewCube(view3dContainer, {
+      getOrbit: () => this._renderer3d.getOrbitState(),
+      setOrbit: (theta, phi) => this._animateOrbitTo(theta, phi),
+    });
+    this._viewCube.setVisible(this._workspaceMode === 'part');
+    this._renderer3d.onPostRender = () => this._viewCube.render();
     
     this.canvas = document.getElementById('cad-canvas');
     this.viewport = new Viewport(this.canvas);
@@ -3662,7 +3671,11 @@ class App {
     if (!screenPos) {
       const midWx = (dim.x1 + dim.x2) / 2;
       const midWy = (dim.y1 + dim.y2) / 2;
-      const s = this.viewport.worldToScreen(midWx, midWy);
+      // In 3D sketch mode, use the renderer's sketchToScreen projection
+      const sketchVp = this._getSketchViewport();
+      const s = sketchVp
+        ? sketchVp.worldToScreen(midWx, midWy)
+        : this.viewport.worldToScreen(midWx, midWy);
       screenPos = { x: s.x, y: s.y };
     }
 
@@ -6165,6 +6178,44 @@ class App {
     }
   }
 
+  /** Smoothly animate the orbit camera to target (theta, phi) over ~300ms. */
+  _animateOrbitTo(targetTheta, targetPhi) {
+    if (!this._renderer3d) return;
+    const state = this._renderer3d.getOrbitState();
+    const startTheta = state.theta;
+    const startPhi = state.phi;
+
+    // Normalise angle difference to shortest path
+    let dTheta = targetTheta - startTheta;
+    while (dTheta > Math.PI)  dTheta -= 2 * Math.PI;
+    while (dTheta < -Math.PI) dTheta += 2 * Math.PI;
+    const dPhi = targetPhi - startPhi;
+
+    const duration = 300; // ms
+    const t0 = performance.now();
+
+    // Cancel any previous animation
+    if (this._orbitAnimId) cancelAnimationFrame(this._orbitAnimId);
+
+    const step = () => {
+      const elapsed = performance.now() - t0;
+      const t = Math.min(1, elapsed / duration);
+      // Ease-in-out (smoothstep)
+      const s = t * t * (3 - 2 * t);
+
+      const theta = startTheta + dTheta * s;
+      const phi = startPhi + dPhi * s;
+      this._renderer3d.setOrbitState({ theta, phi });
+
+      if (t < 1) {
+        this._orbitAnimId = requestAnimationFrame(step);
+      } else {
+        this._orbitAnimId = null;
+      }
+    };
+    this._orbitAnimId = requestAnimationFrame(step);
+  }
+
   _enterWorkspace(mode) {
     this._workspaceMode = mode;
     this._hideQuickStart();
@@ -6198,6 +6249,7 @@ class App {
       this._recorder.workspaceChanged(mode);
       info('Entered Part Design workspace');
     }
+    if (this._viewCube) this._viewCube.setVisible(mode === 'part');
     this._scheduleRender();
   }
 

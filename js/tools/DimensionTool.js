@@ -186,10 +186,14 @@ export class DimensionTool extends BaseTool {
       const alreadyConstrained = this._isAlreadyConstrained(dim);
 
       // Compute screen position for the inline widget (midpoint of dimension line)
-      const vp = this.app.viewport;
       const midWx = (dim.x1 + dim.x2) / 2;
       const midWy = (dim.y1 + dim.y2) / 2;
-      const screenMid = vp.worldToScreen(midWx, midWy);
+      // In 3D sketch mode, use the renderer's sketchToScreen projection;
+      // the 2D viewport's worldToScreen is not valid in 3D.
+      const sketchVp = this.app._getSketchViewport && this.app._getSketchViewport();
+      const screenMid = sketchVp
+        ? sketchVp.worldToScreen(midWx, midWy)
+        : this.app.viewport.worldToScreen(midWx, midWy);
 
       const isAngle = dim.dimType === 'angle';
       const currentVal = isAngle

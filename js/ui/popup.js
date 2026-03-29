@@ -312,7 +312,8 @@ export function showDimensionInput({
     container.appendChild(inputRow);
 
     // --- Position the widget ---
-    const canvasEl = anchor || document.getElementById('cad-canvas');
+    // Use the 3D view container (visible) instead of the hidden cad-canvas
+    const canvasEl = anchor || document.getElementById('view-3d') || document.getElementById('cad-canvas');
     if (canvasEl) {
       const rect = canvasEl.getBoundingClientRect();
       if (screenPos) {

@@ -288,6 +288,8 @@ export class WasmRenderer {
     if (this.mode === '3d' || this._sketchPlane) {
       this._renderMeshOverlay();
     }
+
+    if (this.onPostRender) this.onPostRender();
   }
 
   /* ---------- 3D orbit controls ---------- */
