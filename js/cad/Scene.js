@@ -31,6 +31,57 @@ export class Scene {
     this.constraints = [];  // Constraint[]
     this.texts = [];        // TextPrimitive[] (pass-through, non-constraint)
     this.dimensions = [];   // DimensionPrimitive[] (pass-through)
+
+    // Reference entities — always present, not serialized, constrainable
+    this._initReferenceEntities();
+  }
+
+  /** Create the origin point and axis lines as reference entities. */
+  _initReferenceEntities() {
+    const origin = new PPoint(0, 0, true);
+    origin.id = -1;
+    origin._isReference = true;
+    origin.visible = true;
+
+    const xEnd = new PPoint(1, 0, true);
+    xEnd.id = -2;
+    xEnd._isReference = true;
+    xEnd.visible = false;
+
+    const yEnd = new PPoint(0, 1, true);
+    yEnd.id = -3;
+    yEnd._isReference = true;
+    yEnd.visible = false;
+
+    const xAxis = new PSegment(origin, xEnd);
+    xAxis.id = -4;
+    xAxis._isReference = true;
+    xAxis.construction = true;
+    xAxis.constructionType = 'infinite-both';
+    xAxis.visible = true;
+
+    const yAxis = new PSegment(origin, yEnd);
+    yAxis.id = -5;
+    yAxis._isReference = true;
+    yAxis.construction = true;
+    yAxis.constructionType = 'infinite-both';
+    yAxis.visible = true;
+
+    this._originPoint = origin;
+    this._xAxisLine = xAxis;
+    this._yAxisLine = yAxis;
+  }
+
+  /** Get the reference entities map for serialization lookups. */
+  _refPtMap() {
+    return new Map([
+      [-1, this._originPoint],
+      [-2, this._xAxisLine.p1 === this._originPoint ? this._xAxisLine.p2 : this._xAxisLine.p1],
+      [-3, this._yAxisLine.p1 === this._originPoint ? this._yAxisLine.p2 : this._yAxisLine.p1],
+    ]);
+  }
+  _refShapeMap() {
+    return new Map([[-4, this._xAxisLine], [-5, this._yAxisLine]]);
   }
 
   // -----------------------------------------------------------------------
@@ -216,13 +267,13 @@ export class Scene {
     for (const spl of this.splines) { for (const p of spl.points) used.add(p); }
     this.points = this.points.filter(p => used.has(p));
     this.constraints = this.constraints.filter(c =>
-      c.involvedPoints().every(pt => this.points.includes(pt))
+      c.involvedPoints().every(pt => this.points.includes(pt) || (pt && pt._isReference))
     );
     // Also mark orphaned dimension constraints as non-constraining
     for (const dim of this.dimensions) {
       if (dim.isConstraint && dim.sourceA) {
         const pts = dim.involvedPoints();
-        if (pts.length > 0 && !pts.every(pt => this.points.includes(pt))) {
+        if (pts.length > 0 && !pts.every(pt => this.points.includes(pt) || (pt && pt._isReference))) {
           dim.isConstraint = false;
           dim.sourceA = null;
           dim.sourceB = null;
@@ -268,6 +319,12 @@ export class Scene {
       const d = s.distanceTo(wx, wy);
       if (d < worldTolerance && d < bestDist) { bestDist = d; best = s; }
     }
+    // Also check reference axis lines
+    for (const ref of [this._xAxisLine, this._yAxisLine]) {
+      if (!ref) continue;
+      const d = ref.distanceTo(wx, wy);
+      if (d < worldTolerance && d < bestDist) { bestDist = d; best = ref; }
+    }
     return best;
   }
 
@@ -277,6 +334,11 @@ export class Scene {
     for (const p of this.points) {
       const d = p.distanceTo(wx, wy);
       if (d < worldTolerance && d < bestDist) { bestDist = d; best = p; }
+    }
+    // Also check origin reference point
+    if (this._originPoint) {
+      const d = this._originPoint.distanceTo(wx, wy);
+      if (d < worldTolerance && d < bestDist) { bestDist = d; best = this._originPoint; }
     }
     return best;
   }
@@ -379,6 +441,10 @@ export class Scene {
     // 1. Rebuild points & build id→point map
     const ptMap = new Map();
     let maxPrimId = 0;
+
+    // Add reference entities to maps so constraints can resolve them
+    for (const [id, pt] of scene._refPtMap()) ptMap.set(id, pt);
+
     for (const d of (data.points || [])) {
       const p = new PPoint(d.x, d.y, d.fixed || false);
       p.id = d.id;
@@ -391,6 +457,7 @@ export class Scene {
 
     // 2. Rebuild segments
     const shapeMap = new Map();
+    for (const [id, shape] of scene._refShapeMap()) shapeMap.set(id, shape);
     for (const d of (data.segments || [])) {
       const p1 = ptMap.get(d.p1);
       const p2 = ptMap.get(d.p2);

@@ -7320,11 +7320,13 @@ class App {
     // 1. Active sketch plane
     if (this._sketchingOnPlane && this._activeSketchPlaneDef) {
       this._renderer3d.orientToPlaneNormal(this._activeSketchPlaneDef.normal, this._activeSketchPlaneDef.origin);
+      this._zoomToFitSketch();
       this._scheduleRender();
       return;
     }
     if (this._sketchingOnPlane && this._activeSketchPlane && this._activeSketchPlane !== 'FACE') {
       this._renderer3d.orientToPlane(this._activeSketchPlane);
+      this._zoomToFitSketch();
       this._scheduleRender();
       return;
     }
@@ -7346,7 +7348,47 @@ class App {
       return;
     }
 
+    // 4. Selected sketch feature (not editing)
+    if (this._renderer3d._selectedFeatureId && this._partManager) {
+      const features = this._partManager.getFeatures();
+      const feat = features.find(f => f.id === this._renderer3d._selectedFeatureId);
+      if (feat && feat.type === 'sketch' && feat.plane) {
+        this._renderer3d.orientToPlaneNormal(feat.plane.normal, feat.plane.origin);
+        this._scheduleRender();
+        return;
+      }
+    }
+
     this.setStatus('Select a face or plane first, or enter a sketch.');
+  }
+
+  /** Zoom the 3D camera so the active sketch content fits the viewport. */
+  _zoomToFitSketch() {
+    if (!this._renderer3d) return;
+    const bounds = state.scene.getBounds();
+    const w = bounds.maxX - bounds.minX;
+    const h = bounds.maxY - bounds.minY;
+    const extent = Math.max(w, h, 4); // minimum visible extent
+
+    // In orthographic 3D mode, halfH = orbitRadius * 0.5, so radius = extent * margin
+    const aspect = (this._renderer3d._cssWidth || 800) / (this._renderer3d._cssHeight || 600);
+    const marginFactor = 1.3;
+    const radiusFromH = extent * marginFactor;
+    const radiusFromW = (extent * marginFactor) / aspect;
+    this._renderer3d._orbitRadius = Math.max(radiusFromH, radiusFromW);
+
+    // Center on the sketch content (project 2D center into 3D)
+    const cx = (bounds.minX + bounds.maxX) / 2;
+    const cy = (bounds.minY + bounds.maxY) / 2;
+    const pd = this._activeSketchPlaneDef;
+    if (pd) {
+      this._renderer3d._orbitTarget = {
+        x: pd.origin.x + cx * pd.xAxis.x + cy * pd.yAxis.x,
+        y: pd.origin.y + cx * pd.xAxis.y + cy * pd.yAxis.y,
+        z: pd.origin.z + cx * pd.xAxis.z + cy * pd.yAxis.z,
+      };
+    }
+    this._renderer3d._orbitDirty = true;
   }
 
   _getPlaneFromFace(faceHit) {

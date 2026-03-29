@@ -3395,11 +3395,19 @@ function _computeFullyConstrained(scene) {
       onFCLine: false,
     });
   }
+  // Include reference entities (origin, axis endpoints) as fully-constrained
+  if (scene._originPoint) {
+    for (const rp of [scene._originPoint, scene._xAxisLine && scene._xAxisLine.p2, scene._yAxisLine && scene._yAxisLine.p2]) {
+      if (rp && !ps.has(rp)) ps.set(rp, { xLock: true, yLock: true, radials: new Set(), onFCLine: false });
+    }
+  }
 
   const ss = new Map();
   for (const seg of scene.segments) {
     ss.set(seg, { dirKnown: false, lenKnown: false });
   }
+  if (scene._xAxisLine && !ss.has(scene._xAxisLine)) ss.set(scene._xAxisLine, { dirKnown: true, lenKnown: true });
+  if (scene._yAxisLine && !ss.has(scene._yAxisLine)) ss.set(scene._yAxisLine, { dirKnown: true, lenKnown: true });
 
   const isFC = (s) => {
     if (!s) return false;
@@ -3426,18 +3434,34 @@ function _computeFullyConstrained(scene) {
     for (const c of scene.constraints) {
       switch (c.type) {
         case 'fixed': {
-          return computeOrbitMvp({
-            width: this.canvas.width,
-            height: this.canvas.height,
-            target: this._orbitTarget,
-            theta: this._orbitTheta,
-            phi: this._orbitPhi,
-            radius: this._orbitRadius,
-            fov: this._fov,
-            fovDegrees: this._fovDegrees,
-            ortho3D: this._ortho3D,
-            orthoBounds: this._orthoBounds,
-          });
+          const sp = ps.get(c.pt);
+          if (sp && markFC(sp)) changed = true;
+          break;
+        }
+        case 'parallel':
+        case 'perpendicular': {
+          const siA = ss.get(c.segA), siB = ss.get(c.segB);
+          if (siA && siB) {
+            if (siA.dirKnown && !siB.dirKnown) { siB.dirKnown = true; changed = true; }
+            if (siB.dirKnown && !siA.dirKnown) { siA.dirKnown = true; changed = true; }
+          }
+          break;
+        }
+        case 'horizontal':
+        case 'vertical': {
+          const si = ss.get(c.seg);
+          if (si && !si.dirKnown) { si.dirKnown = true; changed = true; }
+          break;
+        }
+        case 'coincident': {
+          const sa = ps.get(c.ptA), sb = ps.get(c.ptB);
+          if (sa && sb) {
+            if (isFC(sa) && !isFC(sb) && markFC(sb)) changed = true;
+            if (isFC(sb) && !isFC(sa) && markFC(sa)) changed = true;
+          }
+          break;
+        }
+        case 'angle': {
           const siA = ss.get(c.segA), siB = ss.get(c.segB);
           if (siA && siB) {
             if (siA.dirKnown && !siB.dirKnown) { siB.dirKnown = true; changed = true; }
