@@ -1997,24 +1997,26 @@ export class WasmRenderer {
         // Arrowheads — scale with zoom, capped at a max size
         const pixelDist = Math.hypot(sd2.x - sd1.x, sd2.y - sd1.y);
         const baseArrowLen = 8;
+        const ARROW_HEAD_ANGLE = 0.35; // half-angle of arrowhead in radians (~20°)
         const arrowLen = Math.min(baseArrowLen, pixelDist / 4);
         if (arrowLen > 1) {
           const angle = Math.atan2(sd2.y - sd1.y, sd2.x - sd1.x);
+          // Use outside arrows when distance is too small to fit two inside
           const useOutside = pixelDist < baseArrowLen * 4;
-          const _drawArrow = (ax, ay, aAngle) => {
+          const drawArrow = (ax, ay, aAngle) => {
             ctx.beginPath();
             ctx.moveTo(ax, ay);
-            ctx.lineTo(ax - arrowLen * Math.cos(aAngle - 0.35), ay - arrowLen * Math.sin(aAngle - 0.35));
-            ctx.lineTo(ax - arrowLen * Math.cos(aAngle + 0.35), ay - arrowLen * Math.sin(aAngle + 0.35));
+            ctx.lineTo(ax - arrowLen * Math.cos(aAngle - ARROW_HEAD_ANGLE), ay - arrowLen * Math.sin(aAngle - ARROW_HEAD_ANGLE));
+            ctx.lineTo(ax - arrowLen * Math.cos(aAngle + ARROW_HEAD_ANGLE), ay - arrowLen * Math.sin(aAngle + ARROW_HEAD_ANGLE));
             ctx.closePath();
             ctx.fill();
           };
           if (useOutside) {
-            _drawArrow(sd1.x, sd1.y, angle);
-            _drawArrow(sd2.x, sd2.y, angle + Math.PI);
+            drawArrow(sd1.x, sd1.y, angle);
+            drawArrow(sd2.x, sd2.y, angle + Math.PI);
           } else {
-            _drawArrow(sd1.x, sd1.y, angle + Math.PI);
-            _drawArrow(sd2.x, sd2.y, angle);
+            drawArrow(sd1.x, sd1.y, angle + Math.PI);
+            drawArrow(sd2.x, sd2.y, angle);
           }
         }
 

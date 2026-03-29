@@ -1510,6 +1510,8 @@ class App {
     // two-finger gesture lifts one finger.
     let touchWasMulti = false;
     let touchStartedDrawing = false;
+    const TAP_MOVE_THRESHOLD = 15;   // max pixels of movement to count as a tap
+    const TAP_TIME_THRESHOLD = 400;  // max ms for a touch to count as a tap
 
     // Helper: convert a single touch to snapped sketch-world coordinates
     const touchToSketchWorld = (touch) => {
@@ -1614,7 +1616,7 @@ class App {
             const dy = ct.clientY - this._touchTapStart.y;
             const elapsed = Date.now() - this._touchTapStart.time;
             // Treat as tap if finger didn't move much and was short
-            if (Math.hypot(dx, dy) < 15 && elapsed < 400) {
+            if (Math.hypot(dx, dy) < TAP_MOVE_THRESHOLD && elapsed < TAP_TIME_THRESHOLD) {
               const faceHit = this._renderer3d.pickFace(ct.clientX, ct.clientY);
               if (faceHit && faceHit.face) {
                 if (faceHit.face.isCurved) {
