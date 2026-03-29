@@ -7365,10 +7365,18 @@ class App {
   /** Zoom the 3D camera so the active sketch content fits the viewport. */
   _zoomToFitSketch() {
     if (!this._renderer3d) return;
-    const bounds = state.scene.getBounds();
+    const hasContent = state.scene.segments.length > 0 || state.scene.circles.length > 0 ||
+                       state.scene.arcs.length > 0 || state.scene.splines.length > 0;
+    let bounds;
+    if (hasContent) {
+      bounds = state.scene.getBounds();
+    } else {
+      // Default -60 to +60 view range for empty sketches
+      bounds = { minX: -60, minY: -60, maxX: 60, maxY: 60 };
+    }
     const w = bounds.maxX - bounds.minX;
     const h = bounds.maxY - bounds.minY;
-    const extent = Math.max(w, h, 4); // minimum visible extent
+    const extent = Math.max(w, h, 4);
 
     // In orthographic 3D mode, halfH = orbitRadius * 0.5, so radius = extent * margin
     const aspect = (this._renderer3d._cssWidth || 800) / (this._renderer3d._cssHeight || 600);
