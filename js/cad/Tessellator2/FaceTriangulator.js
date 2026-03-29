@@ -213,6 +213,12 @@ function _removeOverlappingTriangles(triangles) {
   const n = triangles.length;
   if (n < 2) return triangles;
 
+  // Precompute areas to avoid redundant calculations in the nested loop
+  const areas = new Array(n);
+  for (let i = 0; i < n; i++) {
+    areas[i] = _triangleArea3D(triangles[i][0], triangles[i][1], triangles[i][2]);
+  }
+
   const removed = new Set();
   for (let i = 0; i < n; i++) {
     if (removed.has(i)) continue;
@@ -220,9 +226,7 @@ function _removeOverlappingTriangles(triangles) {
       if (removed.has(j)) continue;
       if (_trisOverlap(triangles[i], triangles[j])) {
         // Remove the smaller triangle
-        const aI = _triangleArea3D(triangles[i][0], triangles[i][1], triangles[i][2]);
-        const aJ = _triangleArea3D(triangles[j][0], triangles[j][1], triangles[j][2]);
-        removed.add(aI <= aJ ? i : j);
+        removed.add(areas[i] <= areas[j] ? i : j);
       }
     }
   }
