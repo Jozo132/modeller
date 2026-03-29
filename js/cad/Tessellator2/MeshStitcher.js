@@ -59,13 +59,18 @@ export class MeshStitcher {
 
     for (const fm of faceMeshes) {
       const shared = fm.shared || null;
+      const topoFaceId = fm.topoFaceId;
+      const faceType = fm.faceType;
       for (const face of fm.faces) {
         const dedupedVerts = face.vertices.map(v => dedup(v));
-        allFaces.push({
+        const out = {
           vertices: dedupedVerts,
           normal: face.normal ? { ...face.normal } : { x: 0, y: 0, z: 1 },
           shared,
-        });
+        };
+        if (topoFaceId !== undefined) out.topoFaceId = topoFaceId;
+        if (faceType) out.faceType = faceType;
+        allFaces.push(out);
       }
     }
 

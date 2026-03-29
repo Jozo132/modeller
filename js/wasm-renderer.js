@@ -178,6 +178,9 @@ export class WasmRenderer {
     // 3D interaction state
     this._isDragging = false;
     this._isPanning3D = false;
+    this._leftClickOrbitEnabled = true;  // default on; host can override via shouldAllowLeftClickOrbit callback
+    this._leftClickOrbiting = false;     // true when current drag started with left button
+    this.shouldAllowLeftClickOrbit = null; // callback: () => boolean
     this._lastMouseX = 0;
     this._lastMouseY = 0;
     this._ortho3D = false; // orthographic projection in 3D mode
@@ -294,11 +297,20 @@ export class WasmRenderer {
 
     canvas.addEventListener('mousedown', (e) => {
       if (this.mode !== '3d') return;
-      // Middle button = orbit, Right button = pan
-      if (e.button === 1) {
+      // Left button = orbit (when allowed), Middle button = orbit, Right button = pan
+      const allowLeftOrbit = this._leftClickOrbitEnabled
+        && (!this.shouldAllowLeftClickOrbit || this.shouldAllowLeftClickOrbit());
+      if (e.button === 0 && allowLeftOrbit) {
         e.preventDefault();
         this._isDragging = true;
         this._isPanning3D = false;
+        this._leftClickOrbiting = true;
+        if (this.onCameraInteraction) this.onCameraInteraction('orbit_start', this.getOrbitState());
+      } else if (e.button === 1) {
+        e.preventDefault();
+        this._isDragging = true;
+        this._isPanning3D = false;
+        this._leftClickOrbiting = false;
         if (this.onCameraInteraction) this.onCameraInteraction('orbit_start', this.getOrbitState());
       } else if (e.button === 2) {
         e.preventDefault();
@@ -349,12 +361,14 @@ export class WasmRenderer {
       const wasDragging = this._isDragging || this._isPanning3D;
       this._isDragging = false;
       this._isPanning3D = false;
+      this._leftClickOrbiting = false;
       if (wasDragging && this.onCameraInteraction) this.onCameraInteraction('orbit_end', this.getOrbitState());
     });
 
     canvas.addEventListener('mouseleave', () => {
       this._isDragging = false;
       this._isPanning3D = false;
+      this._leftClickOrbiting = false;
     });
 
     canvas.addEventListener('wheel', (e) => {

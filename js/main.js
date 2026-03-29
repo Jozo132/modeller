@@ -89,6 +89,14 @@ class App {
     this._renderer3d.setMode('2d'); // Start in 2D sketching mode
     this._renderer3d.setVisible(true);
     this._renderer3d.setDiagnosticBackfaceHatchEnabled(this._effectiveDiagnosticBackfaceHatchEnabled());
+    // Allow left-click orbit in 3D part mode when no special mode is active
+    this._renderer3d.shouldAllowLeftClickOrbit = () => {
+      return this._workspaceMode === 'part'
+        && !this._sketchingOnPlane
+        && !this._extrudeMode
+        && !this._chamferMode
+        && !this._filletMode;
+    };
     if (this._renderer3d._loadPromise) {
       this._renderer3d._loadPromise.then(() => {
         this._update3DView();
@@ -918,6 +926,11 @@ class App {
       // Middle button = orbit, Right button = pan (handled by WasmRenderer controls)
       if (e.button === 1 || e.button === 2) {
         return; // Let WASM renderer controls handle
+      }
+
+      // Left-click orbit active: let WasmRenderer handle orbit, skip tool processing
+      if (e.button === 0 && this._renderer3d && this._renderer3d._leftClickOrbiting) {
+        return;
       }
 
       // Extrude handle drag start
@@ -4908,11 +4921,9 @@ class App {
       if (stored === DIAGNOSTIC_HATCH_MODE_ON || stored === DIAGNOSTIC_HATCH_MODE_OFF) {
         return stored;
       }
-      if (stored === 'true') {
-        return DIAGNOSTIC_HATCH_MODE_ON;
-      }
-      if (stored === 'false') {
-        return DIAGNOSTIC_HATCH_MODE_OFF;
+      // Legacy boolean values: treat as auto (user likely toggled during debugging)
+      if (stored === 'true' || stored === 'false') {
+        return DIAGNOSTIC_HATCH_MODE_AUTO;
       }
       return DIAGNOSTIC_HATCH_MODE_AUTO;
     } catch {
@@ -4964,6 +4975,16 @@ class App {
     this._saveDiagnosticBackfaceHatchMode();
     this._applyDiagnosticBackfaceHatchState();
     this._scheduleRender();
+  }
+
+  /** Update the left-click orbit flag on the renderer based on current UI state. */
+  _updateLeftClickOrbit() {
+    if (!this._renderer3d) return;
+    this._renderer3d._leftClickOrbitEnabled = this._workspaceMode === 'part'
+      && !this._sketchingOnPlane
+      && !this._extrudeMode
+      && !this._chamferMode
+      && !this._filletMode;
   }
 
   _hasMeshHoles(geometry) {
