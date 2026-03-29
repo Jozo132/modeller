@@ -7554,6 +7554,14 @@ class App {
     this.setActiveTool('select');
     this.setStatus(`Editing ${sketchFeature.name}. Modify, then Exit Sketch to apply changes.`);
     info(`Entered edit mode for sketch: ${sketchFeature.id}`);
+
+    // Rebuild sketch wireframes so the active sketch is excluded (its live
+    // geometry comes from state.scene / _activeSceneEdges instead).
+    if (this._renderer3d) {
+      const p = this._partManager.getPart();
+      if (p) this._renderer3d._buildSketchWireframes(p);
+    }
+
     this._scheduleRender();
   }
 

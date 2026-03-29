@@ -196,6 +196,9 @@ export class Scene {
       case 'circle':    this.removeCircle(prim); break;
       case 'arc':       this.removeArc(prim); break;
       case 'spline':    this.removeSpline(prim); break;
+      case 'text':
+        this.texts = this.texts.filter(t => t !== prim);
+        break;
       case 'dimension':
         this.dimensions = this.dimensions.filter(d => d !== prim);
         // Also remove from constraints if it was acting as one

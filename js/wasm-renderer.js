@@ -516,13 +516,15 @@ export class WasmRenderer {
   orientToPlane(plane) {
     switch (plane) {
       case 'XY':
-        // Look down the Z axis (top view): phi=0 means camera on +Z
-        this._orbitTheta = Math.PI / 2;
+        // Look down the Z axis (top view): phi≈0 means camera on +Z.
+        // theta = -π/2 offsets toward -Y so cross(forward, up) gives +X right.
+        this._orbitTheta = -Math.PI / 2;
         this._orbitPhi = 0.001; // near 0 to look straight down +Z
         break;
       case 'XZ':
-        // Look down the Y axis (front view): camera on +Y looking at origin
-        this._orbitTheta = Math.PI / 2;
+        // Look along the Y axis (front view): camera on -Y looking toward +Y.
+        // theta = -π/2 ensures screen-right = +X, screen-up = +Z.
+        this._orbitTheta = -Math.PI / 2;
         this._orbitPhi = Math.PI / 2;
         break;
       case 'YZ':
@@ -2407,6 +2409,11 @@ export class WasmRenderer {
 
       const isActive = sketchFeature.id === activeSketchId;
       const isSelected = sketchFeature.id === selectedId;
+
+      // Skip the active sketch when in sketch editing mode — its live
+      // geometry is rendered via _activeSceneEdges (from the 2D scene),
+      // so drawing the stale feature wireframe would show deleted entities.
+      if (isActive && this._sketchPlane) continue;
 
       // Show sketch wireframes if: visible, active, or selected in the tree
       if (!sketchFeature.visible && !isActive && !isSelected) continue;
