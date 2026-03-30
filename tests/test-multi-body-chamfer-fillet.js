@@ -721,7 +721,7 @@ test('box-fillet-3-p: sequential fillets stay closed and keep distinct feature o
 
 // --- 2-Edge Corner Fillet Tests ---
 
-test('box-fillet-2: manifold with explicit exact corner patch', () => {
+test('box-fillet-2: exact topology keeps fillets isolated', () => {
   const part = new Part('T_bi1');
   const sf = part.addSketch(makeRectSketch(0, 0, 10, 10));
   part.extrude(sf.id, 10);
@@ -740,33 +740,25 @@ test('box-fillet-2: manifold with explicit exact corner patch', () => {
   assert.strictEqual(m.nonManifoldEdges, 0, 'No non-manifold edges');
   assert.strictEqual(m.windingErrors, 0, 'No winding errors');
 
-  const filletFaces = geom.faces.filter(f => f.isFillet);
-  assert.ok(filletFaces.length > 16, 'Should have >16 isFillet faces (2 strips + corner blend)');
+  assert.ok(geom.topoBody, 'Expected a TopoBody for robust fillet output');
+  assert.ok(geom.faces.some(f => f.topoFaceId !== undefined), 'Expected tessellated faces to retain topoFaceId');
 
-  const cornerFaces = geom.faces.filter(f => f.isCorner);
-  assert.ok(cornerFaces.length > 0, 'Expected explicit corner faces for the 2-edge case');
+  const filletGroups = new Set(
+    geom.faces
+      .filter(f => f.isFillet)
+      .map(f => f.faceGroup)
+      .filter(g => g !== undefined)
+  );
+  assert.ok(filletGroups.size >= 2, `Expected the two fillets to stay isolated, got ${filletGroups.size} groups`);
 
-  const groups = {};
-  for (const f of geom.faces) {
-    const g = f.faceGroup !== undefined ? f.faceGroup : -1;
-    if (!groups[g]) groups[g] = { count: 0, isFillet: false, isCorner: false };
-    groups[g].count++;
-    if (f.isFillet) groups[g].isFillet = true;
-    if (f.isCorner) groups[g].isCorner = true;
-  }
-  const filletGroups = Object.values(groups).filter(g => g.isFillet);
-  assert.ok(filletGroups.length >= 2, `Should have >=2 fillet face groups, got ${filletGroups.length}`);
-
-  const cornerGroups = Object.values(groups).filter(g => g.isCorner);
-  assert.ok(cornerGroups.length >= 1, 'Expected a dedicated corner face group');
-
-  const brep = geom.brep;
-  assert.ok(brep, 'Should have BRep data');
-  const cornerBrepFace = brep.faces.find(f => f.surfaceType === 'fillet' && f.isCornerPatch);
-  assert.ok(cornerBrepFace, 'Expected a dedicated BRep corner patch face');
-  assert.ok(cornerBrepFace.surface, 'Expected the corner patch BRep face to have a NURBS surface');
-  assert.strictEqual(cornerBrepFace.surface.degreeU, 2, 'Corner patch degreeU should be 2');
-  assert.strictEqual(cornerBrepFace.surface.degreeV, 2, 'Corner patch degreeV should be 2');
+  const seamEdges = geom.edges.filter((edge) => {
+    const avgX = (edge.start.x + edge.end.x) * 0.5;
+    const avgY = (edge.start.y + edge.end.y) * 0.5;
+    const avgZ = (edge.start.z + edge.end.z) * 0.5;
+    const curved = Math.abs(edge.start.x - edge.end.x) > 0.01 && Math.abs(edge.start.y - edge.end.y) > 0.01;
+    return curved && avgX > 9 && avgY < 1 && avgZ > 9.9;
+  });
+  assert.ok(seamEdges.length >= 1, `Expected visible top seam segments between the two fillets, got ${seamEdges.length}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -15,6 +15,8 @@ import { NurbsSurface } from './NurbsSurface.js';
 import { BRep, BRepVertex, BRepEdge, BRepFace } from './BRep.js';
 import { NurbsCurve } from './NurbsCurve.js';
 import { exactBooleanOp, hasExactTopology } from './BooleanKernel.js';
+import { buildTopoBody, SurfaceType } from './BRepTopology.js';
+import { tessellateBody } from './Tessellation.js';
 
 const EPSILON = 1e-5;
 
@@ -2885,6 +2887,7 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8, edgeOwnerM
       const nurbsSurface = NurbsSurface.createFilletSurface(
         rail0, rail1, [centerA, centerB], radius, _vec3Normalize(_vec3Sub(data.edgeB, data.edgeA))
       );
+      data._exactSurface = nurbsSurface;
       const brepFace = new BRepFace(nurbsSurface, 'fillet', shared);
 
       // Add BRep edge curves for the trim lines
@@ -3024,6 +3027,24 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8, edgeOwnerM
   _healBoundaryLoops(faces);
   _removeDegenerateFaces(faces);
   _recomputeFaceNormals(faces);
+
+  try {
+    const topoBody = _buildExactFilletTopoBody(faces, edgeDataList);
+    if (topoBody) {
+      const exactGeometry = tessellateBody(topoBody);
+      exactGeometry.topoBody = topoBody;
+      exactGeometry.brep = brep;
+      const edgeResult = computeFeatureEdges(exactGeometry.faces || []);
+      exactGeometry.edges = edgeResult.edges;
+      exactGeometry.paths = edgeResult.paths;
+      exactGeometry.visualEdges = edgeResult.visualEdges;
+      return exactGeometry;
+    }
+  } catch (exactErr) {
+    if (typeof console !== 'undefined' && console.warn) {
+      console.warn('Exact fillet topology promotion skipped:', exactErr.message);
+    }
+  }
 
   const newGeom = { vertices: [], faces, brep };
   const edgeResult = computeFeatureEdges(faces);
@@ -3318,6 +3339,105 @@ function _applyTwoEdgeFilletSharedTrims(edgeDataList, origFaces, vertexEdgeMap) 
     if (edgeInfo1.isA) edgeInfo1.data.sharedTrimA = trimInfo.trimFor1;
     else edgeInfo1.data.sharedTrimB = trimInfo.trimFor1;
   }
+}
+
+function _curveFromSampledPoints(points) {
+  if (!points || points.length < 2) return null;
+  if (points.length === 2) return NurbsCurve.createLine(points[0], points[1]);
+  return NurbsCurve.createPolyline(points);
+}
+
+function _buildPlanarFaceDesc(face) {
+  if (!face || !face.vertices || face.vertices.length < 3) return null;
+
+  let surface = null;
+  try {
+    surface = NurbsSurface.createPlane(
+      face.vertices[0],
+      _vec3Sub(face.vertices[1], face.vertices[0]),
+      _vec3Sub(face.vertices[face.vertices.length - 1], face.vertices[0]),
+    );
+  } catch (_) {
+    surface = null;
+  }
+
+  return {
+    surface,
+    surfaceType: SurfaceType.PLANE,
+    vertices: face.vertices.map((vertex) => ({ ...vertex })),
+    edgeCurves: face.vertices.map((vertex, index) =>
+      NurbsCurve.createLine(vertex, face.vertices[(index + 1) % face.vertices.length])),
+    shared: face.shared ? { ...face.shared } : null,
+  };
+}
+
+function _buildExactFilletFaceDesc(data) {
+  const surface = data && data._exactSurface ? data._exactSurface : null;
+  const trimA = data && (data.sharedTrimA || data.arcA);
+  const trimB = data && (data.sharedTrimB || data.arcB);
+  if (!surface || !trimA || !trimB || trimA.length < 2 || trimB.length < 2) return null;
+
+  const boundary = [
+    ...trimA.map((point) => ({ ...point })),
+    ...[...trimB].reverse().map((point) => ({ ...point })),
+  ];
+
+  let outwardNormal = null;
+  if (trimA.length >= 2 && trimB.length >= 2) {
+    outwardNormal = _computePolygonNormal([
+      { ...trimA[0] },
+      { ...trimA[1] },
+      { ...trimB[1] },
+      { ...trimB[0] },
+    ]);
+  }
+  const surfaceNormal = surface.normal(
+    (surface.uMin + surface.uMax) * 0.5,
+    (surface.vMin + surface.vMax) * 0.5,
+  );
+  const loopNormal = _computePolygonNormal(boundary);
+  if (outwardNormal && loopNormal && _vec3Dot(loopNormal, outwardNormal) < 0) {
+    boundary.reverse();
+  }
+  const sameSense = !(surfaceNormal && outwardNormal)
+    ? true
+    : _vec3Dot(outwardNormal, surfaceNormal) >= 0;
+
+  return {
+    surface,
+    surfaceType: SurfaceType.BSPLINE,
+    vertices: boundary,
+    edgeCurves: boundary.map((point, index) =>
+      NurbsCurve.createLine(point, boundary[(index + 1) % boundary.length])),
+    sameSense,
+    shared: {
+      ...(data.shared || {}),
+      isFillet: true,
+    },
+  };
+}
+
+function _buildExactFilletTopoBody(faces, edgeDataList) {
+  if (!faces || !Array.isArray(faces) || !edgeDataList || edgeDataList.length === 0) return null;
+  if (faces.some((face) => face && face.isCorner)) return null;
+
+  const faceDescs = [];
+
+  for (const face of faces) {
+    if (!face || face.isFillet) continue;
+    const desc = _buildPlanarFaceDesc(face);
+    if (!desc) return null;
+    faceDescs.push(desc);
+  }
+
+  for (const data of edgeDataList) {
+    const desc = _buildExactFilletFaceDesc(data);
+    if (!desc) return null;
+    faceDescs.push(desc);
+  }
+
+  if (faceDescs.length === 0) return null;
+  return buildTopoBody(faceDescs);
 }
 
 /**

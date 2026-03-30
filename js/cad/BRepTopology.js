@@ -762,7 +762,11 @@ export function buildTopoBody(faceDescs, tol = DEFAULT_TOLERANCE) {
     }
 
     const loop = new TopoLoop(coedges);
-    const face = new TopoFace(fd.surface || null, fd.surfaceType || SurfaceType.UNKNOWN);
+    const face = new TopoFace(
+      fd.surface || null,
+      fd.surfaceType || SurfaceType.UNKNOWN,
+      fd.sameSense !== false
+    );
     face.setOuterLoop(loop);
     face.shared = fd.shared || null;
     faces.push(face);

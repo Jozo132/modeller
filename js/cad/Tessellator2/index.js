@@ -96,6 +96,8 @@ export function robustTessellateBody(body, opts = {}) {
       }
 
       faceMesh.shared = face.shared || null;
+      faceMesh.isFillet = !!(face.shared && face.shared.isFillet);
+      faceMesh.isCorner = !!(face.shared && face.shared.isCorner);
       // Tag with B-Rep face index and surface type so assignCoplanarFaceGroups
       // can properly group all triangles from the same topological face and
       // mark curved surfaces for smooth-normal interpolation.

@@ -61,6 +61,8 @@ export class MeshStitcher {
       const shared = fm.shared || null;
       const topoFaceId = fm.topoFaceId;
       const faceType = fm.faceType;
+      const isFillet = !!fm.isFillet;
+      const isCorner = !!fm.isCorner;
       for (const face of fm.faces) {
         const dedupedVerts = face.vertices.map(v => dedup(v));
         const out = {
@@ -75,6 +77,11 @@ export class MeshStitcher {
         if (faceType) {
           out.faceType = faceType;
           out.isCurved = faceType !== 'planar';
+        }
+        if (isFillet) out.isFillet = true;
+        if (isCorner) {
+          out.isCorner = true;
+          out.isFillet = true;
         }
         allFaces.push(out);
       }
