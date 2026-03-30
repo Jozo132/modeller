@@ -254,7 +254,7 @@ function removeCollinearPoints(pts) {
     // face but not on the adjacent face (which has different surrounding
     // edges).  Removing it from only one side creates unmatched boundary
     // edges and leaves holes in the stitched mesh.
-    if (curr._isVertex) { result.push(curr); continue; }
+    if (curr._isVertex || curr._preserveBoundarySample) { result.push(curr); continue; }
     const prev = pts[(i - 1 + n) % n];
     const next = pts[(i + 1) % n];
     // Check if curr is collinear with prev and next
@@ -338,7 +338,7 @@ function _normalizePeriodicLoop(loop, surface) {
     }
   }
 
-  const reordered = (cutAfter >= 0 && maxJumpScore > 0.5)
+  const reordered = (cutAfter >= 0 && maxJumpScore > 0.3)
     ? _rotateLoop(loop, cutAfter + 1)
     : loop.map(p => ({ ...p }));
 
@@ -672,6 +672,7 @@ export class FaceTriangulator {
       return this.triangulatePlanar(boundaryPts3D, holePts3D, null, true);
     }
     const sameSense = face.sameSense !== false;
+    const periodicSurface = surface.periodicU || surface.periodicV;
 
     const outer3D = removeCollinearPoints([...boundaryPts3D]);
     if (outer3D.length < 3) return { vertices: [], faces: [] };
@@ -684,7 +685,9 @@ export class FaceTriangulator {
       const loop = [];
       let prevUv = null;
       for (const p of loop3D) {
-        const uv = surface.closestPointUV(p, 16, prevUv);
+        const uv = periodicSurface
+          ? surface.closestPointUV(p, 16)
+          : surface.closestPointUV(p, 16, prevUv);
         // Attach original 3D position so evalPoint can preserve the exact
         // EdgeSampler coordinates.  Re-evaluating from UV introduces tiny
         // floating-point drift that prevents MeshStitcher from deduplicating
@@ -752,7 +755,6 @@ export class FaceTriangulator {
       }
     }
 
-    const periodicSurface = surface.periodicU || surface.periodicV;
     const steiner2D = [];
     const gridRes = surface.type === 'torus'
       ? Math.max(8, surfaceSegments)
@@ -867,7 +869,13 @@ export class FaceTriangulator {
     const midpointUv = (a, b) => {
       const key = edgeKey(a, b);
       if (midpointCache.has(key)) return midpointCache.get(key);
-      const uv = { u: (a.u + b.u) / 2, v: (a.v + b.v) / 2 };
+      const bu = surface.periodicU && Number.isFinite(surface.periodU)
+        ? _wrapNear(b.u, a.u, surface.periodU)
+        : b.u;
+      const bv = surface.periodicV && Number.isFinite(surface.periodV)
+        ? _wrapNear(b.v, a.v, surface.periodV)
+        : b.v;
+      const uv = { u: (a.u + bu) / 2, v: (a.v + bv) / 2 };
       uv.x = uv.u;
       uv.y = uv.v;
       midpointCache.set(key, uv);
@@ -884,6 +892,8 @@ export class FaceTriangulator {
     };
     const maxPasses = surface.type === 'torus'
       ? Math.min(surfaceSegments, 5)
+      : surface.type === 'cylinder'
+        ? Math.min(surfaceSegments, 1)
       : periodicSurface
         ? Math.min(surfaceSegments, 4)
         : Math.min(surfaceSegments, 4);

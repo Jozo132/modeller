@@ -52,12 +52,16 @@ export class EdgeSampler {
       points = this._sampleLinear(edge.startVertex.point, edge.endVertex.point, segments);
     }
 
-    // Tag edge endpoint vertices so removeCollinearPoints can preserve
-    // B-Rep topology vertices.  Removing a vertex that two edges share
-    // from one face but not its neighbour creates unmatched boundary edges.
+    // Tag shared boundary samples so removeCollinearPoints preserves the
+    // exact edge discretization on every adjacent face. Curved shared edges
+    // are especially sensitive: if one face drops intermediate samples and
+    // the other keeps them, MeshStitcher sees T-junctions and leaves holes.
     if (points.length > 0) {
       points[0]._isVertex = true;
       points[points.length - 1]._isVertex = true;
+      if (edge.curve) {
+        for (const point of points) point._preserveBoundarySample = true;
+      }
     }
 
     this._cache.set(key, points);
