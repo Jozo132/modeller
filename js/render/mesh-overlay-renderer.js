@@ -3,8 +3,10 @@ import { computeSilhouetteEdges } from './part-render-core.js';
 const DEFAULT_FACE_COLOR = [0.65, 0.75, 0.65, 1];
 const DEFAULT_VISUAL_EDGE_COLOR = [0.25, 0.25, 0.25, 0.35];
 const DEFAULT_FEATURE_EDGE_COLOR = [0.1, 0.1, 0.1, 1];
+const DEFAULT_HIDDEN_FEATURE_EDGE_COLOR = [0.14, 0.14, 0.14, 0.55];
 const DEFAULT_SILHOUETTE_COLOR = [0.1, 0.1, 0.1, 1];
 const DEFAULT_BOUNDARY_EDGE_COLOR = [1.0, 0.4, 0.7, 1];
+const DEFAULT_TRIANGLE_OUTLINE_COLOR = [0.72, 0.72, 0.72, 0.7];
 
 export function renderBaseMeshOverlay(executor, options) {
   const {
@@ -12,8 +14,12 @@ export function renderBaseMeshOverlay(executor, options) {
     meshTriangleCount,
     meshVisualEdges,
     meshVisualEdgeVertexCount,
+    meshTriangleOverlayEdges,
+    meshTriangleOverlayEdgeVertexCount,
     meshEdges,
     meshEdgeVertexCount,
+    meshDashedFeatureEdges,
+    meshDashedFeatureEdgeVertexCount,
     meshSilhouetteCandidates,
     meshBoundaryEdges,
     meshBoundaryEdgeVertexCount,
@@ -22,8 +28,12 @@ export function renderBaseMeshOverlay(executor, options) {
     faceColor = DEFAULT_FACE_COLOR,
     visualEdgeColor = DEFAULT_VISUAL_EDGE_COLOR,
     featureEdgeColor = DEFAULT_FEATURE_EDGE_COLOR,
+    hiddenFeatureEdgeColor = DEFAULT_HIDDEN_FEATURE_EDGE_COLOR,
     silhouetteColor = DEFAULT_SILHOUETTE_COLOR,
     boundaryEdgeColor = DEFAULT_BOUNDARY_EDGE_COLOR,
+    triangleOutlineColor = DEFAULT_TRIANGLE_OUTLINE_COLOR,
+    showInvisibleEdges = false,
+    meshTriangleOverlayMode = 'off',
   } = options;
 
   if (!meshTriangles || meshTriangleCount === 0 || !mvp) return;
@@ -38,10 +48,10 @@ export function renderBaseMeshOverlay(executor, options) {
     diagnosticHatch: !!diagnosticHatch,
   });
 
-  if (meshVisualEdges && meshVisualEdgeVertexCount > 0) {
-    executor.drawLineBuffer(meshVisualEdges, meshVisualEdgeVertexCount, {
+  if (meshTriangleOverlayMode === 'outline' && meshTriangleOverlayEdges && meshTriangleOverlayEdgeVertexCount > 0) {
+    executor.drawLineBuffer(meshTriangleOverlayEdges, meshTriangleOverlayEdgeVertexCount, {
       mvp,
-      color: visualEdgeColor,
+      color: triangleOutlineColor,
       lineWidth: 1,
       lineDash: [],
     });
@@ -51,6 +61,26 @@ export function renderBaseMeshOverlay(executor, options) {
     executor.drawLineBuffer(meshEdges, meshEdgeVertexCount, {
       mvp,
       color: featureEdgeColor,
+      lineWidth: 1,
+      lineDash: [],
+    });
+  }
+
+  if (showInvisibleEdges && meshDashedFeatureEdges && meshDashedFeatureEdgeVertexCount > 0) {
+    executor.drawLineBuffer(meshDashedFeatureEdges, meshDashedFeatureEdgeVertexCount, {
+      mvp,
+      color: hiddenFeatureEdgeColor,
+      lineWidth: 1,
+      lineDash: [],
+      depthFunc: 'greater',
+      depthWrite: false,
+    });
+  }
+
+  if (meshVisualEdges && meshVisualEdgeVertexCount > 0 && meshTriangleOverlayMode === 'outline') {
+    executor.drawLineBuffer(meshVisualEdges, meshVisualEdgeVertexCount, {
+      mvp,
+      color: visualEdgeColor,
       lineWidth: 1,
       lineDash: [],
     });

@@ -211,8 +211,14 @@ export class WasmRenderer {
     this._problemTriangles = null; // Diagnostic triangles for inverted/problem faces
     this._problemTriangleCount = 0;
     this._diagnosticBackfaceHatchEnabled = false;
+    this._invisibleEdgesVisible = false;
+    this._meshTriangleOverlayMode = 'off';
     this._meshEdges = null;      // Float32Array: [x,y,z, x,y,z, ...] line pairs
     this._meshEdgeVertexCount = 0;
+    this._meshDashedFeatureEdges = null;
+    this._meshDashedFeatureEdgeVertexCount = 0;
+    this._meshTriangleOverlayEdges = null;
+    this._meshTriangleOverlayEdgeVertexCount = 0;
 
     // Sketch wireframe data for rendering sketch primitives in 3D
     this._sketchEdges = null;     // Float32Array: [x,y,z, x,y,z, ...] line pairs (active sketch)
@@ -2403,6 +2409,14 @@ export class WasmRenderer {
     this._diagnosticBackfaceHatchEnabled = !!enabled;
   }
 
+  setInvisibleEdgesVisible(enabled) {
+    this._invisibleEdgesVisible = !!enabled;
+  }
+
+  setMeshTriangleOverlayMode(mode) {
+    this._meshTriangleOverlayMode = mode === 'outline' ? 'outline' : 'off';
+  }
+
   /**
    * Triangulate polygon faces and build Float32Arrays for WebGL rendering.
    * Stores face metadata for selection/identification.
@@ -2776,6 +2790,10 @@ export class WasmRenderer {
         meshTriangleCount: this._meshTriangleCount,
         meshVisualEdges: this._meshVisualEdges,
         meshVisualEdgeVertexCount: this._meshVisualEdgeVertexCount,
+        meshDashedFeatureEdges: this._meshDashedFeatureEdges,
+        meshDashedFeatureEdgeVertexCount: this._meshDashedFeatureEdgeVertexCount,
+        meshTriangleOverlayEdges: this._meshTriangleOverlayEdges,
+        meshTriangleOverlayEdgeVertexCount: this._meshTriangleOverlayEdgeVertexCount,
         meshEdges: this._meshEdges,
         meshEdgeVertexCount: this._meshEdgeVertexCount,
         meshSilhouetteCandidates: this._meshSilhouetteCandidates,
@@ -2788,6 +2806,8 @@ export class WasmRenderer {
           target: this._orbitTarget,
         },
         mvp,
+        showInvisibleEdges: this._invisibleEdgesVisible,
+        meshTriangleOverlayMode: this._meshTriangleOverlayMode,
       });
 
       if (this._diagnosticBackfaceHatchEnabled) {

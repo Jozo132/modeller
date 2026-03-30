@@ -233,6 +233,9 @@ export class WebGLExecutor {
   drawLineBuffer(data, vertexCount, options) {
     const gl = this.gl;
     const previousBlend = gl.isEnabled(gl.BLEND);
+    const previousDepthTest = gl.isEnabled(gl.DEPTH_TEST);
+    const previousDepthWrite = gl.getParameter(gl.DEPTH_WRITEMASK);
+    const previousDepthFunc = gl.getParameter(gl.DEPTH_FUNC);
 
     gl.viewport(0, 0, this.width, this.height);
     if ((options.color?.[3] ?? 1) < 1) {
@@ -240,6 +243,24 @@ export class WebGLExecutor {
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     } else if (!previousBlend) {
       gl.disable(gl.BLEND);
+    }
+
+    if (options.depthTest === false) {
+      gl.disable(gl.DEPTH_TEST);
+    } else {
+      gl.enable(gl.DEPTH_TEST);
+    }
+
+    if (options.depthFunc === 'greater') {
+      gl.depthFunc(gl.GREATER);
+    } else if (options.depthFunc === 'always') {
+      gl.depthFunc(gl.ALWAYS);
+    } else {
+      gl.depthFunc(gl.LEQUAL);
+    }
+
+    if (Object.prototype.hasOwnProperty.call(options, 'depthWrite')) {
+      gl.depthMask(!!options.depthWrite);
     }
 
     gl.useProgram(this.programs[1]);
@@ -254,6 +275,10 @@ export class WebGLExecutor {
     gl.bindVertexArray(null);
 
     if (!previousBlend) gl.disable(gl.BLEND);
+    if (previousDepthTest) gl.enable(gl.DEPTH_TEST);
+    else gl.disable(gl.DEPTH_TEST);
+    gl.depthMask(previousDepthWrite);
+    gl.depthFunc(previousDepthFunc);
   }
 
   drawPointBuffer(data, vertexCount, options) {

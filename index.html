@@ -86,12 +86,30 @@
         <button data-action="tool-chamfer">Chamfer</button>
         <button data-action="tool-fillet">Fillet</button>
         <hr>
-        <button id="menu-toggle-diagnostic-hatch" data-action="toggle-diagnostic-hatch">Show Inner Face Hatch</button>
+        <label id="menu-toggle-invisible-edges-label" class="menu-checkbox-item" title="Show hidden feature edges as dashed lines">
+          <input id="menu-toggle-invisible-edges" type="checkbox">
+          <span>Show Invisible Edges</span>
+        </label>
+        <label id="menu-toggle-mesh-triangles-label" class="menu-checkbox-item" title="Show light grey mesh triangle outlines that do not coincide with feature edges">
+          <input id="menu-toggle-mesh-triangles" type="checkbox">
+          <span>Mesh Triangles</span>
+        </label>
+        <hr>
+        <label id="menu-toggle-diagnostic-hatch-label" class="menu-checkbox-item">
+          <input id="menu-toggle-diagnostic-hatch" type="checkbox">
+          <span>Show Inner Face Hatch</span>
+        </label>
         <hr>
         <button data-action="scene-manager">Scene Manager</button>
         <hr>
-        <button id="menu-toggle-recording-bar" data-action="toggle-recording-bar">Show Recording Bar</button>
-        <button id="menu-toggle-command-bar" data-action="toggle-command-bar">Show Command Bar</button>
+        <label id="menu-toggle-recording-bar-label" class="menu-checkbox-item">
+          <input id="menu-toggle-recording-bar" type="checkbox">
+          <span>Show Recording Bar</span>
+        </label>
+        <label id="menu-toggle-command-bar-label" class="menu-checkbox-item">
+          <input id="menu-toggle-command-bar" type="checkbox">
+          <span>Show Command Bar</span>
+        </label>
       </div>
     </div>
     <div class="menu-item" data-menu="help">

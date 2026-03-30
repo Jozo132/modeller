@@ -49,6 +49,10 @@ const DIAGNOSTIC_HATCH_STORAGE_KEY = 'cad-modeller-diagnostic-backface-hatch';
 const DIAGNOSTIC_HATCH_MODE_AUTO = 'auto';
 const DIAGNOSTIC_HATCH_MODE_ON = 'on';
 const DIAGNOSTIC_HATCH_MODE_OFF = 'off';
+const INVISIBLE_EDGES_VISIBLE_KEY = 'cad-modeller-invisible-edges-visible';
+const MESH_TRIANGLE_OVERLAY_STORAGE_KEY = 'cad-modeller-mesh-triangle-overlay';
+const MESH_TRIANGLE_OVERLAY_MODE_OFF = 'off';
+const MESH_TRIANGLE_OVERLAY_MODE_OUTLINE = 'outline';
 const RECORDING_BAR_VISIBLE_KEY = 'cad-modeller-recording-bar-visible';
 const COMMAND_BAR_VISIBLE_KEY = 'cad-modeller-command-bar-visible';
 
@@ -76,6 +80,8 @@ class App {
     this._extrudeArrowHoveredState = false;
     this._diagnosticBackfaceHatchMode = this._loadDiagnosticBackfaceHatchMode();
     this._diagnosticBackfaceHatchAuto = false;
+    this._invisibleEdgesVisible = this._loadInvisibleEdgesVisible();
+    this._meshTriangleOverlayMode = this._loadMeshTriangleOverlayMode();
     this._scenes = []; // named camera presets for repeatable renders
     this._sceneManagerOpen = false;
     this._recordingBarVisible = localStorage.getItem(RECORDING_BAR_VISIBLE_KEY) === 'true';
@@ -90,6 +96,8 @@ class App {
     this._renderer3d.setMode('2d'); // Start in 2D sketching mode
     this._renderer3d.setVisible(true);
     this._renderer3d.setDiagnosticBackfaceHatchEnabled(this._effectiveDiagnosticBackfaceHatchEnabled());
+    this._renderer3d.setInvisibleEdgesVisible(this._invisibleEdgesVisible);
+    this._renderer3d.setMeshTriangleOverlayMode(this._meshTriangleOverlayMode);
     // Allow left-click orbit in 3D part mode when no special mode is active
     this._renderer3d.shouldAllowLeftClickOrbit = () => {
       return this._workspaceMode === 'part'
@@ -197,6 +205,8 @@ class App {
     this._bindExitExtrudeButton();
     this._bindRecordingControls();
     this._bindSceneManagerEvents();
+    this._applyInvisibleEdgesState();
+    this._applyMeshTriangleOverlayState();
     this._syncDiagnosticHatchUI();
     this._applyBarVisibility();
     this._bindDragDropEvents();
@@ -1915,10 +1925,7 @@ class App {
           case 'tool-arc': this.setActiveTool('arc'); break;
           case 'tool-chamfer': document.getElementById('btn-chamfer')?.click(); break;
           case 'tool-fillet': document.getElementById('btn-fillet')?.click(); break;
-          case 'toggle-diagnostic-hatch': this._toggleDiagnosticBackfaceHatchPref(); break;
           case 'scene-manager': this._toggleSceneManager(); break;
-          case 'toggle-recording-bar': this._toggleRecordingBar(); break;
-          case 'toggle-command-bar': this._toggleCommandBar(); break;
           case 'help-shortcuts': this.setStatus('Shortcuts: L=Line, R=Rect, C=Circle, Esc=Select, Del=Delete, Ctrl+Z=Undo, Ctrl+Y=Redo, F=Fit'); break;
           case 'help-about': this.setStatus('CAD Modeller v1.0.0 — Parametric 2D/3D CAD'); break;
         }
@@ -1937,6 +1944,53 @@ class App {
       });
       this._populateExamplesMenu(examplesSubmenu);
     }
+
+    const invisibleEdgesLabel = document.getElementById('menu-toggle-invisible-edges-label');
+    const invisibleEdgesToggle = document.getElementById('menu-toggle-invisible-edges');
+    invisibleEdgesLabel?.addEventListener('click', (e) => e.stopPropagation());
+    invisibleEdgesToggle?.addEventListener('click', (e) => e.stopPropagation());
+    invisibleEdgesToggle?.addEventListener('change', (e) => {
+      e.stopPropagation();
+      this._toggleInvisibleEdgesPref(!!e.currentTarget.checked);
+    });
+
+    const meshTrianglesLabel = document.getElementById('menu-toggle-mesh-triangles-label');
+    const meshTrianglesToggle = document.getElementById('menu-toggle-mesh-triangles');
+    meshTrianglesLabel?.addEventListener('click', (e) => e.stopPropagation());
+    meshTrianglesToggle?.addEventListener('click', (e) => e.stopPropagation());
+    meshTrianglesToggle?.addEventListener('change', (e) => {
+      e.stopPropagation();
+      this._setMeshTriangleOverlayMode(e.currentTarget.checked
+        ? MESH_TRIANGLE_OVERLAY_MODE_OUTLINE
+        : MESH_TRIANGLE_OVERLAY_MODE_OFF);
+    });
+
+    const diagnosticHatchLabel = document.getElementById('menu-toggle-diagnostic-hatch-label');
+    const diagnosticHatchToggle = document.getElementById('menu-toggle-diagnostic-hatch');
+    diagnosticHatchLabel?.addEventListener('click', (e) => e.stopPropagation());
+    diagnosticHatchToggle?.addEventListener('click', (e) => e.stopPropagation());
+    diagnosticHatchToggle?.addEventListener('change', (e) => {
+      e.stopPropagation();
+      this._toggleDiagnosticBackfaceHatchPref(!!e.currentTarget.checked);
+    });
+
+    const recordingBarLabel = document.getElementById('menu-toggle-recording-bar-label');
+    const recordingBarToggle = document.getElementById('menu-toggle-recording-bar');
+    recordingBarLabel?.addEventListener('click', (e) => e.stopPropagation());
+    recordingBarToggle?.addEventListener('click', (e) => e.stopPropagation());
+    recordingBarToggle?.addEventListener('change', (e) => {
+      e.stopPropagation();
+      this._toggleRecordingBar(!!e.currentTarget.checked);
+    });
+
+    const commandBarLabel = document.getElementById('menu-toggle-command-bar-label');
+    const commandBarToggle = document.getElementById('menu-toggle-command-bar');
+    commandBarLabel?.addEventListener('click', (e) => e.stopPropagation());
+    commandBarToggle?.addEventListener('click', (e) => e.stopPropagation());
+    commandBarToggle?.addEventListener('change', (e) => {
+      e.stopPropagation();
+      this._toggleCommandBar(!!e.currentTarget.checked);
+    });
   }
 
   _bindToolbarEvents() {
@@ -5200,23 +5254,31 @@ class App {
     document.documentElement.style.setProperty('--bottom-offset', (cmdH + recH + statusH) + 'px');
   }
 
-  _toggleRecordingBar() {
-    this._recordingBarVisible = !this._recordingBarVisible;
+  _toggleRecordingBar(forceValue = null) {
+    this._recordingBarVisible = typeof forceValue === 'boolean'
+      ? forceValue
+      : !this._recordingBarVisible;
     try { localStorage.setItem(RECORDING_BAR_VISIBLE_KEY, this._recordingBarVisible ? 'true' : 'false'); } catch {}
     this._applyBarVisibility();
   }
 
-  _toggleCommandBar() {
-    this._commandBarVisible = !this._commandBarVisible;
+  _toggleCommandBar(forceValue = null) {
+    this._commandBarVisible = typeof forceValue === 'boolean'
+      ? forceValue
+      : !this._commandBarVisible;
     try { localStorage.setItem(COMMAND_BAR_VISIBLE_KEY, this._commandBarVisible ? 'true' : 'false'); } catch {}
     this._applyBarVisibility();
   }
 
   _syncBarToggleUI() {
-    const recBtn = document.getElementById('menu-toggle-recording-bar');
-    const cmdBtn = document.getElementById('menu-toggle-command-bar');
-    if (recBtn) recBtn.textContent = this._recordingBarVisible ? 'Hide Recording Bar' : 'Show Recording Bar';
-    if (cmdBtn) cmdBtn.textContent = this._commandBarVisible ? 'Hide Command Bar' : 'Show Command Bar';
+    const recToggle = document.getElementById('menu-toggle-recording-bar');
+    const recLabel = document.getElementById('menu-toggle-recording-bar-label');
+    const cmdToggle = document.getElementById('menu-toggle-command-bar');
+    const cmdLabel = document.getElementById('menu-toggle-command-bar-label');
+    if (recToggle) recToggle.checked = !!this._recordingBarVisible;
+    if (recLabel) recLabel.classList.toggle('active', !!this._recordingBarVisible);
+    if (cmdToggle) cmdToggle.checked = !!this._commandBarVisible;
+    if (cmdLabel) cmdLabel.classList.toggle('active', !!this._commandBarVisible);
   }
 
   _loadDiagnosticBackfaceHatchMode() {
@@ -5233,6 +5295,39 @@ class App {
     } catch {
       return DIAGNOSTIC_HATCH_MODE_AUTO;
     }
+  }
+
+  _loadInvisibleEdgesVisible() {
+    try {
+      const stored = localStorage.getItem(INVISIBLE_EDGES_VISIBLE_KEY);
+      if (stored === 'true') return true;
+      if (stored === 'false') return false;
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
+  _saveInvisibleEdgesVisible() {
+    try {
+      localStorage.setItem(INVISIBLE_EDGES_VISIBLE_KEY, this._invisibleEdgesVisible ? 'true' : 'false');
+    } catch {}
+  }
+
+  _loadMeshTriangleOverlayMode() {
+    try {
+      const stored = localStorage.getItem(MESH_TRIANGLE_OVERLAY_STORAGE_KEY);
+      if (stored === MESH_TRIANGLE_OVERLAY_MODE_OUTLINE) return stored;
+      return MESH_TRIANGLE_OVERLAY_MODE_OFF;
+    } catch {
+      return MESH_TRIANGLE_OVERLAY_MODE_OFF;
+    }
+  }
+
+  _saveMeshTriangleOverlayMode() {
+    try {
+      localStorage.setItem(MESH_TRIANGLE_OVERLAY_STORAGE_KEY, this._meshTriangleOverlayMode);
+    } catch {}
   }
 
   _saveDiagnosticBackfaceHatchMode() {
@@ -5254,28 +5349,78 @@ class App {
     this._syncDiagnosticHatchUI();
   }
 
+  _applyInvisibleEdgesState() {
+    if (this._renderer3d) {
+      this._renderer3d.setInvisibleEdgesVisible(this._invisibleEdgesVisible);
+    }
+    this._syncInvisibleEdgesUI();
+  }
+
+  _syncInvisibleEdgesUI() {
+    const toggle = document.getElementById('menu-toggle-invisible-edges');
+    const label = document.getElementById('menu-toggle-invisible-edges-label');
+    if (toggle) toggle.checked = !!this._invisibleEdgesVisible;
+    if (label) {
+      label.classList.toggle('active', !!this._invisibleEdgesVisible);
+      label.title = this._invisibleEdgesVisible
+        ? 'Hide hidden feature edges drawn as dashed lines'
+        : 'Show hidden feature edges drawn as dashed lines';
+    }
+  }
+
+  _toggleInvisibleEdgesPref(forceValue = null) {
+    this._invisibleEdgesVisible = typeof forceValue === 'boolean'
+      ? forceValue
+      : !this._invisibleEdgesVisible;
+    this._saveInvisibleEdgesVisible();
+    this._applyInvisibleEdgesState();
+    this._scheduleRender();
+  }
+
+  _applyMeshTriangleOverlayState() {
+    if (this._renderer3d) {
+      this._renderer3d.setMeshTriangleOverlayMode(this._meshTriangleOverlayMode);
+    }
+    this._syncMeshTriangleOverlayUI();
+  }
+
+  _syncMeshTriangleOverlayUI() {
+    const toggle = document.getElementById('menu-toggle-mesh-triangles');
+    const label = document.getElementById('menu-toggle-mesh-triangles-label');
+    const outlineEnabled = this._meshTriangleOverlayMode === MESH_TRIANGLE_OVERLAY_MODE_OUTLINE;
+    if (toggle) toggle.checked = outlineEnabled;
+    if (label) label.classList.toggle('active', outlineEnabled);
+  }
+
+  _setMeshTriangleOverlayMode(mode) {
+    const nextMode = mode === MESH_TRIANGLE_OVERLAY_MODE_OUTLINE
+      ? MESH_TRIANGLE_OVERLAY_MODE_OUTLINE
+      : MESH_TRIANGLE_OVERLAY_MODE_OFF;
+    this._meshTriangleOverlayMode = nextMode;
+    this._saveMeshTriangleOverlayMode();
+    this._applyMeshTriangleOverlayState();
+    this._scheduleRender();
+  }
+
   _syncDiagnosticHatchUI() {
-    const btn = document.getElementById('menu-toggle-diagnostic-hatch');
-    if (!btn) return;
+    const toggle = document.getElementById('menu-toggle-diagnostic-hatch');
+    const label = document.getElementById('menu-toggle-diagnostic-hatch-label');
+    if (!toggle || !label) return;
     const auto = this._diagnosticBackfaceHatchAuto;
     const mode = this._diagnosticBackfaceHatchMode;
     const effective = this._effectiveDiagnosticBackfaceHatchEnabled();
-    let suffix = '';
-    if (mode === DIAGNOSTIC_HATCH_MODE_AUTO) {
-      suffix = auto ? ' (Auto)' : '';
-    } else if (auto) {
-      suffix = ' (Override)';
-    }
-    btn.textContent = `${effective ? 'Hide' : 'Show'} Inner Face Hatch${suffix}`;
-    btn.classList.toggle('active', effective);
-    btn.title = auto
+    toggle.checked = effective;
+    label.classList.toggle('active', effective);
+    label.title = auto
       ? 'Toggle diagnostic hatch for inner/back faces. Holes or non-manifold edges were detected on the current solid.'
       : 'Toggle diagnostic hatch for inner/back faces';
   }
 
-  _toggleDiagnosticBackfaceHatchPref() {
-    const effective = this._effectiveDiagnosticBackfaceHatchEnabled();
-    this._diagnosticBackfaceHatchMode = effective ? DIAGNOSTIC_HATCH_MODE_OFF : DIAGNOSTIC_HATCH_MODE_ON;
+  _toggleDiagnosticBackfaceHatchPref(forceValue = null) {
+    const nextEnabled = typeof forceValue === 'boolean'
+      ? forceValue
+      : !this._effectiveDiagnosticBackfaceHatchEnabled();
+    this._diagnosticBackfaceHatchMode = nextEnabled ? DIAGNOSTIC_HATCH_MODE_ON : DIAGNOSTIC_HATCH_MODE_OFF;
     this._saveDiagnosticBackfaceHatchMode();
     this._applyDiagnosticBackfaceHatchState();
     this._scheduleRender();

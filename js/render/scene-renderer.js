@@ -28,9 +28,15 @@ export class SceneRenderer {
     this._meshEdgeVertexCount = 0;
     this._meshVisualEdges = null;
     this._meshVisualEdgeVertexCount = 0;
+    this._meshDashedFeatureEdges = null;
+    this._meshDashedFeatureEdgeVertexCount = 0;
+    this._meshTriangleOverlayEdges = null;
+    this._meshTriangleOverlayEdgeVertexCount = 0;
     this._meshSilhouetteCandidates = null;
     this._meshBoundaryEdges = null;
     this._meshBoundaryEdgeVertexCount = 0;
+    this._invisibleEdgesVisible = false;
+    this._meshTriangleOverlayMode = 'off';
   }
 
   async init() {
@@ -78,6 +84,14 @@ export class SceneRenderer {
       radius: this._orbitRadius,
       target: { ...this._orbitTarget },
     };
+  }
+
+  setInvisibleEdgesVisible(enabled) {
+    this._invisibleEdgesVisible = !!enabled;
+  }
+
+  setMeshTriangleOverlayMode(mode) {
+    this._meshTriangleOverlayMode = mode === 'outline' ? 'outline' : 'off';
   }
 
   setOrbitState(state) {
@@ -188,6 +202,10 @@ export class SceneRenderer {
       meshTriangleCount: this._meshTriangleCount,
       meshVisualEdges: this._meshVisualEdges,
       meshVisualEdgeVertexCount: this._meshVisualEdgeVertexCount,
+      meshDashedFeatureEdges: this._meshDashedFeatureEdges,
+      meshDashedFeatureEdgeVertexCount: this._meshDashedFeatureEdgeVertexCount,
+      meshTriangleOverlayEdges: this._meshTriangleOverlayEdges,
+      meshTriangleOverlayEdgeVertexCount: this._meshTriangleOverlayEdgeVertexCount,
       meshEdges: this._meshEdges,
       meshEdgeVertexCount: this._meshEdgeVertexCount,
       meshSilhouetteCandidates: this._meshSilhouetteCandidates,
@@ -196,6 +214,8 @@ export class SceneRenderer {
       orbitState: this.getOrbitState(),
       mvp,
       diagnosticHatch: this.diagnosticHatch,
+      showInvisibleEdges: this._invisibleEdgesVisible,
+      meshTriangleOverlayMode: this._meshTriangleOverlayMode,
       problemTriangles: this._problemTriangles,
       problemTriangleCount: this._problemTriangleCount,
     });

@@ -97,6 +97,145 @@ function computePolygonNormal(verts) {
   return { x: nx / len, y: ny / len, z: nz / len };
 }
 
+function makeVertexKey(v, precision = 5) {
+  return `${v.x.toFixed(precision)},${v.y.toFixed(precision)},${v.z.toFixed(precision)}`;
+}
+
+function makeEdgeKey(a, b, precision = 5) {
+  const ka = makeVertexKey(a, precision);
+  const kb = makeVertexKey(b, precision);
+  return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+}
+
+function getEdgePolylinePoints(edge) {
+  if (Array.isArray(edge?.points) && edge.points.length >= 2) return edge.points;
+  if (edge?.start && edge?.end) return [edge.start, edge.end];
+  return [];
+}
+
+function computeGeometryDiagonal(faces) {
+  let minX = Infinity;
+  let minY = Infinity;
+  let minZ = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  let maxZ = -Infinity;
+
+  for (const face of faces || []) {
+    for (const v of face.vertices || []) {
+      if (v.x < minX) minX = v.x;
+      if (v.y < minY) minY = v.y;
+      if (v.z < minZ) minZ = v.z;
+      if (v.x > maxX) maxX = v.x;
+      if (v.y > maxY) maxY = v.y;
+      if (v.z > maxZ) maxZ = v.z;
+    }
+  }
+
+  if (!Number.isFinite(minX) || !Number.isFinite(maxX)) return 1;
+  const dx = maxX - minX;
+  const dy = maxY - minY;
+  const dz = maxZ - minZ;
+  return Math.max(Math.sqrt(dx * dx + dy * dy + dz * dz), 1);
+}
+
+function buildPolylineBuffer(edges) {
+  const data = [];
+  for (const edge of edges || []) {
+    const points = getEdgePolylinePoints(edge);
+    for (let i = 1; i < points.length; i++) {
+      const a = points[i - 1];
+      const b = points[i];
+      data.push(a.x, a.y, a.z, b.x, b.y, b.z);
+    }
+  }
+  return data.length > 0 ? new Float32Array(data) : null;
+}
+
+function appendDashedSegment(data, a, b, dashLength, gapLength) {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const dz = b.z - a.z;
+  const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+  if (len <= 1e-8) return;
+
+  const ux = dx / len;
+  const uy = dy / len;
+  const uz = dz / len;
+  const step = Math.max(dashLength + gapLength, 1e-6);
+
+  for (let distance = 0; distance < len; distance += step) {
+    const start = distance;
+    const end = Math.min(distance + dashLength, len);
+    if (end - start <= 1e-6) continue;
+    data.push(
+      a.x + ux * start,
+      a.y + uy * start,
+      a.z + uz * start,
+      a.x + ux * end,
+      a.y + uy * end,
+      a.z + uz * end,
+    );
+  }
+}
+
+function buildDashedEdgeBuffer(edges, dashLength, gapLength) {
+  const data = [];
+  for (const edge of edges || []) {
+    const points = getEdgePolylinePoints(edge);
+    for (let i = 1; i < points.length; i++) {
+      appendDashedSegment(data, points[i - 1], points[i], dashLength, gapLength);
+    }
+  }
+  return data.length > 0 ? new Float32Array(data) : null;
+}
+
+function buildFeatureEdgeSegmentSet(edges) {
+  const segments = new Set();
+  for (const edge of edges || []) {
+    const points = getEdgePolylinePoints(edge);
+    for (let i = 1; i < points.length; i++) {
+      segments.add(makeEdgeKey(points[i - 1], points[i]));
+    }
+  }
+  return segments;
+}
+
+function buildTriangleOverlayEdges(faces, featureEdgeSegments) {
+  const triangleEdges = new Map();
+
+  const registerEdge = (a, b) => {
+    const key = makeEdgeKey(a, b);
+    if (featureEdgeSegments.has(key)) return;
+    const entry = triangleEdges.get(key);
+    if (entry) {
+      entry.count += 1;
+      return;
+    }
+    triangleEdges.set(key, { a, b, count: 1 });
+  };
+
+  for (const face of faces || []) {
+    const verts = face.vertices || [];
+    if (verts.length < 3) continue;
+    for (let i = 1; i < verts.length - 1; i++) {
+      const a = verts[0];
+      const b = verts[i];
+      const c = verts[i + 1];
+      registerEdge(a, b);
+      registerEdge(b, c);
+      registerEdge(c, a);
+    }
+  }
+
+  const data = [];
+  for (const edge of triangleEdges.values()) {
+    if (edge.count < 2) continue;
+    data.push(edge.a.x, edge.a.y, edge.a.z, edge.b.x, edge.b.y, edge.b.z);
+  }
+  return data.length > 0 ? new Float32Array(data) : null;
+}
+
 function buildBoundaryEdges(faces) {
   const precision = 5;
   const vKey = (v) => `${v.x.toFixed(precision)},${v.y.toFixed(precision)},${v.z.toFixed(precision)}`;
@@ -193,6 +332,10 @@ function buildSilhouetteCandidates(faces) {
 
 export function buildMeshRenderData(geometry) {
   const faces = geometry.faces || [];
+  const geometryDiag = computeGeometryDiagonal(faces);
+  const featureEdgeSegments = buildFeatureEdgeSegmentSet(geometry.edges || []);
+  const edgeDashLength = Math.max(geometryDiag / 180, 0.05);
+  const edgeGapLength = Math.max(edgeDashLength * 0.6, 0.03);
   const isInvertedFace = (face) => {
     const polygonNormal = computePolygonNormal(face.vertices || []);
     const normal = face.normal;
@@ -282,26 +425,24 @@ export function buildMeshRenderData(geometry) {
     }
   }
 
+  const triangleOverlayEdgeData = buildTriangleOverlayEdges(faces, featureEdgeSegments);
+  const dashedFeatureEdgeData = buildDashedEdgeBuffer(geometry.edges || [], edgeDashLength, edgeGapLength);
+
   let meshEdges = null;
   let meshEdgeVertexCount = 0;
+  let meshDashedFeatureEdges = null;
+  let meshDashedFeatureEdgeVertexCount = 0;
   let meshEdgeSegments = null;
   let meshEdgePaths = null;
   let edgeToPath = null;
   let meshSilhouetteCandidates = null;
 
   if (geometry.edges && geometry.edges.length > 0) {
-    const edgeData = new Float32Array(geometry.edges.length * 2 * 3);
-    let ei = 0;
-    for (const edge of geometry.edges) {
-      edgeData[ei++] = edge.start.x;
-      edgeData[ei++] = edge.start.y;
-      edgeData[ei++] = edge.start.z;
-      edgeData[ei++] = edge.end.x;
-      edgeData[ei++] = edge.end.y;
-      edgeData[ei++] = edge.end.z;
-    }
+    const edgeData = buildPolylineBuffer(geometry.edges);
     meshEdges = edgeData;
-    meshEdgeVertexCount = geometry.edges.length * 2;
+    meshEdgeVertexCount = edgeData ? edgeData.length / 3 : 0;
+    meshDashedFeatureEdges = dashedFeatureEdgeData;
+    meshDashedFeatureEdgeVertexCount = dashedFeatureEdgeData ? dashedFeatureEdgeData.length / 3 : 0;
     meshEdgeSegments = geometry.edges.map((e) => ({
       start: e.start,
       end: e.end,
@@ -325,18 +466,9 @@ export function buildMeshRenderData(geometry) {
   let meshVisualEdges = null;
   let meshVisualEdgeVertexCount = 0;
   if (geometry.visualEdges && geometry.visualEdges.length > 0) {
-    const vEdgeData = new Float32Array(geometry.visualEdges.length * 2 * 3);
-    let vi = 0;
-    for (const edge of geometry.visualEdges) {
-      vEdgeData[vi++] = edge.start.x;
-      vEdgeData[vi++] = edge.start.y;
-      vEdgeData[vi++] = edge.start.z;
-      vEdgeData[vi++] = edge.end.x;
-      vEdgeData[vi++] = edge.end.y;
-      vEdgeData[vi++] = edge.end.z;
-    }
+    const vEdgeData = buildPolylineBuffer(geometry.visualEdges);
     meshVisualEdges = vEdgeData;
-    meshVisualEdgeVertexCount = geometry.visualEdges.length * 2;
+    meshVisualEdgeVertexCount = vEdgeData ? vEdgeData.length / 3 : 0;
   }
 
   return {
@@ -348,12 +480,16 @@ export function buildMeshRenderData(geometry) {
     _triFaceMap: triFaceMap,
     _meshEdges: meshEdges,
     _meshEdgeVertexCount: meshEdgeVertexCount,
+    _meshDashedFeatureEdges: meshDashedFeatureEdges,
+    _meshDashedFeatureEdgeVertexCount: meshDashedFeatureEdgeVertexCount,
     _meshEdgeSegments: meshEdgeSegments,
     _meshEdgePaths: meshEdgePaths,
     _edgeToPath: edgeToPath,
     _meshSilhouetteCandidates: meshSilhouetteCandidates,
     _meshVisualEdges: meshVisualEdges,
     _meshVisualEdgeVertexCount: meshVisualEdgeVertexCount,
+    _meshTriangleOverlayEdges: triangleOverlayEdgeData,
+    _meshTriangleOverlayEdgeVertexCount: triangleOverlayEdgeData ? triangleOverlayEdgeData.length / 3 : 0,
     _meshBoundaryEdges: boundaryEdgeData,
     _meshBoundaryEdgeVertexCount: boundaryEdgeData ? boundaryEdgeData.length / 3 : 0,
   };

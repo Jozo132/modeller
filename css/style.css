@@ -100,6 +100,29 @@ html, body {
   background: rgba(0, 122, 204, 0.22);
   color: var(--text-primary);
 }
+.menu-checkbox-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 16px;
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+  user-select: none;
+  box-sizing: border-box;
+}
+.menu-checkbox-item:hover {
+  background: var(--accent);
+  color: #fff;
+}
+.menu-checkbox-item.active {
+  background: rgba(0, 122, 204, 0.22);
+}
+.menu-checkbox-item input {
+  margin: 0;
+}
 .menu-dropdown hr {
   border: none;
   border-top: 1px solid var(--border);
@@ -159,6 +182,10 @@ html, body {
 .menu-submenu button:hover {
   background: var(--accent);
   color: #fff;
+}
+.menu-submenu button.active {
+  background: rgba(0, 122, 204, 0.22);
+  color: var(--text-primary);
 }
 .menu-placeholder {
   display: block;
