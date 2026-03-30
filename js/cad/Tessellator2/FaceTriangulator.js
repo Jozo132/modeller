@@ -285,6 +285,15 @@ function _normalize(v) {
   return len > 1e-14 ? { x: v.x / len, y: v.y / len, z: v.z / len } : { x: 0, y: 0, z: 1 };
 }
 
+function _orientNormal(normal, reference) {
+  if (!normal) return { x: 0, y: 0, z: 1 };
+  const out = _normalize(normal);
+  if (!reference) return out;
+  return _dot(out, reference) >= 0
+    ? out
+    : { x: -out.x, y: -out.y, z: -out.z };
+}
+
 function _dot(a, b) {
   return a.x * b.x + a.y * b.y + a.z * b.z;
 }
@@ -970,15 +979,18 @@ export class FaceTriangulator {
       const na = surface.normal(ua.u, ua.v);
       const nb = surface.normal(ub.u, ub.v);
       const nc = surface.normal(uc.u, uc.v);
+      const triGeoN = calculateNormal(pa, pb, pc);
+      const vna = _orientNormal(sameSense ? na : { x: -na.x, y: -na.y, z: -na.z }, triGeoN);
+      const vnb = _orientNormal(sameSense ? nb : { x: -nb.x, y: -nb.y, z: -nb.z }, triGeoN);
+      const vnc = _orientNormal(sameSense ? nc : { x: -nc.x, y: -nc.y, z: -nc.z }, triGeoN);
       let faceN = _normalize({
-        x: (na.x + nb.x + nc.x) / 3,
-        y: (na.y + nb.y + nc.y) / 3,
-        z: (na.z + nb.z + nc.z) / 3,
+        x: (vna.x + vnb.x + vnc.x) / 3,
+        y: (vna.y + vnb.y + vnc.y) / 3,
+        z: (vna.z + vnb.z + vnc.z) / 3,
       });
       // Orient shading normal to agree with the triangle's geometric winding.
       // On cylinders/spheres the surface normal is nearly perpendicular to
       // boundaryNormal, so dot(faceN, boundaryNormal) ≈ 0 → unreliable sign.
-      const triGeoN = calculateNormal(pa, pb, pc);
       if (_dot(faceN, triGeoN) < 0) {
         faceN = { x: -faceN.x, y: -faceN.y, z: -faceN.z };
       }
@@ -986,6 +998,7 @@ export class FaceTriangulator {
       meshFaces.push({
         vertices: [{ ...pa }, { ...pb }, { ...pc }],
         normal: faceN,
+        vertexNormals: [{ ...vna }, { ...vnb }, { ...vnc }],
       });
       meshVertices.push({ ...pa }, { ...pb }, { ...pc });
     }
@@ -1509,14 +1522,19 @@ export class FaceTriangulator {
 
       // Per-vertex surface normals for shading
       let nx = 0, ny = 0, nz = 0;
+      const triGeoN = calculateNormal(a, b, c);
+      const vertexNormals = [];
       for (const v of [a, b, c]) {
+        let vn;
         try {
           const r = GeometryEvaluator.evalSurface(surface, v._u, v._v);
-          const vn = r.n || surfNormal;
-          nx += vn.x; ny += vn.y; nz += vn.z;
+          vn = r.n || surfNormal;
         } catch (_e) {
-          nx += surfNormal.x; ny += surfNormal.y; nz += surfNormal.z;
+          vn = surfNormal;
         }
+        vn = _orientNormal(sameSense ? vn : { x: -vn.x, y: -vn.y, z: -vn.z }, triGeoN);
+        vertexNormals.push(vn);
+        nx += vn.x; ny += vn.y; nz += vn.z;
       }
       nx /= 3; ny /= 3; nz /= 3;
       const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
@@ -1530,7 +1548,6 @@ export class FaceTriangulator {
       // perpendicular to projNormal, so dotting against projNormal gives
       // unreliable ≈0 values.  Instead, dot the surface normal against the
       // triangle's geometric normal — they should agree in sign.
-      const triGeoN = calculateNormal(a, b, c);
       const faceDot = faceN.x * triGeoN.x + faceN.y * triGeoN.y + faceN.z * triGeoN.z;
       const outNormal = faceDot >= 0
         ? faceN
@@ -1539,6 +1556,7 @@ export class FaceTriangulator {
       meshFaces.push({
         vertices: [{ ...a }, { ...b }, { ...c }],
         normal: outNormal,
+        vertexNormals: vertexNormals.map((vn) => ({ ...vn })),
       });
       meshVertices.push({ ...a }, { ...b }, { ...c });
     }

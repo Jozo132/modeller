@@ -9,6 +9,13 @@ function edgeCacheKey(edgeId, segments) {
   return `${edgeId}:${segments}`;
 }
 
+function isSimpleLineCurve(curve) {
+  return !!curve
+    && curve.degree === 1
+    && Array.isArray(curve.controlPoints)
+    && curve.controlPoints.length === 2;
+}
+
 /**
  * EdgeSampler — samples each topological edge exactly once per config
  * and caches results. Adjacent faces sharing an edge reuse identical
@@ -46,7 +53,9 @@ export class EdgeSampler {
 
     this._misses++;
     let points;
-    if (edge.curve) {
+    if (isSimpleLineCurve(edge.curve)) {
+      points = this._sampleLinear(edge.startVertex.point, edge.endVertex.point, 1);
+    } else if (edge.curve) {
       points = this._sampleCurve(edge.curve, segments);
     } else {
       points = this._sampleLinear(edge.startVertex.point, edge.endVertex.point, segments);
@@ -59,7 +68,7 @@ export class EdgeSampler {
     if (points.length > 0) {
       points[0]._isVertex = true;
       points[points.length - 1]._isVertex = true;
-      if (edge.curve) {
+      if (edge.curve && !isSimpleLineCurve(edge.curve)) {
         for (const point of points) point._preserveBoundarySample = true;
       }
     }

@@ -70,6 +70,9 @@ export class MeshStitcher {
           normal: face.normal ? { ...face.normal } : { x: 0, y: 0, z: 1 },
           shared,
         };
+        if (Array.isArray(face.vertexNormals) && face.vertexNormals.length === face.vertices.length) {
+          out.vertexNormals = face.vertexNormals.map((normal) => ({ ...normal }));
+        }
         if (topoFaceId !== undefined) {
           out.topoFaceId = topoFaceId;
           out.faceGroup = topoFaceId;

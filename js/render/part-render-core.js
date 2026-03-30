@@ -362,9 +362,14 @@ export function buildMeshRenderData(geometry) {
 
   for (const face of faces) {
     if (!face.isCurved) continue;
-    const n = face.normal || { x: 0, y: 0, z: 1 };
     const g = face.faceGroup;
-    for (const v of face.vertices || []) {
+    const verts = face.vertices || [];
+    const normals = Array.isArray(face.vertexNormals) && face.vertexNormals.length === verts.length
+      ? face.vertexNormals
+      : null;
+    for (let i = 0; i < verts.length; i++) {
+      const v = verts[i];
+      const n = normals ? normals[i] : (face.normal || { x: 0, y: 0, z: 1 });
       const key = `${g}|${vKey(v)}`;
       if (!smoothNormals.has(key)) smoothNormals.set(key, { x: 0, y: 0, z: 0 });
       const sn = smoothNormals.get(key);
@@ -401,16 +406,23 @@ export function buildMeshRenderData(geometry) {
     const curved = face.isCurved;
     const g = face.faceGroup;
     const inverted = meshFaces[fi].isInverted;
+    const vertexNormals = Array.isArray(face.vertexNormals) && face.vertexNormals.length === verts.length
+      ? face.vertexNormals
+      : null;
     if (verts.length < 3) continue;
 
     for (let i = 1; i < verts.length - 1; i++) {
       const triVerts = [verts[0], verts[i], verts[i + 1]];
-      for (const v of triVerts) {
+      const triNormals = vertexNormals
+        ? [vertexNormals[0], vertexNormals[i], vertexNormals[i + 1]]
+        : null;
+      for (let vi = 0; vi < triVerts.length; vi++) {
+        const v = triVerts[vi];
         triData[ti++] = v.x;
         triData[ti++] = v.y;
         triData[ti++] = v.z;
         if (curved) {
-          const sn = smoothNormals.get(`${g}|${vKey(v)}`);
+          const sn = triNormals ? triNormals[vi] : smoothNormals.get(`${g}|${vKey(v)}`);
           triData[ti++] = sn.x;
           triData[ti++] = sn.y;
           triData[ti++] = sn.z;
