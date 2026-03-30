@@ -8,3 +8,4 @@ tests/samples/*.png
 tests/step/*.png
 playwright-report/
 test-results/
+*.png

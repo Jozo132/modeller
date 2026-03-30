@@ -52,6 +52,14 @@ export class EdgeSampler {
       points = this._sampleLinear(edge.startVertex.point, edge.endVertex.point, segments);
     }
 
+    // Tag edge endpoint vertices so removeCollinearPoints can preserve
+    // B-Rep topology vertices.  Removing a vertex that two edges share
+    // from one face but not its neighbour creates unmatched boundary edges.
+    if (points.length > 0) {
+      points[0]._isVertex = true;
+      points[points.length - 1]._isVertex = true;
+    }
+
     this._cache.set(key, points);
     return points;
   }

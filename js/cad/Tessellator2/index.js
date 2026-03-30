@@ -157,14 +157,31 @@ function _triangulateFace(face, edgeSampler, triangulator, surfSegs, edgeSegs) {
     if (pts.length >= 3) holePts.push(pts);
   }
 
-  // Choose triangulation strategy based on face type
+  // Prefer exact analytic tessellation for supported STEP analytic faces.
+  // Some imported faces also carry a NURBS support surface whose UV mapping
+  // can collapse at periodic seams; other analytic faces (for example torii)
+  // may not carry a support surface at all. The analytic path uses the exact
+  // trimmed parameterization instead of falling back to projected planar CDT.
+  const analyticType = face.surfaceInfo?.type;
+  const hasAnalyticSurface = analyticType === 'cylinder'
+    || analyticType === 'cone'
+    || analyticType === 'sphere'
+    || analyticType === 'torus';
+  if (hasAnalyticSurface && face.surfaceType !== 'plane') {
+    return triangulator.triangulateAnalyticSurface(face, outerPts, holePts, surfSegs);
+  }
+
+  // Choose triangulation strategy based on face type.
   if (face.surface && face.surfaceType !== 'plane') {
-    // NURBS surface: tessellate the UV domain
+    // Generic NURBS surface: tessellate the UV domain.
     return triangulator.triangulateSurface(face, outerPts, surfSegs, face.sameSense);
   }
 
-  // Planar face: CDT triangulate from boundary
-  return triangulator.triangulatePlanar(outerPts, holePts, null, face.sameSense);
+  // Planar face: CDT triangulate from boundary.
+  // The boundary polygon winding already reflects the face outward direction
+  // (FACE_OUTER_BOUND orientation was applied in _buildFaceTopology), so we
+  // pass sameSense=true to avoid double-flipping the Newell boundary normal.
+  return triangulator.triangulatePlanar(outerPts, holePts, null, true);
 }
 
 /**

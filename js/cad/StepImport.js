@@ -181,7 +181,6 @@ function _applyAnalyticNormals(body, mesh) {
     faceInfos.push({
       surfaceInfo: face.surfaceInfo,
       sameSense: face.sameSense,
-      hasSurface: !!face.surface,
     });
   }
 
@@ -189,7 +188,7 @@ function _applyAnalyticNormals(body, mesh) {
     const id = tri.topoFaceId;
     if (id === undefined || id >= faceInfos.length) continue;
     const info = faceInfos[id];
-    if (!info.surfaceInfo || info.hasSurface) continue;
+    if (!info.surfaceInfo) continue;
 
     // Compute per-vertex averaged normal from analytic surface
     let nx = 0, ny = 0, nz = 0;
@@ -200,7 +199,29 @@ function _applyAnalyticNormals(body, mesh) {
     nx /= 3; ny /= 3; nz /= 3;
     const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
     if (len > 1e-14) {
-      tri.normal = { x: nx / len, y: ny / len, z: nz / len };
+      let out = { x: nx / len, y: ny / len, z: nz / len };
+
+      // The loop/coedge orientation already determines the tessellated
+      // triangle winding. Align analytic shading normals to that actual
+      // winding so sameSense does not re-invert otherwise correct faces.
+      const a = tri.vertices[0];
+      const b = tri.vertices[1];
+      const c = tri.vertices[2];
+      if (a && b && c) {
+        const abx = b.x - a.x;
+        const aby = b.y - a.y;
+        const abz = b.z - a.z;
+        const acx = c.x - a.x;
+        const acy = c.y - a.y;
+        const acz = c.z - a.z;
+        const gx = aby * acz - abz * acy;
+        const gy = abz * acx - abx * acz;
+        const gz = abx * acy - aby * acx;
+        const dot = out.x * gx + out.y * gy + out.z * gz;
+        if (dot < 0) out = { x: -out.x, y: -out.y, z: -out.z };
+      }
+
+      tri.normal = out;
     }
   }
 }
@@ -1072,6 +1093,7 @@ function _buildNurbsSurface(resolved, surfaceRef) {
         axis.origin, axis.zDir, radius, 1.0,
         axis.xDir, yDir, 0, 2 * Math.PI
       );
+      surface._periodicHint = true;
       return { surface, type: SurfaceType.CYLINDER };
     }
 
@@ -1572,27 +1594,57 @@ function _extractSurfaceInfo(resolved, surfaceRef) {
       const axis = _getAxis2Placement3D(resolved, surf.args[1]);
       const radius = Number(surf.args[2]);
       if (!axis || !radius) return null;
-      return { type: 'cylinder', origin: axis.origin, axis: axis.zDir, radius };
+      return {
+        type: 'cylinder',
+        origin: axis.origin,
+        axis: axis.zDir,
+        xDir: axis.xDir,
+        yDir: _cross(axis.zDir, axis.xDir),
+        radius,
+      };
     }
     case 'SPHERICAL_SURFACE': {
       const axis = _getAxis2Placement3D(resolved, surf.args[1]);
       const radius = Number(surf.args[2]);
       if (!axis || !radius) return null;
-      return { type: 'sphere', origin: axis.origin, radius };
+      return {
+        type: 'sphere',
+        origin: axis.origin,
+        axis: axis.zDir,
+        xDir: axis.xDir,
+        yDir: _cross(axis.zDir, axis.xDir),
+        radius,
+      };
     }
     case 'CONICAL_SURFACE': {
       const axis = _getAxis2Placement3D(resolved, surf.args[1]);
       const radius = Number(surf.args[2]);
       const semiAngle = Number(surf.args[3]) || 0;
       if (!axis) return null;
-      return { type: 'cone', origin: axis.origin, axis: axis.zDir, radius, semiAngle };
+      return {
+        type: 'cone',
+        origin: axis.origin,
+        axis: axis.zDir,
+        xDir: axis.xDir,
+        yDir: _cross(axis.zDir, axis.xDir),
+        radius,
+        semiAngle,
+      };
     }
     case 'TOROIDAL_SURFACE': {
       const axis = _getAxis2Placement3D(resolved, surf.args[1]);
       const majorR = Number(surf.args[2]);
       const minorR = Number(surf.args[3]);
       if (!axis || !majorR || !minorR) return null;
-      return { type: 'torus', origin: axis.origin, axis: axis.zDir, majorR, minorR };
+      return {
+        type: 'torus',
+        origin: axis.origin,
+        axis: axis.zDir,
+        xDir: axis.xDir,
+        yDir: _cross(axis.zDir, axis.xDir),
+        majorR,
+        minorR,
+      };
     }
     default:
       return null;
@@ -1613,6 +1665,11 @@ function _computeVertexNormal(vertex, surfaceInfo, sameSense) {
   let n;
 
   switch (surfaceInfo.type) {
+    case 'plane': {
+      // Plane normal comes directly from the STEP PLANE entity axis direction
+      n = { x: surfaceInfo.normal.x, y: surfaceInfo.normal.y, z: surfaceInfo.normal.z };
+      break;
+    }
     case 'cylinder': {
       // Radial direction: project (vertex - origin) onto plane perpendicular to axis
       const dx = vertex.x - surfaceInfo.origin.x;

@@ -9,6 +9,7 @@
 
 import assert from 'assert';
 import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
 import { importSTEP } from '../js/cad/StepImport.js';
 import { StepImportFeature } from '../js/cad/StepImportFeature.js';
 import { Part } from '../js/cad/Part.js';
@@ -35,7 +36,7 @@ function test(name, fn) {
 }
 
 // Load the reference STEP file
-const stepFilePath = new URL('./step/Unnamed-Body.step', import.meta.url).pathname;
+const stepFilePath = fileURLToPath(new URL('./step/Unnamed-Body.step', import.meta.url));
 const stepData = readFileSync(stepFilePath, 'utf-8');
 
 // ============================================================
@@ -107,7 +108,7 @@ console.log('\n=== STEP Import — Box-Fillet-3 Tests ===\n');
 // ============================================================
 
 // Load the box-fillet-3 STEP file (FreeCAD-generated: 10x10x10 box with 3 fillets + sphere corner)
-const boxFilletPath = new URL('./step/box-fillet-3.step', import.meta.url).pathname;
+const boxFilletPath = fileURLToPath(new URL('./step/box-fillet-3.step', import.meta.url));
 const boxFilletData = readFileSync(boxFilletPath, 'utf-8');
 
 test('box-fillet-3: parses without errors', () => {

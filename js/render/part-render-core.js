@@ -97,6 +97,36 @@ function computePolygonNormal(verts) {
   return { x: nx / len, y: ny / len, z: nz / len };
 }
 
+function buildBoundaryEdges(faces) {
+  const precision = 5;
+  const vKey = (v) => `${v.x.toFixed(precision)},${v.y.toFixed(precision)},${v.z.toFixed(precision)}`;
+  const eKey = (a, b) => {
+    const ka = vKey(a);
+    const kb = vKey(b);
+    return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+  };
+
+  const edgeCounts = new Map();
+  for (const face of faces) {
+    const verts = face.vertices || [];
+    for (let i = 0; i < verts.length; i++) {
+      const a = verts[i];
+      const b = verts[(i + 1) % verts.length];
+      const key = eKey(a, b);
+      if (!edgeCounts.has(key)) edgeCounts.set(key, { a, b, count: 0 });
+      edgeCounts.get(key).count++;
+    }
+  }
+
+  const boundary = [];
+  for (const [, info] of edgeCounts) {
+    if (info.count === 1) {
+      boundary.push(info.a.x, info.a.y, info.a.z, info.b.x, info.b.y, info.b.z);
+    }
+  }
+  return boundary.length > 0 ? new Float32Array(boundary) : null;
+}
+
 function buildSilhouetteCandidates(faces) {
   const SHARP_COS = Math.cos(15 * Math.PI / 180);
   // Minimum angular difference (30°) for silhouette candidates within the
@@ -290,6 +320,8 @@ export function buildMeshRenderData(geometry) {
     meshSilhouetteCandidates = buildSilhouetteCandidates(faces);
   }
 
+  const boundaryEdgeData = buildBoundaryEdges(faces);
+
   let meshVisualEdges = null;
   let meshVisualEdgeVertexCount = 0;
   if (geometry.visualEdges && geometry.visualEdges.length > 0) {
@@ -322,6 +354,8 @@ export function buildMeshRenderData(geometry) {
     _meshSilhouetteCandidates: meshSilhouetteCandidates,
     _meshVisualEdges: meshVisualEdges,
     _meshVisualEdgeVertexCount: meshVisualEdgeVertexCount,
+    _meshBoundaryEdges: boundaryEdgeData,
+    _meshBoundaryEdgeVertexCount: boundaryEdgeData ? boundaryEdgeData.length / 3 : 0,
   };
 }
 

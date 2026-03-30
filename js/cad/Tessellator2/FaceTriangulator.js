@@ -248,8 +248,14 @@ function removeCollinearPoints(pts) {
   const result = [];
   const n = pts.length;
   for (let i = 0; i < n; i++) {
-    const prev = pts[(i - 1 + n) % n];
     const curr = pts[i];
+    // Always preserve B-Rep topology vertices.  A vertex shared by two
+    // topological edges may be collinear with its loop neighbours on one
+    // face but not on the adjacent face (which has different surrounding
+    // edges).  Removing it from only one side creates unmatched boundary
+    // edges and leaves holes in the stitched mesh.
+    if (curr._isVertex) { result.push(curr); continue; }
+    const prev = pts[(i - 1 + n) % n];
     const next = pts[(i + 1) % n];
     // Check if curr is collinear with prev and next
     const area = _triangleArea3D(prev, curr, next);
@@ -258,6 +264,257 @@ function removeCollinearPoints(pts) {
     }
   }
   return result.length >= 3 ? result : pts;
+}
+
+function removeCollinearPoints2D(pts) {
+  if (pts.length <= 3) return pts;
+  const result = [];
+  const n = pts.length;
+  for (let i = 0; i < n; i++) {
+    const prev = pts[(i - 1 + n) % n];
+    const curr = pts[i];
+    const next = pts[(i + 1) % n];
+    const cross = (curr.x - prev.x) * (next.y - curr.y) - (curr.y - prev.y) * (next.x - curr.x);
+    if (Math.abs(cross) > 1e-12) result.push(curr);
+  }
+  return result.length >= 3 ? result : pts;
+}
+
+function _normalize(v) {
+  const len = Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+  return len > 1e-14 ? { x: v.x / len, y: v.y / len, z: v.z / len } : { x: 0, y: 0, z: 1 };
+}
+
+function _dot(a, b) {
+  return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+function _add3(a, b) {
+  return { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z };
+}
+
+function _scale3(v, s) {
+  return { x: v.x * s, y: v.y * s, z: v.z * s };
+}
+
+function _wrapNear(value, reference, period) {
+  if (!Number.isFinite(value) || !Number.isFinite(reference) || !Number.isFinite(period) || period <= 0) {
+    return value;
+  }
+  return value + Math.round((reference - value) / period) * period;
+}
+
+function _rotateLoop(loop, startIndex) {
+  if (!Array.isArray(loop) || loop.length === 0) return loop;
+  const idx = ((startIndex % loop.length) + loop.length) % loop.length;
+  if (idx === 0) return loop.map(p => ({ ...p }));
+  return [...loop.slice(idx), ...loop.slice(0, idx)].map(p => ({ ...p }));
+}
+
+function _normalizePeriodicLoop(loop, surface) {
+  if (!Array.isArray(loop) || loop.length < 2 || !surface) return loop;
+
+  const periodicDims = [];
+  if (surface.periodicU && Number.isFinite(surface.periodU) && surface.periodU > 0) {
+    periodicDims.push({ key: 'u', period: surface.periodU });
+  }
+  if (surface.periodicV && Number.isFinite(surface.periodV) && surface.periodV > 0) {
+    periodicDims.push({ key: 'v', period: surface.periodV });
+  }
+  if (periodicDims.length === 0) return loop;
+
+  let cutAfter = -1;
+  let maxJumpScore = 0;
+  for (let i = 0; i < loop.length; i++) {
+    const curr = loop[i];
+    const next = loop[(i + 1) % loop.length];
+    let score = 0;
+    for (const dim of periodicDims) {
+      score += Math.abs(next[dim.key] - curr[dim.key]) / dim.period;
+    }
+    if (score > maxJumpScore) {
+      maxJumpScore = score;
+      cutAfter = i;
+    }
+  }
+
+  const reordered = (cutAfter >= 0 && maxJumpScore > 0.5)
+    ? _rotateLoop(loop, cutAfter + 1)
+    : loop.map(p => ({ ...p }));
+
+  for (const dim of periodicDims) {
+    for (let i = 1; i < reordered.length; i++) {
+      reordered[i][dim.key] = _wrapNear(reordered[i][dim.key], reordered[i - 1][dim.key], dim.period);
+    }
+
+    let avg = 0;
+    for (const p of reordered) avg += p[dim.key];
+    avg /= reordered.length;
+    const shift = Math.round(avg / dim.period) * dim.period;
+    if (shift !== 0) {
+      for (const p of reordered) p[dim.key] -= shift;
+    }
+  }
+
+  for (const p of reordered) {
+    p.x = p.u;
+    p.y = p.v;
+  }
+  return reordered;
+}
+
+function _makeAnalyticSurface(surfaceInfo) {
+  if (!surfaceInfo) return null;
+
+  const origin = surfaceInfo.origin;
+  const axis = surfaceInfo.axis ? _normalize(surfaceInfo.axis) : { x: 0, y: 0, z: 1 };
+  const xDir = surfaceInfo.xDir ? _normalize(surfaceInfo.xDir) : { x: 1, y: 0, z: 0 };
+  const yDir = surfaceInfo.yDir ? _normalize(surfaceInfo.yDir) : { x: 0, y: 1, z: 0 };
+
+  function unwrapAngle(value, hint, period = 2 * Math.PI) {
+    if (!Number.isFinite(hint)) return value;
+    return value + Math.round((hint - value) / period) * period;
+  }
+
+  switch (surfaceInfo.type) {
+    case 'sphere': {
+      const radius = surfaceInfo.radius;
+      return {
+        type: 'sphere',
+        periodicU: true,
+        periodU: 2 * Math.PI,
+        evaluate(u, v) {
+          const cu = Math.cos(u), su = Math.sin(u);
+          const cv = Math.cos(v), sv = Math.sin(v);
+          const radial = _add3(_scale3(xDir, cv * cu), _scale3(yDir, cv * su));
+          const dir = _add3(radial, _scale3(axis, sv));
+          return _add3(origin, _scale3(dir, radius));
+        },
+        normal(u, v) {
+          const p = this.evaluate(u, v);
+          return _normalize({ x: p.x - origin.x, y: p.y - origin.y, z: p.z - origin.z });
+        },
+        closestPointUV(point, _gridRes = 16, uvHint = null) {
+          const dx = point.x - origin.x;
+          const dy = point.y - origin.y;
+          const dz = point.z - origin.z;
+          const dir = _normalize({ x: dx, y: dy, z: dz });
+          const px = _dot(dir, xDir);
+          const py = _dot(dir, yDir);
+          const pz = _dot(dir, axis);
+          let u = Math.atan2(py, px);
+          let v = Math.atan2(pz, Math.sqrt(px * px + py * py));
+          if (uvHint) {
+            u = unwrapAngle(u, uvHint.u);
+          }
+          return { u, v };
+        },
+      };
+    }
+    case 'cylinder': {
+      const radius = surfaceInfo.radius;
+      return {
+        type: 'cylinder',
+        periodicU: true,
+        periodU: 2 * Math.PI,
+        evaluate(u, v) {
+          const radial = _add3(_scale3(xDir, Math.cos(u)), _scale3(yDir, Math.sin(u)));
+          return _add3(origin, _add3(_scale3(radial, radius), _scale3(axis, v)));
+        },
+        normal(u, _v) {
+          return _normalize(_add3(_scale3(xDir, Math.cos(u)), _scale3(yDir, Math.sin(u))));
+        },
+        closestPointUV(point, _gridRes = 16, uvHint = null) {
+          const dx = point.x - origin.x;
+          const dy = point.y - origin.y;
+          const dz = point.z - origin.z;
+          const v = dx * axis.x + dy * axis.y + dz * axis.z;
+          const radial = { x: dx - v * axis.x, y: dy - v * axis.y, z: dz - v * axis.z };
+          const px = _dot(radial, xDir);
+          const py = _dot(radial, yDir);
+          let u = Math.atan2(py, px);
+          if (uvHint) u = unwrapAngle(u, uvHint.u);
+          return { u, v };
+        },
+      };
+    }
+    case 'cone': {
+      const radius = surfaceInfo.radius;
+      const tanA = Math.tan(surfaceInfo.semiAngle || 0);
+      const cosA = Math.cos(surfaceInfo.semiAngle || 0);
+      const sinA = Math.sin(surfaceInfo.semiAngle || 0);
+      return {
+        type: 'cone',
+        periodicU: true,
+        periodU: 2 * Math.PI,
+        evaluate(u, v) {
+          const radialDir = _add3(_scale3(xDir, Math.cos(u)), _scale3(yDir, Math.sin(u)));
+          const currentR = radius + v * tanA;
+          return _add3(origin, _add3(_scale3(radialDir, currentR), _scale3(axis, v)));
+        },
+        normal(u, _v) {
+          const radialDir = _add3(_scale3(xDir, Math.cos(u)), _scale3(yDir, Math.sin(u)));
+          return _normalize({
+            x: radialDir.x * cosA - axis.x * sinA,
+            y: radialDir.y * cosA - axis.y * sinA,
+            z: radialDir.z * cosA - axis.z * sinA,
+          });
+        },
+        closestPointUV(point, _gridRes = 16, uvHint = null) {
+          const dx = point.x - origin.x;
+          const dy = point.y - origin.y;
+          const dz = point.z - origin.z;
+          const v = dx * axis.x + dy * axis.y + dz * axis.z;
+          const radial = { x: dx - v * axis.x, y: dy - v * axis.y, z: dz - v * axis.z };
+          const px = _dot(radial, xDir);
+          const py = _dot(radial, yDir);
+          let u = Math.atan2(py, px);
+          if (uvHint) u = unwrapAngle(u, uvHint.u);
+          return { u, v };
+        },
+      };
+    }
+    case 'torus': {
+      const majorR = surfaceInfo.majorR;
+      const minorR = surfaceInfo.minorR;
+      return {
+        type: 'torus',
+        periodicU: true,
+        periodU: 2 * Math.PI,
+        periodicV: true,
+        periodV: 2 * Math.PI,
+        evaluate(u, v) {
+          const ringDir = _add3(_scale3(xDir, Math.cos(u)), _scale3(yDir, Math.sin(u)));
+          const minorCenter = _add3(origin, _scale3(ringDir, majorR));
+          const normalDir = _add3(_scale3(ringDir, Math.cos(v)), _scale3(axis, Math.sin(v)));
+          return _add3(minorCenter, _scale3(normalDir, minorR));
+        },
+        normal(u, v) {
+          const ringDir = _add3(_scale3(xDir, Math.cos(u)), _scale3(yDir, Math.sin(u)));
+          return _normalize(_add3(_scale3(ringDir, Math.cos(v)), _scale3(axis, Math.sin(v))));
+        },
+        closestPointUV(point, _gridRes = 16, uvHint = null) {
+          const dx = point.x - origin.x;
+          const dy = point.y - origin.y;
+          const dz = point.z - origin.z;
+          const axial = dx * axis.x + dy * axis.y + dz * axis.z;
+          const radial = { x: dx - axial * axis.x, y: dy - axial * axis.y, z: dz - axial * axis.z };
+          const px = _dot(radial, xDir);
+          const py = _dot(radial, yDir);
+          const ringLen = Math.sqrt(px * px + py * py);
+          let u = Math.atan2(py, px);
+          let v = Math.atan2(axial, ringLen - majorR);
+          if (uvHint) {
+            u = unwrapAngle(u, uvHint.u);
+            v = unwrapAngle(v, uvHint.v);
+          }
+          return { u, v };
+        },
+      };
+    }
+    default:
+      return null;
+  }
 }
 
 /**
@@ -406,6 +663,327 @@ export class FaceTriangulator {
   }
 
   /**
+   * Triangulate an analytic curved face directly in its exact parameter space.
+   * This is used for STEP analytic surfaces that do not carry a NurbsSurface.
+   */
+  triangulateAnalyticSurface(face, boundaryPts3D, holePts3D = [], surfaceSegments = 8) {
+    const surface = _makeAnalyticSurface(face.surfaceInfo);
+    if (!surface) {
+      return this.triangulatePlanar(boundaryPts3D, holePts3D, null, true);
+    }
+    const sameSense = face.sameSense !== false;
+
+    const outer3D = removeCollinearPoints([...boundaryPts3D]);
+    if (outer3D.length < 3) return { vertices: [], faces: [] };
+
+    const holeLoops3D = holePts3D
+      .map(loop => removeCollinearPoints([...loop]))
+      .filter(loop => loop.length >= 3);
+
+    const mapLoopToUV = (loop3D) => {
+      const loop = [];
+      let prevUv = null;
+      for (const p of loop3D) {
+        const uv = surface.closestPointUV(p, 16, prevUv);
+        // Attach original 3D position so evalPoint can preserve the exact
+        // EdgeSampler coordinates.  Re-evaluating from UV introduces tiny
+        // floating-point drift that prevents MeshStitcher from deduplicating
+        // shared boundary vertices, creating holes in the stitched mesh.
+        const curr = { x: uv.u, y: uv.v, u: uv.u, v: uv.v, _orig3D: p };
+        const prev = loop[loop.length - 1];
+        if (!prev || Math.abs(prev.u - curr.u) > 1e-10 || Math.abs(prev.v - curr.v) > 1e-10) {
+          loop.push(curr);
+        }
+        prevUv = uv;
+      }
+      if (loop.length > 1) {
+        const first = loop[0];
+        const last = loop[loop.length - 1];
+        if (Math.abs(first.u - last.u) < 1e-10 && Math.abs(first.v - last.v) < 1e-10) {
+          loop.pop();
+        }
+      }
+      return loop;
+    };
+
+    let outerUv = _normalizePeriodicLoop(mapLoopToUV(outer3D), surface);
+    if (outerUv.length < 3) return { vertices: [], faces: [] };
+    let holeUvs = holeLoops3D
+      .map(loop => _normalizePeriodicLoop(mapLoopToUV(loop), surface))
+      .filter(loop => loop.length >= 3);
+
+    if (signedArea2D(outerUv) < 0) {
+      outerUv = _normalizePeriodicLoop([...outerUv].reverse(), surface);
+    }
+    holeUvs = holeUvs.map(loop => {
+      if (signedArea2D(loop) > 0) {
+        return _normalizePeriodicLoop([...loop].reverse(), surface);
+      }
+      return loop;
+    });
+
+    let nnx = 0, nny = 0, nnz = 0;
+    for (let i = 0; i < outer3D.length; i++) {
+      const curr = outer3D[i];
+      const next = outer3D[(i + 1) % outer3D.length];
+      nnx += (curr.y - next.y) * (curr.z + next.z);
+      nny += (curr.z - next.z) * (curr.x + next.x);
+      nnz += (curr.x - next.x) * (curr.y + next.y);
+    }
+    const boundaryNormal = _normalize(
+      Math.sqrt(nnx * nnx + nny * nny + nnz * nnz) > 1e-14
+        ? { x: nnx, y: nny, z: nnz }
+        : calculateNormal(outer3D[0], outer3D[1], outer3D[2])
+    );
+
+    let uMin = Infinity, uMax = -Infinity, vMin = Infinity, vMax = -Infinity;
+    for (const p of outerUv) {
+      if (p.u < uMin) uMin = p.u;
+      if (p.u > uMax) uMax = p.u;
+      if (p.v < vMin) vMin = p.v;
+      if (p.v > vMax) vMax = p.v;
+    }
+    for (const loop of holeUvs) {
+      for (const p of loop) {
+        if (p.u < uMin) uMin = p.u;
+        if (p.u > uMax) uMax = p.u;
+        if (p.v < vMin) vMin = p.v;
+        if (p.v > vMax) vMax = p.v;
+      }
+    }
+
+    const periodicSurface = surface.periodicU || surface.periodicV;
+    const steiner2D = [];
+    const gridRes = surface.type === 'torus'
+      ? Math.max(8, surfaceSegments)
+      : periodicSurface
+        ? Math.max(4, Math.ceil(surfaceSegments / 2))
+        : Math.max(2, Math.ceil(surfaceSegments / 4));
+    const uStep = (uMax - uMin) / (gridRes + 1 || 1);
+    const vStep = (vMax - vMin) / (gridRes + 1 || 1);
+    for (let i = 1; i <= gridRes; i++) {
+      for (let j = 1; j <= gridRes; j++) {
+        const u = uMin + i * uStep;
+        const v = vMin + j * vStep;
+        if (!_pointInPoly2D(u, v, outerUv)) continue;
+        let inHole = false;
+        for (const hole of holeUvs) {
+          if (_pointInPoly2D(u, v, hole)) { inHole = true; break; }
+        }
+        if (!inHole) steiner2D.push({ x: u, y: v, u, v });
+      }
+    }
+
+    const allUv = [...outerUv];
+    for (const hole of holeUvs) allUv.push(...hole);
+    allUv.push(...steiner2D);
+
+    const triIndices = constrainedTriangulate(
+      outerUv.map(p => ({ x: p.u, y: p.v })),
+      holeUvs.map(loop => loop.map(p => ({ x: p.u, y: p.v }))),
+      steiner2D.map(p => ({ x: p.u, y: p.v }))
+    );
+
+    const uvKey = (p) => `${Math.round(p.u * 1e8)},${Math.round(p.v * 1e8)}`;
+    const edgeKey = (a, b) => {
+      const ka = uvKey(a), kb = uvKey(b);
+      return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+    };
+    const boundaryEdgeSet = new Set();
+    const registerBoundary = (loop) => {
+      for (let i = 0; i < loop.length; i++) {
+        boundaryEdgeSet.add(edgeKey(loop[i], loop[(i + 1) % loop.length]));
+      }
+    };
+    registerBoundary(outerUv);
+    for (const hole of holeUvs) registerBoundary(hole);
+
+    const pointCache = new Map();
+    const evalPoint = (uv) => {
+      const key = uvKey(uv);
+      if (pointCache.has(key)) return pointCache.get(key);
+      let out;
+      if (uv._orig3D) {
+        // Boundary vertex — use the exact EdgeSampler position to ensure
+        // MeshStitcher can deduplicate shared vertices across adjacent faces.
+        const o = uv._orig3D;
+        out = { x: o.x, y: o.y, z: o.z, _u: uv.u, _v: uv.v };
+      } else {
+        const p = surface.evaluate(uv.u, uv.v);
+        out = { x: p.x, y: p.y, z: p.z, _u: uv.u, _v: uv.v };
+      }
+      pointCache.set(key, out);
+      return out;
+    };
+
+    const triangleSurfaceNormal = (a, b, c) => {
+      let n = surface.normal((a.u + b.u + c.u) / 3, (a.v + b.v + c.v) / 3);
+      if (!sameSense) n = { x: -n.x, y: -n.y, z: -n.z };
+      return _normalize(n);
+    };
+
+    let triangles = [];
+    for (const [a, b, c] of triIndices) {
+      const ua = allUv[a], ub = allUv[b], uc = allUv[c];
+      if (!ua || !ub || !uc) continue;
+      const pa = evalPoint(ua), pb = evalPoint(ub), pc = evalPoint(uc);
+      if (_triangleArea3D(pa, pb, pc) < 1e-12) continue;
+      triangles.push([ua, ub, uc]);
+    }
+
+    if (!periodicSurface && triangles.length > 0) {
+      const [ua, ub, uc] = triangles[0];
+      const triN = calculateNormal(evalPoint(ua), evalPoint(ub), evalPoint(uc));
+      if (_dot(triN, boundaryNormal) < 0) {
+        triangles = triangles.map(([a, b, c]) => [a, c, b]);
+      }
+    }
+
+    if (!periodicSurface) {
+      triangles = triangles.filter(([a, b, c]) => {
+        const n = calculateNormal(evalPoint(a), evalPoint(b), evalPoint(c));
+        return _dot(n, boundaryNormal) > 0;
+      });
+    }
+
+    let bbMinX = Infinity, bbMinY = Infinity, bbMinZ = Infinity;
+    let bbMaxX = -Infinity, bbMaxY = -Infinity, bbMaxZ = -Infinity;
+    for (const p of outer3D) {
+      if (p.x < bbMinX) bbMinX = p.x; if (p.x > bbMaxX) bbMaxX = p.x;
+      if (p.y < bbMinY) bbMinY = p.y; if (p.y > bbMaxY) bbMaxY = p.y;
+      if (p.z < bbMinZ) bbMinZ = p.z; if (p.z > bbMaxZ) bbMaxZ = p.z;
+    }
+    const faceDiag = Math.sqrt(
+      (bbMaxX - bbMinX) ** 2 + (bbMaxY - bbMinY) ** 2 + (bbMaxZ - bbMinZ) ** 2
+    );
+    const deviationScale = surface.type === 'torus'
+      ? 0.00035
+      : periodicSurface
+        ? 0.0006
+        : 0.002;
+    const deviationTol = Math.max(faceDiag * deviationScale, 1e-8);
+
+    const midpointCache = new Map();
+    const midpointUv = (a, b) => {
+      const key = edgeKey(a, b);
+      if (midpointCache.has(key)) return midpointCache.get(key);
+      const uv = { u: (a.u + b.u) / 2, v: (a.v + b.v) / 2 };
+      uv.x = uv.u;
+      uv.y = uv.v;
+      midpointCache.set(key, uv);
+      return uv;
+    };
+    const edgeDeviation = (a, b) => {
+      const p0 = evalPoint(a);
+      const p1 = evalPoint(b);
+      const midUv = midpointUv(a, b);
+      const mid = evalPoint(midUv);
+      const lx = (p0.x + p1.x) / 2, ly = (p0.y + p1.y) / 2, lz = (p0.z + p1.z) / 2;
+      const dx = mid.x - lx, dy = mid.y - ly, dz = mid.z - lz;
+      return Math.sqrt(dx * dx + dy * dy + dz * dz);
+    };
+    const maxPasses = surface.type === 'torus'
+      ? Math.min(surfaceSegments, 5)
+      : periodicSurface
+        ? Math.min(surfaceSegments, 4)
+        : Math.min(surfaceSegments, 4);
+    for (let pass = 0; pass < maxPasses; pass++) {
+      const edgeSplitSet = new Set();
+      for (const [a, b, c] of triangles) {
+        for (const [p, q] of [[a, b], [b, c], [c, a]]) {
+          const key = edgeKey(p, q);
+          if (boundaryEdgeSet.has(key)) continue;
+          if (edgeDeviation(p, q) > deviationTol) edgeSplitSet.add(key);
+        }
+      }
+      if (edgeSplitSet.size === 0) break;
+
+      let anySplit = false;
+      const next = [];
+      for (const [a, b, c] of triangles) {
+        const splitAB = edgeSplitSet.has(edgeKey(a, b));
+        const splitBC = edgeSplitSet.has(edgeKey(b, c));
+        const splitCA = edgeSplitSet.has(edgeKey(c, a));
+        const splitCount = (splitAB ? 1 : 0) + (splitBC ? 1 : 0) + (splitCA ? 1 : 0);
+        if (splitCount === 0) { next.push([a, b, c]); continue; }
+
+        let subs;
+        if (splitCount === 3) {
+          const mAB = midpointUv(a, b);
+          const mBC = midpointUv(b, c);
+          const mCA = midpointUv(c, a);
+          subs = [[a, mAB, mCA], [mAB, b, mBC], [mCA, mBC, c], [mAB, mBC, mCA]];
+        } else if (splitCount === 2) {
+          if (!splitAB) {
+            const mBC = midpointUv(b, c), mCA = midpointUv(c, a);
+            subs = [[a, b, mBC], [a, mBC, mCA], [mCA, mBC, c]];
+          } else if (!splitBC) {
+            const mAB = midpointUv(a, b), mCA = midpointUv(c, a);
+            subs = [[mAB, b, c], [mAB, c, mCA], [a, mAB, mCA]];
+          } else {
+            const mAB = midpointUv(a, b), mBC = midpointUv(b, c);
+            subs = [[a, mAB, mBC], [a, mBC, c], [mAB, b, mBC]];
+          }
+        } else {
+          if (splitAB) {
+            const m = midpointUv(a, b); subs = [[a, m, c], [m, b, c]];
+          } else if (splitBC) {
+            const m = midpointUv(b, c); subs = [[a, b, m], [a, m, c]];
+          } else {
+            const m = midpointUv(c, a); subs = [[a, b, m], [m, b, c]];
+          }
+        }
+
+        anySplit = true;
+        next.push(...subs);
+      }
+      triangles = next;
+      if (!anySplit) break;
+    }
+
+    const meshFaces = [];
+    const meshVertices = [];
+    for (const [a, b, c] of triangles) {
+      let ua = a, ub = b, uc = c;
+      let pa = evalPoint(ua), pb = evalPoint(ub), pc = evalPoint(uc);
+      const areaThreshold = faceDiag > 0 ? faceDiag * faceDiag * 1e-8 : 1e-14;
+      if (_triangleArea3D(pa, pb, pc) < areaThreshold) continue;
+
+      const refNormal = periodicSurface
+        ? triangleSurfaceNormal(ua, ub, uc)
+        : boundaryNormal;
+      if (_dot(calculateNormal(pa, pb, pc), refNormal) < 0) {
+        [ub, uc] = [uc, ub];
+        [pb, pc] = [pc, pb];
+      }
+
+      const na = surface.normal(ua.u, ua.v);
+      const nb = surface.normal(ub.u, ub.v);
+      const nc = surface.normal(uc.u, uc.v);
+      let faceN = _normalize({
+        x: (na.x + nb.x + nc.x) / 3,
+        y: (na.y + nb.y + nc.y) / 3,
+        z: (na.z + nb.z + nc.z) / 3,
+      });
+      // Orient shading normal to agree with the triangle's geometric winding.
+      // On cylinders/spheres the surface normal is nearly perpendicular to
+      // boundaryNormal, so dot(faceN, boundaryNormal) ≈ 0 → unreliable sign.
+      const triGeoN = calculateNormal(pa, pb, pc);
+      if (_dot(faceN, triGeoN) < 0) {
+        faceN = { x: -faceN.x, y: -faceN.y, z: -faceN.z };
+      }
+
+      meshFaces.push({
+        vertices: [{ ...pa }, { ...pb }, { ...pc }],
+        normal: faceN,
+      });
+      meshVertices.push({ ...pa }, { ...pb }, { ...pc });
+    }
+
+    return { vertices: meshVertices, faces: meshFaces };
+  }
+
+  /**
    * Triangulate a NURBS surface face using its boundary and support surface.
    *
    * Ear-clips the boundary polygon (respecting trim curves), then adaptively
@@ -431,8 +1009,9 @@ export class FaceTriangulator {
     // Detect periodic surfaces: if eval(u,vMin) ≡ eval(u,vMax) (or same
     // for u), the surface wraps and closestPointUV cannot reliably track
     // around the full period — UVs will clamp and collapse.
-    let periodic = false;
-    if (typeof surface.evaluate === 'function') {
+    let periodic = surface._periodicHint === true;
+    const periodicHintLocked = surface._periodicHint === true || surface._periodicHint === false;
+    if (!periodicHintLocked && typeof surface.evaluate === 'function') {
       const uMid = (surface.uMin + surface.uMax) / 2;
       const vMid = (surface.vMin + surface.vMax) / 2;
       try {
@@ -471,7 +1050,69 @@ export class FaceTriangulator {
     const uvRangeV = vMax - vMin;
     let uvValid = uvRangeU > 1e-8 && uvRangeV > 1e-8;
 
-    if (!uvValid) {
+    if (periodic) {
+      // For periodic surfaces, hint-chaining often fails because
+      // closestPointUV snaps to the base domain and can't track across
+      // the seam.  Always recompute independently, then unwrap.
+      for (let i = 0; i < allPts.length; i++) {
+        const uv = surface.closestPointUV(allPts[i]);
+        allPts[i]._u = uv.u;
+        allPts[i]._v = uv.v;
+      }
+
+      const periodU = (surface.uMax - surface.uMin);
+      const periodV = (surface.vMax - surface.vMin);
+      const hasPerU = periodU > 1e-8;
+      const hasPerV = periodV > 1e-8;
+
+      if (hasPerU || hasPerV) {
+        // Find the largest angular jump — that's the seam crossing.
+        let maxJump = 0, jumpIdx = -1;
+        for (let i = 0; i < allPts.length; i++) {
+          const curr = allPts[i];
+          const next = allPts[(i + 1) % allPts.length];
+          let score = 0;
+          if (hasPerU) score += Math.abs(next._u - curr._u) / periodU;
+          if (hasPerV) score += Math.abs(next._v - curr._v) / periodV;
+          if (score > maxJump) { maxJump = score; jumpIdx = i; }
+        }
+
+        if (maxJump > 0.3 && jumpIdx >= 0) {
+          const rotStart = (jumpIdx + 1) % allPts.length;
+          if (rotStart !== 0) {
+            const rotated = [...allPts.slice(rotStart), ...allPts.slice(0, rotStart)];
+            allPts.length = 0;
+            allPts.push(...rotated);
+          }
+        }
+
+        // Chain-unwrap: ensure consecutive points are within half-period
+        for (let i = 1; i < allPts.length; i++) {
+          if (hasPerU) {
+            const diff = allPts[i]._u - allPts[i - 1]._u;
+            if (Math.abs(diff) > periodU * 0.5) {
+              allPts[i]._u -= Math.round(diff / periodU) * periodU;
+            }
+          }
+          if (hasPerV) {
+            const diff = allPts[i]._v - allPts[i - 1]._v;
+            if (Math.abs(diff) > periodV * 0.5) {
+              allPts[i]._v -= Math.round(diff / periodV) * periodV;
+            }
+          }
+        }
+      }
+
+      // Recompute UV range after unwrapping
+      uMin = Infinity; uMax = -Infinity; vMin = Infinity; vMax = -Infinity;
+      for (const p of allPts) {
+        if (p._u < uMin) uMin = p._u;
+        if (p._u > uMax) uMax = p._u;
+        if (p._v < vMin) vMin = p._v;
+        if (p._v > vMax) vMax = p._v;
+      }
+      uvValid = (uMax - uMin) > 1e-8 && (vMax - vMin) > 1e-8;
+    } else if (!uvValid) {
       // Recompute each UV independently (no hint-chaining)
       for (let i = 0; i < allPts.length; i++) {
         const uv = surface.closestPointUV(allPts[i]);
@@ -487,12 +1128,6 @@ export class FaceTriangulator {
       }
       uvValid = (uMax - uMin) > 1e-8 && (vMax - vMin) > 1e-8;
     }
-
-    // On periodic surfaces, UVs from closestPointUV are unreliable even
-    // when they span a non-degenerate range — the solver clamps to [min,max]
-    // and can't track around the wrap.  Disable UV-based features (Steiner
-    // points, adaptive subdivision) to avoid garbage from bad UVs.
-    if (periodic) uvValid = false;
 
     // Compute face normal from boundary geometry using Newell's method.
     // This is the best projection direction for CDT: it sees the boundary
@@ -533,17 +1168,52 @@ export class FaceTriangulator {
       } catch (_e) { /* keep Newell normal */ }
     }
 
-    // --- Step 2: CDT in 3D projected space ---
-    // Project using Newell polygon normal (NOT the surface normal).
-    // For curved surfaces (cylinders, spheres), the surface normal varies
-    // across the face and would give a degenerate projection.
-    const pts2d = projectTo2D(allPts, projNormal);
+    // Detect self-intersecting UV boundary: when the UV polygon has large
+    // jumps (e.g. at coedge boundaries on folded B-splines), the UV-domain
+    // CDT produces garbage.  Fall back to projected 3D CDT for such faces.
+    let uvSelfIntersecting = false;
+    if (uvValid) {
+      const duSteps = [], dvSteps = [];
+      for (let i = 1; i < allPts.length; i++) {
+        duSteps.push(Math.abs(allPts[i]._u - allPts[i - 1]._u));
+        dvSteps.push(Math.abs(allPts[i]._v - allPts[i - 1]._v));
+      }
+      // Also check wrap-around edge
+      duSteps.push(Math.abs(allPts[0]._u - allPts[allPts.length - 1]._u));
+      dvSteps.push(Math.abs(allPts[0]._v - allPts[allPts.length - 1]._v));
+
+      const sortedDu = [...duSteps].sort((a, b) => a - b);
+      const sortedDv = [...dvSteps].sort((a, b) => a - b);
+      const medDu = sortedDu[Math.floor(sortedDu.length / 2)];
+      const medDv = sortedDv[Math.floor(sortedDv.length / 2)];
+      // A step > 20× median is a discontinuity indicating UV fold
+      const threshU = Math.max(medDu * 20, 0.1 * uvRangeU);
+      const threshV = Math.max(medDv * 20, 0.1 * uvRangeV);
+      for (let i = 0; i < duSteps.length; i++) {
+        if (duSteps[i] > threshU || dvSteps[i] > threshV) {
+          uvSelfIntersecting = true;
+          break;
+        }
+      }
+    }
+
+    const useUvDomain = uvValid && !uvSelfIntersecting;
+
+    // --- Step 2: CDT in parameter space when UVs are valid; otherwise fall
+    // back to 3D projected space for periodic / collapsed-UV surfaces.
+    // Trimmed B-spline faces need UV-domain CDT to avoid projected-space
+    // overlaps that leave floating islands and missing regions.
+    let pts2d = useUvDomain
+      ? allPts.map((p) => ({ x: p._u, y: p._v }))
+      : projectTo2D(allPts, projNormal);
 
     // Ensure CCW winding for CDT
     const projArea = signedArea2D(pts2d);
     if (projArea < 0) {
       allPts.reverse();
-      pts2d.reverse();
+      pts2d = useUvDomain
+        ? allPts.map((p) => ({ x: p._u, y: p._v }))
+        : [...pts2d].reverse();
     }
 
     // Generate interior Steiner points for better triangle quality on large faces.
@@ -561,8 +1231,10 @@ export class FaceTriangulator {
           try {
             const sp3d = surface.evaluate(gu, gv);
             const pt3d = { x: sp3d.x, y: sp3d.y, z: sp3d.z, _u: gu, _v: gv };
-            // Project to same 2D space and check if inside boundary polygon
-            const sp2d = projectTo2D([pt3d], projNormal)[0];
+            // Check candidate against the same triangulation domain used by CDT.
+            const sp2d = useUvDomain
+              ? { x: gu, y: gv }
+              : projectTo2D([pt3d], projNormal)[0];
             if (_pointInPoly2D(sp2d.x, sp2d.y, pts2d)) {
               steiner2D.push(sp2d);
               steiner3D.push(pt3d);
@@ -594,34 +1266,63 @@ export class FaceTriangulator {
 
     // Global winding check: CDT produces consistent winding, but the
     // projection direction may not agree with the face outward normal.
-    // Check one representative triangle and flip ALL if needed.
     const outX = sameSense ? surfNormal.x : -surfNormal.x;
     const outY = sameSense ? surfNormal.y : -surfNormal.y;
     const outZ = sameSense ? surfNormal.z : -surfNormal.z;
-    if (triangles.length > 0) {
-      const [ta, tb, tc] = triangles[0];
-      const triN = calculateNormal(ta, tb, tc);
-      const dot = triN.x * outX + triN.y * outY + triN.z * outZ;
-      if (dot < 0) {
-        for (let i = 0; i < triangles.length; i++) {
-          const [a, b, c] = triangles[i];
-          triangles[i] = [a, c, b];
+
+    if (periodic) {
+      // UV-domain CDT on periodic surfaces produces consistent winding.
+      // Evaluate the surface normal at the first triangle's actual location
+      // (not the UV centroid, which may be far from this triangle) to
+      // determine the correct winding direction.
+      if (triangles.length > 0) {
+        const [ta, tb, tc] = triangles[0];
+        const triN = calculateNormal(ta, tb, tc);
+        const cu = (ta._u + tb._u + tc._u) / 3;
+        const cv = (ta._v + tb._v + tc._v) / 3;
+        let refN = surfNormal;
+        try {
+          const e0 = GeometryEvaluator.evalSurface(surface, cu, cv);
+          if (e0.n) refN = e0.n;
+        } catch (_e) { /* keep centroid surfNormal */ }
+        const oX = sameSense ? refN.x : -refN.x;
+        const oY = sameSense ? refN.y : -refN.y;
+        const oZ = sameSense ? refN.z : -refN.z;
+        const dot = triN.x * oX + triN.y * oY + triN.z * oZ;
+        if (dot < 0) {
+          for (let i = 0; i < triangles.length; i++) {
+            const [a, b, c] = triangles[i];
+            triangles[i] = [a, c, b];
+          }
         }
       }
+    } else {
+      // Non-periodic: single reference direction works fine.
+      if (triangles.length > 0) {
+        const [ta, tb, tc] = triangles[0];
+        const triN = calculateNormal(ta, tb, tc);
+        const dot = triN.x * outX + triN.y * outY + triN.z * outZ;
+        if (dot < 0) {
+          for (let i = 0; i < triangles.length; i++) {
+            const [a, b, c] = triangles[i];
+            triangles[i] = [a, c, b];
+          }
+        }
+      }
+
+      // Remove any CDT artifact triangles that face the wrong direction.
+      triangles = triangles.filter(([a, b, c]) => {
+        const n = calculateNormal(a, b, c);
+        return (n.x * outX + n.y * outY + n.z * outZ) > 0;
+      });
     }
 
-    // Remove any CDT artifact triangles that face the wrong direction.
-    // On complex curved surfaces, the 2D projection can create triangles
-    // whose 3D geometry is inverted relative to the face outward normal.
-    triangles = triangles.filter(([a, b, c]) => {
-      const n = calculateNormal(a, b, c);
-      return (n.x * outX + n.y * outY + n.z * outZ) > 0;
-    });
-
-    // Post-CDT overlap cleanup: the CDT is valid in 2D projected space,
-    // but on complex curved surfaces, triangles can overlap in 3D.
-    // Detect and remove the smaller triangle from each overlapping pair.
-    triangles = _removeOverlappingTriangles(triangles);
+    // Projected-space CDT can create overlapping 3D triangles on strongly
+    // curved faces. UV-domain CDT already triangulates in the native trim
+    // domain, so overlap cleanup is only needed for the projected fallback.
+    if (!useUvDomain) {
+      triangles = _removeOverlappingTriangles(triangles);
+    }
 
     // --- Step 3: Adaptive subdivision using UV interpolation ---
     // When UV coordinates are valid, use full adaptive subdivision.
@@ -770,14 +1471,17 @@ export class FaceTriangulator {
           }
         }
 
-        // Fold guard: if any sub-triangle has a flipped normal, keep original
-        const folded = subs.some(([sa, sb, sc]) => !_triAligned(sa, sb, sc));
+        // UV-domain refinement must stay conforming across shared edges.
+        // A per-triangle fold veto desynchronizes neighboring splits and leaves
+        // T-junctions / holes on trimmed NURBS faces.
+        const folded = !useUvDomain && subs.some(([sa, sb, sc]) => !_triAligned(sa, sb, sc));
         if (folded) {
           next.push([a, b, c]);
-        } else {
-          anySplit = true;
-          for (const s of subs) next.push(s);
+          continue;
         }
+
+        anySplit = true;
+        for (const s of subs) next.push(s);
       }
       triangles = next;
       if (!anySplit) break;
@@ -810,7 +1514,15 @@ export class FaceTriangulator {
         ? { x: nx / len, y: ny / len, z: nz / len }
         : surfNormal;
 
-      const outNormal = sameSense
+      // Orient the shading normal to agree with the triangle's geometric
+      // winding (which was already corrected globally above).  On strongly
+      // curved faces (cylinders, spheres) the surface normal is nearly
+      // perpendicular to projNormal, so dotting against projNormal gives
+      // unreliable ≈0 values.  Instead, dot the surface normal against the
+      // triangle's geometric normal — they should agree in sign.
+      const triGeoN = calculateNormal(a, b, c);
+      const faceDot = faceN.x * triGeoN.x + faceN.y * triGeoN.y + faceN.z * triGeoN.z;
+      const outNormal = faceDot >= 0
         ? faceN
         : { x: -faceN.x, y: -faceN.y, z: -faceN.z };
 

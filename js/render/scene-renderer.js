@@ -29,6 +29,8 @@ export class SceneRenderer {
     this._meshVisualEdges = null;
     this._meshVisualEdgeVertexCount = 0;
     this._meshSilhouetteCandidates = null;
+    this._meshBoundaryEdges = null;
+    this._meshBoundaryEdgeVertexCount = 0;
   }
 
   async init() {
@@ -151,6 +153,8 @@ export class SceneRenderer {
     this._meshVisualEdges = null;
     this._meshVisualEdgeVertexCount = 0;
     this._meshSilhouetteCandidates = null;
+    this._meshBoundaryEdges = null;
+    this._meshBoundaryEdgeVertexCount = 0;
     this._problemTriangles = null;
     this._problemTriangleCount = 0;
   }
@@ -187,6 +191,8 @@ export class SceneRenderer {
       meshEdges: this._meshEdges,
       meshEdgeVertexCount: this._meshEdgeVertexCount,
       meshSilhouetteCandidates: this._meshSilhouetteCandidates,
+      meshBoundaryEdges: this._meshBoundaryEdges,
+      meshBoundaryEdgeVertexCount: this._meshBoundaryEdgeVertexCount,
       orbitState: this.getOrbitState(),
       mvp,
       diagnosticHatch: this.diagnosticHatch,

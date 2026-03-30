@@ -1,5 +1,12 @@
 [
   {
+    "file": "Unnamed-Body.cmod",
+    "label": "Unnamed Body",
+    "featureTypes": [
+      "step-import"
+    ]
+  },
+  {
     "file": "box-10x10x10.cmod",
     "label": "Simple 10x10x10 box: rectangle sketch on XY plane, extruded 10 units",
     "featureTypes": [

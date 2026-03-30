@@ -2779,6 +2779,8 @@ export class WasmRenderer {
         meshEdges: this._meshEdges,
         meshEdgeVertexCount: this._meshEdgeVertexCount,
         meshSilhouetteCandidates: this._meshSilhouetteCandidates,
+        meshBoundaryEdges: this._meshBoundaryEdges,
+        meshBoundaryEdgeVertexCount: this._meshBoundaryEdgeVertexCount,
         orbitState: {
           theta: this._orbitTheta,
           phi: this._orbitPhi,

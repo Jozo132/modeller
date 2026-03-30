@@ -4,6 +4,7 @@ const DEFAULT_FACE_COLOR = [0.65, 0.75, 0.65, 1];
 const DEFAULT_VISUAL_EDGE_COLOR = [0.25, 0.25, 0.25, 0.35];
 const DEFAULT_FEATURE_EDGE_COLOR = [0.1, 0.1, 0.1, 1];
 const DEFAULT_SILHOUETTE_COLOR = [0.1, 0.1, 0.1, 1];
+const DEFAULT_BOUNDARY_EDGE_COLOR = [1.0, 0.4, 0.7, 1];
 
 export function renderBaseMeshOverlay(executor, options) {
   const {
@@ -14,12 +15,15 @@ export function renderBaseMeshOverlay(executor, options) {
     meshEdges,
     meshEdgeVertexCount,
     meshSilhouetteCandidates,
+    meshBoundaryEdges,
+    meshBoundaryEdgeVertexCount,
     orbitState,
     mvp,
     faceColor = DEFAULT_FACE_COLOR,
     visualEdgeColor = DEFAULT_VISUAL_EDGE_COLOR,
     featureEdgeColor = DEFAULT_FEATURE_EDGE_COLOR,
     silhouetteColor = DEFAULT_SILHOUETTE_COLOR,
+    boundaryEdgeColor = DEFAULT_BOUNDARY_EDGE_COLOR,
   } = options;
 
   if (!meshTriangles || meshTriangleCount === 0 || !mvp) return;
@@ -58,6 +62,15 @@ export function renderBaseMeshOverlay(executor, options) {
       mvp,
       color: silhouetteColor,
       lineWidth: 1,
+      lineDash: [],
+    });
+  }
+
+  if (meshBoundaryEdges && meshBoundaryEdgeVertexCount > 0) {
+    executor.drawLineBuffer(meshBoundaryEdges, meshBoundaryEdgeVertexCount, {
+      mvp,
+      color: boundaryEdgeColor,
+      lineWidth: 2,
       lineDash: [],
     });
   }
