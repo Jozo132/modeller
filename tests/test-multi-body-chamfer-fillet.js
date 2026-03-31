@@ -785,13 +785,21 @@ test('box-fillet-2: exact topology keeps fillets isolated', () => {
       .filter(g => g !== undefined)
   );
   assert.ok(filletGroups.size >= 2, `Expected the two fillets to stay isolated, got ${filletGroups.size} groups`);
+  const expectedSeamGroups = [...filletGroups].slice(0, 2);
 
   const seamEdges = geom.edges.filter((edge) => {
-    const avgX = (edge.start.x + edge.end.x) * 0.5;
-    const avgY = (edge.start.y + edge.end.y) * 0.5;
-    const avgZ = (edge.start.z + edge.end.z) * 0.5;
-    const curved = Math.abs(edge.start.x - edge.end.x) > 0.01 && Math.abs(edge.start.y - edge.end.y) > 0.01;
-    return curved && avgX > 9 && avgY < 1 && avgZ > 9.9;
+    const pts = edge.points || [];
+    const touchesTopCorner = pts.some((point) =>
+      point.x > 9 &&
+      point.y < 1 &&
+      point.z > 9.9
+    );
+    const groupSet = new Set((edge.faceIndices || [])
+      .map((fi) => geom.faces[fi] && geom.faces[fi].faceGroup)
+      .filter((group) => group !== undefined));
+    return touchesTopCorner &&
+      groupSet.size === 2 &&
+      expectedSeamGroups.every((group) => groupSet.has(group));
   });
   assert.ok(seamEdges.length >= 1, `Expected visible top seam segments between the two fillets, got ${seamEdges.length}`);
 });

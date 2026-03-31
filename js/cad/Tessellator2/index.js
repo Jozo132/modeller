@@ -101,7 +101,7 @@ export function robustTessellateBody(body, opts = {}) {
       // Tag with B-Rep face index and surface type so assignCoplanarFaceGroups
       // can properly group all triangles from the same topological face and
       // mark curved surfaces for smooth-normal interpolation.
-      faceMesh.topoFaceId = faceMeshes.length;
+      faceMesh.topoFaceId = face.id;
       faceMesh.faceType = face.surfaceType === 'plane' ? 'planar'
         : face.surfaceType ? `curved-${face.surfaceType}` : 'unknown';
       faceMeshes.push(faceMesh);

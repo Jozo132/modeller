@@ -99,6 +99,21 @@ function _triangulatePolygonIndices(verts, normal) {
   return triangles;
 }
 
+function _getEdgePolylinePoints(edge) {
+  if (Array.isArray(edge?.points) && edge.points.length >= 2) return edge.points;
+  if (edge?.start && edge?.end) return [edge.start, edge.end];
+  return [];
+}
+
+function _appendEdgePolylineVertices(out, edge) {
+  const points = _getEdgePolylinePoints(edge);
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1];
+    const b = points[i];
+    out.push(a.x, a.y, a.z, b.x, b.y, b.z);
+  }
+}
+
 /**
  * WasmRenderer — WASM-backed renderer for 2D and 3D views.
  *
@@ -230,7 +245,7 @@ export class WasmRenderer {
     this._selectedFaceIndices = new Set();
 
     // Edge selection for chamfer/fillet
-    this._meshEdgeSegments = null; // Array of {start, end, faceIndices, normals} from CSG
+    this._meshEdgeSegments = null; // Array of {start, end, points?, faceIndices, normals} from CSG
     this._meshEdgePaths = null;    // Array of {edgeIndices, isClosed} from CSG paths
     this._edgeToPath = null;       // Map<edgeIndex, pathIndex>
     this._selectedEdgeIndices = new Set(); // indices into _meshEdgeSegments
@@ -924,11 +939,14 @@ export class WasmRenderer {
 
     for (let i = 0; i < this._meshEdgeSegments.length; i++) {
       const seg = this._meshEdgeSegments[i];
-      const result = this._rayLineClosest(origin, dir, seg.start, seg.end);
-      if (result.dist < closestDist) {
-        closestDist = result.dist;
-        closestIdx = i;
-        closestWorldPt = result.point;
+      const points = _getEdgePolylinePoints(seg);
+      for (let pi = 1; pi < points.length; pi++) {
+        const result = this._rayLineClosest(origin, dir, points[pi - 1], points[pi]);
+        if (result.dist < closestDist) {
+          closestDist = result.dist;
+          closestIdx = i;
+          closestWorldPt = result.point;
+        }
       }
     }
 
@@ -2886,8 +2904,7 @@ export class WasmRenderer {
         for (const idx of this._selectedEdgeIndices) {
           const seg = this._meshEdgeSegments[idx];
           if (!seg) continue;
-          selEdgeVerts.push(seg.start.x, seg.start.y, seg.start.z);
-          selEdgeVerts.push(seg.end.x, seg.end.y, seg.end.z);
+          _appendEdgePolylineVertices(selEdgeVerts, seg);
         }
         if (selEdgeVerts.length > 0) {
           const selEdgeData = new Float32Array(selEdgeVerts);
@@ -2915,14 +2932,12 @@ export class WasmRenderer {
           for (const i of this._meshEdgePaths[pathIdx].edgeIndices) {
             const seg = this._meshEdgeSegments[i];
             if (!seg) continue;
-            hovVerts.push(seg.start.x, seg.start.y, seg.start.z);
-            hovVerts.push(seg.end.x, seg.end.y, seg.end.z);
+            _appendEdgePolylineVertices(hovVerts, seg);
           }
         } else {
           const seg = this._meshEdgeSegments[this._hoveredEdgeIndex];
           if (seg) {
-            hovVerts.push(seg.start.x, seg.start.y, seg.start.z);
-            hovVerts.push(seg.end.x, seg.end.y, seg.end.z);
+            _appendEdgePolylineVertices(hovVerts, seg);
           }
         }
         if (hovVerts.length > 0) {

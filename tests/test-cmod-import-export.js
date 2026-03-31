@@ -143,6 +143,21 @@ function edgeKey(a, b) {
   return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
 }
 
+function findFirstCrossGroupEdgeKey(geometry) {
+  const edges = geometry && geometry.edges ? geometry.edges : [];
+  const faces = geometry && geometry.faces ? geometry.faces : [];
+  for (const edge of edges) {
+    const faceIndices = edge.faceIndices || [];
+    if (faceIndices.length !== 2) continue;
+    const faceA = faces[faceIndices[0]];
+    const faceB = faces[faceIndices[1]];
+    if (!faceA || !faceB) continue;
+    if (faceA.faceGroup === faceB.faceGroup) continue;
+    return edgeKey(edge.start, edge.end);
+  }
+  return null;
+}
+
 // -----------------------------------------------------------------------
 // Tests
 // -----------------------------------------------------------------------
@@ -461,6 +476,28 @@ console.log('--- Test 9: Coplanar face-start extrude cuts ---');
     assert.strictEqual(countInvertedFaces(finalGeometry.geometry), 0, 'Expected no inverted faces');
     assertPositiveWallThickness(finalGeometry.geometry, 'coplanar face-start cut sample');
   });
+
+  test('deserialized cut sample accepts an added fillet on a sharp edge', () => {
+    const restored = Part.deserialize(sample.part);
+    const before = restored.getFinalGeometry();
+    assert.ok(before && before.geometry, 'Expected base solid geometry');
+
+    const selectedEdgeKey = findFirstCrossGroupEdgeKey(before.geometry);
+    assert.ok(selectedEdgeKey, 'Expected a selectable sharp edge on the loaded cut sample');
+
+    const beforeVolume = calculateMeshVolume(before.geometry);
+    restored.fillet([selectedEdgeKey], 0.25, { segments: 8 });
+
+    const after = restored.getFinalGeometry();
+    assert.ok(after && after.geometry, 'Expected filleted solid geometry');
+    assert.notStrictEqual(after.geometry, before.geometry, 'Added fillet should not return the original geometry');
+    assert.ok(
+      after.geometry.faces.length !== before.geometry.faces.length ||
+      after.geometry.edges.length !== before.geometry.edges.length ||
+      Math.abs(calculateMeshVolume(after.geometry) - beforeVolume) > 1e-6,
+      'Added fillet should modify the loaded cut geometry',
+    );
+  });
 }
 
 // --- Test 10: Filleted coplanar face-start cuts stay closed ---
@@ -503,6 +540,28 @@ console.log('--- Test 11: Chamfered concave cut edge ---');
     assert.strictEqual(countInvertedFaces(finalGeometry.geometry), 0, 'Expected no inverted faces');
     assertPositiveWallThickness(finalGeometry.geometry, 'concave cut-edge chamfer sample');
     assertSingleHorizontalCapGroup(finalGeometry.geometry, 'concave cut-edge chamfer sample');
+  });
+
+  test('deserialized cut+chamfer sample accepts an additional chamfer on a sharp edge', () => {
+    const restored = Part.deserialize(sample.part);
+    const before = restored.getFinalGeometry();
+    assert.ok(before && before.geometry, 'Expected base solid geometry');
+
+    const selectedEdgeKey = findFirstCrossGroupEdgeKey(before.geometry);
+    assert.ok(selectedEdgeKey, 'Expected a selectable sharp edge on the loaded chamfer sample');
+
+    const beforeVolume = calculateMeshVolume(before.geometry);
+    restored.chamfer([selectedEdgeKey], 0.25);
+
+    const after = restored.getFinalGeometry();
+    assert.ok(after && after.geometry, 'Expected chamfered solid geometry');
+    assert.notStrictEqual(after.geometry, before.geometry, 'Added chamfer should not return the original geometry');
+    assert.ok(
+      after.geometry.faces.length !== before.geometry.faces.length ||
+      after.geometry.edges.length !== before.geometry.edges.length ||
+      Math.abs(calculateMeshVolume(after.geometry) - beforeVolume) > 1e-6,
+      'Added chamfer should modify the loaded chamfer geometry',
+    );
   });
 }
 

@@ -723,7 +723,8 @@ TopoBody._nextId = 0;
  */
 export function buildTopoBody(faceDescs, tol = DEFAULT_TOLERANCE) {
   // Vertex deduplication map: "x,y,z" -> TopoVertex
-  const vertKey = (p) => `${p.x.toFixed(8)},${p.y.toFixed(8)},${p.z.toFixed(8)}`;
+  const fmtCoord = (n) => (Math.abs(n) < 1e-12 ? 0 : n).toFixed(8);
+  const vertKey = (p) => `${fmtCoord(p.x)},${fmtCoord(p.y)},${fmtCoord(p.z)}`;
   const vertMap = new Map();
   const getOrCreateVertex = (p) => {
     const key = vertKey(p);

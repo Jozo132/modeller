@@ -458,6 +458,7 @@ export function buildMeshRenderData(geometry) {
     meshEdgeSegments = geometry.edges.map((e) => ({
       start: e.start,
       end: e.end,
+      points: Array.isArray(e.points) ? e.points.map((point) => ({ x: point.x, y: point.y, z: point.z })) : null,
       faceIndices: e.faceIndices || [],
       normals: e.normals || [],
     }));

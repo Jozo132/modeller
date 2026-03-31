@@ -991,11 +991,12 @@ export function computeFeatureEdges(faces) {
       // always be selectable, even when the normals are nearly continuous
       // (e.g. tangent-continuous fillet-to-corner transitions).
       if (!isFeature && info.faceIndices.length >= 2) {
+        const groups = new Set(info.faceIndices.map(fi => faces[fi].faceGroup));
         const topoIds = new Set();
         for (const fi of info.faceIndices) {
           if (faces[fi].topoFaceId !== undefined) topoIds.add(faces[fi].topoFaceId);
         }
-        if (topoIds.size > 1) isFeature = true;
+        if (topoIds.size > 1 && groups.size > 1) isFeature = true;
       }
       // Suppress feature edges at the corner base seam: the flat base triangle
       // connecting the spherical corner to the trimmed box faces is a geometric
@@ -1529,6 +1530,17 @@ function _rayTriangleIntersect(origin, dir, v0, v1, v2) {
 const EDGE_PREC = 5;
 function _fmtCoord(n) {
   return (Math.abs(n) < 5e-6 ? 0 : n).toFixed(EDGE_PREC);
+}
+function _canonicalCoord(n, eps = 1e-12) {
+  return Math.abs(n) < eps ? 0 : n;
+}
+function _canonicalPoint(point, eps = 1e-12) {
+  if (!point) return point;
+  return {
+    x: _canonicalCoord(point.x, eps),
+    y: _canonicalCoord(point.y, eps),
+    z: _canonicalCoord(point.z, eps),
+  };
 }
 function _edgeVKey(v) {
   return `${_fmtCoord(v.x)},${_fmtCoord(v.y)},${_fmtCoord(v.z)}`;
@@ -2103,7 +2115,7 @@ function _triangulatePlanarPolygon(verts, normal) {
   return triangles;
 }
 
-function _mergeMixedSharedPlanarComponents(faces) {
+function _mergeMixedSharedPlanarComponents(faces, includeUniformShared = false) {
   const quantize = (value, digits = 5) => {
     const clamped = Math.abs(value) < 1e-10 ? 0 : value;
     const text = clamped.toFixed(digits);
@@ -2188,7 +2200,7 @@ function _mergeMixedSharedPlanarComponents(faces) {
         const fn = _vec3Normalize(faces[fi].normal || { x: 0, y: 0, z: 0 });
         return _vec3Len(fn) < 1e-10 || _vec3Dot(fn, refNormal) < 0.999;
       });
-      if (sharedValues.size < 2 && !mixedNormals) continue;
+      if (!includeUniformShared && sharedValues.size < 2 && !mixedNormals) continue;
 
       const boundaryEdges = [];
       const componentSet = new Set(component);
@@ -2606,10 +2618,18 @@ export function applyChamfer(geometry, edgeKeys, distance) {
     return geometry;
   }
 
-  let faces = geometry.faces.map(f => ({
+  const baseFaces = _extractFeatureFacesFromTopoBody(geometry);
+  const exactAdjacencyByKey = _buildExactEdgeAdjacencyLookupFromTopoBody(
+    geometry.topoBody,
+    baseFaces,
+  );
+  let faces = baseFaces.map(f => ({
     vertices: f.vertices.map(v => ({ ...v })),
     normal: { ...f.normal },
     shared: f.shared ? { ...f.shared } : null,
+    isFillet: f.isFillet || false,
+    faceGroup: f.faceGroup,
+    topoFaceId: f.topoFaceId,
   }));
 
   // Save original face vertices for corner-face generation
@@ -2622,7 +2642,7 @@ export function applyChamfer(geometry, edgeKeys, distance) {
   const uniqueKeys = [...new Set(edgeKeys)];
   const edgeDataList = [];
   for (const ek of uniqueKeys) {
-    const data = _precomputeChamferEdge(faces, ek, distance);
+    const data = _precomputeChamferEdge(faces, ek, distance, exactAdjacencyByKey);
     if (data) edgeDataList.push(data);
   }
 
@@ -2688,6 +2708,14 @@ export function applyChamfer(geometry, edgeKeys, distance) {
   // --- Phase 6: Generate corner faces at shared vertices ---
   _generateCornerFaces(faces, origFaces, edgeDataList, vertexEdgeMap);
 
+  _fixTJunctions(faces);
+  _healBoundaryLoops(faces);
+  _weldVertices(faces);
+  _removeDegenerateFaces(faces);
+  _mergeMixedSharedPlanarComponents(faces);
+  _mergeAdjacentCoplanarFacePairs(faces);
+  _fixTJunctions(faces);
+  _healBoundaryLoops(faces);
   _weldVertices(faces);
   _removeDegenerateFaces(faces);
   _recomputeFaceNormals(faces);
@@ -2703,8 +2731,8 @@ export function applyChamfer(geometry, edgeKeys, distance) {
 /**
  * Pre-compute chamfer data for one edge on the original (unmodified) geometry.
  */
-function _precomputeChamferEdge(faces, edgeKey, dist) {
-  const adj = _findAdjacentFaces(faces, edgeKey);
+function _precomputeChamferEdge(faces, edgeKey, dist, exactAdjacencyByKey = null) {
+  const adj = (exactAdjacencyByKey && exactAdjacencyByKey.get(edgeKey)) || _findAdjacentFaces(faces, edgeKey);
   if (adj.length < 2) return null;
 
   const fi0 = adj[0].fi, fi1 = adj[1].fi;
@@ -2741,11 +2769,19 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8, edgeOwnerM
     return geometry;
   }
 
-  let faces = geometry.faces.map(f => ({
+  const baseFaces = _extractFeatureFacesFromTopoBody(geometry);
+  const exactAdjacencyByKey = _buildExactEdgeAdjacencyLookupFromTopoBody(
+    geometry.topoBody,
+    baseFaces,
+  );
+  let faces = baseFaces.map(f => ({
     vertices: f.vertices.map(v => ({ ...v })),
     normal: { ...f.normal },
     shared: f.shared ? { ...f.shared } : null,
     isFillet: f.isFillet || false,
+    isCorner: f.isCorner || false,
+    faceGroup: f.faceGroup,
+    topoFaceId: f.topoFaceId,
   }));
 
   // Save original face vertices for corner-face generation
@@ -2758,7 +2794,7 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8, edgeOwnerM
   const uniqueKeys = [...new Set(edgeKeys)];
   const edgeDataList = [];
   for (const ek of uniqueKeys) {
-    const data = _precomputeFilletEdge(faces, ek, radius, segments);
+    const data = _precomputeFilletEdge(faces, ek, radius, segments, exactAdjacencyByKey);
     if (!data) continue;
     const ownerId = edgeOwnerMap && edgeOwnerMap[ek];
     if (ownerId) {
@@ -2858,7 +2894,8 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8, edgeOwnerM
     }
   }
 
-  for (const data of edgeDataList) {
+  for (let dataIndex = 0; dataIndex < edgeDataList.length; dataIndex++) {
+    const data = edgeDataList[dataIndex];
     const shared = data.shared;
     const arcA = data.arcA;
     const arcB = data.arcB;
@@ -2976,6 +3013,7 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8, edgeOwnerM
         normal: faceNormal,
         shared,
         isFillet: true,
+        _exactFilletFaceOrdinal: dataIndex,
       });
     }
 
@@ -3080,14 +3118,23 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8, edgeOwnerM
       exactGeometry.edges = exactEdgeResult.edges.length > 0 ? exactEdgeResult.edges : edgeResult.edges;
       exactGeometry.paths = exactEdgeResult.paths.length > 0 ? exactEdgeResult.paths : edgeResult.paths;
       exactGeometry.visualEdges = edgeResult.visualEdges;
-      if (_countMeshBoundaryEdges(exactGeometry.faces || []) === 0) {
+      const exactMeshUsage = _countMeshEdgeUsage(exactGeometry.faces || []);
+      if (exactMeshUsage.boundaryCount === 0 && exactMeshUsage.nonManifoldCount === 0) {
         return exactGeometry;
       }
 
-      const fallbackGeometry = { vertices: [], faces, brep, topoBody };
-      const fallbackEdgeResult = computeFeatureEdges(faces);
-      fallbackGeometry.edges = exactGeometry.edges;
-      fallbackGeometry.paths = exactGeometry.paths;
+      const fallbackFaces = _applyTopoFaceIdsToFallbackMesh(faces, topoBody, edgeDataList);
+      _mergeMixedSharedPlanarComponents(fallbackFaces, true);
+      _mergeAdjacentCoplanarFacePairs(fallbackFaces);
+      _fixTJunctions(fallbackFaces);
+      _healBoundaryLoops(fallbackFaces);
+      _removeDegenerateFaces(fallbackFaces);
+      _recomputeFaceNormals(fallbackFaces);
+      const fallbackExactEdgeResult = _buildExactFeatureEdgesFromTopoBody(topoBody, fallbackFaces);
+      const fallbackGeometry = { vertices: [], faces: fallbackFaces, brep, topoBody };
+      const fallbackEdgeResult = computeFeatureEdges(fallbackFaces);
+      fallbackGeometry.edges = fallbackExactEdgeResult.edges.length > 0 ? fallbackExactEdgeResult.edges : fallbackEdgeResult.edges;
+      fallbackGeometry.paths = fallbackExactEdgeResult.paths.length > 0 ? fallbackExactEdgeResult.paths : fallbackEdgeResult.paths;
       fallbackGeometry.visualEdges = fallbackEdgeResult.visualEdges;
       return fallbackGeometry;
     }
@@ -3108,8 +3155,8 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8, edgeOwnerM
 /**
  * Pre-compute fillet data for one edge on the original (unmodified) geometry.
  */
-function _precomputeFilletEdge(faces, edgeKey, radius, segments) {
-  const adj = _findAdjacentFaces(faces, edgeKey);
+function _precomputeFilletEdge(faces, edgeKey, radius, segments, exactAdjacencyByKey = null) {
+  const adj = (exactAdjacencyByKey && exactAdjacencyByKey.get(edgeKey)) || _findAdjacentFaces(faces, edgeKey);
   if (adj.length < 2) return null;
 
   const fi0 = adj[0].fi, fi1 = adj[1].fi;
@@ -3575,6 +3622,18 @@ function _buildExactFilletBoundaryCurve(data, points, side, isSharedTrim) {
   return _curveFromSampledPoints(points);
 }
 
+function _sampleExactEdgePoints(edge, segments = 8) {
+  if (!edge || typeof edge.tessellate !== 'function') return [];
+  const curve = edge.curve || null;
+  const isLinearCurve = !curve || (
+    curve.degree === 1 &&
+    Array.isArray(curve.controlPoints) &&
+    curve.controlPoints.length === 2
+  );
+  const sampleCount = isLinearCurve ? 1 : segments;
+  return edge.tessellate(sampleCount).map((point) => _canonicalPoint(point));
+}
+
 function _buildExactFeatureEdgesFromTopoBody(topoBody, faces, edgeSegments = 16) {
   if (!topoBody || !topoBody.shells || !Array.isArray(faces) || faces.length === 0) {
     return { edges: [], paths: [] };
@@ -3589,19 +3648,13 @@ function _buildExactFeatureEdgesFromTopoBody(topoBody, faces, edgeSegments = 16)
   }
 
   const edges = [];
-  let topoFaceOffset = 0;
   for (const shell of topoBody.shells) {
-    const topoFaceIdByFace = new Map();
-    for (let i = 0; i < shell.faces.length; i++) {
-      topoFaceIdByFace.set(shell.faces[i], topoFaceOffset + i);
-    }
-
     for (const edge of shell.edges()) {
-      const points = edge.tessellate(edgeSegments).map((point) => ({ x: point.x, y: point.y, z: point.z }));
+      const points = _sampleExactEdgePoints(edge, edgeSegments);
       if (points.length < 2) continue;
 
       const topoFaceIds = edge.coedges
-        .map((coedge) => topoFaceIdByFace.get(coedge.face))
+        .map((coedge) => coedge && coedge.face ? coedge.face.id : undefined)
         .filter((id) => id !== undefined);
       const faceIndices = topoFaceIds
         .map((topoFaceId) => repFaceIndexByTopoFaceId.get(topoFaceId))
@@ -3620,31 +3673,194 @@ function _buildExactFeatureEdgesFromTopoBody(topoBody, faces, edgeSegments = 16)
         type: hasFillet && hasNonFillet ? 'fillet-boundary' : 'sharp',
       });
     }
-
-    topoFaceOffset += shell.faces.length;
   }
 
   return { edges, paths: _chainEdgePaths(edges) };
 }
 
-function _countMeshBoundaryEdges(faces) {
-  if (!Array.isArray(faces) || faces.length === 0) return 0;
-  const key = (point) => `${point.x.toFixed(8)},${point.y.toFixed(8)},${point.z.toFixed(8)}`;
+function _buildExactEdgeAdjacencyLookupFromTopoBody(topoBody, faces, edgeSegments = 8) {
+  if (!topoBody || !topoBody.shells || !Array.isArray(faces) || faces.length === 0) {
+    return null;
+  }
+
+  const repFaceIndexByTopoFaceId = new Map();
+  for (let fi = 0; fi < faces.length; fi++) {
+    const topoFaceId = faces[fi] && faces[fi].topoFaceId;
+    if (topoFaceId !== undefined && !repFaceIndexByTopoFaceId.has(topoFaceId)) {
+      repFaceIndexByTopoFaceId.set(topoFaceId, fi);
+    }
+  }
+  if (repFaceIndexByTopoFaceId.size === 0) return null;
+
+  const adjacencyByKey = new Map();
+  for (const shell of topoBody.shells) {
+    for (const edge of shell.edges()) {
+      const samples = _sampleExactEdgePoints(edge, edgeSegments);
+      if (samples.length < 2) continue;
+
+      const vertexStart = edge.startVertex && edge.startVertex.point
+        ? _canonicalPoint(edge.startVertex.point)
+        : null;
+      const vertexEnd = edge.endVertex && edge.endVertex.point
+        ? _canonicalPoint(edge.endVertex.point)
+        : null;
+      const startPoint = vertexStart || samples[0];
+      const endPoint = vertexEnd || samples[samples.length - 1];
+      if (!startPoint || !endPoint) continue;
+
+      const entries = [];
+      for (const coedge of edge.coedges || []) {
+        const topoFaceId = coedge && coedge.face ? coedge.face.id : undefined;
+        const fi = repFaceIndexByTopoFaceId.get(topoFaceId);
+        if (fi === undefined) continue;
+        const sameSense = !coedge || coedge.sameSense !== false;
+        entries.push({
+          fi,
+          a: sameSense ? { ...startPoint } : { ...endPoint },
+          b: sameSense ? { ...endPoint } : { ...startPoint },
+        });
+      }
+      if (entries.length < 2) continue;
+
+      const addAdjacency = (key) => {
+        if (!key || adjacencyByKey.has(key)) return;
+        adjacencyByKey.set(key, entries.map((entry) => ({
+          fi: entry.fi,
+          a: { ...entry.a },
+          b: { ...entry.b },
+        })));
+      };
+
+      addAdjacency(_edgeKeyFromVerts(startPoint, endPoint));
+      addAdjacency(_edgeKeyFromVerts(samples[0], samples[samples.length - 1]));
+    }
+  }
+
+  return adjacencyByKey;
+}
+
+function _countMeshEdgeUsage(faces) {
+  if (!Array.isArray(faces) || faces.length === 0) {
+    return { boundaryCount: 0, nonManifoldCount: 0 };
+  }
   const edgeCounts = new Map();
   for (const face of faces) {
     const vertices = face && Array.isArray(face.vertices) ? face.vertices : [];
     for (let i = 0; i < vertices.length; i++) {
-      const a = key(vertices[i]);
-      const b = key(vertices[(i + 1) % vertices.length]);
-      const edgeKey = a < b ? `${a}|${b}` : `${b}|${a}`;
+      const edgeKey = _edgeKeyFromVerts(vertices[i], vertices[(i + 1) % vertices.length]);
       edgeCounts.set(edgeKey, (edgeCounts.get(edgeKey) || 0) + 1);
     }
   }
   let boundaryCount = 0;
+  let nonManifoldCount = 0;
   for (const count of edgeCounts.values()) {
     if (count === 1) boundaryCount += 1;
+    else if (count > 2) nonManifoldCount += 1;
   }
-  return boundaryCount;
+  return { boundaryCount, nonManifoldCount };
+}
+
+function _countMeshBoundaryEdges(faces) {
+  return _countMeshEdgeUsage(faces).boundaryCount;
+}
+
+function _extractFeatureFacesFromTopoBody(geometry) {
+  if (!geometry || !geometry.topoBody || !Array.isArray(geometry.topoBody.shells)) {
+    return Array.isArray(geometry && geometry.faces) ? geometry.faces : [];
+  }
+
+  const extracted = [];
+  for (const shell of geometry.topoBody.shells) {
+    for (const topoFace of shell.faces || []) {
+      if (!topoFace || !topoFace.outerLoop || !Array.isArray(topoFace.outerLoop.coedges)) continue;
+      const vertices = [];
+      for (const coedge of topoFace.outerLoop.coedges) {
+        let samples = coedge && coedge.edge
+          ? _sampleExactEdgePoints(coedge.edge, 8)
+          : [];
+        if (coedge && coedge.sameSense === false) samples = samples.reverse();
+        if (vertices.length > 0 && samples.length > 0) samples = samples.slice(1);
+        vertices.push(...samples);
+      }
+      if (vertices.length > 1) {
+        const first = vertices[0];
+        const last = vertices[vertices.length - 1];
+        if (_vec3Len(_vec3Sub(first, last)) < 1e-8) vertices.pop();
+      }
+      if (!Array.isArray(vertices) || vertices.length < 3) continue;
+      let normal = _computePolygonNormal(vertices);
+      if ((!normal || _vec3Len(normal) < 1e-10) && topoFace.surface && typeof topoFace.surface.normal === 'function') {
+        const u = (topoFace.surface.uMin + topoFace.surface.uMax) * 0.5;
+        const v = (topoFace.surface.vMin + topoFace.surface.vMax) * 0.5;
+        try {
+          normal = topoFace.surface.normal(u, v);
+          if (topoFace.sameSense === false) {
+            normal = { x: -normal.x, y: -normal.y, z: -normal.z };
+          }
+        } catch (_e) {
+          normal = null;
+        }
+      }
+      extracted.push({
+        vertices: vertices.map((vertex) => ({ x: vertex.x, y: vertex.y, z: vertex.z })),
+        normal: normal && _vec3Len(normal) > 1e-10 ? _vec3Normalize(normal) : { x: 0, y: 0, z: 1 },
+        shared: topoFace.shared ? { ...topoFace.shared } : null,
+        isFillet: !!(topoFace.shared && topoFace.shared.isFillet),
+        isCorner: !!(topoFace.shared && topoFace.shared.isCorner),
+        surfaceType: topoFace.surfaceType,
+        faceGroup: topoFace.id,
+        topoFaceId: topoFace.id,
+      });
+    }
+  }
+
+  return extracted.length > 0
+    ? extracted
+    : (Array.isArray(geometry.faces) ? geometry.faces : []);
+}
+
+function _applyTopoFaceIdsToFallbackMesh(faces, topoBody, edgeDataList = []) {
+  if (!Array.isArray(faces) || !topoBody || !Array.isArray(topoBody.shells) || topoBody.shells.length === 0) {
+    return faces;
+  }
+
+  const shellFaces = topoBody.shells[0].faces || [];
+  if (shellFaces.length === 0) return faces;
+
+  const annotated = faces.map((face) => ({
+    ...face,
+    vertices: Array.isArray(face.vertices) ? face.vertices.map((vertex) => _canonicalPoint(vertex)) : [],
+  }));
+
+  let topoOrdinal = 0;
+  for (let i = 0; i < annotated.length; i++) {
+    const face = annotated[i];
+    if (!face || face.isFillet) continue;
+    const topoFace = shellFaces[topoOrdinal++];
+    if (!topoFace) break;
+    face.topoFaceId = topoFace.id;
+    face.faceGroup = topoFace.id;
+    face.surfaceType = topoFace.surfaceType;
+  }
+
+  const filletFaceOffset = topoOrdinal;
+  const filletTopoFaceIds = new Map();
+  for (let dataIndex = 0; dataIndex < edgeDataList.length; dataIndex++) {
+    const topoFace = shellFaces[filletFaceOffset + dataIndex];
+    if (!topoFace) continue;
+    filletTopoFaceIds.set(dataIndex, topoFace.id);
+  }
+
+  for (const face of annotated) {
+    if (!face || !face.isFillet) continue;
+    const topoFaceId = filletTopoFaceIds.get(face._exactFilletFaceOrdinal);
+    if (topoFaceId === undefined) continue;
+    face.topoFaceId = topoFaceId;
+    face.faceGroup = topoFaceId;
+    face.surfaceType = SurfaceType.BSPLINE;
+  }
+
+  return annotated;
 }
 
 function _buildPlanarBoundarySegments(vertices, edgeDataList) {
@@ -4943,11 +5159,75 @@ export function expandPathEdgeKeys(geometry, edgeKeys) {
     keyToIndex.set(_edgeKeyFromVerts(e.start, e.end), i);
   }
 
+  const parseEdgeKey = (key) => {
+    if (typeof key !== 'string') return null;
+    const sep = key.indexOf('|');
+    if (sep < 0) return null;
+    const parsePoint = (text) => {
+      const coords = text.split(',').map(Number);
+      if (coords.length !== 3 || coords.some((value) => Number.isNaN(value))) return null;
+      return { x: coords[0], y: coords[1], z: coords[2] };
+    };
+    const start = parsePoint(key.slice(0, sep));
+    const end = parsePoint(key.slice(sep + 1));
+    return start && end ? { start, end } : null;
+  };
+
+  const pointToSegmentDistance = (point, start, end) => {
+    const seg = _vec3Sub(end, start);
+    const lenSq = _vec3Dot(seg, seg);
+    if (lenSq < 1e-10) return _vec3Len(_vec3Sub(point, start));
+    const t = Math.max(0, Math.min(1, _vec3Dot(_vec3Sub(point, start), seg) / lenSq));
+    const closest = _vec3Add(start, _vec3Scale(seg, t));
+    return _vec3Len(_vec3Sub(point, closest));
+  };
+
+  const fuzzyMatchEdgeIndex = (edgeKey) => {
+    const parsed = parseEdgeKey(edgeKey);
+    if (!parsed) return undefined;
+    const origDelta = _vec3Sub(parsed.end, parsed.start);
+    const origLen = _vec3Len(origDelta);
+    if (origLen < 1e-10) return undefined;
+    const origDir = _vec3Normalize(origDelta);
+    const origMid = _vec3Lerp(parsed.start, parsed.end, 0.5);
+
+    let bestIndex = undefined;
+    let bestScore = Infinity;
+    for (let i = 0; i < geometry.edges.length; i++) {
+      const edge = geometry.edges[i];
+      if (!edge || !edge.start || !edge.end) continue;
+      const edgeDelta = _vec3Sub(edge.end, edge.start);
+      const edgeLen = _vec3Len(edgeDelta);
+      if (edgeLen < 1e-10) continue;
+      const edgeDir = _vec3Normalize(edgeDelta);
+      if (Math.abs(_vec3Dot(edgeDir, origDir)) < 0.95) continue;
+
+      const distA = pointToSegmentDistance(parsed.start, edge.start, edge.end);
+      const distB = pointToSegmentDistance(parsed.end, edge.start, edge.end);
+      const tol = Math.max(origLen, edgeLen) * 0.1 + 1e-4;
+      if (distA > tol || distB > tol) continue;
+
+      const edgeMid = _vec3Lerp(edge.start, edge.end, 0.5);
+      const midDist = _vec3Len(_vec3Sub(edgeMid, origMid));
+      const lenRatio = edgeLen / origLen;
+      if (lenRatio < 0.1 || lenRatio > 10) continue;
+
+      const score = distA + distB + midDist + Math.abs(Math.log(lenRatio)) * 0.01;
+      if (score < bestScore) {
+        bestScore = score;
+        bestIndex = i;
+      }
+    }
+    return bestIndex;
+  };
+
   // Collect all path indices touched by the input keys
   const touchedPaths = new Set();
+  const matchedKeys = new Set();
   for (const ek of edgeKeys) {
-    const ei = keyToIndex.get(ek);
+    const ei = keyToIndex.get(ek) ?? fuzzyMatchEdgeIndex(ek);
     if (ei !== undefined) {
+      matchedKeys.add(ek);
       const pi = edgeToPath.get(ei);
       if (pi !== undefined) touchedPaths.add(pi);
     }
@@ -5062,7 +5342,7 @@ export function expandPathEdgeKeys(geometry, edgeKeys) {
 
   // Also keep any input keys that didn't match a path (fuzzy fallback)
   for (const ek of edgeKeys) {
-    result.add(ek);
+    if (!matchedKeys.has(ek)) result.add(ek);
   }
 
   return [...result];
