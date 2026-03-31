@@ -212,6 +212,26 @@ export class NurbsCurve {
   }
 
   /**
+   * Return this curve with reversed parameter direction.
+   * The geometry is unchanged; only the start/end orientation flips.
+   *
+   * @returns {NurbsCurve}
+   */
+  reversed() {
+    const u0 = this.knots[0];
+    const u1 = this.knots[this.knots.length - 1];
+    const reversedKnots = this.knots
+      .map((k) => u0 + u1 - k)
+      .reverse();
+    return new NurbsCurve(
+      this.degree,
+      [...this.controlPoints].reverse(),
+      reversedKnots,
+      [...this.weights].reverse(),
+    );
+  }
+
+  /**
    * Serialize to a plain object.
    */
   serialize() {
@@ -349,6 +369,82 @@ export class NurbsCurve {
     // Final knots
     knots.push(1, 1, 1);
 
+    return new NurbsCurve(2, controlPoints, knots, weights);
+  }
+
+  /**
+   * Create an exact NURBS ellipse arc.
+   *
+   * This is the affine image of the rational quadratic circle representation,
+   * so it stays mathematically exact for downstream B-Rep operations.
+   *
+   * @param {{x:number,y:number,z:number}} center
+   * @param {number} radiusX
+   * @param {number} radiusY
+   * @param {{x:number,y:number,z:number}} xAxis
+   * @param {{x:number,y:number,z:number}} yAxis
+   * @param {number} startAngle
+   * @param {number} sweepAngle
+   * @returns {NurbsCurve}
+   */
+  static createEllipseArc(center, radiusX, radiusY, xAxis, yAxis, startAngle, sweepAngle) {
+    const absSweep = Math.abs(sweepAngle);
+    const nArcs = absSweep <= Math.PI / 2 + 1e-10 ? 1
+      : absSweep <= Math.PI + 1e-10 ? 2
+        : absSweep <= 3 * Math.PI / 2 + 1e-10 ? 3
+          : 4;
+
+    const dTheta = sweepAngle / nArcs;
+    const w1 = Math.cos(dTheta / 2);
+
+    const controlPoints = [];
+    const weights = [];
+    const knots = [];
+
+    let angle = startAngle;
+    const cosA = Math.cos(angle);
+    const sinA = Math.sin(angle);
+
+    controlPoints.push({
+      x: center.x + radiusX * cosA * xAxis.x + radiusY * sinA * yAxis.x,
+      y: center.y + radiusX * cosA * xAxis.y + radiusY * sinA * yAxis.y,
+      z: center.z + radiusX * cosA * xAxis.z + radiusY * sinA * yAxis.z,
+    });
+    weights.push(1.0);
+    knots.push(0, 0, 0);
+
+    for (let i = 0; i < nArcs; i++) {
+      const angleMid = angle + dTheta / 2;
+      const angleEnd = angle + dTheta;
+
+      const cosMid = Math.cos(angleMid);
+      const sinMid = Math.sin(angleMid);
+      const cosEnd = Math.cos(angleEnd);
+      const sinEnd = Math.sin(angleEnd);
+
+      controlPoints.push({
+        x: center.x + (radiusX / w1) * cosMid * xAxis.x + (radiusY / w1) * sinMid * yAxis.x,
+        y: center.y + (radiusX / w1) * cosMid * xAxis.y + (radiusY / w1) * sinMid * yAxis.y,
+        z: center.z + (radiusX / w1) * cosMid * xAxis.z + (radiusY / w1) * sinMid * yAxis.z,
+      });
+      weights.push(w1);
+
+      controlPoints.push({
+        x: center.x + radiusX * cosEnd * xAxis.x + radiusY * sinEnd * yAxis.x,
+        y: center.y + radiusX * cosEnd * xAxis.y + radiusY * sinEnd * yAxis.y,
+        z: center.z + radiusX * cosEnd * xAxis.z + radiusY * sinEnd * yAxis.z,
+      });
+      weights.push(1.0);
+
+      const knotVal = (i + 1) / nArcs;
+      if (i < nArcs - 1) {
+        knots.push(knotVal, knotVal);
+      }
+
+      angle = angleEnd;
+    }
+
+    knots.push(1, 1, 1);
     return new NurbsCurve(2, controlPoints, knots, weights);
   }
 

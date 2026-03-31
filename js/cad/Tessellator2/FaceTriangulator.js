@@ -1293,6 +1293,26 @@ export class FaceTriangulator {
     const outY = sameSense ? surfNormal.y : -surfNormal.y;
     const outZ = sameSense ? surfNormal.z : -surfNormal.z;
 
+    const orientTriangleToLocalSurface = (tri) => {
+      const [a, b, c] = tri;
+      const triN = calculateNormal(a, b, c);
+      const cu = (a._u + b._u + c._u) / 3;
+      const cv = (a._v + b._v + c._v) / 3;
+      let refN = surfNormal;
+      try {
+        const evalResult = GeometryEvaluator.evalSurface(surface, cu, cv);
+        if (evalResult.n) refN = evalResult.n;
+      } catch (_e) {
+        // Keep the face-level normal when a local UV centroid eval fails.
+      }
+      const out = sameSense
+        ? refN
+        : { x: -refN.x, y: -refN.y, z: -refN.z };
+      return (triN.x * out.x + triN.y * out.y + triN.z * out.z) >= 0
+        ? tri
+        : [a, c, b];
+    };
+
     if (periodic) {
       // UV-domain CDT on periodic surfaces produces consistent winding.
       // Evaluate the surface normal at the first triangle's actual location
@@ -1333,11 +1353,21 @@ export class FaceTriangulator {
         }
       }
 
-      // Remove any CDT artifact triangles that face the wrong direction.
-      triangles = triangles.filter(([a, b, c]) => {
-        const n = calculateNormal(a, b, c);
-        return (n.x * outX + n.y * outY + n.z * outZ) > 0;
-      });
+      // Keep UV-domain trims watertight by reorienting locally misaligned
+      // triangles instead of deleting them. The projected fallback still
+      // drops folded artifacts later because it has no trustworthy UV trim.
+      if (useUvDomain) {
+        triangles = triangles.map((tri) => orientTriangleToLocalSurface(tri));
+      } else {
+        triangles = triangles.filter(([a, b, c]) => {
+          const n = calculateNormal(a, b, c);
+          return (n.x * outX + n.y * outY + n.z * outZ) > 0;
+        });
+      }
+    }
+
+    if (periodic && useUvDomain) {
+      triangles = triangles.map((tri) => orientTriangleToLocalSurface(tri));
     }
 
     // Projected-space CDT can create overlapping 3D triangles on strongly

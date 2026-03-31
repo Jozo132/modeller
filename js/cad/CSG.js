@@ -2862,8 +2862,6 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8, edgeOwnerM
     const shared = data.shared;
     const arcA = data.arcA;
     const arcB = data.arcB;
-    const trimA = data.sharedTrimA || arcA;
-    const trimB = data.sharedTrimB || arcB;
     const edgeDir = _vec3Normalize(_vec3Sub(data.edgeB, data.edgeA));
 
     // Create NURBS fillet surface for this edge
@@ -2881,6 +2879,47 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8, edgeOwnerM
     const centerDist = alpha > 1e-6 ? radius / Math.sin(alpha / 2) : radius;
     const centerA = _vec3Add(data.edgeA, _vec3Scale(bisector, centerDist));
     const centerB = _vec3Add(data.edgeB, _vec3Scale(bisector, centerDist));
+    data._exactAxisStart = { ...centerA };
+    data._exactAxisEnd = { ...centerB };
+    data._exactRadius = radius;
+    data._exactArcCurveA = null;
+    data._exactArcCurveB = null;
+    data._exactSharedTrimCurveA = null;
+    data._exactSharedTrimCurveB = null;
+
+    const rebuildSharedTrim = (side) => {
+      const points = side === 'A' ? data.sharedTrimA : data.sharedTrimB;
+      const planeOrigin = side === 'A'
+        ? data._sharedTrimPlaneAOrigin
+        : data._sharedTrimPlaneBOrigin;
+      const planeNormal = side === 'A'
+        ? data._sharedTrimPlaneANormal
+        : data._sharedTrimPlaneBNormal;
+      if (!points || !planeOrigin || !planeNormal) return;
+      const curve = _createExactCylinderPlaneTrimCurve(
+        points,
+        data._exactAxisStart,
+        data._exactAxisEnd,
+        radius,
+        planeOrigin,
+        planeNormal,
+      );
+      if (!curve) return;
+      const rebuiltPoints = curve.tessellate(segments).map((point) => ({ x: point.x, y: point.y, z: point.z }));
+      rebuiltPoints[0] = { ...points[0] };
+      rebuiltPoints[rebuiltPoints.length - 1] = { ...points[points.length - 1] };
+      if (side === 'A') {
+        data._exactSharedTrimCurveA = curve.clone();
+        data.sharedTrimA = rebuiltPoints;
+      } else {
+        data._exactSharedTrimCurveB = curve.clone();
+        data.sharedTrimB = rebuiltPoints;
+      }
+    };
+    rebuildSharedTrim('A');
+    rebuildSharedTrim('B');
+    const trimA = data.sharedTrimA || arcA;
+    const trimB = data.sharedTrimB || arcB;
 
     // Create NURBS fillet surface using the rolling-ball factory
     try {
@@ -2910,6 +2949,8 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8, edgeOwnerM
           _vec3Normalize(_vec3Cross(edgeDir, _vec3Normalize(_vec3Sub(arcB[0], centerB)))),
           0, sweep
         );
+        data._exactArcCurveA = arcCurveA.clone();
+        data._exactArcCurveB = arcCurveB.clone();
         brep.addEdge(new BRepEdge(new BRepVertex(arcA[0]), new BRepVertex(arcA[segments]), arcCurveA));
         brep.addEdge(new BRepEdge(new BRepVertex(arcB[0]), new BRepVertex(arcB[segments]), arcCurveB));
       }
@@ -3035,10 +3076,20 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8, edgeOwnerM
       exactGeometry.topoBody = topoBody;
       exactGeometry.brep = brep;
       const edgeResult = computeFeatureEdges(exactGeometry.faces || []);
-      exactGeometry.edges = edgeResult.edges;
-      exactGeometry.paths = edgeResult.paths;
+      const exactEdgeResult = _buildExactFeatureEdgesFromTopoBody(topoBody, exactGeometry.faces || []);
+      exactGeometry.edges = exactEdgeResult.edges.length > 0 ? exactEdgeResult.edges : edgeResult.edges;
+      exactGeometry.paths = exactEdgeResult.paths.length > 0 ? exactEdgeResult.paths : edgeResult.paths;
       exactGeometry.visualEdges = edgeResult.visualEdges;
-      return exactGeometry;
+      if (_countMeshBoundaryEdges(exactGeometry.faces || []) === 0) {
+        return exactGeometry;
+      }
+
+      const fallbackGeometry = { vertices: [], faces, brep, topoBody };
+      const fallbackEdgeResult = computeFeatureEdges(faces);
+      fallbackGeometry.edges = exactGeometry.edges;
+      fallbackGeometry.paths = exactGeometry.paths;
+      fallbackGeometry.visualEdges = fallbackEdgeResult.visualEdges;
+      return fallbackGeometry;
     }
   } catch (exactErr) {
     if (typeof console !== 'undefined' && console.warn) {
@@ -3290,6 +3341,8 @@ function _buildTwoEdgeFilletTrim(edgeInfo0, edgeInfo1, origFaces) {
   const axis1 = _vec3Normalize(axis1Plane);
   if (_vec3Len(axis0) < 1e-10 || _vec3Len(axis1) < 1e-10) return null;
   if (_vec3Len(_vec3Cross(axis0, axis1)) < 1e-6) return null;
+  const planeNormal = _vec3Normalize(_vec3Sub(axis0, axis1));
+  if (_vec3Len(planeNormal) < 1e-10) return null;
 
   const trim = [];
   for (let i = 0; i < orientedArc0.length; i++) {
@@ -3310,7 +3363,12 @@ function _buildTwoEdgeFilletTrim(edgeInfo0, edgeInfo1, origFaces) {
 
   const trimFor0 = commonFaceIndex === data0.fi0 ? trim : [...trim].reverse();
   const trimFor1 = commonFaceIndex === data1.fi0 ? trim : [...trim].reverse();
-  return { trimFor0, trimFor1 };
+  return {
+    trimFor0,
+    trimFor1,
+    planeOrigin: { ...sharedVertex },
+    planeNormal,
+  };
 }
 
 function _applyTwoEdgeFilletSharedTrims(edgeDataList, origFaces, vertexEdgeMap) {
@@ -3338,6 +3396,21 @@ function _applyTwoEdgeFilletSharedTrims(edgeDataList, origFaces, vertexEdgeMap) 
     else edgeInfo0.data.sharedTrimB = trimInfo.trimFor0;
     if (edgeInfo1.isA) edgeInfo1.data.sharedTrimA = trimInfo.trimFor1;
     else edgeInfo1.data.sharedTrimB = trimInfo.trimFor1;
+
+    if (edgeInfo0.isA) {
+      edgeInfo0.data._sharedTrimPlaneAOrigin = { ...trimInfo.planeOrigin };
+      edgeInfo0.data._sharedTrimPlaneANormal = { ...trimInfo.planeNormal };
+    } else {
+      edgeInfo0.data._sharedTrimPlaneBOrigin = { ...trimInfo.planeOrigin };
+      edgeInfo0.data._sharedTrimPlaneBNormal = { ...trimInfo.planeNormal };
+    }
+    if (edgeInfo1.isA) {
+      edgeInfo1.data._sharedTrimPlaneAOrigin = { ...trimInfo.planeOrigin };
+      edgeInfo1.data._sharedTrimPlaneANormal = { ...trimInfo.planeNormal };
+    } else {
+      edgeInfo1.data._sharedTrimPlaneBOrigin = { ...trimInfo.planeOrigin };
+      edgeInfo1.data._sharedTrimPlaneBNormal = { ...trimInfo.planeNormal };
+    }
   }
 }
 
@@ -3347,7 +3420,306 @@ function _curveFromSampledPoints(points) {
   return NurbsCurve.createPolyline(points);
 }
 
-function _buildPlanarFaceDesc(face) {
+function _openPolylineNormal(points) {
+  if (!points || points.length < 3) return null;
+  const origin = points[0];
+  let nx = 0;
+  let ny = 0;
+  let nz = 0;
+  for (let i = 1; i < points.length - 1; i++) {
+    const a = _vec3Sub(points[i], origin);
+    const b = _vec3Sub(points[i + 1], origin);
+    const c = _vec3Cross(a, b);
+    nx += c.x;
+    ny += c.y;
+    nz += c.z;
+  }
+  const normal = { x: nx, y: ny, z: nz };
+  return _vec3Len(normal) > 1e-10 ? _vec3Normalize(normal) : null;
+}
+
+function _createExactCylinderPlaneTrimCurve(
+  points,
+  axisStart,
+  axisEnd,
+  radius,
+  planeOriginOverride = null,
+  planeNormalOverride = null,
+) {
+  if (!points || points.length < 2 || !axisStart || !axisEnd || !Number.isFinite(radius) || radius <= 0) {
+    return null;
+  }
+  if (points.length === 2) return NurbsCurve.createLine(points[0], points[1]);
+
+  const planeOrigin = planeOriginOverride || points[0];
+  const planeNormal = planeNormalOverride ? _vec3Normalize(planeNormalOverride) : _openPolylineNormal(points);
+  if (!planeNormal) return null;
+
+  let maxPlaneResidual = 0;
+  for (const point of points) {
+    const planeDist = Math.abs(_vec3Dot(planeNormal, _vec3Sub(point, planeOrigin)));
+    if (planeDist > maxPlaneResidual) maxPlaneResidual = planeDist;
+  }
+  if (maxPlaneResidual > 1e-4) return null;
+
+  const axisDir = _vec3Normalize(_vec3Sub(axisEnd, axisStart));
+  if (_vec3Len(axisDir) < 1e-10) return null;
+
+  const axisDot = _vec3Dot(planeNormal, axisDir);
+  if (Math.abs(axisDot) < 1e-6) return null;
+
+  const t = _vec3Dot(planeNormal, _vec3Sub(planeOrigin, axisStart)) / axisDot;
+  const center = _vec3Add(axisStart, _vec3Scale(axisDir, t));
+  const majorVector = _vec3Sub(axisDir, _vec3Scale(planeNormal, axisDot));
+  const majorDir = _vec3Normalize(majorVector);
+  if (_vec3Len(majorDir) < 1e-10) return null;
+
+  const semiMajor = radius / Math.abs(axisDot);
+  const semiMinor = radius;
+  const baseMinorDir = _vec3Normalize(_vec3Cross(planeNormal, majorDir));
+  if (_vec3Len(baseMinorDir) < 1e-10) return null;
+
+  const evaluatePoint = (minorDir, angle) => _vec3Add(center, _vec3Add(
+    _vec3Scale(majorDir, semiMajor * Math.cos(angle)),
+    _vec3Scale(minorDir, semiMinor * Math.sin(angle)),
+  ));
+
+  const buildCandidate = (minorDir) => {
+    const angles = [];
+    let prevAngle = null;
+    let maxEllipseResidual = 0;
+    let maxPointResidual = 0;
+    let monotonicSign = 0;
+    let monotonic = true;
+
+    for (const point of points) {
+      const rel = _vec3Sub(point, center);
+      const u = _vec3Dot(rel, majorDir) / semiMajor;
+      const v = _vec3Dot(rel, minorDir) / semiMinor;
+      maxEllipseResidual = Math.max(maxEllipseResidual, Math.abs(u * u + v * v - 1));
+
+      let angle = Math.atan2(v, u);
+      if (prevAngle != null) {
+        while (angle - prevAngle > Math.PI) angle -= 2 * Math.PI;
+        while (angle - prevAngle < -Math.PI) angle += 2 * Math.PI;
+        const diff = angle - prevAngle;
+        if (Math.abs(diff) > 1e-8) {
+          const sign = diff > 0 ? 1 : -1;
+          if (monotonicSign === 0) monotonicSign = sign;
+          else if (sign !== monotonicSign) monotonic = false;
+        }
+      }
+      angles.push(angle);
+      prevAngle = angle;
+
+      const fitPoint = evaluatePoint(minorDir, angle);
+      maxPointResidual = Math.max(maxPointResidual, _vec3Len(_vec3Sub(fitPoint, point)));
+    }
+
+    return {
+      minorDir,
+      startAngle: angles[0],
+      sweepAngle: angles[angles.length - 1] - angles[0],
+      maxEllipseResidual,
+      maxPointResidual,
+      monotonic,
+    };
+  };
+
+  const candidates = [
+    buildCandidate(baseMinorDir),
+    buildCandidate(_vec3Scale(baseMinorDir, -1)),
+  ].filter((candidate) => candidate.monotonic && Math.abs(candidate.sweepAngle) > 1e-6);
+
+  if (candidates.length === 0) return null;
+
+  candidates.sort((a, b) =>
+    (a.maxPointResidual + a.maxEllipseResidual) - (b.maxPointResidual + b.maxEllipseResidual));
+  const best = candidates[0];
+  if (best.maxPointResidual > 1e-4 || best.maxEllipseResidual > 1e-4) return null;
+
+  return NurbsCurve.createEllipseArc(
+    center,
+    semiMajor,
+    semiMinor,
+    majorDir,
+    best.minorDir,
+    best.startAngle,
+    best.sweepAngle,
+  );
+}
+
+function _buildExactFilletBoundaryCurve(data, points, side, isSharedTrim) {
+  if (!points || points.length < 2) return null;
+  if (isSharedTrim) {
+    const exactSharedCurve = side === 'A'
+      ? data && data._exactSharedTrimCurveA
+      : data && data._exactSharedTrimCurveB;
+    if (exactSharedCurve) return exactSharedCurve.clone();
+    return _createExactCylinderPlaneTrimCurve(
+      points,
+      data && data._exactAxisStart,
+      data && data._exactAxisEnd,
+      data && data._exactRadius,
+      side === 'A'
+        ? data && data._sharedTrimPlaneAOrigin
+        : data && data._sharedTrimPlaneBOrigin,
+      side === 'A'
+        ? data && data._sharedTrimPlaneANormal
+        : data && data._sharedTrimPlaneBNormal,
+    ) || _curveFromSampledPoints(points);
+  }
+
+  const exactArc = side === 'A' ? data && data._exactArcCurveA : data && data._exactArcCurveB;
+  if (exactArc) return exactArc.clone();
+  return _curveFromSampledPoints(points);
+}
+
+function _buildExactFeatureEdgesFromTopoBody(topoBody, faces, edgeSegments = 16) {
+  if (!topoBody || !topoBody.shells || !Array.isArray(faces) || faces.length === 0) {
+    return { edges: [], paths: [] };
+  }
+
+  const repFaceIndexByTopoFaceId = new Map();
+  for (let fi = 0; fi < faces.length; fi++) {
+    const topoFaceId = faces[fi] && faces[fi].topoFaceId;
+    if (topoFaceId !== undefined && !repFaceIndexByTopoFaceId.has(topoFaceId)) {
+      repFaceIndexByTopoFaceId.set(topoFaceId, fi);
+    }
+  }
+
+  const edges = [];
+  let topoFaceOffset = 0;
+  for (const shell of topoBody.shells) {
+    const topoFaceIdByFace = new Map();
+    for (let i = 0; i < shell.faces.length; i++) {
+      topoFaceIdByFace.set(shell.faces[i], topoFaceOffset + i);
+    }
+
+    for (const edge of shell.edges()) {
+      const points = edge.tessellate(edgeSegments).map((point) => ({ x: point.x, y: point.y, z: point.z }));
+      if (points.length < 2) continue;
+
+      const topoFaceIds = edge.coedges
+        .map((coedge) => topoFaceIdByFace.get(coedge.face))
+        .filter((id) => id !== undefined);
+      const faceIndices = topoFaceIds
+        .map((topoFaceId) => repFaceIndexByTopoFaceId.get(topoFaceId))
+        .filter((index) => index !== undefined);
+      if (faceIndices.length === 0) continue;
+
+      const hasFillet = faceIndices.some((fi) => !!faces[fi]?.isFillet);
+      const hasNonFillet = faceIndices.some((fi) => !faces[fi]?.isFillet);
+
+      edges.push({
+        start: { ...points[0] },
+        end: { ...points[points.length - 1] },
+        points,
+        faceIndices,
+        normals: faceIndices.map((fi) => faces[fi].normal),
+        type: hasFillet && hasNonFillet ? 'fillet-boundary' : 'sharp',
+      });
+    }
+
+    topoFaceOffset += shell.faces.length;
+  }
+
+  return { edges, paths: _chainEdgePaths(edges) };
+}
+
+function _countMeshBoundaryEdges(faces) {
+  if (!Array.isArray(faces) || faces.length === 0) return 0;
+  const key = (point) => `${point.x.toFixed(8)},${point.y.toFixed(8)},${point.z.toFixed(8)}`;
+  const edgeCounts = new Map();
+  for (const face of faces) {
+    const vertices = face && Array.isArray(face.vertices) ? face.vertices : [];
+    for (let i = 0; i < vertices.length; i++) {
+      const a = key(vertices[i]);
+      const b = key(vertices[(i + 1) % vertices.length]);
+      const edgeKey = a < b ? `${a}|${b}` : `${b}|${a}`;
+      edgeCounts.set(edgeKey, (edgeCounts.get(edgeKey) || 0) + 1);
+    }
+  }
+  let boundaryCount = 0;
+  for (const count of edgeCounts.values()) {
+    if (count === 1) boundaryCount += 1;
+  }
+  return boundaryCount;
+}
+
+function _buildPlanarBoundarySegments(vertices, edgeDataList) {
+  if (!Array.isArray(vertices) || vertices.length < 3) return null;
+  const loopKeys = vertices.map((vertex) => _edgeVKey(vertex));
+  const candidates = [];
+
+  const registerCandidate = (points, curve) => {
+    if (!points || points.length <= 2 || !curve) return;
+    candidates.push({
+      keys: points.map((point) => _edgeVKey(point)),
+      curve,
+    });
+  };
+
+  for (const data of edgeDataList || []) {
+    if (!data) continue;
+    if (!data.sharedTrimA) registerCandidate(data.arcA, data._exactArcCurveA);
+    if (!data.sharedTrimB) registerCandidate(data.arcB, data._exactArcCurveB);
+  }
+
+  const matchesCandidate = (startIndex, candidateKeys) => {
+    for (let i = 0; i < candidateKeys.length; i++) {
+      if (loopKeys[(startIndex + i) % loopKeys.length] !== candidateKeys[i]) return false;
+    }
+    return true;
+  };
+
+  const segments = [];
+  let edgeCount = 0;
+  let index = 0;
+  while (edgeCount < vertices.length) {
+    let best = null;
+
+    for (const candidate of candidates) {
+      const len = candidate.keys.length;
+      if (len <= 2 || len > vertices.length) continue;
+
+      if (matchesCandidate(index, candidate.keys)) {
+        if (!best || len > best.len) {
+          best = { len, curve: candidate.curve.clone() };
+        }
+      }
+
+      const reversedKeys = [...candidate.keys].reverse();
+      if (matchesCandidate(index, reversedKeys)) {
+        if (!best || len > best.len) {
+          best = { len, curve: candidate.curve.reversed() };
+        }
+      }
+    }
+
+    if (best) {
+      segments.push({
+        start: { ...vertices[index] },
+        curve: best.curve,
+      });
+      edgeCount += best.len - 1;
+      index = (index + best.len - 1) % vertices.length;
+      continue;
+    }
+
+    const nextIndex = (index + 1) % vertices.length;
+    segments.push({
+      start: { ...vertices[index] },
+      curve: NurbsCurve.createLine(vertices[index], vertices[nextIndex]),
+    });
+    edgeCount += 1;
+    index = nextIndex;
+  }
+
+  return segments.length > 0 ? segments : null;
+}
+
+function _buildPlanarFaceDesc(face, edgeDataList = null) {
   if (!face || !face.vertices || face.vertices.length < 3) return null;
 
   let surface = null;
@@ -3361,12 +3733,19 @@ function _buildPlanarFaceDesc(face) {
     surface = null;
   }
 
+  const boundarySegments = _buildPlanarBoundarySegments(face.vertices, edgeDataList);
+  const boundaryVertices = boundarySegments
+    ? boundarySegments.map((segment) => ({ ...segment.start }))
+    : face.vertices.map((vertex) => ({ ...vertex }));
+
   return {
     surface,
     surfaceType: SurfaceType.PLANE,
-    vertices: face.vertices.map((vertex) => ({ ...vertex })),
-    edgeCurves: face.vertices.map((vertex, index) =>
-      NurbsCurve.createLine(vertex, face.vertices[(index + 1) % face.vertices.length])),
+    vertices: boundaryVertices,
+    edgeCurves: boundarySegments
+      ? boundarySegments.map((segment) => segment.curve)
+      : face.vertices.map((vertex, index) =>
+        NurbsCurve.createLine(vertex, face.vertices[(index + 1) % face.vertices.length])),
     shared: face.shared ? { ...face.shared } : null,
   };
 }
@@ -3377,10 +3756,25 @@ function _buildExactFilletFaceDesc(data) {
   const trimB = data && (data.sharedTrimB || data.arcB);
   if (!surface || !trimA || !trimB || trimA.length < 2 || trimB.length < 2) return null;
 
-  const boundary = [
+  const denseBoundary = [
     ...trimA.map((point) => ({ ...point })),
     ...[...trimB].reverse().map((point) => ({ ...point })),
   ];
+
+  let vertices = [
+    { ...trimA[0] },
+    { ...trimA[trimA.length - 1] },
+    { ...trimB[trimB.length - 1] },
+    { ...trimB[0] },
+  ];
+  let edgeCurves = [
+    _buildExactFilletBoundaryCurve(data, trimA, 'A', !!(data && data.sharedTrimA)),
+    NurbsCurve.createLine(trimA[trimA.length - 1], trimB[trimB.length - 1]),
+    _buildExactFilletBoundaryCurve(data, trimB, 'B', !!(data && data.sharedTrimB)),
+    NurbsCurve.createLine(trimB[0], trimA[0]),
+  ];
+  if (!edgeCurves[0] || !edgeCurves[2]) return null;
+  edgeCurves[2] = edgeCurves[2].reversed();
 
   let outwardNormal = null;
   if (trimA.length >= 2 && trimB.length >= 2) {
@@ -3395,9 +3789,10 @@ function _buildExactFilletFaceDesc(data) {
     (surface.uMin + surface.uMax) * 0.5,
     (surface.vMin + surface.vMax) * 0.5,
   );
-  const loopNormal = _computePolygonNormal(boundary);
+  const loopNormal = _computePolygonNormal(denseBoundary);
   if (outwardNormal && loopNormal && _vec3Dot(loopNormal, outwardNormal) < 0) {
-    boundary.reverse();
+    vertices = [...vertices].reverse();
+    edgeCurves = [...edgeCurves].reverse().map((curve) => curve.reversed());
   }
   const sameSense = !(surfaceNormal && outwardNormal)
     ? true
@@ -3406,9 +3801,8 @@ function _buildExactFilletFaceDesc(data) {
   return {
     surface,
     surfaceType: SurfaceType.BSPLINE,
-    vertices: boundary,
-    edgeCurves: boundary.map((point, index) =>
-      NurbsCurve.createLine(point, boundary[(index + 1) % boundary.length])),
+    vertices,
+    edgeCurves,
     sameSense,
     shared: {
       ...(data.shared || {}),
@@ -3425,7 +3819,7 @@ function _buildExactFilletTopoBody(faces, edgeDataList) {
 
   for (const face of faces) {
     if (!face || face.isFillet) continue;
-    const desc = _buildPlanarFaceDesc(face);
+    const desc = _buildPlanarFaceDesc(face, edgeDataList);
     if (!desc) return null;
     faceDescs.push(desc);
   }

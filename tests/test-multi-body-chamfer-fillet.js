@@ -213,6 +213,41 @@ test('Fillet adds more faces than original', () => {
     `Expected more faces: before=${facesBefore}, after=${after.geometry.faces.length}`);
 });
 
+test('Two-edge box fillet keeps exact shared seam as a single exact edge', () => {
+  const part = new Part('T9b');
+  const sf = part.addSketch(makeRectSketch(0, 0, 10, 10));
+  part.extrude(sf.id, 10);
+
+  const ek1 = makeEdgeKey({ x: 0, y: 0, z: 10 }, { x: 10, y: 0, z: 10 });
+  const ek2 = makeEdgeKey({ x: 10, y: 0, z: 10 }, { x: 10, y: 10, z: 10 });
+  part.fillet([ek1, ek2], 1, { segments: 8 });
+
+  const r = part.getFinalGeometry();
+  const m = checkManifold(r.geometry);
+  assert.strictEqual(m.boundaryEdges, 0, `boundary=${m.boundaryEdges}`);
+  assert.strictEqual(m.nonManifoldEdges, 0, `nonManifold=${m.nonManifoldEdges}`);
+
+  const body = r.geometry.topoBody;
+  assert.ok(body && body.shells && body.shells.length > 0, 'Expected exact topoBody');
+  const shell = body.shells[0];
+  const bsplineFaces = shell.faces.filter((face) => face.surfaceType === 'bspline');
+  assert.strictEqual(bsplineFaces.length, 2, `Expected 2 fillet faces, got ${bsplineFaces.length}`);
+  for (const face of bsplineFaces) {
+    assert.strictEqual(face.outerLoop.coedges.length, 4, 'Exact fillet faces should use 4 coedges');
+  }
+
+  const sharedBlendEdges = shell.edges().filter((edge) =>
+    edge.coedges.length === 2 &&
+    edge.coedges.every((coedge) => coedge.face && coedge.face.surfaceType === 'bspline')
+  );
+  assert.ok(sharedBlendEdges.length >= 1, 'Expected a shared fillet/fillet seam edge');
+  assert.ok(sharedBlendEdges.some((edge) =>
+    edge.curve &&
+    edge.curve.degree === 2 &&
+    edge.curve.controlPoints.length <= 9
+  ), 'Expected a quadratic exact seam curve, not a segmented polyline chain');
+});
+
 // --- Chamfer + Fillet on adjacent edges (same face) ---
 
 test('Chamfer + Fillet on adjacent edges sharing a vertex', () => {
