@@ -1016,6 +1016,11 @@ export function computeFeatureEdges(faces) {
           isFeature = false;
         }
       }
+      // Faces already merged into one logical coplanar face must never
+      // expose their internal triangulation seam as a selectable feature edge.
+      if (isFeature && sameGroup) {
+        isFeature = false;
+      }
       if (isFeature) {
         edges.push({
           start: info.start, end: info.end,
@@ -1160,9 +1165,14 @@ export function booleanOp(geomA, geomB, operation, sharedA = null, sharedB = nul
       hasExactTopology(geomA.topoBody) && hasExactTopology(geomB.topoBody)) {
     const opName = (operation === 'add') ? 'union' : operation;
     const { body, mesh } = exactBooleanOp(geomA.topoBody, geomB.topoBody, opName);
-    const edgeResult = computeFeatureEdges(mesh.faces || []);
-    return {
+    const displayFaces = _compactExactPlanarDisplayFaces(mesh.faces || []);
+    const displayMesh = {
       ...mesh,
+      faces: displayFaces,
+    };
+    const edgeResult = computeFeatureEdges(displayFaces);
+    return {
+      ...displayMesh,
       edges: edgeResult.edges,
       paths: edgeResult.paths,
       visualEdges: edgeResult.visualEdges,
@@ -2451,6 +2461,184 @@ function _mergeAdjacentCoplanarFacePairs(faces) {
   }
 }
 
+function _collectFaceTopoFaceIds(face) {
+  const ids = [];
+  if (!face) return ids;
+  if (face.topoFaceId !== undefined) ids.push(face.topoFaceId);
+  if (Array.isArray(face.topoFaceIds)) {
+    for (const topoFaceId of face.topoFaceIds) {
+      if (topoFaceId !== undefined) ids.push(topoFaceId);
+    }
+  }
+  return [...new Set(ids)];
+}
+
+function _buildRepFaceIndexByTopoFaceId(faces) {
+  const repFaceIndexByTopoFaceId = new Map();
+  for (let fi = 0; fi < faces.length; fi++) {
+    const topoFaceIds = _collectFaceTopoFaceIds(faces[fi]);
+    for (const topoFaceId of topoFaceIds) {
+      if (!repFaceIndexByTopoFaceId.has(topoFaceId)) {
+        repFaceIndexByTopoFaceId.set(topoFaceId, fi);
+      }
+    }
+  }
+  return repFaceIndexByTopoFaceId;
+}
+
+function _tracePlanarFaceGroupLoop(faces, faceIndices) {
+  const directedEdges = [];
+  const edgeCounts = new Map();
+
+  for (const fi of faceIndices) {
+    const face = faces[fi];
+    const verts = face && Array.isArray(face.vertices) ? face.vertices : [];
+    if (verts.length < 3) continue;
+    for (let i = 0; i < verts.length; i++) {
+      const a = verts[i];
+      const b = verts[(i + 1) % verts.length];
+      const key = _edgeKeyFromVerts(a, b);
+      edgeCounts.set(key, (edgeCounts.get(key) || 0) + 1);
+      directedEdges.push({
+        a: { ...a },
+        b: { ...b },
+        key,
+        startKey: _edgeVKey(a),
+        endKey: _edgeVKey(b),
+      });
+    }
+  }
+
+  const boundaryEdges = directedEdges.filter((edge) => edgeCounts.get(edge.key) === 1);
+  if (boundaryEdges.length < 3) return null;
+
+  const outgoing = new Map();
+  const incoming = new Map();
+  for (const edge of boundaryEdges) {
+    if (outgoing.has(edge.startKey) || incoming.has(edge.endKey)) return null;
+    outgoing.set(edge.startKey, edge);
+    incoming.set(edge.endKey, edge);
+  }
+
+  let startEdge = boundaryEdges[0];
+  for (const edge of boundaryEdges) {
+    if (!incoming.has(edge.startKey)) {
+      startEdge = edge;
+      break;
+    }
+  }
+
+  const loop = [{ ...startEdge.a }];
+  const used = new Set();
+  let current = startEdge;
+  while (current && !used.has(`${current.startKey}|${current.endKey}`)) {
+    used.add(`${current.startKey}|${current.endKey}`);
+    loop.push({ ...current.b });
+    current = outgoing.get(current.endKey);
+    if (current && current.startKey === startEdge.startKey) break;
+  }
+
+  if (_edgeVKey(loop[0]) !== _edgeVKey(loop[loop.length - 1])) return null;
+  loop.pop();
+  if (used.size !== boundaryEdges.length) return null;
+
+  const mergedVerts = _deduplicatePolygon(loop);
+  return mergedVerts.length >= 3 ? mergedVerts : null;
+}
+
+function _sharedMetadataSignature(shared) {
+  if (!shared) return '__null__';
+  const keys = Object.keys(shared).sort();
+  return JSON.stringify(shared, keys);
+}
+
+function _compactExactPlanarDisplayFaces(inputFaces) {
+  if (!Array.isArray(inputFaces) || inputFaces.length < 2) {
+    return Array.isArray(inputFaces) ? inputFaces : [];
+  }
+
+  const faces = inputFaces.map((face) => ({
+    ...face,
+    vertices: Array.isArray(face.vertices) ? face.vertices.map((vertex) => ({ ...vertex })) : [],
+    normal: face.normal ? { ...face.normal } : face.normal,
+    shared: face.shared ? { ...face.shared } : null,
+    topoFaceIds: Array.isArray(face.topoFaceIds) ? [...face.topoFaceIds] : face.topoFaceIds,
+    vertexNormals: Array.isArray(face.vertexNormals)
+      ? face.vertexNormals.map((normal) => (normal ? { ...normal } : normal))
+      : face.vertexNormals,
+  }));
+
+  _fixTJunctions(faces);
+  _weldVertices(faces);
+  _removeDegenerateFaces(faces);
+  _mergeAdjacentCoplanarFacePairs(faces);
+  computeFeatureEdges(faces);
+
+  const groups = new Map();
+  for (let fi = 0; fi < faces.length; fi++) {
+    const face = faces[fi];
+    if (!face || !Array.isArray(face.vertices) || face.vertices.length < 3) continue;
+    if (face.isCurved || face.isFillet || face.isCorner) continue;
+    if (face.faceType && !face.faceType.startsWith('planar')) continue;
+    const groupKey = face.faceGroup != null ? face.faceGroup : fi;
+    if (!groups.has(groupKey)) groups.set(groupKey, []);
+    groups.get(groupKey).push(fi);
+  }
+
+  const removeIndices = new Set();
+  const replacements = [];
+  for (const faceIndices of groups.values()) {
+    if (faceIndices.length < 2) continue;
+
+    const mergedVerts = _tracePlanarFaceGroupLoop(faces, faceIndices);
+    if (!mergedVerts) continue;
+
+    let mergedNormal = _computePolygonNormal(mergedVerts);
+    if (!mergedNormal) continue;
+
+    const componentFaces = faceIndices.map((fi) => faces[fi]).filter(Boolean);
+    const template = [...componentFaces].sort((a, b) => _polygonArea(b) - _polygonArea(a))[0];
+    if (!template) continue;
+
+    const templateNormal = _vec3Normalize(template.normal || { x: 0, y: 0, z: 0 });
+    if (_vec3Len(templateNormal) >= 1e-10 && _vec3Dot(mergedNormal, templateNormal) < 0) {
+      mergedVerts.reverse();
+      mergedNormal = _computePolygonNormal(mergedVerts);
+      if (!mergedNormal) continue;
+    }
+
+    const topoFaceIds = [...new Set(faceIndices.flatMap((fi) => _collectFaceTopoFaceIds(faces[fi])))];
+    const sharedSignatures = new Set(faceIndices.map((fi) => _sharedMetadataSignature(faces[fi].shared)));
+    const replacement = {
+      ...template,
+      vertices: mergedVerts.map((vertex) => ({ ...vertex })),
+      normal: mergedNormal,
+      shared: sharedSignatures.size === 1 && template.shared ? { ...template.shared } : null,
+      topoFaceId: topoFaceIds.length === 1 ? topoFaceIds[0] : undefined,
+    };
+    if (topoFaceIds.length > 1) replacement.topoFaceIds = topoFaceIds;
+    else if (topoFaceIds.length === 1) replacement.topoFaceIds = [topoFaceIds[0]];
+
+    replacements.push(replacement);
+    for (const fi of faceIndices) removeIndices.add(fi);
+  }
+
+  if (replacements.length === 0) {
+    return faces;
+  }
+
+  const compactedFaces = [];
+  for (let fi = 0; fi < faces.length; fi++) {
+    if (!removeIndices.has(fi)) compactedFaces.push(faces[fi]);
+  }
+  compactedFaces.push(...replacements);
+
+  _weldVertices(compactedFaces);
+  _removeDegenerateFaces(compactedFaces);
+  _recomputeFaceNormals(compactedFaces);
+  return compactedFaces;
+}
+
 // Weld vertices that map to the same rounded key so seam duplicates are eliminated
 function _weldVertices(faces) {
   const canon = new Map();
@@ -3130,11 +3318,16 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8, edgeOwnerM
       _healBoundaryLoops(fallbackFaces);
       _removeDegenerateFaces(fallbackFaces);
       _recomputeFaceNormals(fallbackFaces);
-      const fallbackExactEdgeResult = _buildExactFeatureEdgesFromTopoBody(topoBody, fallbackFaces);
       const fallbackGeometry = { vertices: [], faces: fallbackFaces, brep, topoBody };
       const fallbackEdgeResult = computeFeatureEdges(fallbackFaces);
-      fallbackGeometry.edges = fallbackExactEdgeResult.edges.length > 0 ? fallbackExactEdgeResult.edges : fallbackEdgeResult.edges;
-      fallbackGeometry.paths = fallbackExactEdgeResult.paths.length > 0 ? fallbackExactEdgeResult.paths : fallbackEdgeResult.paths;
+      const fallbackExactEdgeResult = _buildExactFeatureEdgesFromTopoBody(topoBody, fallbackFaces);
+      const supportedExactEdgeResult = _mergeExactAndFallbackFeatureEdges(
+        fallbackFaces,
+        fallbackExactEdgeResult,
+        fallbackEdgeResult,
+      );
+      fallbackGeometry.edges = supportedExactEdgeResult.edges.length > 0 ? supportedExactEdgeResult.edges : fallbackEdgeResult.edges;
+      fallbackGeometry.paths = supportedExactEdgeResult.paths.length > 0 ? supportedExactEdgeResult.paths : fallbackEdgeResult.paths;
       fallbackGeometry.visualEdges = fallbackEdgeResult.visualEdges;
       return fallbackGeometry;
     }
@@ -3639,13 +3832,7 @@ function _buildExactFeatureEdgesFromTopoBody(topoBody, faces, edgeSegments = 16)
     return { edges: [], paths: [] };
   }
 
-  const repFaceIndexByTopoFaceId = new Map();
-  for (let fi = 0; fi < faces.length; fi++) {
-    const topoFaceId = faces[fi] && faces[fi].topoFaceId;
-    if (topoFaceId !== undefined && !repFaceIndexByTopoFaceId.has(topoFaceId)) {
-      repFaceIndexByTopoFaceId.set(topoFaceId, fi);
-    }
-  }
+  const repFaceIndexByTopoFaceId = _buildRepFaceIndexByTopoFaceId(faces);
 
   const edges = [];
   for (const shell of topoBody.shells) {
@@ -3683,13 +3870,7 @@ function _buildExactEdgeAdjacencyLookupFromTopoBody(topoBody, faces, edgeSegment
     return null;
   }
 
-  const repFaceIndexByTopoFaceId = new Map();
-  for (let fi = 0; fi < faces.length; fi++) {
-    const topoFaceId = faces[fi] && faces[fi].topoFaceId;
-    if (topoFaceId !== undefined && !repFaceIndexByTopoFaceId.has(topoFaceId)) {
-      repFaceIndexByTopoFaceId.set(topoFaceId, fi);
-    }
-  }
+  const repFaceIndexByTopoFaceId = _buildRepFaceIndexByTopoFaceId(faces);
   if (repFaceIndexByTopoFaceId.size === 0) return null;
 
   const adjacencyByKey = new Map();
@@ -3762,6 +3943,161 @@ function _countMeshEdgeUsage(faces) {
 
 function _countMeshBoundaryEdges(faces) {
   return _countMeshEdgeUsage(faces).boundaryCount;
+}
+
+function _pathEndpointPoints(edges, path) {
+  if (!path || path.isClosed || !Array.isArray(path.edgeIndices) || path.edgeIndices.length === 0) {
+    return null;
+  }
+
+  const counts = new Map();
+  const points = new Map();
+  for (const edgeIndex of path.edgeIndices) {
+    const edge = edges[edgeIndex];
+    if (!edge) continue;
+    for (const point of [edge.start, edge.end]) {
+      const key = _edgeVKey(point);
+      counts.set(key, (counts.get(key) || 0) + 1);
+      if (!points.has(key)) points.set(key, point);
+    }
+  }
+
+  const endpoints = [];
+  for (const [key, count] of counts) {
+    if (count === 1 && points.has(key)) endpoints.push(points.get(key));
+  }
+  return endpoints.length === 2 ? endpoints : null;
+}
+
+function _pathFaceGroupKey(edges, path, faces) {
+  const groups = new Set();
+  if (!path || !Array.isArray(path.edgeIndices)) return '';
+
+  for (const edgeIndex of path.edgeIndices) {
+    const edge = edges[edgeIndex];
+    if (!edge || !Array.isArray(edge.faceIndices)) continue;
+    for (const fi of edge.faceIndices) {
+      const group = faces[fi] && faces[fi].faceGroup;
+      if (group !== undefined && group !== null) groups.add(group);
+    }
+  }
+
+  return [...groups].sort((a, b) => a - b).join('|');
+}
+
+function _pathFeatureKind(edges, path, faces) {
+  let hasFillet = false;
+  let hasNonFillet = false;
+  let hasBoundary = false;
+  if (!path || !Array.isArray(path.edgeIndices)) return 'sharp';
+
+  for (const edgeIndex of path.edgeIndices) {
+    const edge = edges[edgeIndex];
+    if (!edge) continue;
+    if (edge.type === 'fillet-boundary') return 'fillet-boundary';
+    if (Array.isArray(edge.faceIndices) && edge.faceIndices.length === 1) hasBoundary = true;
+    for (const fi of edge.faceIndices || []) {
+      const face = faces[fi];
+      if (!face) continue;
+      if (face.isFillet) hasFillet = true;
+      else hasNonFillet = true;
+    }
+  }
+
+  if (hasFillet && hasNonFillet) return 'fillet-boundary';
+  if (hasBoundary) return 'boundary';
+  return 'sharp';
+}
+
+function _mergeExactAndFallbackFeatureEdges(faces, exactEdgeResult, fallbackEdgeResult, endpointTolerance = 1e-4) {
+  if (!fallbackEdgeResult || !Array.isArray(fallbackEdgeResult.edges) || fallbackEdgeResult.edges.length === 0) {
+    return exactEdgeResult && Array.isArray(exactEdgeResult.edges) ? exactEdgeResult : { edges: [], paths: [] };
+  }
+  if (!exactEdgeResult || !Array.isArray(exactEdgeResult.edges) || exactEdgeResult.edges.length === 0) {
+    return fallbackEdgeResult;
+  }
+
+  const maxEndpointDistSq = endpointTolerance * endpointTolerance * 2;
+  const exactPaths = Array.isArray(exactEdgeResult.paths) ? exactEdgeResult.paths : _chainEdgePaths(exactEdgeResult.edges);
+  const fallbackPaths = Array.isArray(fallbackEdgeResult.paths) ? fallbackEdgeResult.paths : _chainEdgePaths(fallbackEdgeResult.edges);
+
+  const exactPathDescriptors = exactPaths.map((path, index) => ({
+    index,
+    path,
+    faceGroupKey: _pathFaceGroupKey(exactEdgeResult.edges, path, faces),
+    endpoints: _pathEndpointPoints(exactEdgeResult.edges, path),
+    kind: _pathFeatureKind(exactEdgeResult.edges, path, faces),
+  }));
+
+  const usedExactPathIndices = new Set();
+  const mergedEdges = [];
+
+  for (const fallbackPath of fallbackPaths) {
+    const fallbackFaceGroupKey = _pathFaceGroupKey(fallbackEdgeResult.edges, fallbackPath, faces);
+    const fallbackEndpoints = _pathEndpointPoints(fallbackEdgeResult.edges, fallbackPath);
+    const fallbackKind = _pathFeatureKind(fallbackEdgeResult.edges, fallbackPath, faces);
+
+    let matchedExactDescriptor = null;
+    let bestEndpointScore = Infinity;
+    if (fallbackEndpoints && fallbackFaceGroupKey) {
+      for (const descriptor of exactPathDescriptors) {
+        if (usedExactPathIndices.has(descriptor.index)) continue;
+        if (!descriptor.endpoints) continue;
+        if (descriptor.faceGroupKey !== fallbackFaceGroupKey) continue;
+
+        const forwardA = _vec3Sub(fallbackEndpoints[0], descriptor.endpoints[0]);
+        const forwardB = _vec3Sub(fallbackEndpoints[1], descriptor.endpoints[1]);
+        const reverseA = _vec3Sub(fallbackEndpoints[0], descriptor.endpoints[1]);
+        const reverseB = _vec3Sub(fallbackEndpoints[1], descriptor.endpoints[0]);
+        const forwardScore = _vec3Dot(forwardA, forwardA) + _vec3Dot(forwardB, forwardB);
+        const reverseScore = _vec3Dot(reverseA, reverseA) + _vec3Dot(reverseB, reverseB);
+        const endpointScore = Math.min(forwardScore, reverseScore);
+        if (endpointScore <= maxEndpointDistSq && endpointScore < bestEndpointScore) {
+          bestEndpointScore = endpointScore;
+          matchedExactDescriptor = descriptor;
+        }
+      }
+    }
+
+    if (!matchedExactDescriptor && fallbackEndpoints && fallbackKind === 'fillet-boundary') {
+      for (const descriptor of exactPathDescriptors) {
+        if (usedExactPathIndices.has(descriptor.index)) continue;
+        if (!descriptor.endpoints) continue;
+        if (descriptor.kind !== fallbackKind) continue;
+
+        const forwardA = _vec3Sub(fallbackEndpoints[0], descriptor.endpoints[0]);
+        const forwardB = _vec3Sub(fallbackEndpoints[1], descriptor.endpoints[1]);
+        const reverseA = _vec3Sub(fallbackEndpoints[0], descriptor.endpoints[1]);
+        const reverseB = _vec3Sub(fallbackEndpoints[1], descriptor.endpoints[0]);
+        const forwardScore = _vec3Dot(forwardA, forwardA) + _vec3Dot(forwardB, forwardB);
+        const reverseScore = _vec3Dot(reverseA, reverseA) + _vec3Dot(reverseB, reverseB);
+        const endpointScore = Math.min(forwardScore, reverseScore);
+        if (endpointScore <= maxEndpointDistSq && endpointScore < bestEndpointScore) {
+          bestEndpointScore = endpointScore;
+          matchedExactDescriptor = descriptor;
+        }
+      }
+    }
+
+    if (matchedExactDescriptor) {
+      usedExactPathIndices.add(matchedExactDescriptor.index);
+      for (const edgeIndex of matchedExactDescriptor.path.edgeIndices || []) {
+        const edge = exactEdgeResult.edges[edgeIndex];
+        if (edge) mergedEdges.push(edge);
+      }
+      continue;
+    }
+
+    for (const edgeIndex of fallbackPath.edgeIndices || []) {
+      const edge = fallbackEdgeResult.edges[edgeIndex];
+      if (edge) mergedEdges.push(edge);
+    }
+  }
+
+  return {
+    edges: mergedEdges,
+    paths: _chainEdgePaths(mergedEdges),
+  };
 }
 
 function _extractFeatureFacesFromTopoBody(geometry) {

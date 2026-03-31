@@ -10,7 +10,7 @@ import { Sketch } from '../js/cad/Sketch.js';
 import { buildCMOD, parseCMOD } from '../js/cmod.js';
 import {
   calculateMeshVolume, calculateBoundingBox, calculateSurfaceArea,
-  detectDisconnectedBodies, calculateWallThickness, countInvertedFaces,
+  detectDisconnectedBodies, calculateWallThickness, countInvertedFaces, computeFeatureEdges,
 } from '../js/cad/CSG.js';
 
 let passed = 0;
@@ -33,23 +33,27 @@ function assertApprox(actual, expected, tol, msg) {
     `${msg}: expected ~${expected}, got ${actual}`);
 }
 
+function quantizedVertexKey(vertex) {
+  return [vertex.x, vertex.y, vertex.z].map((value) => Number(value).toFixed(6)).join(',');
+}
+
+function undirectedEdgeKey(start, end) {
+  const startKey = quantizedVertexKey(start);
+  const endKey = quantizedVertexKey(end);
+  return startKey < endKey ? `${startKey}|${endKey}` : `${endKey}|${startKey}`;
+}
+
 function collectEdgeUsage(geometry) {
   const edgeCounts = new Map();
   const directedEdges = new Map();
-  const toKey = (vertex) => [vertex.x, vertex.y, vertex.z].map((value) => Number(value).toFixed(6)).join(',');
-  const edgeKey = (start, end) => {
-    const startKey = toKey(start);
-    const endKey = toKey(end);
-    return startKey < endKey ? `${startKey}|${endKey}` : `${endKey}|${startKey}`;
-  };
 
   for (const face of geometry.faces || []) {
     for (let index = 0; index < face.vertices.length; index++) {
       const current = face.vertices[index];
       const next = face.vertices[(index + 1) % face.vertices.length];
-      const currentKey = toKey(current);
-      const nextKey = toKey(next);
-      const key = edgeKey(current, next);
+      const currentKey = quantizedVertexKey(current);
+      const nextKey = quantizedVertexKey(next);
+      const key = undirectedEdgeKey(current, next);
       edgeCounts.set(key, (edgeCounts.get(key) || 0) + 1);
       if (!directedEdges.has(key)) directedEdges.set(key, []);
       directedEdges.get(key).push({ fwd: currentKey < nextKey });
@@ -107,6 +111,69 @@ function assertNoDownwardTopExtremeFaces(geometry, context) {
   );
 
   assert.strictEqual(topWrong.length, 0, `${context}: expected no downward-facing top-extreme faces, got ${topWrong.length}`);
+}
+
+function countUnsupportedFeatureEdges(geometry) {
+  const meshSegments = new Set();
+  for (const face of geometry.faces || []) {
+    const vertices = face.vertices || [];
+    for (let i = 0; i < vertices.length; i++) {
+      meshSegments.add(undirectedEdgeKey(vertices[i], vertices[(i + 1) % vertices.length]));
+    }
+  }
+
+  let unsupportedEdges = 0;
+  for (const edge of geometry.edges || []) {
+    const points = Array.isArray(edge.points) && edge.points.length >= 2
+      ? edge.points
+      : (edge.start && edge.end ? [edge.start, edge.end] : []);
+    if (points.length < 2) continue;
+
+    let supported = true;
+    for (let i = 1; i < points.length; i++) {
+      if (!meshSegments.has(undirectedEdgeKey(points[i - 1], points[i]))) {
+        supported = false;
+        break;
+      }
+    }
+    if (!supported) unsupportedEdges++;
+  }
+
+  return unsupportedEdges;
+}
+
+function assertFeatureEdgesLieOnMeshBoundaries(geometry, context) {
+  const unsupportedEdges = countUnsupportedFeatureEdges(geometry);
+  assert.strictEqual(unsupportedEdges, 0, `${context}: expected no floating feature edges, got ${unsupportedEdges}`);
+}
+
+function cloneFaces(faces) {
+  return (faces || []).map((face) => ({
+    ...face,
+    vertices: (face.vertices || []).map((vertex) => ({ ...vertex })),
+    normal: face.normal ? { ...face.normal } : face.normal,
+    shared: face.shared ? { ...face.shared } : face.shared,
+  }));
+}
+
+function countFilletBoundaryPaths(geometry) {
+  let count = 0;
+  for (const path of geometry.paths || []) {
+    let hasFillet = false;
+    let hasNonFillet = false;
+    for (const edgeIndex of path.edgeIndices || []) {
+      const edge = geometry.edges && geometry.edges[edgeIndex];
+      if (!edge) continue;
+      for (const fi of edge.faceIndices || []) {
+        const face = geometry.faces && geometry.faces[fi];
+        if (!face) continue;
+        if (face.isFillet) hasFillet = true;
+        else hasNonFillet = true;
+      }
+    }
+    if (hasFillet && hasNonFillet) count++;
+  }
+  return count;
 }
 
 // -----------------------------------------------------------------------
@@ -460,9 +527,33 @@ console.log('--- Test 8: Duplicate imported feature IDs ---');
 // --- Test 9: Coplanar face-start extrude cuts stay closed ---
 console.log('--- Test 9: Coplanar face-start extrude cuts ---');
 {
+  const dualExtrudeSample = JSON.parse(
+    fs.readFileSync(new URL('./samples/extrude-on-extrude-dual.cmod', import.meta.url), 'utf8')
+  );
   const sample = JSON.parse(
     fs.readFileSync(new URL('./samples/extrude-on-extrude-dual-with-cut.cmod', import.meta.url), 'utf8')
   );
+
+  test('deserialized dual extrude sample compacts planar display faces', () => {
+    const restored = Part.deserialize(dualExtrudeSample.part);
+    const finalGeometry = restored.getFinalGeometry();
+    assert.ok(finalGeometry && finalGeometry.geometry, 'Expected final dual-extrude solid geometry');
+
+    const faces = finalGeometry.geometry.faces || [];
+    let zMax = -Infinity;
+    for (const face of faces) {
+      for (const vertex of face.vertices || []) zMax = Math.max(zMax, vertex.z);
+    }
+    const topFaces = faces.filter((face) =>
+      (face.normal?.z || 0) > 0.99999 &&
+      (face.vertices || []).length >= 3 &&
+      face.vertices.every((vertex) => Math.abs(vertex.z - zMax) < 1e-5)
+    );
+
+    assert.ok(faces.length <= 40, `Expected compact planar display mesh, got ${faces.length} faces`);
+    assert.strictEqual(topFaces.length, 1, `Expected a single top face polygon, got ${topFaces.length}`);
+    assertSingleHorizontalCapGroup(finalGeometry.geometry, 'dual extrude sample');
+  });
 
   test('deserialized cut sample produces a closed manifold mesh', () => {
     const restored = Part.deserialize(sample.part);
@@ -585,6 +676,45 @@ console.log('--- Test 12: Filleted chamfered concave cut edge ---');
     assertPositiveWallThickness(finalGeometry.geometry, 'concave cut-edge chamfer+fillet sample');
     assertSingleHorizontalCapGroup(finalGeometry.geometry, 'concave cut-edge chamfer+fillet sample');
     assertNoDownwardTopExtremeFaces(finalGeometry.geometry, 'concave cut-edge chamfer+fillet sample');
+  });
+
+  test('deserialized cut+chamfer+fillet sample keeps displayed feature edges on the mesh', () => {
+    const restored = Part.deserialize(sample.part);
+    const finalGeometry = restored.getFinalGeometry();
+    assert.ok(finalGeometry && finalGeometry.geometry, 'Expected final solid geometry');
+
+    assertFeatureEdgesLieOnMeshBoundaries(finalGeometry.geometry, 'concave cut-edge chamfer+fillet sample');
+  });
+
+  test('deserialized cut+chamfer+fillet sample keeps exact displayed paths aligned to fallback-supported seams', () => {
+    const restored = Part.deserialize(sample.part);
+    const finalGeometry = restored.getFinalGeometry();
+    assert.ok(finalGeometry && finalGeometry.geometry, 'Expected final solid geometry');
+
+    const geometry = finalGeometry.geometry;
+    const fallbackFeatureEdges = computeFeatureEdges(cloneFaces(geometry.faces));
+    assert.strictEqual(
+      geometry.paths.length,
+      fallbackFeatureEdges.paths.length,
+      `Expected displayed exact paths to follow fallback seam layout (${fallbackFeatureEdges.paths.length}), got ${geometry.paths.length}`,
+    );
+    assert.ok(
+      countFilletBoundaryPaths(geometry) >= 3,
+      `Expected at least 3 displayed fillet boundary paths, got ${countFilletBoundaryPaths(geometry)}`,
+    );
+  });
+
+  test('deserialized cut+chamfer+fillet sample suppresses same-group internal seams', () => {
+    const restored = Part.deserialize(sample.part);
+    const finalGeometry = restored.getFinalGeometry();
+    assert.ok(finalGeometry && finalGeometry.geometry, 'Expected final solid geometry');
+
+    const singleFaceEdges = (finalGeometry.geometry.edges || []).filter((edge) => (edge.faceIndices || []).length === 1);
+    assert.strictEqual(
+      singleFaceEdges.length,
+      0,
+      `Expected no displayed single-face feature edges, got ${singleFaceEdges.length}`,
+    );
   });
 }
 
