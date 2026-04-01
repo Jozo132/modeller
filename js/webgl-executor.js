@@ -125,7 +125,12 @@ function createProgram(gl, vsSource, fsSource) {
 
 export class WebGLExecutor {
   constructor(canvas) {
-    const gl = canvas.getContext('webgl2', { antialias: true, alpha: false, preserveDrawingBuffer: true });
+    const gl = canvas.getContext('webgl2', {
+      antialias: true,
+      alpha: false,
+      preserveDrawingBuffer: true,
+      stencil: true,
+    });
     if (!gl) throw new Error('WebGL2 not supported');
     this.gl = gl;
     this.width = canvas.width;

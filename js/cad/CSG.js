@@ -2021,6 +2021,79 @@ function _polygonArea(face) {
   return area;
 }
 
+function _coplanarFaceClusterKey(face, fallbackIndex = 0) {
+  if (!face || !face.normal || !Array.isArray(face.vertices) || face.vertices.length < 3) return null;
+  const point = face.vertices[0];
+  if (!point) return null;
+  const normal = _vec3Normalize(face.normal);
+  if (_vec3Len(normal) < 1e-10) return null;
+
+  let sign = 1;
+  const ax = Math.abs(normal.x);
+  const ay = Math.abs(normal.y);
+  const az = Math.abs(normal.z);
+  if (az >= ax && az >= ay) sign = normal.z < 0 ? -1 : 1;
+  else if (ay >= ax) sign = normal.y < 0 ? -1 : 1;
+  else sign = normal.x < 0 ? -1 : 1;
+
+  const canonicalNormal = {
+    x: normal.x * sign,
+    y: normal.y * sign,
+    z: normal.z * sign,
+  };
+  const planeDistance = _vec3Dot(canonicalNormal, point);
+  const clusterOwner = face.faceGroup ?? fallbackIndex;
+  return [
+    clusterOwner,
+    Math.round(canonicalNormal.x * 1e6),
+    Math.round(canonicalNormal.y * 1e6),
+    Math.round(canonicalNormal.z * 1e6),
+    Math.round(planeDistance * 1e6),
+  ].join('|');
+}
+
+function _fixOpposedCoplanarFacesInGroups(faces) {
+  if (!Array.isArray(faces) || faces.length === 0) return;
+
+  const clusters = new Map();
+  for (let fi = 0; fi < faces.length; fi++) {
+    const key = _coplanarFaceClusterKey(faces[fi], fi);
+    if (!key) continue;
+    if (!clusters.has(key)) clusters.set(key, []);
+    clusters.get(key).push(fi);
+  }
+
+  for (const faceIndices of clusters.values()) {
+    if (faceIndices.length < 2) continue;
+
+    let referenceFace = null;
+    let referenceArea = -Infinity;
+    for (const fi of faceIndices) {
+      const area = _polygonArea(faces[fi]);
+      if (area > referenceArea) {
+        referenceArea = area;
+        referenceFace = faces[fi];
+      }
+    }
+    if (!referenceFace || !referenceFace.normal) continue;
+
+    const referenceNormal = _vec3Normalize(referenceFace.normal);
+    if (_vec3Len(referenceNormal) < 1e-10) continue;
+
+    for (const fi of faceIndices) {
+      const face = faces[fi];
+      if (!face || !face.normal) continue;
+      if (_vec3Dot(referenceNormal, face.normal) >= 0) continue;
+      face.vertices.reverse();
+      face.normal = {
+        x: -face.normal.x,
+        y: -face.normal.y,
+        z: -face.normal.z,
+      };
+    }
+  }
+}
+
 function _isConvexPlanarPolygon(verts, normal) {
   if (!verts || verts.length < 3 || !normal) return false;
   let sign = 0;
@@ -2487,6 +2560,19 @@ function _buildRepFaceIndexByTopoFaceId(faces) {
 }
 
 function _tracePlanarFaceGroupLoop(faces, faceIndices) {
+  const componentVertices = [];
+  const seenVertices = new Set();
+  for (const fi of faceIndices) {
+    const face = faces[fi];
+    const verts = face && Array.isArray(face.vertices) ? face.vertices : [];
+    for (const vertex of verts) {
+      const key = _edgeVKey(vertex);
+      if (seenVertices.has(key)) continue;
+      seenVertices.add(key);
+      componentVertices.push({ ...vertex });
+    }
+  }
+
   const directedEdges = [];
   const edgeCounts = new Map();
 
@@ -2497,15 +2583,43 @@ function _tracePlanarFaceGroupLoop(faces, faceIndices) {
     for (let i = 0; i < verts.length; i++) {
       const a = verts[i];
       const b = verts[(i + 1) % verts.length];
-      const key = _edgeKeyFromVerts(a, b);
-      edgeCounts.set(key, (edgeCounts.get(key) || 0) + 1);
-      directedEdges.push({
-        a: { ...a },
-        b: { ...b },
-        key,
-        startKey: _edgeVKey(a),
-        endKey: _edgeVKey(b),
+      const splitPoints = [{ ...a }, { ...b }];
+      for (const vertex of componentVertices) {
+        const key = _edgeVKey(vertex);
+        if (key === _edgeVKey(a) || key === _edgeVKey(b)) continue;
+        if (pointOnSegmentStrict(vertex, a, b)) splitPoints.push({ ...vertex });
+      }
+
+      const edgeDir = _vec3Sub(b, a);
+      const edgeLenSq = _vec3Dot(edgeDir, edgeDir);
+      if (edgeLenSq < 1e-12) continue;
+      splitPoints.sort((p0, p1) => {
+        const t0 = _vec3Dot(_vec3Sub(p0, a), edgeDir) / edgeLenSq;
+        const t1 = _vec3Dot(_vec3Sub(p1, a), edgeDir) / edgeLenSq;
+        return t0 - t1;
       });
+
+      const uniquePoints = [];
+      for (const point of splitPoints) {
+        if (uniquePoints.length === 0 || _edgeVKey(uniquePoints[uniquePoints.length - 1]) !== _edgeVKey(point)) {
+          uniquePoints.push(point);
+        }
+      }
+
+      for (let pi = 1; pi < uniquePoints.length; pi++) {
+        const start = uniquePoints[pi - 1];
+        const end = uniquePoints[pi];
+        if (_edgeVKey(start) === _edgeVKey(end)) continue;
+        const key = _edgeKeyFromVerts(start, end);
+        edgeCounts.set(key, (edgeCounts.get(key) || 0) + 1);
+        directedEdges.push({
+          a: { ...start },
+          b: { ...end },
+          key,
+          startKey: _edgeVKey(start),
+          endKey: _edgeVKey(end),
+        });
+      }
     }
   }
 
@@ -2544,6 +2658,96 @@ function _tracePlanarFaceGroupLoop(faces, faceIndices) {
 
   const mergedVerts = _deduplicatePolygon(loop);
   return mergedVerts.length >= 3 ? mergedVerts : null;
+}
+
+function _mergeCoplanarNonManifoldComponents(faces) {
+  if (!Array.isArray(faces) || faces.length === 0) return;
+
+  assignCoplanarFaceGroups(faces);
+
+  const edgeToFaces = new Map();
+  for (let fi = 0; fi < faces.length; fi++) {
+    const face = faces[fi];
+    const verts = face && Array.isArray(face.vertices) ? face.vertices : [];
+    if (verts.length < 3) continue;
+    for (let vi = 0; vi < verts.length; vi++) {
+      const key = _edgeKeyFromVerts(verts[vi], verts[(vi + 1) % verts.length]);
+      if (!edgeToFaces.has(key)) edgeToFaces.set(key, []);
+      edgeToFaces.get(key).push(fi);
+    }
+  }
+
+  const candidateGroups = new Map();
+  for (const faceIndices of edgeToFaces.values()) {
+    if (faceIndices.length <= 2) continue;
+    for (const fi of faceIndices) {
+      const face = faces[fi];
+      if (!face || face.isFillet || face.isCorner) continue;
+      if (face.surfaceType !== SurfaceType.PLANE) continue;
+      const groupKey = face.faceGroup != null ? face.faceGroup : fi;
+      if (!candidateGroups.has(groupKey)) candidateGroups.set(groupKey, new Set());
+      candidateGroups.get(groupKey).add(fi);
+    }
+  }
+
+  if (candidateGroups.size === 0) return;
+
+  const removeIndices = new Set();
+  const replacements = [];
+  for (const groupFaceSet of candidateGroups.values()) {
+    const faceIndices = [...groupFaceSet].sort((a, b) => a - b);
+    if (faceIndices.length < 2) continue;
+
+    const mergedVerts = _tracePlanarFaceGroupLoop(faces, faceIndices);
+    if (!mergedVerts || mergedVerts.length < 3) continue;
+
+    let mergedNormal = _computePolygonNormal(mergedVerts);
+    if (!mergedNormal) continue;
+
+    const componentFaces = faceIndices.map((fi) => faces[fi]).filter(Boolean);
+    const template = [...componentFaces].sort((a, b) => _polygonArea(b) - _polygonArea(a))[0];
+    if (!template) continue;
+
+    const templateNormal = _vec3Normalize(template.normal || { x: 0, y: 0, z: 0 });
+    if (_vec3Len(templateNormal) >= 1e-10 && _vec3Dot(mergedNormal, templateNormal) < 0) {
+      mergedVerts.reverse();
+      mergedNormal = _computePolygonNormal(mergedVerts);
+      if (!mergedNormal) continue;
+    }
+
+    const topoFaceIds = [...new Set(faceIndices.flatMap((fi) => _collectFaceTopoFaceIds(faces[fi])))];
+    const sharedSignatures = new Set(faceIndices.map((fi) => _sharedMetadataSignature(faces[fi].shared)));
+    const buildReplacement = (vertices) => {
+      const replacement = {
+        ...template,
+        vertices: vertices.map((vertex) => ({ ...vertex })),
+        normal: mergedNormal,
+        shared: sharedSignatures.size === 1 && template.shared ? { ...template.shared } : null,
+        topoFaceId: topoFaceIds.length === 1 ? topoFaceIds[0] : undefined,
+      };
+      if (topoFaceIds.length > 1) replacement.topoFaceIds = topoFaceIds;
+      else if (topoFaceIds.length === 1) replacement.topoFaceIds = [topoFaceIds[0]];
+      return replacement;
+    };
+
+    const replacementFaces = _isConvexPlanarPolygon(mergedVerts, mergedNormal)
+      ? [buildReplacement(mergedVerts)]
+      : (_triangulatePlanarPolygon(mergedVerts, mergedNormal) || []).map((tri) => buildReplacement(tri));
+    if (replacementFaces.length === 0) continue;
+
+    for (const fi of faceIndices) removeIndices.add(fi);
+    replacements.push(...replacementFaces);
+  }
+
+  if (replacements.length === 0) return;
+
+  const keptFaces = [];
+  for (let fi = 0; fi < faces.length; fi++) {
+    if (!removeIndices.has(fi)) keptFaces.push(faces[fi]);
+  }
+  keptFaces.push(...replacements);
+  faces.length = 0;
+  faces.push(...keptFaces);
 }
 
 function _sharedMetadataSignature(shared) {
@@ -3318,11 +3522,37 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8, edgeOwnerM
       _healBoundaryLoops(fallbackFaces);
       _removeDegenerateFaces(fallbackFaces);
       _recomputeFaceNormals(fallbackFaces);
-      const fallbackGeometry = { vertices: [], faces: fallbackFaces, brep, topoBody };
-      const fallbackEdgeResult = computeFeatureEdges(fallbackFaces);
-      const fallbackExactEdgeResult = _buildExactFeatureEdgesFromTopoBody(topoBody, fallbackFaces);
+      _fixWindingConsistency(fallbackFaces);
+      _fixOpposedCoplanarFacesInGroups(fallbackFaces);
+      const hybridFallbackFaces = _replaceFallbackPlanarFacesWithExactTopoFaces(fallbackFaces, topoBody);
+      _removeDegenerateFaces(hybridFallbackFaces);
+      _recomputeFaceNormals(hybridFallbackFaces);
+      _fixWindingConsistency(hybridFallbackFaces);
+      _fixOpposedCoplanarFacesInGroups(hybridFallbackFaces);
+      _mergeCoplanarNonManifoldComponents(hybridFallbackFaces);
+      _removeDegenerateFaces(hybridFallbackFaces);
+      _recomputeFaceNormals(hybridFallbackFaces);
+      _fixWindingConsistency(hybridFallbackFaces);
+      _fixOpposedCoplanarFacesInGroups(hybridFallbackFaces);
+      const hybridMeshUsage = _countMeshEdgeUsage(hybridFallbackFaces);
+      if (hybridMeshUsage.boundaryCount > 0 || hybridMeshUsage.nonManifoldCount > 0) {
+        _fixTJunctions(hybridFallbackFaces);
+        _healBoundaryLoops(hybridFallbackFaces);
+        _removeDegenerateFaces(hybridFallbackFaces);
+        _recomputeFaceNormals(hybridFallbackFaces);
+        _fixWindingConsistency(hybridFallbackFaces);
+        _fixOpposedCoplanarFacesInGroups(hybridFallbackFaces);
+        _mergeCoplanarNonManifoldComponents(hybridFallbackFaces);
+        _removeDegenerateFaces(hybridFallbackFaces);
+        _recomputeFaceNormals(hybridFallbackFaces);
+        _fixWindingConsistency(hybridFallbackFaces);
+        _fixOpposedCoplanarFacesInGroups(hybridFallbackFaces);
+      }
+      const fallbackGeometry = { vertices: [], faces: hybridFallbackFaces, brep, topoBody };
+      const fallbackEdgeResult = computeFeatureEdges(hybridFallbackFaces);
+      const fallbackExactEdgeResult = _buildExactFeatureEdgesFromTopoBody(topoBody, hybridFallbackFaces);
       const supportedExactEdgeResult = _mergeExactAndFallbackFeatureEdges(
-        fallbackFaces,
+        hybridFallbackFaces,
         fallbackExactEdgeResult,
         fallbackEdgeResult,
       );
@@ -4153,6 +4383,56 @@ function _extractFeatureFacesFromTopoBody(geometry) {
   return extracted.length > 0
     ? extracted
     : (Array.isArray(geometry.faces) ? geometry.faces : []);
+}
+
+function _cloneMeshFace(face) {
+  if (!face) return face;
+  return {
+    ...face,
+    vertices: Array.isArray(face.vertices)
+      ? face.vertices.map((vertex) => _canonicalPoint(vertex))
+      : [],
+    normal: face.normal ? _vec3Normalize(face.normal) : face.normal,
+    shared: face.shared ? { ...face.shared } : face.shared,
+    topoFaceIds: Array.isArray(face.topoFaceIds) ? [...face.topoFaceIds] : face.topoFaceIds,
+  };
+}
+
+function _replaceFallbackPlanarFacesWithExactTopoFaces(fallbackFaces, topoBody) {
+  if (!Array.isArray(fallbackFaces) || !topoBody) return fallbackFaces;
+
+  const exactFaces = _extractFeatureFacesFromTopoBody({ topoBody, faces: [] });
+  if (!Array.isArray(exactFaces) || exactFaces.length === 0) return fallbackFaces;
+
+  const exactPlanarFaces = exactFaces
+    .filter((face) =>
+      face &&
+      !face.isFillet &&
+      !face.isCorner &&
+      face.surfaceType === SurfaceType.PLANE &&
+      Array.isArray(face.vertices) &&
+      face.vertices.length >= 3 &&
+      face.topoFaceId !== undefined)
+    .map((face) => _cloneMeshFace(face));
+
+  if (exactPlanarFaces.length === 0) return fallbackFaces;
+
+  const replacedTopoFaceIds = new Set(
+    exactPlanarFaces
+      .map((face) => face.topoFaceId)
+      .filter((topoFaceId) => topoFaceId !== undefined)
+  );
+
+  const preservedFaces = [];
+  for (const face of fallbackFaces) {
+    if (!face) continue;
+    const topoFaceIds = _collectFaceTopoFaceIds(face);
+    const replacesFace = topoFaceIds.some((topoFaceId) => replacedTopoFaceIds.has(topoFaceId));
+    if (replacesFace) continue;
+    preservedFaces.push(_cloneMeshFace(face));
+  }
+
+  return [...preservedFaces, ...exactPlanarFaces];
 }
 
 function _applyTopoFaceIdsToFallbackMesh(faces, topoBody, edgeDataList = []) {

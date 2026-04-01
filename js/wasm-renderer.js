@@ -114,6 +114,69 @@ function _appendEdgePolylineVertices(out, edge) {
   }
 }
 
+function _buildFaceGroupHighlightVertices(meshTriangles, meshTriangleCount, meshFaces, triFaceMap, targetGroups) {
+  if (!meshTriangles || !meshFaces || !triFaceMap || !targetGroups || targetGroups.size === 0) return [];
+  const highlightVerts = [];
+  const triCount = meshTriangleCount / 3;
+  for (let ti = 0; ti < triCount; ti++) {
+    const faceIdx = triFaceMap[ti];
+    const faceMeta = meshFaces[faceIdx];
+    const group = faceMeta ? faceMeta.faceGroup : faceIdx;
+    if (!targetGroups.has(group)) continue;
+    const base = ti * 3 * 6;
+    for (let vi = 0; vi < 3; vi++) {
+      const vbase = base + vi * 6;
+      highlightVerts.push(
+        meshTriangles[vbase], meshTriangles[vbase + 1], meshTriangles[vbase + 2],
+        meshTriangles[vbase + 3], meshTriangles[vbase + 4], meshTriangles[vbase + 5],
+      );
+    }
+  }
+  return highlightVerts;
+}
+
+function _drawFaceHighlightOverlay(gl, exec, mvp, highlightVerts, color) {
+  if (!highlightVerts || highlightVerts.length === 0) return;
+
+  const contextAttrs = typeof gl.getContextAttributes === 'function' ? gl.getContextAttributes() : null;
+  const hasStencil = !!(contextAttrs && contextAttrs.stencil);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.depthFunc(gl.LEQUAL);
+  gl.depthMask(false);
+  gl.disable(gl.CULL_FACE);
+
+  if (hasStencil) {
+    gl.enable(gl.STENCIL_TEST);
+    gl.clearStencil(0);
+    gl.clear(gl.STENCIL_BUFFER_BIT);
+    gl.stencilMask(0xFF);
+    gl.stencilFunc(gl.EQUAL, 0, 0xFF);
+    gl.stencilOp(gl.KEEP, gl.KEEP, gl.REPLACE);
+  }
+
+  const highlightData = new Float32Array(highlightVerts);
+  gl.useProgram(exec.programs[0]);
+  gl.uniformMatrix4fv(exec.uniforms[0].uMVP, false, mvp);
+  gl.uniform4f(exec.uniforms[0].uColor, color[0], color[1], color[2], color[3]);
+
+  gl.bindVertexArray(exec.vaoSolid);
+  gl.bindBuffer(gl.ARRAY_BUFFER, exec.vbo);
+  gl.bufferData(gl.ARRAY_BUFFER, highlightData, gl.DYNAMIC_DRAW);
+  gl.drawArrays(gl.TRIANGLES, 0, highlightVerts.length / 6);
+  gl.bindVertexArray(null);
+
+  if (hasStencil) {
+    gl.disable(gl.STENCIL_TEST);
+    gl.stencilMask(0xFF);
+  }
+
+  gl.depthMask(true);
+  gl.disable(gl.BLEND);
+  gl.enable(gl.CULL_FACE);
+  gl.cullFace(gl.BACK);
+}
+
 /**
  * WasmRenderer — WASM-backed renderer for 2D and 3D views.
  *
@@ -2857,45 +2920,14 @@ export class WasmRenderer {
           const selMeta = this._meshFaces[fi];
           selGroups.add(selMeta ? selMeta.faceGroup : fi);
         }
-        // Build highlight triangles for all faces in any selected group
-        const highlightVerts = [];
-        const triCount = this._meshTriangleCount / 3;
-        for (let ti = 0; ti < triCount; ti++) {
-          const faceIdx = this._triFaceMap[ti];
-          const faceMeta = this._meshFaces[faceIdx];
-          const group = faceMeta ? faceMeta.faceGroup : faceIdx;
-          if (selGroups.has(group)) {
-            const base = ti * 3 * 6;
-            for (let vi = 0; vi < 3; vi++) {
-              const vbase = base + vi * 6;
-              highlightVerts.push(
-                this._meshTriangles[vbase], this._meshTriangles[vbase + 1], this._meshTriangles[vbase + 2],
-                this._meshTriangles[vbase + 3], this._meshTriangles[vbase + 4], this._meshTriangles[vbase + 5]
-              );
-            }
-          }
-        }
-        if (highlightVerts.length > 0) {
-          gl.enable(gl.BLEND);
-          gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-          gl.depthFunc(gl.LEQUAL);
-          gl.disable(gl.CULL_FACE);
-
-          const highlightData = new Float32Array(highlightVerts);
-          gl.useProgram(exec.programs[0]);
-          gl.uniformMatrix4fv(exec.uniforms[0].uMVP, false, mvp);
-          gl.uniform4f(exec.uniforms[0].uColor, 0.2, 0.6, 1.0, 0.35);
-
-          gl.bindVertexArray(exec.vaoSolid);
-          gl.bindBuffer(gl.ARRAY_BUFFER, exec.vbo);
-          gl.bufferData(gl.ARRAY_BUFFER, highlightData, gl.DYNAMIC_DRAW);
-          gl.drawArrays(gl.TRIANGLES, 0, highlightVerts.length / 6);
-          gl.bindVertexArray(null);
-
-          gl.disable(gl.BLEND);
-          gl.enable(gl.CULL_FACE);
-          gl.cullFace(gl.BACK);
-        }
+        const highlightVerts = _buildFaceGroupHighlightVertices(
+          this._meshTriangles,
+          this._meshTriangleCount,
+          this._meshFaces,
+          this._triFaceMap,
+          selGroups,
+        );
+        _drawFaceHighlightOverlay(gl, exec, mvp, highlightVerts, [0.2, 0.6, 1.0, 0.35]);
       }
 
       // Draw selected edge highlights (bright cyan)
@@ -2966,33 +2998,14 @@ export class WasmRenderer {
       if (this._hoveredFaceIndex >= 0 && this._meshFaces && this._triFaceMap) {
         const hovMeta = this._meshFaces[this._hoveredFaceIndex];
         const hovGroup = hovMeta ? hovMeta.faceGroup : this._hoveredFaceIndex;
-        const hovFaceVerts = [];
-        const triCnt = this._meshTriangleCount / 3;
-        for (let ti = 0; ti < triCnt; ti++) {
-          const faceIdx = this._triFaceMap[ti];
-          const faceMeta = this._meshFaces[faceIdx];
-          const group = faceMeta ? faceMeta.faceGroup : faceIdx;
-          if (group === hovGroup) {
-            const base = ti * 3 * 6;
-            for (let vi = 0; vi < 3; vi++) {
-              const vb = base + vi * 6;
-              hovFaceVerts.push(
-                this._meshTriangles[vb], this._meshTriangles[vb + 1], this._meshTriangles[vb + 2],
-                this._meshTriangles[vb + 3], this._meshTriangles[vb + 4], this._meshTriangles[vb + 5]
-              );
-            }
-          }
-        }
+        const hovFaceVerts = _buildFaceGroupHighlightVertices(
+          this._meshTriangles,
+          this._meshTriangleCount,
+          this._meshFaces,
+          this._triFaceMap,
+          new Set([hovGroup]),
+        );
         if (hovFaceVerts.length > 0) {
-          gl.enable(gl.BLEND);
-          gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-          gl.depthFunc(gl.LEQUAL);
-          gl.disable(gl.CULL_FACE);
-
-          const hovFaceData = new Float32Array(hovFaceVerts);
-          gl.useProgram(exec.programs[0]);
-          gl.uniformMatrix4fv(exec.uniforms[0].uMVP, false, mvp);
-          // Use a lighter blue when hovering over an already-selected face group, yellow otherwise
           const hovGroupSelected = (() => {
             for (const fi of this._selectedFaceIndices) {
               const selMeta = this._meshFaces[fi];
@@ -3000,21 +3013,13 @@ export class WasmRenderer {
             }
             return false;
           })();
-          if (hovGroupSelected) {
-            gl.uniform4f(exec.uniforms[0].uColor, 0.4, 0.75, 1.0, 0.45);
-          } else {
-            gl.uniform4f(exec.uniforms[0].uColor, 1.0, 0.9, 0.0, 0.2);
-          }
-
-          gl.bindVertexArray(exec.vaoSolid);
-          gl.bindBuffer(gl.ARRAY_BUFFER, exec.vbo);
-          gl.bufferData(gl.ARRAY_BUFFER, hovFaceData, gl.DYNAMIC_DRAW);
-          gl.drawArrays(gl.TRIANGLES, 0, hovFaceVerts.length / 6);
-          gl.bindVertexArray(null);
-
-          gl.disable(gl.BLEND);
-          gl.enable(gl.CULL_FACE);
-          gl.cullFace(gl.BACK);
+          _drawFaceHighlightOverlay(
+            gl,
+            exec,
+            mvp,
+            hovFaceVerts,
+            hovGroupSelected ? [0.4, 0.75, 1.0, 0.45] : [1.0, 0.9, 0.0, 0.2],
+          );
         }
       }
 

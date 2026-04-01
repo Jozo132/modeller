@@ -176,6 +176,33 @@ function countFilletBoundaryPaths(geometry) {
   return count;
 }
 
+function countOpposedCoplanarSameGroupFacePairs(geometry, normalDotTol = 0.999999, planeTol = 1e-5) {
+  const faces = geometry && geometry.faces ? geometry.faces : [];
+  let count = 0;
+  for (let i = 0; i < faces.length; i++) {
+    const faceA = faces[i];
+    const normalA = faceA && faceA.normal;
+    const verticesA = faceA && faceA.vertices;
+    if (!normalA || !Array.isArray(verticesA) || verticesA.length < 3) continue;
+    const planeA = normalA.x * verticesA[0].x + normalA.y * verticesA[0].y + normalA.z * verticesA[0].z;
+    for (let j = i + 1; j < faces.length; j++) {
+      const faceB = faces[j];
+      const normalB = faceB && faceB.normal;
+      const verticesB = faceB && faceB.vertices;
+      if (!normalB || !Array.isArray(verticesB) || verticesB.length < 3) continue;
+      if (faceA.faceGroup !== faceB.faceGroup) continue;
+
+      const dot = normalA.x * normalB.x + normalA.y * normalB.y + normalA.z * normalB.z;
+      if (dot > -normalDotTol) continue;
+
+      const planeB = normalA.x * verticesB[0].x + normalA.y * verticesB[0].y + normalA.z * verticesB[0].z;
+      if (Math.abs(planeA - planeB) > planeTol) continue;
+      count++;
+    }
+  }
+  return count;
+}
+
 // -----------------------------------------------------------------------
 // Build test geometry
 // -----------------------------------------------------------------------
@@ -714,6 +741,19 @@ console.log('--- Test 12: Filleted chamfered concave cut edge ---');
       singleFaceEdges.length,
       0,
       `Expected no displayed single-face feature edges, got ${singleFaceEdges.length}`,
+    );
+  });
+
+  test('deserialized cut+chamfer+fillet sample has no opposed coplanar faces in one face group', () => {
+    const restored = Part.deserialize(sample.part);
+    const finalGeometry = restored.getFinalGeometry();
+    assert.ok(finalGeometry && finalGeometry.geometry, 'Expected final solid geometry');
+
+    const opposedPairs = countOpposedCoplanarSameGroupFacePairs(finalGeometry.geometry);
+    assert.strictEqual(
+      opposedPairs,
+      0,
+      `Expected no opposed coplanar same-group face pairs, got ${opposedPairs}`,
     );
   });
 }
