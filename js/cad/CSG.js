@@ -1745,6 +1745,487 @@ function _splitVertexAtEndpoint(faces, fi0, fi1, oldVertex, p0, p1, face0Keys, f
 }
 
 /**
+ * Extend edge keys through existing fillet boundaries.
+ * When an edge endpoint sits on a fillet face boundary (not at a sharp corner),
+ * extend the edge along its direction to pass through the fillet surface.
+ * This enables sequential fillets to cut through existing fillet surfaces.
+ */
+function _extendEdgesThroughFilletBoundaries(faces, edgeKeys) {
+  const result = [];
+  
+  // Build a lookup of which vertices belong to fillet faces
+  const filletBoundaryVertices = new Map(); // vertex key → { filletFaceIndices, originalVertex }
+  for (let fi = 0; fi < faces.length; fi++) {
+    const face = faces[fi];
+    if (!face.isFillet) continue;
+    for (const v of face.vertices) {
+      const vk = _edgeVKey(v);
+      if (!filletBoundaryVertices.has(vk)) {
+        filletBoundaryVertices.set(vk, { filletFaceIndices: [], pos: { ...v } });
+      }
+      filletBoundaryVertices.get(vk).filletFaceIndices.push(fi);
+    }
+  }
+
+  // Build lookup of sharp edges (from non-fillet faces) that could be the
+  // "original" edge before filleting
+  const sharpEdgeLines = []; // Array of {start, end, dir}
+  for (let fi = 0; fi < faces.length; fi++) {
+    const face = faces[fi];
+    if (face.isFillet || face.isCorner) continue;
+    const verts = face.vertices;
+    for (let i = 0; i < verts.length; i++) {
+      const a = verts[i];
+      const b = verts[(i + 1) % verts.length];
+      const delta = _vec3Sub(b, a);
+      const len = _vec3Len(delta);
+      if (len < 1e-10) continue;
+      sharpEdgeLines.push({
+        start: { ...a },
+        end: { ...b },
+        dir: _vec3Normalize(delta),
+        len,
+      });
+    }
+  }
+
+  for (const ek of edgeKeys) {
+    const sep = ek.indexOf('|');
+    if (sep < 0) {
+      result.push(ek);
+      continue;
+    }
+    
+    const parseV = (s) => {
+      const c = s.split(',').map(Number);
+      return { x: c[0], y: c[1], z: c[2] };
+    };
+    
+    let ptA = parseV(ek.slice(0, sep));
+    let ptB = parseV(ek.slice(sep + 1));
+    const edgeDir = _vec3Normalize(_vec3Sub(ptB, ptA));
+    const edgeLen = _vec3Len(_vec3Sub(ptB, ptA));
+    
+    // Check if endpoint A is on a fillet boundary
+    const vkA = _edgeVKey(ptA);
+    const filletInfoA = filletBoundaryVertices.get(vkA);
+    if (filletInfoA) {
+      // Endpoint A is on a fillet boundary - extend backward along edge direction
+      // Look for sharp edges that are collinear and could be the original untrimmed edge
+      for (const line of sharpEdgeLines) {
+        // Check if this edge line is collinear with our edge direction
+        const dotDir = Math.abs(_vec3Dot(line.dir, edgeDir));
+        if (dotDir < 0.99) continue;
+        
+        // Check if extending our edge backward would reach this line
+        // Project ptA onto the line
+        const toLineStart = _vec3Sub(ptA, line.start);
+        const projOnLine = _vec3Dot(toLineStart, line.dir);
+        const closestOnLine = _vec3Add(line.start, _vec3Scale(line.dir, projOnLine));
+        const lateralDist = _vec3Len(_vec3Sub(ptA, closestOnLine));
+        
+        // If ptA is close to this line, find the extension point
+        if (lateralDist < edgeLen * 0.15 + 0.1) {
+          // Compute intersection of our edge ray with the line's plane perpendicular to edge direction
+          // The extension point is where backtracking along edgeDir reaches the line's endpoint
+          const toStart = _vec3Sub(line.start, ptA);
+          const toEnd = _vec3Sub(line.end, ptA);
+          const projStart = _vec3Dot(toStart, edgeDir);
+          const projEnd = _vec3Dot(toEnd, edgeDir);
+          
+          // Find the point that's in the backward direction
+          if (projStart < -1e-6 && projStart < projEnd) {
+            ptA = { ...line.start };
+            break;
+          } else if (projEnd < -1e-6) {
+            ptA = { ...line.end };
+            break;
+          }
+        }
+      }
+    }
+    
+    // Check if endpoint B is on a fillet boundary  
+    const vkB = _edgeVKey(ptB);
+    const filletInfoB = filletBoundaryVertices.get(vkB);
+    if (filletInfoB) {
+      // Endpoint B is on a fillet boundary - extend forward along edge direction
+      for (const line of sharpEdgeLines) {
+        const dotDir = Math.abs(_vec3Dot(line.dir, edgeDir));
+        if (dotDir < 0.99) continue;
+        
+        const toLineStart = _vec3Sub(ptB, line.start);
+        const projOnLine = _vec3Dot(toLineStart, line.dir);
+        const closestOnLine = _vec3Add(line.start, _vec3Scale(line.dir, projOnLine));
+        const lateralDist = _vec3Len(_vec3Sub(ptB, closestOnLine));
+        
+        if (lateralDist < edgeLen * 0.15 + 0.1) {
+          const toStart = _vec3Sub(line.start, ptB);
+          const toEnd = _vec3Sub(line.end, ptB);
+          const projStart = _vec3Dot(toStart, edgeDir);
+          const projEnd = _vec3Dot(toEnd, edgeDir);
+          
+          if (projStart > 1e-6 && projStart > projEnd) {
+            ptB = { ...line.start };
+            break;
+          } else if (projEnd > 1e-6) {
+            ptB = { ...line.end };
+            break;
+          }
+        }
+      }
+    }
+    
+    // Rebuild the edge key with potentially extended endpoints
+    const fmt = (n) => n.toFixed(5);
+    const newKey = `${fmt(ptA.x)},${fmt(ptA.y)},${fmt(ptA.z)}|${fmt(ptB.x)},${fmt(ptB.y)},${fmt(ptB.z)}`;
+    result.push(newKey);
+  }
+  
+  return result;
+}
+
+/**
+ * Compute intersection trim curves between new fillet cylinders and existing fillet cylinders.
+ * When a new fillet edge passes through an existing fillet surface, compute the intersection
+ * curve between the two rolling-ball cylinders. This curve becomes the shared trim boundary.
+ */
+function _computeFilletFilletIntersections(faces, edgeDataList, radius, segments) {
+  // Find existing fillet faces with their cylinder geometry
+  const existingFilletCylinders = [];
+  let filletFaceCount = 0;
+  for (let fi = 0; fi < faces.length; fi++) {
+    const face = faces[fi];
+    if (!face.isFillet) continue;
+    filletFaceCount++;
+    // Extract cylinder axis and radius from fillet face metadata if available
+    if (face._exactAxisStart && face._exactAxisEnd && face._exactRadius) {
+      existingFilletCylinders.push({
+        fi,
+        axisStart: face._exactAxisStart,
+        axisEnd: face._exactAxisEnd,
+        radius: face._exactRadius,
+      });
+    }
+  }
+  
+  if (existingFilletCylinders.length === 0) return;
+  
+  // For each new fillet edge, check if it intersects any existing fillet cylinder
+  for (const data of edgeDataList) {
+    if (!data) continue;
+    
+    // The new fillet cylinder axis needs to be computed from the edge and adjacent face normals
+    // First, get the adjacent faces to compute the bisector direction
+    const face0 = faces[data.fi0];
+    const face1 = faces[data.fi1];
+    
+    // Compute offset directions from edge toward each adjacent face's interior
+    const { offsDir0, offsDir1 } = _computeOffsetDirs(face0, face1, data.edgeA, data.edgeB);
+    
+    // Bisector and centerDist computation
+    const bisector = _vec3Normalize(_vec3Add(offsDir0, offsDir1));
+    const alpha = Math.acos(Math.max(-1, Math.min(1, _vec3Dot(offsDir0, offsDir1))));
+    const centerDist = alpha > 1e-6 ? radius / Math.sin(alpha / 2) : radius;
+    
+    // The new fillet cylinder axis runs parallel to the edge, offset by centerDist along bisector
+    const newAxisStart = _vec3Add(data.edgeA, _vec3Scale(bisector, centerDist));
+    const newAxisEnd = _vec3Add(data.edgeB, _vec3Scale(bisector, centerDist));
+    const newAxisDir = _vec3Normalize(_vec3Sub(newAxisEnd, newAxisStart));
+    
+
+    
+    for (const oldCyl of existingFilletCylinders) {
+      // Check if the new fillet edge passes near the old cylinder
+      const oldAxisDir = _vec3Normalize(_vec3Sub(oldCyl.axisEnd, oldCyl.axisStart));
+      
+      // Skip if axes are nearly parallel (no intersection)
+      const axisDot = Math.abs(_vec3Dot(newAxisDir, oldAxisDir));
+
+      if (axisDot > 0.99) continue;
+      
+      // Compute closest approach between the two axis lines
+      const d = _vec3Sub(data.edgeA, oldCyl.axisStart);
+      const n = _vec3Cross(newAxisDir, oldAxisDir);
+      const nLen = _vec3Len(n);
+      if (nLen < 1e-10) continue;
+      
+      const dist = Math.abs(_vec3Dot(d, n)) / nLen;
+      const sumRadii = radius + oldCyl.radius;
+      
+
+      
+      // If axes are close enough, the cylinders might intersect
+      if (dist < sumRadii * 1.5) {
+
+        // Mark this edge data as having a fillet-fillet intersection
+        data._intersectsOldFillet = true;
+        data._oldFilletCylinder = oldCyl;
+        
+        // Check which edge endpoint (A or B) is near the old fillet cylinder axis
+        // by testing distance from the edge endpoint to the old cylinder's axis line
+        const distEdgeAToOldAxis = _distancePointToLineSegment(data.edgeA, oldCyl.axisStart, oldCyl.axisEnd);
+        const distEdgeBToOldAxis = _distancePointToLineSegment(data.edgeB, oldCyl.axisStart, oldCyl.axisEnd);
+        
+
+        
+        // If an edge endpoint is within the interaction zone of the old fillet, compute the trim curve
+        // The trim curve is the 3D cylinder-cylinder intersection: each arc point is translated
+        // along the edge direction until it lies on the old cylinder surface.
+        const edgeDir = _vec3Normalize(_vec3Sub(data.edgeB, data.edgeA));
+        if (distEdgeAToOldAxis < sumRadii && distEdgeAToOldAxis < distEdgeBToOldAxis) {
+          // Compute intersection of arcA with old cylinder
+          const intersectionCurve = _computeArcCylinderIntersection(
+            data.arcA, edgeDir, oldCyl.axisStart, oldCyl.axisEnd, oldCyl.radius
+          );
+          if (intersectionCurve && intersectionCurve.length > 0) {
+            data.sharedTrimA = intersectionCurve;
+            // Don't set plane origin/normal — the intersection is a 3D space curve, not planar
+            data._sharedTrimPlaneAOrigin = null;
+            data._sharedTrimPlaneANormal = null;
+            data._filletJunctionSideA = true;
+          }
+        } else if (distEdgeBToOldAxis < sumRadii) {
+          // Compute intersection of arcB with old cylinder
+          const negEdgeDir = _vec3Scale(edgeDir, -1);
+          const intersectionCurve = _computeArcCylinderIntersection(
+            data.arcB, negEdgeDir, oldCyl.axisStart, oldCyl.axisEnd, oldCyl.radius
+          );
+          if (intersectionCurve && intersectionCurve.length > 0) {
+            data.sharedTrimB = intersectionCurve;
+            data._sharedTrimPlaneBOrigin = null;
+            data._sharedTrimPlaneBNormal = null;
+            data._filletJunctionSideB = true;
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Compute distance from a point to a line segment.
+ */
+function _distancePointToLineSegment(p, a, b) {
+  const ab = _vec3Sub(b, a);
+  const ap = _vec3Sub(p, a);
+  const abLen = _vec3Len(ab);
+  if (abLen < 1e-10) return _vec3Len(ap);
+  
+  const t = Math.max(0, Math.min(1, _vec3Dot(ap, ab) / (abLen * abLen)));
+  const closest = _vec3Add(a, _vec3Scale(ab, t));
+  return _vec3Len(_vec3Sub(p, closest));
+}
+
+/**
+ * Compute the 3D intersection curve between a new fillet arc and an old fillet cylinder.
+ * For each arc point P, translates it along edgeDir by t so the point lies on the old
+ * cylinder surface.  Solves:  |P + t·edgeDir − oldAxis|_perp = oldRadius  (quadratic in t).
+ * Returns the intersection curve as an array of 3D points, or null.
+ */
+function _computeArcCylinderIntersection(arc, edgeDir, oldCylAxisStart, oldCylAxisEnd, oldCylRadius) {
+  if (!arc || arc.length < 2) return null;
+
+  const D_old = _vec3Normalize(_vec3Sub(oldCylAxisEnd, oldCylAxisStart));
+  // B = edgeDir × D_old  (shared across all points)
+  const B = _vec3Cross(edgeDir, D_old);
+  const a_coeff = _vec3Dot(B, B);          // |edgeDir × D_old|²
+  if (a_coeff < 1e-12) return null;        // edge ∥ old axis → no intersection
+
+  const result = [];
+  for (const p of arc) {
+    const Q0 = _vec3Sub(p, oldCylAxisStart);
+    const A  = _vec3Cross(Q0, D_old);       // Q0 × D_old
+
+    const b_half = _vec3Dot(A, B);          // (Q0×D_old)·(edgeDir×D_old)
+    const c_coeff = _vec3Dot(A, A) - oldCylRadius * oldCylRadius;
+
+    const disc = b_half * b_half - a_coeff * c_coeff;
+    if (disc < 0) {
+      // Arc point can't reach old cylinder – keep original position
+      result.push({ ...p });
+      continue;
+    }
+
+    const sqrtDisc = Math.sqrt(disc);
+    const t1 = (-b_half - sqrtDisc) / a_coeff;   // more-negative root
+    const t2 = (-b_half + sqrtDisc) / a_coeff;
+
+    // We want the root that moves the point toward the old fillet surface
+    // (typically backward from edgeA, i.e. t ≤ 0).  Among the two roots pick
+    // the one with t ≤ 0 that is closest to 0; fall back to smaller |t|.
+    let t;
+    if (Math.abs(c_coeff) < 1e-8) {
+      // Already on the cylinder surface
+      t = 0;
+    } else if (t1 <= 0 && t2 <= 0) {
+      t = t2;                               // less negative (closer to 0)
+    } else if (t1 <= 0) {
+      t = t1;                               // only negative root
+    } else if (t2 <= 0) {
+      t = t2;                               // only negative root
+    } else {
+      t = Math.abs(t1) < Math.abs(t2) ? t1 : t2;  // both positive – pick smaller
+    }
+
+    result.push(_vec3Add(p, _vec3Scale(edgeDir, t)));
+  }
+
+  return result.length > 0 ? result : null;
+}
+
+/**
+ * Compute the intersection curve between two cylinders.
+ * Returns an array of points approximating the intersection curve.
+ */
+function _computeCylinderCylinderIntersection(
+  axis1Start, axis1End, radius1,
+  axis2Start, axis2End, radius2,
+  segments
+) {
+  const axis1Dir = _vec3Normalize(_vec3Sub(axis1End, axis1Start));
+  const axis2Dir = _vec3Normalize(_vec3Sub(axis2End, axis2Start));
+  
+  // Find the intersection plane (perpendicular to the line joining closest points)
+  const cross = _vec3Cross(axis1Dir, axis2Dir);
+  const crossLen = _vec3Len(cross);
+  if (crossLen < 1e-10) return null; // Parallel axes
+  
+  const planeNormal = _vec3Normalize(cross);
+  
+  // Find closest points on the two axis lines
+  const d = _vec3Sub(axis2Start, axis1Start);
+  const a = _vec3Dot(axis1Dir, axis1Dir);
+  const b = _vec3Dot(axis1Dir, axis2Dir);
+  const c = _vec3Dot(axis2Dir, axis2Dir);
+  const e = _vec3Dot(axis1Dir, d);
+  const f = _vec3Dot(axis2Dir, d);
+  
+  const denom = a * c - b * b;
+  if (Math.abs(denom) < 1e-10) return null;
+  
+  const t1 = (b * f - c * e) / denom;
+  const t2 = (a * f - b * e) / denom;
+  
+  const closest1 = _vec3Add(axis1Start, _vec3Scale(axis1Dir, t1));
+  const closest2 = _vec3Add(axis2Start, _vec3Scale(axis2Dir, t2));
+  
+  // The intersection curve lies on a plane through the midpoint
+  const midpoint = _vec3Lerp(closest1, closest2, 0.5);
+  
+  // Create a local coordinate system on the intersection plane
+  const localX = _vec3Normalize(_vec3Sub(closest1, midpoint));
+  const localY = _vec3Normalize(_vec3Cross(planeNormal, localX));
+  
+  // Sample points on both cylinder surfaces in this plane
+  const points = [];
+  const sumRadii = radius1 + radius2;
+  const arcRadius = Math.min(radius1, radius2);
+  
+  for (let i = 0; i <= segments; i++) {
+    const theta = (i / segments) * Math.PI;
+    const x = arcRadius * Math.cos(theta);
+    const y = arcRadius * Math.sin(theta);
+    const pt = _vec3Add(midpoint, _vec3Add(
+      _vec3Scale(localX, x),
+      _vec3Scale(localY, y)
+    ));
+    points.push(pt);
+  }
+  
+  return points;
+}
+
+/**
+ * Clip old fillet faces that overlap with new fillet regions.
+ * When a new fillet passes through an existing fillet surface, the old fillet
+ * strip quads in the overlap zone need to be removed or trimmed to avoid
+ * creating non-manifold geometry.
+ */
+function _clipOldFilletFacesInOverlapZone(faces, edgeDataList, radius) {
+  if (edgeDataList.length === 0) return;
+  
+  // Collect new fillet endpoints with tolerance-based proximity checking
+  const newFilletEndpoints = [];
+  const newFilletEdgeRays = [];
+  
+  for (const data of edgeDataList) {
+    if (!data) continue;
+    newFilletEndpoints.push({ ...data.edgeA });
+    newFilletEndpoints.push({ ...data.edgeB });
+    
+    // Store the edge ray for proximity testing
+    const dir = _vec3Normalize(_vec3Sub(data.edgeB, data.edgeA));
+    const len = _vec3Len(_vec3Sub(data.edgeB, data.edgeA));
+    newFilletEdgeRays.push({
+      start: data.edgeA,
+      end: data.edgeB,
+      dir,
+      len,
+      radius,
+    });
+  }
+  
+  const proximityTol = radius * 1.5; // Tolerance for vertex proximity
+  
+  // Helper to check if a point is near any new fillet endpoint
+  const isNearNewFilletEndpoint = (pt) => {
+    for (const ep of newFilletEndpoints) {
+      if (_vec3Len(_vec3Sub(pt, ep)) < proximityTol) return true;
+    }
+    return false;
+  };
+  
+  // For each existing fillet face, check if it overlaps with any new fillet edge's
+  // cylindrical extent. If so, mark for removal.
+  for (let fi = 0; fi < faces.length; fi++) {
+    const face = faces[fi];
+    if (!face || !face.isFillet) continue;
+    
+    // Check if any vertex of this face is near a new fillet endpoint
+    let hasVertexNearEndpoint = false;
+    for (const v of face.vertices) {
+      if (isNearNewFilletEndpoint(v)) {
+        hasVertexNearEndpoint = true;
+        break;
+      }
+    }
+    
+    if (!hasVertexNearEndpoint) continue;
+    
+    // This face has a vertex near a new fillet endpoint
+    // Check if the face's centroid is within the new fillet's cylindrical extent
+    const centroid = _faceCentroid(face);
+    
+    for (const ray of newFilletEdgeRays) {
+      // Project centroid onto the new fillet edge line
+      const toCenter = _vec3Sub(centroid, ray.start);
+      const projDist = _vec3Dot(toCenter, ray.dir);
+      
+      // Clamp to edge bounds
+      const clampedProj = Math.max(0, Math.min(ray.len, projDist));
+      
+      // Compute lateral distance from the edge line
+      const projPoint = _vec3Add(ray.start, _vec3Scale(ray.dir, clampedProj));
+      const lateral = _vec3Len(_vec3Sub(centroid, projPoint));
+      
+      // If within the new fillet's cylindrical extent, mark for removal
+      if (lateral < ray.radius * 3) {
+        face._markedForRemoval = true;
+        break;
+      }
+    }
+  }
+  
+  // Remove marked faces
+  for (let fi = faces.length - 1; fi >= 0; fi--) {
+    if (faces[fi] && faces[fi]._markedForRemoval) {
+      faces.splice(fi, 1);
+    }
+  }
+}
+
+/**
  * Compute offset directions perpendicular to edge, lying on each face plane,
  * pointing into the face interior.
  */
@@ -3174,6 +3655,10 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8, edgeOwnerM
     isCorner: f.isCorner || false,
     faceGroup: f.faceGroup,
     topoFaceId: f.topoFaceId,
+    // Preserve cylinder metadata for fillet-fillet intersection detection
+    _exactAxisStart: f._exactAxisStart ? { ...f._exactAxisStart } : null,
+    _exactAxisEnd: f._exactAxisEnd ? { ...f._exactAxisEnd } : null,
+    _exactRadius: f._exactRadius || null,
   }));
 
   // Save original face vertices for corner-face generation
@@ -3182,8 +3667,14 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8, edgeOwnerM
     normal: { ...f.normal },
   }));
 
+  // --- Phase 0: Extend edge keys through fillet boundaries ---
+  // When an edge endpoint sits on an existing fillet boundary (not a sharp corner),
+  // extend the edge along its direction to pass through the fillet surface.
+  // This enables fillet-through-fillet operations where the new fillet cuts through old fillets.
+  const extendedEdgeKeys = _extendEdgesThroughFilletBoundaries(faces, edgeKeys);
+
   // --- Phase 1: Pre-compute all edge data on the ORIGINAL geometry ---
-  const uniqueKeys = [...new Set(edgeKeys)];
+  const uniqueKeys = [...new Set(extendedEdgeKeys)];
   const edgeDataList = [];
   for (const ek of uniqueKeys) {
     const data = _precomputeFilletEdge(faces, ek, radius, segments, exactAdjacencyByKey);
@@ -3196,6 +3687,16 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8, edgeOwnerM
   }
 
   if (edgeDataList.length === 0) return geometry;
+
+  // --- Phase 1b: Compute fillet-fillet intersection trims ---
+  // For edges that pass through existing fillet surfaces, compute the intersection
+  // curve between the new fillet cylinder and the old fillet cylinder.
+  _computeFilletFilletIntersections(faces, edgeDataList, radius, segments);
+
+  // --- Phase 1c: Clip old fillet faces in the overlap zone ---
+  // When a new fillet passes through an existing fillet surface, remove or trim
+  // the old fillet strip quads that would overlap with the new fillet.
+  _clipOldFilletFacesInOverlapZone(faces, edgeDataList, radius);
 
   // --- Phase 2: Build vertex-sharing map ---
   const vertexEdgeMap = _buildVertexEdgeMap(edgeDataList);
@@ -3226,6 +3727,30 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8, edgeOwnerM
 
   function trySpliceEndpointArcIntoFace(arc, desiredNormal) {
     if (!desiredNormal || _vec3Len(desiredNormal) < 1e-10 || arc.length < 3) return false;
+
+    // Check if arc is actually curved or nearly collinear.
+    // If the arc points deviate from the straight line between endpoints,
+    // we should NOT splice them into a planar face - use fan triangles instead.
+    const startPt = arc[0];
+    const endPt = arc[arc.length - 1];
+    const chordDir = _vec3Sub(endPt, startPt);
+    const chordLen = _vec3Len(chordDir);
+    if (chordLen > 1e-10) {
+      const chordNorm = _vec3Normalize(chordDir);
+      // Check deviation of interior points from the chord line
+      for (let i = 1; i < arc.length - 1; i++) {
+        const pt = arc[i];
+        const toPoint = _vec3Sub(pt, startPt);
+        const projLen = _vec3Dot(toPoint, chordNorm);
+        const projected = _vec3Add(startPt, _vec3Scale(chordNorm, projLen));
+        const deviation = _vec3Len(_vec3Sub(pt, projected));
+        // If any interior point deviates from the chord line by more than 1% of chord length,
+        // this is a curved arc - don't splice it into planar faces
+        if (deviation > chordLen * 0.01) {
+          return false;
+        }
+      }
+    }
 
     const startKey = _edgeVKey(arc[0]);
     const endKey = _edgeVKey(arc[arc.length - 1]);
@@ -3406,13 +3931,18 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8, edgeOwnerM
         shared,
         isFillet: true,
         _exactFilletFaceOrdinal: dataIndex,
+        // Store cylinder metadata for fillet-fillet intersection detection in sequential operations
+        _exactAxisStart: data._exactAxisStart ? { ...data._exactAxisStart } : null,
+        _exactAxisEnd: data._exactAxisEnd ? { ...data._exactAxisEnd } : null,
+        _exactRadius: data._exactRadius || null,
       });
     }
 
     // Fan triangles at endpoint A — only if NOT a shared internal vertex
+    // and NOT a fillet-fillet junction (where the strip extends to the old cylinder surface)
     // For concave edges, skip splice (arc bows inward, would create ear) and use fan
     const vkA = _edgeVKey(data.edgeA);
-    if (!sharedEndpoints.has(vkA)) {
+    if (!sharedEndpoints.has(vkA) && !data._filletJunctionSideA) {
       let merged = false;
       if (!data.isConcave) {
         merged = trySpliceEndpointArcIntoFace(arcA, _vec3Scale(edgeDir, -1));
@@ -3421,8 +3951,9 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8, edgeOwnerM
     }
 
     // Fan triangles at endpoint B — only if NOT a shared internal vertex
+    // and NOT a fillet-fillet junction
     const vkB = _edgeVKey(data.edgeB);
-    if (!sharedEndpoints.has(vkB)) {
+    if (!sharedEndpoints.has(vkB) && !data._filletJunctionSideB) {
       let merged = false;
       if (!data.isConcave) {
         merged = trySpliceEndpointArcIntoFace(arcB, edgeDir);
@@ -3600,6 +4131,7 @@ function _precomputeFilletEdge(faces, edgeKey, radius, segments, exactAdjacencyB
   const centerDist = radius / Math.sin(alpha / 2);
   const sweep = Math.PI - alpha;
   const bisector = _vec3Normalize(_vec3Add(offsDir0, offsDir1));
+  const edgeDir = _vec3Normalize(_vec3Sub(edgeB, edgeA));
 
   const t0a = _vec3Add(edgeA, _vec3Scale(offsDir0, tangentDist));
   const t0b = _vec3Add(edgeB, _vec3Scale(offsDir0, tangentDist));
@@ -3611,21 +4143,30 @@ function _precomputeFilletEdge(faces, edgeKey, radius, segments, exactAdjacencyB
     const t0 = _vec3Add(vertex, _vec3Scale(offsDir0, tangentDist));
     const e0 = _vec3Normalize(_vec3Sub(t0, center));
     const t1 = _vec3Add(vertex, _vec3Scale(offsDir1, tangentDist));
-    const e1 = _vec3Normalize(_vec3Sub(t1, center));
-    const cosSweep = Math.cos(sweep);
-    const sinSweep = Math.sin(sweep);
-    const perp = sinSweep > 1e-10
-      ? _vec3Scale(_vec3Sub(e1, _vec3Scale(e0, cosSweep)), 1 / sinSweep)
-      : e1;
-    const points = [];
-    for (let s = 0; s <= segments; s++) {
-      const theta = (s / segments) * sweep;
-      points.push(_vec3Add(center, _vec3Add(
-        _vec3Scale(e0, radius * Math.cos(theta)),
-        _vec3Scale(perp, radius * Math.sin(theta))
-      )));
+    // Use NURBS arc tessellation to match EdgeSampler's parameterization.
+    // This ensures polygon arc boundaries align exactly with NURBS edge samples.
+    try {
+      const nurbsArc = NurbsCurve.createArc(center, radius, e0, _vec3Cross(edgeDir, e0), 0, sweep);
+      const tessPoints = nurbsArc.tessellate(segments);
+      return tessPoints.map(p => ({ x: p.x, y: p.y, z: p.z }));
+    } catch (e) {
+      // Fallback to simple theta-based sampling if NURBS fails
+      const e1 = _vec3Normalize(_vec3Sub(t1, center));
+      const cosSweep = Math.cos(sweep);
+      const sinSweep = Math.sin(sweep);
+      const perp = sinSweep > 1e-10
+        ? _vec3Scale(_vec3Sub(e1, _vec3Scale(e0, cosSweep)), 1 / sinSweep)
+        : e1;
+      const points = [];
+      for (let s = 0; s <= segments; s++) {
+        const theta = (s / segments) * sweep;
+        points.push(_vec3Add(center, _vec3Add(
+          _vec3Scale(e0, radius * Math.cos(theta)),
+          _vec3Scale(perp, radius * Math.sin(theta))
+        )));
+      }
+      return points;
     }
-    return points;
   }
 
   const arcA = computeArc(edgeA);
@@ -4367,7 +4908,7 @@ function _extractFeatureFacesFromTopoBody(geometry) {
           normal = null;
         }
       }
-      extracted.push({
+      const faceData = {
         vertices: vertices.map((vertex) => ({ x: vertex.x, y: vertex.y, z: vertex.z })),
         normal: normal && _vec3Len(normal) > 1e-10 ? _vec3Normalize(normal) : { x: 0, y: 0, z: 1 },
         shared: topoFace.shared ? { ...topoFace.shared } : null,
@@ -4376,7 +4917,19 @@ function _extractFeatureFacesFromTopoBody(geometry) {
         surfaceType: topoFace.surfaceType,
         faceGroup: topoFace.id,
         topoFaceId: topoFace.id,
-      });
+      };
+      // Extract cylinder metadata from shared for fillet-fillet intersection detection
+      if (topoFace.shared && topoFace.shared._exactAxisStart) {
+        faceData._exactAxisStart = { ...topoFace.shared._exactAxisStart };
+
+      }
+      if (topoFace.shared && topoFace.shared._exactAxisEnd) {
+        faceData._exactAxisEnd = { ...topoFace.shared._exactAxisEnd };
+      }
+      if (topoFace.shared && topoFace.shared._exactRadius) {
+        faceData._exactRadius = topoFace.shared._exactRadius;
+      }
+      extracted.push(faceData);
     }
   }
 
@@ -4630,16 +5183,23 @@ function _buildExactFilletFaceDesc(data) {
     ? true
     : _vec3Dot(outwardNormal, surfaceNormal) >= 0;
 
+  // Build shared metadata including cylinder axis/radius for fillet-fillet intersection detection
+  const sharedData = {
+    ...(data.shared || {}),
+    isFillet: true,
+  };
+  // Preserve cylinder metadata for sequential fillet operations
+  if (data._exactAxisStart) sharedData._exactAxisStart = { ...data._exactAxisStart };
+  if (data._exactAxisEnd) sharedData._exactAxisEnd = { ...data._exactAxisEnd };
+  if (data._exactRadius) sharedData._exactRadius = data._exactRadius;
+
   return {
     surface,
     surfaceType: SurfaceType.BSPLINE,
     vertices,
     edgeCurves,
     sameSense,
-    shared: {
-      ...(data.shared || {}),
-      isFillet: true,
-    },
+    shared: sharedData,
   };
 }
 
@@ -4819,6 +5379,8 @@ function _batchSplitVertices(faces, edgeDataList, vertexEdgeMap) {
     for (let fi = 0; fi < faces.length; fi++) {
       if (entry.fi0Set.has(fi) || entry.fi1Set.has(fi)) continue;
       const face = faces[fi];
+      // Skip existing fillet/corner faces from prior features - we'll clip them separately
+      // in the fillet-fillet intersection handling instead of trying to split their vertices
       if (face.isFillet || face.isCorner) continue;
       const verts = face.vertices;
 
