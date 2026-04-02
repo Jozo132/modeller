@@ -6,6 +6,7 @@
 
 import { Feature } from './Feature.js';
 import { booleanOp, calculateMeshVolume, calculateBoundingBox, computeFeatureEdges } from './CSG.js';
+import { constrainedTriangulate } from './Tessellator2/CDT.js';
 import { NurbsCurve } from './NurbsCurve.js';
 import { NurbsSurface } from './NurbsSurface.js';
 import {
@@ -65,7 +66,22 @@ export class ExtrudeFeature extends Feature {
     // Get the current solid (if any)
     let solid = this.getPreviousSolid(context);
 
-    const profileGeometries = profiles.map((profile) => this.generateGeometry([profile], plane));
+    // Group profiles: outer profiles (non-holes) carry their hole children.
+    // Each group is { outer: profile, holes: [profile, ...] }.
+    const profileGroups = [];
+    for (let i = 0; i < profiles.length; i++) {
+      if (profiles[i].isHole) continue; // holes are attached to their parent
+      const group = { outer: profiles[i], holes: [] };
+      if (profiles[i].holes) {
+        for (const hi of profiles[i].holes) {
+          group.holes.push(profiles[hi]);
+        }
+      }
+      profileGroups.push(group);
+    }
+
+    const profileGeometries = profileGroups.map((group) =>
+      this.generateGeometry([group.outer], plane, group.holes));
 
     // When adding/subtracting/intersecting against an existing solid, combine
     // all bodies from this feature first and run a single boolean. Sequential
@@ -160,11 +176,12 @@ export class ExtrudeFeature extends Feature {
 
   /**
    * Generate 3D geometry from sketch profiles.
-   * @param {Array} profiles - Sketch profiles to extrude
+   * @param {Array} profiles - Sketch profiles to extrude (outer boundaries)
    * @param {Object} plane - Sketch plane definition
+   * @param {Array} [holes] - Hole profiles to subtract from the extrusion
    * @returns {Object} 3D geometry data
    */
-  generateGeometry(profiles, plane) {
+  generateGeometry(profiles, plane, holes = []) {
     const planeFrame = this.resolvePlaneFrame(plane);
     const resolvedPlane = planeFrame.plane;
     const geometry = {
@@ -263,19 +280,7 @@ export class ExtrudeFeature extends Feature {
         geometry.vertices.push(top3D);
       }
       
-      // Create bottom face (reverse winding for outward-facing normal)
-      geometry.faces.push({
-        vertices: [...bottomVertices].reverse(),
-        normal: { x: -resolvedPlane.normal.x, y: -resolvedPlane.normal.y, z: -resolvedPlane.normal.z },
-      });
-      
-      // Create top face
-      geometry.faces.push({
-        vertices: [...topVertices],
-        normal: { x: resolvedPlane.normal.x, y: resolvedPlane.normal.y, z: resolvedPlane.normal.z },
-      });
-      
-      // Create side faces
+      // Create side faces for outer boundary
       for (let i = 0; i < pts.length; i++) {
         const nextI = (i + 1) % pts.length;
         const face = {
@@ -286,9 +291,107 @@ export class ExtrudeFeature extends Feature {
             topVertices[i],
           ],
         };
-        // Calculate face normal
         face.normal = this.calculateFaceNormal(face.vertices);
         geometry.faces.push(face);
+      }
+
+      // Build cap faces — with or without holes
+      if (holes && holes.length > 0) {
+        // Generate hole vertices and side walls
+        const holeVertArrays = []; // { pts2D, bottomVerts, topVerts }
+        for (const hole of holes) {
+          let hPts = hole.points.map(p => planeFrame.toPlanePoint(p));
+          // Ensure CW winding for holes (negative signed area)
+          let hArea = 0;
+          for (let i = 0; i < hPts.length; i++) {
+            const j = (i + 1) % hPts.length;
+            hArea += hPts[i].x * hPts[j].y - hPts[j].x * hPts[i].y;
+          }
+          if (hArea > 0) hPts = [...hPts].reverse();
+
+          const hBottom = [], hTop = [];
+          for (const hp of hPts) {
+            const hb = this.sketchToWorld(hp, resolvedPlane);
+            const hb3 = {
+              x: hb.x + baseOffset.x,
+              y: hb.y + baseOffset.y,
+              z: hb.z + baseOffset.z,
+            };
+            hBottom.push(hb3);
+            geometry.vertices.push(hb3);
+
+            let htPoint = hp;
+            if (useTaper) {
+              const dx = hp.x - cx2, dy = hp.y - cy2;
+              const dist = Math.sqrt(dx * dx + dy * dy);
+              if (dist > 1e-10) {
+                const scale = taperOffset / dist;
+                htPoint = { x: hp.x + dx * scale, y: hp.y + dy * scale };
+              }
+            }
+            const ht = this.sketchToWorld(htPoint, resolvedPlane);
+            const ht3 = {
+              x: ht.x + extrusionVector.x + tipOffset.x,
+              y: ht.y + extrusionVector.y + tipOffset.y,
+              z: ht.z + extrusionVector.z + tipOffset.z,
+            };
+            hTop.push(ht3);
+            geometry.vertices.push(ht3);
+          }
+          holeVertArrays.push({ pts2D: hPts, bottomVerts: hBottom, topVerts: hTop });
+
+          // Hole side walls — CW boundary with standard quad winding gives inward normals
+          for (let i = 0; i < hBottom.length; i++) {
+            const nextI = (i + 1) % hBottom.length;
+            const hFace = {
+              vertices: [
+                hBottom[i],
+                hBottom[nextI],
+                hTop[nextI],
+                hTop[i],
+              ],
+            };
+            hFace.normal = this.calculateFaceNormal(hFace.vertices);
+            geometry.faces.push(hFace);
+          }
+        }
+
+        // CDT triangulation for caps with holes
+        const holePts2D = holeVertArrays.map(h => h.pts2D);
+        const triangles = constrainedTriangulate(pts, holePts2D);
+
+        // Build flat vertex lookup: outer vertices then hole vertices
+        const allBottom = [...bottomVertices];
+        const allTop = [...topVertices];
+        for (const h of holeVertArrays) {
+          allBottom.push(...h.bottomVerts);
+          allTop.push(...h.topVerts);
+        }
+
+        const downNormal = { x: -resolvedPlane.normal.x, y: -resolvedPlane.normal.y, z: -resolvedPlane.normal.z };
+        const upNormal = { x: resolvedPlane.normal.x, y: resolvedPlane.normal.y, z: resolvedPlane.normal.z };
+
+        for (const [a, b, c] of triangles) {
+          // Bottom cap — reversed winding
+          geometry.faces.push({ vertices: [allBottom[c], allBottom[b], allBottom[a]], normal: { ...downNormal } });
+          // Top cap
+          geometry.faces.push({ vertices: [allTop[a], allTop[b], allTop[c]], normal: { ...upNormal } });
+        }
+      } else {
+        // No holes — use CDT for concave polygons, simple face for convex
+        const downNormal = { x: -resolvedPlane.normal.x, y: -resolvedPlane.normal.y, z: -resolvedPlane.normal.z };
+        const upNormal = { x: resolvedPlane.normal.x, y: resolvedPlane.normal.y, z: resolvedPlane.normal.z };
+
+        if (pts.length > 3) {
+          const triangles = constrainedTriangulate(pts);
+          for (const [a, b, c] of triangles) {
+            geometry.faces.push({ vertices: [bottomVertices[c], bottomVertices[b], bottomVertices[a]], normal: { ...downNormal } });
+            geometry.faces.push({ vertices: [topVertices[a], topVertices[b], topVertices[c]], normal: { ...upNormal } });
+          }
+        } else {
+          geometry.faces.push({ vertices: [...bottomVertices].reverse(), normal: downNormal });
+          geometry.faces.push({ vertices: [...topVertices], normal: upNormal });
+        }
       }
     }
 

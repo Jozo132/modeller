@@ -85,6 +85,9 @@ export class SketchFeature extends Feature {
       }
     }
     
+    // Classify nesting: even nesting depth = solid outer, odd = hole
+    _classifyProfileNesting(profiles);
+
     return profiles;
   }
 
@@ -101,9 +104,9 @@ export class SketchFeature extends Feature {
     const edgeId = e => e.id || e._arcId;
     
     let current = startEdge;
-    let currentEnd = current.p2;      // PPoint: the end we're heading toward
-    let prevEnd = current.p1;         // PPoint: the end we came from
-    let startPoint = current.p1;      // PPoint: first point for closure check
+    let currentEnd = current.p2;
+    let prevEnd = current.p1;
+    let startPoint = current.p1;
     
     // Include the starting point of the profile
     points.push(startPoint);
@@ -115,7 +118,7 @@ export class SketchFeature extends Feature {
       visited.add(edgeId(current));
 
       // Determine forward direction: does prevEnd match p1?
-      const forward = (current.p1 === prevEnd);
+      const forward = _ptEq(current.p1, prevEnd);
       const edgePoints = _tessellateEdge(current, forward);
       // Skip the first point of each edge (it's already in the profile as the previous endpoint)
       for (let i = 1; i < edgePoints.length; i++) {
@@ -124,7 +127,7 @@ export class SketchFeature extends Feature {
       
       // Find next connected edge
       const connected = allEdges.find(e => 
-        !visited.has(edgeId(e)) && (e.p1 === currentEnd || e.p2 === currentEnd)
+        !visited.has(edgeId(e)) && (_ptEq(e.p1, currentEnd) || _ptEq(e.p2, currentEnd))
       );
       
       if (!connected) break;
@@ -132,12 +135,12 @@ export class SketchFeature extends Feature {
       // Update for next iteration
       prevEnd = currentEnd;
       current = connected;
-      currentEnd = (connected.p1 === prevEnd) ? connected.p2 : connected.p1;
+      currentEnd = _ptEq(connected.p1, prevEnd) ? connected.p2 : connected.p1;
       
       // Check if we closed the loop
-      if (currentEnd === startPoint) {
+      if (_ptEq(currentEnd, startPoint)) {
         visited.add(edgeId(current));
-        const closingForward = (current.p1 === prevEnd);
+        const closingForward = _ptEq(current.p1, prevEnd);
         const closingPoints = _tessellateEdge(current, closingForward);
         for (let i = 1; i < closingPoints.length; i++) {
           points.push(closingPoints[i]);
@@ -145,7 +148,7 @@ export class SketchFeature extends Feature {
         // Remove the duplicate closing point if it matches startPoint
         if (points.length > 1) {
           const last = points[points.length - 1];
-          if (Math.abs(last.x - startPoint.x) < 1e-8 && Math.abs(last.y - startPoint.y) < 1e-8) {
+          if (_ptEq(last, startPoint)) {
             points.pop();
           }
         }
@@ -213,11 +216,109 @@ export class SketchFeature extends Feature {
 // -----------------------------------------------------------------------
 
 /**
+ * Classify an array of closed profiles by nesting depth using even-odd rule.
+ * Each profile gets:
+ *   - `nestingDepth` (0 = outermost, 1 = first hole, 2 = island inside hole, etc.)
+ *   - `isHole` (true if nestingDepth is odd)
+ *   - `parentIndex` (index of the immediate parent profile, or -1)
+ *   - `holes` (array of child profile indices that are direct holes of this profile)
+ */
+function _classifyProfileNesting(profiles) {
+  if (profiles.length <= 1) {
+    for (const p of profiles) {
+      p.nestingDepth = 0;
+      p.isHole = false;
+      p.parentIndex = -1;
+      p.holes = [];
+    }
+    return;
+  }
+
+  // Compute signed area and a representative interior point for each profile
+  const meta = profiles.map((profile, idx) => {
+    const pts = profile.points;
+    let area = 0;
+    for (let i = 0; i < pts.length; i++) {
+      const j = (i + 1) % pts.length;
+      area += pts[i].x * pts[j].y - pts[j].x * pts[i].y;
+    }
+    area *= 0.5;
+    // Use the midpoint of the first edge, nudged inward via the edge normal
+    const p0 = pts[0], p1 = pts[1 % pts.length];
+    const dx = p1.x - p0.x, dy = p1.y - p0.y;
+    const len = Math.sqrt(dx * dx + dy * dy) || 1;
+    // Inward normal depends on winding; for CCW (area>0) inward is to the right
+    const sign = area >= 0 ? 1 : -1;
+    const testPt = {
+      x: (p0.x + p1.x) / 2 + sign * dy / len * 1e-6,
+      y: (p0.y + p1.y) / 2 - sign * dx / len * 1e-6,
+    };
+    return { idx, absArea: Math.abs(area), testPt };
+  });
+
+  // For each profile, count how many other profiles contain its test point
+  // and find the direct parent (smallest containing profile)
+  for (const m of meta) {
+    let depth = 0;
+    let bestParent = -1;
+    let bestParentArea = Infinity;
+    for (const other of meta) {
+      if (other.idx === m.idx) continue;
+      if (_pointInPolygon(m.testPt, profiles[other.idx].points)) {
+        depth++;
+        if (other.absArea < bestParentArea) {
+          bestParentArea = other.absArea;
+          bestParent = other.idx;
+        }
+      }
+    }
+
+    profiles[m.idx].nestingDepth = depth;
+    profiles[m.idx].isHole = (depth % 2) === 1;
+    profiles[m.idx].parentIndex = bestParent;
+    profiles[m.idx].holes = [];
+  }
+
+  // Build holes arrays: each outer profile's direct holes
+  for (let i = 0; i < profiles.length; i++) {
+    const pi = profiles[i].parentIndex;
+    if (pi >= 0 && profiles[i].isHole) {
+      profiles[pi].holes.push(i);
+    }
+  }
+}
+
+/**
+ * Point-in-polygon test using ray casting (even-odd rule).
+ */
+function _pointInPolygon(pt, polygon) {
+  let inside = false;
+  const n = polygon.length;
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const xi = polygon[i].x, yi = polygon[i].y;
+    const xj = polygon[j].x, yj = polygon[j].y;
+    if (((yi > pt.y) !== (yj > pt.y)) &&
+        (pt.x < (xj - xi) * (pt.y - yi) / (yj - yi) + xi)) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+/**
  * Wrap a PArc as a traceable edge with p1/p2 endpoints.
  * p1 = arc start, p2 = arc end. These are PPoint-like objects derived from
  * the arc's center, radius, and angles so the profile tracer can match them
  * against shared PPoint references from segments/splines.
  */
+const PT_TOL = 1e-6;
+
+function _ptEq(a, b) {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return Math.abs(a.x - b.x) < PT_TOL && Math.abs(a.y - b.y) < PT_TOL;
+}
+
 function _arcAsEdge(arc) {
   // Use the actual center PPoint to derive start/end positions.
   // For profile tracing to work, arcs need to share PPoints with other edges.
