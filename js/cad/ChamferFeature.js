@@ -6,7 +6,7 @@
 // features. Selection uses stable entity keys when present.
 
 import { Feature } from './Feature.js';
-import { applyChamfer, calculateMeshVolume, calculateBoundingBox, expandPathEdgeKeys } from './CSG.js';
+import { applyBRepChamfer, applyChamfer, calculateMeshVolume, calculateBoundingBox, expandPathEdgeKeys } from './CSG.js';
 import { isLegacyEdgeKey, legacyEdgeKeyToStable } from './history/StableEntityKey.js';
 
 export class ChamferFeature extends Feature {
@@ -34,19 +34,24 @@ export class ChamferFeature extends Feature {
 
     // Expand path-level keys to individual face-edge keys
     const resolvedKeys = expandPathEdgeKeys(solid.geometry, this.edgeKeys);
-    const geometry = applyChamfer(solid.geometry, resolvedKeys, this.distance);
+    const inputTopoBody = solid.body || (solid.geometry && solid.geometry.topoBody) || null;
+    const exactInputGeometry = inputTopoBody
+      ? { ...solid.geometry, topoBody: inputTopoBody }
+      : null;
+    const geometry = exactInputGeometry
+      ? (applyBRepChamfer(exactInputGeometry, resolvedKeys, this.distance) || applyChamfer(solid.geometry, resolvedKeys, this.distance))
+      : applyChamfer(solid.geometry, resolvedKeys, this.distance);
 
     // Tag faces with source feature
     for (const f of geometry.faces) {
       if (!f.shared) f.shared = {};
     }
 
-    // Propagate topoBody from input when available (topology chain)
-    const inputTopoBody = solid.body || (solid.geometry && solid.geometry.topoBody) || null;
     const resultTopoBody = geometry.topoBody || geometry.brep || null;
 
-    // Mark exactness based on whether input had exact topology
-    this._resultExact = !!(inputTopoBody && resultTopoBody);
+    // Mark exactness: true when result has valid TopoBody (either from
+    // exact BRep path or from successful mesh-level promotion)
+    this._resultExact = !!resultTopoBody;
 
     return {
       type: 'solid',

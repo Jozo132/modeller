@@ -1,0 +1,686 @@
+{
+  "format": "CAD Modeller Open Design",
+  "version": 2,
+  "scene": {
+    "points": [],
+    "segments": [],
+    "circles": [],
+    "arcs": [],
+    "splines": [],
+    "constraints": [],
+    "texts": [],
+    "dimensions": [],
+    "variables": {}
+  },
+  "layers": [
+    {
+      "name": "0",
+      "color": "#9CDCFE",
+      "visible": true,
+      "locked": false
+    }
+  ],
+  "activeLayer": "0",
+  "settings": {
+    "gridSize": 10,
+    "gridVisible": true,
+    "snapEnabled": true,
+    "orthoEnabled": false,
+    "autoCoincidence": true
+  },
+  "viewport": {
+    "zoom": 1,
+    "panX": 0,
+    "panY": 0
+  },
+  "part": {
+    "type": "Part",
+    "name": "Part1",
+    "description": "",
+    "created": "2026-04-02T16:41:06.029Z",
+    "modified": "2026-04-02T20:46:34.538Z",
+    "featureTree": {
+      "features": [
+        {
+          "id": "feature_23",
+          "name": "Sketch 1",
+          "type": "sketch",
+          "suppressed": false,
+          "visible": false,
+          "created": "2026-04-02T16:41:54.912Z",
+          "modified": "2026-04-02T17:20:50.232Z",
+          "dependencies": [],
+          "children": [],
+          "sketch": {
+            "name": "Sketch 1",
+            "description": "",
+            "created": "2026-04-02T17:20:47.245Z",
+            "modified": "2026-04-02T17:20:47.245Z",
+            "scene": {
+              "points": [
+                {
+                  "id": 10483,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": 0,
+                  "y": 0,
+                  "fixed": false
+                },
+                {
+                  "id": 10484,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": 20,
+                  "y": 0,
+                  "fixed": false
+                },
+                {
+                  "id": 10486,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": 10,
+                  "y": 10,
+                  "fixed": false
+                },
+                {
+                  "id": 10488,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": 40,
+                  "y": 10,
+                  "fixed": false
+                },
+                {
+                  "id": 10490,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": 30,
+                  "y": 0,
+                  "fixed": false
+                },
+                {
+                  "id": 10492,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": 50,
+                  "y": 0,
+                  "fixed": false
+                },
+                {
+                  "id": 10494,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": 50,
+                  "y": 40,
+                  "fixed": false
+                },
+                {
+                  "id": 10496,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": 30,
+                  "y": 40,
+                  "fixed": false
+                },
+                {
+                  "id": 10498,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": 40,
+                  "y": 50,
+                  "fixed": false
+                },
+                {
+                  "id": 10500,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": 10,
+                  "y": 50,
+                  "fixed": false
+                },
+                {
+                  "id": 10502,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": 20,
+                  "y": 40,
+                  "fixed": false
+                },
+                {
+                  "id": 10504,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": 0,
+                  "y": 40,
+                  "fixed": false
+                },
+                {
+                  "id": 10708,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": 50,
+                  "y": 30,
+                  "fixed": false
+                },
+                {
+                  "id": 11046,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": 50,
+                  "y": 10,
+                  "fixed": false
+                },
+                {
+                  "id": 11303,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": 0,
+                  "y": 30,
+                  "fixed": false
+                },
+                {
+                  "id": 11473,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": 0,
+                  "y": 10,
+                  "fixed": false
+                },
+                {
+                  "id": 10647,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": 50,
+                  "y": 20,
+                  "fixed": false
+                },
+                {
+                  "id": 10777,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": 0,
+                  "y": 20,
+                  "fixed": false
+                },
+                {
+                  "id": 12000,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": 10,
+                  "y": 30,
+                  "fixed": false
+                },
+                {
+                  "id": 12001,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": 20,
+                  "y": 30,
+                  "fixed": false
+                },
+                {
+                  "id": 12003,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": 20,
+                  "y": 20,
+                  "fixed": false
+                },
+                {
+                  "id": 12005,
+                  "type": "point",
+                  "layer": "0",
+                  "color": null,
+                  "x": 10,
+                  "y": 20,
+                  "fixed": false
+                }
+              ],
+              "segments": [
+                {
+                  "id": 10485,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 10483,
+                  "p2": 10484
+                },
+                {
+                  "id": 10487,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 10484,
+                  "p2": 10486
+                },
+                {
+                  "id": 10489,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 10486,
+                  "p2": 10488
+                },
+                {
+                  "id": 10491,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 10488,
+                  "p2": 10490
+                },
+                {
+                  "id": 10493,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 10490,
+                  "p2": 10492
+                },
+                {
+                  "id": 10497,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 10494,
+                  "p2": 10496
+                },
+                {
+                  "id": 10499,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 10496,
+                  "p2": 10498
+                },
+                {
+                  "id": 10501,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 10498,
+                  "p2": 10500
+                },
+                {
+                  "id": 10503,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 10500,
+                  "p2": 10502
+                },
+                {
+                  "id": 10505,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 10502,
+                  "p2": 10504
+                },
+                {
+                  "id": 10709,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 10494,
+                  "p2": 10708
+                },
+                {
+                  "id": 11047,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 10492,
+                  "p2": 11046
+                },
+                {
+                  "id": 11304,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 10504,
+                  "p2": 11303
+                },
+                {
+                  "id": 11474,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 11473,
+                  "p2": 10483
+                },
+                {
+                  "id": 12002,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 12000,
+                  "p2": 12001
+                },
+                {
+                  "id": 12004,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 12001,
+                  "p2": 12003
+                },
+                {
+                  "id": 12006,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 12003,
+                  "p2": 12005
+                },
+                {
+                  "id": 12007,
+                  "type": "segment",
+                  "layer": "0",
+                  "color": null,
+                  "p1": 12005,
+                  "p2": 12000
+                }
+              ],
+              "circles": [
+                {
+                  "id": 11543,
+                  "type": "circle",
+                  "layer": "0",
+                  "color": null,
+                  "center": 10777,
+                  "radius": 4.345138558620705
+                }
+              ],
+              "arcs": [
+                {
+                  "id": 10648,
+                  "type": "arc",
+                  "layer": "0",
+                  "color": null,
+                  "center": 10647,
+                  "radius": 10,
+                  "startAngle": 1.5707963267948966,
+                  "endAngle": -1.5707963267948966
+                },
+                {
+                  "id": 10778,
+                  "type": "arc",
+                  "layer": "0",
+                  "color": null,
+                  "center": 10777,
+                  "radius": 10,
+                  "startAngle": 1.5707963267948966,
+                  "endAngle": -1.5707963267948966
+                }
+              ],
+              "splines": [],
+              "constraints": [],
+              "texts": [],
+              "dimensions": [],
+              "variables": {}
+            }
+          },
+          "plane": {
+            "origin": {
+              "x": 0,
+              "y": 0,
+              "z": 0
+            },
+            "normal": {
+              "x": 0,
+              "y": 0,
+              "z": 1
+            },
+            "xAxis": {
+              "x": 1,
+              "y": 0,
+              "z": 0
+            },
+            "yAxis": {
+              "x": 0,
+              "y": 1,
+              "z": 0
+            }
+          }
+        },
+        {
+          "id": "feature_28",
+          "name": "Extrude 1",
+          "type": "extrude",
+          "suppressed": false,
+          "visible": true,
+          "created": "2026-04-02T17:05:36.257Z",
+          "modified": "2026-04-02T18:14:57.654Z",
+          "dependencies": [
+            "feature_23"
+          ],
+          "children": [
+            "feature_23"
+          ],
+          "sketchFeatureId": "feature_23",
+          "distance": 10,
+          "direction": 1,
+          "symmetric": false,
+          "operation": "new",
+          "extrudeType": "distance",
+          "taper": false,
+          "taperAngle": 5,
+          "taperInward": true
+        },
+        {
+          "id": "feature_30",
+          "name": "Chamfer 1",
+          "type": "chamfer",
+          "suppressed": false,
+          "visible": true,
+          "created": "2026-04-02T17:23:54.975Z",
+          "modified": "2026-04-02T18:52:05.058Z",
+          "dependencies": [],
+          "children": [],
+          "distance": 1,
+          "edgeKeys": [
+            "48.04910,29.80785,10.00000|50.00000,30.00000,10.00000",
+            "46.17317,29.23880,10.00000|48.04910,29.80785,10.00000",
+            "44.44430,28.31470,10.00000|46.17317,29.23880,10.00000",
+            "42.92893,27.07107,10.00000|44.44430,28.31470,10.00000",
+            "41.68530,25.55570,10.00000|42.92893,27.07107,10.00000",
+            "40.76120,23.82683,10.00000|41.68530,25.55570,10.00000",
+            "40.19215,21.95090,10.00000|40.76120,23.82683,10.00000",
+            "40.00000,20.00000,10.00000|40.19215,21.95090,10.00000",
+            "40.00000,20.00000,10.00000|40.19215,18.04910,10.00000",
+            "40.19215,18.04910,10.00000|40.76120,16.17317,10.00000",
+            "40.76120,16.17317,10.00000|41.68530,14.44430,10.00000",
+            "41.68530,14.44430,10.00000|42.92893,12.92893,10.00000",
+            "42.92893,12.92893,10.00000|44.44430,11.68530,10.00000",
+            "44.44430,11.68530,10.00000|46.17317,10.76120,10.00000",
+            "46.17317,10.76120,10.00000|48.04910,10.19215,10.00000",
+            "48.04910,10.19215,10.00000|50.00000,10.00000,10.00000"
+          ],
+          "stableEdgeKeys": [
+            "sek1:E:48.04910,29.80785,10.00000|50.00000,30.00000,10.00000:feature_30",
+            "sek1:E:46.17317,29.23880,10.00000|48.04910,29.80785,10.00000:feature_30",
+            "sek1:E:44.44430,28.31470,10.00000|46.17317,29.23880,10.00000:feature_30",
+            "sek1:E:42.92893,27.07107,10.00000|44.44430,28.31470,10.00000:feature_30",
+            "sek1:E:41.68530,25.55570,10.00000|42.92893,27.07107,10.00000:feature_30",
+            "sek1:E:40.76120,23.82683,10.00000|41.68530,25.55570,10.00000:feature_30",
+            "sek1:E:40.19215,21.95090,10.00000|40.76120,23.82683,10.00000:feature_30",
+            "sek1:E:40.00000,20.00000,10.00000|40.19215,21.95090,10.00000:feature_30",
+            "sek1:E:40.00000,20.00000,10.00000|40.19215,18.04910,10.00000:feature_30",
+            "sek1:E:40.19215,18.04910,10.00000|40.76120,16.17317,10.00000:feature_30",
+            "sek1:E:40.76120,16.17317,10.00000|41.68530,14.44430,10.00000:feature_30",
+            "sek1:E:41.68530,14.44430,10.00000|42.92893,12.92893,10.00000:feature_30",
+            "sek1:E:42.92893,12.92893,10.00000|44.44430,11.68530,10.00000:feature_30",
+            "sek1:E:44.44430,11.68530,10.00000|46.17317,10.76120,10.00000:feature_30",
+            "sek1:E:46.17317,10.76120,10.00000|48.04910,10.19215,10.00000:feature_30",
+            "sek1:E:48.04910,10.19215,10.00000|50.00000,10.00000,10.00000:feature_30"
+          ]
+        },
+        {
+          "id": "feature_31",
+          "name": "Chamfer 2",
+          "type": "chamfer",
+          "suppressed": false,
+          "visible": true,
+          "created": "2026-04-02T20:45:12.495Z",
+          "modified": "2026-04-02T20:46:33.795Z",
+          "dependencies": [],
+          "children": [],
+          "distance": 1,
+          "edgeKeys": [
+            "30.00000,0.00000,10.00000|50.00000,0.00000,10.00000"
+          ],
+          "stableEdgeKeys": [
+            "sek1:E:30.00000,0.00000,10.00000|50.00000,0.00000,10.00000:feature_31"
+          ]
+        }
+      ]
+    },
+    "originPlanes": {
+      "XY": {
+        "visible": false,
+        "size": 5
+      },
+      "XZ": {
+        "visible": false,
+        "size": 5
+      },
+      "YZ": {
+        "visible": false,
+        "size": 5
+      }
+    },
+    "originPlanesAutoHidden": true,
+    "material": null,
+    "mass": 0,
+    "volume": 10194.308415717438,
+    "centerOfMass": {
+      "x": 0,
+      "y": 0,
+      "z": 0
+    },
+    "tessellationConfig": {
+      "curveSegments": 16,
+      "surfaceSegments": 8,
+      "edgeSegments": 16,
+      "adaptiveSubdivision": true,
+      "tessellator": "legacy"
+    }
+  },
+  "orbit": {
+    "theta": -2.0746018366025494,
+    "phi": 0.8071975511965976,
+    "radius": 44.48265199575753,
+    "target": {
+      "x": 45.444651402899524,
+      "y": 13.270517521118899,
+      "z": -0.3487603645856535
+    },
+    "fovDegrees": 56,
+    "ortho3D": false
+  },
+  "workspaceMode": "part",
+  "sessionState": {
+    "sketchingOnPlane": false,
+    "activeSketchPlane": null,
+    "editingSketchFeatureId": null,
+    "lastSketchFeatureId": null,
+    "savedOrbitState": null,
+    "expandedFolders": [
+      "folder-feature_25",
+      "folder-feature_28"
+    ],
+    "rollbackIndex": -1
+  },
+  "scenes": [
+    {
+      "name": "top",
+      "orbit": {
+        "theta": -1.5707963267948966,
+        "phi": 0.001,
+        "radius": 75.06284999661547,
+        "target": {
+          "x": 24.59103074867996,
+          "y": 21.820144427944086,
+          "z": 9.999999999999986
+        },
+        "fovDegrees": 0,
+        "ortho3D": false
+      }
+    },
+    {
+      "name": "bird",
+      "orbit": {
+        "theta": -0.7853981633974483,
+        "phi": 0.9553166181245093,
+        "radius": 75.06284999661547,
+        "target": {
+          "x": 19.761140740534987,
+          "y": 11.045264063237203,
+          "z": 4.055009643438038
+        },
+        "fovDegrees": 0,
+        "ortho3D": false
+      }
+    }
+  ],
+  "metadata": {
+    "createdWith": "CAD Modeller Open Design",
+    "exportedAt": "2026-04-02T20:52:33.134Z",
+    "featureCount": 4,
+    "featureTypes": [
+      "sketch",
+      "extrude",
+      "chamfer",
+      "chamfer"
+    ],
+    "faceCount": 1472,
+    "volume": 10194.308416,
+    "surfaceArea": 7795.580478,
+    "boundingBox": {
+      "min": {
+        "x": -10.000000000000002,
+        "y": 0,
+        "z": 0
+      },
+      "max": {
+        "x": 60.00000000000001,
+        "y": 50,
+        "z": 10
+      }
+    },
+    "width": 70,
+    "height": 50,
+    "depth": 10,
+    "edgeCount": 51,
+    "pathCount": 51,
+    "bodyCount": 1,
+    "bodySizes": [
+      1472
+    ],
+    "minWallThickness": 0.072614,
+    "maxWallThickness": 50,
+    "invertedFaceCount": 0
+  }
+}

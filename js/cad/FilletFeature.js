@@ -51,8 +51,9 @@ export class FilletFeature extends Feature {
     const inputTopoBody = solid.body || (solid.geometry && solid.geometry.topoBody) || null;
     const resultTopoBody = geometry.topoBody || geometry.brep || null;
 
-    // Mark exactness based on whether input had exact topology
-    this._resultExact = !!(inputTopoBody && resultTopoBody);
+    // Mark exactness: true when result has valid TopoBody (either from
+    // exact input chain or from successful mesh-level promotion)
+    this._resultExact = !!resultTopoBody;
 
     return {
       type: 'solid',

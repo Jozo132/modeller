@@ -17,6 +17,7 @@ import { NurbsCurve } from './NurbsCurve.js';
 import { exactBooleanOp, hasExactTopology } from './BooleanKernel.js';
 import { buildTopoBody, SurfaceType } from './BRepTopology.js';
 import { tessellateBody } from './Tessellation.js';
+import { constrainedTriangulate } from './Tessellator2/CDT.js';
 
 const EPSILON = 1e-5;
 
@@ -1644,10 +1645,31 @@ function _findEdgeNormals(faces, edgeKey) {
 // -----------------------------------------------------------------------
 
 function _faceCentroid(face) {
-  let cx = 0, cy = 0, cz = 0;
-  for (const v of face.vertices) { cx += v.x; cy += v.y; cz += v.z; }
-  const n = face.vertices.length;
-  return { x: cx / n, y: cy / n, z: cz / n };
+  if (Array.isArray(face?.vertices) && face.vertices.length > 0) {
+    let cx = 0, cy = 0, cz = 0;
+    for (const v of face.vertices) {
+      cx += v.x;
+      cy += v.y;
+      cz += v.z;
+    }
+    const n = face.vertices.length;
+    return { x: cx / n, y: cy / n, z: cz / n };
+  }
+
+  const coedges = face?.outerLoop?.coedges;
+  if (Array.isArray(coedges) && coedges.length > 0) {
+    let sx = 0, sy = 0, sz = 0;
+    for (const ce of coedges) {
+      const p = ce.edge.startVertex.point;
+      sx += p.x;
+      sy += p.y;
+      sz += p.z;
+    }
+    const count = coedges.length;
+    return { x: sx / count, y: sy / count, z: sz / count };
+  }
+
+  return { x: 0, y: 0, z: 0 };
 }
 
 function _trimFaceEdge(face, edgeA, edgeB, newA, newB) {
@@ -3384,6 +3406,54 @@ function _recomputeFaceNormals(faces) {
 }
 
 /**
+ * Triangulate concave polygon faces (>4 vertices) using CDT so that
+ * renderers don't produce self-intersecting fan triangulations.
+ * Operates in-place on the faces array by splicing N-gons into triangles.
+ */
+function _triangulateConcaveFaces(faces) {
+  for (let fi = faces.length - 1; fi >= 0; fi--) {
+    const face = faces[fi];
+    if (face.vertices.length <= 4) continue;
+    const norm = face.normal;
+    if (!norm || _vec3Len(norm) < 1e-10) continue;
+    // Build 2D projection frame
+    let ax;
+    if (Math.abs(norm.x) < 0.9) ax = { x: 1, y: 0, z: 0 };
+    else ax = { x: 0, y: 1, z: 0 };
+    const uAxis = _vec3Normalize(_vec3Cross(norm, ax));
+    const vAxis = _vec3Cross(norm, uAxis);
+    const origin = face.vertices[0];
+    const pts2D = face.vertices.map(v => ({
+      x: _vec3Dot(_vec3Sub(v, origin), uAxis),
+      y: _vec3Dot(_vec3Sub(v, origin), vAxis),
+    }));
+    // Ensure CCW winding for CDT
+    let area2 = 0;
+    for (let i = 0; i < pts2D.length; i++) {
+      const j = (i + 1) % pts2D.length;
+      area2 += pts2D[i].x * pts2D[j].y - pts2D[j].x * pts2D[i].y;
+    }
+    if (area2 < 0) { pts2D.reverse(); face.vertices.reverse(); }
+    try {
+      const tris = constrainedTriangulate(pts2D);
+      if (tris.length === 0) continue;
+      const newFaces = tris.map(([a, b, c]) => ({
+        vertices: [{ ...face.vertices[a] }, { ...face.vertices[b] }, { ...face.vertices[c] }],
+        normal: { ...face.normal },
+        shared: face.shared ? { ...face.shared } : null,
+        isFillet: face.isFillet || false,
+        isCorner: face.isCorner || false,
+        faceGroup: face.faceGroup,
+        topoFaceId: face.topoFaceId,
+      }));
+      faces.splice(fi, 1, ...newFaces);
+    } catch (_e) {
+      // CDT failed — keep original face
+    }
+  }
+}
+
+/**
  * Fix winding consistency across all faces using BFS propagation from a seed
  * face, then verify outward orientation via signed volume.  When 3+ chamfer/
  * fillet edges meet at a vertex, the independently-generated bevel faces may
@@ -3555,6 +3625,7 @@ export function applyChamfer(geometry, edgeKeys, distance) {
       vertices: [{ ...data.p0a }, { ...data.p1a }, { ...data.p1b }, { ...data.p0b }],
       normal: chamferNormal,
       shared: data.shared,
+      _isChamferBevel: true,
     };
     faces.push(meshFace);
 
@@ -3592,6 +3663,29 @@ export function applyChamfer(geometry, edgeKeys, distance) {
   _weldVertices(faces);
   _removeDegenerateFaces(faces);
   _recomputeFaceNormals(faces);
+  _triangulateConcaveFaces(faces);
+
+  // --- Phase 7: Attempt exact topology promotion ---
+  try {
+    const topoBody = _buildExactChamferTopoBody(faces, edgeDataList);
+    if (topoBody) {
+      const exactGeometry = tessellateBody(topoBody);
+      exactGeometry.topoBody = topoBody;
+      exactGeometry.brep = brep;
+      const edgeResult = computeFeatureEdges(exactGeometry.faces || []);
+      exactGeometry.edges = edgeResult.edges;
+      exactGeometry.paths = edgeResult.paths;
+      exactGeometry.visualEdges = edgeResult.visualEdges;
+      const meshUsage = _countMeshEdgeUsage(exactGeometry.faces || []);
+      if (meshUsage.boundaryCount === 0 && meshUsage.nonManifoldCount === 0) {
+        return exactGeometry;
+      }
+    }
+  } catch (exactErr) {
+    if (typeof console !== 'undefined' && console.warn) {
+      console.warn('Exact chamfer topology promotion skipped:', exactErr.message);
+    }
+  }
 
   const newGeom = { vertices: [], faces, brep };
   const edgeResult = computeFeatureEdges(faces);
@@ -3599,6 +3693,960 @@ export function applyChamfer(geometry, edgeKeys, distance) {
   newGeom.paths = edgeResult.paths;
   newGeom.visualEdges = edgeResult.visualEdges;
   return newGeom;
+}
+
+/**
+ * Build a TopoBody from mesh-level chamfer results.
+ * Collects planar face descriptors from trimmed faces, chamfer bevel
+ * face descriptors from edgeDataList, and corner face descriptors.
+ */
+function _buildExactChamferTopoBody(faces, edgeDataList) {
+  if (!faces || !Array.isArray(faces) || !edgeDataList || edgeDataList.length === 0) return null;
+
+  const faceDescs = [];
+
+  // Planar trimmed faces (original faces after trimming)
+  // Bevel and corner faces are appended at the tail of the faces array —
+  // the first (faces.length - bevelCount - cornerCount) faces are the originals.
+  // To distinguish, skip faces that are chamfer bevel quads or corner faces.
+  for (const face of faces) {
+    if (!face || !face.vertices || face.vertices.length < 3) continue;
+    // Skip bevel faces (they are added below from edgeDataList)
+    if (face._isChamferBevel) continue;
+    // Skip corner faces (handled separately)
+    if (face.isCorner) continue;
+    const desc = _buildPlanarFaceDesc(face);
+    if (!desc) return null;
+    faceDescs.push(desc);
+  }
+
+  // Chamfer bevel faces
+  for (const data of edgeDataList) {
+    let surface = null;
+    try {
+      surface = NurbsSurface.createChamferSurface(data.p0a, data.p0b, data.p1a, data.p1b);
+    } catch (_) {
+      surface = null;
+    }
+
+    const vertices = [
+      { ...data.p0a }, { ...data.p1a }, { ...data.p1b }, { ...data.p0b },
+    ];
+    const edgeCurves = [
+      NurbsCurve.createLine(data.p0a, data.p1a),
+      NurbsCurve.createLine(data.p1a, data.p1b),
+      NurbsCurve.createLine(data.p1b, data.p0b),
+      NurbsCurve.createLine(data.p0b, data.p0a),
+    ];
+
+    const polyNormal = _computePolygonNormal(vertices);
+    let sameSense = true;
+    if (surface && polyNormal) {
+      const surfNormal = surface.normal(0.5, 0.5);
+      if (surfNormal) sameSense = _vec3Dot(polyNormal, surfNormal) >= 0;
+    }
+
+    faceDescs.push({
+      surface,
+      surfaceType: surface ? SurfaceType.PLANE : SurfaceType.PLANE,
+      vertices,
+      edgeCurves,
+      sameSense,
+      shared: data.shared ? { ...data.shared, isChamfer: true } : { isChamfer: true },
+    });
+  }
+
+  // Corner face descriptors
+  for (const face of faces) {
+    if (!face || !face.isCorner) continue;
+    if (!face.vertices || face.vertices.length < 3) continue;
+    const desc = _buildPlanarFaceDesc(face);
+    if (desc) faceDescs.push(desc);
+  }
+
+  if (faceDescs.length === 0) return null;
+  return buildTopoBody(faceDescs);
+}
+
+// -----------------------------------------------------------------------
+// BRep-level chamfer — operates directly on TopoBody topology
+// -----------------------------------------------------------------------
+
+/**
+ * Map mesh-level edge keys (from tessellated segments) to their parent TopoEdges.
+ * Returns Map<meshEdgeKey, TopoEdge>.
+ */
+function _mapSegmentKeysToTopoEdges(topoBody, edgeSegments = 16) {
+  const map = new Map();
+  const allEdgeSamples = [];
+  for (const shell of topoBody.shells) {
+    for (const topoEdge of shell.edges()) {
+      const samples = _sampleExactEdgePoints(topoEdge, edgeSegments);
+      if (samples.length < 2) continue;
+      allEdgeSamples.push({ topoEdge, samples });
+      // Register the full-endpoint key
+      const fullKey = _edgeKeyFromVerts(
+        topoEdge.startVertex.point, topoEdge.endVertex.point
+      );
+      map.set(fullKey, topoEdge);
+      // Register each tessellated segment key
+      for (let i = 0; i < samples.length - 1; i++) {
+        map.set(_edgeKeyFromVerts(samples[i], samples[i + 1]), topoEdge);
+      }
+    }
+  }
+  map._allEdgeSamples = allEdgeSamples;
+  return map;
+}
+
+/**
+ * Proximity-based fallback: for each unmatched edge key, parse the two
+ * endpoints and find the TopoEdge whose polyline tessellation is closest
+ * to the midpoint of the key segment.
+ */
+function _proximityMatchEdgeKeys(unmatchedKeys, allEdgeSamples, chamferTopoEdges) {
+  if (!allEdgeSamples || allEdgeSamples.length === 0) return;
+  const tol = 5e-4;
+  for (const key of unmatchedKeys) {
+    const sep = key.indexOf('|');
+    if (sep < 0) continue;
+    const aCoords = key.slice(0, sep).split(',').map(Number);
+    const bCoords = key.slice(sep + 1).split(',').map(Number);
+    if (aCoords.length !== 3 || bCoords.length !== 3) continue;
+    const mid = {
+      x: (aCoords[0] + bCoords[0]) * 0.5,
+      y: (aCoords[1] + bCoords[1]) * 0.5,
+      z: (aCoords[2] + bCoords[2]) * 0.5,
+    };
+    let bestEdge = null, bestDist = Infinity;
+    for (const { topoEdge, samples } of allEdgeSamples) {
+      for (let i = 0; i < samples.length - 1; i++) {
+        const s0 = samples[i], s1 = samples[i + 1];
+        // point-to-segment distance (project mid onto segment s0→s1)
+        const dx = s1.x - s0.x, dy = s1.y - s0.y, dz = s1.z - s0.z;
+        const lenSq = dx * dx + dy * dy + dz * dz;
+        let t = 0;
+        if (lenSq > 1e-20) {
+          t = ((mid.x - s0.x) * dx + (mid.y - s0.y) * dy + (mid.z - s0.z) * dz) / lenSq;
+          if (t < 0) t = 0; else if (t > 1) t = 1;
+        }
+        const px = s0.x + t * dx, py = s0.y + t * dy, pz = s0.z + t * dz;
+        const d = Math.sqrt((mid.x - px) ** 2 + (mid.y - py) ** 2 + (mid.z - pz) ** 2);
+        if (d < bestDist) { bestDist = d; bestEdge = topoEdge; }
+      }
+    }
+    if (bestEdge && bestDist < tol) {
+      chamferTopoEdges.set(bestEdge.id, bestEdge);
+    }
+  }
+}
+
+function _countTopoBodyBoundaryEdges(topoBody) {
+  if (!topoBody?.shells) return Infinity;
+  const edgeRefs = new Map();
+  for (const shell of topoBody.shells) {
+    for (const face of shell.faces) {
+      for (const loop of face.allLoops()) {
+        for (const coedge of loop.coedges) {
+          edgeRefs.set(coedge.edge.id, (edgeRefs.get(coedge.edge.id) || 0) + 1);
+        }
+      }
+    }
+  }
+  let boundaryEdges = 0;
+  for (const count of edgeRefs.values()) {
+    if (count < 2) boundaryEdges++;
+  }
+  return boundaryEdges;
+}
+
+function _getCoedgeEdgePoints(coedge) {
+  const sameSense = coedge?.sameSense !== false;
+  return {
+    start: sameSense ? coedge.edge.startVertex.point : coedge.edge.endVertex.point,
+    end: sameSense ? coedge.edge.endVertex.point : coedge.edge.startVertex.point,
+  };
+}
+
+function _intersectPlanarOffsetWithNeighbor(coedge, origin, uAxis, vAxis, targetV, nearPoint) {
+  if (!coedge?.edge) return null;
+
+  const { start, end } = _getCoedgeEdgePoints(coedge);
+  const toUV = (point) => {
+    const delta = _vec3Sub(point, origin);
+    return {
+      x: _vec3Dot(delta, uAxis),
+      y: _vec3Dot(delta, vAxis),
+    };
+  };
+  const fromUV = (x, y) => _vec3Add(origin, _vec3Add(_vec3Scale(uAxis, x), _vec3Scale(vAxis, y)));
+
+  const curve = coedge.edge.curve;
+  if (curve && curve.degree === 2 && curve.controlPoints.length >= 3) {
+    const center = _recoverArcCenter(curve, start, end);
+    if (center) {
+      const centerUV = toUV(center);
+      const radius = _vec3Len(_vec3Sub(start, center));
+      const dy = targetV - centerUV.y;
+      const inside = radius * radius - dy * dy;
+      if (inside >= -1e-8) {
+        const dx = Math.sqrt(Math.max(0, inside));
+        const candidates = [
+          fromUV(centerUV.x - dx, targetV),
+          fromUV(centerUV.x + dx, targetV),
+        ];
+        candidates.sort((a, b) => _vec3Len(_vec3Sub(a, nearPoint)) - _vec3Len(_vec3Sub(b, nearPoint)));
+        return candidates[0];
+      }
+    }
+  }
+
+  const startUV = toUV(start);
+  const endUV = toUV(end);
+  const dy = endUV.y - startUV.y;
+  if (Math.abs(dy) < 1e-10) return null;
+  const t = (targetV - startUV.y) / dy;
+  const x = startUV.x + t * (endUV.x - startUV.x);
+  return fromUV(x, targetV);
+}
+
+/**
+ * Compute the offset curve of a TopoEdge on a given adjacent face.
+ *
+ * Returns { curve: NurbsCurve, startPt: {x,y,z}, endPt: {x,y,z} }
+ * where curve runs from startPt to endPt at distance `dist` from the edge
+ * into the face surface.
+ */
+function _offsetEdgeOnSurface(topoEdge, face, coedge, dist) {
+  const sType = face.surfaceType;
+  const oriented = coedge ? _getCoedgeEdgePoints(coedge) : {
+    start: topoEdge.startVertex.point,
+    end: topoEdge.endVertex.point,
+  };
+  const sp = oriented.start;
+  const ep = oriented.end;
+  const edgeVec = _vec3Sub(ep, sp);
+  const edgeLen = _vec3Len(edgeVec);
+  const edgeDir = edgeLen > 1e-14 ? _vec3Scale(edgeVec, 1 / edgeLen) : { x: 1, y: 0, z: 0 };
+
+  if (sType === SurfaceType.PLANE) {
+    // Get face normal from evaluation or from surface
+    let faceNormal;
+    if (face.surface && typeof face.surface.normal === 'function') {
+      faceNormal = face.surface.normal(0.5, 0.5);
+      if (face.sameSense === false) faceNormal = _vec3Scale(faceNormal, -1);
+    } else {
+      // Approximate from boundary vertices
+      const verts = [];
+      for (const ce of face.outerLoop.coedges) {
+        verts.push(ce.edge.startVertex.point);
+      }
+      faceNormal = _computePolygonNormal(verts) || { x: 0, y: 0, z: 1 };
+    }
+    faceNormal = _vec3Normalize(faceNormal);
+
+    // Offset direction: cross(faceNormal, edgeDir) pointing into the face
+    let offDir = _vec3Normalize(_vec3Cross(faceNormal, edgeDir));
+    // Ensure offDir points into the face (toward face centroid)
+    const centroid = _faceCentroid(face);
+    const edgeMid = _vec3Lerp(sp, ep, 0.5);
+    if (_vec3Dot(_vec3Sub(centroid, edgeMid), offDir) < 0) {
+      offDir = _vec3Scale(offDir, -1);
+    }
+
+    const curve = topoEdge.curve;
+    if (curve && curve.degree === 2 && curve.controlPoints.length >= 3) {
+      // Arc edge on a plane → offset = concentric arc
+      // Recover arc center: the middle control point of a degree-2 rational arc
+      // The center is equidistant from the start and end points
+      // We can also compute it from the offset direction at each endpoint
+      const r0 = _vec3Sub(sp, _vec3Scale(offDir, 0));
+      // For a circular arc, the offset direction at each point is radial (toward center)
+      // offDir at sp should point from sp toward center (or away from center)
+      // Use the arc geometry: center = sp + R * radialDir
+      // The offset of a circular arc with radius R at distance d is another arc with radius R ∓ d
+
+      // Reconstruct arc center from the curve
+      const arcCenter = _recoverArcCenter(curve, sp, ep);
+      if (arcCenter) {
+        const r = _vec3Len(_vec3Sub(sp, arcCenter));
+        // Check if offset goes toward center or away
+        const radialAtSp = _vec3Normalize(_vec3Sub(sp, arcCenter));
+        const inward = _vec3Dot(radialAtSp, offDir) < 0; // offDir points toward center
+        const newR = inward ? r - dist : r + dist;
+        if (newR < 1e-10) return null; // degenerate
+
+        const newSp = _vec3Add(arcCenter, _vec3Scale(_vec3Normalize(_vec3Sub(sp, arcCenter)), newR));
+        const newEp = _vec3Add(arcCenter, _vec3Scale(_vec3Normalize(_vec3Sub(ep, arcCenter)), newR));
+
+        // Build the offset arc in the same local frame
+        const xAx = _vec3Normalize(_vec3Sub(newSp, arcCenter));
+        const yAx = _vec3Normalize(_vec3Cross(faceNormal, xAx));
+        const r1 = _vec3Sub(newEp, arcCenter);
+        const cosA = Math.max(-1, Math.min(1, _vec3Dot(r1, _vec3Scale(xAx, newR)) / (newR * newR)));
+        const sinA = _vec3Dot(r1, _vec3Scale(yAx, newR)) / (newR * newR);
+        let sweep = Math.atan2(sinA, cosA);
+        if (sweep <= 1e-10) sweep += 2 * Math.PI;
+
+        const offCurve = NurbsCurve.createArc(arcCenter, newR, xAx, yAx, 0, sweep);
+        return {
+          curve: offCurve,
+          startPt: newSp,
+          endPt: newEp,
+          arcCenter,
+          radius: newR,
+          startVertexPoint: sp,
+          endVertexPoint: ep,
+        };
+      }
+    }
+
+    // Straight edge on a plane → parallel line
+    let newSp = _vec3Add(sp, _vec3Scale(offDir, dist));
+    let newEp = _vec3Add(ep, _vec3Scale(offDir, dist));
+
+    const loop = coedge?.loop;
+    if (loop && Array.isArray(loop.coedges) && loop.coedges.length >= 3) {
+      const idx = loop.coedges.indexOf(coedge);
+      if (idx >= 0) {
+        const prev = loop.coedges[(idx - 1 + loop.coedges.length) % loop.coedges.length];
+        const next = loop.coedges[(idx + 1) % loop.coedges.length];
+        newSp = _intersectPlanarOffsetWithNeighbor(prev, sp, edgeDir, offDir, dist, newSp) || newSp;
+        newEp = _intersectPlanarOffsetWithNeighbor(next, sp, edgeDir, offDir, dist, newEp) || newEp;
+      }
+    }
+
+    return {
+      curve: NurbsCurve.createLine(newSp, newEp),
+      startPt: newSp,
+      endPt: newEp,
+      startVertexPoint: sp,
+      endVertexPoint: ep,
+    };
+
+  } else if (sType === SurfaceType.CYLINDER) {
+    // Cylindrical face — determine edge orientation relative to axis
+    const surfInfo = face.surfaceInfo || _extractCylinderInfo(face);
+    if (!surfInfo) {
+      // Fallback to linear offset
+      return _offsetEdgeLinearFallback(topoEdge, face, dist);
+    }
+
+    const { axis, center: cylCenter, radius: cylR } = surfInfo;
+    const axisDir = _vec3Normalize(axis);
+
+    // Check if edge is circumferential (perpendicular to axis) or axial (along axis)
+    const edgeDotAxis = Math.abs(_vec3Dot(edgeDir, axisDir));
+
+    if (edgeDotAxis < 0.1) {
+      // Circumferential edge (arc along the bottom/top of cylinder)
+      // Offset = shift along axis direction
+      // Determine which direction to offset (into the face)
+      const centroid = _faceCentroid(face);
+      const edgeMid = _vec3Lerp(sp, ep, 0.5);
+      const towardFace = _vec3Sub(centroid, edgeMid);
+      const axisDist = _vec3Dot(towardFace, axisDir);
+      const offDir = axisDist > 0 ? axisDir : _vec3Scale(axisDir, -1);
+
+      const newSp = _vec3Add(sp, _vec3Scale(offDir, dist));
+      const newEp = _vec3Add(ep, _vec3Scale(offDir, dist));
+
+      if (topoEdge.curve && topoEdge.curve.degree === 2) {
+        const arcCenter = _recoverArcCenter(topoEdge.curve, sp, ep);
+        if (arcCenter) {
+          const newCenter = _vec3Add(arcCenter, _vec3Scale(offDir, dist));
+          const xAx = _vec3Normalize(_vec3Sub(newSp, newCenter));
+          const yAx = _vec3Normalize(_vec3Cross(axisDir, xAx));
+          const r1 = _vec3Sub(newEp, newCenter);
+          const cosA = Math.max(-1, Math.min(1, _vec3Dot(r1, _vec3Scale(xAx, cylR)) / (cylR * cylR)));
+          const sinA = _vec3Dot(r1, _vec3Scale(yAx, cylR)) / (cylR * cylR);
+          let sweep = Math.atan2(sinA, cosA);
+          if (sweep <= 1e-10) sweep += 2 * Math.PI;
+
+          const offCurve = NurbsCurve.createArc(newCenter, cylR, xAx, yAx, 0, sweep);
+          return {
+            curve: offCurve,
+            startPt: newSp,
+            endPt: newEp,
+            arcCenter: newCenter,
+            radius: cylR,
+            startVertexPoint: sp,
+            endVertexPoint: ep,
+          };
+        }
+      }
+      return {
+        curve: NurbsCurve.createLine(newSp, newEp),
+        startPt: newSp,
+        endPt: newEp,
+        startVertexPoint: sp,
+        endVertexPoint: ep,
+      };
+
+    } else {
+      // Axial edge (along cylinder axis)
+      // Offset = angular shift: d/R radians around the axis
+      const radialSp = _vec3Normalize(_vec3Sub(sp, _projectOntoAxis(sp, cylCenter, axisDir)));
+      const tangentSp = _vec3Cross(axisDir, radialSp);
+      const centroid = _faceCentroid(face);
+      const edgeMid = _vec3Lerp(sp, ep, 0.5);
+      const towardFace = _vec3Sub(centroid, edgeMid);
+      const intoFace = _vec3Dot(towardFace, tangentSp) > 0 ? tangentSp : _vec3Scale(tangentSp, -1);
+
+      // Rotate by angle = dist / cylR
+      const angle = dist / cylR;
+      const cosA = Math.cos(angle);
+      const sinA = _vec3Dot(intoFace, tangentSp) > 0 ? Math.sin(angle) : -Math.sin(angle);
+
+      const rotatePoint = (p) => {
+        const proj = _projectOntoAxis(p, cylCenter, axisDir);
+        const radial = _vec3Sub(p, proj);
+        const rLen = _vec3Len(radial);
+        if (rLen < 1e-14) return p;
+        const rDir = _vec3Scale(radial, 1 / rLen);
+        const tDir = _vec3Cross(axisDir, rDir);
+        const newRadial = _vec3Add(
+          _vec3Scale(rDir, rLen * cosA),
+          _vec3Scale(tDir, rLen * sinA)
+        );
+        return _vec3Add(proj, newRadial);
+      };
+
+      const newSp = rotatePoint(sp);
+      const newEp = rotatePoint(ep);
+      return {
+        curve: NurbsCurve.createLine(newSp, newEp),
+        startPt: newSp,
+        endPt: newEp,
+        startVertexPoint: sp,
+        endVertexPoint: ep,
+      };
+    }
+  }
+
+  // Fallback: linear offset (approximate for unsupported surface types)
+  return _offsetEdgeLinearFallback(topoEdge, face, dist);
+}
+
+/** Recover the center of a degree-2 rational arc NurbsCurve */
+function _recoverArcCenter(curve, sp, ep) {
+  // For a degree-2 NURBS arc, the control point layout is:
+  //   [start, weighted_shoulder, end] for a single span
+  // or multi-span for larger arcs.
+  // The center can be found geometrically:
+  // All points on the arc are equidistant from the center.
+  // For a single-span (3-cp) arc: center = shoulder−projected offset
+  // Simpler: evaluate the midpoint and use 3-point circle construction.
+  const mid = curve.evaluate(0.5);
+  if (!mid) return null;
+  // Three points on arc: sp, mid, ep
+  return _circumCenter3D(sp, mid, ep);
+}
+
+/** Compute circumcenter of three 3D points (center of circle through them) */
+function _circumCenter3D(a, b, c) {
+  const ab = _vec3Sub(b, a);
+  const ac = _vec3Sub(c, a);
+  const n = _vec3Cross(ab, ac);
+  const n2 = _vec3Dot(n, n);
+  if (n2 < 1e-20) return null; // collinear
+  const abDot = _vec3Dot(ab, ab);
+  const acDot = _vec3Dot(ac, ac);
+  const d = _vec3Add(
+    _vec3Scale(_vec3Cross(n, _vec3Cross(ab, n)), acDot),
+    _vec3Scale(_vec3Cross(_vec3Cross(ac, n), n), abDot)
+  );
+  // Hmm this formula is wrong, let me use the standard one
+  // center = a + (|ac|^2 (ab×n) + |ab|^2 (n×ac)) / (2|n|^2)
+  const t1 = _vec3Cross(ab, n);
+  const t2 = _vec3Cross(n, ac);
+  const num = _vec3Add(_vec3Scale(t2, abDot), _vec3Scale(t1, acDot));
+  return _vec3Add(a, _vec3Scale(num, 0.5 / n2));
+}
+
+/** Project a point onto an axis line */
+function _projectOntoAxis(point, axisOrigin, axisDir) {
+  const v = _vec3Sub(point, axisOrigin);
+  const t = _vec3Dot(v, axisDir);
+  return _vec3Add(axisOrigin, _vec3Scale(axisDir, t));
+}
+
+/** Extract cylinder axis/center/radius from a cylindrical TopoFace */
+function _extractCylinderInfo(face) {
+  if (!face.surface) return null;
+  // Try to extract from surface info metadata
+  if (face.surfaceInfo) return face.surfaceInfo;
+  // Try to recover from the cylinder surface control points
+  const surf = face.surface;
+  if (surf.degreeU === 1 && surf.degreeV === 2 && surf.numRowsU === 2) {
+    // Cylinder: 2 rows of arc CPs, linear in u-direction
+    const nCols = surf.numColsV;
+    const row0 = [];
+    const row1 = [];
+    for (let j = 0; j < nCols; j++) {
+      row0.push(surf.controlPoints[j]);
+      row1.push(surf.controlPoints[nCols + j]);
+    }
+    // Axis = row1[0] - row0[0]
+    const axis = _vec3Sub(row1[0], row0[0]);
+    // Center of the arc: evaluate bottom row at midpoint
+    const p0 = row0[0];
+    const pMid = surf.evaluate(0, 0.5);
+    const pEnd = row0[nCols - 1];
+    const center = _circumCenter3D(p0, pMid, pEnd);
+    const radius = center ? _vec3Len(_vec3Sub(p0, center)) : null;
+    if (center && radius) {
+      return { axis, center, radius };
+    }
+  }
+  return null;
+}
+
+function _offsetEdgeLinearFallback(topoEdge, face, dist) {
+  const sp = topoEdge.startVertex.point;
+  const ep = topoEdge.endVertex.point;
+  const edgeDir = _vec3Normalize(_vec3Sub(ep, sp));
+  const centroid = _faceCentroid(face);
+  const edgeMid = _vec3Lerp(sp, ep, 0.5);
+  const towardFace = _vec3Normalize(_vec3Sub(centroid, edgeMid));
+  // Remove component along edge direction
+  const perp = _vec3Normalize(_vec3Sub(towardFace, _vec3Scale(edgeDir, _vec3Dot(towardFace, edgeDir))));
+  const newSp = _vec3Add(sp, _vec3Scale(perp, dist));
+  const newEp = _vec3Add(ep, _vec3Scale(perp, dist));
+  return {
+    curve: NurbsCurve.createLine(newSp, newEp),
+    startPt: newSp,
+    endPt: newEp,
+    startVertexPoint: sp,
+    endVertexPoint: ep,
+  };
+}
+
+/**
+ * Build a ruled NURBS surface between two arc curves (for arc-edge chamfers).
+ * When both offsets produce arcs, this creates a conical or cylindrical ruled surface.
+ */
+function _buildChamferRuledSurface(offset0, offset1) {
+  const c0 = offset0.curve;
+  const c1 = offset1.curve;
+
+  // If both curves are NURBS arcs with compatible parametrization, build a ruled surface
+  if (c0.degree === 2 && c1.degree === 2 &&
+      c0.controlPoints.length === c1.controlPoints.length &&
+      c0.knots.length === c1.knots.length) {
+    const nCols = c0.controlPoints.length;
+    const nRows = 2;
+    const controlPoints = [];
+    const weights = [];
+    for (let j = 0; j < nCols; j++) {
+      controlPoints.push({ ...c0.controlPoints[j] });
+      weights.push(c0.weights[j]);
+    }
+    for (let j = 0; j < nCols; j++) {
+      controlPoints.push({ ...c1.controlPoints[j] });
+      weights.push(c1.weights[j]);
+    }
+    return new NurbsSurface(
+      1, c0.degree,       // linear in u, quadratic in v
+      nRows, nCols,
+      controlPoints,
+      [0, 0, 1, 1],       // linear u-knots
+      [...c0.knots],       // arc v-knots
+      weights
+    );
+  }
+
+  // Fallback: bilinear patch (flat chamfer)
+  return NurbsSurface.createChamferSurface(
+    offset0.startPt, offset0.endPt, offset1.startPt, offset1.endPt
+  );
+}
+
+function _extractLoopDesc(loop) {
+  if (!loop || !Array.isArray(loop.coedges) || loop.coedges.length === 0) {
+    return { vertices: [], edgeCurves: [] };
+  }
+
+  const vertices = [];
+  const edgeCurves = [];
+  for (const coedge of loop.coedges) {
+    const edge = coedge.edge;
+    const sameSense = coedge.sameSense !== false;
+    const start = sameSense ? edge.startVertex.point : edge.endVertex.point;
+    const end = sameSense ? edge.endVertex.point : edge.startVertex.point;
+    const curve = edge.curve
+      ? (sameSense ? edge.curve : edge.curve.reversed())
+      : NurbsCurve.createLine(start, end);
+    vertices.push({ ...start });
+    edgeCurves.push(curve);
+  }
+
+  return { vertices, edgeCurves };
+}
+
+function _pointsCoincident3D(a, b, tol = 1e-8) {
+  return _vec3Len(_vec3Sub(a, b)) < tol;
+}
+
+function _getOrientedCoedgeCurve(coedge) {
+  if (!coedge?.edge) return null;
+
+  const edge = coedge.edge;
+  if (!edge.curve) {
+    const { start, end } = _getCoedgeEdgePoints(coedge);
+    return NurbsCurve.createLine(start, end);
+  }
+
+  return coedge.sameSense !== false ? edge.curve : edge.curve.reversed();
+}
+
+function _orientOffsetAlongTopoEdge(offset, topoEdge) {
+  const topoStart = topoEdge.startVertex.point;
+  const sameDirection = _pointsCoincident3D(offset.startVertexPoint || topoStart, topoStart);
+  return sameDirection ? {
+    startPt: offset.startPt,
+    endPt: offset.endPt,
+    curve: offset.curve,
+  } : {
+    startPt: offset.endPt,
+    endPt: offset.startPt,
+    curve: offset.curve.reversed ? offset.curve.reversed() : offset.curve,
+  };
+}
+
+function _measureMeshTopology(faces) {
+  const edgeMap = new Map();
+  for (const face of faces || []) {
+    const verts = face.vertices || [];
+    for (let i = 0; i < verts.length; i++) {
+      const a = verts[i];
+      const b = verts[(i + 1) % verts.length];
+      const ka = _edgeVKey(a);
+      const kb = _edgeVKey(b);
+      const key = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+      const fwd = ka < kb;
+      if (!edgeMap.has(key)) edgeMap.set(key, []);
+      edgeMap.get(key).push({ fwd });
+    }
+  }
+
+  let boundaryEdges = 0;
+  let nonManifoldEdges = 0;
+  let windingErrors = 0;
+  for (const entries of edgeMap.values()) {
+    if (entries.length === 1) {
+      boundaryEdges++;
+    } else if (entries.length === 2) {
+      if (entries[0].fwd === entries[1].fwd) windingErrors++;
+    } else {
+      nonManifoldEdges++;
+    }
+  }
+
+  return { boundaryEdges, nonManifoldEdges, windingErrors };
+}
+
+function _debugBRepChamfer(...args) {
+  if (typeof process === 'undefined' || !process?.env?.DEBUG_BREP_CHAMFER) return;
+  console.log('[applyBRepChamfer]', ...args);
+}
+
+/**
+ * Apply B-Rep chamfer to a TopoBody.
+ *
+ * Operates directly on the TopoBody topology, producing exact offset
+ * curves on planar and cylindrical surfaces. Creates proper chamfer
+ * faces (ruled surfaces) and rebuilds adjacent face boundaries.
+ *
+ * @param {Object} geometry - Input geometry with .topoBody
+ * @param {string[]} edgeKeys - Edge keys to chamfer (position-based)
+ * @param {number} distance - Chamfer offset distance
+ * @returns {Object|null} New geometry or null if BRep chamfer not applicable
+ */
+export function applyBRepChamfer(geometry, edgeKeys, distance) {
+  const topoBody = geometry && geometry.topoBody;
+  if (!topoBody || !topoBody.shells) {
+    _debugBRepChamfer('missing-topobody');
+    return null;
+  }
+
+  // Step 1: Map mesh edge keys to TopoEdges
+  const segMap = _mapSegmentKeysToTopoEdges(topoBody);
+  const uniqueMeshKeys = [...new Set(edgeKeys)];
+  const chamferTopoEdges = new Map(); // topoEdge.id → topoEdge
+  const unmatchedKeys = [];
+  for (const key of uniqueMeshKeys) {
+    const te = segMap.get(key);
+    if (te) chamferTopoEdges.set(te.id, te);
+    else unmatchedKeys.push(key);
+  }
+  // Proximity fallback for keys that didn't match exact segments
+  if (unmatchedKeys.length > 0) {
+    _proximityMatchEdgeKeys(unmatchedKeys, segMap._allEdgeSamples, chamferTopoEdges);
+  }
+  if (chamferTopoEdges.size === 0) {
+    _debugBRepChamfer('no-matched-topo-edges', { edgeKeys: uniqueMeshKeys.length });
+    return null;
+  }
+
+  // Step 2: For each TopoEdge, compute offset info on both adjacent faces
+  const chamferInfos = [];
+  for (const [, topoEdge] of chamferTopoEdges) {
+    const adjFaces = [];
+    for (const coedge of topoEdge.coedges) {
+      if (coedge.loop && coedge.loop.face) {
+        adjFaces.push({ face: coedge.loop.face, coedge, sameSense: coedge.sameSense !== false });
+      }
+    }
+    if (adjFaces.length < 2) continue;
+
+    const off0 = _offsetEdgeOnSurface(topoEdge, adjFaces[0].face, adjFaces[0].coedge, distance);
+    const off1 = _offsetEdgeOnSurface(topoEdge, adjFaces[1].face, adjFaces[1].coedge, distance);
+    if (!off0 || !off1) continue;
+
+    chamferInfos.push({
+      topoEdge,
+      face0: adjFaces[0].face,
+      face1: adjFaces[1].face,
+      off0, off1,
+    });
+  }
+  if (chamferInfos.length === 0) {
+    _debugBRepChamfer('no-chamfer-infos', { topoEdges: chamferTopoEdges.size });
+    return null;
+  }
+
+  // Build lookup: topoEdge.id → chamferInfo
+  const chamferByEdgeId = new Map();
+  for (const ci of chamferInfos) {
+    chamferByEdgeId.set(ci.topoEdge.id, ci);
+  }
+
+  // Build lookup: vertex key → chamfer infos that touch it
+  const _vkey = (p) => `${_fmtCoord(p.x)},${_fmtCoord(p.y)},${_fmtCoord(p.z)}`;
+  const vertexChamfers = new Map();
+  for (const ci of chamferInfos) {
+    const sp = ci.topoEdge.startVertex.point;
+    const ep = ci.topoEdge.endVertex.point;
+    for (const p of [sp, ep]) {
+      const k = _vkey(p);
+      if (!vertexChamfers.has(k)) vertexChamfers.set(k, []);
+      vertexChamfers.get(k).push(ci);
+    }
+  }
+
+  // Step 3: Build face descriptors for new TopoBody
+  const faceDescs = [];
+
+  for (const shell of topoBody.shells) {
+    for (const face of shell.faces) {
+      // Walk the boundary and rebuild with offsets
+      const coedges = face.outerLoop.coedges;
+      const rebuiltEdges = [];
+
+      for (let ci = 0; ci < coedges.length; ci++) {
+        const coedge = coedges[ci];
+        const edge = coedge.edge;
+        const sameSense = coedge.sameSense !== false;
+        const edgeSp = sameSense ? edge.startVertex.point : edge.endVertex.point;
+        const edgeEp = sameSense ? edge.endVertex.point : edge.startVertex.point;
+
+        const chamInfo = chamferByEdgeId.get(edge.id);
+
+        if (!chamInfo) {
+          // Non-chamfered edge: keep but may need to adjust endpoint positions
+          // if adjacent vertices are chamfered
+          const edgeFaces = edge.coedges
+            .map((edgeCoedge) => edgeCoedge?.loop?.face)
+            .filter((edgeFace) => !!edgeFace);
+          let sp = edgeSp;
+          let ep = edgeEp;
+
+          const resolveEndpoint = (vertexPoint) => {
+            const chamfersAtVertex = vertexChamfers.get(_vkey(vertexPoint));
+            if (!chamfersAtVertex) return vertexPoint;
+
+            for (const sci of chamfersAtVertex) {
+              const matchedFace = edgeFaces.includes(sci.face0)
+                ? sci.face0
+                : edgeFaces.includes(sci.face1)
+                  ? sci.face1
+                  : null;
+              if (!matchedFace) continue;
+
+              const off = matchedFace === sci.face0 ? sci.off0 : sci.off1;
+              const isStart = _vec3Len(_vec3Sub(off.startVertexPoint || sci.topoEdge.startVertex.point, vertexPoint)) < 1e-8;
+              return isStart ? off.startPt : off.endPt;
+            }
+
+            return vertexPoint;
+          };
+
+          sp = resolveEndpoint(edgeSp);
+          ep = resolveEndpoint(edgeEp);
+          const endpointsUnchanged = _pointsCoincident3D(sp, edgeSp) && _pointsCoincident3D(ep, edgeEp);
+
+          rebuiltEdges.push({
+            start: sp,
+            end: ep,
+            curve: endpointsUnchanged
+              ? (_getOrientedCoedgeCurve(coedge) || NurbsCurve.createLine(sp, ep))
+              : NurbsCurve.createLine(sp, ep),
+          });
+        } else {
+          // Chamfered edge: replace with offset curve on this face
+          const off = chamInfo.face0 === face ? chamInfo.off0 : chamInfo.off1;
+          rebuiltEdges.push({
+            start: off.startPt,
+            end: off.endPt,
+            curve: off.curve,
+          });
+        }
+      }
+
+      // Handle vertices at chamfered corners that need connecting edges
+      // between the offset endpoints on different faces
+      const finalVerts = [];
+      const finalCurves = [];
+      for (let i = 0; i < rebuiltEdges.length; i++) {
+        const current = rebuiltEdges[i];
+        const next = rebuiltEdges[(i + 1) % rebuiltEdges.length];
+        finalVerts.push(current.start);
+        finalCurves.push(current.curve);
+
+        // Check if there's a gap between this edge's endpoint and next edge's start
+        if (_vec3Len(_vec3Sub(current.end, next.start)) > 1e-8) {
+          finalVerts.push(current.end);
+          finalCurves.push(NurbsCurve.createLine(current.end, next.start));
+        }
+      }
+
+      if (finalVerts.length < 3) continue;
+
+      faceDescs.push({
+        surface: face.surface,
+        surfaceType: face.surfaceType,
+        vertices: finalVerts,
+        edgeCurves: finalCurves,
+        innerLoops: face.innerLoops.map((loop) => _extractLoopDesc(loop)),
+        sameSense: face.sameSense,
+        shared: face.shared ? { ...face.shared } : null,
+      });
+    }
+  }
+
+  // Step 4: Add chamfer faces
+  for (const ci of chamferInfos) {
+    const off0 = _orientOffsetAlongTopoEdge(ci.off0, ci.topoEdge);
+    const off1 = _orientOffsetAlongTopoEdge(ci.off1, ci.topoEdge);
+    const surface = _buildChamferRuledSurface(off0, off1);
+    const surfType = (off0.curve.degree === 2 && off1.curve.degree === 2)
+      ? SurfaceType.CONE
+      : SurfaceType.PLANE;
+
+    faceDescs.push({
+      surface,
+      surfaceType: surfType,
+      vertices: [off0.startPt, off0.endPt, off1.endPt, off1.startPt],
+      edgeCurves: [
+        off0.curve,
+        NurbsCurve.createLine(off0.endPt, off1.endPt),
+        off1.curve.reversed(),
+        NurbsCurve.createLine(off1.startPt, off0.startPt),
+      ],
+      shared: ci.face0.shared ? { ...ci.face0.shared, isChamfer: true } : { isChamfer: true },
+    });
+  }
+
+  // Step 5: Add corner faces where chamfers meet at a vertex
+  for (const [vk, cInfos] of vertexChamfers) {
+    if (cInfos.length < 2) continue;
+    // Find the offset points at this vertex from all chamfer infos
+    // and create a corner face connecting them
+    const pts = [];
+    for (const ci of cInfos) {
+      const off0StartKey = _vkey(ci.off0.startVertexPoint || ci.topoEdge.startVertex.point);
+      const off1StartKey = _vkey(ci.off1.startVertexPoint || ci.topoEdge.startVertex.point);
+      pts.push(vk === off0StartKey ? ci.off0.startPt : ci.off0.endPt);
+      pts.push(vk === off1StartKey ? ci.off1.startPt : ci.off1.endPt);
+    }
+    // Deduplicate nearby points
+    const uniquePts = [pts[0]];
+    for (let i = 1; i < pts.length; i++) {
+      let dup = false;
+      for (const up of uniquePts) {
+        if (_vec3Len(_vec3Sub(pts[i], up)) < 1e-8) { dup = true; break; }
+      }
+      if (!dup) uniquePts.push(pts[i]);
+    }
+    if (uniquePts.length >= 3) {
+      const n = _computePolygonNormal(uniquePts);
+      faceDescs.push({
+        surface: NurbsSurface.createPlane(
+          uniquePts[0],
+          _vec3Sub(uniquePts[1], uniquePts[0]),
+          _vec3Sub(uniquePts[uniquePts.length - 1], uniquePts[0])
+        ),
+        surfaceType: SurfaceType.PLANE,
+        vertices: uniquePts,
+        edgeCurves: uniquePts.map((v, i) =>
+          NurbsCurve.createLine(v, uniquePts[(i + 1) % uniquePts.length])
+        ),
+        shared: cInfos[0].face0.shared ? { ...cInfos[0].face0.shared, isCorner: true } : { isCorner: true },
+      });
+    }
+  }
+
+  // Step 6: Build new TopoBody and tessellate
+  let newTopoBody;
+  try {
+    newTopoBody = buildTopoBody(faceDescs);
+  } catch (error) {
+    _debugBRepChamfer('build-topobody-failed', error?.message || String(error));
+    return null; // fallback to mesh chamfer
+  }
+
+  const topoBoundaryEdges = _countTopoBodyBoundaryEdges(newTopoBody);
+  if (topoBoundaryEdges !== 0) {
+    _debugBRepChamfer('topo-boundary-edges', { topoBoundaryEdges, faceCount: faceDescs.length });
+    return null;
+  }
+
+  let mesh;
+  try {
+    mesh = tessellateBody(newTopoBody, { validate: true });
+  } catch (error) {
+    _debugBRepChamfer('tessellate-failed', error?.message || String(error));
+    return null;
+  }
+
+  if (!mesh || !mesh.faces || mesh.faces.length === 0) {
+    _debugBRepChamfer('empty-mesh');
+    return null;
+  }
+  if (mesh.validation && mesh.validation.isClean === false) {
+    _debugBRepChamfer('mesh-validation-failed', mesh.validation);
+    return null;
+  }
+
+  _fixWindingConsistency(mesh.faces);
+  _recomputeFaceNormals(mesh.faces);
+  const meshTopology = _measureMeshTopology(mesh.faces);
+  if (meshTopology.boundaryEdges !== 0 || meshTopology.nonManifoldEdges !== 0 || meshTopology.windingErrors !== 0) {
+    _debugBRepChamfer('mesh-topology-failed', meshTopology);
+    return null;
+  }
+
+  const edgeResult = computeFeatureEdges(mesh.faces);
+
+  return {
+    vertices: mesh.vertices || [],
+    faces: mesh.faces,
+    edges: edgeResult.edges,
+    paths: edgeResult.paths,
+    visualEdges: edgeResult.visualEdges,
+    topoBody: newTopoBody,
+  };
 }
 
 /**
@@ -4099,7 +5147,8 @@ export function applyFillet(geometry, edgeKeys, radius, segments = 8, edgeOwnerM
   }
 
   const newGeom = { vertices: [], faces, brep };
-  const edgeResult = computeFeatureEdges(faces);
+  _triangulateConcaveFaces(newGeom.faces);
+  const edgeResult = computeFeatureEdges(newGeom.faces);
   newGeom.edges = edgeResult.edges;
   newGeom.paths = edgeResult.paths;
   newGeom.visualEdges = edgeResult.visualEdges;
@@ -5203,14 +6252,172 @@ function _buildExactFilletFaceDesc(data) {
   };
 }
 
+function _buildExactCornerPatchFaceDesc(cornerGroup) {
+  if (!cornerGroup || cornerGroup.length === 0) return null;
+  const patch = cornerGroup[0]._cornerPatch;
+  if (!patch) return null;
+
+  let surface = null;
+  try {
+    surface = NurbsSurface.createCornerBlendPatch(
+      patch.top0, patch.top1,
+      patch.side0Mid, patch.side1Mid,
+      patch.apex, patch.centerPoint,
+      patch.topMid,
+    );
+  } catch (_) {
+    surface = null;
+  }
+
+  const hasTopMid = patch.topMid &&
+    _edgeVKey(patch.topMid) !== _edgeVKey(patch.top0) &&
+    _edgeVKey(patch.topMid) !== _edgeVKey(patch.top1);
+
+  let vertices, edgeCurves;
+  if (hasTopMid) {
+    vertices = [
+      { ...patch.top0 }, { ...patch.topMid },
+      { ...patch.top1 }, { ...patch.apex },
+    ];
+    edgeCurves = [
+      NurbsCurve.createLine(patch.top0, patch.topMid),
+      NurbsCurve.createLine(patch.topMid, patch.top1),
+      NurbsCurve.createLine(patch.top1, patch.apex),
+      NurbsCurve.createLine(patch.apex, patch.top0),
+    ];
+  } else {
+    vertices = [
+      { ...patch.top0 }, { ...patch.top1 }, { ...patch.apex },
+    ];
+    edgeCurves = [
+      NurbsCurve.createLine(patch.top0, patch.top1),
+      NurbsCurve.createLine(patch.top1, patch.apex),
+      NurbsCurve.createLine(patch.apex, patch.top0),
+    ];
+  }
+
+  const polyNormal = _computePolygonNormal(vertices);
+  let sameSense = true;
+  if (surface && polyNormal) {
+    const surfNormal = surface.normal(
+      (surface.uMin + surface.uMax) * 0.5,
+      (surface.vMin + surface.vMax) * 0.5,
+    );
+    if (surfNormal) sameSense = _vec3Dot(polyNormal, surfNormal) >= 0;
+  }
+
+  return {
+    surface,
+    surfaceType: surface ? SurfaceType.BSPLINE : SurfaceType.PLANE,
+    vertices,
+    edgeCurves,
+    sameSense,
+    shared: cornerGroup[0].shared ? { ...cornerGroup[0].shared, isCorner: true } : { isCorner: true },
+  };
+}
+
+function _buildExactTrihedronFaceDesc(cornerGroup) {
+  if (!cornerGroup || cornerGroup.length === 0) return null;
+  const triVerts = cornerGroup[0]._triVerts;
+  if (!triVerts || triVerts.length !== 3) return null;
+
+  const sphereCenter = cornerGroup.find(f => f._sphereCenter)?._sphereCenter;
+  const sphereRadius = cornerGroup.find(f => f._sphereRadius > 0)?._sphereRadius || 0;
+
+  let surface = null;
+  if (sphereCenter && sphereRadius > 1e-10) {
+    try {
+      surface = NurbsSurface.createSphericalPatch(
+        sphereCenter, sphereRadius, triVerts[0], triVerts[1], triVerts[2],
+      );
+    } catch (_) {
+      surface = null;
+    }
+  }
+
+  const vertices = triVerts.map(v => ({ ...v }));
+  const edgeCurves = [
+    NurbsCurve.createLine(triVerts[0], triVerts[1]),
+    NurbsCurve.createLine(triVerts[1], triVerts[2]),
+    NurbsCurve.createLine(triVerts[2], triVerts[0]),
+  ];
+
+  const polyNormal = _computePolygonNormal(vertices);
+  let sameSense = true;
+  if (surface && polyNormal) {
+    const surfNormal = surface.normal(
+      (surface.uMin + surface.uMax) * 0.5,
+      (surface.vMin + surface.vMax) * 0.5,
+    );
+    if (surfNormal) sameSense = _vec3Dot(polyNormal, surfNormal) >= 0;
+  }
+
+  return {
+    surface,
+    surfaceType: surface ? SurfaceType.SPHERE : SurfaceType.PLANE,
+    vertices,
+    edgeCurves,
+    sameSense,
+    shared: cornerGroup[0].shared ? { ...cornerGroup[0].shared, isCorner: true } : { isCorner: true },
+  };
+}
+
+function _buildExactCornerFaceDescs(faces) {
+  const descs = [];
+
+  // Group two-edge corner patches by _cornerPatchKey
+  const patchGroups = new Map();
+  // Group trihedron corners by sorted _triVerts key
+  const trihedronGroups = new Map();
+  // Collect standalone corner faces with neither metadata
+  const standaloneFaces = [];
+
+  for (const face of faces) {
+    if (!face || !face.isCorner) continue;
+
+    if (face._cornerPatchKey) {
+      if (!patchGroups.has(face._cornerPatchKey)) {
+        patchGroups.set(face._cornerPatchKey, []);
+      }
+      patchGroups.get(face._cornerPatchKey).push(face);
+    } else if (face._triVerts && face._triVerts.length === 3) {
+      const key = face._triVerts.map(v => _edgeVKey(v)).sort().join('|');
+      if (!trihedronGroups.has(key)) trihedronGroups.set(key, []);
+      trihedronGroups.get(key).push(face);
+    } else {
+      standaloneFaces.push(face);
+    }
+  }
+
+  // Build face descs for two-edge corner patches
+  for (const [, group] of patchGroups) {
+    const desc = _buildExactCornerPatchFaceDesc(group);
+    if (desc) descs.push(desc);
+  }
+
+  // Build face descs for trihedron corners
+  for (const [, group] of trihedronGroups) {
+    const desc = _buildExactTrihedronFaceDesc(group);
+    if (desc) descs.push(desc);
+  }
+
+  // Build planar face descs for standalone corners
+  for (const face of standaloneFaces) {
+    if (!face.vertices || face.vertices.length < 3) continue;
+    const desc = _buildPlanarFaceDesc(face);
+    if (desc) descs.push(desc);
+  }
+
+  return descs;
+}
+
 function _buildExactFilletTopoBody(faces, edgeDataList) {
   if (!faces || !Array.isArray(faces) || !edgeDataList || edgeDataList.length === 0) return null;
-  if (faces.some((face) => face && face.isCorner)) return null;
 
   const faceDescs = [];
 
   for (const face of faces) {
-    if (!face || face.isFillet) continue;
+    if (!face || face.isFillet || face.isCorner) continue;
     const desc = _buildPlanarFaceDesc(face, edgeDataList);
     if (!desc) return null;
     faceDescs.push(desc);
@@ -5221,6 +6428,10 @@ function _buildExactFilletTopoBody(faces, edgeDataList) {
     if (!desc) return null;
     faceDescs.push(desc);
   }
+
+  // Include corner face descriptors (two-edge patches, trihedron patches, standalone)
+  const cornerDescs = _buildExactCornerFaceDescs(faces);
+  faceDescs.push(...cornerDescs);
 
   if (faceDescs.length === 0) return null;
   return buildTopoBody(faceDescs);

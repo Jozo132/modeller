@@ -64,7 +64,16 @@ export class SketchFeature extends Feature {
           y: circle.center.y + Math.sin(angle) * circle.radius,
         });
       }
-      profiles.push({ points, closed: true });
+      profiles.push({
+        points,
+        closed: true,
+        edges: [{
+          type: 'circle',
+          center: { x: circle.center.x, y: circle.center.y },
+          radius: circle.radius,
+          pointCount: numPoints,
+        }],
+      });
     }
 
     // Build a combined list of traceable edges (segments, arcs, splines)
@@ -101,6 +110,7 @@ export class SketchFeature extends Feature {
    */
   _traceProfileEdges(startEdge, allEdges, visited) {
     const points = [];
+    const edges = [];
     const edgeId = e => e.id || e._arcId;
     
     let current = startEdge;
@@ -120,10 +130,12 @@ export class SketchFeature extends Feature {
       // Determine forward direction: does prevEnd match p1?
       const forward = _ptEq(current.p1, prevEnd);
       const edgePoints = _tessellateEdge(current, forward);
+      const pointStartIndex = points.length - 1; // index of the shared start point
       // Skip the first point of each edge (it's already in the profile as the previous endpoint)
       for (let i = 1; i < edgePoints.length; i++) {
         points.push(edgePoints[i]);
       }
+      edges.push(_buildEdgeMeta(current, forward, pointStartIndex, edgePoints.length));
       
       // Find next connected edge
       const connected = allEdges.find(e => 
@@ -142,9 +154,11 @@ export class SketchFeature extends Feature {
         visited.add(edgeId(current));
         const closingForward = _ptEq(current.p1, prevEnd);
         const closingPoints = _tessellateEdge(current, closingForward);
+        const closingStartIndex = points.length - 1;
         for (let i = 1; i < closingPoints.length; i++) {
           points.push(closingPoints[i]);
         }
+        edges.push(_buildEdgeMeta(current, closingForward, closingStartIndex, closingPoints.length));
         // Remove the duplicate closing point if it matches startPoint
         if (points.length > 1) {
           const last = points[points.length - 1];
@@ -154,6 +168,7 @@ export class SketchFeature extends Feature {
         }
         return {
           points,
+          edges,
           closed: true,
         };
       }
@@ -162,6 +177,7 @@ export class SketchFeature extends Feature {
     // Not a closed loop
     return {
       points,
+      edges,
       closed: false,
     };
   }
@@ -346,6 +362,34 @@ function _findMatchingPoint(arc, pt) {
   // a coordinate-only proxy. The profile tracer already falls back to
   // coordinate comparison.
   return { x: pt.x, y: pt.y, _proxyFor: arc.id };
+}
+
+/**
+ * Build edge metadata for a traced edge, preserving exact geometry info.
+ * @param {Object} edge - The traceable edge (segment, arc-wrapper, or spline)
+ * @param {boolean} forward - Traversal direction
+ * @param {number} pointStartIndex - Index in the profile points array where this edge starts
+ * @param {number} pointCount - Number of tessellation points for this edge (including start)
+ * @returns {Object} Edge metadata
+ */
+function _buildEdgeMeta(edge, forward, pointStartIndex, pointCount) {
+  const meta = {
+    type: edge.type || 'segment',
+    pointStartIndex,
+    pointCount,
+  };
+  if (edge.type === 'arc' && edge.arc) {
+    const arc = edge.arc;
+    let startAngle = arc.startAngle;
+    let endAngle = arc.endAngle;
+    let sweep = endAngle - startAngle;
+    if (sweep <= 0) sweep += Math.PI * 2;
+    meta.center = { x: arc.center.x, y: arc.center.y };
+    meta.radius = arc.radius;
+    meta.startAngle = forward ? startAngle : startAngle + sweep;
+    meta.sweepAngle = forward ? sweep : -sweep;
+  }
+  return meta;
 }
 
 /**

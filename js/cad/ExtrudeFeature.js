@@ -411,7 +411,7 @@ export class ExtrudeFeature extends Feature {
     
     // Attach exact B-Rep alongside mesh
     try {
-      geometry.topoBody = this.buildExactBrep(profiles, resolvedPlane, extrusionVector, planeFrame, baseOffset, tipOffset);
+      geometry.topoBody = this.buildExactBrep(profiles, resolvedPlane, extrusionVector, planeFrame, baseOffset, tipOffset, holes);
     } catch (_) {
       // Exact B-Rep is best-effort; mesh is always the fallback
       geometry.topoBody = null;
@@ -435,92 +435,280 @@ export class ExtrudeFeature extends Feature {
    * @param {Object} planeFrame - Plane frame from resolvePlaneFrame
    * @returns {import('./BRepTopology.js').TopoBody}
    */
-  buildExactBrep(profiles, plane, extrusionVector, planeFrame, baseOffset = { x: 0, y: 0, z: 0 }, tipOffset = { x: 0, y: 0, z: 0 }) {
+  buildExactBrep(profiles, plane, extrusionVector, planeFrame, baseOffset = { x: 0, y: 0, z: 0 }, tipOffset = { x: 0, y: 0, z: 0 }, holes = []) {
     const faceDescs = [];
+    const extDir = _normalize(extrusionVector);
+    const extHeight = Math.sqrt(
+      extrusionVector.x * extrusionVector.x +
+      extrusionVector.y * extrusionVector.y +
+      extrusionVector.z * extrusionVector.z
+    );
 
-    for (const profile of profiles) {
-      let pts = profile.points.map(p => planeFrame.toPlanePoint(p));
+    const prepareProfileData = (profile, wantCCW) => {
+      let pts = profile.points.map((point) => planeFrame.toPlanePoint(point));
+      let profileEdges = profile.edges || null;
 
-      // Ensure CCW winding
       let signedArea = 0;
       for (let i = 0; i < pts.length; i++) {
         const j = (i + 1) % pts.length;
         signedArea += pts[i].x * pts[j].y - pts[j].x * pts[i].y;
       }
-      if (signedArea < 0) pts = [...pts].reverse();
+
+      const isCCW = signedArea >= 0;
+      if (isCCW !== wantCCW) {
+        if (profileEdges) {
+          const reversedProfile = _reverseProfileWinding(pts, profileEdges);
+          pts = reversedProfile.points;
+          profileEdges = reversedProfile.edges;
+        } else {
+          pts = [...pts].reverse();
+        }
+      }
 
       const n = pts.length;
-      const bottomVerts = pts.map((p) => {
-        const world = this.sketchToWorld(p, plane);
+      const bottomVerts = pts.map((point) => {
+        const world = this.sketchToWorld(point, plane);
         return {
           x: world.x + baseOffset.x,
           y: world.y + baseOffset.y,
           z: world.z + baseOffset.z,
         };
       });
-      const topVerts = bottomVerts.map(v => ({
-        x: v.x + extrusionVector.x + tipOffset.x - baseOffset.x,
-        y: v.y + extrusionVector.y + tipOffset.y - baseOffset.y,
-        z: v.z + extrusionVector.z + tipOffset.z - baseOffset.z,
+      const topVerts = bottomVerts.map((vertex) => ({
+        x: vertex.x + extrusionVector.x + tipOffset.x - baseOffset.x,
+        y: vertex.y + extrusionVector.y + tipOffset.y - baseOffset.y,
+        z: vertex.z + extrusionVector.z + tipOffset.z - baseOffset.z,
       }));
 
-      // Bottom cap (reverse winding for outward normal)
-      const bottomNorm = { x: -plane.normal.x, y: -plane.normal.y, z: -plane.normal.z };
-      const bottomCapVerts = [...bottomVerts].reverse();
+      const edgeRanges = _buildEdgeRanges(profileEdges, n);
+      const edgeInfos = [];
+
+      for (const range of edgeRanges) {
+        const { type, startIdx, endIdx } = range;
+        const spanIndices = [];
+        for (let k = startIdx; ; k = (k + 1) % n) {
+          spanIndices.push(k);
+          if (k === endIdx) break;
+        }
+
+        if ((type === 'arc' || type === 'circle') && range.center && range.radius) {
+          const centerWorld = this.sketchToWorld(range.center, plane);
+          const center3D = {
+            x: centerWorld.x + baseOffset.x,
+            y: centerWorld.y + baseOffset.y,
+            z: centerWorld.z + baseOffset.z,
+          };
+          const topCenter3D = {
+            x: center3D.x + extrusionVector.x + tipOffset.x - baseOffset.x,
+            y: center3D.y + extrusionVector.y + tipOffset.y - baseOffset.y,
+            z: center3D.z + extrusionVector.z + tipOffset.z - baseOffset.z,
+          };
+
+          if (type === 'circle') {
+            const halfIndex = Math.floor(spanIndices.length / 2);
+            const circleHalves = [
+              {
+                startIdx: spanIndices[0],
+                endIdx: spanIndices[halfIndex],
+                tangentIdx: spanIndices[1] ?? spanIndices[0],
+              },
+              {
+                startIdx: spanIndices[halfIndex],
+                endIdx: spanIndices[0],
+                tangentIdx: spanIndices[(halfIndex + 1) % spanIndices.length] ?? spanIndices[halfIndex],
+              },
+            ];
+
+            for (const half of circleHalves) {
+              const r0 = _sub(bottomVerts[half.startIdx], center3D);
+              const r0Len = Math.sqrt(r0.x * r0.x + r0.y * r0.y + r0.z * r0.z);
+              const xAx = r0Len > 1e-14 ? { x: r0.x / r0Len, y: r0.y / r0Len, z: r0.z / r0Len } : plane.xAxis;
+              const positiveYAx = _normalize(_cross(extDir, xAx));
+              const tangent = _normalize(_sub(bottomVerts[half.tangentIdx], bottomVerts[half.startIdx]));
+              const yAx = _dot(tangent, positiveYAx) >= 0
+                ? positiveYAx
+                : { x: -positiveYAx.x, y: -positiveYAx.y, z: -positiveYAx.z };
+
+              edgeInfos.push({
+                type,
+                startIdx: half.startIdx,
+                endIdx: half.endIdx,
+                spanIndices: [half.startIdx, half.endIdx],
+                isArc: true,
+                bottomCurve: NurbsCurve.createArc(center3D, range.radius, xAx, yAx, 0, Math.PI),
+                topCurve: NurbsCurve.createArc(topCenter3D, range.radius, xAx, yAx, 0, Math.PI),
+                cylSurf: NurbsSurface.createCylinder(center3D, extDir, range.radius, extHeight, xAx, yAx, 0, Math.PI),
+              });
+            }
+            continue;
+          }
+
+          const r0 = _sub(bottomVerts[startIdx], center3D);
+          const r0Len = Math.sqrt(r0.x * r0.x + r0.y * r0.y + r0.z * r0.z);
+          const xAx = r0Len > 1e-14 ? { x: r0.x / r0Len, y: r0.y / r0Len, z: r0.z / r0Len } : plane.xAxis;
+          const yAx = _normalize(_cross(extDir, xAx));
+
+          const r1 = _sub(bottomVerts[endIdx], center3D);
+          const cosA = Math.max(-1, Math.min(1, (r0.x * r1.x + r0.y * r1.y + r0.z * r1.z) / (r0Len * range.radius)));
+          const crossR = _cross(r0, r1);
+          const sinSign = crossR.x * extDir.x + crossR.y * extDir.y + crossR.z * extDir.z;
+          let sweep = Math.acos(cosA);
+          if (range.sweepAngle !== undefined) {
+            sweep = Math.abs(range.sweepAngle);
+            if ((range.sweepAngle > 0 && sinSign < 0) || (range.sweepAngle < 0 && sinSign > 0)) {
+              sweep = 2 * Math.PI - sweep;
+            }
+          } else if (sinSign < 0) {
+            sweep = 2 * Math.PI - sweep;
+          }
+
+          edgeInfos.push({
+            type,
+            startIdx,
+            endIdx,
+            spanIndices,
+            isArc: true,
+            bottomCurve: NurbsCurve.createArc(center3D, range.radius, xAx, yAx, 0, sweep),
+            topCurve: NurbsCurve.createArc(topCenter3D, range.radius, xAx, yAx, 0, sweep),
+            cylSurf: NurbsSurface.createCylinder(center3D, extDir, range.radius, extHeight, xAx, yAx, 0, sweep),
+          });
+        } else {
+          edgeInfos.push({
+            type,
+            startIdx,
+            endIdx,
+            spanIndices,
+            isArc: false,
+            isClosedRange: type === 'circle',
+          });
+        }
+      }
+
+      return { bottomVerts, topVerts, edgeInfos };
+    };
+
+    const buildCapLoop = (profileData, curveKey, reversed) => {
+      const vertices = [];
+      const edgeCurves = [];
+      const infos = reversed ? [...profileData.edgeInfos].reverse() : profileData.edgeInfos;
+      const verts = curveKey === 'bottomCurve' ? profileData.bottomVerts : profileData.topVerts;
+
+      for (const info of infos) {
+        if (info.isArc) {
+          vertices.push(reversed ? verts[info.endIdx] : verts[info.startIdx]);
+          edgeCurves.push(reversed ? info[curveKey].reversed() : info[curveKey]);
+          continue;
+        }
+
+        const indices = reversed ? [...info.spanIndices].reverse() : info.spanIndices;
+        const segmentCount = info.isClosedRange ? indices.length : (indices.length - 1);
+        for (let si = 0; si < segmentCount; si++) {
+          const start = verts[indices[si]];
+          const end = verts[indices[(si + 1) % indices.length]];
+          vertices.push(start);
+          edgeCurves.push(NurbsCurve.createLine(start, end));
+        }
+      }
+
+      return { vertices, edgeCurves };
+    };
+
+    const addSideFaces = (profileData) => {
+      for (const info of profileData.edgeInfos) {
+        if (info.isArc) {
+          const bStart = profileData.bottomVerts[info.startIdx];
+          const bEnd = profileData.bottomVerts[info.endIdx];
+          const tStart = profileData.topVerts[info.startIdx];
+          const tEnd = profileData.topVerts[info.endIdx];
+          let vertices = [bStart, bEnd, tEnd, tStart];
+          let edgeCurves = [
+            info.bottomCurve,
+            NurbsCurve.createLine(bEnd, tEnd),
+            info.topCurve.reversed(),
+            NurbsCurve.createLine(tStart, bStart),
+          ];
+
+          if (this.direction < 0) {
+            vertices = [...vertices].reverse();
+            edgeCurves = edgeCurves.reverse();
+          }
+
+          faceDescs.push({
+            surface: info.cylSurf,
+            surfaceType: SurfaceType.CYLINDER,
+            vertices,
+            edgeCurves,
+            shared: { sourceFeatureId: this.id },
+          });
+          continue;
+        }
+
+        const segmentCount = info.isClosedRange ? info.spanIndices.length : (info.spanIndices.length - 1);
+        for (let si = 0; si < segmentCount; si++) {
+          const i0 = info.spanIndices[si];
+          const i1 = info.spanIndices[(si + 1) % info.spanIndices.length];
+          let vertices = [
+            profileData.bottomVerts[i0],
+            profileData.bottomVerts[i1],
+            profileData.topVerts[i1],
+            profileData.topVerts[i0],
+          ];
+          if (this.direction < 0) vertices = [...vertices].reverse();
+
+          faceDescs.push({
+            surface: NurbsSurface.createPlane(vertices[0], _sub(vertices[1], vertices[0]), _sub(vertices[3], vertices[0])),
+            surfaceType: SurfaceType.PLANE,
+            vertices,
+            edgeCurves: [
+              NurbsCurve.createLine(vertices[0], vertices[1]),
+              NurbsCurve.createLine(vertices[1], vertices[2]),
+              NurbsCurve.createLine(vertices[2], vertices[3]),
+              NurbsCurve.createLine(vertices[3], vertices[0]),
+            ],
+            shared: { sourceFeatureId: this.id },
+          });
+        }
+      }
+    };
+
+    for (let profileIndex = 0; profileIndex < profiles.length; profileIndex++) {
+      const outerData = prepareProfileData(profiles[profileIndex], true);
+      const holeData = profileIndex === 0
+        ? (holes || []).map((hole) => prepareProfileData(hole, false))
+        : [];
+
+      const bottomOuterLoop = buildCapLoop(outerData, 'bottomCurve', true);
+      const topOuterLoop = buildCapLoop(outerData, 'topCurve', false);
+
       faceDescs.push({
         surface: NurbsSurface.createPlane(
-          bottomCapVerts[0],
-          _sub(bottomCapVerts[1], bottomCapVerts[0]),
-          _sub(bottomCapVerts[bottomCapVerts.length - 1], bottomCapVerts[0]),
+          bottomOuterLoop.vertices[0],
+          _sub(bottomOuterLoop.vertices[1] || bottomOuterLoop.vertices[0], bottomOuterLoop.vertices[0]),
+          _sub(bottomOuterLoop.vertices[bottomOuterLoop.vertices.length - 1] || bottomOuterLoop.vertices[0], bottomOuterLoop.vertices[0]),
         ),
         surfaceType: SurfaceType.PLANE,
-        vertices: bottomCapVerts,
-        edgeCurves: bottomCapVerts.map((v, i) =>
-          NurbsCurve.createLine(v, bottomCapVerts[(i + 1) % bottomCapVerts.length])),
+        vertices: bottomOuterLoop.vertices,
+        edgeCurves: bottomOuterLoop.edgeCurves,
+        innerLoops: holeData.map((holeProfile) => buildCapLoop(holeProfile, 'bottomCurve', true)),
         shared: { sourceFeatureId: this.id },
       });
 
-      // Top cap
       faceDescs.push({
         surface: NurbsSurface.createPlane(
-          topVerts[0],
-          _sub(topVerts[1], topVerts[0]),
-          _sub(topVerts[topVerts.length - 1], topVerts[0]),
+          topOuterLoop.vertices[0],
+          _sub(topOuterLoop.vertices[1] || topOuterLoop.vertices[0], topOuterLoop.vertices[0]),
+          _sub(topOuterLoop.vertices[topOuterLoop.vertices.length - 1] || topOuterLoop.vertices[0], topOuterLoop.vertices[0]),
         ),
         surfaceType: SurfaceType.PLANE,
-        vertices: [...topVerts],
-        edgeCurves: topVerts.map((v, i) =>
-          NurbsCurve.createLine(v, topVerts[(i + 1) % topVerts.length])),
+        vertices: topOuterLoop.vertices,
+        edgeCurves: topOuterLoop.edgeCurves,
+        innerLoops: holeData.map((holeProfile) => buildCapLoop(holeProfile, 'topCurve', false)),
         shared: { sourceFeatureId: this.id },
       });
 
-      // Side faces
-      for (let i = 0; i < n; i++) {
-        const nextI = (i + 1) % n;
-        let sideVerts = [bottomVerts[i], bottomVerts[nextI], topVerts[nextI], topVerts[i]];
-
-        if (this.direction < 0) sideVerts = [...sideVerts].reverse();
-
-        const sideSurf = NurbsSurface.createPlane(
-          sideVerts[0],
-          _sub(sideVerts[1], sideVerts[0]),
-          _sub(sideVerts[3], sideVerts[0]),
-        );
-
-        const edgeCurves = [
-          NurbsCurve.createLine(sideVerts[0], sideVerts[1]),
-          NurbsCurve.createLine(sideVerts[1], sideVerts[2]),
-          NurbsCurve.createLine(sideVerts[2], sideVerts[3]),
-          NurbsCurve.createLine(sideVerts[3], sideVerts[0]),
-        ];
-
-        faceDescs.push({
-          surface: sideSurf,
-          surfaceType: SurfaceType.PLANE,
-          vertices: sideVerts,
-          edgeCurves,
-          shared: { sourceFeatureId: this.id },
-        });
+      addSideFaces(outerData);
+      for (const holeProfile of holeData) {
+        addSideFaces(holeProfile);
       }
     }
 
@@ -781,4 +969,180 @@ export class ExtrudeFeature extends Feature {
 // Vector helper for B-Rep construction
 function _sub(a, b) {
   return { x: a.x - b.x, y: a.y - b.y, z: a.z - b.z };
+}
+
+function _cross(a, b) {
+  return {
+    x: a.y * b.z - a.z * b.y,
+    y: a.z * b.x - a.x * b.z,
+    z: a.x * b.y - a.y * b.x,
+  };
+}
+
+function _normalize(v) {
+  const len = Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+  return len > 1e-14 ? { x: v.x / len, y: v.y / len, z: v.z / len } : { x: 0, y: 0, z: 1 };
+}
+
+function _dot(a, b) {
+  return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+/**
+ * Reverse edge metadata list when profile winding is reversed.
+ * The edges list must be reversed and each arc sweep direction flipped.
+ */
+function _reverseEdgeMetaList(edges, totalPoints) {
+  if (!edges || edges.length === 0) return edges;
+  const result = [];
+  for (let i = edges.length - 1; i >= 0; i--) {
+    const e = { ...edges[i] };
+    if (e.type === 'arc' && e.sweepAngle !== undefined) {
+      e.sweepAngle = -e.sweepAngle;
+      if (e.startAngle !== undefined) {
+        e.startAngle = e.startAngle + edges[i].sweepAngle;
+      }
+    }
+    result.push(e);
+  }
+  return result;
+}
+
+function _reverseProfileWinding(points, edges) {
+  if (!Array.isArray(points) || points.length === 0 || !Array.isArray(edges) || edges.length === 0) {
+    return {
+      points: Array.isArray(points) ? [...points].reverse() : points,
+      edges: Array.isArray(edges) ? _reverseEdgeMetaList(edges) : edges,
+    };
+  }
+
+  if (edges.length === 1 && edges[0].type === 'circle') {
+    return {
+      points: [points[0], ...points.slice(1).reverse()],
+      edges: [{
+        ..._reverseSingleEdgeMeta(edges[0]),
+        pointStartIndex: 0,
+        pointCount: points.length,
+      }],
+    };
+  }
+
+  const pointCount = points.length;
+  const ranges = _buildEdgeRanges(edges, pointCount);
+  const pointChains = ranges.map((range) => {
+    const chain = [];
+    for (let index = range.startIdx; ; index = (index + 1) % pointCount) {
+      chain.push(points[index]);
+      if (index === range.endIdx) break;
+    }
+    return chain;
+  });
+
+  const reversedPoints = [{ ...points[0] }];
+  const reversedEdges = [];
+  for (let edgeIndex = edges.length - 1; edgeIndex >= 0; edgeIndex--) {
+    reversedEdges.push(_reverseSingleEdgeMeta(edges[edgeIndex]));
+
+    const reversedChain = [...pointChains[edgeIndex]].reverse();
+    for (let i = 1; i < reversedChain.length; i++) {
+      reversedPoints.push({ ...reversedChain[i] });
+    }
+  }
+
+  if (reversedPoints.length > 1) {
+    const first = reversedPoints[0];
+    const last = reversedPoints[reversedPoints.length - 1];
+    if (Math.abs(first.x - last.x) < 1e-9 && Math.abs(first.y - last.y) < 1e-9) {
+      reversedPoints.pop();
+    }
+  }
+
+  let currentIndex = 0;
+  const normalizedEdges = reversedEdges.map((edge) => {
+    const normalized = {
+      ...edge,
+      pointStartIndex: currentIndex,
+      pointCount: edge.pointCount || 2,
+    };
+    currentIndex = (currentIndex + normalized.pointCount - 1) % reversedPoints.length;
+    return normalized;
+  });
+
+  return {
+    points: reversedPoints,
+    edges: normalizedEdges,
+  };
+}
+
+function _reverseSingleEdgeMeta(edge) {
+  const reversed = { ...edge };
+  if (edge.type === 'arc' && edge.sweepAngle !== undefined) {
+    reversed.startAngle = edge.startAngle !== undefined ? edge.startAngle + edge.sweepAngle : edge.startAngle;
+    reversed.sweepAngle = -edge.sweepAngle;
+  }
+  return reversed;
+}
+
+/**
+ * Build edge ranges from profile edge metadata.
+ * Returns array of { type, startIdx, endIdx, center?, radius?, sweepAngle? }
+ * where startIdx..endIdx are indices into the profile points array.
+ */
+function _buildEdgeRanges(profileEdges, totalPoints) {
+  if (!profileEdges || profileEdges.length === 0) {
+    // No edge metadata — treat entire profile as line segments
+    const ranges = [];
+    for (let i = 0; i < totalPoints; i++) {
+      ranges.push({
+        type: 'segment',
+        startIdx: i,
+        endIdx: (i + 1) % totalPoints,
+      });
+    }
+    return ranges;
+  }
+
+  const ranges = [];
+  let currentIdx = 0;
+
+  for (const edge of profileEdges) {
+    const nPts = edge.pointCount || 2;
+    // The edge covers nPts tessellation points (including shared start),
+    // contributing nPts-1 point advances
+    const advance = nPts - 1;
+    const endIdx = (currentIdx + advance) % totalPoints;
+
+    ranges.push({
+      type: edge.type || 'segment',
+      startIdx: currentIdx,
+      endIdx,
+      center: edge.center,
+      radius: edge.radius,
+      sweepAngle: edge.sweepAngle,
+      startAngle: edge.startAngle,
+    });
+
+    currentIdx = endIdx;
+  }
+
+  return ranges;
+}
+
+/**
+ * Build edge curves for cap faces.
+ * For segments between cap vertices → line curves.
+ * For arcs → NURBS arc curves in 3D.
+ * @param {Array} capVerts - Cap vertices in order
+ * @param {Array} edgeRanges - Edge range descriptors
+ * @param {number} n - Total number of profile points
+ * @param {boolean} isBottom - If true, cap is reversed winding (needs arc reversal)
+ */
+function _buildCapEdgeCurves(capVerts, edgeRanges, n, isBottom) {
+  // Cap vertices just form a polygon boundary; each consecutive pair
+  // of vertices is an edge. For now, use line curves for all cap edges.
+  // Arc curves on cap edges are not needed for the planar cap surface —
+  // the key improvement is the cylindrical SIDE faces.
+  return capVerts.map((v, i) =>
+    NurbsCurve.createLine(v, capVerts[(i + 1) % capVerts.length])
+  );
 }

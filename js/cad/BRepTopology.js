@@ -714,8 +714,12 @@ TopoBody._nextId = 0;
  * @param {Array<{
  *   surface: NurbsSurface|null,
  *   surfaceType: string,
- *   vertices: Array<{x,y,z}>,
+ *   vertices: Array<{x,y,z,topologyKey?:string}>,
  *   edgeCurves: Array<NurbsCurve|null>,
+ *   innerLoops?: Array<{
+ *     vertices: Array<{x,y,z,topologyKey?:string}>,
+ *     edgeCurves?: Array<NurbsCurve|null>,
+ *   }>,
  *   shared: Object|null,
  * }>} faceDescs
  * @param {import('./Tolerance.js').Tolerance} [tol]
@@ -726,10 +730,11 @@ export function buildTopoBody(faceDescs, tol = DEFAULT_TOLERANCE) {
   const fmtCoord = (n) => (Math.abs(n) < 1e-12 ? 0 : n).toFixed(8);
   const vertKey = (p) => `${fmtCoord(p.x)},${fmtCoord(p.y)},${fmtCoord(p.z)}`;
   const vertMap = new Map();
-  const getOrCreateVertex = (p) => {
-    const key = vertKey(p);
+  const getOrCreateVertex = (entry) => {
+    const point = entry && entry.point ? entry.point : entry;
+    const key = entry && entry.topologyKey ? `topology:${entry.topologyKey}` : vertKey(point);
     if (vertMap.has(key)) return vertMap.get(key);
-    const v = new TopoVertex(p, tol.pointCoincidence);
+    const v = new TopoVertex(point, tol.pointCoincidence);
     vertMap.set(key, v);
     return v;
   };
@@ -746,29 +751,32 @@ export function buildTopoBody(faceDescs, tol = DEFAULT_TOLERANCE) {
     return { edge: e, sameSense: true };
   };
 
-  const faces = [];
-
-  for (const fd of faceDescs) {
-    const verts = fd.vertices.map(p => getOrCreateVertex(p));
+  const buildLoop = (loopDesc) => {
+    const verts = (loopDesc.vertices || []).map((vertex) => getOrCreateVertex(vertex));
     const n = verts.length;
-
-    // Build coedges for outer loop
     const coedges = [];
     for (let i = 0; i < n; i++) {
       const v1 = verts[i];
       const v2 = verts[(i + 1) % n];
-      const curve = (fd.edgeCurves && fd.edgeCurves[i]) || null;
+      const curve = (loopDesc.edgeCurves && loopDesc.edgeCurves[i]) || null;
       const { edge, sameSense } = getOrCreateEdge(v1, v2, curve);
       coedges.push(new TopoCoEdge(edge, sameSense, null));
     }
+    return new TopoLoop(coedges);
+  };
 
-    const loop = new TopoLoop(coedges);
+  const faces = [];
+
+  for (const fd of faceDescs) {
     const face = new TopoFace(
       fd.surface || null,
       fd.surfaceType || SurfaceType.UNKNOWN,
       fd.sameSense !== false
     );
-    face.setOuterLoop(loop);
+    face.setOuterLoop(buildLoop({ vertices: fd.vertices || [], edgeCurves: fd.edgeCurves || [] }));
+    for (const innerLoop of (fd.innerLoops || [])) {
+      face.addInnerLoop(buildLoop(innerLoop));
+    }
     face.shared = fd.shared || null;
     faces.push(face);
   }
