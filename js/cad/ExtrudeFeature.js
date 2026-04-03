@@ -558,6 +558,9 @@ export class ExtrudeFeature extends Feature {
             if ((range.sweepAngle > 0 && sinSign < 0) || (range.sweepAngle < 0 && sinSign > 0)) {
               sweep = 2 * Math.PI - sweep;
             }
+            // Preserve the sweep direction: a negative sweepAngle means the arc
+            // goes clockwise (concave), so negate sweep for createArc.
+            if (range.sweepAngle < 0) sweep = -sweep;
           } else if (sinSign < 0) {
             sweep = 2 * Math.PI - sweep;
           }
