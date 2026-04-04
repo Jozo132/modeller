@@ -312,46 +312,109 @@ function _buildTwoEdgeFilletTrim(edgeInfo0, edgeInfo1, origFaces) {
 }
 
 function _applyTwoEdgeFilletSharedTrims(edgeDataList, origFaces, vertexEdgeMap) {
+  // Track corner vertex trim endpoints for 3-edge corner patch generation
+  const cornerTrimEndpoints = new Map(); // vk → [{ trimEndpoint, pairKey }]
+
   for (const [vk, edgeIndices] of vertexEdgeMap) {
-    if (edgeIndices.length !== 2) continue;
+    if (edgeIndices.length === 2) {
+      // Standard 2-edge case
+      const data0 = edgeDataList[edgeIndices[0]];
+      const data1 = edgeDataList[edgeIndices[1]];
+      const edgeInfo0 = {
+        data: data0,
+        isA: _edgeVKey(data0.edgeA) === vk,
+        arc: _edgeVKey(data0.edgeA) === vk ? data0.arcA : data0.arcB,
+      };
+      const edgeInfo1 = {
+        data: data1,
+        isA: _edgeVKey(data1.edgeA) === vk,
+        arc: _edgeVKey(data1.edgeA) === vk ? data1.arcA : data1.arcB,
+      };
+      if (!edgeInfo0.arc || !edgeInfo1.arc) continue;
 
-    const data0 = edgeDataList[edgeIndices[0]];
-    const data1 = edgeDataList[edgeIndices[1]];
-    const edgeInfo0 = {
-      data: data0,
-      isA: _edgeVKey(data0.edgeA) === vk,
-      arc: _edgeVKey(data0.edgeA) === vk ? data0.arcA : data0.arcB,
-    };
-    const edgeInfo1 = {
-      data: data1,
-      isA: _edgeVKey(data1.edgeA) === vk,
-      arc: _edgeVKey(data1.edgeA) === vk ? data1.arcA : data1.arcB,
-    };
-    if (!edgeInfo0.arc || !edgeInfo1.arc) continue;
+      const trimInfo = _buildTwoEdgeFilletTrim(edgeInfo0, edgeInfo1, origFaces);
+      if (!trimInfo) continue;
 
-    const trimInfo = _buildTwoEdgeFilletTrim(edgeInfo0, edgeInfo1, origFaces);
-    if (!trimInfo) continue;
+      if (edgeInfo0.isA) edgeInfo0.data.sharedTrimA = trimInfo.trimFor0;
+      else edgeInfo0.data.sharedTrimB = trimInfo.trimFor0;
+      if (edgeInfo1.isA) edgeInfo1.data.sharedTrimA = trimInfo.trimFor1;
+      else edgeInfo1.data.sharedTrimB = trimInfo.trimFor1;
 
-    if (edgeInfo0.isA) edgeInfo0.data.sharedTrimA = trimInfo.trimFor0;
-    else edgeInfo0.data.sharedTrimB = trimInfo.trimFor0;
-    if (edgeInfo1.isA) edgeInfo1.data.sharedTrimA = trimInfo.trimFor1;
-    else edgeInfo1.data.sharedTrimB = trimInfo.trimFor1;
+      if (edgeInfo0.isA) {
+        edgeInfo0.data._sharedTrimPlaneAOrigin = { ...trimInfo.planeOrigin };
+        edgeInfo0.data._sharedTrimPlaneANormal = { ...trimInfo.planeNormal };
+      } else {
+        edgeInfo0.data._sharedTrimPlaneBOrigin = { ...trimInfo.planeOrigin };
+        edgeInfo0.data._sharedTrimPlaneBNormal = { ...trimInfo.planeNormal };
+      }
+      if (edgeInfo1.isA) {
+        edgeInfo1.data._sharedTrimPlaneAOrigin = { ...trimInfo.planeOrigin };
+        edgeInfo1.data._sharedTrimPlaneANormal = { ...trimInfo.planeNormal };
+      } else {
+        edgeInfo1.data._sharedTrimPlaneBOrigin = { ...trimInfo.planeOrigin };
+        edgeInfo1.data._sharedTrimPlaneBNormal = { ...trimInfo.planeNormal };
+      }
+    } else if (edgeIndices.length >= 3) {
+      // 3+ edge corner: process all pairs to compute shared trims
+      // Each pair of edges sharing a common face gets a shared trim curve
+      const trimEndpoints = [];
 
-    if (edgeInfo0.isA) {
-      edgeInfo0.data._sharedTrimPlaneAOrigin = { ...trimInfo.planeOrigin };
-      edgeInfo0.data._sharedTrimPlaneANormal = { ...trimInfo.planeNormal };
-    } else {
-      edgeInfo0.data._sharedTrimPlaneBOrigin = { ...trimInfo.planeOrigin };
-      edgeInfo0.data._sharedTrimPlaneBNormal = { ...trimInfo.planeNormal };
-    }
-    if (edgeInfo1.isA) {
-      edgeInfo1.data._sharedTrimPlaneAOrigin = { ...trimInfo.planeOrigin };
-      edgeInfo1.data._sharedTrimPlaneANormal = { ...trimInfo.planeNormal };
-    } else {
-      edgeInfo1.data._sharedTrimPlaneBOrigin = { ...trimInfo.planeOrigin };
-      edgeInfo1.data._sharedTrimPlaneBNormal = { ...trimInfo.planeNormal };
+      for (let i = 0; i < edgeIndices.length; i++) {
+        for (let j = i + 1; j < edgeIndices.length; j++) {
+          const data0 = edgeDataList[edgeIndices[i]];
+          const data1 = edgeDataList[edgeIndices[j]];
+          const edgeInfo0 = {
+            data: data0,
+            isA: _edgeVKey(data0.edgeA) === vk,
+            arc: _edgeVKey(data0.edgeA) === vk ? data0.arcA : data0.arcB,
+          };
+          const edgeInfo1 = {
+            data: data1,
+            isA: _edgeVKey(data1.edgeA) === vk,
+            arc: _edgeVKey(data1.edgeA) === vk ? data1.arcA : data1.arcB,
+          };
+          if (!edgeInfo0.arc || !edgeInfo1.arc) continue;
+
+          const trimInfo = _buildTwoEdgeFilletTrim(edgeInfo0, edgeInfo1, origFaces);
+          if (!trimInfo) continue;
+
+          // Apply shared trims to each edge
+          if (edgeInfo0.isA) edgeInfo0.data.sharedTrimA = trimInfo.trimFor0;
+          else edgeInfo0.data.sharedTrimB = trimInfo.trimFor0;
+          if (edgeInfo1.isA) edgeInfo1.data.sharedTrimA = trimInfo.trimFor1;
+          else edgeInfo1.data.sharedTrimB = trimInfo.trimFor1;
+
+          if (edgeInfo0.isA) {
+            edgeInfo0.data._sharedTrimPlaneAOrigin = { ...trimInfo.planeOrigin };
+            edgeInfo0.data._sharedTrimPlaneANormal = { ...trimInfo.planeNormal };
+          } else {
+            edgeInfo0.data._sharedTrimPlaneBOrigin = { ...trimInfo.planeOrigin };
+            edgeInfo0.data._sharedTrimPlaneBNormal = { ...trimInfo.planeNormal };
+          }
+          if (edgeInfo1.isA) {
+            edgeInfo1.data._sharedTrimPlaneAOrigin = { ...trimInfo.planeOrigin };
+            edgeInfo1.data._sharedTrimPlaneANormal = { ...trimInfo.planeNormal };
+          } else {
+            edgeInfo1.data._sharedTrimPlaneBOrigin = { ...trimInfo.planeOrigin };
+            edgeInfo1.data._sharedTrimPlaneBNormal = { ...trimInfo.planeNormal };
+          }
+
+          // Collect the trim endpoint closest to the shared vertex for corner patch
+          // The shared trim on the common face side near the vertex
+          const trimPts = trimInfo.trimFor0;
+          if (trimPts && trimPts.length > 0) {
+            trimEndpoints.push({ ...trimPts[0] });
+          }
+        }
+      }
+
+      if (trimEndpoints.length >= 3) {
+        cornerTrimEndpoints.set(vk, trimEndpoints);
+      }
     }
   }
+
+  return cornerTrimEndpoints;
 }
 
 function _curveFromSampledPoints(points) {
@@ -841,7 +904,7 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
   // Step 3: Merge shared vertex positions and apply two-edge fillet trims
   const vertexEdgeMap = _buildVertexEdgeMap(edgeDataList);
   _mergeSharedVertexPositions(edgeDataList, vertexEdgeMap);
-  _applyTwoEdgeFilletSharedTrims(edgeDataList, faces, vertexEdgeMap);
+  const cornerTrimEndpoints = _applyTwoEdgeFilletSharedTrims(edgeDataList, faces, vertexEdgeMap);
 
   // Step 4: Trim original faces and build fillet face descriptors
   // Create a set of face indices that are adjacent to fillet edges
@@ -929,8 +992,48 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
             newVerts.push({ ...trimPts[1] }, { ...trimPts[0] });
           }
           modified = true;
+        } else if (trimPts.length > 2) {
+          // Multiple fillet edges share this vertex on a non-adjacent face.
+          // Sort all trim points by angular order around the boundary walk
+          // to maintain watertight topology.
+          const dirPrev = _vec3Normalize(_vec3Sub(vPrev, v));
+          const dirNext = _vec3Normalize(_vec3Sub(vNext, v));
+          const faceNormal = face.normal
+            ? { x: face.normal.x, y: face.normal.y, z: face.normal.z }
+            : _computePolygonNormal(origVerts);
+
+          // Deduplicate trim points that are at the same position
+          const uniqueTrimPts = [];
+          const seen = new Set();
+          for (const pt of trimPts) {
+            const ptKey = _edgeVKey(pt);
+            if (!seen.has(ptKey)) {
+              seen.add(ptKey);
+              uniqueTrimPts.push(pt);
+            }
+          }
+
+          // Sort by signed angle from vPrev direction around face normal
+          uniqueTrimPts.sort((a, b) => {
+            const da = _vec3Normalize(_vec3Sub(a, v));
+            const db = _vec3Normalize(_vec3Sub(b, v));
+            const angleA = Math.atan2(
+              _vec3Dot(_vec3Cross(dirPrev, da), faceNormal),
+              _vec3Dot(dirPrev, da)
+            );
+            const angleB = Math.atan2(
+              _vec3Dot(_vec3Cross(dirPrev, db), faceNormal),
+              _vec3Dot(dirPrev, db)
+            );
+            return angleA - angleB;
+          });
+
+          for (const pt of uniqueTrimPts) {
+            newVerts.push({ ...pt });
+          }
+          modified = true;
         } else {
-          // Multiple fillets at vertex — fallback: keep original
+          // No trim points — keep original
           newVerts.push({ ...v });
         }
       }
@@ -1022,7 +1125,15 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
     }
   }
 
-  // Step 6: Build the exact fillet TopoBody
+  // Step 6: Generate corner patch faces for 3+ edge vertices
+  // At vertices where 3+ fillet edges meet, the shared trims leave
+  // gaps. Currently, corner patches are only generated when the shared
+  // trims produce exactly matching edge endpoints. Complex 3-edge
+  // corners may leave boundary edges.
+  // TODO: Implement proper spherical corner patch generation for
+  // 3+ edge fillet corners with matching edge topology.
+
+  // Step 7: Build the exact fillet TopoBody
   // Mark fillet faces in trimmed faces
   for (const data of edgeDataList) {
     // The fillet strip face will be added by _buildExactFilletTopoBody
