@@ -19,6 +19,39 @@ import { buildTopoBody, SurfaceType } from './BRepTopology.js';
 import { tessellateBody } from './Tessellation.js';
 import { constrainedTriangulate } from './Tessellator2/CDT.js';
 
+// Re-export mesh analysis from toolkit so consumers that imported from CSG.js
+// continue to work without changes.
+export {
+  countInvertedFaces,
+  calculateMeshVolume,
+  calculateBoundingBox,
+  calculateSurfaceArea,
+  detectDisconnectedBodies,
+  calculateWallThickness,
+} from './toolkit/MeshAnalysis.js';
+
+import {
+  vec3Sub as _vec3Sub,
+  vec3Add as _vec3Add,
+  vec3Scale as _vec3Scale,
+  vec3Dot as _vec3Dot,
+  vec3Cross as _vec3Cross,
+  vec3Len as _vec3Len,
+  vec3Normalize as _vec3Normalize,
+  vec3Lerp as _vec3Lerp,
+  circumsphereCenter as _circumsphereCenter,
+  circumCenter3D as _circumCenter3D,
+  projectOntoAxis as _projectOntoAxis,
+  pointsCoincident3D as _pointsCoincident3D,
+  pointOnFacePlane as _pointOnFacePlane,
+  rayTriangleIntersect as _rayTriangleIntersect,
+  canonicalCoord as _canonicalCoord,
+  canonicalPoint as _canonicalPoint,
+  fmtCoord as _fmtCoord,
+  edgeVKey as _edgeVKey,
+  edgeKeyFromVerts as _edgeKeyFromVerts,
+} from './toolkit/Vec3Utils.js';
+
 const EPSILON = 1e-5;
 
 // -----------------------------------------------------------------------
@@ -1285,340 +1318,21 @@ function _computePolygonNormal(vertices) {
   return { x: nx / len, y: ny / len, z: nz / len };
 }
 
-/**
- * Count faces whose polygon winding opposes their stored face normal.
- * Degenerate faces or faces without a stored normal are ignored.
- * @param {Object} geometry - {faces: [{vertices: [...], normal: {x,y,z}}]}
- * @returns {number}
- */
-export function countInvertedFaces(geometry) {
-  let inverted = 0;
-  for (const face of (geometry.faces || [])) {
-    const polygonNormal = _computePolygonNormal(face.vertices || []);
-    const faceNormal = face.normal;
-    if (!polygonNormal || !faceNormal) continue;
-    const dot =
-      polygonNormal.x * faceNormal.x +
-      polygonNormal.y * faceNormal.y +
-      polygonNormal.z * faceNormal.z;
-    if (dot < -1e-5) inverted++;
-  }
-  return inverted;
-}
-
-/**
- * Calculate the volume of a geometry using the divergence theorem.
- * Assumes the mesh is closed and consistently wound.
- * @param {Object} geometry - {faces: [{vertices: [{x,y,z},...], ...}]}
- * @returns {number} Signed volume
- */
-export function calculateMeshVolume(geometry) {
-  let volume = 0;
-  for (const face of (geometry.faces || [])) {
-    const verts = face.vertices;
-    if (verts.length < 3) continue;
-    // Fan triangulate and sum signed tetrahedron volumes
-    const v0 = verts[0];
-    for (let i = 1; i < verts.length - 1; i++) {
-      const v1 = verts[i], v2 = verts[i + 1];
-      volume += (
-        v0.x * (v1.y * v2.z - v2.y * v1.z) -
-        v1.x * (v0.y * v2.z - v2.y * v0.z) +
-        v2.x * (v0.y * v1.z - v1.y * v0.z)
-      ) / 6.0;
-    }
-  }
-  return Math.abs(volume);
-}
-
-/**
- * Calculate the bounding box of a geometry.
- * @param {Object} geometry - {faces: [{vertices: [{x,y,z},...], ...}]}
- * @returns {Object} {min: {x,y,z}, max: {x,y,z}}
- */
-export function calculateBoundingBox(geometry) {
-  let minX = Infinity, minY = Infinity, minZ = Infinity;
-  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-
-  for (const face of (geometry.faces || [])) {
-    for (const v of face.vertices) {
-      if (v.x < minX) minX = v.x;
-      if (v.y < minY) minY = v.y;
-      if (v.z < minZ) minZ = v.z;
-      if (v.x > maxX) maxX = v.x;
-      if (v.y > maxY) maxY = v.y;
-      if (v.z > maxZ) maxZ = v.z;
-    }
-  }
-
-  if (minX === Infinity) {
-    return { min: { x: 0, y: 0, z: 0 }, max: { x: 0, y: 0, z: 0 } };
-  }
-  return { min: { x: minX, y: minY, z: minZ }, max: { x: maxX, y: maxY, z: maxZ } };
-}
-
-/**
- * Calculate the total surface area of a closed mesh.
- * Uses fan triangulation per face and sums triangle areas.
- * @param {Object} geometry - {faces: [{vertices: [{x,y,z},...], ...}]}
- * @returns {number} Total surface area
- */
-export function calculateSurfaceArea(geometry) {
-  let area = 0;
-  for (const face of (geometry.faces || [])) {
-    const verts = face.vertices;
-    if (verts.length < 3) continue;
-    const v0 = verts[0];
-    for (let i = 1; i < verts.length - 1; i++) {
-      const v1 = verts[i], v2 = verts[i + 1];
-      // Cross product of (v1-v0) x (v2-v0)
-      const ax = v1.x - v0.x, ay = v1.y - v0.y, az = v1.z - v0.z;
-      const bx = v2.x - v0.x, by = v2.y - v0.y, bz = v2.z - v0.z;
-      const cx = ay * bz - az * by;
-      const cy = az * bx - ax * bz;
-      const cz = ax * by - ay * bx;
-      area += Math.sqrt(cx * cx + cy * cy + cz * cz) / 2;
-    }
-  }
-  return area;
-}
-
 // -----------------------------------------------------------------------
-// Geometry analysis utilities
+// Mesh analysis functions — re-exported from toolkit/MeshAnalysis.js
+// (countInvertedFaces, calculateMeshVolume, calculateBoundingBox,
+//  calculateSurfaceArea, detectDisconnectedBodies, calculateWallThickness)
 // -----------------------------------------------------------------------
 
-/**
- * Detect disconnected bodies (connected components) in a geometry mesh.
- * Builds a face adjacency graph from shared edge vertices and finds
- * connected components via BFS.
- * @param {Object} geometry - {faces: [{vertices: [{x,y,z},...], ...}]}
- * @returns {Object} { bodyCount: number, bodySizes: number[] }
- *   bodyCount = number of connected components (1 = single solid)
- *   bodySizes = array of face counts per component, sorted descending
- */
-export function detectDisconnectedBodies(geometry) {
-  const faces = geometry.faces || [];
-  if (faces.length === 0) return { bodyCount: 0, bodySizes: [] };
-
-  // Build edge → face indices map
-  const edgeFaces = new Map();
-  for (let fi = 0; fi < faces.length; fi++) {
-    const verts = faces[fi].vertices;
-    for (let i = 0; i < verts.length; i++) {
-      const a = verts[i], b = verts[(i + 1) % verts.length];
-      const key = edgeKey(a, b);
-      if (!edgeFaces.has(key)) edgeFaces.set(key, []);
-      edgeFaces.get(key).push(fi);
-    }
-  }
-
-  // Build face adjacency (face → set of neighbor face indices)
-  const adj = Array.from({ length: faces.length }, () => new Set());
-  for (const faceList of edgeFaces.values()) {
-    for (let i = 0; i < faceList.length; i++) {
-      for (let j = i + 1; j < faceList.length; j++) {
-        adj[faceList[i]].add(faceList[j]);
-        adj[faceList[j]].add(faceList[i]);
-      }
-    }
-  }
-
-  // BFS connected components
-  const visited = new Uint8Array(faces.length);
-  const bodySizes = [];
-  for (let start = 0; start < faces.length; start++) {
-    if (visited[start]) continue;
-    let count = 0;
-    const queue = [start];
-    visited[start] = 1;
-    while (queue.length > 0) {
-      const fi = queue.pop();
-      count++;
-      for (const neighbor of adj[fi]) {
-        if (!visited[neighbor]) {
-          visited[neighbor] = 1;
-          queue.push(neighbor);
-        }
-      }
-    }
-    bodySizes.push(count);
-  }
-
-  bodySizes.sort((a, b) => b - a);
-  return { bodyCount: bodySizes.length, bodySizes };
-}
-
-/**
- * Estimate wall thickness by ray-casting from each face centroid along its
- * inward normal and finding the nearest opposing face hit.
- * Returns min and max wall thickness across all faces.
- * @param {Object} geometry - {faces: [{vertices: [{x,y,z},...], normal: {x,y,z}, ...}]}
- * @returns {Object} { minThickness: number, maxThickness: number }
- */
-export function calculateWallThickness(geometry) {
-  const faces = geometry.faces || [];
-  if (faces.length < 2) return { minThickness: 0, maxThickness: 0 };
-
-  // Pre-compute face centroids
-  const centroids = faces.map(f => {
-    const vs = f.vertices;
-    const n = vs.length;
-    let cx = 0, cy = 0, cz = 0;
-    for (const v of vs) { cx += v.x; cy += v.y; cz += v.z; }
-    return { x: cx / n, y: cy / n, z: cz / n };
-  });
-
-  let minT = Infinity, maxT = 0;
-
-  for (let fi = 0; fi < faces.length; fi++) {
-    const face = faces[fi];
-    const n = face.normal;
-    if (!n) continue;
-    // Ray origin: centroid, direction: inward normal (negated outward normal)
-    const origin = centroids[fi];
-    const dir = { x: -n.x, y: -n.y, z: -n.z };
-
-    let closest = Infinity;
-    for (let ti = 0; ti < faces.length; ti++) {
-      if (ti === fi) continue;
-      const target = faces[ti];
-      const tn = target.normal;
-      if (!tn) continue;
-      // Only consider roughly opposing faces (normals pointing toward each other)
-      const dotNormals = n.x * tn.x + n.y * tn.y + n.z * tn.z;
-      if (dotNormals > -0.1) continue; // not opposing
-
-      // Ray-triangle intersection for each triangle in the fan
-      const tverts = target.vertices;
-      if (tverts.length < 3) continue;
-      const v0 = tverts[0];
-      for (let k = 1; k < tverts.length - 1; k++) {
-        const v1 = tverts[k], v2 = tverts[k + 1];
-        const t = _rayTriangleIntersect(origin, dir, v0, v1, v2);
-        if (t > 1e-6 && t < closest) closest = t;
-      }
-    }
-
-    if (closest < Infinity) {
-      if (closest < minT) minT = closest;
-      if (closest > maxT) maxT = closest;
-    }
-  }
-
-  if (minT === Infinity) minT = 0;
-  return { minThickness: minT, maxThickness: maxT };
-}
-
-/**
- * Möller–Trumbore ray-triangle intersection.
- * @returns {number} Distance t along ray, or Infinity if no hit.
- */
-function _rayTriangleIntersect(origin, dir, v0, v1, v2) {
-  const e1x = v1.x - v0.x, e1y = v1.y - v0.y, e1z = v1.z - v0.z;
-  const e2x = v2.x - v0.x, e2y = v2.y - v0.y, e2z = v2.z - v0.z;
-  const px = dir.y * e2z - dir.z * e2y;
-  const py = dir.z * e2x - dir.x * e2z;
-  const pz = dir.x * e2y - dir.y * e2x;
-  const det = e1x * px + e1y * py + e1z * pz;
-  if (Math.abs(det) < 1e-10) return Infinity;
-  const invDet = 1.0 / det;
-  const tx = origin.x - v0.x, ty = origin.y - v0.y, tz = origin.z - v0.z;
-  const u = (tx * px + ty * py + tz * pz) * invDet;
-  if (u < 0 || u > 1) return Infinity;
-  const qx = ty * e1z - tz * e1y;
-  const qy = tz * e1x - tx * e1z;
-  const qz = tx * e1y - ty * e1x;
-  const v = (dir.x * qx + dir.y * qy + dir.z * qz) * invDet;
-  if (v < 0 || u + v > 1) return Infinity;
-  const t = (e2x * qx + e2y * qy + e2z * qz) * invDet;
-  return t;
-}
-
 // -----------------------------------------------------------------------
-// Edge key helpers for chamfer/fillet
+// Edge key & vec3 helpers — imported from toolkit/Vec3Utils.js
 // -----------------------------------------------------------------------
 
-const EDGE_PREC = 5;
-function _fmtCoord(n) {
-  return (Math.abs(n) < 5e-6 ? 0 : n).toFixed(EDGE_PREC);
-}
-function _canonicalCoord(n, eps = 1e-12) {
-  return Math.abs(n) < eps ? 0 : n;
-}
-function _canonicalPoint(point, eps = 1e-12) {
-  if (!point) return point;
-  return {
-    x: _canonicalCoord(point.x, eps),
-    y: _canonicalCoord(point.y, eps),
-    z: _canonicalCoord(point.z, eps),
-  };
-}
-function _edgeVKey(v) {
-  return `${_fmtCoord(v.x)},${_fmtCoord(v.y)},${_fmtCoord(v.z)}`;
-}
-function _edgeKeyFromVerts(a, b) {
-  const ka = _edgeVKey(a), kb = _edgeVKey(b);
-  return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
-}
+// vec3 helpers imported from toolkit/Vec3Utils.js (aliased as _vec3* for compatibility)
 
-function _vec3Sub(a, b) { return { x: a.x - b.x, y: a.y - b.y, z: a.z - b.z }; }
-function _vec3Add(a, b) { return { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z }; }
-function _vec3Scale(v, s) { return { x: v.x * s, y: v.y * s, z: v.z * s }; }
-function _vec3Dot(a, b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
-function _vec3Cross(a, b) {
-  return { x: a.y * b.z - a.z * b.y, y: a.z * b.x - a.x * b.z, z: a.x * b.y - a.y * b.x };
-}
-function _vec3Len(v) { return Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z); }
-function _vec3Normalize(v) {
-  const len = _vec3Len(v);
-  if (len < 1e-10) return { x: 0, y: 0, z: 0 };
-  return { x: v.x / len, y: v.y / len, z: v.z / len };
-}
-function _vec3Lerp(a, b, t) {
-  return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, z: a.z + (b.z - a.z) * t };
-}
+// circumsphereCenter imported from toolkit/Vec3Utils.js
 
-/**
- * Compute the circumsphere center of 4 non-coplanar points.
- * All 4 points are equidistant from the returned center.
- * Returns {x,y,z} or null if the points are (near-)coplanar.
- */
-function _circumsphereCenter(p0, p1, p2, p3) {
-  const d1 = _vec3Sub(p1, p0);
-  const d2 = _vec3Sub(p2, p0);
-  const d3 = _vec3Sub(p3, p0);
-  const b1 = _vec3Dot(d1, d1) / 2;
-  const b2 = _vec3Dot(d2, d2) / 2;
-  const b3 = _vec3Dot(d3, d3) / 2;
-  const det = d1.x * (d2.y * d3.z - d2.z * d3.y)
-            - d1.y * (d2.x * d3.z - d2.z * d3.x)
-            + d1.z * (d2.x * d3.y - d2.y * d3.x);
-  if (Math.abs(det) < 1e-12) return null;
-  const inv = 1 / det;
-  const cx = (b1 * (d2.y * d3.z - d2.z * d3.y)
-            - d1.y * (b2 * d3.z - d2.z * b3)
-            + d1.z * (b2 * d3.y - d2.y * b3)) * inv;
-  const cy = (d1.x * (b2 * d3.z - d2.z * b3)
-            - b1 * (d2.x * d3.z - d2.z * d3.x)
-            + d1.z * (d2.x * b3 - b2 * d3.x)) * inv;
-  const cz = (d1.x * (d2.y * b3 - b2 * d3.y)
-            - d1.y * (d2.x * b3 - b2 * d3.x)
-            + b1 * (d2.x * d3.y - d2.y * d3.x)) * inv;
-  return { x: p0.x + cx, y: p0.y + cy, z: p0.z + cz };
-}
-
-/**
- * Check whether a point lies on the plane defined by a set of face vertices.
- * Returns true if the signed distance from point to the plane is within tolerance.
- */
-function _pointOnFacePlane(point, faceVerts, tolerance) {
-  if (tolerance === undefined) tolerance = 0.01;
-  if (faceVerts.length < 3) return true;
-  const n = _vec3Cross(_vec3Sub(faceVerts[1], faceVerts[0]), _vec3Sub(faceVerts[2], faceVerts[0]));
-  const len = _vec3Len(n);
-  if (len < 1e-10) return true;
-  return Math.abs(_vec3Dot(n, _vec3Sub(point, faceVerts[0]))) / len < tolerance;
-}
+// pointOnFacePlane imported from toolkit/Vec3Utils.js
 
 /**
  * Find the two face normals adjacent to an edge in a geometry.
@@ -4155,28 +3869,8 @@ function _recoverArcCenter(curve, sp, ep) {
   return _circumCenter3D(sp, mid, ep);
 }
 
-/** Compute circumcenter of three 3D points (center of circle through them) */
-function _circumCenter3D(a, b, c) {
-  const ab = _vec3Sub(b, a);
-  const ac = _vec3Sub(c, a);
-  const n = _vec3Cross(ab, ac);
-  const n2 = _vec3Dot(n, n);
-  if (n2 < 1e-20) return null; // collinear
-  const abDot = _vec3Dot(ab, ab);
-  const acDot = _vec3Dot(ac, ac);
-  // center = a + (|ac|² (n × ab) − |ab|² (n × ac)) / (2|n|²)
-  const nxab = _vec3Cross(n, ab);
-  const nxac = _vec3Cross(n, ac);
-  const num = _vec3Sub(_vec3Scale(nxab, acDot), _vec3Scale(nxac, abDot));
-  return _vec3Add(a, _vec3Scale(num, 0.5 / n2));
-}
-
-/** Project a point onto an axis line */
-function _projectOntoAxis(point, axisOrigin, axisDir) {
-  const v = _vec3Sub(point, axisOrigin);
-  const t = _vec3Dot(v, axisDir);
-  return _vec3Add(axisOrigin, _vec3Scale(axisDir, t));
-}
+// _circumCenter3D imported from toolkit/Vec3Utils.js
+// _projectOntoAxis imported from toolkit/Vec3Utils.js
 
 /** Extract cylinder axis/center/radius from a cylindrical TopoFace */
 function _extractCylinderInfo(face) {
@@ -4291,9 +3985,7 @@ function _extractLoopDesc(loop) {
   return { vertices, edgeCurves };
 }
 
-function _pointsCoincident3D(a, b, tol = 1e-8) {
-  return _vec3Len(_vec3Sub(a, b)) < tol;
-}
+// _pointsCoincident3D imported from toolkit/Vec3Utils.js
 
 function _getOrientedCoedgeCurve(coedge) {
   if (!coedge?.edge) return null;
