@@ -74,7 +74,7 @@ export {
   SurfaceType, buildTopoBody, resetTopoIds,
 } from './BRepTopology.js';
 export { ValidationResult, validateBody, validateIncidence, validateNoDuplicateEdges, validateFull } from './BRepValidator.js';
-export { tessellateBody, tessellateFace, tessellateForSTL, _legacyTessellateBody } from './Tessellation.js';
+export { tessellateBody, tessellateFace, tessellateForSTL } from './Tessellation.js';
 export { curveCurveIntersect } from './CurveCurveIntersect.js';
 export { curveSurfaceIntersect } from './CurveSurfaceIntersect.js';
 export { surfaceSurfaceIntersect } from './SurfaceSurfaceIntersect.js';

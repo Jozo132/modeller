@@ -8,10 +8,7 @@
 // ear-clipping path is retained as _legacyTessellateBody() for fallback and
 // backward compatibility but should not be used directly by new code.
 
-import { DEFAULT_TOLERANCE } from './Tolerance.js';
-import { getFlag } from '../featureFlags.js';
 import { robustTessellateBody } from './Tessellator2/index.js';
-import { warnOnceForFallback } from './fallback/warnOnce.js';
 
 function projectPolygon2D(verts, normal) {
   const an = {
@@ -118,32 +115,18 @@ function triangulatePolygonIndices(verts, normal) {
  * @returns {{ vertices: Array<{x,y,z}>, faces: Array<{vertices: Array<{x,y,z}>, normal: {x,y,z}, shared: Object}>, edges: Array }}
  */
 export function tessellateBody(body, opts = {}) {
-  if (getFlag('CAD_USE_ROBUST_TESSELLATOR')) {
-    try {
-      const result = robustTessellateBody(body, { ...opts, validate: true });
-      if (result.faces.length > 0) {
-        // The robust tessellator is the authoritative new-stack path.
-        // Accept its output when it produces a non-empty mesh.  Validation
-        // diagnostics are preserved for downstream inspection but do NOT
-        // trigger a legacy fallback — the legacy path had known bugs.
-        result._tessellator = 'robust';
-        return result;
-      }
-      // Robust produced an empty mesh — fall through to legacy compatibility shim
-    } catch (_e) {
-      // Robust tessellation threw — fall through to legacy compatibility shim
-    }
-    warnOnceForFallback({
-      id: 'tessellation:compat-legacy',
-      policy: 'allow-fallback',
-      reason: 'robust tessellator produced empty mesh or threw; using legacy ear-clipping compatibility shim',
-      kind: 'compatibility-shim',
-    });
-    const fallback = _legacyTessellateBody(body, opts);
-    fallback._tessellator = 'legacy-fallback';
-    return fallback;
+  // BRep-only pipeline: always use the robust Tessellator2 pipeline.
+  // Legacy ear-clipping fallback has been removed.
+  const result = robustTessellateBody(body, { ...opts, validate: true });
+  if (result.faces.length > 0) {
+    result._tessellator = 'robust';
+    return result;
   }
-  return _legacyTessellateBody(body, opts);
+  throw new Error(
+    '[BRep-only] tessellateBody: robust tessellator produced an empty mesh. ' +
+    'Legacy ear-clipping fallback is no longer available. ' +
+    'Fix the TopoBody input or the Tessellator2 pipeline.'
+  );
 }
 
 /**
@@ -300,44 +283,26 @@ export function tessellateFace(face, segments = 8) {
  */
 export function tessellateForSTL(body, opts = {}) {
   const chordalDev = opts.chordalDeviation ?? 0.01;
-  const angularTol = opts.angularTolerance ?? 15;
 
   // Determine segment count based on tolerance
-  // Higher precision → more segments
   const segments = Math.max(4, Math.min(64, Math.ceil(1.0 / chordalDev)));
 
-  // --- Robust path: try robust tessellator first when enabled ---
-  const useRobust = getFlag('CAD_USE_ROBUST_TESSELLATOR');
-  if (useRobust) {
-    try {
-      const robustMesh = robustTessellateBody(body, {
-        surfaceSegments: segments,
-        validate: true,
-      });
-      if (robustMesh.faces.length > 0) {
-        // The robust tessellator is authoritative.  Accept its output
-        // whenever it produces a non-empty mesh.
-        const triangles = _meshToTriangles(robustMesh);
-        if (triangles.length > 0) {
-          triangles._tessellator = 'robust';
-          return triangles;
-        }
-      }
-      // Robust produced an empty mesh — fall through to legacy compatibility shim
-    } catch (_e) {
-      // Robust tessellation threw — fall through to legacy compatibility shim
+  // BRep-only: use robust tessellator, no legacy fallback
+  const robustMesh = robustTessellateBody(body, {
+    surfaceSegments: segments,
+    validate: true,
+  });
+  if (robustMesh.faces.length > 0) {
+    const triangles = _meshToTriangles(robustMesh);
+    if (triangles.length > 0) {
+      triangles._tessellator = 'robust';
+      return triangles;
     }
-    warnOnceForFallback({
-      id: 'tessellation:compat-legacy',
-      policy: 'allow-fallback',
-      reason: 'robust tessellator produced empty mesh or threw; using legacy ear-clipping compatibility shim',
-      kind: 'compatibility-shim',
-    });
   }
-
-  const mesh = _legacyTessellateBody(body, { surfaceSegments: segments });
-  const triangles = _meshToTriangles(mesh);
-  return triangles;
+  throw new Error(
+    '[BRep-only] tessellateForSTL: robust tessellator produced an empty mesh. ' +
+    'Legacy ear-clipping fallback is no longer available.'
+  );
 }
 
 /**
