@@ -842,10 +842,29 @@ export class FaceTriangulator {
       triangles.push([ua, ub, uc]);
     }
 
+    // Compute the outward reference direction from the surface normal at the
+    // UV centroid, adjusted for sameSense. This is more reliable than the
+    // boundary polygon Newell normal for curved chamfer/fillet faces where
+    // the flat boundary normal can disagree with the surface orientation
+    // (e.g. cone faces with sameSense=false).
+    let outwardRef = boundaryNormal;
+    {
+      const uMid = (uMin + uMax) / 2;
+      const vMid = (vMin + vMax) / 2;
+      try {
+        const sn = surface.normal(uMid, vMid);
+        if (sn) {
+          outwardRef = sameSense
+            ? _normalize(sn)
+            : _normalize({ x: -sn.x, y: -sn.y, z: -sn.z });
+        }
+      } catch (_e) { /* keep boundaryNormal */ }
+    }
+
     if (!periodicSurface && triangles.length > 0) {
       const [ua, ub, uc] = triangles[0];
       const triN = calculateNormal(evalPoint(ua), evalPoint(ub), evalPoint(uc));
-      if (_dot(triN, boundaryNormal) < 0) {
+      if (_dot(triN, outwardRef) < 0) {
         triangles = triangles.map(([a, b, c]) => [a, c, b]);
       }
     }
@@ -853,7 +872,7 @@ export class FaceTriangulator {
     if (!periodicSurface) {
       triangles = triangles.filter(([a, b, c]) => {
         const n = calculateNormal(evalPoint(a), evalPoint(b), evalPoint(c));
-        return _dot(n, boundaryNormal) > 0;
+        return _dot(n, outwardRef) > 0;
       });
     }
 
@@ -970,7 +989,7 @@ export class FaceTriangulator {
 
       const refNormal = periodicSurface
         ? triangleSurfaceNormal(ua, ub, uc)
-        : boundaryNormal;
+        : outwardRef;
       if (_dot(calculateNormal(pa, pb, pc), refNormal) < 0) {
         [ub, uc] = [uc, ub];
         [pb, pc] = [pc, pb];
