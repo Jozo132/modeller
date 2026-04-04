@@ -1359,4 +1359,6 @@ export {
   _precomputeChamferEdge,
   _computeOffsetDirs,
   _buildExactChamferTopoBody,
+  _buildPlanarFaceDesc,
+  _buildPlanarBoundarySegments,
 };
