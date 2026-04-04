@@ -33,7 +33,23 @@ import {
   _computeOffsetDirs,
   _buildPlanarFaceDesc,
   _buildPlanarBoundarySegments,
+  _extractFeatureFacesFromTopoBody,
+  _buildExactEdgeAdjacencyLookupFromTopoBody,
+  _sampleExactEdgePoints,
 } from './BRepChamfer.js';
+
+import { tessellateBody } from './Tessellation.js';
+import { computeFeatureEdges } from './EdgeAnalysis.js';
+
+import {
+  measureMeshTopology,
+  countTopoBodyBoundaryEdges,
+} from './toolkit/TopologyUtils.js';
+
+import {
+  fixWindingConsistency,
+  recomputeFaceNormals,
+} from './toolkit/MeshRepair.js';
 
 // -----------------------------------------------------------------------
 // Fillet helpers
@@ -502,14 +518,36 @@ function _buildExactFilletFaceDesc(data) {
     { ...trimB[trimB.length - 1] },
     { ...trimB[0] },
   ];
-  let edgeCurves = [
-    _buildExactFilletBoundaryCurve(data, trimA, 'A', !!(data && data.sharedTrimA)),
-    NurbsCurve.createLine(trimA[trimA.length - 1], trimB[trimB.length - 1]),
-    _buildExactFilletBoundaryCurve(data, trimB, 'B', !!(data && data.sharedTrimB)),
-    NurbsCurve.createLine(trimB[0], trimA[0]),
-  ];
-  if (!edgeCurves[0] || !edgeCurves[2]) return null;
-  edgeCurves[2] = edgeCurves[2].reversed();
+
+  // Build edge curves for the fillet face.
+  // Edges 0 and 2 are the arc cross-section boundaries (A and B sides).
+  // Edges 1 and 3 are straight-line connections between the rails.
+  //
+  // When the fillet is used in a BRep context (only 4 corner vertices),
+  // the side boundary edges (edges 0 and 2) must use straight lines so
+  // they can be shared with adjacent planar faces via buildTopoBody's
+  // edge deduplication. The NURBS surface itself provides the actual arc
+  // geometry; the edge curves just define the topological boundary.
+  const useSimpleSideEdges = data._brepSideEdges !== false;
+  let edgeCurves;
+  if (useSimpleSideEdges) {
+    // Use straight lines for side edges to match adjacent planar faces
+    edgeCurves = [
+      NurbsCurve.createLine(trimA[0], trimA[trimA.length - 1]),
+      NurbsCurve.createLine(trimA[trimA.length - 1], trimB[trimB.length - 1]),
+      NurbsCurve.createLine(trimB[trimB.length - 1], trimB[0]),
+      NurbsCurve.createLine(trimB[0], trimA[0]),
+    ];
+  } else {
+    edgeCurves = [
+      _buildExactFilletBoundaryCurve(data, trimA, 'A', !!(data && data.sharedTrimA)),
+      NurbsCurve.createLine(trimA[trimA.length - 1], trimB[trimB.length - 1]),
+      _buildExactFilletBoundaryCurve(data, trimB, 'B', !!(data && data.sharedTrimB)),
+      NurbsCurve.createLine(trimB[0], trimA[0]),
+    ];
+    if (!edgeCurves[0] || !edgeCurves[2]) return null;
+    edgeCurves[2] = edgeCurves[2].reversed();
+  }
 
   let outwardNormal = null;
   if (trimA.length >= 2 && trimB.length >= 2) {
@@ -747,6 +785,302 @@ function _buildExactFilletTopoBody(faces, edgeDataList) {
 }
 
 // -----------------------------------------------------------------------
+// BRep-level fillet entry point
+// -----------------------------------------------------------------------
+
+function _debugBRepFillet(...args) {
+  if (typeof process === 'undefined' || !process?.env?.DEBUG_BREP_FILLET) return;
+  console.log('[applyBRepFillet]', ...args);
+}
+
+/**
+ * Apply B-Rep fillet (rolling-ball blend) to a TopoBody.
+ *
+ * Operates directly on the TopoBody topology:
+ * 1. For each selected edge, compute tangent offset points and circular arc
+ *    cross-sections on both adjacent faces.
+ * 2. Trim the original faces along the offset lines.
+ * 3. Create cylindrical fillet surfaces between the two rail curves.
+ * 4. Handle corner patches where fillets meet at shared vertices.
+ *
+ * @param {Object} geometry - Input geometry with .topoBody
+ * @param {string[]} edgeKeys - Edge keys to fillet (position-based)
+ * @param {number} radius - Fillet radius
+ * @param {number} [segments=8] - Arc tessellation segments
+ * @returns {Object|null} New geometry or null if BRep fillet not applicable
+ */
+export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
+  const topoBody = geometry && geometry.topoBody;
+  if (!topoBody || !topoBody.shells) {
+    _debugBRepFillet('missing-topobody');
+    return null;
+  }
+
+  // Step 1: Extract mesh-level faces from TopoBody for edge adjacency
+  const faces = _extractFeatureFacesFromTopoBody(geometry);
+  if (!faces || faces.length === 0) {
+    _debugBRepFillet('no-faces');
+    return null;
+  }
+
+  // Build exact edge adjacency lookup from TopoBody
+  const exactAdjacencyByKey = _buildExactEdgeAdjacencyLookupFromTopoBody(topoBody, faces);
+
+  // Step 2: Precompute fillet data for each edge
+  const uniqueKeys = [...new Set(edgeKeys)];
+  const edgeDataList = [];
+  for (const key of uniqueKeys) {
+    const data = _precomputeFilletEdge(faces, key, radius, segments, exactAdjacencyByKey);
+    if (data) edgeDataList.push(data);
+  }
+  if (edgeDataList.length === 0) {
+    _debugBRepFillet('no-precomputed-edges', { edgeKeys: uniqueKeys.length });
+    return null;
+  }
+
+  // Step 3: Merge shared vertex positions and apply two-edge fillet trims
+  const vertexEdgeMap = _buildVertexEdgeMap(edgeDataList);
+  _mergeSharedVertexPositions(edgeDataList, vertexEdgeMap);
+  _applyTwoEdgeFilletSharedTrims(edgeDataList, faces, vertexEdgeMap);
+
+  // Step 4: Trim original faces and build fillet face descriptors
+  // Create a set of face indices that are adjacent to fillet edges
+  const filletFaceIndices = new Set();
+  for (const data of edgeDataList) {
+    filletFaceIndices.add(data.fi0);
+    filletFaceIndices.add(data.fi1);
+  }
+
+  // Trim each face: for faces adjacent to filleted edges, replace edge
+  // endpoint vertices with the corresponding fillet offset points.
+  // For non-adjacent faces that share a vertex with a fillet edge,
+  // split the vertex into the two fillet trim points.
+  //
+  // Build a lookup: vertexKey+faceIndex → trim data for direct face adjacency
+  const vertexTrimLookup = new Map(); // "fi|vertexKey" → { data, isEdgeA, isFace0 }
+  for (const data of edgeDataList) {
+    const vkA = _edgeVKey(data.edgeA);
+    const vkB = _edgeVKey(data.edgeB);
+    vertexTrimLookup.set(`${data.fi0}|${vkA}`, { data, isEdgeA: true, isFace0: true });
+    vertexTrimLookup.set(`${data.fi0}|${vkB}`, { data, isEdgeA: false, isFace0: true });
+    vertexTrimLookup.set(`${data.fi1}|${vkA}`, { data, isEdgeA: true, isFace0: false });
+    vertexTrimLookup.set(`${data.fi1}|${vkB}`, { data, isEdgeA: false, isFace0: false });
+  }
+
+  // Build vertex-key → all fillet data touching that vertex (for non-adjacent faces)
+  const vertexFilletMap = new Map(); // vertexKey → [{data, isEdgeA}]
+  for (const data of edgeDataList) {
+    const vkA = _edgeVKey(data.edgeA);
+    const vkB = _edgeVKey(data.edgeB);
+    if (!vertexFilletMap.has(vkA)) vertexFilletMap.set(vkA, []);
+    vertexFilletMap.get(vkA).push({ data, isEdgeA: true });
+    if (!vertexFilletMap.has(vkB)) vertexFilletMap.set(vkB, []);
+    vertexFilletMap.get(vkB).push({ data, isEdgeA: false });
+  }
+
+  const trimmedFaces = [];
+  for (let fi = 0; fi < faces.length; fi++) {
+    const face = faces[fi];
+    if (!face || !face.vertices || face.vertices.length < 3) continue;
+
+    if (!filletFaceIndices.has(fi)) {
+      // Non-fillet face: check if any vertex is at a fillet edge endpoint.
+      // Such vertices need to be split into the two fillet trim points
+      // (one on each adjacent face side) to maintain watertight topology.
+      const origVerts = face.vertices;
+      const n = origVerts.length;
+      let modified = false;
+      const newVerts = [];
+
+      for (let vi = 0; vi < n; vi++) {
+        const v = origVerts[vi];
+        const vk = _edgeVKey(v);
+        const filletEntries = vertexFilletMap.get(vk);
+        if (!filletEntries || filletEntries.length === 0) {
+          newVerts.push({ ...v });
+          continue;
+        }
+
+        // This vertex is at a fillet edge endpoint.
+        // Insert both trim points (p0 and p1 side) in the correct order
+        // to maintain consistent face boundary winding.
+        const vNext = origVerts[(vi + 1) % n];
+        const vPrev = origVerts[(vi - 1 + n) % n];
+
+        // Collect trim points from all fillet edges at this vertex
+        const trimPts = [];
+        for (const entry of filletEntries) {
+          const p0 = entry.isEdgeA ? entry.data.p0a : entry.data.p0b;
+          const p1 = entry.isEdgeA ? entry.data.p1a : entry.data.p1b;
+          trimPts.push(p0, p1);
+        }
+
+        if (trimPts.length === 2) {
+          // Single fillet at this vertex: insert both trim points.
+          // Order by proximity to incoming edge direction: the trim point
+          // closer to vPrev should come first in the boundary walk.
+          const dirPrev = _vec3Normalize(_vec3Sub(vPrev, v));
+          const d0prev = _vec3Dot(_vec3Normalize(_vec3Sub(trimPts[0], v)), dirPrev);
+          const d1prev = _vec3Dot(_vec3Normalize(_vec3Sub(trimPts[1], v)), dirPrev);
+
+          if (d0prev > d1prev) {
+            newVerts.push({ ...trimPts[0] }, { ...trimPts[1] });
+          } else {
+            newVerts.push({ ...trimPts[1] }, { ...trimPts[0] });
+          }
+          modified = true;
+        } else {
+          // Multiple fillets at vertex — fallback: keep original
+          newVerts.push({ ...v });
+        }
+      }
+
+      if (modified && newVerts.length >= 3) {
+        trimmedFaces.push({ ...face, vertices: newVerts, normal: face.normal });
+      } else {
+        trimmedFaces.push(face);
+      }
+      continue;
+    }
+
+    // This face IS adjacent to one or more fillet edges.
+    // Replace vertices at fillet edge endpoints with offset trim points.
+    const origVerts = face.vertices;
+    const newVerts = [];
+    for (let vi = 0; vi < origVerts.length; vi++) {
+      const vk = _edgeVKey(origVerts[vi]);
+      const trimInfo = vertexTrimLookup.get(`${fi}|${vk}`);
+      if (trimInfo) {
+        const pt = trimInfo.isFace0
+          ? (trimInfo.isEdgeA ? trimInfo.data.p0a : trimInfo.data.p0b)
+          : (trimInfo.isEdgeA ? trimInfo.data.p1a : trimInfo.data.p1b);
+        newVerts.push({ ...pt });
+      } else {
+        newVerts.push({ ...origVerts[vi] });
+      }
+    }
+
+    if (newVerts.length < 3) continue;
+    trimmedFaces.push({
+      ...face,
+      vertices: newVerts,
+      normal: face.normal,
+    });
+  }
+
+  // Step 5: Build exact NURBS fillet surfaces for each edge data
+  for (const data of edgeDataList) {
+    // Build NURBS cylinder surface for the fillet strip
+    const arcA = data.sharedTrimA || data.arcA;
+    const arcB = data.sharedTrimB || data.arcB;
+    if (!arcA || !arcB || arcA.length < 2 || arcB.length < 2) continue;
+
+    // The fillet surface is a cylinder ruled between arcA and arcB
+    // Compute center line for the fillet
+    const edgeDir = _vec3Normalize(_vec3Sub(data.edgeB, data.edgeA));
+    const edgeLen = _vec3Len(_vec3Sub(data.edgeB, data.edgeA));
+
+    // Compute rail curves and center points for NurbsSurface.createFilletSurface
+    const nPts = Math.min(arcA.length, arcB.length);
+    const rail0 = [];
+    const rail1 = [];
+    const centers = [];
+
+    for (let i = 0; i < nPts; i++) {
+      rail0.push({ ...arcA[i] });
+      rail1.push({ ...arcB[i] });
+      // Center for each cross-section = midpoint of edge projected at this arc param
+      const t = nPts > 1 ? i / (nPts - 1) : 0;
+      const edgePt = _vec3Lerp(data.edgeA, data.edgeB, t);
+      // The rolling-ball center is at the edge point offset along the bisector
+      const { offsDir0, offsDir1 } = _computeOffsetDirs(
+        faces[data.fi0], faces[data.fi1], data.edgeA, data.edgeB
+      );
+      const alpha = Math.acos(Math.max(-1, Math.min(1, _vec3Dot(offsDir0, offsDir1))));
+      const centerDist = alpha > 1e-6 ? radius / Math.sin(alpha / 2) : radius;
+      const bisector = _vec3Normalize(_vec3Add(offsDir0, offsDir1));
+      centers.push(_vec3Add(edgePt, _vec3Scale(bisector, centerDist)));
+    }
+
+    try {
+      const surface = NurbsSurface.createFilletSurface(rail0, rail1, centers, radius, edgeDir);
+      data._exactSurface = surface;
+      data._exactAxisStart = { ...data.edgeA };
+      data._exactAxisEnd = { ...data.edgeB };
+      data._exactRadius = radius;
+
+      // Build NURBS arc curves for the arcs if not already present
+      if (!data._exactArcCurveA) {
+        data._exactArcCurveA = _curveFromSampledPoints(arcA);
+      }
+      if (!data._exactArcCurveB) {
+        data._exactArcCurveB = _curveFromSampledPoints(arcB);
+      }
+    } catch (e) {
+      _debugBRepFillet('create-fillet-surface-failed', e?.message || String(e));
+      // Continue without exact surface — will fall back to polyline/planar
+    }
+  }
+
+  // Step 6: Build the exact fillet TopoBody
+  // Mark fillet faces in trimmed faces
+  for (const data of edgeDataList) {
+    // The fillet strip face will be added by _buildExactFilletTopoBody
+    // Ensure the trimmed faces are tagged for _buildExactFilletTopoBody
+  }
+
+  // _buildExactFilletTopoBody expects trimmed faces and edgeDataList
+  const newTopoBody = _buildExactFilletTopoBody(trimmedFaces, edgeDataList);
+  if (!newTopoBody) {
+    _debugBRepFillet('build-topobody-failed');
+    return null;
+  }
+
+  const topoBoundaryEdges = countTopoBodyBoundaryEdges(newTopoBody);
+  if (topoBoundaryEdges !== 0) {
+    _debugBRepFillet('topo-boundary-edges', { topoBoundaryEdges });
+    // For fillet, boundary edges are common due to complex corner geometry
+    // Don't reject immediately — try tessellation anyway
+  }
+
+  // Step 7: Tessellate
+  let mesh;
+  try {
+    mesh = tessellateBody(newTopoBody, { validate: false });
+  } catch (error) {
+    _debugBRepFillet('tessellate-failed', error?.message || String(error));
+    return null;
+  }
+
+  if (!mesh || !mesh.faces || mesh.faces.length === 0) {
+    _debugBRepFillet('empty-mesh');
+    return null;
+  }
+
+  // Winding consistency: for fillet bodies with curved surfaces,
+  // skip BFS-based winding fix to avoid corrupting the tessellator's
+  // sameSense-aware normals.
+  const bodyCurved = newTopoBody.shells.some(
+    (s) => s.faces.some((f) => f.surfaceType !== 'plane')
+  );
+  const preFixTopology = measureMeshTopology(mesh.faces);
+  if (!bodyCurved &&
+      preFixTopology.boundaryEdges === 0 && preFixTopology.nonManifoldEdges === 0) {
+    fixWindingConsistency(mesh.faces);
+    recomputeFaceNormals(mesh.faces);
+  }
+
+  const edgeResult = computeFeatureEdges(mesh.faces);
+
+  return {
+    vertices: mesh.vertices || [],
+    faces: mesh.faces,
+    edges: edgeResult.edges,
+    paths: edgeResult.paths,
+    visualEdges: edgeResult.visualEdges,
+    topoBody: newTopoBody,
+  };
+}
 // Exports
 // -----------------------------------------------------------------------
 

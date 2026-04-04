@@ -6,6 +6,9 @@
 // features. Selection uses stable entity keys when present.
 
 import { Feature } from './Feature.js';
+import { applyBRepFillet } from './BRepFillet.js';
+import { expandPathEdgeKeys } from './EdgeAnalysis.js';
+import { calculateMeshVolume, calculateBoundingBox } from './toolkit/MeshAnalysis.js';
 import { isLegacyEdgeKey, legacyEdgeKeyToStable } from './history/StableEntityKey.js';
 
 export class FilletFeature extends Feature {
@@ -32,13 +35,41 @@ export class FilletFeature extends Feature {
       throw new Error('No edges selected for fillet');
     }
 
-    // BRep-only pipeline: fillet requires exact topology implementation
-    // TODO: Implement applyBRepFillet using TopoBody, NurbsSurface rolling-ball
-    throw new Error(
-      '[BRep-only] FilletFeature: applyBRepFillet is not yet implemented. ' +
-      'Legacy mesh-based fillet is no longer supported. ' +
-      'This is a placeholder — implement proper BRep fillet using rolling-ball offset surfaces.'
-    );
+    // BRep-only pipeline: require exact topology
+    const inputTopoBody = solid.body || (solid.geometry && solid.geometry.topoBody) || null;
+    if (!inputTopoBody) {
+      throw new Error(
+        '[BRep-only] FilletFeature requires exact topology (TopoBody) on the input solid. ' +
+        'Legacy mesh-based fillet is no longer supported.'
+      );
+    }
+
+    const exactInputGeometry = { ...solid.geometry, topoBody: inputTopoBody };
+    const geometry = applyBRepFillet(exactInputGeometry, edgeKeys, this.radius, this.segments);
+    if (!geometry) {
+      throw new Error(
+        '[BRep-only] applyBRepFillet returned null — the BRep fillet path failed. ' +
+        'This must be fixed in the BRep kernel, not by falling back to mesh fillet.'
+      );
+    }
+
+    // Tag faces with source feature
+    for (const f of geometry.faces) {
+      if (!f.shared) f.shared = {};
+    }
+
+    const resultTopoBody = geometry.topoBody || null;
+    this._resultExact = !!resultTopoBody;
+
+    return {
+      type: 'solid',
+      geometry,
+      solid: { geometry, body: resultTopoBody },
+      volume: calculateMeshVolume(geometry),
+      boundingBox: calculateBoundingBox(geometry),
+      brep: geometry.brep || null,
+      _exactTopology: this._resultExact,
+    };
   }
 
   _getPreviousSolid(context) {
