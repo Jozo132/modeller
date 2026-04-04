@@ -1545,10 +1545,10 @@ export class FaceTriangulator {
     const meshFaces = [];
     const meshVertices = [];
     for (const [a, b, c] of triangles) {
-      // Skip near-degenerate triangles: use a relative threshold based on
-      // face diagonal to catch CDT micro-artifacts on complex curved faces.
-      const areaThreshold = faceDiag > 0 ? faceDiag * faceDiag * 1e-8 : 1e-14;
-      if (_triangleArea3D(a, b, c) < areaThreshold) continue;
+      // Skip truly degenerate triangles (collapsed to a line or point).
+      // Use a small absolute threshold — the CDT + subdivision produces
+      // valid thin triangles that must not be removed or gaps appear.
+      if (_triangleArea3D(a, b, c) < 1e-12) continue;
 
       // Per-vertex surface normals for shading
       let nx = 0, ny = 0, nz = 0;

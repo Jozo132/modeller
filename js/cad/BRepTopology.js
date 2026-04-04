@@ -739,15 +739,41 @@ export function buildTopoBody(faceDescs, tol = DEFAULT_TOLERANCE) {
     return v;
   };
 
-  // Edge deduplication: "v1.id,v2.id" -> TopoEdge (unordered)
+  // Edge deduplication: "v1.id,v2.id" -> TopoEdge[] (unordered)
+  // Multiple edges can connect the same two vertices with different curves
+  // (e.g. upper and lower semicircular arcs of a circle).
   const edgeMap = new Map();
+
+  /** Check if two edge curves follow the same geometric path. */
+  const _curvesCompatible = (c1, c2) => {
+    if (!c1 || !c2) return true; // null/line edges are always compatible
+    if (c1 === c2) return true;
+    if (c1.degree !== c2.degree) return false;
+    try {
+      const m1 = c1.evaluate(0.5);
+      const m2 = c2.evaluate(0.5);
+      const d = Math.sqrt((m1.x - m2.x) ** 2 + (m1.y - m2.y) ** 2 + (m1.z - m2.z) ** 2);
+      return d < 1e-6;
+    } catch { return true; }
+  };
+
   const getOrCreateEdge = (v1, v2, curve) => {
     const k1 = `${v1.id},${v2.id}`;
     const k2 = `${v2.id},${v1.id}`;
-    if (edgeMap.has(k1)) return { edge: edgeMap.get(k1), sameSense: true };
-    if (edgeMap.has(k2)) return { edge: edgeMap.get(k2), sameSense: false };
+    const fwd = edgeMap.get(k1);
+    if (fwd) {
+      for (const e of fwd) {
+        if (_curvesCompatible(e.curve, curve)) return { edge: e, sameSense: true };
+      }
+    }
+    const rev = edgeMap.get(k2);
+    if (rev) {
+      for (const e of rev) {
+        if (_curvesCompatible(e.curve, curve)) return { edge: e, sameSense: false };
+      }
+    }
     const e = new TopoEdge(v1, v2, curve, tol.edgeOverlap);
-    edgeMap.set(k1, e);
+    if (!fwd) edgeMap.set(k1, [e]); else fwd.push(e);
     return { edge: e, sameSense: true };
   };
 
