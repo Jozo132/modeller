@@ -4164,15 +4164,10 @@ function _circumCenter3D(a, b, c) {
   if (n2 < 1e-20) return null; // collinear
   const abDot = _vec3Dot(ab, ab);
   const acDot = _vec3Dot(ac, ac);
-  const d = _vec3Add(
-    _vec3Scale(_vec3Cross(n, _vec3Cross(ab, n)), acDot),
-    _vec3Scale(_vec3Cross(_vec3Cross(ac, n), n), abDot)
-  );
-  // Hmm this formula is wrong, let me use the standard one
-  // center = a + (|ac|^2 (ab×n) + |ab|^2 (n×ac)) / (2|n|^2)
-  const t1 = _vec3Cross(ab, n);
-  const t2 = _vec3Cross(n, ac);
-  const num = _vec3Add(_vec3Scale(t2, abDot), _vec3Scale(t1, acDot));
+  // center = a + (|ac|² (n × ab) − |ab|² (n × ac)) / (2|n|²)
+  const nxab = _vec3Cross(n, ab);
+  const nxac = _vec3Cross(n, ac);
+  const num = _vec3Sub(_vec3Scale(nxab, acDot), _vec3Scale(nxac, abDot));
   return _vec3Add(a, _vec3Scale(num, 0.5 / n2));
 }
 
