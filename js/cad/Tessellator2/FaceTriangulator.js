@@ -842,10 +842,29 @@ export class FaceTriangulator {
       triangles.push([ua, ub, uc]);
     }
 
+    // Compute the outward reference direction from the surface normal at the
+    // UV centroid, adjusted for sameSense. This is more reliable than the
+    // boundary polygon Newell normal for curved chamfer/fillet faces where
+    // the flat boundary normal can disagree with the surface orientation
+    // (e.g. cone faces with sameSense=false).
+    let outwardRef = boundaryNormal;
+    {
+      const uMid = (uMin + uMax) / 2;
+      const vMid = (vMin + vMax) / 2;
+      try {
+        const sn = surface.normal(uMid, vMid);
+        if (sn) {
+          outwardRef = sameSense
+            ? _normalize(sn)
+            : _normalize({ x: -sn.x, y: -sn.y, z: -sn.z });
+        }
+      } catch (_e) { /* keep boundaryNormal */ }
+    }
+
     if (!periodicSurface && triangles.length > 0) {
       const [ua, ub, uc] = triangles[0];
       const triN = calculateNormal(evalPoint(ua), evalPoint(ub), evalPoint(uc));
-      if (_dot(triN, boundaryNormal) < 0) {
+      if (_dot(triN, outwardRef) < 0) {
         triangles = triangles.map(([a, b, c]) => [a, c, b]);
       }
     }
@@ -853,7 +872,7 @@ export class FaceTriangulator {
     if (!periodicSurface) {
       triangles = triangles.filter(([a, b, c]) => {
         const n = calculateNormal(evalPoint(a), evalPoint(b), evalPoint(c));
-        return _dot(n, boundaryNormal) > 0;
+        return _dot(n, outwardRef) > 0;
       });
     }
 
@@ -970,7 +989,7 @@ export class FaceTriangulator {
 
       const refNormal = periodicSurface
         ? triangleSurfaceNormal(ua, ub, uc)
-        : boundaryNormal;
+        : outwardRef;
       if (_dot(calculateNormal(pa, pb, pc), refNormal) < 0) {
         [ub, uc] = [uc, ub];
         [pb, pc] = [pc, pb];
@@ -1191,31 +1210,35 @@ export class FaceTriangulator {
       } catch (_e) { /* keep Newell normal */ }
     }
 
-    // Detect self-intersecting UV boundary: when the UV polygon has large
-    // jumps (e.g. at coedge boundaries on folded B-splines), the UV-domain
-    // CDT produces garbage.  Fall back to projected 3D CDT for such faces.
+    // Detect self-intersecting UV boundary: when the UV polygon actually
+    // crosses itself (e.g. folded B-splines), the UV-domain CDT produces
+    // garbage.  Fall back to projected 3D CDT for such faces.
+    // Use actual segment-segment intersection test rather than step-size
+    // heuristics, which false-positive on rectangular patches (e.g. ruled
+    // surfaces where coedge boundaries jump across the full u or v range).
     let uvSelfIntersecting = false;
     if (uvValid) {
-      const duSteps = [], dvSteps = [];
-      for (let i = 1; i < allPts.length; i++) {
-        duSteps.push(Math.abs(allPts[i]._u - allPts[i - 1]._u));
-        dvSteps.push(Math.abs(allPts[i]._v - allPts[i - 1]._v));
-      }
-      // Also check wrap-around edge
-      duSteps.push(Math.abs(allPts[0]._u - allPts[allPts.length - 1]._u));
-      dvSteps.push(Math.abs(allPts[0]._v - allPts[allPts.length - 1]._v));
-
-      const sortedDu = [...duSteps].sort((a, b) => a - b);
-      const sortedDv = [...dvSteps].sort((a, b) => a - b);
-      const medDu = sortedDu[Math.floor(sortedDu.length / 2)];
-      const medDv = sortedDv[Math.floor(sortedDv.length / 2)];
-      // A step > 20× median is a discontinuity indicating UV fold
-      const threshU = Math.max(medDu * 20, 0.1 * uvRangeU);
-      const threshV = Math.max(medDv * 20, 0.1 * uvRangeV);
-      for (let i = 0; i < duSteps.length; i++) {
-        if (duSteps[i] > threshU || dvSteps[i] > threshV) {
-          uvSelfIntersecting = true;
-          break;
+      const uvPoly = allPts.map((p) => [p._u, p._v]);
+      const n = uvPoly.length;
+      // Check all non-adjacent edge pairs for proper crossing
+      outer: for (let i = 0; i < n; i++) {
+        const [ax, ay] = uvPoly[i];
+        const [bx, by] = uvPoly[(i + 1) % n];
+        for (let j = i + 2; j < n; j++) {
+          if (j === (i + n - 1) % n) continue; // skip adjacent wrap-around
+          const [cx, cy] = uvPoly[j];
+          const [dx, dy] = uvPoly[(j + 1) % n];
+          // Segment-segment proper crossing test
+          const d1x = bx - ax, d1y = by - ay;
+          const d2x = dx - cx, d2y = dy - cy;
+          const denom = d1x * d2y - d1y * d2x;
+          if (Math.abs(denom) < 1e-14) continue; // parallel
+          const t = ((cx - ax) * d2y - (cy - ay) * d2x) / denom;
+          const u = ((cx - ax) * d1y - (cy - ay) * d1x) / denom;
+          if (t > 1e-8 && t < 1 - 1e-8 && u > 1e-8 && u < 1 - 1e-8) {
+            uvSelfIntersecting = true;
+            break outer;
+          }
         }
       }
     }
@@ -1545,10 +1568,10 @@ export class FaceTriangulator {
     const meshFaces = [];
     const meshVertices = [];
     for (const [a, b, c] of triangles) {
-      // Skip near-degenerate triangles: use a relative threshold based on
-      // face diagonal to catch CDT micro-artifacts on complex curved faces.
-      const areaThreshold = faceDiag > 0 ? faceDiag * faceDiag * 1e-8 : 1e-14;
-      if (_triangleArea3D(a, b, c) < areaThreshold) continue;
+      // Skip truly degenerate triangles (collapsed to a line or point).
+      // Use a small absolute threshold — the CDT + subdivision produces
+      // valid thin triangles that must not be removed or gaps appear.
+      if (_triangleArea3D(a, b, c) < 1e-12) continue;
 
       // Per-vertex surface normals for shading
       let nx = 0, ny = 0, nz = 0;

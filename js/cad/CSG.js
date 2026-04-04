@@ -19,6 +19,89 @@ import { buildTopoBody, SurfaceType } from './BRepTopology.js';
 import { tessellateBody } from './Tessellation.js';
 import { constrainedTriangulate } from './Tessellator2/CDT.js';
 
+// Re-export mesh analysis from toolkit so consumers that imported from CSG.js
+// continue to work without changes.
+export {
+  countInvertedFaces,
+  calculateMeshVolume,
+  calculateBoundingBox,
+  calculateSurfaceArea,
+  detectDisconnectedBodies,
+  calculateWallThickness,
+} from './toolkit/MeshAnalysis.js';
+
+import {
+  vec3Sub as _vec3Sub,
+  vec3Add as _vec3Add,
+  vec3Scale as _vec3Scale,
+  vec3Dot as _vec3Dot,
+  vec3Cross as _vec3Cross,
+  vec3Len as _vec3Len,
+  vec3Normalize as _vec3Normalize,
+  vec3Lerp as _vec3Lerp,
+  circumsphereCenter as _circumsphereCenter,
+  circumCenter3D as _circumCenter3D,
+  projectOntoAxis as _projectOntoAxis,
+  pointsCoincident3D as _pointsCoincident3D,
+  pointOnFacePlane as _pointOnFacePlane,
+  rayTriangleIntersect as _rayTriangleIntersect,
+  canonicalCoord as _canonicalCoord,
+  canonicalPoint as _canonicalPoint,
+  fmtCoord as _fmtCoord,
+  edgeVKey as _edgeVKey,
+  edgeKeyFromVerts as _edgeKeyFromVerts,
+  distancePointToLineSegment as _distancePointToLineSegment_toolkit,
+  openPolylineNormal as _openPolylineNormal_toolkit,
+} from './toolkit/Vec3Utils.js';
+
+import {
+  computePolygonNormal as _computePolygonNormal_toolkit,
+  faceCentroid as _faceCentroid_toolkit,
+  edgeKey as edgeKey_toolkit,
+  collectFaceEdgeKeys as _collectFaceEdgeKeys_toolkit,
+  findEdgeNormals as _findEdgeNormals_toolkit,
+  trimFaceEdge as _trimFaceEdge_toolkit,
+  pointOnSegmentStrict as pointOnSegmentStrict_toolkit,
+} from './toolkit/GeometryUtils.js';
+
+import {
+  weldVertices as _weldVertices_toolkit,
+  deduplicatePolygon as _deduplicatePolygon_toolkit,
+  removeDegenerateFaces as _removeDegenerateFaces_toolkit,
+  recomputeFaceNormals as _recomputeFaceNormals_toolkit,
+  fixWindingConsistency as _fixWindingConsistency_toolkit,
+  countMeshEdgeUsage as _countMeshEdgeUsage_toolkit,
+  cloneMeshFace as _cloneMeshFace_toolkit,
+} from './toolkit/MeshRepair.js';
+
+import {
+  isConvexPlanarPolygon as _isConvexPlanarPolygon_toolkit,
+  projectPolygon2D as _projectPolygon2D_toolkit,
+  triangulatePlanarPolygon as _triangulatePlanarPolygon_toolkit,
+  classifyFaceType as classifyFaceType_toolkit,
+} from './toolkit/PlanarMath.js';
+
+import {
+  chainEdgePaths as _chainEdgePaths_toolkit,
+} from './toolkit/EdgePathUtils.js';
+
+import {
+  measureMeshTopology as _measureMeshTopology_toolkit,
+  countTopoBodyBoundaryEdges as _countTopoBodyBoundaryEdges_toolkit,
+  findAdjacentFaces as _findAdjacentFaces_toolkit,
+  buildVertexEdgeMap as _buildVertexEdgeMap_toolkit,
+} from './toolkit/TopologyUtils.js';
+
+import {
+  polygonArea as _polygonArea_toolkit,
+  collinearSegmentsOverlap as _collinearSegmentsOverlap_toolkit,
+  coplanarFacesTouch as _coplanarFacesTouch_toolkit,
+  facesSharePlane as _facesSharePlane_toolkit,
+  sameNormalPair as _sameNormalPair_toolkit,
+  coplanarFaceClusterKey as _coplanarFaceClusterKey_toolkit,
+  sharedMetadataSignature as _sharedMetadataSignature_toolkit,
+} from './toolkit/CoplanarUtils.js';
+
 const EPSILON = 1e-5;
 
 // -----------------------------------------------------------------------
@@ -646,47 +729,11 @@ function assignCoplanarFaceGroups(faces) {
  * Classify the type of a face based on its normal and vertex positions.
  * Returns: 'planar-horizontal', 'planar-vertical', 'planar', 'cylindrical', or 'freeform'
  */
-function classifyFaceType(normal, vertices) {
-  if (vertices.length < 3) return 'planar';
+// classifyFaceType now delegates to toolkit/PlanarMath.js
+const classifyFaceType = classifyFaceType_toolkit;
 
-  // Check if all vertices are coplanar (within tolerance)
-  const n = Vec3.from(normal);
-  const p0 = Vec3.from(vertices[0]);
-  const d = n.dot(p0);
-
-  let allCoplanar = true;
-  for (const v of vertices) {
-    if (Math.abs(n.dot(Vec3.from(v)) - d) > EPSILON * 10) {
-      allCoplanar = false;
-      break;
-    }
-  }
-
-  if (allCoplanar) {
-    // Check if normal is axis-aligned
-    const ax = Math.abs(n.x), ay = Math.abs(n.y), az = Math.abs(n.z);
-    if (az > 0.99) return 'planar-horizontal';
-    if (ax > 0.99 || ay > 0.99) return 'planar-vertical';
-    return 'planar';
-  }
-
-  // For quads with non-coplanar verts, assume cylindrical (from extrusion of curves)
-  if (vertices.length === 4) return 'cylindrical';
-
-  return 'freeform';
-}
-
-/**
- * Create a unique edge key from two vertex positions (order-independent).
- */
-function edgeKey(a, b) {
-  const ax = Math.round(a.x * 1e6), ay = Math.round(a.y * 1e6), az = Math.round(a.z * 1e6);
-  const bx = Math.round(b.x * 1e6), by = Math.round(b.y * 1e6), bz = Math.round(b.z * 1e6);
-  if (ax < bx || (ax === bx && (ay < by || (ay === by && az < bz)))) {
-    return `${ax},${ay},${az}|${bx},${by},${bz}`;
-  }
-  return `${bx},${by},${bz}|${ax},${ay},${az}`;
-}
+// edgeKey now delegates to toolkit/GeometryUtils.js
+const edgeKey = edgeKey_toolkit;
 
 // -----------------------------------------------------------------------
 // T-junction repair
@@ -813,19 +860,8 @@ function _fixTJunctions(faces) {
 // Feature edge computation
 // -----------------------------------------------------------------------
 
-/**
- * Check if point p lies strictly on segment [a, b] (not at endpoints).
- */
-function pointOnSegmentStrict(p, a, b) {
-  const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
-  const px = p.x - a.x, py = p.y - a.y, pz = p.z - a.z;
-  const lenSq = dx * dx + dy * dy + dz * dz;
-  if (lenSq < EPSILON * EPSILON) return false; // degenerate edge
-  const t = (px * dx + py * dy + pz * dz) / lenSq;
-  if (t <= EPSILON || t >= 1 - EPSILON) return false; // at or beyond endpoints
-  const projX = px - t * dx, projY = py - t * dy, projZ = pz - t * dz;
-  return (projX * projX + projY * projY + projZ * projZ) < EPSILON * EPSILON;
-}
+// pointOnSegmentStrict → delegates to toolkit/GeometryUtils.js
+const pointOnSegmentStrict = pointOnSegmentStrict_toolkit;
 
 /**
  * Compute feature edges for a geometry's face list.
@@ -1066,85 +1102,8 @@ export function computeFeatureEdges(faces) {
  * @returns {Array} Array of path objects:
  *   { edgeIndices: number[], isClosed: boolean }
  */
-function _chainEdgePaths(edges) {
-  if (edges.length === 0) return [];
-
-  const vKey = (v) => `${Math.round(v.x * 1e5)},${Math.round(v.y * 1e5)},${Math.round(v.z * 1e5)}`;
-
-  // Build vertex → [edge index] adjacency
-  const vertexEdges = new Map();
-  const addVE = (v, idx) => {
-    const k = vKey(v);
-    if (!vertexEdges.has(k)) vertexEdges.set(k, []);
-    vertexEdges.get(k).push(idx);
-  };
-  for (let i = 0; i < edges.length; i++) {
-    addVE(edges[i].start, i);
-    addVE(edges[i].end, i);
-  }
-
-  const visited = new Set();
-  const paths = [];
-
-  for (let seed = 0; seed < edges.length; seed++) {
-    if (visited.has(seed)) continue;
-
-    // Walk backward from seed to find the start of the chain
-    // (stop when we hit a branch vertex or a dead end or revisit the seed)
-    let startEdge = seed;
-    let startVert = vKey(edges[seed].start);
-    {
-      let cur = seed;
-      let prevVert = vKey(edges[seed].end);
-      let curVert = vKey(edges[seed].start);
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
-        const neighbors = vertexEdges.get(curVert) || [];
-        if (neighbors.length !== 2) break; // branch or dead-end → stop
-        const next = neighbors[0] === cur ? neighbors[1] : neighbors[0];
-        if (next === seed) break; // looped back → closed
-        const ne = edges[next];
-        const nextVert = vKey(ne.start) === curVert ? vKey(ne.end) : vKey(ne.start);
-        if (nextVert === prevVert) break; // shouldn't happen but guard
-        prevVert = curVert;
-        curVert = nextVert;
-        cur = next;
-      }
-      startEdge = cur;
-      startVert = curVert;
-    }
-
-    // Walk forward from startEdge/startVert collecting the chain
-    const chain = [startEdge];
-    visited.add(startEdge);
-    let curVert = vKey(edges[startEdge].start) === startVert
-      ? vKey(edges[startEdge].end) : startVert;
-    // Use the other vertex of startEdge as the forward direction
-    const se = edges[startEdge];
-    let walkVert = vKey(se.start) === startVert ? vKey(se.end) : vKey(se.start);
-
-    let isClosed = false;
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
-      const neighbors = vertexEdges.get(walkVert) || [];
-      if (neighbors.length !== 2) break; // branch/dead-end
-      const next = neighbors[0] === chain[chain.length - 1] ? neighbors[1] : neighbors[0];
-      if (visited.has(next)) {
-        // We re-visited an edge → closed loop
-        isClosed = true;
-        break;
-      }
-      chain.push(next);
-      visited.add(next);
-      const ne = edges[next];
-      walkVert = vKey(ne.start) === walkVert ? vKey(ne.end) : vKey(ne.start);
-    }
-
-    paths.push({ edgeIndices: chain, isClosed });
-  }
-
-  return paths;
-}
+// _chainEdgePaths now delegates to toolkit/EdgePathUtils.js
+const _chainEdgePaths = _chainEdgePaths_toolkit;
 
 // -----------------------------------------------------------------------
 // Public API
@@ -1222,482 +1181,46 @@ export function booleanOp(geomA, geomB, operation, sharedA = null, sharedB = nul
   return result.toGeometry();
 }
 
-function _coplanarFacesTouch(faceA, faceB) {
-  const vertsA = faceA.vertices || [];
-  const vertsB = faceB.vertices || [];
-  for (const va of vertsA) {
-    for (let i = 0; i < vertsB.length; i++) {
-      if (pointOnSegmentStrict(va, vertsB[i], vertsB[(i + 1) % vertsB.length])) return true;
-    }
-  }
-  for (const vb of vertsB) {
-    for (let i = 0; i < vertsA.length; i++) {
-      if (pointOnSegmentStrict(vb, vertsA[i], vertsA[(i + 1) % vertsA.length])) return true;
-    }
-  }
-  for (let i = 0; i < vertsA.length; i++) {
-    const a0 = vertsA[i], a1 = vertsA[(i + 1) % vertsA.length];
-    for (let j = 0; j < vertsB.length; j++) {
-      const b0 = vertsB[j], b1 = vertsB[(j + 1) % vertsB.length];
-      if (_collinearSegmentsOverlap(a0, a1, b0, b1)) return true;
-    }
-  }
-  return false;
-}
+// _coplanarFacesTouch → delegates to toolkit/CoplanarUtils.js
+const _coplanarFacesTouch = _coplanarFacesTouch_toolkit;
 
-function _collinearSegmentsOverlap(a0, a1, b0, b1) {
-  const ab = { x: a1.x - a0.x, y: a1.y - a0.y, z: a1.z - a0.z };
-  const ac = { x: b0.x - a0.x, y: b0.y - a0.y, z: b0.z - a0.z };
-  const ad = { x: b1.x - a0.x, y: b1.y - a0.y, z: b1.z - a0.z };
-  const crossC = {
-    x: ab.y * ac.z - ab.z * ac.y,
-    y: ab.z * ac.x - ab.x * ac.z,
-    z: ab.x * ac.y - ab.y * ac.x,
-  };
-  const crossD = {
-    x: ab.y * ad.z - ab.z * ad.y,
-    y: ab.z * ad.x - ab.x * ad.z,
-    z: ab.x * ad.y - ab.y * ad.x,
-  };
-  const lenC = Math.sqrt(crossC.x * crossC.x + crossC.y * crossC.y + crossC.z * crossC.z);
-  const lenD = Math.sqrt(crossD.x * crossD.x + crossD.y * crossD.y + crossD.z * crossD.z);
-  if (lenC > 1e-5 || lenD > 1e-5) return false;
+// _collinearSegmentsOverlap → delegates to toolkit/CoplanarUtils.js
+const _collinearSegmentsOverlap = _collinearSegmentsOverlap_toolkit;
 
-  const lenSq = ab.x * ab.x + ab.y * ab.y + ab.z * ab.z;
-  if (lenSq < 1e-10) return false;
-  const t0 = (ac.x * ab.x + ac.y * ab.y + ac.z * ab.z) / lenSq;
-  const t1 = (ad.x * ab.x + ad.y * ab.y + ad.z * ab.z) / lenSq;
-  const minT = Math.min(t0, t1);
-  const maxT = Math.max(t0, t1);
-  return maxT > 1e-5 && minT < 1 - 1e-5 && (Math.min(1, maxT) - Math.max(0, minT)) > 1e-5;
-}
-function _computePolygonNormal(vertices) {
-  let nx = 0, ny = 0, nz = 0;
-  for (let i = 0; i < vertices.length; i++) {
-    const curr = vertices[i];
-    const next = vertices[(i + 1) % vertices.length];
-    nx += (curr.y - next.y) * (curr.z + next.z);
-    ny += (curr.z - next.z) * (curr.x + next.x);
-    nz += (curr.x - next.x) * (curr.y + next.y);
-  }
-  const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
-  if (len <= 1e-10) return null;
-  return { x: nx / len, y: ny / len, z: nz / len };
-}
-
-/**
- * Count faces whose polygon winding opposes their stored face normal.
- * Degenerate faces or faces without a stored normal are ignored.
- * @param {Object} geometry - {faces: [{vertices: [...], normal: {x,y,z}}]}
- * @returns {number}
- */
-export function countInvertedFaces(geometry) {
-  let inverted = 0;
-  for (const face of (geometry.faces || [])) {
-    const polygonNormal = _computePolygonNormal(face.vertices || []);
-    const faceNormal = face.normal;
-    if (!polygonNormal || !faceNormal) continue;
-    const dot =
-      polygonNormal.x * faceNormal.x +
-      polygonNormal.y * faceNormal.y +
-      polygonNormal.z * faceNormal.z;
-    if (dot < -1e-5) inverted++;
-  }
-  return inverted;
-}
-
-/**
- * Calculate the volume of a geometry using the divergence theorem.
- * Assumes the mesh is closed and consistently wound.
- * @param {Object} geometry - {faces: [{vertices: [{x,y,z},...], ...}]}
- * @returns {number} Signed volume
- */
-export function calculateMeshVolume(geometry) {
-  let volume = 0;
-  for (const face of (geometry.faces || [])) {
-    const verts = face.vertices;
-    if (verts.length < 3) continue;
-    // Fan triangulate and sum signed tetrahedron volumes
-    const v0 = verts[0];
-    for (let i = 1; i < verts.length - 1; i++) {
-      const v1 = verts[i], v2 = verts[i + 1];
-      volume += (
-        v0.x * (v1.y * v2.z - v2.y * v1.z) -
-        v1.x * (v0.y * v2.z - v2.y * v0.z) +
-        v2.x * (v0.y * v1.z - v1.y * v0.z)
-      ) / 6.0;
-    }
-  }
-  return Math.abs(volume);
-}
-
-/**
- * Calculate the bounding box of a geometry.
- * @param {Object} geometry - {faces: [{vertices: [{x,y,z},...], ...}]}
- * @returns {Object} {min: {x,y,z}, max: {x,y,z}}
- */
-export function calculateBoundingBox(geometry) {
-  let minX = Infinity, minY = Infinity, minZ = Infinity;
-  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-
-  for (const face of (geometry.faces || [])) {
-    for (const v of face.vertices) {
-      if (v.x < minX) minX = v.x;
-      if (v.y < minY) minY = v.y;
-      if (v.z < minZ) minZ = v.z;
-      if (v.x > maxX) maxX = v.x;
-      if (v.y > maxY) maxY = v.y;
-      if (v.z > maxZ) maxZ = v.z;
-    }
-  }
-
-  if (minX === Infinity) {
-    return { min: { x: 0, y: 0, z: 0 }, max: { x: 0, y: 0, z: 0 } };
-  }
-  return { min: { x: minX, y: minY, z: minZ }, max: { x: maxX, y: maxY, z: maxZ } };
-}
-
-/**
- * Calculate the total surface area of a closed mesh.
- * Uses fan triangulation per face and sums triangle areas.
- * @param {Object} geometry - {faces: [{vertices: [{x,y,z},...], ...}]}
- * @returns {number} Total surface area
- */
-export function calculateSurfaceArea(geometry) {
-  let area = 0;
-  for (const face of (geometry.faces || [])) {
-    const verts = face.vertices;
-    if (verts.length < 3) continue;
-    const v0 = verts[0];
-    for (let i = 1; i < verts.length - 1; i++) {
-      const v1 = verts[i], v2 = verts[i + 1];
-      // Cross product of (v1-v0) x (v2-v0)
-      const ax = v1.x - v0.x, ay = v1.y - v0.y, az = v1.z - v0.z;
-      const bx = v2.x - v0.x, by = v2.y - v0.y, bz = v2.z - v0.z;
-      const cx = ay * bz - az * by;
-      const cy = az * bx - ax * bz;
-      const cz = ax * by - ay * bx;
-      area += Math.sqrt(cx * cx + cy * cy + cz * cz) / 2;
-    }
-  }
-  return area;
-}
+// _computePolygonNormal now delegates to toolkit/GeometryUtils.js
+const _computePolygonNormal = _computePolygonNormal_toolkit;
 
 // -----------------------------------------------------------------------
-// Geometry analysis utilities
+// Mesh analysis functions — re-exported from toolkit/MeshAnalysis.js
+// (countInvertedFaces, calculateMeshVolume, calculateBoundingBox,
+//  calculateSurfaceArea, detectDisconnectedBodies, calculateWallThickness)
 // -----------------------------------------------------------------------
 
-/**
- * Detect disconnected bodies (connected components) in a geometry mesh.
- * Builds a face adjacency graph from shared edge vertices and finds
- * connected components via BFS.
- * @param {Object} geometry - {faces: [{vertices: [{x,y,z},...], ...}]}
- * @returns {Object} { bodyCount: number, bodySizes: number[] }
- *   bodyCount = number of connected components (1 = single solid)
- *   bodySizes = array of face counts per component, sorted descending
- */
-export function detectDisconnectedBodies(geometry) {
-  const faces = geometry.faces || [];
-  if (faces.length === 0) return { bodyCount: 0, bodySizes: [] };
-
-  // Build edge → face indices map
-  const edgeFaces = new Map();
-  for (let fi = 0; fi < faces.length; fi++) {
-    const verts = faces[fi].vertices;
-    for (let i = 0; i < verts.length; i++) {
-      const a = verts[i], b = verts[(i + 1) % verts.length];
-      const key = edgeKey(a, b);
-      if (!edgeFaces.has(key)) edgeFaces.set(key, []);
-      edgeFaces.get(key).push(fi);
-    }
-  }
-
-  // Build face adjacency (face → set of neighbor face indices)
-  const adj = Array.from({ length: faces.length }, () => new Set());
-  for (const faceList of edgeFaces.values()) {
-    for (let i = 0; i < faceList.length; i++) {
-      for (let j = i + 1; j < faceList.length; j++) {
-        adj[faceList[i]].add(faceList[j]);
-        adj[faceList[j]].add(faceList[i]);
-      }
-    }
-  }
-
-  // BFS connected components
-  const visited = new Uint8Array(faces.length);
-  const bodySizes = [];
-  for (let start = 0; start < faces.length; start++) {
-    if (visited[start]) continue;
-    let count = 0;
-    const queue = [start];
-    visited[start] = 1;
-    while (queue.length > 0) {
-      const fi = queue.pop();
-      count++;
-      for (const neighbor of adj[fi]) {
-        if (!visited[neighbor]) {
-          visited[neighbor] = 1;
-          queue.push(neighbor);
-        }
-      }
-    }
-    bodySizes.push(count);
-  }
-
-  bodySizes.sort((a, b) => b - a);
-  return { bodyCount: bodySizes.length, bodySizes };
-}
-
-/**
- * Estimate wall thickness by ray-casting from each face centroid along its
- * inward normal and finding the nearest opposing face hit.
- * Returns min and max wall thickness across all faces.
- * @param {Object} geometry - {faces: [{vertices: [{x,y,z},...], normal: {x,y,z}, ...}]}
- * @returns {Object} { minThickness: number, maxThickness: number }
- */
-export function calculateWallThickness(geometry) {
-  const faces = geometry.faces || [];
-  if (faces.length < 2) return { minThickness: 0, maxThickness: 0 };
-
-  // Pre-compute face centroids
-  const centroids = faces.map(f => {
-    const vs = f.vertices;
-    const n = vs.length;
-    let cx = 0, cy = 0, cz = 0;
-    for (const v of vs) { cx += v.x; cy += v.y; cz += v.z; }
-    return { x: cx / n, y: cy / n, z: cz / n };
-  });
-
-  let minT = Infinity, maxT = 0;
-
-  for (let fi = 0; fi < faces.length; fi++) {
-    const face = faces[fi];
-    const n = face.normal;
-    if (!n) continue;
-    // Ray origin: centroid, direction: inward normal (negated outward normal)
-    const origin = centroids[fi];
-    const dir = { x: -n.x, y: -n.y, z: -n.z };
-
-    let closest = Infinity;
-    for (let ti = 0; ti < faces.length; ti++) {
-      if (ti === fi) continue;
-      const target = faces[ti];
-      const tn = target.normal;
-      if (!tn) continue;
-      // Only consider roughly opposing faces (normals pointing toward each other)
-      const dotNormals = n.x * tn.x + n.y * tn.y + n.z * tn.z;
-      if (dotNormals > -0.1) continue; // not opposing
-
-      // Ray-triangle intersection for each triangle in the fan
-      const tverts = target.vertices;
-      if (tverts.length < 3) continue;
-      const v0 = tverts[0];
-      for (let k = 1; k < tverts.length - 1; k++) {
-        const v1 = tverts[k], v2 = tverts[k + 1];
-        const t = _rayTriangleIntersect(origin, dir, v0, v1, v2);
-        if (t > 1e-6 && t < closest) closest = t;
-      }
-    }
-
-    if (closest < Infinity) {
-      if (closest < minT) minT = closest;
-      if (closest > maxT) maxT = closest;
-    }
-  }
-
-  if (minT === Infinity) minT = 0;
-  return { minThickness: minT, maxThickness: maxT };
-}
-
-/**
- * Möller–Trumbore ray-triangle intersection.
- * @returns {number} Distance t along ray, or Infinity if no hit.
- */
-function _rayTriangleIntersect(origin, dir, v0, v1, v2) {
-  const e1x = v1.x - v0.x, e1y = v1.y - v0.y, e1z = v1.z - v0.z;
-  const e2x = v2.x - v0.x, e2y = v2.y - v0.y, e2z = v2.z - v0.z;
-  const px = dir.y * e2z - dir.z * e2y;
-  const py = dir.z * e2x - dir.x * e2z;
-  const pz = dir.x * e2y - dir.y * e2x;
-  const det = e1x * px + e1y * py + e1z * pz;
-  if (Math.abs(det) < 1e-10) return Infinity;
-  const invDet = 1.0 / det;
-  const tx = origin.x - v0.x, ty = origin.y - v0.y, tz = origin.z - v0.z;
-  const u = (tx * px + ty * py + tz * pz) * invDet;
-  if (u < 0 || u > 1) return Infinity;
-  const qx = ty * e1z - tz * e1y;
-  const qy = tz * e1x - tx * e1z;
-  const qz = tx * e1y - ty * e1x;
-  const v = (dir.x * qx + dir.y * qy + dir.z * qz) * invDet;
-  if (v < 0 || u + v > 1) return Infinity;
-  const t = (e2x * qx + e2y * qy + e2z * qz) * invDet;
-  return t;
-}
-
 // -----------------------------------------------------------------------
-// Edge key helpers for chamfer/fillet
+// Edge key & vec3 helpers — imported from toolkit/Vec3Utils.js
 // -----------------------------------------------------------------------
 
-const EDGE_PREC = 5;
-function _fmtCoord(n) {
-  return (Math.abs(n) < 5e-6 ? 0 : n).toFixed(EDGE_PREC);
-}
-function _canonicalCoord(n, eps = 1e-12) {
-  return Math.abs(n) < eps ? 0 : n;
-}
-function _canonicalPoint(point, eps = 1e-12) {
-  if (!point) return point;
-  return {
-    x: _canonicalCoord(point.x, eps),
-    y: _canonicalCoord(point.y, eps),
-    z: _canonicalCoord(point.z, eps),
-  };
-}
-function _edgeVKey(v) {
-  return `${_fmtCoord(v.x)},${_fmtCoord(v.y)},${_fmtCoord(v.z)}`;
-}
-function _edgeKeyFromVerts(a, b) {
-  const ka = _edgeVKey(a), kb = _edgeVKey(b);
-  return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
-}
+// vec3 helpers imported from toolkit/Vec3Utils.js (aliased as _vec3* for compatibility)
 
-function _vec3Sub(a, b) { return { x: a.x - b.x, y: a.y - b.y, z: a.z - b.z }; }
-function _vec3Add(a, b) { return { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z }; }
-function _vec3Scale(v, s) { return { x: v.x * s, y: v.y * s, z: v.z * s }; }
-function _vec3Dot(a, b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
-function _vec3Cross(a, b) {
-  return { x: a.y * b.z - a.z * b.y, y: a.z * b.x - a.x * b.z, z: a.x * b.y - a.y * b.x };
-}
-function _vec3Len(v) { return Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z); }
-function _vec3Normalize(v) {
-  const len = _vec3Len(v);
-  if (len < 1e-10) return { x: 0, y: 0, z: 0 };
-  return { x: v.x / len, y: v.y / len, z: v.z / len };
-}
-function _vec3Lerp(a, b, t) {
-  return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, z: a.z + (b.z - a.z) * t };
-}
+// circumsphereCenter imported from toolkit/Vec3Utils.js
 
-/**
- * Compute the circumsphere center of 4 non-coplanar points.
- * All 4 points are equidistant from the returned center.
- * Returns {x,y,z} or null if the points are (near-)coplanar.
- */
-function _circumsphereCenter(p0, p1, p2, p3) {
-  const d1 = _vec3Sub(p1, p0);
-  const d2 = _vec3Sub(p2, p0);
-  const d3 = _vec3Sub(p3, p0);
-  const b1 = _vec3Dot(d1, d1) / 2;
-  const b2 = _vec3Dot(d2, d2) / 2;
-  const b3 = _vec3Dot(d3, d3) / 2;
-  const det = d1.x * (d2.y * d3.z - d2.z * d3.y)
-            - d1.y * (d2.x * d3.z - d2.z * d3.x)
-            + d1.z * (d2.x * d3.y - d2.y * d3.x);
-  if (Math.abs(det) < 1e-12) return null;
-  const inv = 1 / det;
-  const cx = (b1 * (d2.y * d3.z - d2.z * d3.y)
-            - d1.y * (b2 * d3.z - d2.z * b3)
-            + d1.z * (b2 * d3.y - d2.y * b3)) * inv;
-  const cy = (d1.x * (b2 * d3.z - d2.z * b3)
-            - b1 * (d2.x * d3.z - d2.z * d3.x)
-            + d1.z * (d2.x * b3 - b2 * d3.x)) * inv;
-  const cz = (d1.x * (d2.y * b3 - b2 * d3.y)
-            - d1.y * (d2.x * b3 - b2 * d3.x)
-            + b1 * (d2.x * d3.y - d2.y * d3.x)) * inv;
-  return { x: p0.x + cx, y: p0.y + cy, z: p0.z + cz };
-}
+// pointOnFacePlane imported from toolkit/Vec3Utils.js
 
-/**
- * Check whether a point lies on the plane defined by a set of face vertices.
- * Returns true if the signed distance from point to the plane is within tolerance.
- */
-function _pointOnFacePlane(point, faceVerts, tolerance) {
-  if (tolerance === undefined) tolerance = 0.01;
-  if (faceVerts.length < 3) return true;
-  const n = _vec3Cross(_vec3Sub(faceVerts[1], faceVerts[0]), _vec3Sub(faceVerts[2], faceVerts[0]));
-  const len = _vec3Len(n);
-  if (len < 1e-10) return true;
-  return Math.abs(_vec3Dot(n, _vec3Sub(point, faceVerts[0]))) / len < tolerance;
-}
-
-/**
- * Find the two face normals adjacent to an edge in a geometry.
- * Returns { n0, n1 } or null if edge not found.
- */
-function _findEdgeNormals(faces, edgeKey) {
-  const normals = [];
-  for (const face of faces) {
-    const verts = face.vertices;
-    for (let i = 0; i < verts.length; i++) {
-      const a = verts[i], b = verts[(i + 1) % verts.length];
-      if (_edgeKeyFromVerts(a, b) === edgeKey) {
-        normals.push(face.normal);
-        break;
-      }
-    }
-    if (normals.length >= 2) break;
-  }
-  return normals.length >= 2 ? { n0: normals[0], n1: normals[1] } : null;
-}
+// _findEdgeNormals now delegates to toolkit/GeometryUtils.js
+const _findEdgeNormals = _findEdgeNormals_toolkit;
 
 // -----------------------------------------------------------------------
 // Chamfer / Fillet shared helpers
 // -----------------------------------------------------------------------
 
-function _faceCentroid(face) {
-  if (Array.isArray(face?.vertices) && face.vertices.length > 0) {
-    let cx = 0, cy = 0, cz = 0;
-    for (const v of face.vertices) {
-      cx += v.x;
-      cy += v.y;
-      cz += v.z;
-    }
-    const n = face.vertices.length;
-    return { x: cx / n, y: cy / n, z: cz / n };
-  }
+// _faceCentroid now delegates to toolkit/GeometryUtils.js
+const _faceCentroid = _faceCentroid_toolkit;
 
-  const coedges = face?.outerLoop?.coedges;
-  if (Array.isArray(coedges) && coedges.length > 0) {
-    let sx = 0, sy = 0, sz = 0;
-    for (const ce of coedges) {
-      const p = ce.edge.startVertex.point;
-      sx += p.x;
-      sy += p.y;
-      sz += p.z;
-    }
-    const count = coedges.length;
-    return { x: sx / count, y: sy / count, z: sz / count };
-  }
+// _trimFaceEdge now delegates to toolkit/GeometryUtils.js
+const _trimFaceEdge = _trimFaceEdge_toolkit;
 
-  return { x: 0, y: 0, z: 0 };
-}
-
-function _trimFaceEdge(face, edgeA, edgeB, newA, newB) {
-  const verts = face.vertices;
-  const keyA = _edgeVKey(edgeA);
-  const keyB = _edgeVKey(edgeB);
-  const newVerts = [];
-  for (let i = 0; i < verts.length; i++) {
-    const vk = _edgeVKey(verts[i]);
-    if (vk === keyA) {
-      newVerts.push({ ...newA });
-    } else if (vk === keyB) {
-      newVerts.push({ ...newB });
-    } else {
-      newVerts.push(verts[i]);
-    }
-  }
-  face.vertices = newVerts;
-}
-
-function _collectFaceEdgeKeys(face) {
-  const keys = new Set();
-  const verts = face.vertices;
-  for (let i = 0; i < verts.length; i++) {
-    keys.add(_edgeKeyFromVerts(verts[i], verts[(i + 1) % verts.length]));
-  }
-  return keys;
-}
+// _collectFaceEdgeKeys now delegates to toolkit/GeometryUtils.js
+const _collectFaceEdgeKeys = _collectFaceEdgeKeys_toolkit;
 
 /**
  * At an edge endpoint, split the vertex in every face OTHER THAN face0/face1.
@@ -2025,19 +1548,8 @@ function _computeFilletFilletIntersections(faces, edgeDataList, radius, segments
   }
 }
 
-/**
- * Compute distance from a point to a line segment.
- */
-function _distancePointToLineSegment(p, a, b) {
-  const ab = _vec3Sub(b, a);
-  const ap = _vec3Sub(p, a);
-  const abLen = _vec3Len(ab);
-  if (abLen < 1e-10) return _vec3Len(ap);
-  
-  const t = Math.max(0, Math.min(1, _vec3Dot(ap, ab) / (abLen * abLen)));
-  const closest = _vec3Add(a, _vec3Scale(ab, t));
-  return _vec3Len(_vec3Sub(p, closest));
-}
+// _distancePointToLineSegment → delegates to toolkit/Vec3Utils.js
+const _distancePointToLineSegment = _distancePointToLineSegment_toolkit;
 
 /**
  * Compute the 3D intersection curve between a new fillet arc and an old fillet cylinder.
@@ -2272,70 +1784,8 @@ function _computeOffsetDirs(face0, face1, edgeA, edgeB) {
   return { offsDir0, offsDir1, edgeDir, isConcave };
 }
 
-/**
- * Find the two faces sharing a given edge key. Returns array of {fi, a, b}.
- * Falls back to fuzzy direction+proximity matching when a previous chamfer/fillet
- * has displaced shared vertices so the stored key no longer exactly matches.
- */
-function _findAdjacentFaces(faces, edgeKey) {
-  // --- exact match ---
-  const adj = [];
-  for (let fi = 0; fi < faces.length; fi++) {
-    const verts = faces[fi].vertices;
-    for (let i = 0; i < verts.length; i++) {
-      const a = verts[i], b = verts[(i + 1) % verts.length];
-      if (_edgeKeyFromVerts(a, b) === edgeKey) {
-        adj.push({ fi, a, b });
-        break;
-      }
-    }
-    if (adj.length >= 2) break;
-  }
-  if (adj.length >= 2) return adj;
-
-  const edgeOwnerMap = null; // Added edgeOwnerMap parameter
-  // --- fuzzy fallback ---
-  const sep = edgeKey.indexOf('|');
-  if (sep < 0) return adj;
-  const parseV = (s) => { const c = s.split(',').map(Number); return { x: c[0], y: c[1], z: c[2] }; };
-  const origA = parseV(edgeKey.slice(0, sep));
-  const origB = parseV(edgeKey.slice(sep + 1));
-  const origDelta = _vec3Sub(origB, origA);
-  const origLen = _vec3Len(origDelta);
-  if (origLen < 1e-10) return adj;
-  const origDir = _vec3Normalize(origDelta);
-  const origMid = { x: (origA.x + origB.x) / 2, y: (origA.y + origB.y) / 2, z: (origA.z + origB.z) / 2 };
-  const maxMidDist = origLen * 0.4;
-
-  const candidates = [];
-  for (let fi = 0; fi < faces.length; fi++) {
-    const verts = faces[fi].vertices;
-    for (let i = 0; i < verts.length; i++) {
-      const a = verts[i], b = verts[(i + 1) % verts.length];
-      const d = _vec3Sub(b, a);
-      const len = _vec3Len(d);
-      if (len < 1e-10) continue;
-      if (Math.abs(_vec3Dot(_vec3Normalize(d), origDir)) < 0.95) continue;
-      const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, z: (a.z + b.z) / 2 };
-      const midDist = _vec3Len(_vec3Sub(mid, origMid));
-      if (midDist > maxMidDist) continue;
-      const lenRatio = len / origLen;
-      if (lenRatio < 0.3 || lenRatio > 1.5) continue;
-      candidates.push({ fi, a, b, score: midDist });
-    }
-  }
-
-  candidates.sort((x, y) => x.score - y.score);
-  const fuzzy = [];
-  const seen = new Set();
-  for (const c of candidates) {
-    if (seen.has(c.fi)) continue;
-    fuzzy.push({ fi: c.fi, a: c.a, b: c.b });
-    seen.add(c.fi);
-    if (fuzzy.length >= 2) break;
-  }
-  return fuzzy.length >= 2 ? fuzzy : adj;
-}
+// _findAdjacentFaces → delegates to toolkit/TopologyUtils.js
+const _findAdjacentFaces = _findAdjacentFaces_toolkit;
 
 // -----------------------------------------------------------------------
 // Chamfer geometry operation
@@ -2513,47 +1963,11 @@ function _healBoundaryLoops(faces) {
   }
 }
 
-function _polygonArea(face) {
-  const verts = face.vertices || [];
-  let area = 0;
-  for (let i = 1; i < verts.length - 1; i++) {
-    const ab = _vec3Sub(verts[i], verts[0]);
-    const ac = _vec3Sub(verts[i + 1], verts[0]);
-    area += 0.5 * _vec3Len(_vec3Cross(ab, ac));
-  }
-  return area;
-}
+// _polygonArea → delegates to toolkit/CoplanarUtils.js
+const _polygonArea = _polygonArea_toolkit;
 
-function _coplanarFaceClusterKey(face, fallbackIndex = 0) {
-  if (!face || !face.normal || !Array.isArray(face.vertices) || face.vertices.length < 3) return null;
-  const point = face.vertices[0];
-  if (!point) return null;
-  const normal = _vec3Normalize(face.normal);
-  if (_vec3Len(normal) < 1e-10) return null;
-
-  let sign = 1;
-  const ax = Math.abs(normal.x);
-  const ay = Math.abs(normal.y);
-  const az = Math.abs(normal.z);
-  if (az >= ax && az >= ay) sign = normal.z < 0 ? -1 : 1;
-  else if (ay >= ax) sign = normal.y < 0 ? -1 : 1;
-  else sign = normal.x < 0 ? -1 : 1;
-
-  const canonicalNormal = {
-    x: normal.x * sign,
-    y: normal.y * sign,
-    z: normal.z * sign,
-  };
-  const planeDistance = _vec3Dot(canonicalNormal, point);
-  const clusterOwner = face.faceGroup ?? fallbackIndex;
-  return [
-    clusterOwner,
-    Math.round(canonicalNormal.x * 1e6),
-    Math.round(canonicalNormal.y * 1e6),
-    Math.round(canonicalNormal.z * 1e6),
-    Math.round(planeDistance * 1e6),
-  ].join('|');
-}
+// _coplanarFaceClusterKey → delegates to toolkit/CoplanarUtils.js
+const _coplanarFaceClusterKey = _coplanarFaceClusterKey_toolkit;
 
 function _fixOpposedCoplanarFacesInGroups(faces) {
   if (!Array.isArray(faces) || faces.length === 0) return;
@@ -2597,109 +2011,14 @@ function _fixOpposedCoplanarFacesInGroups(faces) {
   }
 }
 
-function _isConvexPlanarPolygon(verts, normal) {
-  if (!verts || verts.length < 3 || !normal) return false;
-  let sign = 0;
-  for (let i = 0; i < verts.length; i++) {
-    const a = verts[i];
-    const b = verts[(i + 1) % verts.length];
-    const c = verts[(i + 2) % verts.length];
-    const cross = _vec3Cross(_vec3Sub(b, a), _vec3Sub(c, b));
-    const turn = _vec3Dot(cross, normal);
-    if (Math.abs(turn) < 1e-8) continue;
-    const nextSign = turn > 0 ? 1 : -1;
-    if (sign === 0) sign = nextSign;
-    else if (sign !== nextSign) return false;
-  }
-  return true;
-}
+// _isConvexPlanarPolygon now delegates to toolkit/PlanarMath.js
+const _isConvexPlanarPolygon = _isConvexPlanarPolygon_toolkit;
 
-function _projectPolygon2D(verts, normal) {
-  const an = {
-    x: Math.abs(normal.x),
-    y: Math.abs(normal.y),
-    z: Math.abs(normal.z),
-  };
-  if (an.z >= an.x && an.z >= an.y) {
-    return verts.map((v) => ({ x: v.x, y: v.y }));
-  }
-  if (an.y >= an.x) {
-    return verts.map((v) => ({ x: v.x, y: v.z }));
-  }
-  return verts.map((v) => ({ x: v.y, y: v.z }));
-}
+// _projectPolygon2D now delegates to toolkit/PlanarMath.js
+const _projectPolygon2D = _projectPolygon2D_toolkit;
 
-function _triangulatePlanarPolygon(verts, normal) {
-  if (!verts || verts.length < 3) return [];
-  if (verts.length === 3) return [verts.map((v) => ({ ...v }))];
-
-  const pts2d = _projectPolygon2D(verts, normal);
-  const signedArea = (() => {
-    let area = 0;
-    for (let i = 0; i < pts2d.length; i++) {
-      const a = pts2d[i];
-      const b = pts2d[(i + 1) % pts2d.length];
-      area += a.x * b.y - b.x * a.y;
-    }
-    return area * 0.5;
-  })();
-  const winding = signedArea >= 0 ? 1 : -1;
-
-  function cross2(a, b, c) {
-    return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
-  }
-
-  function pointInTri(p, a, b, c) {
-    const c1 = cross2(a, b, p) * winding;
-    const c2 = cross2(b, c, p) * winding;
-    const c3 = cross2(c, a, p) * winding;
-    return c1 >= -1e-8 && c2 >= -1e-8 && c3 >= -1e-8;
-  }
-
-  const remaining = verts.map((_, i) => i);
-  const triangles = [];
-  let guard = 0;
-
-  while (remaining.length > 3 && guard < verts.length * verts.length) {
-    let earFound = false;
-    for (let ri = 0; ri < remaining.length; ri++) {
-      const prev = remaining[(ri - 1 + remaining.length) % remaining.length];
-      const curr = remaining[ri];
-      const next = remaining[(ri + 1) % remaining.length];
-      const a = pts2d[prev];
-      const b = pts2d[curr];
-      const c = pts2d[next];
-      if (cross2(a, b, c) * winding <= 1e-8) continue;
-
-      let containsPoint = false;
-      for (const other of remaining) {
-        if (other === prev || other === curr || other === next) continue;
-        if (pointInTri(pts2d[other], a, b, c)) {
-          containsPoint = true;
-          break;
-        }
-      }
-      if (containsPoint) continue;
-
-      triangles.push([
-        { ...verts[prev] },
-        { ...verts[curr] },
-        { ...verts[next] },
-      ]);
-      remaining.splice(ri, 1);
-      earFound = true;
-      break;
-    }
-
-    if (!earFound) return null;
-    guard++;
-  }
-
-  if (remaining.length === 3) {
-    triangles.push(remaining.map((idx) => ({ ...verts[idx] })));
-  }
-  return triangles;
-}
+// _triangulatePlanarPolygon now delegates to toolkit/PlanarMath.js
+const _triangulatePlanarPolygon = _triangulatePlanarPolygon_toolkit;
 
 function _mergeMixedSharedPlanarComponents(faces, includeUniformShared = false) {
   const quantize = (value, digits = 5) => {
@@ -2886,17 +2205,8 @@ function _mergeMixedSharedPlanarComponents(faces, includeUniformShared = false) 
   faces.push(...kept);
 }
 
-function _facesSharePlane(faceA, faceB) {
-  const na = _vec3Normalize(faceA?.normal || { x: 0, y: 0, z: 0 });
-  const nb = _vec3Normalize(faceB?.normal || { x: 0, y: 0, z: 0 });
-  if (_vec3Len(na) < 1e-10 || _vec3Len(nb) < 1e-10) return false;
-  if (Math.abs(_vec3Dot(na, nb)) < 0.999) return false;
-  const planeD = _vec3Dot(faceA.vertices[0], na);
-  for (const v of faceB.vertices || []) {
-    if (Math.abs(_vec3Dot(v, na) - planeD) > 1e-5) return false;
-  }
-  return true;
-}
+// _facesSharePlane → delegates to toolkit/CoplanarUtils.js
+const _facesSharePlane = _facesSharePlane_toolkit;
 
 function _traceMergedPairLoop(faceA, faceB) {
   const directedEdges = [];
@@ -3253,11 +2563,8 @@ function _mergeCoplanarNonManifoldComponents(faces) {
   faces.push(...keptFaces);
 }
 
-function _sharedMetadataSignature(shared) {
-  if (!shared) return '__null__';
-  const keys = Object.keys(shared).sort();
-  return JSON.stringify(shared, keys);
-}
+// _sharedMetadataSignature → delegates to toolkit/CoplanarUtils.js
+const _sharedMetadataSignature = _sharedMetadataSignature_toolkit;
 
 function _compactExactPlanarDisplayFaces(inputFaces) {
   if (!Array.isArray(inputFaces) || inputFaces.length < 2) {
@@ -3346,64 +2653,10 @@ function _compactExactPlanarDisplayFaces(inputFaces) {
   return compactedFaces;
 }
 
-// Weld vertices that map to the same rounded key so seam duplicates are eliminated
-function _weldVertices(faces) {
-  const canon = new Map();
-  for (const f of faces) {
-    for (let i = 0; i < f.vertices.length; i++) {
-      const v = f.vertices[i];
-      const key = _edgeVKey(v);
-      if (canon.has(key)) {
-        const c = canon.get(key);
-        f.vertices[i] = { x: c.x, y: c.y, z: c.z };
-      } else {
-        canon.set(key, { x: v.x, y: v.y, z: v.z });
-      }
-    }
-  }
-}
-
-function _removeDegenerateFaces(faces) {
-  for (let i = faces.length - 1; i >= 0; i--) {
-    const face = faces[i];
-    const cleaned = _deduplicatePolygon(face.vertices || []);
-    if (cleaned.length < 3) {
-      faces.splice(i, 1);
-      continue;
-    }
-    const normal = _computePolygonNormal(cleaned);
-    if (!normal) {
-      faces.splice(i, 1);
-      continue;
-    }
-    face.vertices = cleaned;
-  }
-}
-
-/**
- * Recompute face normals using the Newell method for correctness after
- * vertex modifications (trimming, splitting). The Newell method sums
- * cross products of consecutive edge pairs and works correctly for both
- * convex and concave polygons.
- */
-function _recomputeFaceNormals(faces) {
-  for (const face of faces) {
-    const verts = face.vertices;
-    if (verts.length < 3) continue;
-    let nx = 0, ny = 0, nz = 0;
-    for (let i = 0; i < verts.length; i++) {
-      const curr = verts[i];
-      const next = verts[(i + 1) % verts.length];
-      nx += (curr.y - next.y) * (curr.z + next.z);
-      ny += (curr.z - next.z) * (curr.x + next.x);
-      nz += (curr.x - next.x) * (curr.y + next.y);
-    }
-    const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
-    if (len > 1e-10) {
-      face.normal = { x: nx / len, y: ny / len, z: nz / len };
-    }
-  }
-}
+// Mesh repair functions now delegate to toolkit/MeshRepair.js
+const _weldVertices = _weldVertices_toolkit;
+const _removeDegenerateFaces = _removeDegenerateFaces_toolkit;
+const _recomputeFaceNormals = _recomputeFaceNormals_toolkit;
 
 /**
  * Triangulate concave polygon faces (>4 vertices) using CDT so that
@@ -3460,101 +2713,7 @@ function _triangulateConcaveFaces(faces) {
  * have winding that conflicts with the trimmed original faces.  This function
  * detects and corrects such conflicts.
  */
-function _fixWindingConsistency(faces) {
-  if (faces.length === 0) return;
-
-  // Build edge → face adjacency (directed edge → face index + direction)
-  const edgeToFaces = new Map();
-  for (let fi = 0; fi < faces.length; fi++) {
-    const verts = faces[fi].vertices;
-    for (let i = 0; i < verts.length; i++) {
-      const a = verts[i], b = verts[(i + 1) % verts.length];
-      const ka = _edgeVKey(a), kb = _edgeVKey(b);
-      const ek = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
-      const fwd = ka < kb;
-      if (!edgeToFaces.has(ek)) edgeToFaces.set(ek, []);
-      edgeToFaces.get(ek).push({ fi, fwd });
-    }
-  }
-
-  // Check if any winding errors exist
-  let hasErrors = false;
-  for (const [, entries] of edgeToFaces) {
-    if (entries.length === 2 && entries[0].fwd === entries[1].fwd) {
-      hasErrors = true;
-      break;
-    }
-  }
-  if (!hasErrors) return;
-
-  // BFS from face 0 to propagate consistent winding.
-  // flipped[fi] tracks whether face fi needs to be reversed.
-  // When checking a neighbor, we must account for the current face's flip
-  // state: if the current face is flipped, its effective edge direction is
-  // the opposite of the original stored direction.
-  const flipped = new Uint8Array(faces.length);
-  const visited = new Uint8Array(faces.length);
-  const queue = [0];
-  visited[0] = 1;
-
-  while (queue.length > 0) {
-    const fi = queue.shift();
-    const verts = faces[fi].vertices;
-    for (let i = 0; i < verts.length; i++) {
-      const a = verts[i], b = verts[(i + 1) % verts.length];
-      const ka = _edgeVKey(a), kb = _edgeVKey(b);
-      const ek = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
-      const myOrigFwd = ka < kb;
-      const neighbors = edgeToFaces.get(ek);
-      if (!neighbors) continue;
-      // Effective direction of this edge for the current face
-      const myEffectiveFwd = flipped[fi] ? !myOrigFwd : myOrigFwd;
-      for (const nb of neighbors) {
-        if (nb.fi === fi || visited[nb.fi]) continue;
-        visited[nb.fi] = 1;
-        // Consistent winding: neighbor's effective direction must be OPPOSITE
-        // If neighbor's original fwd matches our effective fwd, it needs flipping
-        if (nb.fwd === myEffectiveFwd) {
-          flipped[nb.fi] = 1;
-        }
-        queue.push(nb.fi);
-      }
-    }
-  }
-
-  // Apply flips
-  for (let fi = 0; fi < faces.length; fi++) {
-    if (flipped[fi]) {
-      faces[fi].vertices.reverse();
-      const n = faces[fi].normal;
-      faces[fi].normal = { x: -n.x, y: -n.y, z: -n.z };
-    }
-  }
-
-  // Verify outward orientation via signed volume
-  let signedVol = 0;
-  for (const face of faces) {
-    const verts = face.vertices;
-    if (verts.length < 3) continue;
-    const v0 = verts[0];
-    for (let i = 1; i < verts.length - 1; i++) {
-      const v1 = verts[i], v2 = verts[i + 1];
-      signedVol += (
-        v0.x * (v1.y * v2.z - v2.y * v1.z) -
-        v1.x * (v0.y * v2.z - v2.y * v0.z) +
-        v2.x * (v0.y * v1.z - v1.y * v0.z)
-      );
-    }
-  }
-  if (signedVol < 0) {
-    // All normals point inward — flip everything
-    for (const face of faces) {
-      face.vertices.reverse();
-      const n = face.normal;
-      face.normal = { x: -n.x, y: -n.y, z: -n.z };
-    }
-  }
-}
+const _fixWindingConsistency = _fixWindingConsistency_toolkit;
 
 export function applyChamfer(geometry, edgeKeys, distance) {
   if (!geometry || !geometry.faces || edgeKeys.length === 0 || distance <= 0) {
@@ -3846,24 +3005,8 @@ function _proximityMatchEdgeKeys(unmatchedKeys, allEdgeSamples, chamferTopoEdges
   }
 }
 
-function _countTopoBodyBoundaryEdges(topoBody) {
-  if (!topoBody?.shells) return Infinity;
-  const edgeRefs = new Map();
-  for (const shell of topoBody.shells) {
-    for (const face of shell.faces) {
-      for (const loop of face.allLoops()) {
-        for (const coedge of loop.coedges) {
-          edgeRefs.set(coedge.edge.id, (edgeRefs.get(coedge.edge.id) || 0) + 1);
-        }
-      }
-    }
-  }
-  let boundaryEdges = 0;
-  for (const count of edgeRefs.values()) {
-    if (count < 2) boundaryEdges++;
-  }
-  return boundaryEdges;
-}
+// _countTopoBodyBoundaryEdges → delegates to toolkit/TopologyUtils.js
+const _countTopoBodyBoundaryEdges = _countTopoBodyBoundaryEdges_toolkit;
 
 function _getCoedgeEdgePoints(coedge) {
   const sameSense = coedge?.sameSense !== false;
@@ -4155,33 +3298,8 @@ function _recoverArcCenter(curve, sp, ep) {
   return _circumCenter3D(sp, mid, ep);
 }
 
-/** Compute circumcenter of three 3D points (center of circle through them) */
-function _circumCenter3D(a, b, c) {
-  const ab = _vec3Sub(b, a);
-  const ac = _vec3Sub(c, a);
-  const n = _vec3Cross(ab, ac);
-  const n2 = _vec3Dot(n, n);
-  if (n2 < 1e-20) return null; // collinear
-  const abDot = _vec3Dot(ab, ab);
-  const acDot = _vec3Dot(ac, ac);
-  const d = _vec3Add(
-    _vec3Scale(_vec3Cross(n, _vec3Cross(ab, n)), acDot),
-    _vec3Scale(_vec3Cross(_vec3Cross(ac, n), n), abDot)
-  );
-  // Hmm this formula is wrong, let me use the standard one
-  // center = a + (|ac|^2 (ab×n) + |ab|^2 (n×ac)) / (2|n|^2)
-  const t1 = _vec3Cross(ab, n);
-  const t2 = _vec3Cross(n, ac);
-  const num = _vec3Add(_vec3Scale(t2, abDot), _vec3Scale(t1, acDot));
-  return _vec3Add(a, _vec3Scale(num, 0.5 / n2));
-}
-
-/** Project a point onto an axis line */
-function _projectOntoAxis(point, axisOrigin, axisDir) {
-  const v = _vec3Sub(point, axisOrigin);
-  const t = _vec3Dot(v, axisDir);
-  return _vec3Add(axisOrigin, _vec3Scale(axisDir, t));
-}
+// _circumCenter3D imported from toolkit/Vec3Utils.js
+// _projectOntoAxis imported from toolkit/Vec3Utils.js
 
 /** Extract cylinder axis/center/radius from a cylindrical TopoFace */
 function _extractCylinderInfo(face) {
@@ -4296,9 +3414,7 @@ function _extractLoopDesc(loop) {
   return { vertices, edgeCurves };
 }
 
-function _pointsCoincident3D(a, b, tol = 1e-8) {
-  return _vec3Len(_vec3Sub(a, b)) < tol;
-}
+// _pointsCoincident3D imported from toolkit/Vec3Utils.js
 
 function _getOrientedCoedgeCurve(coedge) {
   if (!coedge?.edge) return null;
@@ -4326,37 +3442,8 @@ function _orientOffsetAlongTopoEdge(offset, topoEdge) {
   };
 }
 
-function _measureMeshTopology(faces) {
-  const edgeMap = new Map();
-  for (const face of faces || []) {
-    const verts = face.vertices || [];
-    for (let i = 0; i < verts.length; i++) {
-      const a = verts[i];
-      const b = verts[(i + 1) % verts.length];
-      const ka = _edgeVKey(a);
-      const kb = _edgeVKey(b);
-      const key = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
-      const fwd = ka < kb;
-      if (!edgeMap.has(key)) edgeMap.set(key, []);
-      edgeMap.get(key).push({ fwd });
-    }
-  }
-
-  let boundaryEdges = 0;
-  let nonManifoldEdges = 0;
-  let windingErrors = 0;
-  for (const entries of edgeMap.values()) {
-    if (entries.length === 1) {
-      boundaryEdges++;
-    } else if (entries.length === 2) {
-      if (entries[0].fwd === entries[1].fwd) windingErrors++;
-    } else {
-      nonManifoldEdges++;
-    }
-  }
-
-  return { boundaryEdges, nonManifoldEdges, windingErrors };
-}
+// _measureMeshTopology → delegates to toolkit/TopologyUtils.js
+const _measureMeshTopology = _measureMeshTopology_toolkit;
 
 function _debugBRepChamfer(...args) {
   if (typeof process === 'undefined' || !process?.env?.DEBUG_BREP_CHAMFER) return;
@@ -4653,17 +3740,26 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
     return null;
   }
 
-  // The B-Rep tessellator (tessellateBody) produces faces with normals
-  // derived from the TopoFace surface and sameSense flag.  For clean
-  // manifold meshes we still run _fixWindingConsistency (useful for planar
-  // chamfers where the tessellator may produce simple triangle fans).
-  // However, when the mesh contains non-manifold / boundary edges (expected
-  // for curved-surface tessellation), the BFS propagation in
-  // _fixWindingConsistency can flip faces across non-manifold seams,
-  // corrupting the winding and the signed volume.  In that case we trust
-  // the normals that tessellateBody computed directly from B-Rep data.
+  // The robust B-Rep tessellator (Tessellator2) produces faces with normals
+  // derived from each TopoFace's surface and sameSense flag.  For curved
+  // surfaces (cone, cylinder, etc.) these per-face normals are authoritative
+  // and _fixWindingConsistency must NOT override them — the BFS propagation
+  // can corrupt the sameSense-aware orientation computed by the tessellator.
+  //
+  // For purely planar chamfers the robust tessellator can still produce
+  // minor winding inconsistencies from projected CDT, so the BFS fix
+  // remains useful when no curved surfaces are involved.
+  //
+  // When the mesh contains non-manifold / boundary edges (expected for
+  // curved-surface tessellation), skip _fixWindingConsistency entirely as
+  // the BFS flips faces across non-manifold seams, corrupting winding and
+  // signed volume.
+  const bodyCurved = newTopoBody.shells.some(
+    (s) => s.faces.some((f) => f.surfaceType !== 'plane')
+  );
   const preFixTopology = _measureMeshTopology(mesh.faces);
-  if (preFixTopology.boundaryEdges === 0 && preFixTopology.nonManifoldEdges === 0) {
+  if (!bodyCurved &&
+      preFixTopology.boundaryEdges === 0 && preFixTopology.nonManifoldEdges === 0) {
     _fixWindingConsistency(mesh.faces);
     _recomputeFaceNormals(mesh.faces);
   }
@@ -5298,22 +4394,8 @@ function _precomputeFilletEdge(faces, edgeKey, radius, segments, exactAdjacencyB
 // Batch chamfer/fillet helpers
 // -----------------------------------------------------------------------
 
-/**
- * Build a map of vertex key → list of edge data indices that share that vertex.
- */
-function _buildVertexEdgeMap(edgeDataList) {
-  const map = new Map();
-  for (let i = 0; i < edgeDataList.length; i++) {
-    const d = edgeDataList[i];
-    const vkA = _edgeVKey(d.edgeA);
-    const vkB = _edgeVKey(d.edgeB);
-    if (!map.has(vkA)) map.set(vkA, []);
-    if (!map.has(vkB)) map.set(vkB, []);
-    map.get(vkA).push(i);
-    map.get(vkB).push(i);
-  }
-  return map;
-}
+// _buildVertexEdgeMap → delegates to toolkit/TopologyUtils.js
+const _buildVertexEdgeMap = _buildVertexEdgeMap_toolkit;
 
 /**
  * Merge trimmed-vertex positions at shared vertices on common faces.
@@ -5542,23 +4624,8 @@ function _curveFromSampledPoints(points) {
   return NurbsCurve.createPolyline(points);
 }
 
-function _openPolylineNormal(points) {
-  if (!points || points.length < 3) return null;
-  const origin = points[0];
-  let nx = 0;
-  let ny = 0;
-  let nz = 0;
-  for (let i = 1; i < points.length - 1; i++) {
-    const a = _vec3Sub(points[i], origin);
-    const b = _vec3Sub(points[i + 1], origin);
-    const c = _vec3Cross(a, b);
-    nx += c.x;
-    ny += c.y;
-    nz += c.z;
-  }
-  const normal = { x: nx, y: ny, z: nz };
-  return _vec3Len(normal) > 1e-10 ? _vec3Normalize(normal) : null;
-}
+// _openPolylineNormal → delegates to toolkit/Vec3Utils.js
+const _openPolylineNormal = _openPolylineNormal_toolkit;
 
 function _createExactCylinderPlaneTrimCurve(
   points,
@@ -6049,18 +5116,8 @@ function _extractFeatureFacesFromTopoBody(geometry) {
     : (Array.isArray(geometry.faces) ? geometry.faces : []);
 }
 
-function _cloneMeshFace(face) {
-  if (!face) return face;
-  return {
-    ...face,
-    vertices: Array.isArray(face.vertices)
-      ? face.vertices.map((vertex) => _canonicalPoint(vertex))
-      : [],
-    normal: face.normal ? _vec3Normalize(face.normal) : face.normal,
-    shared: face.shared ? { ...face.shared } : face.shared,
-    topoFaceIds: Array.isArray(face.topoFaceIds) ? [...face.topoFaceIds] : face.topoFaceIds,
-  };
-}
+// _cloneMeshFace → delegates to toolkit/MeshRepair.js
+const _cloneMeshFace = _cloneMeshFace_toolkit;
 
 function _replaceFallbackPlanarFacesWithExactTopoFaces(fallbackFaces, topoBody) {
   if (!Array.isArray(fallbackFaces) || !topoBody) return fallbackFaces;
@@ -6960,10 +6017,8 @@ function _generateCornerFaces(faces, origFaces, edgeDataList, vertexEdgeMap) {
   }
 }
 
-function _sameNormalPair(a0, a1, b0, b1) {
-  const same = (u, v) => Math.abs(_vec3Dot(_vec3Normalize(u), _vec3Normalize(v)) - 1) < 1e-5;
-  return (same(a0, b0) && same(a1, b1)) || (same(a0, b1) && same(a1, b0));
-}
+// _sameNormalPair → delegates to toolkit/CoplanarUtils.js
+const _sameNormalPair = _sameNormalPair_toolkit;
 
 function _isLinearEdgeContinuation(edgeInfos, origFaces) {
   if (edgeInfos.length !== 2) return false;

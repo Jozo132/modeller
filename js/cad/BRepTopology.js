@@ -708,6 +708,54 @@ TopoBody._nextId = 0;
 // -----------------------------------------------------------------------
 
 /**
+ * Compute the correct sameSense flag for a face by comparing the vertex-loop
+ * winding normal (Newell method) to the surface normal at the parametric
+ * center.  Returns true if both agree (outward), false if the surface normal
+ * must be flipped.  Falls back to true when no determination is possible.
+ *
+ * @param {import('./NurbsSurface.js').NurbsSurface|null} surface
+ * @param {Array<{x:number,y:number,z:number}|{point:{x:y,z}}>} vertices - Raw points or vertex objects with .point
+ * @returns {boolean}
+ */
+function _computeSameSense(surface, vertices) {
+  if (!surface || !vertices || vertices.length < 3) return true;
+
+  // 1. Loop normal via Newell method
+  const pts = vertices.map(v => v.point ? v.point : v);
+  let lnx = 0, lny = 0, lnz = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const c = pts[i];
+    const n = pts[(i + 1) % pts.length];
+    lnx += (c.y - n.y) * (c.z + n.z);
+    lny += (c.z - n.z) * (c.x + n.x);
+    lnz += (c.x - n.x) * (c.y + n.y);
+  }
+  const llen = Math.sqrt(lnx * lnx + lny * lny + lnz * lnz);
+  if (llen < 1e-10) return true; // degenerate loop, can't determine
+  lnx /= llen; lny /= llen; lnz /= llen;
+
+  // 2. Surface normal at (0.5, 0.5) via finite differences
+  try {
+    const eps = 1e-4;
+    const p = surface.evaluate(0.5, 0.5);
+    const pu = surface.evaluate(0.5 + eps, 0.5);
+    const pv = surface.evaluate(0.5, 0.5 + eps);
+    if (!p || !pu || !pv) return true;
+    const dux = (pu.x - p.x) / eps, duy = (pu.y - p.y) / eps, duz = (pu.z - p.z) / eps;
+    const dvx = (pv.x - p.x) / eps, dvy = (pv.y - p.y) / eps, dvz = (pv.z - p.z) / eps;
+    const snx = duy * dvz - duz * dvy;
+    const sny = duz * dvx - dux * dvz;
+    const snz = dux * dvy - duy * dvx;
+    const slen = Math.sqrt(snx * snx + sny * sny + snz * snz);
+    if (slen < 1e-10) return true;
+    const dot = lnx * (snx / slen) + lny * (sny / slen) + lnz * (snz / slen);
+    return dot >= 0;
+  } catch {
+    return true;
+  }
+}
+
+/**
  * Build a TopoBody from a set of flat face descriptions.
  * Useful for constructing topology from feature generators.
  *
@@ -739,15 +787,41 @@ export function buildTopoBody(faceDescs, tol = DEFAULT_TOLERANCE) {
     return v;
   };
 
-  // Edge deduplication: "v1.id,v2.id" -> TopoEdge (unordered)
+  // Edge deduplication: "v1.id,v2.id" -> TopoEdge[] (unordered)
+  // Multiple edges can connect the same two vertices with different curves
+  // (e.g. upper and lower semicircular arcs of a circle).
   const edgeMap = new Map();
+
+  /** Check if two edge curves follow the same geometric path. */
+  const _curvesCompatible = (c1, c2) => {
+    if (!c1 || !c2) return true; // null/line edges are always compatible
+    if (c1 === c2) return true;
+    if (c1.degree !== c2.degree) return false;
+    try {
+      const m1 = c1.evaluate(0.5);
+      const m2 = c2.evaluate(0.5);
+      const d = Math.sqrt((m1.x - m2.x) ** 2 + (m1.y - m2.y) ** 2 + (m1.z - m2.z) ** 2);
+      return d < 1e-6;
+    } catch { return true; }
+  };
+
   const getOrCreateEdge = (v1, v2, curve) => {
     const k1 = `${v1.id},${v2.id}`;
     const k2 = `${v2.id},${v1.id}`;
-    if (edgeMap.has(k1)) return { edge: edgeMap.get(k1), sameSense: true };
-    if (edgeMap.has(k2)) return { edge: edgeMap.get(k2), sameSense: false };
+    const fwd = edgeMap.get(k1);
+    if (fwd) {
+      for (const e of fwd) {
+        if (_curvesCompatible(e.curve, curve)) return { edge: e, sameSense: true };
+      }
+    }
+    const rev = edgeMap.get(k2);
+    if (rev) {
+      for (const e of rev) {
+        if (_curvesCompatible(e.curve, curve)) return { edge: e, sameSense: false };
+      }
+    }
     const e = new TopoEdge(v1, v2, curve, tol.edgeOverlap);
-    edgeMap.set(k1, e);
+    if (!fwd) edgeMap.set(k1, [e]); else fwd.push(e);
     return { edge: e, sameSense: true };
   };
 
@@ -768,10 +842,19 @@ export function buildTopoBody(faceDescs, tol = DEFAULT_TOLERANCE) {
   const faces = [];
 
   for (const fd of faceDescs) {
+    // Determine sameSense: if explicitly provided, use it.
+    // Otherwise, auto-compute from vertex-loop winding vs. surface normal.
+    let sameSense;
+    if (fd.sameSense === true || fd.sameSense === false) {
+      sameSense = fd.sameSense;
+    } else {
+      sameSense = _computeSameSense(fd.surface, fd.vertices);
+    }
+
     const face = new TopoFace(
       fd.surface || null,
       fd.surfaceType || SurfaceType.UNKNOWN,
-      fd.sameSense !== false
+      sameSense
     );
     face.setOuterLoop(buildLoop({ vertices: fd.vertices || [], edgeCurves: fd.edgeCurves || [] }));
     for (const innerLoop of (fd.innerLoops || [])) {
