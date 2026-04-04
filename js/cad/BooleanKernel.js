@@ -30,14 +30,9 @@ import { NurbsCurve } from './NurbsCurve.js';
 import { validateIntersections, validateFragments, validateFinalBody } from './IntersectionValidator.js';
 import { healFragments } from './Healing.js';
 import { ResultGrade, FallbackDiagnostics } from './fallback/FallbackDiagnostics.js';
-import {
-  isFallbackEnabled, shouldTriggerFallback, evaluateExactResult,
-  wrapResult, FallbackTrigger, OperationPolicy, resolvePolicy,
-} from './fallback/FallbackPolicy.js';
-import { meshBooleanOp } from './fallback/MeshBoolean.js';
+import { wrapResult } from './fallback/FallbackPolicy.js';
 import { validateBooleanResult } from './BooleanInvariantValidator.js';
 import { getFlag } from '../featureFlags.js';
-import { warnOnceForFallback } from './fallback/warnOnce.js';
 
 /**
  * Perform an exact boolean operation on two TopoBody operands.
@@ -67,81 +62,10 @@ import { warnOnceForFallback } from './fallback/warnOnce.js';
  * }}
  */
 export function exactBooleanOp(bodyA, bodyB, operation, tol = DEFAULT_TOLERANCE, opts = {}) {
-  const policy = resolvePolicy(opts.policy);
-
-  // force-fallback: skip exact path entirely
-  if (policy === OperationPolicy.FORCE_FALLBACK) {
-    return _runFallback(bodyA, bodyB, operation, 'force_fallback', 'policy', {}, policy);
-  }
-
-  // Try exact path first; catch unexpected errors to route to fallback
-  try {
-    const result = _exactBooleanOpInner(bodyA, bodyB, operation, tol);
-
-    // Evaluate whether exact result has concerning diagnostics
-    const evaluation = evaluateExactResult(result.diagnostics);
-    if (evaluation.shouldFallback && shouldTriggerFallback(evaluation.trigger, { policy })) {
-      return _runFallback(bodyA, bodyB, operation, evaluation.trigger, evaluation.stage, result.diagnostics, policy);
-    }
-
-    // Exact path succeeded — return with explicit grade
-    return wrapResult(result, ResultGrade.EXACT, FallbackDiagnostics.exact(result.diagnostics));
-  } catch (err) {
-    // Uncaught exception in exact path — route to fallback if policy allows
-    if (shouldTriggerFallback(FallbackTrigger.UNCAUGHT_EXCEPTION, { policy })) {
-      return _runFallback(bodyA, bodyB, operation, FallbackTrigger.UNCAUGHT_EXCEPTION, 'exact_pipeline', { error: err.message }, policy);
-    }
-    // exact-only or fallback not enabled — rethrow
-    throw err;
-  }
-}
-
-/**
- * Run the discrete fallback lane.
- * @private
- */
-function _runFallback(bodyA, bodyB, operation, trigger, stage, exactDiagnostics, policy) {
-  warnOnceForFallback({
-    id: 'boolean:exact-to-discrete',
-    policy,
-    reason: `exact boolean failed at ${stage} (trigger: ${trigger}); using discrete mesh fallback`,
-    kind: 'new-stack-fallback',
-  });
-  _writeDiagnosticArtifact(operation, { trigger, stage, exactDiagnostics, path: 'fallback', policy });
-  try {
-    const fbResult = meshBooleanOp(bodyA, bodyB, operation);
-    const diag = FallbackDiagnostics.fallback(
-      trigger, stage,
-      {
-        meshValidation: fbResult.validation,
-        adjacency: {
-          boundaryEdgeCount: fbResult.adjacency.boundaryEdgeCount,
-          nonManifoldEdgeCount: fbResult.adjacency.nonManifoldEdgeCount,
-          isManifold: fbResult.adjacency.isManifold,
-          isClosed: fbResult.adjacency.isClosed,
-          eulerCharacteristic: fbResult.adjacency.eulerCharacteristic,
-        },
-        manifoldRepairAttempted: fbResult.manifoldRepairAttempted,
-      },
-      exactDiagnostics,
-    );
-    return wrapResult(
-      { body: null, mesh: fbResult.mesh, diagnostics: exactDiagnostics },
-      ResultGrade.FALLBACK,
-      diag,
-    );
-  } catch (fbErr) {
-    // Both exact and fallback failed
-    _writeDiagnosticArtifact(operation, { trigger, stage, exactDiagnostics, path: 'failed', error: fbErr.message });
-    const diag = FallbackDiagnostics.failed(
-      trigger, stage, exactDiagnostics,
-    );
-    return wrapResult(
-      { body: null, mesh: { vertices: [], faces: [], edges: [] }, diagnostics: exactDiagnostics },
-      ResultGrade.FAILED,
-      diag,
-    );
-  }
+  // BRep-only pipeline: no fallback to mesh boolean.
+  // The exact path must succeed or throw.
+  const result = _exactBooleanOpInner(bodyA, bodyB, operation, tol);
+  return wrapResult(result, ResultGrade.EXACT, FallbackDiagnostics.exact(result.diagnostics));
 }
 
 /**
