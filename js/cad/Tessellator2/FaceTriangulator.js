@@ -1191,31 +1191,35 @@ export class FaceTriangulator {
       } catch (_e) { /* keep Newell normal */ }
     }
 
-    // Detect self-intersecting UV boundary: when the UV polygon has large
-    // jumps (e.g. at coedge boundaries on folded B-splines), the UV-domain
-    // CDT produces garbage.  Fall back to projected 3D CDT for such faces.
+    // Detect self-intersecting UV boundary: when the UV polygon actually
+    // crosses itself (e.g. folded B-splines), the UV-domain CDT produces
+    // garbage.  Fall back to projected 3D CDT for such faces.
+    // Use actual segment-segment intersection test rather than step-size
+    // heuristics, which false-positive on rectangular patches (e.g. ruled
+    // surfaces where coedge boundaries jump across the full u or v range).
     let uvSelfIntersecting = false;
     if (uvValid) {
-      const duSteps = [], dvSteps = [];
-      for (let i = 1; i < allPts.length; i++) {
-        duSteps.push(Math.abs(allPts[i]._u - allPts[i - 1]._u));
-        dvSteps.push(Math.abs(allPts[i]._v - allPts[i - 1]._v));
-      }
-      // Also check wrap-around edge
-      duSteps.push(Math.abs(allPts[0]._u - allPts[allPts.length - 1]._u));
-      dvSteps.push(Math.abs(allPts[0]._v - allPts[allPts.length - 1]._v));
-
-      const sortedDu = [...duSteps].sort((a, b) => a - b);
-      const sortedDv = [...dvSteps].sort((a, b) => a - b);
-      const medDu = sortedDu[Math.floor(sortedDu.length / 2)];
-      const medDv = sortedDv[Math.floor(sortedDv.length / 2)];
-      // A step > 20× median is a discontinuity indicating UV fold
-      const threshU = Math.max(medDu * 20, 0.1 * uvRangeU);
-      const threshV = Math.max(medDv * 20, 0.1 * uvRangeV);
-      for (let i = 0; i < duSteps.length; i++) {
-        if (duSteps[i] > threshU || dvSteps[i] > threshV) {
-          uvSelfIntersecting = true;
-          break;
+      const uvPoly = allPts.map((p) => [p._u, p._v]);
+      const n = uvPoly.length;
+      // Check all non-adjacent edge pairs for proper crossing
+      outer: for (let i = 0; i < n; i++) {
+        const [ax, ay] = uvPoly[i];
+        const [bx, by] = uvPoly[(i + 1) % n];
+        for (let j = i + 2; j < n; j++) {
+          if (j === (i + n - 1) % n) continue; // skip adjacent wrap-around
+          const [cx, cy] = uvPoly[j];
+          const [dx, dy] = uvPoly[(j + 1) % n];
+          // Segment-segment proper crossing test
+          const d1x = bx - ax, d1y = by - ay;
+          const d2x = dx - cx, d2y = dy - cy;
+          const denom = d1x * d2y - d1y * d2x;
+          if (Math.abs(denom) < 1e-14) continue; // parallel
+          const t = ((cx - ax) * d2y - (cy - ay) * d2x) / denom;
+          const u = ((cx - ax) * d1y - (cy - ay) * d1x) / denom;
+          if (t > 1e-8 && t < 1 - 1e-8 && u > 1e-8 && u < 1 - 1e-8) {
+            uvSelfIntersecting = true;
+            break outer;
+          }
         }
       }
     }
