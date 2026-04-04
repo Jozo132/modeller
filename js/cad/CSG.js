@@ -4128,17 +4128,26 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
     return null;
   }
 
-  // The B-Rep tessellator (tessellateBody) produces faces with normals
-  // derived from the TopoFace surface and sameSense flag.  For clean
-  // manifold meshes we still run _fixWindingConsistency (useful for planar
-  // chamfers where the tessellator may produce simple triangle fans).
-  // However, when the mesh contains non-manifold / boundary edges (expected
-  // for curved-surface tessellation), the BFS propagation in
-  // _fixWindingConsistency can flip faces across non-manifold seams,
-  // corrupting the winding and the signed volume.  In that case we trust
-  // the normals that tessellateBody computed directly from B-Rep data.
+  // The robust B-Rep tessellator (Tessellator2) produces faces with normals
+  // derived from each TopoFace's surface and sameSense flag.  For curved
+  // surfaces (cone, cylinder, etc.) these per-face normals are authoritative
+  // and _fixWindingConsistency must NOT override them — the BFS propagation
+  // can corrupt the sameSense-aware orientation computed by the tessellator.
+  //
+  // For purely planar chamfers the robust tessellator can still produce
+  // minor winding inconsistencies from projected CDT, so the BFS fix
+  // remains useful when no curved surfaces are involved.
+  //
+  // When the mesh contains non-manifold / boundary edges (expected for
+  // curved-surface tessellation), skip _fixWindingConsistency entirely as
+  // the BFS flips faces across non-manifold seams, corrupting winding and
+  // signed volume.
+  const bodyCurved = newTopoBody.shells.some(
+    (s) => s.faces.some((f) => f.surfaceType !== 'plane')
+  );
   const preFixTopology = _measureMeshTopology(mesh.faces);
-  if (preFixTopology.boundaryEdges === 0 && preFixTopology.nonManifoldEdges === 0) {
+  if (!bodyCurved &&
+      preFixTopology.boundaryEdges === 0 && preFixTopology.nonManifoldEdges === 0) {
     _fixWindingConsistency(mesh.faces);
     _recomputeFaceNormals(mesh.faces);
   }
