@@ -127,17 +127,20 @@ test('vec3Lerp interpolates', () => {
   assert.deepStrictEqual(r, v(5, 10, 15));
 });
 
-test('canonicalCoord rounds to 5 decimals', () => {
-  // canonicalCoord doesn't snap near-zero, it just passes through
-  assert.strictEqual(typeof canonicalCoord(1e-12), 'number');
-  assert.strictEqual(typeof canonicalCoord(1.23456789), 'number');
+test('canonicalCoord — snaps below eps to zero, preserves larger values', () => {
+  // Default eps = 1e-12; values strictly below eps snap to 0
+  assert.strictEqual(canonicalCoord(1e-13), 0);
+  assert.strictEqual(canonicalCoord(-1e-13), 0);
+  // Values at or above eps are preserved
+  assert.strictEqual(canonicalCoord(1e-12), 1e-12); // exactly eps → not snapped
+  assert.strictEqual(canonicalCoord(1.5), 1.5);
 });
 
-test('canonicalPoint returns point with snapped coords', () => {
-  const p = canonicalPoint(v(1e-11, 2.123456789, -0.00001));
-  assert.strictEqual(typeof p.x, 'number');
-  assert.strictEqual(typeof p.y, 'number');
-  assert.strictEqual(typeof p.z, 'number');
+test('canonicalPoint — snaps sub-eps coords', () => {
+  const p = canonicalPoint(v(1e-13, 2.5, -1e-14));
+  assert.strictEqual(p.x, 0);
+  assert.strictEqual(p.y, 2.5);
+  assert.strictEqual(p.z, 0);
 });
 
 test('edgeVKey produces deterministic key', () => {
