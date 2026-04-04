@@ -4,47 +4,7 @@
 // wall-thickness estimation.
 
 import { vec3Cross, vec3Sub, vec3Len, vec3Dot, rayTriangleIntersect } from './Vec3Utils.js';
-
-// ---------------------------------------------------------------------------
-// Local helpers (not exported)
-// ---------------------------------------------------------------------------
-
-/**
- * Compute the geometric normal of a polygon from its vertex loop using the
- * Newell method.  Returns null for degenerate (zero-area) polygons.
- * @param {{x:number,y:number,z:number}[]} vertices
- * @returns {{x:number,y:number,z:number}|null}
- */
-function _computePolygonNormal(vertices) {
-  let nx = 0, ny = 0, nz = 0;
-  for (let i = 0; i < vertices.length; i++) {
-    const curr = vertices[i];
-    const next = vertices[(i + 1) % vertices.length];
-    nx += (curr.y - next.y) * (curr.z + next.z);
-    ny += (curr.z - next.z) * (curr.x + next.x);
-    nz += (curr.x - next.x) * (curr.y + next.y);
-  }
-  const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
-  if (len <= 1e-10) return null;
-  return { x: nx / len, y: ny / len, z: nz / len };
-}
-
-/**
- * Produce a canonical string key for an edge defined by two vertices.
- * Vertices are snapped to a grid (1e-6 precision) so that nearly-coincident
- * endpoints produce the same key regardless of order.
- * @param {{x:number,y:number,z:number}} a
- * @param {{x:number,y:number,z:number}} b
- * @returns {string}
- */
-function edgeKey(a, b) {
-  const ax = Math.round(a.x * 1e6), ay = Math.round(a.y * 1e6), az = Math.round(a.z * 1e6);
-  const bx = Math.round(b.x * 1e6), by = Math.round(b.y * 1e6), bz = Math.round(b.z * 1e6);
-  if (ax < bx || (ax === bx && (ay < by || (ay === by && az < bz)))) {
-    return `${ax},${ay},${az}|${bx},${by},${bz}`;
-  }
-  return `${bx},${by},${bz}|${ax},${ay},${az}`;
-}
+import { computePolygonNormal, edgeKey } from './GeometryUtils.js';
 
 // ---------------------------------------------------------------------------
 // Exported analysis functions
@@ -59,7 +19,7 @@ function edgeKey(a, b) {
 export function countInvertedFaces(geometry) {
   let inverted = 0;
   for (const face of (geometry.faces || [])) {
-    const polygonNormal = _computePolygonNormal(face.vertices || []);
+    const polygonNormal = computePolygonNormal(face.vertices || []);
     const faceNormal = face.normal;
     if (!polygonNormal || !faceNormal) continue;
     const dot =

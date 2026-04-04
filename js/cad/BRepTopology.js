@@ -714,7 +714,7 @@ TopoBody._nextId = 0;
  * must be flipped.  Falls back to true when no determination is possible.
  *
  * @param {import('./NurbsSurface.js').NurbsSurface|null} surface
- * @param {Array<{x:number,y:number,z:number}>} vertices
+ * @param {Array<{x:number,y:number,z:number}|{point:{x:y,z}}>} vertices - Raw points or vertex objects with .point
  * @returns {boolean}
  */
 function _computeSameSense(surface, vertices) {
