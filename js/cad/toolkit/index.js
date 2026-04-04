@@ -9,6 +9,7 @@ export {
   pointOnFacePlane, rayTriangleIntersect,
   canonicalCoord, canonicalPoint,
   fmtCoord, edgeVKey, edgeKeyFromVerts,
+  distancePointToLineSegment, openPolylineNormal,
 } from './Vec3Utils.js';
 
 export {
@@ -28,6 +29,7 @@ export {
   weldVertices, deduplicatePolygon,
   removeDegenerateFaces, recomputeFaceNormals,
   fixWindingConsistency, countMeshEdgeUsage,
+  cloneMeshFace,
 } from './MeshRepair.js';
 
 export {
@@ -36,3 +38,15 @@ export {
 } from './PlanarMath.js';
 
 export { chainEdgePaths } from './EdgePathUtils.js';
+
+export {
+  measureMeshTopology, countTopoBodyBoundaryEdges,
+  findAdjacentFaces, buildVertexEdgeMap,
+} from './TopologyUtils.js';
+
+export {
+  polygonArea, collinearSegmentsOverlap,
+  coplanarFacesTouch, facesSharePlane,
+  sameNormalPair, coplanarFaceClusterKey,
+  sharedMetadataSignature,
+} from './CoplanarUtils.js';

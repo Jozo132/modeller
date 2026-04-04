@@ -140,3 +140,48 @@ export function edgeKeyFromVerts(a, b) {
   const ka = edgeVKey(a), kb = edgeVKey(b);
   return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
 }
+
+// -----------------------------------------------------------------------
+// Distance / projection helpers
+// -----------------------------------------------------------------------
+
+/**
+ * Shortest distance from point p to line segment [a, b].
+ *
+ * @param {{x:number,y:number,z:number}} p
+ * @param {{x:number,y:number,z:number}} a
+ * @param {{x:number,y:number,z:number}} b
+ * @returns {number}
+ */
+export function distancePointToLineSegment(p, a, b) {
+  const ab = vec3Sub(b, a);
+  const ap = vec3Sub(p, a);
+  const abLen = vec3Len(ab);
+  if (abLen < 1e-10) return vec3Len(ap);
+  const t = Math.max(0, Math.min(1, vec3Dot(ap, ab) / (abLen * abLen)));
+  const closest = vec3Add(a, vec3Scale(ab, t));
+  return vec3Len(vec3Sub(p, closest));
+}
+
+/**
+ * Compute the average normal of an open polyline (sequence of 3-D points)
+ * by accumulating cross products relative to the first point.
+ *
+ * @param {Array<{x:number,y:number,z:number}>} points
+ * @returns {{x:number,y:number,z:number}|null}
+ */
+export function openPolylineNormal(points) {
+  if (!points || points.length < 3) return null;
+  const origin = points[0];
+  let nx = 0, ny = 0, nz = 0;
+  for (let i = 1; i < points.length - 1; i++) {
+    const a = vec3Sub(points[i], origin);
+    const b = vec3Sub(points[i + 1], origin);
+    const c = vec3Cross(a, b);
+    nx += c.x;
+    ny += c.y;
+    nz += c.z;
+  }
+  const normal = { x: nx, y: ny, z: nz };
+  return vec3Len(normal) > 1e-10 ? vec3Normalize(normal) : null;
+}

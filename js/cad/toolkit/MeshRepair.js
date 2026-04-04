@@ -221,3 +221,35 @@ export function countMeshEdgeUsage(faces) {
   }
   return { boundaryCount, nonManifoldCount, edgeCounts };
 }
+
+// -----------------------------------------------------------------------
+// Mesh face cloning
+// -----------------------------------------------------------------------
+
+/**
+ * Deep-clone a mesh face, snapping vertices to canonical coordinates.
+ *
+ * @param {{vertices:Array, normal?:{x:number,y:number,z:number}, shared?:Object, topoFaceIds?:Array}} face
+ * @returns {Object|null}
+ */
+export function cloneMeshFace(face) {
+  if (!face) return face;
+  const canonPt = (v) => ({
+    x: Math.abs(v.x) < 1e-10 ? 0 : Math.round(v.x * 1e5) / 1e5,
+    y: Math.abs(v.y) < 1e-10 ? 0 : Math.round(v.y * 1e5) / 1e5,
+    z: Math.abs(v.z) < 1e-10 ? 0 : Math.round(v.z * 1e5) / 1e5,
+  });
+  const nrm = (n) => {
+    const len = Math.sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+    return len > 1e-10 ? { x: n.x / len, y: n.y / len, z: n.z / len } : n;
+  };
+  return {
+    ...face,
+    vertices: Array.isArray(face.vertices)
+      ? face.vertices.map((vertex) => canonPt(vertex))
+      : [],
+    normal: face.normal ? nrm(face.normal) : face.normal,
+    shared: face.shared ? { ...face.shared } : face.shared,
+    topoFaceIds: Array.isArray(face.topoFaceIds) ? [...face.topoFaceIds] : face.topoFaceIds,
+  };
+}
