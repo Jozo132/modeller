@@ -29,3 +29,10 @@ export {
   removeDegenerateFaces, recomputeFaceNormals,
   fixWindingConsistency, countMeshEdgeUsage,
 } from './MeshRepair.js';
+
+export {
+  isConvexPlanarPolygon, projectPolygon2D,
+  triangulatePlanarPolygon, classifyFaceType,
+} from './PlanarMath.js';
+
+export { chainEdgePaths } from './EdgePathUtils.js';

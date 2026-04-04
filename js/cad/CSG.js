@@ -71,6 +71,17 @@ import {
   countMeshEdgeUsage as _countMeshEdgeUsage_toolkit,
 } from './toolkit/MeshRepair.js';
 
+import {
+  isConvexPlanarPolygon as _isConvexPlanarPolygon_toolkit,
+  projectPolygon2D as _projectPolygon2D_toolkit,
+  triangulatePlanarPolygon as _triangulatePlanarPolygon_toolkit,
+  classifyFaceType as classifyFaceType_toolkit,
+} from './toolkit/PlanarMath.js';
+
+import {
+  chainEdgePaths as _chainEdgePaths_toolkit,
+} from './toolkit/EdgePathUtils.js';
+
 const EPSILON = 1e-5;
 
 // -----------------------------------------------------------------------
@@ -698,35 +709,8 @@ function assignCoplanarFaceGroups(faces) {
  * Classify the type of a face based on its normal and vertex positions.
  * Returns: 'planar-horizontal', 'planar-vertical', 'planar', 'cylindrical', or 'freeform'
  */
-function classifyFaceType(normal, vertices) {
-  if (vertices.length < 3) return 'planar';
-
-  // Check if all vertices are coplanar (within tolerance)
-  const n = Vec3.from(normal);
-  const p0 = Vec3.from(vertices[0]);
-  const d = n.dot(p0);
-
-  let allCoplanar = true;
-  for (const v of vertices) {
-    if (Math.abs(n.dot(Vec3.from(v)) - d) > EPSILON * 10) {
-      allCoplanar = false;
-      break;
-    }
-  }
-
-  if (allCoplanar) {
-    // Check if normal is axis-aligned
-    const ax = Math.abs(n.x), ay = Math.abs(n.y), az = Math.abs(n.z);
-    if (az > 0.99) return 'planar-horizontal';
-    if (ax > 0.99 || ay > 0.99) return 'planar-vertical';
-    return 'planar';
-  }
-
-  // For quads with non-coplanar verts, assume cylindrical (from extrusion of curves)
-  if (vertices.length === 4) return 'cylindrical';
-
-  return 'freeform';
-}
+// classifyFaceType now delegates to toolkit/PlanarMath.js
+const classifyFaceType = classifyFaceType_toolkit;
 
 // edgeKey now delegates to toolkit/GeometryUtils.js
 const edgeKey = edgeKey_toolkit;
@@ -1109,85 +1093,8 @@ export function computeFeatureEdges(faces) {
  * @returns {Array} Array of path objects:
  *   { edgeIndices: number[], isClosed: boolean }
  */
-function _chainEdgePaths(edges) {
-  if (edges.length === 0) return [];
-
-  const vKey = (v) => `${Math.round(v.x * 1e5)},${Math.round(v.y * 1e5)},${Math.round(v.z * 1e5)}`;
-
-  // Build vertex → [edge index] adjacency
-  const vertexEdges = new Map();
-  const addVE = (v, idx) => {
-    const k = vKey(v);
-    if (!vertexEdges.has(k)) vertexEdges.set(k, []);
-    vertexEdges.get(k).push(idx);
-  };
-  for (let i = 0; i < edges.length; i++) {
-    addVE(edges[i].start, i);
-    addVE(edges[i].end, i);
-  }
-
-  const visited = new Set();
-  const paths = [];
-
-  for (let seed = 0; seed < edges.length; seed++) {
-    if (visited.has(seed)) continue;
-
-    // Walk backward from seed to find the start of the chain
-    // (stop when we hit a branch vertex or a dead end or revisit the seed)
-    let startEdge = seed;
-    let startVert = vKey(edges[seed].start);
-    {
-      let cur = seed;
-      let prevVert = vKey(edges[seed].end);
-      let curVert = vKey(edges[seed].start);
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
-        const neighbors = vertexEdges.get(curVert) || [];
-        if (neighbors.length !== 2) break; // branch or dead-end → stop
-        const next = neighbors[0] === cur ? neighbors[1] : neighbors[0];
-        if (next === seed) break; // looped back → closed
-        const ne = edges[next];
-        const nextVert = vKey(ne.start) === curVert ? vKey(ne.end) : vKey(ne.start);
-        if (nextVert === prevVert) break; // shouldn't happen but guard
-        prevVert = curVert;
-        curVert = nextVert;
-        cur = next;
-      }
-      startEdge = cur;
-      startVert = curVert;
-    }
-
-    // Walk forward from startEdge/startVert collecting the chain
-    const chain = [startEdge];
-    visited.add(startEdge);
-    let curVert = vKey(edges[startEdge].start) === startVert
-      ? vKey(edges[startEdge].end) : startVert;
-    // Use the other vertex of startEdge as the forward direction
-    const se = edges[startEdge];
-    let walkVert = vKey(se.start) === startVert ? vKey(se.end) : vKey(se.start);
-
-    let isClosed = false;
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
-      const neighbors = vertexEdges.get(walkVert) || [];
-      if (neighbors.length !== 2) break; // branch/dead-end
-      const next = neighbors[0] === chain[chain.length - 1] ? neighbors[1] : neighbors[0];
-      if (visited.has(next)) {
-        // We re-visited an edge → closed loop
-        isClosed = true;
-        break;
-      }
-      chain.push(next);
-      visited.add(next);
-      const ne = edges[next];
-      walkVert = vKey(ne.start) === walkVert ? vKey(ne.end) : vKey(ne.start);
-    }
-
-    paths.push({ edgeIndices: chain, isClosed });
-  }
-
-  return paths;
-}
+// _chainEdgePaths now delegates to toolkit/EdgePathUtils.js
+const _chainEdgePaths = _chainEdgePaths_toolkit;
 
 // -----------------------------------------------------------------------
 // Public API
@@ -2247,109 +2154,14 @@ function _fixOpposedCoplanarFacesInGroups(faces) {
   }
 }
 
-function _isConvexPlanarPolygon(verts, normal) {
-  if (!verts || verts.length < 3 || !normal) return false;
-  let sign = 0;
-  for (let i = 0; i < verts.length; i++) {
-    const a = verts[i];
-    const b = verts[(i + 1) % verts.length];
-    const c = verts[(i + 2) % verts.length];
-    const cross = _vec3Cross(_vec3Sub(b, a), _vec3Sub(c, b));
-    const turn = _vec3Dot(cross, normal);
-    if (Math.abs(turn) < 1e-8) continue;
-    const nextSign = turn > 0 ? 1 : -1;
-    if (sign === 0) sign = nextSign;
-    else if (sign !== nextSign) return false;
-  }
-  return true;
-}
+// _isConvexPlanarPolygon now delegates to toolkit/PlanarMath.js
+const _isConvexPlanarPolygon = _isConvexPlanarPolygon_toolkit;
 
-function _projectPolygon2D(verts, normal) {
-  const an = {
-    x: Math.abs(normal.x),
-    y: Math.abs(normal.y),
-    z: Math.abs(normal.z),
-  };
-  if (an.z >= an.x && an.z >= an.y) {
-    return verts.map((v) => ({ x: v.x, y: v.y }));
-  }
-  if (an.y >= an.x) {
-    return verts.map((v) => ({ x: v.x, y: v.z }));
-  }
-  return verts.map((v) => ({ x: v.y, y: v.z }));
-}
+// _projectPolygon2D now delegates to toolkit/PlanarMath.js
+const _projectPolygon2D = _projectPolygon2D_toolkit;
 
-function _triangulatePlanarPolygon(verts, normal) {
-  if (!verts || verts.length < 3) return [];
-  if (verts.length === 3) return [verts.map((v) => ({ ...v }))];
-
-  const pts2d = _projectPolygon2D(verts, normal);
-  const signedArea = (() => {
-    let area = 0;
-    for (let i = 0; i < pts2d.length; i++) {
-      const a = pts2d[i];
-      const b = pts2d[(i + 1) % pts2d.length];
-      area += a.x * b.y - b.x * a.y;
-    }
-    return area * 0.5;
-  })();
-  const winding = signedArea >= 0 ? 1 : -1;
-
-  function cross2(a, b, c) {
-    return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
-  }
-
-  function pointInTri(p, a, b, c) {
-    const c1 = cross2(a, b, p) * winding;
-    const c2 = cross2(b, c, p) * winding;
-    const c3 = cross2(c, a, p) * winding;
-    return c1 >= -1e-8 && c2 >= -1e-8 && c3 >= -1e-8;
-  }
-
-  const remaining = verts.map((_, i) => i);
-  const triangles = [];
-  let guard = 0;
-
-  while (remaining.length > 3 && guard < verts.length * verts.length) {
-    let earFound = false;
-    for (let ri = 0; ri < remaining.length; ri++) {
-      const prev = remaining[(ri - 1 + remaining.length) % remaining.length];
-      const curr = remaining[ri];
-      const next = remaining[(ri + 1) % remaining.length];
-      const a = pts2d[prev];
-      const b = pts2d[curr];
-      const c = pts2d[next];
-      if (cross2(a, b, c) * winding <= 1e-8) continue;
-
-      let containsPoint = false;
-      for (const other of remaining) {
-        if (other === prev || other === curr || other === next) continue;
-        if (pointInTri(pts2d[other], a, b, c)) {
-          containsPoint = true;
-          break;
-        }
-      }
-      if (containsPoint) continue;
-
-      triangles.push([
-        { ...verts[prev] },
-        { ...verts[curr] },
-        { ...verts[next] },
-      ]);
-      remaining.splice(ri, 1);
-      earFound = true;
-      break;
-    }
-
-    if (!earFound) return null;
-    guard++;
-  }
-
-  if (remaining.length === 3) {
-    triangles.push(remaining.map((idx) => ({ ...verts[idx] })));
-  }
-  return triangles;
-}
+// _triangulatePlanarPolygon now delegates to toolkit/PlanarMath.js
+const _triangulatePlanarPolygon = _triangulatePlanarPolygon_toolkit;
 
 function _mergeMixedSharedPlanarComponents(faces, includeUniformShared = false) {
   const quantize = (value, digits = 5) => {
