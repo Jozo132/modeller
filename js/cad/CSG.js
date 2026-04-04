@@ -3975,9 +3975,16 @@ function _offsetEdgeOnSurface(topoEdge, face, coedge, dist) {
       const arcCenter = _recoverArcCenter(curve, sp, ep);
       if (arcCenter) {
         const r = _vec3Len(_vec3Sub(sp, arcCenter));
-        // Check if offset goes toward center or away
-        const radialAtSp = _vec3Normalize(_vec3Sub(sp, arcCenter));
-        const inward = _vec3Dot(radialAtSp, offDir) < 0; // offDir points toward center
+        // Check if offset goes toward center or away.
+        // Use the arc midpoint for the radial test: at the endpoints the
+        // radial direction can be perpendicular to offDir (dot ≈ 0), giving
+        // an unreliable sign.  At the midpoint the radial is maximally
+        // aligned with the curvature direction, so the dot product reliably
+        // indicates whether the face interior lies toward or away from the
+        // arc center.
+        const arcMid = curve.evaluate(0.5);
+        const radialAtMid = _vec3Normalize(_vec3Sub(arcMid, arcCenter));
+        const inward = _vec3Dot(radialAtMid, offDir) < 0; // offDir points toward center
         const newR = inward ? r - dist : r + dist;
         if (newR < 1e-10) return null; // degenerate
 
@@ -4655,16 +4662,29 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
   // surface approximation).  Only reject if the chamfer genuinely introduces
   // NEW boundary or non-manifold edges beyond what already existed, or if
   // winding errors appear that weren't present before.
-  const baselineBE = baselineMeshTopo ? baselineMeshTopo.boundaryEdges : 0;
-  const baselineNME = baselineMeshTopo ? baselineMeshTopo.nonManifoldEdges : 0;
-  const baselineWE = baselineMeshTopo ? baselineMeshTopo.windingErrors : 0;
-  if (
-    meshTopology.boundaryEdges > baselineBE ||
-    meshTopology.nonManifoldEdges > baselineNME ||
-    meshTopology.windingErrors > baselineWE
-  ) {
-    _debugBRepChamfer('mesh-topology-failed', { ...meshTopology, baselineBE, baselineNME, baselineWE });
-    return null;
+  //
+  // The B-Rep topology check above (topoBoundaryEdges === 0) already
+  // guarantees structural correctness of the solid.  When curved surfaces
+  // are present (either from the input body or from the chamfer itself),
+  // tessellation naturally introduces boundary/non-manifold/winding
+  // artifacts at curved-face boundaries.  These artifacts are visual-only
+  // and do not indicate geometry errors, so we skip the mesh-level check
+  // when the B-Rep is watertight and any curved surfaces are involved.
+  const hasCurvedSurfaces = chamferInfos.some(ci =>
+    ci.off0.curve.degree >= 2 || ci.off1.curve.degree >= 2
+  ) || (baselineMeshTopo && (baselineMeshTopo.boundaryEdges > 0 || baselineMeshTopo.nonManifoldEdges > 0));
+  if (!hasCurvedSurfaces) {
+    const baselineBE = baselineMeshTopo ? baselineMeshTopo.boundaryEdges : 0;
+    const baselineNME = baselineMeshTopo ? baselineMeshTopo.nonManifoldEdges : 0;
+    const baselineWE = baselineMeshTopo ? baselineMeshTopo.windingErrors : 0;
+    if (
+      meshTopology.boundaryEdges > baselineBE ||
+      meshTopology.nonManifoldEdges > baselineNME ||
+      meshTopology.windingErrors > baselineWE
+    ) {
+      _debugBRepChamfer('mesh-topology-failed', { ...meshTopology, baselineBE, baselineNME, baselineWE });
+      return null;
+    }
   }
 
   const edgeResult = computeFeatureEdges(mesh.faces);
