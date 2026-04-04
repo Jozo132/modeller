@@ -686,7 +686,7 @@ test('box-fillet-2-s.cmod (two sequential fillets) produces valid mesh', () => {
   validateGeometry(geom, 'box-fillet-2-s', { allowBoundaryEdges: true });
 });
 
-test('box-fillet-3-p.cmod (two fillets on different edges) produces valid mesh', () => {
+test('box-fillet-3-p.cmod (two parallel fillets then single fillet) produces valid mesh', () => {
   const part = loadCMOD('box-fillet-3-p.cmod');
   assert.ok(part, 'Should load box-fillet-3-p.cmod');
   const geom = getFinalGeometry(part);
