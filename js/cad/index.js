@@ -56,9 +56,13 @@ export { disconnect, union, trim, split, movePoint, moveShape } from './Operatio
 export { booleanOp } from './CSGLegacy.js';
 export { computeFeatureEdges, makeEdgeKey, expandPathEdgeKeys } from './EdgeAnalysis.js';
 export { applyBRepChamfer } from './BRepChamfer.js';
-export { calculateMeshVolume, calculateBoundingBox } from './toolkit/MeshAnalysis.js';
+export {
+  calculateMeshVolume, calculateBoundingBox, calculateSurfaceArea,
+  detectDisconnectedBodies, calculateWallThickness, countInvertedFaces,
+} from './toolkit/MeshAnalysis.js';
 // Legacy aliases — applyChamfer now points to BRep chamfer, applyFillet throws
 export { applyBRepChamfer as applyChamfer } from './BRepChamfer.js';
+export { applyFillet } from './CSG.js';
 export { NurbsCurve } from './NurbsCurve.js';
 export { NurbsSurface } from './NurbsSurface.js';
 export { BRep, BRepVertex, BRepEdge, BRepFace, tessellateNurbsFaces } from './BRep.js';
