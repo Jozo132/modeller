@@ -1091,6 +1091,88 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
     }
   }
 
+  // Step 2.5: Intersect offset endpoints at corners where multiple chamfers meet.
+  // When 2+ chamfer edges meet at a vertex on the same face, each offset is computed
+  // independently, leaving their endpoints non-coincident.  We must intersect them:
+  // e.g. on a box top face at corner (0,0,10) with chamfer distance 1,
+  // edge 4 offset → (0,1,10) and edge 7 offset → (1,0,10) should both be (1,1,10).
+  for (const [vk, cInfos] of vertexChamfers) {
+    if (cInfos.length < 2) continue;
+
+    // Group offsets by face: for each face, collect which chamfer infos have an
+    // offset on that face at this vertex
+    const faceOffsets = new Map(); // face.id → [{ci, off, isStart}]
+    for (const ci of cInfos) {
+      const isStart0 = _vkey(ci.off0.startVertexPoint || ci.topoEdge.startVertex.point) === vk;
+      const isStart1 = _vkey(ci.off1.startVertexPoint || ci.topoEdge.startVertex.point) === vk;
+
+      const f0id = ci.face0.id;
+      if (!faceOffsets.has(f0id)) faceOffsets.set(f0id, []);
+      faceOffsets.get(f0id).push({ ci, off: ci.off0, offKey: 'off0', isStart: isStart0 });
+
+      const f1id = ci.face1.id;
+      if (!faceOffsets.has(f1id)) faceOffsets.set(f1id, []);
+      faceOffsets.get(f1id).push({ ci, off: ci.off1, offKey: 'off1', isStart: isStart1 });
+    }
+
+    // For each face where 2+ offsets converge, compute intersection
+    for (const [, offsets] of faceOffsets) {
+      if (offsets.length < 2) continue;
+
+      // For 2 offsets: intersect their lines at this vertex
+      // The offsets are line segments (startPt→endPt); we need to find where
+      // the infinite lines through them intersect, then update the endpoint.
+      if (offsets.length === 2) {
+        const [o0, o1] = offsets;
+        const pt0 = o0.isStart ? o0.off.startPt : o0.off.endPt;
+        const pt0other = o0.isStart ? o0.off.endPt : o0.off.startPt;
+        const pt1 = o1.isStart ? o1.off.startPt : o1.off.endPt;
+        const pt1other = o1.isStart ? o1.off.endPt : o1.off.startPt;
+
+        // Direction vectors along the offset lines
+        const dir0 = vec3Normalize(vec3Sub(pt0other, pt0));
+        const dir1 = vec3Normalize(vec3Sub(pt1other, pt1));
+
+        // Intersect two lines: pt0 + t*dir0 = pt1 + s*dir1
+        // Using least-squares intersection for robustness
+        const crossDir = vec3Cross(dir0, dir1);
+        const crossLen = vec3Len(crossDir);
+        if (crossLen > 1e-10) {
+          // Lines are not parallel — compute intersection
+          const diff = vec3Sub(pt1, pt0);
+          const t = vec3Dot(vec3Cross(diff, dir1), crossDir) / (crossLen * crossLen);
+          const intPt = vec3Add(pt0, vec3Scale(dir0, t));
+
+          // Update the offset endpoints
+          if (o0.isStart) o0.off.startPt = intPt;
+          else o0.off.endPt = intPt;
+          if (o1.isStart) o1.off.startPt = intPt;
+          else o1.off.endPt = intPt;
+        } else {
+          // Parallel offsets — merge to midpoint
+          const mid = vec3Lerp(pt0, pt1, 0.5);
+          if (o0.isStart) o0.off.startPt = mid;
+          else o0.off.endPt = mid;
+          if (o1.isStart) o1.off.startPt = mid;
+          else o1.off.endPt = mid;
+        }
+      } else {
+        // 3+ offsets: merge to centroid of all endpoint positions
+        let cx = 0, cy = 0, cz = 0;
+        for (const o of offsets) {
+          const pt = o.isStart ? o.off.startPt : o.off.endPt;
+          cx += pt.x; cy += pt.y; cz += pt.z;
+        }
+        cx /= offsets.length; cy /= offsets.length; cz /= offsets.length;
+        const merged = { x: cx, y: cy, z: cz };
+        for (const o of offsets) {
+          if (o.isStart) o.off.startPt = merged;
+          else o.off.endPt = merged;
+        }
+      }
+    }
+  }
+
   // Step 3: Build face descriptors for new TopoBody
   const faceDescs = [];
 
@@ -1152,10 +1234,16 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
         } else {
           // Chamfered edge: replace with offset curve on this face
           const off = chamInfo.face0 === face ? chamInfo.off0 : chamInfo.off1;
+          // Rebuild straight-line curves to match possibly-adjusted endpoints.
+          // Arc curves are left as-is (they are trimmed by their parameterization).
+          let curve = off.curve;
+          if (curve && curve.degree === 1) {
+            curve = NurbsCurve.createLine(off.startPt, off.endPt);
+          }
           rebuiltEdges.push({
             start: off.startPt,
             end: off.endPt,
-            curve: off.curve,
+            curve,
           });
         }
       }
@@ -1321,7 +1409,8 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
   // when the B-Rep is watertight and any curved surfaces are involved.
   const hasCurvedSurfaces = chamferInfos.some(ci =>
     ci.off0.curve.degree >= 2 || ci.off1.curve.degree >= 2
-  ) || (baselineMeshTopo && (baselineMeshTopo.boundaryEdges > 0 || baselineMeshTopo.nonManifoldEdges > 0));
+  ) || (baselineMeshTopo && (baselineMeshTopo.boundaryEdges > 0 || baselineMeshTopo.nonManifoldEdges > 0))
+    || newTopoBody.shells.some(s => s.faces.some(f => f.surfaceType !== 'plane'));
   if (!hasCurvedSurfaces) {
     const baselineBE = baselineMeshTopo ? baselineMeshTopo.boundaryEdges : 0;
     const baselineNME = baselineMeshTopo ? baselineMeshTopo.nonManifoldEdges : 0;

@@ -34,10 +34,15 @@ export class ChamferFeature extends Feature {
       throw new Error('No edges selected for chamfer');
     }
 
-    // Expand path-level keys to individual face-edge keys
-    const resolvedKeys = expandPathEdgeKeys(solid.geometry, this.edgeKeys);
-    // BRep-only pipeline: require exact topology, no mesh fallback
+    // Expand path-level keys to individual face-edge keys.
+    // Skip expansion for the BRep path since applyBRepChamfer already maps
+    // mesh-level segment keys to whole TopoEdges internally, and tangent-path
+    // expansion can erroneously include neighboring arc segments.
     const inputTopoBody = solid.body || (solid.geometry && solid.geometry.topoBody) || null;
+    const resolvedKeys = inputTopoBody
+      ? this.edgeKeys
+      : expandPathEdgeKeys(solid.geometry, this.edgeKeys);
+    // BRep-only pipeline: require exact topology, no mesh fallback
     if (!inputTopoBody) {
       throw new Error(
         '[BRep-only] ChamferFeature requires exact topology (TopoBody) on the input solid. ' +
