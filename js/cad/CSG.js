@@ -3141,7 +3141,34 @@ function _offsetEdgeOnSurface(topoEdge, face, coedge, dist) {
         const cosA = Math.max(-1, Math.min(1, _vec3Dot(r1, _vec3Scale(xAx, newR)) / (newR * newR)));
         const sinA = _vec3Dot(r1, _vec3Scale(yAx, newR)) / (newR * newR);
         let sweep = Math.atan2(sinA, cosA);
-        if (sweep <= 1e-10) sweep += 2 * Math.PI;
+
+        // Validate sweep direction against the original arc's midpoint.
+        // The offset arc is concentric so its midpoint is at the same
+        // angular position as the original curve's parametric midpoint.
+        // If the tentative sweep puts the arc midpoint far from the
+        // expected position, the sweep is going the wrong way around the
+        // circle — apply the complementary angle.  NurbsCurve.createArc
+        // handles both positive and negative sweep angles correctly.
+        const expectedMid = _vec3Add(arcCenter, _vec3Scale(
+          _vec3Normalize(_vec3Sub(arcMid, arcCenter)), newR));
+        const halfAngle = sweep / 2;
+        const computedMid = _vec3Add(arcCenter, _vec3Add(
+          _vec3Scale(xAx, newR * Math.cos(halfAngle)),
+          _vec3Scale(yAx, newR * Math.sin(halfAngle))));
+        const midError = _vec3Len(_vec3Sub(computedMid, expectedMid));
+        // For semicircular arcs (|sweep| ≈ π) both ±π reach the same
+        // endpoint; always use the positive sweep that is consistent with
+        // the face boundary loop direction (faceNormal × xAx).
+        // For non-semicircular arcs, validate against the original curve's
+        // midpoint and apply the complementary angle when the tentative
+        // sweep traces the wrong half of the circle.  createArc handles
+        // both positive and negative sweeps.
+        const isSemicircle = Math.abs(Math.abs(sweep) - Math.PI) < 0.1;
+        if (isSemicircle) {
+          if (sweep < 0) sweep += 2 * Math.PI;
+        } else if (midError > 0.1 * newR) {
+          sweep = sweep > 0 ? sweep - 2 * Math.PI : sweep + 2 * Math.PI;
+        }
 
         const offCurve = NurbsCurve.createArc(arcCenter, newR, xAx, yAx, 0, sweep);
         return {
@@ -3216,7 +3243,22 @@ function _offsetEdgeOnSurface(topoEdge, face, coedge, dist) {
           const cosA = Math.max(-1, Math.min(1, _vec3Dot(r1, _vec3Scale(xAx, cylR)) / (cylR * cylR)));
           const sinA = _vec3Dot(r1, _vec3Scale(yAx, cylR)) / (cylR * cylR);
           let sweep = Math.atan2(sinA, cosA);
-          if (sweep <= 1e-10) sweep += 2 * Math.PI;
+
+          // Validate sweep against original arc midpoint (same approach
+          // as planar case — see detailed comment above).
+          const arcMidCyl = topoEdge.curve.evaluate(0.5);
+          const expectedMidCyl = _vec3Add(arcMidCyl, _vec3Scale(offDir, dist));
+          const halfAngleCyl = sweep / 2;
+          const computedMidCyl = _vec3Add(newCenter, _vec3Add(
+            _vec3Scale(xAx, cylR * Math.cos(halfAngleCyl)),
+            _vec3Scale(yAx, cylR * Math.sin(halfAngleCyl))));
+          const midErrorCyl = _vec3Len(_vec3Sub(computedMidCyl, expectedMidCyl));
+          const isSemicircleCyl = Math.abs(Math.abs(sweep) - Math.PI) < 0.1;
+          if (isSemicircleCyl) {
+            if (sweep < 0) sweep += 2 * Math.PI;
+          } else if (midErrorCyl > 0.1 * cylR) {
+            sweep = sweep > 0 ? sweep - 2 * Math.PI : sweep + 2 * Math.PI;
+          }
 
           const offCurve = NurbsCurve.createArc(newCenter, cylR, xAx, yAx, 0, sweep);
           return {
