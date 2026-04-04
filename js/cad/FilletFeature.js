@@ -6,8 +6,6 @@
 // features. Selection uses stable entity keys when present.
 
 import { Feature } from './Feature.js';
-import { expandPathEdgeKeys } from './EdgeAnalysis.js';
-import { calculateMeshVolume, calculateBoundingBox } from './toolkit/MeshAnalysis.js';
 import { isLegacyEdgeKey, legacyEdgeKeyToStable } from './history/StableEntityKey.js';
 
 export class FilletFeature extends Feature {
@@ -41,38 +39,6 @@ export class FilletFeature extends Feature {
       'Legacy mesh-based fillet is no longer supported. ' +
       'This is a placeholder — implement proper BRep fillet using rolling-ball offset surfaces.'
     );
-
-    // Expand path-level keys to individual face-edge keys
-    const resolvedKeys = expandPathEdgeKeys(solid.geometry, edgeKeys);
-    const resolvedOwnerMap = {};
-    for (const key of resolvedKeys) {
-      const ownerId = edgeOwnerMap[key];
-      if (ownerId) resolvedOwnerMap[key] = ownerId;
-    }
-    const geometry = null; // applyBRepFillet(solid.geometry, resolvedKeys, this.radius);
-
-    // Tag faces with source feature
-    for (const f of geometry.faces) {
-      if (!f.shared) f.shared = {};
-    }
-
-    // Propagate topoBody from input when available (topology chain)
-    const inputTopoBody = solid.body || (solid.geometry && solid.geometry.topoBody) || null;
-    const resultTopoBody = geometry.topoBody || geometry.brep || null;
-
-    // Mark exactness: true when result has valid TopoBody (either from
-    // exact input chain or from successful mesh-level promotion)
-    this._resultExact = !!resultTopoBody;
-
-    return {
-      type: 'solid',
-      geometry,
-      solid: { geometry, body: resultTopoBody },
-      volume: calculateMeshVolume(geometry),
-      boundingBox: calculateBoundingBox(geometry),
-      brep: geometry.brep || null,
-      _exactTopology: this._resultExact,
-    };
   }
 
   _getPreviousSolid(context) {
