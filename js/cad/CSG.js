@@ -52,6 +52,25 @@ import {
   edgeKeyFromVerts as _edgeKeyFromVerts,
 } from './toolkit/Vec3Utils.js';
 
+import {
+  computePolygonNormal as _computePolygonNormal_toolkit,
+  faceCentroid as _faceCentroid_toolkit,
+  edgeKey as edgeKey_toolkit,
+  collectFaceEdgeKeys as _collectFaceEdgeKeys_toolkit,
+  findEdgeNormals as _findEdgeNormals_toolkit,
+  trimFaceEdge as _trimFaceEdge_toolkit,
+  pointOnSegmentStrict as pointOnSegmentStrict_toolkit,
+} from './toolkit/GeometryUtils.js';
+
+import {
+  weldVertices as _weldVertices_toolkit,
+  deduplicatePolygon as _deduplicatePolygon_toolkit,
+  removeDegenerateFaces as _removeDegenerateFaces_toolkit,
+  recomputeFaceNormals as _recomputeFaceNormals_toolkit,
+  fixWindingConsistency as _fixWindingConsistency_toolkit,
+  countMeshEdgeUsage as _countMeshEdgeUsage_toolkit,
+} from './toolkit/MeshRepair.js';
+
 const EPSILON = 1e-5;
 
 // -----------------------------------------------------------------------
@@ -709,17 +728,8 @@ function classifyFaceType(normal, vertices) {
   return 'freeform';
 }
 
-/**
- * Create a unique edge key from two vertex positions (order-independent).
- */
-function edgeKey(a, b) {
-  const ax = Math.round(a.x * 1e6), ay = Math.round(a.y * 1e6), az = Math.round(a.z * 1e6);
-  const bx = Math.round(b.x * 1e6), by = Math.round(b.y * 1e6), bz = Math.round(b.z * 1e6);
-  if (ax < bx || (ax === bx && (ay < by || (ay === by && az < bz)))) {
-    return `${ax},${ay},${az}|${bx},${by},${bz}`;
-  }
-  return `${bx},${by},${bz}|${ax},${ay},${az}`;
-}
+// edgeKey now delegates to toolkit/GeometryUtils.js
+const edgeKey = edgeKey_toolkit;
 
 // -----------------------------------------------------------------------
 // T-junction repair
@@ -1304,19 +1314,8 @@ function _collinearSegmentsOverlap(a0, a1, b0, b1) {
   const maxT = Math.max(t0, t1);
   return maxT > 1e-5 && minT < 1 - 1e-5 && (Math.min(1, maxT) - Math.max(0, minT)) > 1e-5;
 }
-function _computePolygonNormal(vertices) {
-  let nx = 0, ny = 0, nz = 0;
-  for (let i = 0; i < vertices.length; i++) {
-    const curr = vertices[i];
-    const next = vertices[(i + 1) % vertices.length];
-    nx += (curr.y - next.y) * (curr.z + next.z);
-    ny += (curr.z - next.z) * (curr.x + next.x);
-    nz += (curr.x - next.x) * (curr.y + next.y);
-  }
-  const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
-  if (len <= 1e-10) return null;
-  return { x: nx / len, y: ny / len, z: nz / len };
-}
+// _computePolygonNormal now delegates to toolkit/GeometryUtils.js
+const _computePolygonNormal = _computePolygonNormal_toolkit;
 
 // -----------------------------------------------------------------------
 // Mesh analysis functions — re-exported from toolkit/MeshAnalysis.js
@@ -1334,84 +1333,21 @@ function _computePolygonNormal(vertices) {
 
 // pointOnFacePlane imported from toolkit/Vec3Utils.js
 
-/**
- * Find the two face normals adjacent to an edge in a geometry.
- * Returns { n0, n1 } or null if edge not found.
- */
-function _findEdgeNormals(faces, edgeKey) {
-  const normals = [];
-  for (const face of faces) {
-    const verts = face.vertices;
-    for (let i = 0; i < verts.length; i++) {
-      const a = verts[i], b = verts[(i + 1) % verts.length];
-      if (_edgeKeyFromVerts(a, b) === edgeKey) {
-        normals.push(face.normal);
-        break;
-      }
-    }
-    if (normals.length >= 2) break;
-  }
-  return normals.length >= 2 ? { n0: normals[0], n1: normals[1] } : null;
-}
+// _findEdgeNormals now delegates to toolkit/GeometryUtils.js
+const _findEdgeNormals = _findEdgeNormals_toolkit;
 
 // -----------------------------------------------------------------------
 // Chamfer / Fillet shared helpers
 // -----------------------------------------------------------------------
 
-function _faceCentroid(face) {
-  if (Array.isArray(face?.vertices) && face.vertices.length > 0) {
-    let cx = 0, cy = 0, cz = 0;
-    for (const v of face.vertices) {
-      cx += v.x;
-      cy += v.y;
-      cz += v.z;
-    }
-    const n = face.vertices.length;
-    return { x: cx / n, y: cy / n, z: cz / n };
-  }
+// _faceCentroid now delegates to toolkit/GeometryUtils.js
+const _faceCentroid = _faceCentroid_toolkit;
 
-  const coedges = face?.outerLoop?.coedges;
-  if (Array.isArray(coedges) && coedges.length > 0) {
-    let sx = 0, sy = 0, sz = 0;
-    for (const ce of coedges) {
-      const p = ce.edge.startVertex.point;
-      sx += p.x;
-      sy += p.y;
-      sz += p.z;
-    }
-    const count = coedges.length;
-    return { x: sx / count, y: sy / count, z: sz / count };
-  }
+// _trimFaceEdge now delegates to toolkit/GeometryUtils.js
+const _trimFaceEdge = _trimFaceEdge_toolkit;
 
-  return { x: 0, y: 0, z: 0 };
-}
-
-function _trimFaceEdge(face, edgeA, edgeB, newA, newB) {
-  const verts = face.vertices;
-  const keyA = _edgeVKey(edgeA);
-  const keyB = _edgeVKey(edgeB);
-  const newVerts = [];
-  for (let i = 0; i < verts.length; i++) {
-    const vk = _edgeVKey(verts[i]);
-    if (vk === keyA) {
-      newVerts.push({ ...newA });
-    } else if (vk === keyB) {
-      newVerts.push({ ...newB });
-    } else {
-      newVerts.push(verts[i]);
-    }
-  }
-  face.vertices = newVerts;
-}
-
-function _collectFaceEdgeKeys(face) {
-  const keys = new Set();
-  const verts = face.vertices;
-  for (let i = 0; i < verts.length; i++) {
-    keys.add(_edgeKeyFromVerts(verts[i], verts[(i + 1) % verts.length]));
-  }
-  return keys;
-}
+// _collectFaceEdgeKeys now delegates to toolkit/GeometryUtils.js
+const _collectFaceEdgeKeys = _collectFaceEdgeKeys_toolkit;
 
 /**
  * At an edge endpoint, split the vertex in every face OTHER THAN face0/face1.
@@ -3060,64 +2996,10 @@ function _compactExactPlanarDisplayFaces(inputFaces) {
   return compactedFaces;
 }
 
-// Weld vertices that map to the same rounded key so seam duplicates are eliminated
-function _weldVertices(faces) {
-  const canon = new Map();
-  for (const f of faces) {
-    for (let i = 0; i < f.vertices.length; i++) {
-      const v = f.vertices[i];
-      const key = _edgeVKey(v);
-      if (canon.has(key)) {
-        const c = canon.get(key);
-        f.vertices[i] = { x: c.x, y: c.y, z: c.z };
-      } else {
-        canon.set(key, { x: v.x, y: v.y, z: v.z });
-      }
-    }
-  }
-}
-
-function _removeDegenerateFaces(faces) {
-  for (let i = faces.length - 1; i >= 0; i--) {
-    const face = faces[i];
-    const cleaned = _deduplicatePolygon(face.vertices || []);
-    if (cleaned.length < 3) {
-      faces.splice(i, 1);
-      continue;
-    }
-    const normal = _computePolygonNormal(cleaned);
-    if (!normal) {
-      faces.splice(i, 1);
-      continue;
-    }
-    face.vertices = cleaned;
-  }
-}
-
-/**
- * Recompute face normals using the Newell method for correctness after
- * vertex modifications (trimming, splitting). The Newell method sums
- * cross products of consecutive edge pairs and works correctly for both
- * convex and concave polygons.
- */
-function _recomputeFaceNormals(faces) {
-  for (const face of faces) {
-    const verts = face.vertices;
-    if (verts.length < 3) continue;
-    let nx = 0, ny = 0, nz = 0;
-    for (let i = 0; i < verts.length; i++) {
-      const curr = verts[i];
-      const next = verts[(i + 1) % verts.length];
-      nx += (curr.y - next.y) * (curr.z + next.z);
-      ny += (curr.z - next.z) * (curr.x + next.x);
-      nz += (curr.x - next.x) * (curr.y + next.y);
-    }
-    const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
-    if (len > 1e-10) {
-      face.normal = { x: nx / len, y: ny / len, z: nz / len };
-    }
-  }
-}
+// Mesh repair functions now delegate to toolkit/MeshRepair.js
+const _weldVertices = _weldVertices_toolkit;
+const _removeDegenerateFaces = _removeDegenerateFaces_toolkit;
+const _recomputeFaceNormals = _recomputeFaceNormals_toolkit;
 
 /**
  * Triangulate concave polygon faces (>4 vertices) using CDT so that
@@ -3174,101 +3056,7 @@ function _triangulateConcaveFaces(faces) {
  * have winding that conflicts with the trimmed original faces.  This function
  * detects and corrects such conflicts.
  */
-function _fixWindingConsistency(faces) {
-  if (faces.length === 0) return;
-
-  // Build edge → face adjacency (directed edge → face index + direction)
-  const edgeToFaces = new Map();
-  for (let fi = 0; fi < faces.length; fi++) {
-    const verts = faces[fi].vertices;
-    for (let i = 0; i < verts.length; i++) {
-      const a = verts[i], b = verts[(i + 1) % verts.length];
-      const ka = _edgeVKey(a), kb = _edgeVKey(b);
-      const ek = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
-      const fwd = ka < kb;
-      if (!edgeToFaces.has(ek)) edgeToFaces.set(ek, []);
-      edgeToFaces.get(ek).push({ fi, fwd });
-    }
-  }
-
-  // Check if any winding errors exist
-  let hasErrors = false;
-  for (const [, entries] of edgeToFaces) {
-    if (entries.length === 2 && entries[0].fwd === entries[1].fwd) {
-      hasErrors = true;
-      break;
-    }
-  }
-  if (!hasErrors) return;
-
-  // BFS from face 0 to propagate consistent winding.
-  // flipped[fi] tracks whether face fi needs to be reversed.
-  // When checking a neighbor, we must account for the current face's flip
-  // state: if the current face is flipped, its effective edge direction is
-  // the opposite of the original stored direction.
-  const flipped = new Uint8Array(faces.length);
-  const visited = new Uint8Array(faces.length);
-  const queue = [0];
-  visited[0] = 1;
-
-  while (queue.length > 0) {
-    const fi = queue.shift();
-    const verts = faces[fi].vertices;
-    for (let i = 0; i < verts.length; i++) {
-      const a = verts[i], b = verts[(i + 1) % verts.length];
-      const ka = _edgeVKey(a), kb = _edgeVKey(b);
-      const ek = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
-      const myOrigFwd = ka < kb;
-      const neighbors = edgeToFaces.get(ek);
-      if (!neighbors) continue;
-      // Effective direction of this edge for the current face
-      const myEffectiveFwd = flipped[fi] ? !myOrigFwd : myOrigFwd;
-      for (const nb of neighbors) {
-        if (nb.fi === fi || visited[nb.fi]) continue;
-        visited[nb.fi] = 1;
-        // Consistent winding: neighbor's effective direction must be OPPOSITE
-        // If neighbor's original fwd matches our effective fwd, it needs flipping
-        if (nb.fwd === myEffectiveFwd) {
-          flipped[nb.fi] = 1;
-        }
-        queue.push(nb.fi);
-      }
-    }
-  }
-
-  // Apply flips
-  for (let fi = 0; fi < faces.length; fi++) {
-    if (flipped[fi]) {
-      faces[fi].vertices.reverse();
-      const n = faces[fi].normal;
-      faces[fi].normal = { x: -n.x, y: -n.y, z: -n.z };
-    }
-  }
-
-  // Verify outward orientation via signed volume
-  let signedVol = 0;
-  for (const face of faces) {
-    const verts = face.vertices;
-    if (verts.length < 3) continue;
-    const v0 = verts[0];
-    for (let i = 1; i < verts.length - 1; i++) {
-      const v1 = verts[i], v2 = verts[i + 1];
-      signedVol += (
-        v0.x * (v1.y * v2.z - v2.y * v1.z) -
-        v1.x * (v0.y * v2.z - v2.y * v0.z) +
-        v2.x * (v0.y * v1.z - v1.y * v0.z)
-      );
-    }
-  }
-  if (signedVol < 0) {
-    // All normals point inward — flip everything
-    for (const face of faces) {
-      face.vertices.reverse();
-      const n = face.normal;
-      face.normal = { x: -n.x, y: -n.y, z: -n.z };
-    }
-  }
-}
+const _fixWindingConsistency = _fixWindingConsistency_toolkit;
 
 export function applyChamfer(geometry, edgeKeys, distance) {
   if (!geometry || !geometry.faces || edgeKeys.length === 0 || distance <= 0) {

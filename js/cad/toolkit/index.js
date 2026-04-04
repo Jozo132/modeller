@@ -16,3 +16,16 @@ export {
   calculateBoundingBox, calculateSurfaceArea,
   detectDisconnectedBodies, calculateWallThickness,
 } from './MeshAnalysis.js';
+
+export {
+  computePolygonNormal, faceCentroid,
+  edgeKey, collectFaceEdgeKeys,
+  findEdgeNormals, trimFaceEdge,
+  pointOnSegmentStrict,
+} from './GeometryUtils.js';
+
+export {
+  weldVertices, deduplicatePolygon,
+  removeDegenerateFaces, recomputeFaceNormals,
+  fixWindingConsistency, countMeshEdgeUsage,
+} from './MeshRepair.js';
