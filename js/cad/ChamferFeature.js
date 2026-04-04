@@ -6,7 +6,9 @@
 // features. Selection uses stable entity keys when present.
 
 import { Feature } from './Feature.js';
-import { applyBRepChamfer, applyChamfer, calculateMeshVolume, calculateBoundingBox, expandPathEdgeKeys } from './CSG.js';
+import { applyBRepChamfer } from './BRepChamfer.js';
+import { expandPathEdgeKeys } from './EdgeAnalysis.js';
+import { calculateMeshVolume, calculateBoundingBox } from './toolkit/MeshAnalysis.js';
 import { isLegacyEdgeKey, legacyEdgeKeyToStable } from './history/StableEntityKey.js';
 
 export class ChamferFeature extends Feature {
@@ -34,13 +36,22 @@ export class ChamferFeature extends Feature {
 
     // Expand path-level keys to individual face-edge keys
     const resolvedKeys = expandPathEdgeKeys(solid.geometry, this.edgeKeys);
+    // BRep-only pipeline: require exact topology, no mesh fallback
     const inputTopoBody = solid.body || (solid.geometry && solid.geometry.topoBody) || null;
-    const exactInputGeometry = inputTopoBody
-      ? { ...solid.geometry, topoBody: inputTopoBody }
-      : null;
-    const geometry = exactInputGeometry
-      ? (applyBRepChamfer(exactInputGeometry, resolvedKeys, this.distance) || applyChamfer(solid.geometry, resolvedKeys, this.distance))
-      : applyChamfer(solid.geometry, resolvedKeys, this.distance);
+    if (!inputTopoBody) {
+      throw new Error(
+        '[BRep-only] ChamferFeature requires exact topology (TopoBody) on the input solid. ' +
+        'Legacy mesh-based chamfer is no longer supported.'
+      );
+    }
+    const exactInputGeometry = { ...solid.geometry, topoBody: inputTopoBody };
+    const geometry = applyBRepChamfer(exactInputGeometry, resolvedKeys, this.distance);
+    if (!geometry) {
+      throw new Error(
+        '[BRep-only] applyBRepChamfer returned null — the BRep chamfer path failed. ' +
+        'This must be fixed in the BRep kernel, not by falling back to mesh chamfer.'
+      );
+    }
 
     // Tag faces with source feature
     for (const f of geometry.faces) {

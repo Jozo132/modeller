@@ -1123,43 +1123,15 @@ export function booleanOp(geomA, geomB, operation, sharedA = null, sharedB = nul
     };
   }
 
-  // --- Legacy mesh BSP path ---
-  const normalizeBooleanOperand = (geometry) => {
-    if (!geometry || !Array.isArray(geometry.faces)) return geometry;
-
-    const faces = geometry.faces.map((face) => ({
-      ...face,
-      vertices: (face.vertices || []).map((vertex) => ({ ...vertex })),
-      normal: face.normal ? { ...face.normal } : face.normal,
-      shared: face.shared || null,
-    }));
-
-    _fixTJunctions(faces);
-
-    return {
-      ...geometry,
-      faces,
-    };
-  };
-
-  const a = CSGSolid.fromGeometry(normalizeBooleanOperand(geomA), sharedA);
-  const b = CSGSolid.fromGeometry(normalizeBooleanOperand(geomB), sharedB);
-
-  let result;
-  switch (operation) {
-    case 'union':
-    case 'add':
-      result = a.union(b);
-      break;
-    case 'subtract':
-      result = a.subtract(b);
-      break;
-    case 'intersect':
-      result = a.intersect(b);
-      break;
-    default:
-      throw new Error(`Unknown boolean operation: ${operation}`);
-  }
-
-  return result.toGeometry();
+  // --- BRep-only pipeline: legacy mesh BSP fallback is DISABLED ---
+  // Both operands MUST carry exact B-Rep topology. If they don't, the
+  // upstream feature (extrude, revolve, …) must be fixed to produce a
+  // TopoBody. Falling back to mesh BSP would corrupt the topology chain.
+  const missingA = !geomA?.topoBody ? 'operand A' : null;
+  const missingB = !geomB?.topoBody ? 'operand B' : null;
+  const missing = [missingA, missingB].filter(Boolean).join(' and ');
+  throw new Error(
+    `[BRep-only] booleanOp('${operation}') requires exact topology on both operands, ` +
+    `but ${missing} lack(s) a TopoBody. Legacy CSG/BSP mesh boolean is no longer supported.`
+  );
 }

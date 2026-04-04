@@ -6,7 +6,8 @@
 // features. Selection uses stable entity keys when present.
 
 import { Feature } from './Feature.js';
-import { applyFillet, calculateMeshVolume, calculateBoundingBox, expandPathEdgeKeys } from './CSG.js';
+import { expandPathEdgeKeys } from './EdgeAnalysis.js';
+import { calculateMeshVolume, calculateBoundingBox } from './toolkit/MeshAnalysis.js';
 import { isLegacyEdgeKey, legacyEdgeKeyToStable } from './history/StableEntityKey.js';
 
 export class FilletFeature extends Feature {
@@ -33,6 +34,14 @@ export class FilletFeature extends Feature {
       throw new Error('No edges selected for fillet');
     }
 
+    // BRep-only pipeline: fillet requires exact topology implementation
+    // TODO: Implement applyBRepFillet using TopoBody, NurbsSurface rolling-ball
+    throw new Error(
+      '[BRep-only] FilletFeature: applyBRepFillet is not yet implemented. ' +
+      'Legacy mesh-based fillet is no longer supported. ' +
+      'This is a placeholder — implement proper BRep fillet using rolling-ball offset surfaces.'
+    );
+
     // Expand path-level keys to individual face-edge keys
     const resolvedKeys = expandPathEdgeKeys(solid.geometry, edgeKeys);
     const resolvedOwnerMap = {};
@@ -40,7 +49,7 @@ export class FilletFeature extends Feature {
       const ownerId = edgeOwnerMap[key];
       if (ownerId) resolvedOwnerMap[key] = ownerId;
     }
-    const geometry = applyFillet(solid.geometry, resolvedKeys, this.radius, this.segments, resolvedOwnerMap);
+    const geometry = null; // applyBRepFillet(solid.geometry, resolvedKeys, this.radius);
 
     // Tag faces with source feature
     for (const f of geometry.faces) {

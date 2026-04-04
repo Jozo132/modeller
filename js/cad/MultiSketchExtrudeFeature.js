@@ -6,7 +6,9 @@
 
 import { Feature } from './Feature.js';
 import { ExtrudeFeature } from './ExtrudeFeature.js';
-import { booleanOp, calculateMeshVolume, calculateBoundingBox, computeFeatureEdges } from './CSG.js';
+import { booleanOp } from './CSGLegacy.js';
+import { computeFeatureEdges } from './EdgeAnalysis.js';
+import { calculateMeshVolume, calculateBoundingBox } from './toolkit/MeshAnalysis.js';
 
 /**
  * MultiSketchExtrudeFeature extrudes multiple sketch profiles on independent
