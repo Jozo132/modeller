@@ -451,7 +451,7 @@ function _recoverMissingBoundaryVertices(points, triList, outerCount, holes) {
   }
 
   // Find which boundary vertices are used in at least one triangle
-  let usedSet = new Set();
+  const usedSet = new Set();
   for (const tri of triList) {
     if (!tri) continue;
     usedSet.add(tri[0]);
