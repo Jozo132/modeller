@@ -568,6 +568,8 @@ function _findShells(resolved) {
  *
  * @param {Map} resolved - Resolved entity map
  * @param {number} faceId - Entity ID of the ADVANCED_FACE
+ * @param {Map<number, TopoVertex>} vertexCache - Shared vertex cache (STEP VERTEX_POINT ID → TopoVertex)
+ * @param {Map<number, TopoEdge>} edgeCache - Shared edge cache (STEP EDGE_CURVE ID → TopoEdge)
  * @returns {TopoFace|null}
  */
 function _buildFaceTopology(resolved, faceId, vertexCache, edgeCache) {
