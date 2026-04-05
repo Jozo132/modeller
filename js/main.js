@@ -43,7 +43,10 @@ import {
 } from './tools/index.js';
 import { InteractionRecorder, PlaybackEngine } from './interaction-recorder.js';
 import { ViewCube } from './ui/viewcube.js';
-import { applyChamfer, applyFillet, expandPathEdgeKeys, makeEdgeKey, calculateMeshVolume, calculateBoundingBox, calculateSurfaceArea, detectDisconnectedBodies, calculateWallThickness, countInvertedFaces } from './cad/CSG.js';
+import { expandPathEdgeKeys, makeEdgeKey } from './cad/EdgeAnalysis.js';
+import { applyBRepChamfer as applyChamfer } from './cad/BRepChamfer.js';
+import { applyBRepFillet as applyFillet } from './cad/BRepFillet.js';
+import { calculateMeshVolume, calculateBoundingBox, calculateSurfaceArea, detectDisconnectedBodies, calculateWallThickness, countInvertedFaces } from './cad/toolkit/MeshAnalysis.js';
 
 const DIAGNOSTIC_HATCH_STORAGE_KEY = 'cad-modeller-diagnostic-backface-hatch';
 const DIAGNOSTIC_HATCH_MODE_AUTO = 'auto';

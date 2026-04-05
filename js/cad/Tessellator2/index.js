@@ -16,9 +16,7 @@ import { MeshStitcher } from './MeshStitcher.js';
 import { computeMeshHash, meshSummary } from './MeshHash.js';
 import { recommendEdgeSegments, detectCriticalRegions } from './Refinement.js';
 import { validateMesh, detectBoundaryEdges, detectSelfIntersections, checkWatertight } from '../MeshValidator.js';
-import { _legacyTessellateBody as legacyTessellateBody } from '../Tessellation.js';
 import { getFlag } from '../../featureFlags.js';
-import { warnOnceForFallback } from '../fallback/warnOnce.js';
 
 // ── Shadow tessellation disagreement log ────────────────────────────
 /** @type {Array<Object>} */
@@ -243,98 +241,46 @@ function _collectLoopPoints(loop, edgeSampler, edgeSegs) {
  * @returns {Object} Mesh result
  */
 export function tessellateBodyRouted(body, opts = {}) {
-  // Default to 'robust'; unrecognized values also fall through to legacy
-  const mode = opts.tessellator ?? 'robust';
-
-  if (mode === 'robust') {
-    try {
-      const result = robustTessellateBody(body, opts);
-      // If robust tessellation produced results, return them
-      if (result.faces.length > 0) {
-        result._tessellator = 'robust';
-        return result;
-      }
-      // Fall through to legacy if robust produced empty mesh
-    } catch (err) {
-      // Robust tessellation failed — fall back to legacy with diagnostic
-      warnOnceForFallback({
-        id: 'tessellation:compat-legacy',
-        policy: 'allow-fallback',
-        reason: 'robust tessellator failed; using legacy ear-clipping compatibility shim',
-        kind: 'compatibility-shim',
-      });
-      const fallback = legacyTessellateBody(body, opts);
-      fallback._tessellator = 'legacy-fallback';
-      fallback._robustError = err.message;
-      return fallback;
-    }
+  // BRep-only: always use robust tessellator, no legacy fallback
+  const result = robustTessellateBody(body, opts);
+  if (result.faces.length > 0) {
+    result._tessellator = 'robust';
+    return result;
   }
-
-  if (mode === 'legacy') {
-    warnOnceForFallback({
-      id: 'tessellation:compat-legacy',
-      policy: 'force-fallback',
-      reason: 'explicit legacy tessellator requested via tessellator option',
-      kind: 'compatibility-shim',
-    });
-  }
-  const result = legacyTessellateBody(body, opts);
-  result._tessellator = 'legacy';
-  return result;
+  throw new Error(
+    '[BRep-only] tessellateBodyRouted: robust tessellator produced an empty mesh. ' +
+    'Legacy ear-clipping fallback is no longer available.'
+  );
 }
 
 /**
- * Shadow tessellation: run both legacy and robust tessellators, compare
- * outputs, and record disagreements.  Returns the legacy result by default
- * (shadow mode is observation-only).
- *
- * When CAD_USE_ROBUST_TESSELLATOR is true this function is called
- * automatically by tessellateBodyRouted() instead of the normal path.
+ * Shadow tessellation: run the robust tessellator and record diagnostics.
+ * Legacy comparison has been removed — this now only validates the robust path.
  *
  * @param {import('../BRepTopology.js').TopoBody} body
  * @param {Object} [opts]
- * @returns {Object} The primary mesh result (legacy by default, robust if clean)
+ * @returns {Object} The robust mesh result
  */
 export function shadowTessellateBody(body, opts = {}) {
-  const legacyResult = legacyTessellateBody(body, opts);
-  legacyResult._tessellator = 'legacy';
+  const robustResult = robustTessellateBody(body, { ...opts, validate: true });
+  robustResult._tessellator = 'robust';
 
-  let robustResult;
-  let robustError = null;
-  try {
-    robustResult = robustTessellateBody(body, { ...opts, validate: true });
-    robustResult._tessellator = 'robust';
-  } catch (err) {
-    robustError = err.message;
-  }
+  const robustHash = computeMeshHash(robustResult);
+  const robustValidation = robustResult.validation ?? validateMesh(robustResult.faces);
 
-  const legacyHash = computeMeshHash(legacyResult);
-  const robustHash = robustResult ? computeMeshHash(robustResult) : null;
-
-  const legacyValidation = validateMesh(legacyResult.faces);
-  const robustValidation = robustResult ? robustResult.validation ?? validateMesh(robustResult.faces) : null;
-
-  const disagreement = {
+  const diagnostics = {
     timestamp: new Date().toISOString(),
-    legacyHash,
     robustHash,
-    hashMatch: legacyHash === robustHash,
-    legacyFaces: legacyResult.faces.length,
-    robustFaces: robustResult ? robustResult.faces.length : 0,
-    legacyClean: legacyValidation.isClean,
-    robustClean: robustValidation ? robustValidation.isClean : false,
-    robustError,
+    robustFaces: robustResult.faces.length,
+    robustClean: robustValidation.isClean,
   };
 
-  // Record if there is any disagreement
-  if (!disagreement.hashMatch || robustError || !disagreement.robustClean) {
-    _shadowDisagreements.push(disagreement);
+  if (!diagnostics.robustClean) {
+    _shadowDisagreements.push(diagnostics);
   }
 
-  // Attach shadow comparison to the primary result
-  legacyResult._shadowComparison = disagreement;
-
-  return legacyResult;
+  robustResult._shadowComparison = diagnostics;
+  return robustResult;
 }
 
 // Re-export sub-modules for direct access

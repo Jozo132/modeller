@@ -8,7 +8,7 @@
 
 import { Feature, claimFeatureId } from './Feature.js';
 import { importSTEP } from './StepImport.js';
-import { computeFeatureEdges } from './CSG.js';
+import { computeFeatureEdges } from './EdgeAnalysis.js';
 import { getFlag } from '../featureFlags.js';
 
 /**

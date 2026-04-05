@@ -9,7 +9,7 @@ import { Scene } from './cad/index.js';
 import {
   calculateMeshVolume, calculateBoundingBox, calculateSurfaceArea,
   detectDisconnectedBodies, calculateWallThickness, countInvertedFaces,
-} from './cad/CSG.js';
+} from './cad/toolkit/MeshAnalysis.js';
 import { info, warn, error } from './logger.js';
 
 // ── Optional CBREP IR cache embedding (gated by CAD_USE_IR_CACHE=1) ──

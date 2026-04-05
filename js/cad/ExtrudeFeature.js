@@ -5,7 +5,9 @@
 // enabling STEP-quality export and exact boolean operations.
 
 import { Feature } from './Feature.js';
-import { booleanOp, calculateMeshVolume, calculateBoundingBox, computeFeatureEdges } from './CSG.js';
+import { booleanOp } from './CSGLegacy.js';
+import { computeFeatureEdges } from './EdgeAnalysis.js';
+import { calculateMeshVolume, calculateBoundingBox } from './toolkit/MeshAnalysis.js';
 import { constrainedTriangulate } from './Tessellator2/CDT.js';
 import { NurbsCurve } from './NurbsCurve.js';
 import { NurbsSurface } from './NurbsSurface.js';

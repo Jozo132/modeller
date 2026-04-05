@@ -6,7 +6,9 @@
 // features. Selection uses stable entity keys when present.
 
 import { Feature } from './Feature.js';
-import { applyFillet, calculateMeshVolume, calculateBoundingBox, expandPathEdgeKeys } from './CSG.js';
+import { applyBRepFillet } from './BRepFillet.js';
+import { expandPathEdgeKeys } from './EdgeAnalysis.js';
+import { calculateMeshVolume, calculateBoundingBox } from './toolkit/MeshAnalysis.js';
 import { isLegacyEdgeKey, legacyEdgeKeyToStable } from './history/StableEntityKey.js';
 
 export class FilletFeature extends Feature {
@@ -33,26 +35,30 @@ export class FilletFeature extends Feature {
       throw new Error('No edges selected for fillet');
     }
 
-    // Expand path-level keys to individual face-edge keys
-    const resolvedKeys = expandPathEdgeKeys(solid.geometry, edgeKeys);
-    const resolvedOwnerMap = {};
-    for (const key of resolvedKeys) {
-      const ownerId = edgeOwnerMap[key];
-      if (ownerId) resolvedOwnerMap[key] = ownerId;
+    // BRep-only pipeline: require exact topology
+    const inputTopoBody = solid.body || (solid.geometry && solid.geometry.topoBody) || null;
+    if (!inputTopoBody) {
+      throw new Error(
+        '[BRep-only] FilletFeature requires exact topology (TopoBody) on the input solid. ' +
+        'Legacy mesh-based fillet is no longer supported.'
+      );
     }
-    const geometry = applyFillet(solid.geometry, resolvedKeys, this.radius, this.segments, resolvedOwnerMap);
+
+    const exactInputGeometry = { ...solid.geometry, topoBody: inputTopoBody };
+    const geometry = applyBRepFillet(exactInputGeometry, edgeKeys, this.radius, this.segments);
+    if (!geometry) {
+      throw new Error(
+        '[BRep-only] applyBRepFillet returned null — the BRep fillet path failed. ' +
+        'This must be fixed in the BRep kernel, not by falling back to mesh fillet.'
+      );
+    }
 
     // Tag faces with source feature
     for (const f of geometry.faces) {
       if (!f.shared) f.shared = {};
     }
 
-    // Propagate topoBody from input when available (topology chain)
-    const inputTopoBody = solid.body || (solid.geometry && solid.geometry.topoBody) || null;
-    const resultTopoBody = geometry.topoBody || geometry.brep || null;
-
-    // Mark exactness: true when result has valid TopoBody (either from
-    // exact input chain or from successful mesh-level promotion)
+    const resultTopoBody = geometry.topoBody || null;
     this._resultExact = !!resultTopoBody;
 
     return {

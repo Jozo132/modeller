@@ -53,7 +53,16 @@ export {
   clearVariables, serializeVariables, deserializeVariables,
 } from './Constraint.js';
 export { disconnect, union, trim, split, movePoint, moveShape } from './Operations.js';
-export { booleanOp, calculateMeshVolume, calculateBoundingBox, applyChamfer, applyFillet, makeEdgeKey, expandPathEdgeKeys } from './CSG.js';
+export { booleanOp } from './CSGLegacy.js';
+export { computeFeatureEdges, makeEdgeKey, expandPathEdgeKeys } from './EdgeAnalysis.js';
+export { applyBRepChamfer } from './BRepChamfer.js';
+export {
+  calculateMeshVolume, calculateBoundingBox, calculateSurfaceArea,
+  detectDisconnectedBodies, calculateWallThickness, countInvertedFaces,
+} from './toolkit/MeshAnalysis.js';
+// Legacy aliases — applyChamfer now points to BRep chamfer, applyFillet throws
+export { applyBRepChamfer as applyChamfer } from './BRepChamfer.js';
+export { applyFillet } from './CSG.js';
 export { NurbsCurve } from './NurbsCurve.js';
 export { NurbsSurface } from './NurbsSurface.js';
 export { BRep, BRepVertex, BRepEdge, BRepFace, tessellateNurbsFaces } from './BRep.js';
@@ -65,7 +74,7 @@ export {
   SurfaceType, buildTopoBody, resetTopoIds,
 } from './BRepTopology.js';
 export { ValidationResult, validateBody, validateIncidence, validateNoDuplicateEdges, validateFull } from './BRepValidator.js';
-export { tessellateBody, tessellateFace, tessellateForSTL, _legacyTessellateBody } from './Tessellation.js';
+export { tessellateBody, tessellateFace, tessellateForSTL } from './Tessellation.js';
 export { curveCurveIntersect } from './CurveCurveIntersect.js';
 export { curveSurfaceIntersect } from './CurveSurfaceIntersect.js';
 export { surfaceSurfaceIntersect } from './SurfaceSurfaceIntersect.js';
