@@ -818,16 +818,155 @@ function _buildExactCornerFaceDescs(faces) {
 }
 
 // -----------------------------------------------------------------------
+// Reconstruct face description from original TopoFace
+// -----------------------------------------------------------------------
+
+/**
+ * Reconstruct a face description from an original TopoFace, applying
+ * vertex substitutions as needed.
+ *
+ * For non-planar BRep faces (bspline, cylinder, etc.) from previous
+ * fillet/chamfer operations, this preserves the exact surface and edge
+ * curves instead of degrading them to planar polygon approximations.
+ *
+ * @param {Object} topoFace - Original TopoFace from the input TopoBody
+ * @param {Map<string, {x,y,z}[]>} vertexReplacements - Map of vertexKey → ordered replacement vertices
+ * @returns {Object|null} Face description for buildTopoBody
+ */
+function _buildOriginalFaceDesc(topoFace, vertexReplacements = null) {
+  if (!topoFace || !topoFace.outerLoop) return null;
+
+  const coedges = topoFace.outerLoop.coedges;
+  if (!coedges || coedges.length < 3) return null;
+
+  // Extract loop vertices in winding order
+  const origLoopVerts = [];
+  for (const ce of coedges) {
+    const startPt = ce.sameSense !== false
+      ? ce.edge.startVertex.point
+      : ce.edge.endVertex.point;
+    origLoopVerts.push({ ...startPt });
+  }
+
+  // Apply vertex replacements if any
+  if (vertexReplacements && vertexReplacements.size > 0) {
+    const newVertices = [];
+    const n = origLoopVerts.length;
+
+    for (let i = 0; i < n; i++) {
+      const vk = _edgeVKey(origLoopVerts[i]);
+      const replacements = vertexReplacements.get(vk);
+
+      if (replacements && replacements.length > 0) {
+        // This vertex needs to be replaced/split
+        for (const rpt of replacements) {
+          newVertices.push({ ...rpt });
+        }
+      } else {
+        newVertices.push({ ...origLoopVerts[i] });
+      }
+    }
+
+    // Build edge curves — all straight lines for the modified boundary
+    const edgeCurves = [];
+    for (let i = 0; i < newVertices.length; i++) {
+      const next = newVertices[(i + 1) % newVertices.length];
+      edgeCurves.push(NurbsCurve.createLine(newVertices[i], next));
+    }
+
+    return {
+      surface: topoFace.surface || null,
+      surfaceType: topoFace.surfaceType || SurfaceType.PLANE,
+      vertices: newVertices,
+      edgeCurves,
+      sameSense: topoFace.sameSense,
+      shared: topoFace.shared ? { ...topoFace.shared } : null,
+    };
+  }
+
+  // No replacements — reconstruct from original edges
+  const edgeCurves = [];
+  for (const ce of coedges) {
+    const curve = ce.edge.curve;
+    if (ce.sameSense === false && curve && curve.reversed) {
+      edgeCurves.push(curve.reversed());
+    } else {
+      edgeCurves.push(curve || null);
+    }
+  }
+
+  return {
+    surface: topoFace.surface || null,
+    surfaceType: topoFace.surfaceType || SurfaceType.PLANE,
+    vertices: origLoopVerts,
+    edgeCurves,
+    sameSense: topoFace.sameSense,
+    shared: topoFace.shared ? { ...topoFace.shared } : null,
+  };
+}
+
+// -----------------------------------------------------------------------
 // Main entry point
 // -----------------------------------------------------------------------
 
-function _buildExactFilletTopoBody(faces, edgeDataList) {
+function _buildExactFilletTopoBody(faces, edgeDataList, origTopoBody = null) {
   if (!faces || !Array.isArray(faces) || !edgeDataList || edgeDataList.length === 0) return null;
+
+  // Build a lookup from topoFaceId → original TopoFace for BRep preservation
+  const origTopoFaces = new Map();
+  if (origTopoBody && origTopoBody.shells) {
+    for (const shell of origTopoBody.shells) {
+      for (const topoFace of (shell.faces || [])) {
+        origTopoFaces.set(topoFace.id, topoFace);
+      }
+    }
+  }
+
+  // Build set of face indices that are adjacent to fillet edges (already trimmed in mesh)
+  const filletAdjacentFaceIds = new Set();
+  for (const data of edgeDataList) {
+    const face0 = faces[data.fi0];
+    const face1 = faces[data.fi1];
+    if (face0 && face0.topoFaceId !== undefined) filletAdjacentFaceIds.add(face0.topoFaceId);
+    if (face1 && face1.topoFaceId !== undefined) filletAdjacentFaceIds.add(face1.topoFaceId);
+  }
+
+  // Build a set of face indices that are adjacent to current fillet edges
+  const filletAdjacentIndices = new Set();
+  for (const data of edgeDataList) {
+    filletAdjacentIndices.add(data.fi0);
+    filletAdjacentIndices.add(data.fi1);
+  }
 
   const faceDescs = [];
 
-  for (const face of faces) {
-    if (!face || face.isFillet || face.isCorner) continue;
+  for (let fi = 0; fi < faces.length; fi++) {
+    const face = faces[fi];
+    if (!face || face.isCorner) continue;
+
+    // Skip fillet/isFillet faces ONLY if they're adjacent to the current
+    // fillet operation's edges (they'll be replaced by new fillet descs).
+    // Non-adjacent fillet faces from previous operations should be preserved.
+    if (face.isFillet && filletAdjacentIndices.has(fi)) continue;
+
+    // Check if this face has an original BRep face that should be preserved
+    const topoFaceId = face.topoFaceId;
+    const origFace = topoFaceId !== undefined ? origTopoFaces.get(topoFaceId) : null;
+    const isNonPlanar = origFace && origFace.surfaceType !== 'plane';
+    const isNotAdjacent = topoFaceId !== undefined && !filletAdjacentFaceIds.has(topoFaceId);
+
+    if (origFace && isNonPlanar && isNotAdjacent) {
+      // Preserve the original BRep face with vertex substitutions
+      // Build vertex replacement map from the trimmed face vertices
+      const vertReplacements = _buildVertexReplacementMap(face, origFace);
+      const desc = _buildOriginalFaceDesc(origFace, vertReplacements);
+      if (desc) {
+        faceDescs.push(desc);
+        continue;
+      }
+      // Fall through to planar if reconstruction fails
+    }
+
     const desc = _buildPlanarFaceDesc(face, edgeDataList);
     if (!desc) return null;
     faceDescs.push(desc);
@@ -845,6 +984,96 @@ function _buildExactFilletTopoBody(faces, edgeDataList) {
 
   if (faceDescs.length === 0) return null;
   return buildTopoBody(faceDescs);
+}
+
+/**
+ * Build a vertex replacement map by comparing the trimmed face's vertices
+ * with the original TopoFace's loop vertices. When a vertex from the original
+ * face is missing from the trimmed face, find the replacement vertices
+ * that were inserted in its place, ordered to maintain face boundary winding.
+ *
+ * @param {Object} trimmedFace - The trimmed mesh face with modified vertices
+ * @param {Object} origTopoFace - The original TopoFace from the input TopoBody
+ * @returns {Map<string, Array<{x,y,z}>>} vertexKey → ordered replacement vertices
+ */
+function _buildVertexReplacementMap(trimmedFace, origTopoFace) {
+  const replacements = new Map();
+  if (!trimmedFace || !origTopoFace || !origTopoFace.outerLoop) return replacements;
+
+  // Get original loop vertices in winding order
+  const origVerts = [];
+  for (const ce of origTopoFace.outerLoop.coedges) {
+    const pt = ce.sameSense !== false
+      ? ce.edge.startVertex.point
+      : ce.edge.endVertex.point;
+    origVerts.push({ ...pt });
+  }
+
+  // Get trimmed face vertices
+  const trimVerts = trimmedFace.vertices || [];
+  const trimVertKeys = new Set(trimVerts.map(v => _edgeVKey(v)));
+  const origVertKeys = new Set(origVerts.map(v => _edgeVKey(v)));
+
+  // For each original vertex missing from the trimmed face,
+  // identify replacement vertices and order them by face boundary winding
+  for (let oi = 0; oi < origVerts.length; oi++) {
+    const origVk = _edgeVKey(origVerts[oi]);
+    if (trimVertKeys.has(origVk)) continue;
+
+    // This vertex was replaced. Find replacement vertices by looking at the
+    // trimmed face's boundary walk — the replacements are vertices that aren't
+    // in the original face and are near the removed vertex.
+    const prevOrig = origVerts[(oi - 1 + origVerts.length) % origVerts.length];
+    const nextOrig = origVerts[(oi + 1) % origVerts.length];
+    const prevVk = _edgeVKey(prevOrig);
+    const nextVk = _edgeVKey(nextOrig);
+
+    // Walk the trimmed face vertices to find the segment between
+    // the prev and next original vertices
+    const trimN = trimVerts.length;
+    let prevIdx = -1, nextIdx = -1;
+    for (let ti = 0; ti < trimN; ti++) {
+      const tvk = _edgeVKey(trimVerts[ti]);
+      if (tvk === prevVk) prevIdx = ti;
+      if (tvk === nextVk) nextIdx = ti;
+    }
+
+    if (prevIdx === -1 || nextIdx === -1) {
+      // Can't find anchors — try to use proximity ordering instead
+      const newVerts = trimVerts.filter(v => !origVertKeys.has(_edgeVKey(v)));
+      if (newVerts.length > 0) {
+        // Order by distance to previous original vertex (closest first in walk)
+        const pv = prevOrig;
+        newVerts.sort((a, b) => {
+          const da = (a.x - pv.x) ** 2 + (a.y - pv.y) ** 2 + (a.z - pv.z) ** 2;
+          const db = (b.x - pv.x) ** 2 + (b.y - pv.y) ** 2 + (b.z - pv.z) ** 2;
+          return da - db;
+        });
+        replacements.set(origVk, newVerts);
+      }
+      continue;
+    }
+
+    // Extract vertices between prevIdx and nextIdx in the trimmed face walk
+    const replVerts = [];
+    let idx = (prevIdx + 1) % trimN;
+    const maxSteps = trimN;
+    let steps = 0;
+    while (idx !== nextIdx && steps < maxSteps) {
+      const tvk = _edgeVKey(trimVerts[idx]);
+      if (!origVertKeys.has(tvk)) {
+        replVerts.push({ ...trimVerts[idx] });
+      }
+      idx = (idx + 1) % trimN;
+      steps++;
+    }
+
+    if (replVerts.length > 0) {
+      replacements.set(origVk, replVerts);
+    }
+  }
+
+  return replacements;
 }
 
 // -----------------------------------------------------------------------
@@ -1141,7 +1370,7 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
   }
 
   // _buildExactFilletTopoBody expects trimmed faces and edgeDataList
-  const newTopoBody = _buildExactFilletTopoBody(trimmedFaces, edgeDataList);
+  const newTopoBody = _buildExactFilletTopoBody(trimmedFaces, edgeDataList, topoBody);
   if (!newTopoBody) {
     _debugBRepFillet('build-topobody-failed');
     return null;

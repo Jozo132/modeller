@@ -681,9 +681,9 @@ test('box-fillet-2-s.cmod (two sequential fillets) produces valid mesh', () => {
   assert.ok(part, 'Should load box-fillet-2-s.cmod');
   const geom = getFinalGeometry(part);
   assert.ok(geom, 'Should have geometry');
-  // Known: sequential fillets may produce boundary edges at fillet-fillet
-  // intersection corners. Track progress toward zero boundary edges.
-  validateGeometry(geom, 'box-fillet-2-s', { allowBoundaryEdges: true });
+  // Sequential fillets now properly preserve BRep faces from previous
+  // fillet operations, producing a watertight topology.
+  validateGeometry(geom, 'box-fillet-2-s');
 });
 
 test('box-fillet-3-p.cmod (two parallel fillets then single fillet) produces valid mesh', () => {
