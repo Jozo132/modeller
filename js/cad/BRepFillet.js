@@ -1194,23 +1194,46 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
         }
 
         // This vertex is at a fillet edge endpoint.
-        // Insert both trim points (p0 and p1 side) in the correct order
-        // to maintain consistent face boundary winding.
+        // Insert trim points in the correct order to maintain boundary winding.
         const vNext = origVerts[(vi + 1) % n];
         const vPrev = origVerts[(vi - 1 + n) % n];
 
-        // Collect trim points from all fillet edges at this vertex
+        // Check which fillet-adjacent face this non-adjacent face borders at this vertex.
+        // This determines whether to insert one trim point (single-side) or both.
+        const faceEdgeKeys = _collectFaceEdgeKeys(face);
+        let side0 = false, side1 = false;
+        for (const entry of filletEntries) {
+          const face0Keys = entry.data.face0Keys;
+          const face1Keys = entry.data.face1Keys;
+          for (const ek of faceEdgeKeys) {
+            if (face0Keys && face0Keys.has(ek)) side0 = true;
+            if (face1Keys && face1Keys.has(ek)) side1 = true;
+          }
+        }
+
+        // Collect appropriate trim points based on face-side affinity
         const trimPts = [];
         for (const entry of filletEntries) {
           const p0 = entry.isEdgeA ? entry.data.p0a : entry.data.p0b;
           const p1 = entry.isEdgeA ? entry.data.p1a : entry.data.p1b;
-          trimPts.push(p0, p1);
+          if (side0 && !side1) {
+            // Face borders only fi0 side — use only p0
+            trimPts.push(p0);
+          } else if (side1 && !side0) {
+            // Face borders only fi1 side — use only p1
+            trimPts.push(p1);
+          } else {
+            // Face borders both or neither — use both (vertex split)
+            trimPts.push(p0, p1);
+          }
         }
 
-        if (trimPts.length === 2) {
-          // Single fillet at this vertex: insert both trim points.
-          // Order by proximity to incoming edge direction: the trim point
-          // closer to vPrev should come first in the boundary walk.
+        if (trimPts.length === 1) {
+          // Single-side: replace vertex with the one trim point
+          newVerts.push({ ...trimPts[0] });
+          modified = true;
+        } else if (trimPts.length === 2) {
+          // Two trim points: order by proximity to incoming edge direction.
           const dirPrev = _vec3Normalize(_vec3Sub(vPrev, v));
           const d0prev = _vec3Dot(_vec3Normalize(_vec3Sub(trimPts[0], v)), dirPrev);
           const d1prev = _vec3Dot(_vec3Normalize(_vec3Sub(trimPts[1], v)), dirPrev);
@@ -1223,15 +1246,13 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
           modified = true;
         } else if (trimPts.length > 2) {
           // Multiple fillet edges share this vertex on a non-adjacent face.
-          // Sort all trim points by angular order around the boundary walk
-          // to maintain watertight topology.
+          // Sort all trim points by angular order around the boundary walk.
           const dirPrev = _vec3Normalize(_vec3Sub(vPrev, v));
-          const dirNext = _vec3Normalize(_vec3Sub(vNext, v));
           const faceNormal = face.normal
             ? { x: face.normal.x, y: face.normal.y, z: face.normal.z }
             : _computePolygonNormal(origVerts);
 
-          // Deduplicate trim points that are at the same position
+          // Deduplicate trim points at the same position
           const uniqueTrimPts = [];
           const seen = new Set();
           for (const pt of trimPts) {

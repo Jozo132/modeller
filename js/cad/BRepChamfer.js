@@ -845,6 +845,20 @@ function _orientOffsetAlongTopoEdge(offset, topoEdge) {
   };
 }
 
+/**
+ * Rebuild offset curve to match updated startPt/endPt after intersection adjustment.
+ * For straight-line offsets, recreates the line with the new endpoints.
+ * For arc offsets, keeps the original curve (arc geometry is defined by its
+ * center/radius, not by endpoints — the surface provides the actual geometry).
+ */
+function _rebuildOffsetCurve(off) {
+  if (!off || !off.curve) return;
+  // Only rebuild straight-line curves — arcs are parameterized by center+radius
+  if (off.curve.degree === 1 && off.curve.controlPoints && off.curve.controlPoints.length === 2) {
+    off.curve = NurbsCurve.createLine(off.startPt, off.endPt);
+  }
+}
+
 function _debugBRepChamfer(...args) {
   if (typeof process === 'undefined' || !process?.env?.DEBUG_BREP_CHAMFER) return;
   console.log('[applyBRepChamfer]', ...args);
@@ -1143,11 +1157,13 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
           const t = vec3Dot(vec3Cross(diff, dir1), crossDir) / (crossLen * crossLen);
           const intPt = vec3Add(pt0, vec3Scale(dir0, t));
 
-          // Update the offset endpoints
+          // Update the offset endpoints and rebuild curves to match
           if (o0.isStart) o0.off.startPt = intPt;
           else o0.off.endPt = intPt;
           if (o1.isStart) o1.off.startPt = intPt;
           else o1.off.endPt = intPt;
+          _rebuildOffsetCurve(o0.off);
+          _rebuildOffsetCurve(o1.off);
         } else {
           // Parallel offsets — merge to midpoint
           const mid = vec3Lerp(pt0, pt1, 0.5);
@@ -1155,6 +1171,8 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
           else o0.off.endPt = mid;
           if (o1.isStart) o1.off.startPt = mid;
           else o1.off.endPt = mid;
+          _rebuildOffsetCurve(o0.off);
+          _rebuildOffsetCurve(o1.off);
         }
       } else {
         // 3+ offsets: merge to centroid of all endpoint positions
@@ -1168,6 +1186,7 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
         for (const o of offsets) {
           if (o.isStart) o.off.startPt = merged;
           else o.off.endPt = merged;
+          _rebuildOffsetCurve(o.off);
         }
       }
     }
@@ -1283,6 +1302,7 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
   for (const ci of chamferInfos) {
     const off0 = _orientOffsetAlongTopoEdge(ci.off0, ci.topoEdge);
     const off1 = _orientOffsetAlongTopoEdge(ci.off1, ci.topoEdge);
+
     const surface = _buildChamferRuledSurface(off0, off1);
     const surfType = (off0.curve.degree === 2 && off1.curve.degree === 2)
       ? SurfaceType.CONE
