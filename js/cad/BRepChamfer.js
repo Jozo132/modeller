@@ -848,12 +848,14 @@ function _orientOffsetAlongTopoEdge(offset, topoEdge) {
 /**
  * Rebuild offset curve to match updated startPt/endPt after intersection adjustment.
  * For straight-line offsets, recreates the line with the new endpoints.
- * For arc offsets, keeps the original curve (arc geometry is defined by its
- * center/radius, not by endpoints — the surface provides the actual geometry).
+ * Arc offsets are left unchanged: their geometry is defined by center/radius and
+ * the arc parameterization is not affected by the endpoint intersection adjustment
+ * (the face rebuild and bevel face construction use off.startPt/endPt for vertices,
+ * while the arc curve provides the in-between shape via the surface).
  */
 function _rebuildOffsetCurve(off) {
   if (!off || !off.curve) return;
-  // Only rebuild straight-line curves — arcs are parameterized by center+radius
+  // Only rebuild straight-line curves
   if (off.curve.degree === 1 && off.curve.controlPoints && off.curve.controlPoints.length === 2) {
     off.curve = NurbsCurve.createLine(off.startPt, off.endPt);
   }
