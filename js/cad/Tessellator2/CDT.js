@@ -193,7 +193,16 @@ export function constrainedTriangulate(outerLoop, holes = [], steinerPoints = []
   _enforceConstraints(points, triList, constraintEdges);
 
   // --- Step 4: Remove exterior and hole triangles via flood fill ---
-  return _removeExteriorTriangles(points, triList, outerLoop.length, constraintEdges, holes);
+  const interior = _removeExteriorTriangles(points, triList, outerLoop.length, constraintEdges, holes);
+
+  // --- Step 5: Recover unused boundary vertices ---
+  // The Bowyer-Watson algorithm can fail to include nearly-collinear
+  // boundary points (e.g. curve samples projected onto a planar face).
+  // When a constraint vertex is missing from all triangles, find the
+  // constraint edge it lies on and split the adjacent triangle.
+  _recoverMissingBoundaryVertices(points, interior, outerLoop.length, holes);
+
+  return interior;
 }
 
 /**
@@ -411,4 +420,173 @@ function _removeExteriorTriangles(points, triList, outerCount, constraintEdges, 
   }
 
   return output;
+}
+
+/**
+ * Recover boundary vertices that are missing from the triangulation.
+ *
+ * After Bowyer-Watson + constraint enforcement + exterior removal, some
+ * nearly-collinear boundary points may not appear in any triangle.  This
+ * happens when the circumcircle test creates degenerate slivers that get
+ * collapsed.
+ *
+ * Strategy: for each missing boundary vertex, locate the triangle
+ * containing it (or closest to it) and split that triangle to include the
+ * missing point.  Then enforce the constraint edges through the new
+ * point.
+ *
+ * @param {Array<{x:number,y:number}>} points
+ * @param {Array<[number,number,number]>} triList - Mutable triangle list
+ * @param {number} outerCount - Number of outer loop points
+ * @param {Array<Array<{x:number,y:number}>>} holes
+ */
+function _recoverMissingBoundaryVertices(points, triList, outerCount, holes) {
+  // Collect all boundary vertex indices
+  const boundaryIndices = [];
+  for (let i = 0; i < outerCount; i++) boundaryIndices.push(i);
+  let offset = outerCount;
+  for (const hole of holes) {
+    for (let i = 0; i < hole.length; i++) boundaryIndices.push(offset + i);
+    offset += hole.length;
+  }
+
+  // Find which boundary vertices are used in at least one triangle
+  const usedSet = new Set();
+  for (const tri of triList) {
+    if (!tri) continue;
+    usedSet.add(tri[0]);
+    usedSet.add(tri[1]);
+    usedSet.add(tri[2]);
+  }
+
+  // Collect missing boundary vertices
+  const missing = [];
+  for (const idx of boundaryIndices) {
+    if (!usedSet.has(idx)) missing.push(idx);
+  }
+  if (missing.length === 0) return;
+
+  // Insert each missing vertex into the triangulation by splitting
+  // the triangle it falls on (or the nearest triangle edge).
+  for (const midx of missing) {
+    const px = points[midx].x;
+    const py = points[midx].y;
+
+    // Find triangle containing point or closest triangle edge
+    let bestTri = -1;
+    let bestType = ''; // 'inside', 'edge', 'nearest'
+    let bestEdge = null; // [v0, v1] for edge insertion
+    let bestDist = Infinity;
+
+    for (let t = 0; t < triList.length; t++) {
+      const tri = triList[t];
+      if (!tri) continue;
+      const [a, b, c] = tri;
+      const pa = points[a], pb = points[b], pc = points[c];
+
+      // Barycentric coordinates
+      const v0x = pc.x - pa.x, v0y = pc.y - pa.y;
+      const v1x = pb.x - pa.x, v1y = pb.y - pa.y;
+      const v2x = px - pa.x, v2y = py - pa.y;
+      const dot00 = v0x * v0x + v0y * v0y;
+      const dot01 = v0x * v1x + v0y * v1y;
+      const dot02 = v0x * v2x + v0y * v2y;
+      const dot11 = v1x * v1x + v1y * v1y;
+      const dot12 = v1x * v2x + v1y * v2y;
+      const invDenom = dot00 * dot11 - dot01 * dot01;
+
+      if (Math.abs(invDenom) < 1e-20) {
+        // Degenerate triangle — check distance to edges
+        for (const [e0, e1] of [[a, b], [b, c], [c, a]]) {
+          const d = _pointToSegmentDist2D(points, midx, e0, e1);
+          if (d < bestDist) { bestDist = d; bestTri = t; bestType = 'edge'; bestEdge = [e0, e1]; }
+        }
+        continue;
+      }
+
+      const u = (dot11 * dot02 - dot01 * dot12) / invDenom;
+      const v = (dot00 * dot12 - dot01 * dot02) / invDenom;
+
+      if (u >= -EPSILON && v >= -EPSILON && u + v <= 1 + EPSILON) {
+        // Point is inside or on the boundary of this triangle
+        bestTri = t;
+        bestType = 'inside';
+        bestDist = 0;
+        bestEdge = null;
+
+        // Check if point is on an edge (one barycentric coord ≈ 0)
+        const w = 1 - u - v;
+        const edgeTol = 1e-6;
+        if (w < edgeTol) { bestType = 'edge'; bestEdge = [b, c]; }
+        else if (v < edgeTol) { bestType = 'edge'; bestEdge = [a, c]; }
+        else if (u < edgeTol) { bestType = 'edge'; bestEdge = [a, b]; }
+        break;
+      }
+
+      // Point is outside — compute distance to nearest edge
+      for (const [e0, e1] of [[a, b], [b, c], [c, a]]) {
+        const d = _pointToSegmentDist2D(points, midx, e0, e1);
+        if (d < bestDist) { bestDist = d; bestTri = t; bestType = 'edge'; bestEdge = [e0, e1]; }
+      }
+    }
+
+    if (bestTri === -1) continue;
+
+    if (bestType === 'inside') {
+      // Split triangle into 3 sub-triangles
+      const [a, b, c] = triList[bestTri];
+      triList[bestTri] = [a, b, midx];
+      triList.push([b, c, midx]);
+      triList.push([c, a, midx]);
+    } else if (bestType === 'edge' && bestEdge) {
+      // Split edge: find both triangles sharing this edge and split them
+      const [e0, e1] = bestEdge;
+      const edgeKey = e0 < e1 ? `${e0},${e1}` : `${e1},${e0}`;
+      const sharers = [];
+      for (let t = 0; t < triList.length; t++) {
+        const tri = triList[t];
+        if (!tri) continue;
+        const has0 = tri.indexOf(e0) !== -1;
+        const has1 = tri.indexOf(e1) !== -1;
+        if (has0 && has1) sharers.push(t);
+      }
+
+      for (const t of sharers) {
+        const tri = triList[t];
+        if (!tri) continue;
+        const opp = tri.find(v => v !== e0 && v !== e1);
+        if (opp === undefined) continue;
+        // Replace this triangle with two: (opp, e0, midx) and (opp, midx, e1)
+        triList[t] = [opp, e0, midx];
+        triList.push([opp, midx, e1]);
+      }
+    }
+
+    usedSet.add(midx);
+  }
+
+  // Compact: remove null entries
+  let write = 0;
+  for (let read = 0; read < triList.length; read++) {
+    if (triList[read]) {
+      triList[write++] = triList[read];
+    }
+  }
+  triList.length = write;
+}
+
+/**
+ * Distance from point at index `pidx` to segment (a, b) in 2D.
+ */
+function _pointToSegmentDist2D(points, pidx, a, b) {
+  const px = points[pidx].x, py = points[pidx].y;
+  const ax = points[a].x, ay = points[a].y;
+  const bx = points[b].x, by = points[b].y;
+  const dx = bx - ax, dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  if (len2 < 1e-20) return Math.sqrt((px - ax) ** 2 + (py - ay) ** 2);
+  let t = ((px - ax) * dx + (py - ay) * dy) / len2;
+  t = Math.max(0, Math.min(1, t));
+  const projX = ax + t * dx, projY = ay + t * dy;
+  return Math.sqrt((px - projX) ** 2 + (py - projY) ** 2);
 }
