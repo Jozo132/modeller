@@ -886,6 +886,10 @@ export class FaceTriangulator {
     const faceDiag = Math.sqrt(
       (bbMaxX - bbMinX) ** 2 + (bbMaxY - bbMinY) ** 2 + (bbMaxZ - bbMinZ) ** 2
     );
+    // Deviation tolerance relative to face diagonal.  The analytic path
+    // uses a tighter scale (0.005) than the generic NURBS path (0.01)
+    // because analytic surfaces have exact normals: tighter geometry
+    // control improves smooth-shading quality on cylinders/cones.
     const deviationScale = surface.type === 'torus'
       ? 0.00035
       : periodicSurface

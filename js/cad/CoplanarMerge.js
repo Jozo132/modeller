@@ -156,7 +156,14 @@ function _sameShared(fA, fB) {
   const sB = fB.shared;
   if (sA == null && sB == null) return true;
   if (sA == null || sB == null) return false;
-  return JSON.stringify(sA) === JSON.stringify(sB);
+  // Shallow equality check on own enumerable properties
+  const keysA = Object.keys(sA);
+  const keysB = Object.keys(sB);
+  if (keysA.length !== keysB.length) return false;
+  for (const k of keysA) {
+    if (sA[k] !== sB[k]) return false;
+  }
+  return true;
 }
 
 // ── Merge two faces ─────────────────────────────────────────────────
@@ -207,9 +214,10 @@ function _mergePair(faceA, faceB, sharedEdgeIds, tol) {
   const outerCoedges = chains[0];
   if (outerCoedges.length < 3) return null;
 
-  // Build the merged face
+  // Build the merged face — reuse surface reference instead of cloning
+  // since both faces lie on the same geometric plane.
   const newFace = new TopoFace(
-    faceA.surface ? faceA.surface.clone() : null,
+    faceA.surface,
     faceA.surfaceType,
     faceA.sameSense,
   );
