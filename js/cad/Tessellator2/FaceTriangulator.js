@@ -766,7 +766,7 @@ export class FaceTriangulator {
 
     const steiner2D = [];
     const gridRes = surface.type === 'torus'
-      ? Math.max(8, surfaceSegments)
+      ? Math.max(4, Math.ceil(surfaceSegments / 2))
       : periodicSurface
         ? Math.max(4, Math.ceil(surfaceSegments / 2))
         : Math.max(1, Math.ceil(surfaceSegments / 8));
@@ -890,10 +890,13 @@ export class FaceTriangulator {
     // uses a tighter scale (0.005) than the generic NURBS path (0.01)
     // because analytic surfaces have exact normals: tighter geometry
     // control improves smooth-shading quality on cylinders/cones.
+    // Torus and periodic surfaces use intermediate scales — their
+    // high curvature in two axes benefits from more refinement than
+    // cylinders but smooth-shading hides moderate deviation.
     const deviationScale = surface.type === 'torus'
-      ? 0.00035
+      ? 0.002
       : periodicSurface
-        ? 0.0006
+        ? 0.002
         : 0.005;
     const deviationTol = Math.max(faceDiag * deviationScale, 1e-8);
 
@@ -923,11 +926,11 @@ export class FaceTriangulator {
       return Math.sqrt(dx * dx + dy * dy + dz * dz);
     };
     const maxPasses = surface.type === 'torus'
-      ? Math.min(surfaceSegments, 5)
+      ? Math.min(surfaceSegments, 3)
       : surface.type === 'cylinder'
         ? Math.min(surfaceSegments, 1)
       : periodicSurface
-        ? Math.min(surfaceSegments, 4)
+        ? Math.min(surfaceSegments, 3)
         : Math.min(surfaceSegments, 4);
     for (let pass = 0; pass < maxPasses; pass++) {
       const edgeSplitSet = new Set();

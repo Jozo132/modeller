@@ -72,8 +72,13 @@ export function parseSTEPTopology(stepString) {
 
   // ------------------------------------------------------------------
   // 4. Build exact B-Rep topology (no tessellation)
+  //    Vertex and edge caches ensure shared topology objects across faces.
   // ------------------------------------------------------------------
   const topoShells = [];
+  /** @type {Map<number, TopoVertex>} STEP VERTEX_POINT id → TopoVertex */
+  const vertexCache = new Map();
+  /** @type {Map<number, TopoEdge>} STEP EDGE_CURVE id → TopoEdge */
+  const edgeCache = new Map();
 
   for (const shell of shells) {
     const faceRefs = Array.isArray(shell.args[1]) ? shell.args[1] : shell.args;
@@ -83,7 +88,7 @@ export function parseSTEPTopology(stepString) {
       const faceId = _refId(faceRef);
       if (faceId == null) continue;
 
-      const topoFace = _buildFaceTopology(resolved, faceId);
+      const topoFace = _buildFaceTopology(resolved, faceId, vertexCache, edgeCache);
       if (topoFace) topoFaces.push(topoFace);
     }
 
@@ -565,7 +570,7 @@ function _findShells(resolved) {
  * @param {number} faceId - Entity ID of the ADVANCED_FACE
  * @returns {TopoFace|null}
  */
-function _buildFaceTopology(resolved, faceId) {
+function _buildFaceTopology(resolved, faceId, vertexCache, edgeCache) {
   const face = resolved.get(faceId);
   if (!face || face.type !== 'ADVANCED_FACE') return null;
 
@@ -602,7 +607,7 @@ function _buildFaceTopology(resolved, faceId) {
     const orientedEdgeRefs = loop.args[1];
     if (!Array.isArray(orientedEdgeRefs)) continue;
 
-    const coedges = _buildLoopTopology(resolved, orientedEdgeRefs);
+    const coedges = _buildLoopTopology(resolved, orientedEdgeRefs, vertexCache, edgeCache);
     if (!coedges || coedges.length === 0) continue;
 
     if (!boundSense) {
@@ -635,13 +640,17 @@ function _buildFaceTopology(resolved, faceId) {
  * Build topology coedges from an EDGE_LOOP's ORIENTED_EDGE references.
  *
  * Creates TopoVertex → TopoEdge (with NurbsCurve) → TopoCoEdge chain.
+ * Vertices and edges are cached by their STEP entity IDs so that
+ * adjacent faces sharing a topological edge receive the same objects.
  * No curve sampling or tessellation is performed.
  *
  * @param {Map} resolved - Resolved entity map
  * @param {Array} orientedEdgeRefs - References to ORIENTED_EDGE entities
+ * @param {Map<number, TopoVertex>} vertexCache - Shared vertex cache
+ * @param {Map<number, TopoEdge>} edgeCache - Shared edge cache
  * @returns {TopoCoEdge[]}
  */
-function _buildLoopTopology(resolved, orientedEdgeRefs) {
+function _buildLoopTopology(resolved, orientedEdgeRefs, vertexCache, edgeCache) {
   const coedges = [];
 
   for (const oeRef of orientedEdgeRefs) {
@@ -654,6 +663,7 @@ function _buildLoopTopology(resolved, orientedEdgeRefs) {
     const edgeCurve = _getEntity(resolved, edgeCurveRef);
     if (!edgeCurve || edgeCurve.type !== 'EDGE_CURVE') continue;
 
+    const edgeCurveId = _refId(edgeCurveRef);
     const startVertexRef = edgeCurve.args[1];
     const endVertexRef = edgeCurve.args[2];
     const curveRef = edgeCurve.args[3];
@@ -665,13 +675,41 @@ function _buildLoopTopology(resolved, orientedEdgeRefs) {
 
     const forward = oeSense === edgeSense;
 
-    // Build NurbsCurve from the edge geometry (exact representation)
-    const nurbsCurve = _buildNurbsCurve(resolved, curveRef, startPt, endPt);
+    // Retrieve or create shared TopoVertex for each STEP VERTEX_POINT.
+    // The `forward` flag determines which STEP vertex becomes the coedge's
+    // start vs end, but the cache always maps the STEP entity ID to the
+    // same TopoVertex object regardless of coedge direction.
+    const startVtxId = _refId(startVertexRef);
+    const endVtxId = _refId(endVertexRef);
 
-    // Create topology elements
-    const sv = new TopoVertex(forward ? startPt : endPt);
-    const ev = new TopoVertex(forward ? endPt : startPt);
-    const topoEdge = new TopoEdge(sv, ev, nurbsCurve);
+    const getOrCreateVertex = (vtxId, point) => {
+      if (vtxId != null && vertexCache.has(vtxId)) {
+        return vertexCache.get(vtxId);
+      }
+      const v = new TopoVertex(point);
+      if (vtxId != null) vertexCache.set(vtxId, v);
+      return v;
+    };
+
+    // STEP EDGE_CURVE always lists (start, end) in its own orientation.
+    // Create/retrieve the vertices in STEP order, then let the TopoEdge
+    // reference them in the canonical (STEP) direction.
+    const stepSv = getOrCreateVertex(startVtxId, startPt);
+    const stepEv = getOrCreateVertex(endVtxId, endPt);
+
+    // Retrieve or create shared TopoEdge for each STEP EDGE_CURVE.
+    // The TopoEdge always stores vertices in STEP EDGE_CURVE order.
+    let topoEdge;
+    if (edgeCurveId != null && edgeCache.has(edgeCurveId)) {
+      topoEdge = edgeCache.get(edgeCurveId);
+    } else {
+      const nurbsCurve = _buildNurbsCurve(resolved, curveRef, startPt, endPt);
+      topoEdge = new TopoEdge(stepSv, stepEv, nurbsCurve);
+      if (edgeCurveId != null) edgeCache.set(edgeCurveId, topoEdge);
+    }
+
+    // The coedge's `sameSense` flag indicates whether it traverses the
+    // edge in the same direction as the TopoEdge (STEP order).
     const coedge = new TopoCoEdge(topoEdge, forward);
     coedges.push(coedge);
   }
