@@ -23,6 +23,7 @@ import { splitFace, classifyFragment } from './FaceSplitter.js';
 import { classifyPoint as containmentClassifyPoint } from './Containment.js';
 import { buildBody } from './ShellBuilder.js';
 import { tessellateBody } from './Tessellation.js';
+import { mergeCoplanarFaces } from './CoplanarMerge.js';
 import { DEFAULT_TOLERANCE, Tolerance } from './Tolerance.js';
 import { SurfaceType, TopoFace, TopoLoop, TopoCoEdge, TopoEdge, TopoVertex } from './BRepTopology.js';
 import { NurbsSurface } from './NurbsSurface.js';
@@ -128,6 +129,12 @@ function _exactBooleanOpInner(bodyA, bodyB, operation, tol) {
   // Step 7-8: Stitch fragments into a result body (includes sewing)
   const resultBody = buildBody(keptFragments, tol);
 
+  // Step 8b: Merge adjacent coplanar face fragments back together.
+  // Boolean face splitting can create many small planar quads from a
+  // single original face. This consolidation step reduces face count
+  // and downstream triangle output.
+  mergeCoplanarFaces(resultBody, tol);
+
   // Step 9: Validate final body — attach diagnostics
   const bodyValidation = validateFinalBody(resultBody, tol);
   diagnostics.finalBodyValidation = bodyValidation.toJSON();
@@ -194,6 +201,7 @@ function _exactPlanarBoolean(bodyA, bodyB, operation, tol) {
 
   const faces = stitchedPolys.map(poly => _polygonToTopoFace(poly, tol)).filter(Boolean);
   const resultBody = buildBody(faces, tol);
+  mergeCoplanarFaces(resultBody, tol);
   const mesh = tessellateBody(resultBody);
   return { body: resultBody, mesh };
 }

@@ -173,6 +173,12 @@ function _triangulateFace(face, edgeSampler, triangulator, surfSegs, edgeSegs) {
 
   // Choose triangulation strategy based on face type.
   if (face.surface && face.surfaceType !== 'plane') {
+    // Check if this NURBS surface is effectively planar (e.g. a degree 1×1
+    // patch with coplanar control points tagged as 'bspline').  Route flat
+    // surfaces through the cheaper planar CDT path.
+    if (_isEffectivelyPlanar(face.surface)) {
+      return triangulator.triangulatePlanar(outerPts, holePts, null, face.sameSense);
+    }
     // Generic NURBS surface: tessellate the UV domain.
     return triangulator.triangulateSurface(face, outerPts, surfSegs, face.sameSense);
   }
@@ -182,6 +188,49 @@ function _triangulateFace(face, edgeSampler, triangulator, surfSegs, edgeSegs) {
   // (FACE_OUTER_BOUND orientation was applied in _buildFaceTopology), so we
   // pass sameSense=true to avoid double-flipping the Newell boundary normal.
   return triangulator.triangulatePlanar(outerPts, holePts, null, true);
+}
+
+/**
+ * Check if a NURBS surface is effectively planar — all control points lie
+ * on a single plane within tolerance.  This catches flat surfaces that
+ * carry a non-'plane' surfaceType (e.g. chamfer bevels tagged 'bspline').
+ *
+ * @param {import('../NurbsSurface.js').NurbsSurface} surface
+ * @param {number} [tol=1e-6]
+ * @returns {boolean}
+ * @private
+ */
+function _isEffectivelyPlanar(surface, tol = 1e-6) {
+  if (!surface || !surface.controlPoints || surface.controlPoints.length < 3) return false;
+  const cp = surface.controlPoints;
+  const p0 = cp[0];
+
+  // Find first pair of non-collinear control points to define the plane.
+  let normal = null;
+  let planeD = 0;
+  for (let i = 1; i < cp.length && !normal; i++) {
+    for (let j = i + 1; j < cp.length && !normal; j++) {
+      const v1x = cp[i].x - p0.x, v1y = cp[i].y - p0.y, v1z = cp[i].z - p0.z;
+      const v2x = cp[j].x - p0.x, v2y = cp[j].y - p0.y, v2z = cp[j].z - p0.z;
+      const nx = v1y * v2z - v1z * v2y;
+      const ny = v1z * v2x - v1x * v2z;
+      const nz = v1x * v2y - v1y * v2x;
+      const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+      if (len > 1e-10) {
+        normal = { x: nx / len, y: ny / len, z: nz / len };
+        planeD = normal.x * p0.x + normal.y * p0.y + normal.z * p0.z;
+      }
+    }
+  }
+
+  if (!normal) return true; // All collinear — degenerate but "flat"
+
+  // Every control point must lie on the plane.
+  for (const p of cp) {
+    const dist = Math.abs(normal.x * p.x + normal.y * p.y + normal.z * p.z - planeD);
+    if (dist > tol) return false;
+  }
+  return true;
 }
 
 /**

@@ -769,7 +769,7 @@ export class FaceTriangulator {
       ? Math.max(8, surfaceSegments)
       : periodicSurface
         ? Math.max(4, Math.ceil(surfaceSegments / 2))
-        : Math.max(2, Math.ceil(surfaceSegments / 4));
+        : Math.max(1, Math.ceil(surfaceSegments / 8));
     const uStep = (uMax - uMin) / (gridRes + 1 || 1);
     const vStep = (vMax - vMin) / (gridRes + 1 || 1);
     for (let i = 1; i <= gridRes; i++) {
@@ -890,7 +890,7 @@ export class FaceTriangulator {
       ? 0.00035
       : periodicSurface
         ? 0.0006
-        : 0.002;
+        : 0.005;
     const deviationTol = Math.max(faceDiag * deviationScale, 1e-8);
 
     const midpointCache = new Map();
@@ -1267,7 +1267,7 @@ export class FaceTriangulator {
     const steiner2D = [];
     const steiner3D = [];
     if (uvValid) {
-      const gridRes = Math.max(2, Math.ceil(surfaceSegments / 4));
+      const gridRes = Math.max(1, Math.ceil(surfaceSegments / 8));
       const uStep = (uMax - uMin) / (gridRes + 1);
       const vStep = (vMax - vMin) / (gridRes + 1);
       for (let gi = 1; gi <= gridRes; gi++) {
@@ -1401,12 +1401,11 @@ export class FaceTriangulator {
     }
 
     // --- Step 3: Adaptive subdivision using UV interpolation ---
-    // When UV coordinates are valid, use full adaptive subdivision.
-    // For periodic surfaces, allow limited subdivision on interior edges
-    // only (boundary edges are protected above to prevent T-junctions).
-    // The surfaceMidpoint() handles seam-crossing via closestPointUV.
+    // When UV coordinates are valid, use adaptive subdivision with limited
+    // passes.  BRep faces carry infinite-detail geometry so the mesh is
+    // only for visualization; per-vertex normals handle smooth shading.
     const maxPasses = uvValid
-      ? Math.min(surfaceSegments, 4)
+      ? Math.min(Math.ceil(surfaceSegments / 4), 2)
       : 0;
 
     // Scale deviation tolerance relative to face bounding box diagonal.
@@ -1422,7 +1421,7 @@ export class FaceTriangulator {
     const faceDiag = Math.sqrt(
       (bbMaxX - bbMinX) ** 2 + (bbMaxY - bbMinY) ** 2 + (bbMaxZ - bbMinZ) ** 2
     );
-    const deviationTol = Math.max(faceDiag * 0.002, 1e-8);
+    const deviationTol = Math.max(faceDiag * 0.01, 1e-8);
 
     const midCache = new Map();
     function _ptKey(v) {
