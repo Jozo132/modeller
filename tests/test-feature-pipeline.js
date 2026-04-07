@@ -425,6 +425,56 @@ test('Box all top edges fillet produces valid mesh', () => {
   validateGeometry(geom, 'box-fillet-all-top');
 });
 
+test('Smaller fillet on larger fillet edge preserves curved surface', () => {
+  // A smaller fillet applied to an edge bordering a previous larger fillet's
+  // cylindrical face must preserve the curved surface (not skip it).
+  const part = makeBox(20, 10, 10);
+  // First fillet: large radius on front-top edge (z=10, y=0)
+  const keys1 = findTopEdge(part, (e) =>
+    Math.abs(e.start.y) < 1e-5 && Math.abs(e.end.y) < 1e-5
+  );
+  assert.ok(keys1.length > 0, 'Should find front top edge');
+  const fillet1 = part.fillet(keys1, 3);
+  const g1 = fillet1.result?.geometry || fillet1.result;
+  assert.ok(g1, 'First fillet should produce geometry');
+  validateGeometry(g1, 'fillet-on-fillet-step1');
+
+  // Second fillet: smaller radius on the edge between the right planar face
+  // and the cylindrical fillet face from the first operation.
+  const edges1 = g1.edges || [];
+  const filletRightEdge = edges1.filter((e) => {
+    const onRight = Math.abs(e.start.x - 20) < 0.1 && Math.abs(e.end.x - 20) < 0.1;
+    if (!onRight) return false;
+    // Edge connecting fillet trim points on the right face
+    const hasFilletPt = (v) =>
+      (Math.abs(v.y - 3) < 0.5 && Math.abs(v.z - 10) < 0.5) ||
+      (Math.abs(v.y) < 0.1 && Math.abs(v.z - 7) < 0.5);
+    return hasFilletPt(e.start) || hasFilletPt(e.end);
+  });
+  assert.ok(filletRightEdge.length > 0, 'Should find edge on right side near fillet');
+
+  // Pick just the edge between the cylinder and the right face
+  const sideEdge = filletRightEdge.find((e) => {
+    const hasTop = (Math.abs(e.start.y - 3) < 0.5 && Math.abs(e.start.z - 10) < 0.5) ||
+                   (Math.abs(e.end.y - 3) < 0.5 && Math.abs(e.end.z - 10) < 0.5);
+    const hasFront = (Math.abs(e.start.y) < 0.1 && Math.abs(e.start.z - 7) < 0.5) ||
+                     (Math.abs(e.end.y) < 0.1 && Math.abs(e.end.z - 7) < 0.5);
+    return hasTop && hasFront;
+  });
+  assert.ok(sideEdge, 'Should find the fillet-to-plane side edge');
+
+  const fillet2 = part.fillet([edgeKey(sideEdge.start, sideEdge.end)], 1);
+  const g2 = fillet2.result?.geometry || fillet2.result;
+  assert.ok(g2, 'Second fillet should produce geometry');
+  validateGeometry(g2, 'fillet-on-fillet-step2');
+
+  // Verify the output has a bspline face from the preserved cylinder
+  const topoBody = g2.topoBody;
+  assert.ok(topoBody, 'Should have TopoBody');
+  const bsplineFaces = topoBody.shells.flatMap((s) => s.faces).filter((f) => f.surfaceType === 'bspline');
+  assert.ok(bsplineFaces.length >= 2, `Expected ≥2 bspline faces (original + new fillet), got ${bsplineFaces.length}`);
+});
+
 console.log('\n=== Feature Pipeline — Chamfer + Chamfer (cc) ===\n');
 
 test('Box chamfer-then-chamfer on different edges produces valid mesh', () => {
