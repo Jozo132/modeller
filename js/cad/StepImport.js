@@ -1058,10 +1058,10 @@ function _buildNurbsCurve(resolved, curveRef, startPt, endPt) {
     }
 
     case 'B_SPLINE_CURVE_WITH_KNOTS':
-      return _buildBSplineCurveNurbs(resolved, geomCurve, null);
+      return _buildBSplineCurveNurbs(resolved, geomCurve, false);
 
     case 'RATIONAL_B_SPLINE_CURVE':
-      return _buildBSplineCurveNurbs(resolved, geomCurve, geomCurve.args[9]);
+      return _buildBSplineCurveNurbs(resolved, geomCurve, true);
 
     case 'ELLIPSE': {
       // Represent the ellipse arc as a polyline NurbsCurve by sampling
@@ -1079,12 +1079,40 @@ function _buildNurbsCurve(resolved, curveRef, startPt, endPt) {
 
 /**
  * Build a NurbsCurve from a B_SPLINE_CURVE_WITH_KNOTS or RATIONAL_B_SPLINE_CURVE.
+ *
+ * Non-complex (flat) entity args layout:
+ *   [0] name
+ *   [1] degree
+ *   [2] control_points
+ *   [3] form
+ *   [4] closed
+ *   [5] self_intersect
+ *   [6] knot_multiplicities
+ *   [7] knot_values
+ *   [8] knot_spec
+ *   [9] weights (only for rational)
+ *
+ * Complex (merged from B_SPLINE_CURVE + B_SPLINE_CURVE_WITH_KNOTS) args layout:
+ *   [0] degree            (no name — B_SPLINE_CURVE sub-entity has no name)
+ *   [1] control_points
+ *   [2] form
+ *   [3] closed
+ *   [4] self_intersect
+ *   [5] knot_multiplicities
+ *   [6] knot_values
+ *   [7] knot_spec
+ *   [8] weights (only for rational)
  */
-function _buildBSplineCurveNurbs(resolved, entity, weightsArg) {
-  const degree = Number(entity.args[1]) || 1;
-  const cpRefs = entity.args[2];
-  const knotMults = entity.args[6];
-  const knotVals = entity.args[7];
+function _buildBSplineCurveNurbs(resolved, entity, rational) {
+  // Detect offset: non-complex entities have a name string at args[0] (e.g. ''),
+  // while complex entities (merged from sub-entities) start with degree (a number).
+  const firstArg = entity.args[0];
+  const offset = (typeof firstArg === 'string') ? 1 : 0;
+
+  const degree = Number(entity.args[offset]) || 1;
+  const cpRefs = entity.args[offset + 1];
+  const knotMults = entity.args[offset + 5];
+  const knotVals = entity.args[offset + 6];
 
   if (!Array.isArray(cpRefs) || !Array.isArray(knotMults) || !Array.isArray(knotVals)) {
     return null;
@@ -1101,8 +1129,11 @@ function _buildBSplineCurveNurbs(resolved, entity, weightsArg) {
   const vals = knotVals.map(v => Number(v));
 
   let weights = null;
-  if (Array.isArray(weightsArg) && weightsArg.length === controlPoints.length) {
-    weights = weightsArg.map(w => Number(w) || 1);
+  if (rational) {
+    const weightsArg = entity.args[offset + 8];
+    if (Array.isArray(weightsArg) && weightsArg.length === controlPoints.length) {
+      weights = weightsArg.map(w => Number(w) || 1);
+    }
   }
 
   return NurbsCurve.fromStepBSpline(degree, controlPoints, mults, vals, weights);
@@ -1399,11 +1430,15 @@ function _sampleEllipse(resolved, entity, startPt, endPt, segments) {
  *                            (knot_mults...), (knots...), knot_spec)
  */
 function _sampleBSplineCurve(resolved, entity, startPt, endPt, segments) {
-  // args: [name, degree, cp_list, form, closed, self_intersect, mults, knots, knot_spec]
-  const degree = Number(entity.args[1]) || 1;
-  const cpRefs = entity.args[2];
-  const knotMults = entity.args[6];
-  const knotVals = entity.args[7];
+  // Detect offset: non-complex entities have a name string at args[0],
+  // complex entities (merged from sub-entities) start with degree.
+  const firstArg = entity.args[0];
+  const offset = (typeof firstArg === 'string') ? 1 : 0;
+
+  const degree = Number(entity.args[offset]) || 1;
+  const cpRefs = entity.args[offset + 1];
+  const knotMults = entity.args[offset + 5];
+  const knotVals = entity.args[offset + 6];
 
   if (!Array.isArray(cpRefs) || !Array.isArray(knotMults) || !Array.isArray(knotVals)) {
     return null;
@@ -1450,13 +1485,17 @@ function _sampleBSplineCurve(resolved, entity, startPt, endPt, segments) {
  *   [name, degree, cp_list, form, closed, self_int, mults, knots, knot_spec, weights]
  */
 function _sampleRationalBSplineCurve(resolved, entity, startPt, endPt, segments) {
-  // args: [name, degree, cp_list, form, closed, self_int, mults, knots, knot_spec, weights]
-  const degree = Number(entity.args[1]) || 1;
-  const cpRefs = entity.args[2];
-  const knotMults = entity.args[6];
-  const knotVals = entity.args[7];
-  // weights is the last array arg (index 9 for rational)
-  const weights = entity.args[9];
+  // Detect offset: non-complex entities have a name string at args[0],
+  // complex entities (merged from sub-entities) start with degree.
+  const firstArg = entity.args[0];
+  const offset = (typeof firstArg === 'string') ? 1 : 0;
+
+  const degree = Number(entity.args[offset]) || 1;
+  const cpRefs = entity.args[offset + 1];
+  const knotMults = entity.args[offset + 5];
+  const knotVals = entity.args[offset + 6];
+  // weights follows knot_spec
+  const weights = entity.args[offset + 8];
 
   if (!Array.isArray(cpRefs) || !Array.isArray(knotMults) || !Array.isArray(knotVals)) {
     return null;
