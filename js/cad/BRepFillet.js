@@ -944,25 +944,43 @@ function _buildExactFilletTopoBody(faces, edgeDataList, origTopoBody = null) {
     const face = faces[fi];
     if (!face || face.isCorner) continue;
 
-    // Skip fillet/isFillet faces ONLY if they're adjacent to the current
-    // fillet operation's edges (they'll be replaced by new fillet descs).
-    // Non-adjacent fillet faces from previous operations should be preserved.
-    if (face.isFillet && filletAdjacentIndices.has(fi)) continue;
-
     // Check if this face has an original BRep face that should be preserved
     const topoFaceId = face.topoFaceId;
     const origFace = topoFaceId !== undefined ? origTopoFaces.get(topoFaceId) : null;
     const isNonPlanar = origFace && origFace.surfaceType !== 'plane';
     const isNotAdjacent = topoFaceId !== undefined && !filletAdjacentFaceIds.has(topoFaceId);
 
-    if (origFace && isNonPlanar && isNotAdjacent) {
-      // Preserve the original BRep face with vertex substitutions
-      // Build vertex replacement map from the trimmed face vertices
-      const vertReplacements = _buildVertexReplacementMap(face, origFace);
-      const desc = _buildOriginalFaceDesc(origFace, vertReplacements);
-      if (desc) {
-        faceDescs.push(desc);
-        continue;
+    if (origFace && isNonPlanar) {
+      if (isNotAdjacent) {
+        // Non-adjacent non-planar: preserve original edge curves via replacement map
+        const vertReplacements = _buildVertexReplacementMap(face, origFace);
+        const desc = _buildOriginalFaceDesc(origFace, vertReplacements);
+        if (desc) {
+          faceDescs.push(desc);
+          continue;
+        }
+      } else {
+        // Adjacent non-planar (e.g., fillet face from a previous operation):
+        // The boundary has already been trimmed in the main loop.  Build the
+        // face descriptor directly from the trimmed vertices + original surface
+        // so the curved surface is preserved in the output TopoBody.
+        const trimmedVerts = face.vertices.map(v => ({ ...v }));
+        if (trimmedVerts.length >= 3) {
+          const edgeCurves = [];
+          for (let i = 0; i < trimmedVerts.length; i++) {
+            const next = trimmedVerts[(i + 1) % trimmedVerts.length];
+            edgeCurves.push(NurbsCurve.createLine(trimmedVerts[i], next));
+          }
+          faceDescs.push({
+            surface: origFace.surface,
+            surfaceType: origFace.surfaceType || SurfaceType.BSPLINE,
+            vertices: trimmedVerts,
+            edgeCurves,
+            sameSense: origFace.sameSense,
+            shared: origFace.shared ? { ...origFace.shared } : null,
+          });
+          continue;
+        }
       }
       // Fall through to planar if reconstruction fails
     }
