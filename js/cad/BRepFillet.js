@@ -1346,32 +1346,34 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
     const arcB = data.sharedTrimB || data.arcB;
     if (!arcA || !arcB || arcA.length < 2 || arcB.length < 2) continue;
 
-    // The fillet surface is a cylinder ruled between arcA and arcB
-    // Compute center line for the fillet
+    // The fillet surface is a cylinder ruled between arcA and arcB.
+    // createFilletSurface expects:
+    //   rail0[j] = face0 trim point at edge position j
+    //   rail1[j] = face1 trim point at edge position j
+    //   centers[j] = rolling-ball center at edge position j
+    // Each cross-section (rail0[j] → rail1[j]) is a circular arc.
     const edgeDir = _vec3Normalize(_vec3Sub(data.edgeB, data.edgeA));
-    const edgeLen = _vec3Len(_vec3Sub(data.edgeB, data.edgeA));
 
-    // Compute rail curves and center points for NurbsSurface.createFilletSurface
-    const nPts = Math.min(arcA.length, arcB.length);
-    const rail0 = [];
-    const rail1 = [];
-    const centers = [];
+    const { offsDir0, offsDir1 } = _computeOffsetDirs(
+      faces[data.fi0], faces[data.fi1], data.edgeA, data.edgeB
+    );
+    const alpha = Math.acos(Math.max(-1, Math.min(1, _vec3Dot(offsDir0, offsDir1))));
+    const centerDist = alpha > 1e-6 ? radius / Math.sin(alpha / 2) : radius;
+    const bisector = _vec3Normalize(_vec3Add(offsDir0, offsDir1));
 
-    for (let i = 0; i < nPts; i++) {
-      rail0.push({ ...arcA[i] });
-      rail1.push({ ...arcB[i] });
-      // Center for each cross-section = midpoint of edge projected at this arc param
-      const t = nPts > 1 ? i / (nPts - 1) : 0;
-      const edgePt = _vec3Lerp(data.edgeA, data.edgeB, t);
-      // The rolling-ball center is at the edge point offset along the bisector
-      const { offsDir0, offsDir1 } = _computeOffsetDirs(
-        faces[data.fi0], faces[data.fi1], data.edgeA, data.edgeB
-      );
-      const alpha = Math.acos(Math.max(-1, Math.min(1, _vec3Dot(offsDir0, offsDir1))));
-      const centerDist = alpha > 1e-6 ? radius / Math.sin(alpha / 2) : radius;
-      const bisector = _vec3Normalize(_vec3Add(offsDir0, offsDir1));
-      centers.push(_vec3Add(edgePt, _vec3Scale(bisector, centerDist)));
-    }
+    // Two edge positions: edgeA (start) and edgeB (end)
+    const rail0 = [
+      { ...arcA[0] },                      // face0 trim at edgeA
+      { ...arcB[0] },                      // face0 trim at edgeB
+    ];
+    const rail1 = [
+      { ...arcA[arcA.length - 1] },        // face1 trim at edgeA
+      { ...arcB[arcB.length - 1] },        // face1 trim at edgeB
+    ];
+    const centers = [
+      _vec3Add(data.edgeA, _vec3Scale(bisector, centerDist)),  // center at edgeA
+      _vec3Add(data.edgeB, _vec3Scale(bisector, centerDist)),  // center at edgeB
+    ];
 
     try {
       const surface = NurbsSurface.createFilletSurface(rail0, rail1, centers, radius, edgeDir);
