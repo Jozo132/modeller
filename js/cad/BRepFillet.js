@@ -239,7 +239,10 @@ function _samplePolyline(points, samples) {
   for (let i = 0; i <= samples; i++) {
     const target = (i / samples) * total;
     let seg = 1;
-    while (seg < lengths.length && lengths[seg] < target) seg++;
+    while (seg < lengths.length && lengths[seg] < target) {
+      seg++;
+      if (seg > 10_000_000) throw new Error('_resamplePolylineByArcLength: exceeded 10M iterations');
+    }
     const lo = Math.max(0, seg - 1);
     const hi = Math.min(points.length - 1, seg);
     const segLen = lengths[hi] - lengths[lo];
@@ -485,8 +488,9 @@ function _createExactCylinderPlaneTrimCurve(
 
       let angle = Math.atan2(v, u);
       if (prevAngle != null) {
-        while (angle - prevAngle > Math.PI) angle -= 2 * Math.PI;
-        while (angle - prevAngle < -Math.PI) angle += 2 * Math.PI;
+        let _angleGuard = 0;
+        while (angle - prevAngle > Math.PI) { angle -= 2 * Math.PI; if (++_angleGuard > 10_000_000) throw new Error('_precomputeFilletEdge angle wrap: exceeded 10M iterations'); }
+        while (angle - prevAngle < -Math.PI) { angle += 2 * Math.PI; if (++_angleGuard > 10_000_000) throw new Error('_precomputeFilletEdge angle wrap: exceeded 10M iterations'); }
         const diff = angle - prevAngle;
         if (Math.abs(diff) > 1e-8) {
           const sign = diff > 0 ? 1 : -1;

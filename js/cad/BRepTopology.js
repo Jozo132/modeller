@@ -798,10 +798,17 @@ export function buildTopoBody(faceDescs, tol = DEFAULT_TOLERANCE) {
     if (c1 === c2) return true;
     if (c1.degree !== c2.degree) return false;
     try {
-      const m1 = c1.evaluate(0.5);
-      const m2 = c2.evaluate(0.5);
+      // Evaluate at the normalized midpoint of each curve's knot domain.
+      // Polyline knots may span [0, N-1] rather than [0, 1], so using a
+      // fixed parameter like 0.5 would compare different geometric positions
+      // for curves with different knot ranges.
+      const k1s = c1.knots, k2s = c2.knots;
+      const t1 = (k1s[0] + k1s[k1s.length - 1]) * 0.5;
+      const t2 = (k2s[0] + k2s[k2s.length - 1]) * 0.5;
+      const m1 = c1.evaluate(t1);
+      const m2 = c2.evaluate(t2);
       const d = Math.sqrt((m1.x - m2.x) ** 2 + (m1.y - m2.y) ** 2 + (m1.z - m2.z) ** 2);
-      return d < 1e-6;
+      return d < 1e-4;
     } catch { return true; }
   };
 
