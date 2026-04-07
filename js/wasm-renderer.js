@@ -289,6 +289,7 @@ export class WasmRenderer {
     this._problemTriangles = null; // Diagnostic triangles for inverted/problem faces
     this._problemTriangleCount = 0;
     this._diagnosticBackfaceHatchEnabled = false;
+    this._normalColorShadingEnabled = false;
     this._invisibleEdgesVisible = false;
     this._meshTriangleOverlayMode = 'off';
     this._meshEdges = null;      // Float32Array: [x,y,z, x,y,z, ...] line pairs
@@ -2490,6 +2491,10 @@ export class WasmRenderer {
     this._diagnosticBackfaceHatchEnabled = !!enabled;
   }
 
+  setNormalColorShadingEnabled(enabled) {
+    this._normalColorShadingEnabled = !!enabled;
+  }
+
   setInvisibleEdgesVisible(enabled) {
     this._invisibleEdgesVisible = !!enabled;
   }
@@ -2889,6 +2894,7 @@ export class WasmRenderer {
         mvp,
         showInvisibleEdges: this._invisibleEdgesVisible,
         meshTriangleOverlayMode: this._meshTriangleOverlayMode,
+        normalColorShading: this._normalColorShadingEnabled,
       });
 
       if (this._diagnosticBackfaceHatchEnabled) {

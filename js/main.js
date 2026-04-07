@@ -56,6 +56,7 @@ const INVISIBLE_EDGES_VISIBLE_KEY = 'cad-modeller-invisible-edges-visible';
 const MESH_TRIANGLE_OVERLAY_STORAGE_KEY = 'cad-modeller-mesh-triangle-overlay';
 const MESH_TRIANGLE_OVERLAY_MODE_OFF = 'off';
 const MESH_TRIANGLE_OVERLAY_MODE_OUTLINE = 'outline';
+const NORMAL_COLOR_SHADING_KEY = 'cad-modeller-normal-color-shading';
 const RECORDING_BAR_VISIBLE_KEY = 'cad-modeller-recording-bar-visible';
 const COMMAND_BAR_VISIBLE_KEY = 'cad-modeller-command-bar-visible';
 
@@ -85,6 +86,7 @@ class App {
     this._diagnosticBackfaceHatchAuto = false;
     this._invisibleEdgesVisible = this._loadInvisibleEdgesVisible();
     this._meshTriangleOverlayMode = this._loadMeshTriangleOverlayMode();
+    this._normalColorShadingEnabled = this._loadNormalColorShading();
     this._scenes = []; // named camera presets for repeatable renders
     this._sceneManagerOpen = false;
     this._recordingBarVisible = localStorage.getItem(RECORDING_BAR_VISIBLE_KEY) === 'true';
@@ -101,6 +103,7 @@ class App {
     this._renderer3d.setDiagnosticBackfaceHatchEnabled(this._effectiveDiagnosticBackfaceHatchEnabled());
     this._renderer3d.setInvisibleEdgesVisible(this._invisibleEdgesVisible);
     this._renderer3d.setMeshTriangleOverlayMode(this._meshTriangleOverlayMode);
+    this._renderer3d.setNormalColorShadingEnabled(this._normalColorShadingEnabled);
     // Allow left-click orbit in 3D part mode when no special mode is active
     this._renderer3d.shouldAllowLeftClickOrbit = () => {
       return this._workspaceMode === 'part'
@@ -1975,6 +1978,15 @@ class App {
     diagnosticHatchToggle?.addEventListener('change', (e) => {
       e.stopPropagation();
       this._toggleDiagnosticBackfaceHatchPref(!!e.currentTarget.checked);
+    });
+
+    const normalColorLabel = document.getElementById('menu-toggle-normal-color-label');
+    const normalColorToggle = document.getElementById('menu-toggle-normal-color');
+    normalColorLabel?.addEventListener('click', (e) => e.stopPropagation());
+    normalColorToggle?.addEventListener('click', (e) => e.stopPropagation());
+    normalColorToggle?.addEventListener('change', (e) => {
+      e.stopPropagation();
+      this._toggleNormalColorShading(!!e.currentTarget.checked);
     });
 
     const recordingBarLabel = document.getElementById('menu-toggle-recording-bar-label');
@@ -5426,6 +5438,43 @@ class App {
     this._diagnosticBackfaceHatchMode = nextEnabled ? DIAGNOSTIC_HATCH_MODE_ON : DIAGNOSTIC_HATCH_MODE_OFF;
     this._saveDiagnosticBackfaceHatchMode();
     this._applyDiagnosticBackfaceHatchState();
+    this._scheduleRender();
+  }
+
+  _loadNormalColorShading() {
+    try {
+      return localStorage.getItem(NORMAL_COLOR_SHADING_KEY) === 'true';
+    } catch {
+      return false;
+    }
+  }
+
+  _saveNormalColorShading() {
+    try {
+      localStorage.setItem(NORMAL_COLOR_SHADING_KEY, this._normalColorShadingEnabled ? 'true' : 'false');
+    } catch {}
+  }
+
+  _applyNormalColorShadingState() {
+    if (this._renderer3d) {
+      this._renderer3d.setNormalColorShadingEnabled(this._normalColorShadingEnabled);
+    }
+    this._syncNormalColorShadingUI();
+  }
+
+  _syncNormalColorShadingUI() {
+    const toggle = document.getElementById('menu-toggle-normal-color');
+    const label = document.getElementById('menu-toggle-normal-color-label');
+    if (toggle) toggle.checked = !!this._normalColorShadingEnabled;
+    if (label) label.classList.toggle('active', !!this._normalColorShadingEnabled);
+  }
+
+  _toggleNormalColorShading(forceValue = null) {
+    this._normalColorShadingEnabled = typeof forceValue === 'boolean'
+      ? forceValue
+      : !this._normalColorShadingEnabled;
+    this._saveNormalColorShading();
+    this._applyNormalColorShadingState();
     this._scheduleRender();
   }
 

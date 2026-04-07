@@ -71,6 +71,35 @@ void main() {
   fragColor = vec4(color * shade, 0.98);
 }`;
 
+// Program 3: normal-color debug shader — maps abs(normal) XYZ to soft RGB
+const NORMAL_COLOR_VS = `#version 300 es
+layout(location = 0) in vec3 aPosition;
+layout(location = 1) in vec3 aNormal;
+uniform mat4 uMVP;
+out vec3 vNormal;
+void main() {
+  vNormal = aNormal;
+  gl_Position = uMVP * vec4(aPosition, 1.0);
+}`;
+
+const NORMAL_COLOR_FS = `#version 300 es
+precision mediump float;
+uniform vec3 uViewDir;
+in vec3 vNormal;
+out vec4 fragColor;
+void main() {
+  vec3 n = normalize(vNormal);
+  vec3 absN = abs(n);
+  // Soft pastel mapping: blend toward grey to keep colors muted
+  vec3 base = absN * 0.45 + 0.35;
+  // Light directional shading to preserve depth cues
+  vec3 lightDir = normalize(vec3(0.3, 0.5, 0.8));
+  float ambient = 0.55;
+  float diffuse = max(dot(n, lightDir), 0.0) * 0.35;
+  float camLight = max(dot(n, uViewDir), 0.0) * 0.1;
+  fragColor = vec4(base * (ambient + diffuse + camLight), 1.0);
+}`;
+
 // Program 1: line/point shader, no lighting
 const LINE_VS = `#version 300 es
 layout(location = 0) in vec3 aPosition;
@@ -141,6 +170,7 @@ export class WebGLExecutor {
       createProgram(gl, SOLID_VS, SOLID_FS),
       createProgram(gl, LINE_VS, LINE_FS),
       createProgram(gl, DIAG_SOLID_VS, DIAG_SOLID_FS),
+      createProgram(gl, NORMAL_COLOR_VS, NORMAL_COLOR_FS),
     ];
 
     // Cache uniform locations for each program
@@ -233,6 +263,39 @@ export class WebGLExecutor {
     if (!previousPolygonOffset) gl.disable(gl.POLYGON_OFFSET_FILL);
     if (!previousCull) gl.disable(gl.CULL_FACE);
     if (!previousBlend) gl.disable(gl.BLEND);
+  }
+
+  drawTriangleBufferNormalColor(data, vertexCount, options) {
+    const gl = this.gl;
+    const prevBlend = gl.isEnabled(gl.BLEND);
+    const prevCull = gl.isEnabled(gl.CULL_FACE);
+    const prevPolyOff = gl.isEnabled(gl.POLYGON_OFFSET_FILL);
+
+    gl.viewport(0, 0, this.width, this.height);
+    gl.disable(gl.BLEND);
+    gl.enable(gl.CULL_FACE);
+    gl.cullFace(gl.BACK);
+
+    if (options.polygonOffset) {
+      gl.enable(gl.POLYGON_OFFSET_FILL);
+      gl.polygonOffset(options.polygonOffset[0], options.polygonOffset[1]);
+    }
+
+    gl.useProgram(this.programs[3]);
+    gl.uniformMatrix4fv(this.uniforms[3].uMVP, false, options.mvp);
+    if (this.uniforms[3].uViewDir) {
+      gl.uniform3fv(this.uniforms[3].uViewDir, this._viewDir);
+    }
+
+    gl.bindVertexArray(this.vaoSolid);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo);
+    gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
+    gl.drawArrays(gl.TRIANGLES, 0, vertexCount);
+    gl.bindVertexArray(null);
+
+    if (!prevPolyOff) gl.disable(gl.POLYGON_OFFSET_FILL);
+    if (!prevCull) gl.disable(gl.CULL_FACE);
+    if (!prevBlend) gl.disable(gl.BLEND);
   }
 
   drawLineBuffer(data, vertexCount, options) {
