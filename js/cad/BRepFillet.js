@@ -488,9 +488,10 @@ function _createExactCylinderPlaneTrimCurve(
 
       let angle = Math.atan2(v, u);
       if (prevAngle != null) {
-        let _angleGuard = 0;
-        while (angle - prevAngle > Math.PI) { angle -= 2 * Math.PI; if (++_angleGuard > 10_000_000) throw new Error('_precomputeFilletEdge angle wrap: exceeded 10M iterations'); }
-        while (angle - prevAngle < -Math.PI) { angle += 2 * Math.PI; if (++_angleGuard > 10_000_000) throw new Error('_precomputeFilletEdge angle wrap: exceeded 10M iterations'); }
+        let _angleGuard1 = 0;
+        while (angle - prevAngle > Math.PI) { angle -= 2 * Math.PI; if (++_angleGuard1 > 10_000_000) throw new Error('_precomputeFilletEdge angle wrap+: exceeded 10M iterations'); }
+        let _angleGuard2 = 0;
+        while (angle - prevAngle < -Math.PI) { angle += 2 * Math.PI; if (++_angleGuard2 > 10_000_000) throw new Error('_precomputeFilletEdge angle wrap-: exceeded 10M iterations'); }
         const diff = angle - prevAngle;
         if (Math.abs(diff) > 1e-8) {
           const sign = diff > 0 ? 1 : -1;

@@ -808,6 +808,9 @@ export function buildTopoBody(faceDescs, tol = DEFAULT_TOLERANCE) {
       const m1 = c1.evaluate(t1);
       const m2 = c2.evaluate(t2);
       const d = Math.sqrt((m1.x - m2.x) ** 2 + (m1.y - m2.y) ** 2 + (m1.z - m2.z) ** 2);
+      // Tolerance relaxed from 1e-6 to 1e-4 to accommodate numerical
+      // precision differences between polyline curves (many control points)
+      // and simple line curves whose knot domains may differ.
       return d < 1e-4;
     } catch { return true; }
   };
