@@ -911,6 +911,194 @@ function _buildOriginalFaceDesc(topoFace, vertexReplacements = null) {
 }
 
 // -----------------------------------------------------------------------
+// Cross-face arc curve coordination
+// -----------------------------------------------------------------------
+
+/**
+ * Replace straight-line edge curves with arc polyline curves on face
+ * descriptors whose edge endpoints match a fillet arc.
+ *
+ * Both the fillet face and its adjacent planar face must carry the same
+ * arc curve so that `buildTopoBody` deduplicates them into a single
+ * shared `TopoEdge`.  The `EdgeSampler` then produces arc-faithful
+ * boundary samples on both faces, preventing T-junctions and the
+ * "balloon" boundary artefact caused by flat straight-line edges.
+ *
+ * @param {Array<Object>} faceDescs - Face descriptors (mutated in place)
+ * @param {Array<Object>} edgeDataList - Precomputed fillet edge data
+ * @param {Object} [origTopoBody] - Original TopoBody for preserving arcs from previous fillets
+ */
+function _replaceEdgesWithArcCurves(faceDescs, edgeDataList, origTopoBody) {
+  // Build lookup: unordered vertex-key pair → canonical (forward) arc curve.
+  // Always provide the same forward curve for both directions, since
+  // buildTopoBody's getOrCreateEdge deduplicates edges by comparing curve
+  // midpoints — using a single canonical direction ensures both the fillet
+  // face and the adjacent planar face pass the check.
+  // (Reversed curves evaluate differently at parameter 0.5 for polylines
+  // whose knot range isn't [0,1], causing false negatives.)
+  const arcCurveLookup = new Map();
+
+  // Add arc curves from the current fillet operation
+  for (const data of edgeDataList) {
+    const arcA = data.sharedTrimA || data.arcA;
+    const arcB = data.sharedTrimB || data.arcB;
+    if (arcA && arcA.length >= 2) {
+      const curveA = data.sharedTrimA
+        ? (data._exactSharedTrimCurveA || data._exactArcCurveA)
+        : data._exactArcCurveA;
+      if (curveA) {
+        const k1 = _edgeVKey(arcA[0]);
+        const k2 = _edgeVKey(arcA[arcA.length - 1]);
+        if (k1 !== k2) {
+          const unordered = k1 < k2 ? `${k1}|${k2}` : `${k2}|${k1}`;
+          arcCurveLookup.set(unordered, curveA);
+        }
+      }
+    }
+    if (arcB && arcB.length >= 2) {
+      const curveB = data.sharedTrimB
+        ? (data._exactSharedTrimCurveB || data._exactArcCurveB)
+        : data._exactArcCurveB;
+      if (curveB) {
+        const k1 = _edgeVKey(arcB[0]);
+        const k2 = _edgeVKey(arcB[arcB.length - 1]);
+        if (k1 !== k2) {
+          const unordered = k1 < k2 ? `${k1}|${k2}` : `${k2}|${k1}`;
+          arcCurveLookup.set(unordered, curveB);
+        }
+      }
+    }
+  }
+
+  // Also add non-trivial edge curves from the original TopoBody (preserves
+  // arc curves from previous fillet operations).
+  if (origTopoBody && origTopoBody.shells) {
+    for (const shell of origTopoBody.shells) {
+      for (const topoFace of (shell.faces || [])) {
+        if (!topoFace.outerLoop) continue;
+        for (const coedge of topoFace.outerLoop.coedges) {
+          const e = coedge.edge;
+          if (!e.curve || e.curve.degree !== 1) continue;
+          const cps = e.curve.controlPoints;
+          if (!cps || cps.length <= 2) continue; // skip simple lines
+          // This is a polyline arc curve from a previous fillet
+          const sk = _edgeVKey(e.startVertex.point);
+          const ek = _edgeVKey(e.endVertex.point);
+          if (sk === ek) continue;
+          const unordered = sk < ek ? `${sk}|${ek}` : `${ek}|${sk}`;
+          if (!arcCurveLookup.has(unordered)) {
+            arcCurveLookup.set(unordered, e.curve);
+          }
+        }
+      }
+    }
+  }
+
+  if (arcCurveLookup.size === 0) return;
+
+  // Replace matching straight-line edge curves with arc curves.
+  // Two modes of operation:
+  //
+  // 1. **Single-edge replacement**: A straight-line edge (2 control points)
+  //    whose endpoints match an arc lookup entry is replaced directly.
+  //
+  // 2. **Sequence consolidation**: Multiple consecutive straight-line edges
+  //    whose combined span (first vertex → last vertex) matches an arc lookup
+  //    entry are collapsed into a single arc curve edge, removing intermediate
+  //    vertices.  This handles faces that inherited intermediate arc sample
+  //    points from a previous fillet operation.
+  for (const desc of faceDescs) {
+    if (!desc.vertices || !desc.edgeCurves) continue;
+
+    // --- Pass 1: single-edge replacement ---
+    const n = desc.vertices.length;
+    for (let i = 0; i < n; i++) {
+      const curve = desc.edgeCurves[i];
+      if (!curve || curve.degree !== 1 || !curve.controlPoints || curve.controlPoints.length !== 2) continue;
+      const v1 = desc.vertices[i];
+      const v2 = desc.vertices[(i + 1) % n];
+      const k1 = _edgeVKey(v1);
+      const k2 = _edgeVKey(v2);
+      const unordered = k1 < k2 ? `${k1}|${k2}` : `${k2}|${k1}`;
+      const arcCurve = arcCurveLookup.get(unordered);
+      if (arcCurve) {
+        const arcStart = _edgeVKey(arcCurve.controlPoints[0]);
+        desc.edgeCurves[i] = arcStart === k1 ? arcCurve.clone() : arcCurve.reversed();
+      }
+    }
+
+    // --- Pass 2: sequence consolidation ---
+    // Look for runs of consecutive straight-line edges whose overall span
+    // matches an arc endpoint pair.  Only consider sequences of length ≥ 2
+    // to avoid duplicating Pass 1 work.
+    if (desc.vertices.length <= 3) continue; // can't remove vertices from a triangle
+    let changed = true;
+    let _consolidateGuard = 0;
+    while (changed) {
+      if (++_consolidateGuard > 10_000_000) throw new Error('_replaceEdgesWithArcCurves: consolidation exceeded 10M iterations');
+      changed = false;
+      const m = desc.vertices.length;
+      for (let start = 0; start < m; start++) {
+        // Try longer runs first (greedy)
+        for (let runLen = Math.min(m - 3, m - 1); runLen >= 2; runLen--) {
+          // Check that every edge in [start, start+runLen-1] is a straight line
+          let allLines = true;
+          for (let j = 0; j < runLen; j++) {
+            const idx = (start + j) % m;
+            const c = desc.edgeCurves[idx];
+            if (!c || c.degree !== 1 || !c.controlPoints || c.controlPoints.length !== 2) {
+              allLines = false;
+              break;
+            }
+          }
+          if (!allLines) continue;
+
+          const firstVert = desc.vertices[start];
+          const lastVert = desc.vertices[(start + runLen) % m];
+          const fk = _edgeVKey(firstVert);
+          const lk = _edgeVKey(lastVert);
+          if (fk === lk) continue;
+          const unordered = fk < lk ? `${fk}|${lk}` : `${lk}|${fk}`;
+          const arcCurve = arcCurveLookup.get(unordered);
+          if (!arcCurve) continue;
+
+          // Found a match — consolidate: remove intermediate vertices and edges
+          const arcStart = _edgeVKey(arcCurve.controlPoints[0]);
+          const replacement = arcStart === fk ? arcCurve.clone() : arcCurve.reversed();
+
+          // Build new arrays without the intermediate vertices
+          const newVerts = [];
+          const newCurves = [];
+          for (let j = 0; j < m; j++) {
+            const isIntermediate = (j > start && j < start + runLen) ||
+              (start + runLen > m && (j > start || j < (start + runLen) % m));
+            if (isIntermediate) continue;
+            newVerts.push(desc.vertices[j]);
+            if (j === start) {
+              newCurves.push(replacement);
+            } else {
+              const isSkippedCurve = (j > start && j <= start + runLen - 1) ||
+                (start + runLen > m && (j > start || j <= (start + runLen - 1) % m));
+              if (!isSkippedCurve) {
+                newCurves.push(desc.edgeCurves[j]);
+              }
+            }
+          }
+
+          if (newVerts.length >= 3) {
+            desc.vertices = newVerts;
+            desc.edgeCurves = newCurves;
+            changed = true;
+            break; // restart scanning with updated arrays
+          }
+        }
+        if (changed) break;
+      }
+    }
+  }
+}
+
+// -----------------------------------------------------------------------
 // Main entry point
 // -----------------------------------------------------------------------
 
@@ -971,10 +1159,35 @@ function _buildExactFilletTopoBody(faces, edgeDataList, origTopoBody = null) {
         // so the curved surface is preserved in the output TopoBody.
         const trimmedVerts = face.vertices.map(v => ({ ...v }));
         if (trimmedVerts.length >= 3) {
+          // Build lookup from vertex-pair key → original edge curve so we
+          // preserve arc polyline curves from previous fillet operations.
+          // Without this, all edges become straight lines and the EdgeSampler
+          // produces only 2-point samples, creating T-junctions with adjacent
+          // faces that still carry the original arc boundary vertices.
+          const origEdgeCurveLookup = new Map();
+          if (origFace.outerLoop) {
+            for (const coedge of origFace.outerLoop.coedges) {
+              const e = coedge.edge;
+              if (e.curve) {
+                const sk = _edgeVKey(e.startVertex.point);
+                const ek = _edgeVKey(e.endVertex.point);
+                origEdgeCurveLookup.set(`${sk}|${ek}`, { curve: e.curve, forward: true });
+                origEdgeCurveLookup.set(`${ek}|${sk}`, { curve: e.curve, forward: false });
+              }
+            }
+          }
+
           const edgeCurves = [];
           for (let i = 0; i < trimmedVerts.length; i++) {
             const next = trimmedVerts[(i + 1) % trimmedVerts.length];
-            edgeCurves.push(NurbsCurve.createLine(trimmedVerts[i], next));
+            const k1 = _edgeVKey(trimmedVerts[i]);
+            const k2 = _edgeVKey(next);
+            const origEntry = origEdgeCurveLookup.get(`${k1}|${k2}`);
+            if (origEntry && origEntry.curve) {
+              edgeCurves.push(origEntry.forward ? origEntry.curve.clone() : origEntry.curve.reversed());
+            } else {
+              edgeCurves.push(NurbsCurve.createLine(trimmedVerts[i], next));
+            }
           }
           faceDescs.push({
             surface: origFace.surface,
@@ -1006,6 +1219,14 @@ function _buildExactFilletTopoBody(faces, edgeDataList, origTopoBody = null) {
   faceDescs.push(...cornerDescs);
 
   if (faceDescs.length === 0) return null;
+
+  // Replace straight-line edge curves with arc curves on edges that match
+  // fillet arc endpoints.  This must happen AFTER all face descriptors are
+  // assembled so both the fillet face and its adjacent planar/non-planar
+  // neighbours receive the same curve, ensuring buildTopoBody's edge
+  // deduplication succeeds.
+  _replaceEdgesWithArcCurves(faceDescs, edgeDataList, origTopoBody);
+
   return buildTopoBody(faceDescs);
 }
 
