@@ -972,24 +972,61 @@ function _replaceEdgesWithArcCurves(faceDescs, edgeDataList, faces, origTopoFace
       }
     }
   }
+
+  // Also add non-trivial edge curves from the original TopoBody.  These
+  // preserve arc curves from previous fillet operations so that planar faces
+  // referencing inherited arc-sample intermediates can be consolidated back
+  // into a single arc-curve edge matching the preserved non-planar face's edge.
+  if (origTopoFaces && origTopoFaces.size > 0) {
+    // Gather edge curves from all origTopoFaces
+    const seen = new Set();
+    for (const [, topoFace] of origTopoFaces) {
+      if (!topoFace.outerLoop) continue;
+      for (const coedge of topoFace.outerLoop.coedges) {
+        const e = coedge.edge;
+        if (seen.has(e.id)) continue;
+        seen.add(e.id);
+        if (!e.curve || e.curve.degree !== 1) continue;
+        const cps = e.curve.controlPoints;
+        if (!cps || cps.length <= 2) continue;
+        const sk = _edgeVKey(e.startVertex.point);
+        const ek = _edgeVKey(e.endVertex.point);
+        if (sk === ek) continue;
+        const unordered = sk < ek ? `${sk}|${ek}` : `${ek}|${sk}`;
+        if (!arcCurveLookup.has(unordered)) {
+          arcCurveLookup.set(unordered, e.curve);
+        }
+      }
+    }
+  }
+
   if (arcCurveLookup.size === 0) return;
 
-  // Build a set of vertex-pair keys referenced by non-planar face descriptors.
-  // Arc curves shared between two non-planar faces (e.g. a new fillet face
-  // and a previous fillet's trimmed face) would cause CDT T-junctions because
-  // both surfaces produce incompatible internal triangulations.  These arcs
-  // must be excluded from replacement.
+  // Build a count of how many non-planar face descriptors reference each arc
+  // vertex-pair key.  Arcs shared between TWO non-planar faces (e.g. a new
+  // fillet face and a previous fillet's trimmed face) would cause CDT
+  // T-junctions because both surfaces produce incompatible internal
+  // triangulations.  An arc referenced by exactly ONE non-planar face (the
+  // fillet face itself) is fine — the other face sharing the edge is planar.
   const nonPlanarEdgeKeys = new Set();
-  for (const desc of faceDescs) {
-    if (!desc.vertices || !desc.edgeCurves) continue;
-    const isNonPlanar = desc.surfaceType && desc.surfaceType !== 'plane';
-    if (!isNonPlanar) continue;
-    const nv = desc.vertices.length;
-    for (let i = 0; i < nv; i++) {
-      const k1 = _edgeVKey(desc.vertices[i]);
-      const k2 = _edgeVKey(desc.vertices[(i + 1) % nv]);
-      const unordered = k1 < k2 ? `${k1}|${k2}` : `${k2}|${k1}`;
-      if (arcCurveLookup.has(unordered)) nonPlanarEdgeKeys.add(unordered);
+  {
+    const counts = new Map();
+    for (const desc of faceDescs) {
+      if (!desc.vertices || !desc.edgeCurves) continue;
+      const isNonPlanar = desc.surfaceType && desc.surfaceType !== 'plane';
+      if (!isNonPlanar) continue;
+      const nv = desc.vertices.length;
+      for (let i = 0; i < nv; i++) {
+        const k1 = _edgeVKey(desc.vertices[i]);
+        const k2 = _edgeVKey(desc.vertices[(i + 1) % nv]);
+        const unordered = k1 < k2 ? `${k1}|${k2}` : `${k2}|${k1}`;
+        if (arcCurveLookup.has(unordered)) {
+          counts.set(unordered, (counts.get(unordered) || 0) + 1);
+        }
+      }
+    }
+    for (const [k, count] of counts) {
+      if (count >= 2) nonPlanarEdgeKeys.add(k);
     }
   }
 
