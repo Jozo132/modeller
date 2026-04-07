@@ -39,14 +39,21 @@ export function renderBaseMeshOverlay(executor, options) {
   if (!meshTriangles || meshTriangleCount === 0 || !mvp) return;
 
   // Diagnostic hatch uses a combined front+back face pass with painter's algorithm
-  const { diagnosticHatch } = options;
+  const { diagnosticHatch, normalColorShading } = options;
 
-  executor.drawTriangleBuffer(meshTriangles, meshTriangleCount, {
-    mvp,
-    color: faceColor,
-    polygonOffset: [1, 1],
-    diagnosticHatch: !!diagnosticHatch,
-  });
+  if (normalColorShading) {
+    executor.drawTriangleBufferNormalColor(meshTriangles, meshTriangleCount, {
+      mvp,
+      polygonOffset: [1, 1],
+    });
+  } else {
+    executor.drawTriangleBuffer(meshTriangles, meshTriangleCount, {
+      mvp,
+      color: faceColor,
+      polygonOffset: [1, 1],
+      diagnosticHatch: !!diagnosticHatch,
+    });
+  }
 
   if (meshTriangleOverlayMode === 'outline' && meshTriangleOverlayEdges && meshTriangleOverlayEdgeVertexCount > 0) {
     executor.drawLineBuffer(meshTriangleOverlayEdges, meshTriangleOverlayEdgeVertexCount, {
