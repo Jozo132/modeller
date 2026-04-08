@@ -303,6 +303,9 @@ export function removeCollinearEdgeVertices(body, tol = DEFAULT_TOLERANCE) {
 
 function _removeCollinearInShell(shell, tol) {
   let changed = true;
+  // Use 10× the point-coincidence tolerance for collinearity: the cross-product
+  // area is proportional to edge-length × deviation, so it needs a larger
+  // absolute threshold than pure point matching.
   const collinearTol = (tol.pointCoincidence ?? 1e-6) * 10;
 
   while (changed) {
@@ -431,12 +434,13 @@ function _isStraightLine(curve) {
   const p0 = cp[0], p1 = cp[cp.length - 1];
   const dx = p1.x - p0.x, dy = p1.y - p0.y, dz = p1.z - p0.z;
   const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
-  if (len < 1e-14) return true;
+  if (len < 1e-14) return true; // degenerate zero-length curve treated as line
   for (let i = 1; i < cp.length - 1; i++) {
     const px = cp[i].x - p0.x, py = cp[i].y - p0.y, pz = cp[i].z - p0.z;
     const cx = dy * pz - dz * py;
     const cy = dz * px - dx * pz;
     const cz = dx * py - dy * px;
+    // Distance from control point to line, normalised by line length
     if (Math.sqrt(cx * cx + cy * cy + cz * cz) / len > 1e-6) return false;
   }
   return true;
