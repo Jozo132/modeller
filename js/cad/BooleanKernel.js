@@ -179,8 +179,7 @@ function _isPlanarBody(body) {
     face &&
     face.surfaceType === SurfaceType.PLANE &&
     face.surface &&
-    face.outerLoop &&
-    face.innerLoops.length === 0
+    face.outerLoop
   );
 }
 
@@ -510,17 +509,63 @@ function _shouldKeep(classification, operation, operand) {
 }
 
 function _bodyToPolygons(body) {
-  return body.faces().map(face => {
-    const verts = face.outerLoop.points();
-    const oriented = face.sameSense === false ? [...verts].reverse() : verts;
-    const normal = _polygonNormal(oriented);
-    return {
-      vertices: oriented.map(v => ({ ...v })),
-      normal,
-      shared: face.shared ? { ...face.shared } : null,
-      surfaceType: face.surfaceType,
-    };
-  }).filter(poly => poly.vertices.length >= 3 && _vecLen(poly.normal) > 1e-10);
+  const result = [];
+  for (const face of body.faces()) {
+    // Faces with inner loops must be decomposed into simple polygons via CDT
+    if (face.innerLoops && face.innerLoops.length > 0) {
+      const outerPts = face.outerLoop.points();
+      if (outerPts.length < 3) continue;
+      const oriented = face.sameSense === false ? [...outerPts].reverse() : outerPts;
+      const normal = _polygonNormal(oriented);
+      if (_vecLen(normal) < 1e-10) continue;
+
+      // Project to 2D for CDT
+      const ax = Math.abs(normal.x), ay = Math.abs(normal.y), az = Math.abs(normal.z);
+      let toU, toV;
+      if (az >= ax && az >= ay) { toU = p => p.x; toV = p => p.y; }
+      else if (ay >= ax) { toU = p => p.x; toV = p => p.z; }
+      else { toU = p => p.y; toV = p => p.z; }
+
+      const outer2D = oriented.map(p => ({ x: toU(p), y: toV(p) }));
+      const holePts = face.innerLoops.map(il => {
+        const pts = il.points();
+        return face.sameSense === false ? [...pts].reverse() : pts;
+      });
+      const holes2D = holePts.map(hpts => hpts.map(p => ({ x: toU(p), y: toV(p) })));
+
+      // All 3D points in one flat array: outer + holes
+      const all3D = [...oriented];
+      for (const hpts of holePts) all3D.push(...hpts);
+
+      const triIndices = constrainedTriangulate(outer2D, holes2D);
+      for (const [i0, i1, i2] of triIndices) {
+        const p0 = all3D[i0], p1 = all3D[i1], p2 = all3D[i2];
+        if (!p0 || !p1 || !p2) continue;
+        const triVerts = [{ ...p0 }, { ...p1 }, { ...p2 }];
+        const triNormal = _polygonNormal(triVerts);
+        if (_vecLen(triNormal) < 1e-10) continue;
+        result.push({
+          vertices: triVerts,
+          normal: triNormal,
+          shared: face.shared ? { ...face.shared } : null,
+          surfaceType: face.surfaceType,
+        });
+      }
+    } else {
+      const verts = face.outerLoop.points();
+      const oriented = face.sameSense === false ? [...verts].reverse() : verts;
+      const normal = _polygonNormal(oriented);
+      if (oriented.length >= 3 && _vecLen(normal) > 1e-10) {
+        result.push({
+          vertices: oriented.map(v => ({ ...v })),
+          normal,
+          shared: face.shared ? { ...face.shared } : null,
+          surfaceType: face.surfaceType,
+        });
+      }
+    }
+  }
+  return result;
 }
 
 function _splitPolygonsByBody(polygons, body, tol) {

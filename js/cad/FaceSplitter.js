@@ -274,11 +274,10 @@ function _sampleInteriorPoint(face) {
   if (face.outerLoop) {
     const pts = face.outerLoop.points();
     if (pts.length >= 3) {
-      const centroid = {
-        x: (pts[0].x + pts[1].x + pts[2].x) / 3,
-        y: (pts[0].y + pts[1].y + pts[2].y) / 3,
-        z: (pts[0].z + pts[1].z + pts[2].z) / 3,
-      };
+      // Use full polygon centroid (robust for collinear first-3-vertex cases)
+      let cx = 0, cy = 0, cz = 0;
+      for (const p of pts) { cx += p.x; cy += p.y; cz += p.z; }
+      const centroid = { x: cx / pts.length, y: cy / pts.length, z: cz / pts.length };
       const n = _faceNormal(face);
       return {
         x: centroid.x + n.x * 1e-5,
@@ -417,11 +416,15 @@ function _pointInPolygon2D(pt, polygon) {
  */
 function _polyNormal(pts) {
   if (pts.length < 3) return { x: 0, y: 0, z: 1 };
-  const v1 = { x: pts[1].x - pts[0].x, y: pts[1].y - pts[0].y, z: pts[1].z - pts[0].z };
-  const v2 = { x: pts[2].x - pts[0].x, y: pts[2].y - pts[0].y, z: pts[2].z - pts[0].z };
-  const nx = v1.y * v2.z - v1.z * v2.y;
-  const ny = v1.z * v2.x - v1.x * v2.z;
-  const nz = v1.x * v2.y - v1.y * v2.x;
+  // Newell method: robust for polygons whose first 3 vertices are collinear
+  let nx = 0, ny = 0, nz = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const c = pts[i];
+    const n = pts[(i + 1) % pts.length];
+    nx += (c.y - n.y) * (c.z + n.z);
+    ny += (c.z - n.z) * (c.x + n.x);
+    nz += (c.x - n.x) * (c.y + n.y);
+  }
   const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
   if (len < 1e-14) return { x: 0, y: 0, z: 1 };
   return { x: nx / len, y: ny / len, z: nz / len };
