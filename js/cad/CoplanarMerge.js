@@ -9,7 +9,8 @@
 // edge, splice their boundary loops together (removing the shared edge),
 // and repeat until no more merges are possible.
 
-import { TopoFace, TopoLoop, SurfaceType } from './BRepTopology.js';
+import { TopoFace, TopoLoop, TopoEdge, TopoCoEdge, SurfaceType } from './BRepTopology.js';
+import { NurbsCurve } from './NurbsCurve.js';
 import { DEFAULT_TOLERANCE } from './Tolerance.js';
 
 /**
@@ -272,4 +273,171 @@ function _chainCoedges(coedges) {
   }
 
   return chains;
+}
+
+// ── Collinear vertex removal ────────────────────────────────────────
+
+/**
+ * Remove valence-2 vertices that lie on straight edges.
+ *
+ * After boolean splitting and coplanar merging, some vertices exist only
+ * because two sub-edges of what was originally a single straight edge were
+ * created by the plane-splitting step.  These vertices are collinear with
+ * their two neighbours and add unnecessary boundary complexity — every
+ * face that references them gets extra triangles from the tessellator.
+ *
+ * This function finds such vertices and merges the two sub-edges into one,
+ * updating all face loops in the shell.
+ *
+ * @param {import('./BRepTopology.js').TopoBody} body
+ * @param {Object} [tol]
+ * @returns {import('./BRepTopology.js').TopoBody} The same body, mutated.
+ */
+export function removeCollinearEdgeVertices(body, tol = DEFAULT_TOLERANCE) {
+  if (!body || !body.shells) return body;
+  for (const shell of body.shells) {
+    _removeCollinearInShell(shell, tol);
+  }
+  return body;
+}
+
+function _removeCollinearInShell(shell, tol) {
+  let changed = true;
+  const collinearTol = (tol.pointCoincidence ?? 1e-6) * 10;
+
+  while (changed) {
+    changed = false;
+
+    // Rebuild edge set and vertex→edges map each iteration since topology
+    // is mutated when a vertex is removed.
+    const allEdges = new Set();
+    for (const face of shell.faces) {
+      if (face.outerLoop) {
+        for (const ce of face.outerLoop.coedges) allEdges.add(ce.edge);
+      }
+      for (const inner of face.innerLoops) {
+        for (const ce of inner.coedges) allEdges.add(ce.edge);
+      }
+    }
+
+    const vertexEdges = new Map();
+    for (const edge of allEdges) {
+      const sv = edge.startVertex;
+      const ev = edge.endVertex;
+      if (!vertexEdges.has(sv)) vertexEdges.set(sv, new Set());
+      if (!vertexEdges.has(ev)) vertexEdges.set(ev, new Set());
+      vertexEdges.get(sv).add(edge);
+      vertexEdges.get(ev).add(edge);
+    }
+
+    // Find ONE collinear valence-2 vertex and remove it
+    for (const [vertex, edges] of vertexEdges) {
+      if (edges.size !== 2) continue;
+
+      const [edgeA, edgeB] = [...edges];
+
+      const vertA = edgeA.otherVertex(vertex);
+      const vertB = edgeB.otherVertex(vertex);
+      if (!vertA || !vertB || vertA === vertB) continue;
+
+      // Both edges must be straight lines
+      if (edgeA.curve && !_isStraightLine(edgeA.curve)) continue;
+      if (edgeB.curve && !_isStraightLine(edgeB.curve)) continue;
+
+      // Collinearity check: triangle area of A, V, B ≈ 0
+      const pA = vertA.point, pV = vertex.point, pB = vertB.point;
+      const ux = pV.x - pA.x, uy = pV.y - pA.y, uz = pV.z - pA.z;
+      const wx = pB.x - pA.x, wy = pB.y - pA.y, wz = pB.z - pA.z;
+      const cx = uy * wz - uz * wy;
+      const cy = uz * wx - ux * wz;
+      const cz = ux * wy - uy * wx;
+      const area = Math.sqrt(cx * cx + cy * cy + cz * cz);
+      if (area > collinearTol) continue;
+
+      // Create merged edge A→B
+      const mergedEdge = new TopoEdge(
+        vertA, vertB,
+        NurbsCurve.createLine(vertA.point, vertB.point),
+        Math.max(edgeA.tolerance, edgeB.tolerance),
+      );
+
+      // Replace coedge pairs in ALL face loops
+      const mergeInfo = { edgeA, edgeB, mergedEdge };
+      for (const face of shell.faces) {
+        const loops = [face.outerLoop, ...face.innerLoops].filter(Boolean);
+        for (const loop of loops) {
+          _replaceCoedgePairInLoop(loop, vertex, mergeInfo);
+        }
+      }
+
+      changed = true;
+      break; // restart: topology has changed
+    }
+  }
+}
+
+/**
+ * In a loop, find the consecutive coedge pair that meets at the given vertex
+ * and reference the two old edges, then replace them with a single coedge.
+ */
+function _replaceCoedgePairInLoop(loop, vertex, { edgeA, edgeB, mergedEdge }) {
+  if (!loop || loop.coedges.length < 2) return;
+
+  const coedges = loop.coedges;
+  for (let i = 0; i < coedges.length; i++) {
+    const curr = coedges[i];
+    const next = coedges[(i + 1) % coedges.length];
+
+    // The shared vertex between curr and next must be the one being removed
+    if (curr.endVertex() !== vertex) continue;
+
+    // Check that curr and next reference the two old edges (in either order)
+    if (!((curr.edge === edgeA && next.edge === edgeB) ||
+          (curr.edge === edgeB && next.edge === edgeA))) continue;
+
+    // Determine orientation: the merged coedge should go from
+    // curr.startVertex() to next.endVertex()
+    const startV = curr.startVertex();
+    const endV = next.endVertex();
+    const sameSense = (mergedEdge.startVertex === startV && mergedEdge.endVertex === endV);
+
+    const mergedCoEdge = new TopoCoEdge(mergedEdge, sameSense, null);
+    mergedCoEdge.loop = loop;
+    mergedCoEdge.face = curr.face;
+
+    // Replace the two coedges with the merged one
+    if (i + 1 < coedges.length) {
+      coedges.splice(i, 2, mergedCoEdge);
+    } else {
+      // curr is last, next is first (wrapping)
+      coedges.splice(i, 1);
+      coedges.splice(0, 1, mergedCoEdge);
+    }
+    return; // done for this loop
+  }
+}
+
+/**
+ * Check if a NurbsCurve is a straight line (degree 1 with 2 control points,
+ * or all control points are collinear).
+ */
+function _isStraightLine(curve) {
+  if (!curve) return true;
+  if (curve.degree === 1 && curve.controlPoints && curve.controlPoints.length === 2) return true;
+  // Check if all control points are collinear
+  const cp = curve.controlPoints;
+  if (!cp || cp.length < 2) return true;
+  if (cp.length === 2) return true;
+  const p0 = cp[0], p1 = cp[cp.length - 1];
+  const dx = p1.x - p0.x, dy = p1.y - p0.y, dz = p1.z - p0.z;
+  const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+  if (len < 1e-14) return true;
+  for (let i = 1; i < cp.length - 1; i++) {
+    const px = cp[i].x - p0.x, py = cp[i].y - p0.y, pz = cp[i].z - p0.z;
+    const cx = dy * pz - dz * py;
+    const cy = dz * px - dx * pz;
+    const cz = dx * py - dy * px;
+    if (Math.sqrt(cx * cx + cy * cy + cz * cz) / len > 1e-6) return false;
+  }
+  return true;
 }
