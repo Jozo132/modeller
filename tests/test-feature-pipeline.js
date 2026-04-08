@@ -15,7 +15,7 @@ import { Part } from '../js/cad/Part.js';
 import { Sketch } from '../js/cad/Sketch.js';
 import { parseCMOD } from '../js/cmod.js';
 import { resetFeatureIds } from '../js/cad/Feature.js';
-import { resetTopoIds } from '../js/cad/BRepTopology.js';
+import { resetTopoIds, buildTopoBody } from '../js/cad/BRepTopology.js';
 import { robustTessellateBody } from '../js/cad/Tessellator2/index.js';
 import { TessellationConfig } from '../js/cad/TessellationConfig.js';
 import {
@@ -23,6 +23,8 @@ import {
   calculateBoundingBox,
 } from '../js/cad/toolkit/MeshAnalysis.js';
 import { computePolygonNormal } from '../js/cad/toolkit/GeometryUtils.js';
+import { applyBRepFillet } from '../js/cad/BRepFillet.js';
+import { NurbsCurve } from '../js/cad/NurbsCurve.js';
 
 let passed = 0;
 let failed = 0;
@@ -739,6 +741,34 @@ test('box-fillet-2-p.cmod (two parallel fillets) produces valid mesh', () => {
   validateGeometry(geom, 'box-fillet-2-p');
 });
 
+test('box-fillet-2-p.cmod shared trim edge is a curve, not a diagonal', () => {
+  const part = loadCMOD('box-fillet-2-p.cmod');
+  assert.ok(part, 'Should load box-fillet-2-p.cmod');
+  const geom = getFinalGeometry(part);
+  assert.ok(geom?.topoBody, 'Should have topoBody');
+  // Find the shared edge between the two bspline (fillet) faces
+  const tb = geom.topoBody;
+  const bsplineFaces = [];
+  for (const shell of tb.shells) {
+    for (const face of shell.faces) {
+      if (face.surfaceType === 'bspline') bsplineFaces.push(face);
+    }
+  }
+  assert.strictEqual(bsplineFaces.length, 2, 'Should have exactly 2 fillet faces');
+  // Find the shared edge (referenced by both bspline faces)
+  const edgeIds0 = new Set((bsplineFaces[0].outerLoop?.coedges || []).map(ce => ce.edge.id));
+  let sharedEdge = null;
+  for (const ce of (bsplineFaces[1].outerLoop?.coedges || [])) {
+    if (edgeIds0.has(ce.edge.id)) { sharedEdge = ce.edge; break; }
+  }
+  assert.ok(sharedEdge, 'Should find shared edge between fillet faces');
+  // The shared edge must be a proper curve (polyline with intermediate points),
+  // not a simple 2-control-point straight line (which creates the diagonal artifact).
+  const cp = sharedEdge.curve?.controlPoints;
+  assert.ok(cp && cp.length > 2,
+    `Shared trim edge should have >2 control points (got ${cp?.length || 0}), not a diagonal`);
+});
+
 test('box-fillet-2-s.cmod (two sequential fillets) produces valid mesh', () => {
   const part = loadCMOD('box-fillet-2-s.cmod');
   assert.ok(part, 'Should load box-fillet-2-s.cmod');
@@ -766,6 +796,56 @@ test('box-fillet-3.cmod (single multi-edge fillet) produces valid mesh', () => {
   assert.ok(geom, 'Should have geometry');
   // Known: multi-edge fillet with 3 edges produces corner boundary gaps.
   validateGeometry(geom, 'box-fillet-3', { allowBoundaryEdges: true });
+});
+
+test('custom-part-1.cmod (non-axis-aligned fillet + chamfer) produces valid mesh', () => {
+  const part = loadCMOD('custom-part-1.cmod');
+  if (!part) return; // skip if file not present
+  const geom = getFinalGeometry(part);
+  assert.ok(geom, 'Should have geometry');
+  validateGeometry(geom, 'custom-part-1');
+});
+
+test('Non-90-degree fillet produces watertight topology', () => {
+  // Build a trapezoidal prism with a ~104° dihedral angle between
+  // the front face and top face, then fillet the front-top edge.
+  resetFeatureIds();
+  resetTopoIds();
+
+  const v = (x,y,z) => ({x,y,z});
+  const faces = [
+    { vertices: [v(0,0,0), v(10,0,0), v(10,5,0), v(0,5,0)], normal: v(0,0,-1), shared: null },
+    { vertices: [v(0,2,8), v(0,3,8), v(10,3,8), v(10,2,8)], normal: v(0,0,1), shared: null },
+    { vertices: [v(0,0,0), v(0,2,8), v(10,2,8), v(10,0,0)], normal: null, shared: null },
+    { vertices: [v(0,5,0), v(10,5,0), v(10,3,8), v(0,3,8)], normal: null, shared: null },
+    { vertices: [v(0,0,0), v(0,5,0), v(0,3,8), v(0,2,8)], normal: v(-1,0,0), shared: null },
+    { vertices: [v(10,0,0), v(10,2,8), v(10,3,8), v(10,5,0)], normal: v(1,0,0), shared: null },
+  ];
+  // Compute normals for angled faces
+  for (const f of [faces[2], faces[3]]) {
+    const vs = f.vertices;
+    const e1 = v(vs[1].x-vs[0].x, vs[1].y-vs[0].y, vs[1].z-vs[0].z);
+    const e2 = v(vs[3].x-vs[0].x, vs[3].y-vs[0].y, vs[3].z-vs[0].z);
+    const n = v(e1.y*e2.z-e1.z*e2.y, e1.z*e2.x-e1.x*e2.z, e1.x*e2.y-e1.y*e2.x);
+    const len = Math.sqrt(n.x**2+n.y**2+n.z**2);
+    f.normal = v(n.x/len, n.y/len, n.z/len);
+  }
+  const faceDescs = faces.map(f => ({
+    surface: null, surfaceType: 'plane',
+    vertices: f.vertices.map(p => ({...p})),
+    edgeCurves: f.vertices.map((p, i) => NurbsCurve.createLine(p, f.vertices[(i+1)%f.vertices.length])),
+    sameSense: true, shared: null,
+  }));
+  const topoBody = buildTopoBody(faceDescs);
+  const geom = { vertices: [], faces, edges: [], paths: [], topoBody };
+
+  const edgeKey = '0.00000,2.00000,8.00000|10.00000,2.00000,8.00000';
+  const result = applyBRepFillet(geom, [edgeKey], 0.5, 8);
+  assert.ok(result, 'Fillet on non-90° edge should succeed');
+  assert.ok(result.topoBody, 'Result should have topoBody');
+  const tbBound = countTopoBodyBoundaryEdges(result.topoBody);
+  assert.strictEqual(tbBound, 0,
+    `Non-90° fillet should produce 0 boundary edges (got ${tbBound})`);
 });
 
 test('extrude-on-extrude.cmod produces valid mesh', () => {

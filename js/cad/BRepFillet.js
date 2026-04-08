@@ -89,19 +89,30 @@ function _precomputeFilletEdge(faces, edgeKey, radius, segments, exactAdjacencyB
     const t0 = _vec3Add(vertex, _vec3Scale(offsDir0, tangentDist));
     const e0 = _vec3Normalize(_vec3Sub(t0, center));
     const t1 = _vec3Add(vertex, _vec3Scale(offsDir1, tangentDist));
+    // Compute the arc sweep basis vector from center and t1, which is
+    // independent of edge vertex ordering.  The previous approach using
+    // cross(edgeDir, e0) depended on the direction of edgeDir and
+    // produced arcs sweeping the wrong way when the edge vertices were
+    // ordered differently (common for non-axis-aligned / non-90° edges).
+    const t1rel = _vec3Sub(t1, center);
+    const t1proj = _vec3Dot(t1rel, e0);
+    const rawE1 = _vec3Sub(t1rel, _vec3Scale(e0, t1proj));
+    const rawE1Len = _vec3Len(rawE1);
+    const e1 = rawE1Len > 1e-10
+      ? _vec3Scale(rawE1, 1 / rawE1Len)
+      : _vec3Normalize(_vec3Cross(edgeDir, e0));
     // Use NURBS arc tessellation to match EdgeSampler's parameterization.
     // This ensures polygon arc boundaries align exactly with NURBS edge samples.
     try {
-      const nurbsArc = NurbsCurve.createArc(center, radius, e0, _vec3Cross(edgeDir, e0), 0, sweep);
+      const nurbsArc = NurbsCurve.createArc(center, radius, e0, e1, 0, sweep);
       const tessPoints = nurbsArc.tessellate(segments);
       return tessPoints.map(p => ({ x: p.x, y: p.y, z: p.z }));
     } catch (e) {
       // Fallback to simple theta-based sampling if NURBS fails
-      const e1 = _vec3Normalize(_vec3Sub(t1, center));
       const cosSweep = Math.cos(sweep);
       const sinSweep = Math.sin(sweep);
       const perp = sinSweep > 1e-10
-        ? _vec3Scale(_vec3Sub(e1, _vec3Scale(e0, cosSweep)), 1 / sinSweep)
+        ? _vec3Scale(_vec3Sub(_vec3Normalize(_vec3Sub(t1, center)), _vec3Scale(e0, cosSweep)), 1 / sinSweep)
         : e1;
       const points = [];
       for (let s = 0; s <= segments; s++) {
@@ -599,11 +610,33 @@ function _buildExactFilletFaceDesc(data) {
   const useSimpleSideEdges = data._brepSideEdges !== false;
   let edgeCurves;
   if (useSimpleSideEdges) {
-    // Use straight lines for side edges to match adjacent planar faces
+    // For non-shared arcs, use straight lines — they will be replaced later
+    // by _replaceEdgesWithArcCurves to match adjacent planar faces.
+    // For shared trim edges (where two fillet strips meet at a corner),
+    // use the actual trim curve (polyline or elliptic arc) instead of a
+    // straight line.  This produces the correct smooth boundary at
+    // multi-edge fillet intersections rather than a diagonal artifact.
+    const hasSharedA = !!(data && data.sharedTrimA);
+    const hasSharedB = !!(data && data.sharedTrimB);
+
+    let edgeCurve0 = NurbsCurve.createLine(trimA[0], trimA[trimA.length - 1]);
+    let edgeCurve2 = NurbsCurve.createLine(trimB[trimB.length - 1], trimB[0]);
+
+    if (hasSharedA && trimA.length > 2) {
+      const curve = _buildExactFilletBoundaryCurve(data, trimA, 'A', true);
+      if (curve) edgeCurve0 = curve;
+    }
+    if (hasSharedB && trimB.length > 2) {
+      // Edge 2 runs from trimB[last] to trimB[0] — reversed direction
+      const reversedTrimB = [...trimB].reverse();
+      const curve = _buildExactFilletBoundaryCurve(data, reversedTrimB, 'B', true);
+      if (curve) edgeCurve2 = curve;
+    }
+
     edgeCurves = [
-      NurbsCurve.createLine(trimA[0], trimA[trimA.length - 1]),
+      edgeCurve0,
       NurbsCurve.createLine(trimA[trimA.length - 1], trimB[trimB.length - 1]),
-      NurbsCurve.createLine(trimB[trimB.length - 1], trimB[0]),
+      edgeCurve2,
       NurbsCurve.createLine(trimB[0], trimA[0]),
     ];
   } else {
