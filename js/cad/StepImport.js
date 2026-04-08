@@ -180,10 +180,12 @@ export function importSTEP(stepString, opts = {}) {
  * @param {{ faces: Array }} mesh
  */
 function _applyAnalyticNormals(body, mesh) {
-  // Build a map: topoFaceId -> { surfaceInfo, sameSense }
-  const faceInfos = [];
+  // Build a map: face.id -> { surfaceInfo, sameSense }
+  // Uses a Map keyed by face.id so lookups work regardless of the
+  // global TopoFace._nextId counter value.
+  const faceInfoMap = new Map();
   for (const face of body.faces()) {
-    faceInfos.push({
+    faceInfoMap.set(face.id, {
       surfaceInfo: face.surfaceInfo,
       sameSense: face.sameSense,
     });
@@ -191,11 +193,14 @@ function _applyAnalyticNormals(body, mesh) {
 
   for (const tri of mesh.faces) {
     const id = tri.topoFaceId;
-    if (id === undefined || id >= faceInfos.length) continue;
-    const info = faceInfos[id];
+    if (id === undefined || !faceInfoMap.has(id)) continue;
+    const info = faceInfoMap.get(id);
     if (!info.surfaceInfo) continue;
 
-    // Compute per-vertex averaged normal from analytic surface
+    // Compute per-vertex averaged normal from the analytic surface.
+    // The analytic normal with sameSense applied is the authoritative
+    // outward direction — it comes directly from the STEP surface
+    // definition and is always correct.
     let nx = 0, ny = 0, nz = 0;
     for (const v of tri.vertices) {
       const vn = _computeVertexNormal(v, info.surfaceInfo, info.sameSense);
@@ -204,11 +209,12 @@ function _applyAnalyticNormals(body, mesh) {
     nx /= 3; ny /= 3; nz /= 3;
     const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
     if (len > 1e-14) {
-      let out = { x: nx / len, y: ny / len, z: nz / len };
+      const out = { x: nx / len, y: ny / len, z: nz / len };
 
-      // The loop/coedge orientation already determines the tessellated
-      // triangle winding. Align analytic shading normals to that actual
-      // winding so sameSense does not re-invert otherwise correct faces.
+      // If the triangle's geometric winding disagrees with the
+      // correct analytic normal, fix the winding (swap vertices)
+      // rather than flipping the normal.  This ensures the stored
+      // normal always reflects the true surface orientation.
       const a = tri.vertices[0];
       const b = tri.vertices[1];
       const c = tri.vertices[2];
@@ -223,7 +229,17 @@ function _applyAnalyticNormals(body, mesh) {
         const gy = abz * acx - abx * acz;
         const gz = abx * acy - aby * acx;
         const dot = out.x * gx + out.y * gy + out.z * gz;
-        if (dot < 0) out = { x: -out.x, y: -out.y, z: -out.z };
+        if (dot < 0) {
+          // Swap b and c to fix winding order
+          tri.vertices[1] = c;
+          tri.vertices[2] = b;
+          // Also swap corresponding vertex normals if present
+          if (Array.isArray(tri.vertexNormals) && tri.vertexNormals.length >= 3) {
+            const tmp = tri.vertexNormals[1];
+            tri.vertexNormals[1] = tri.vertexNormals[2];
+            tri.vertexNormals[2] = tmp;
+          }
+        }
       }
 
       tri.normal = out;
