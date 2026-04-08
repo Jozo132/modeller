@@ -252,14 +252,22 @@ function _classifyAndSelect(fragmentsA, fragmentsB, bodyA, bodyB, operation, tol
 
   // Classify A fragments against B
   for (const frag of fragmentsA) {
-    const cls = classifyFragment(frag, bodyB, tol);
+    let cls = classifyFragment(frag, bodyB, tol);
+    // Refine coincident classification for coplanar faces
+    if (cls === 'coincident') {
+      cls = _refineCoincidentClassification(frag, bodyB, tol);
+    }
     const keep = _shouldKeep(cls, operation, 'A');
     if (keep) kept.push(frag);
   }
 
   // Classify B fragments against A
   for (const frag of fragmentsB) {
-    const cls = classifyFragment(frag, bodyA, tol);
+    let cls = classifyFragment(frag, bodyA, tol);
+    // Refine coincident classification for coplanar faces
+    if (cls === 'coincident') {
+      cls = _refineCoincidentClassification(frag, bodyA, tol);
+    }
     const keep = _shouldKeep(cls, operation, 'B');
     if (keep) {
       // For subtract, reverse face orientation for B fragments kept inside A
@@ -274,6 +282,104 @@ function _classifyAndSelect(fragmentsA, fragmentsB, bodyA, bodyB, operation, tol
 }
 
 /**
+ * Refine a 'coincident' classification by checking whether the fragment
+ * truly overlaps a coplanar face of the other body.
+ *
+ * When a fragment face is coplanar with a face of `body`, the standard
+ * point-containment sample lands on the boundary, yielding 'coincident'.
+ * This function distinguishes:
+ *   - 'coincident'          → fragment centroid projects inside a same-sense coplanar face
+ *   - 'coincident-opposite' → fragment centroid projects inside an opposite-sense coplanar face
+ *   - 'outside'             → fragment is near the boundary but not truly coplanar-overlapping
+ *
+ * @param {import('./BRepTopology.js').TopoFace} fragment
+ * @param {import('./BRepTopology.js').TopoBody} body
+ * @param {import('./Tolerance.js').Tolerance} tol
+ * @returns {'coincident'|'coincident-opposite'|'outside'}
+ */
+function _refineCoincidentClassification(fragment, body, tol) {
+  if (!fragment.outerLoop) return 'outside';
+  const fragPts = fragment.outerLoop.points();
+  if (fragPts.length < 3) return 'outside';
+
+  // Fragment centroid (full polygon centroid, not first-3 centroid)
+  let cx = 0, cy = 0, cz = 0;
+  for (const v of fragPts) { cx += v.x; cy += v.y; cz += v.z; }
+  cx /= fragPts.length; cy /= fragPts.length; cz /= fragPts.length;
+  const fragCentroid = { x: cx, y: cy, z: cz };
+
+  // Fragment face normal (respecting sameSense)
+  const fragN = _fragmentFaceNormal(fragment);
+
+  // Use generous threshold to accommodate subtract-overshoot (see ExtrudeFeature)
+  const coplanarThreshold = Math.max(tol.sewing * 10, 1e-3);
+
+  for (const face of body.faces()) {
+    if (!face.outerLoop) continue;
+    const facePts = face.outerLoop.points();
+    if (facePts.length < 3) continue;
+
+    // Face normal (respecting sameSense)
+    const faceN = _fragmentFaceNormal(face);
+
+    // Normals must be parallel (same or opposite direction)
+    const dotN = _dot(fragN, faceN);
+    if (Math.abs(Math.abs(dotN) - 1) > 0.01) continue;
+
+    // Centroid must lie on the face's plane (within overshoot tolerance)
+    const faceW = _dot(faceN, facePts[0]);
+    const dist = Math.abs(_dot(faceN, fragCentroid) - faceW);
+    if (dist > coplanarThreshold) continue;
+
+    // Centroid must project inside the face polygon
+    if (!_pointInPolygon3D(fragCentroid, facePts, faceN)) continue;
+
+    // Coplanar overlap detected.  Probe the interior side.
+    const probeOffset = 0.01;
+    const probePt = {
+      x: fragCentroid.x - fragN.x * probeOffset,
+      y: fragCentroid.y - fragN.y * probeOffset,
+      z: fragCentroid.z - fragN.z * probeOffset,
+    };
+    const probeResult = containmentClassifyPoint(body, probePt, { tolerance: tol });
+    return (probeResult.state === 'inside') ? 'coincident' : 'outside';
+  }
+
+  // No coplanar overlap found — the fragment was near the boundary but
+  // not actually on a coplanar face of body.  Re-classify with a larger
+  // offset to get a definitive inside/outside answer.
+  const nx2 = fragN.x, ny2 = fragN.y, nz2 = fragN.z;
+  const offsetMag = Math.max(tol.classification * 10, 1e-4);
+  const testPt = {
+    x: fragCentroid.x + nx2 * offsetMag,
+    y: fragCentroid.y + ny2 * offsetMag,
+    z: fragCentroid.z + nz2 * offsetMag,
+  };
+  const result = containmentClassifyPoint(body, testPt, { tolerance: tol });
+  if (result.state === 'inside') return 'inside';
+  return 'outside';
+}
+
+/**
+ * Compute the outward face normal for a topo face, respecting sameSense.
+ */
+function _fragmentFaceNormal(face) {
+  const pts = face.outerLoop.points();
+  let nx = 0, ny = 0, nz = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const curr = pts[i];
+    const next = pts[(i + 1) % pts.length];
+    nx += (curr.y - next.y) * (curr.z + next.z);
+    ny += (curr.z - next.z) * (curr.x + next.x);
+    nz += (curr.x - next.x) * (curr.y + next.y);
+  }
+  const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+  if (len > 1e-10) { nx /= len; ny /= len; nz /= len; }
+  if (face.sameSense === false) { nx = -nx; ny = -ny; nz = -nz; }
+  return { x: nx, y: ny, z: nz };
+}
+
+/**
  * Determine whether to keep a fragment based on classification and operation.
  *
  * @param {'inside'|'outside'|'coincident'} classification
@@ -285,19 +391,24 @@ function _shouldKeep(classification, operation, operand) {
   switch (operation) {
     case 'union':
       // Keep outside fragments from both operands
-      return classification === 'outside' || classification === 'coincident';
+      // coincident: keep from A only (B copy is a duplicate)
+      if (operand === 'A') {
+        return classification === 'outside' || classification === 'coincident';
+      }
+      return classification === 'outside';
 
     case 'subtract':
       if (operand === 'A') {
-        // Keep A outside B
+        // Keep A outside B; discard A coincident (shared boundary being cut)
         return classification === 'outside';
       } else {
-        // Keep B inside A (reversed)
+        // Keep B inside A (reversed); discard B coincident (shared boundary = opening)
         return classification === 'inside';
       }
 
     case 'intersect':
       // Keep inside fragments from both operands
+      // coincident: keep (shared boundary of intersection)
       return classification === 'inside' || classification === 'coincident';
 
     default:
@@ -427,10 +538,69 @@ function _splitPolygonByPlane(poly, plane, tol) {
 function _classifyPlanarPolygon(poly, body, tol) {
   const c = _polygonCentroid(poly.vertices);
   const n = _normalize(poly.normal);
+
+  // Detect coplanar coincidence: if this polygon lies on (or very near)
+  // a face of `body` and the centroid projects inside that face, the polygon
+  // shares a boundary plane with the body.  Standard offset-based
+  // classification fails here because the test point lands within the
+  // classification tolerance of the body surface, yielding an ambiguous
+  // 'on-boundary' result.
+  //
+  // The distance threshold must be generous enough to accommodate the
+  // subtract-overshoot applied by ExtrudeFeature (max(1e-4, dist*1e-5))
+  // which shifts cut-body faces slightly past the target body's boundary.
+  const coplanarThreshold = Math.max(tol.sewing * 10, 1e-3);
+
+  for (const face of body.faces()) {
+    if (!face.outerLoop) continue;
+    const faceVerts = face.outerLoop.points();
+    if (faceVerts.length < 3) continue;
+    const oriented = face.sameSense === false ? [...faceVerts].reverse() : faceVerts;
+    const faceN = _normalize(_polygonNormal(oriented));
+
+    // Normals must be parallel (same or opposite direction)
+    const dotN = _dot(n, faceN);
+    if (Math.abs(Math.abs(dotN) - 1) > 0.01) continue;
+
+    // Centroid must lie on the face's plane (within overshoot tolerance)
+    const faceW = _dot(faceN, oriented[0]);
+    const dist = Math.abs(_dot(faceN, c) - faceW);
+    if (dist > coplanarThreshold) continue;
+
+    // Centroid must project inside the face polygon
+    if (!_pointInPolygon3D(c, oriented, faceN)) continue;
+
+    // Coplanar overlap detected.  Probe the interior side of the polygon
+    // (opposite to the outward normal) to determine whether the other body
+    // actually overlaps here or merely touches.
+    // The offset must be large enough (≥0.01) for the containment engine's
+    // ray-cast to give confident results even when the body has faces with
+    // imperfect winding (e.g. extrude-cut overshoot caps).
+    const probeOffset = 0.01;
+    const probePt = {
+      x: c.x - n.x * probeOffset,
+      y: c.y - n.y * probeOffset,
+      z: c.z - n.z * probeOffset,
+    };
+    const probeResult = containmentClassifyPoint(body, probePt, { tolerance: tol });
+    if (probeResult.state === 'inside') {
+      // The polygon's interior side is inside the other body → bodies overlap
+      // at this face.  The face is an internal boundary → 'coincident'.
+      return 'coincident';
+    }
+    // The interior side is outside the other body → bodies merely touch.
+    // The face sits on the exterior of the other body → 'outside'.
+    return 'outside';
+  }
+
+  // Non-coplanar: offset along normal to sample containment.
+  // Use an offset well above tol.classification to avoid ambiguous
+  // 'on-boundary' results from the containment engine.
+  const offsetMag = Math.max(tol.classification * 10, 1e-4);
   const p = {
-    x: c.x + n.x * (tol.pointCoincidence * 10),
-    y: c.y + n.y * (tol.pointCoincidence * 10),
-    z: c.z + n.z * (tol.pointCoincidence * 10),
+    x: c.x + n.x * offsetMag,
+    y: c.y + n.y * offsetMag,
+    z: c.z + n.z * offsetMag,
   };
   const result = containmentClassifyPoint(body, p, { tolerance: tol });
   // Map Containment state to legacy classification strings
@@ -440,6 +610,36 @@ function _classifyPlanarPolygon(poly, body, tol) {
     case 'uncertain': return _rayCastClassifyPoint(p, body, tol); // fallback
     default: return 'outside';
   }
+}
+
+/**
+ * Test whether a 3D point projects inside a planar polygon using
+ * a 2D ray-casting (even-odd) test on the dominant-axis projection.
+ *
+ * @param {{x:number,y:number,z:number}} p - Point to test (must be coplanar)
+ * @param {Array<{x:number,y:number,z:number}>} verts - Polygon vertices
+ * @param {{x:number,y:number,z:number}} normal - Polygon face normal (unit)
+ * @returns {boolean}
+ */
+function _pointInPolygon3D(p, verts, normal) {
+  // Choose the dominant axis to drop for 2D projection
+  const ax = Math.abs(normal.x), ay = Math.abs(normal.y), az = Math.abs(normal.z);
+  let u, v; // property names for the 2D axes
+  if (ax >= ay && ax >= az) { u = 'y'; v = 'z'; }
+  else if (ay >= ax && ay >= az) { u = 'x'; v = 'z'; }
+  else { u = 'x'; v = 'y'; }
+
+  const pu = p[u], pv = p[v];
+  let inside = false;
+  for (let i = 0, j = verts.length - 1; i < verts.length; j = i++) {
+    const iu = verts[i][u], iv = verts[i][v];
+    const ju = verts[j][u], jv = verts[j][v];
+    if (((iv > pv) !== (jv > pv)) &&
+        (pu < (ju - iu) * (pv - iv) / (jv - iv) + iu)) {
+      inside = !inside;
+    }
+  }
+  return inside;
 }
 
 function _rayCastClassifyPoint(point, body, tol) {
