@@ -1270,6 +1270,7 @@ function _computeFilletFilletIntersectionCurve(
   if (alpha2 < 1e-6) return null;
   const centerDist2 = R2 / Math.sin(alpha2 / 2);
   const bisector2 = _vec3Normalize(_vec3Add(offsDir0, offsDir1));
+  if (_vec3Len(bisector2) < 1e-6) return null; // opposite offset dirs
   const newAxisDir = _vec3Normalize(_vec3Sub(newData.edgeB, newData.edgeA));
   const newCylCenter = _vec3Add(edgeVertex, _vec3Scale(bisector2, centerDist2));
 
@@ -1327,10 +1328,10 @@ function _computeFilletFilletIntersectionCurve(
     const d1val = newC_d1 + sign_new_d1 * Math.sqrt(sq_new);
     const d2val = prevC_d2 + sign_prev_d2 * Math.sqrt(sq_prev);
 
-    const pt = _vec3Add(
-      _vec3Add(_vec3Scale(prevAxisDir, d1val), _vec3Scale(newAxisDir, d2val)),
-      _vec3Scale(d3, d3val),
-    );
+    const comp_d1 = _vec3Scale(prevAxisDir, d1val);
+    const comp_d2 = _vec3Scale(newAxisDir, d2val);
+    const comp_d3 = _vec3Scale(d3, d3val);
+    const pt = _vec3Add(_vec3Add(comp_d1, comp_d2), comp_d3);
     curvePoints.push(pt);
   }
 
@@ -1624,7 +1625,6 @@ function _applyJunctionCurveToMesh(
         if (!otherFace._junctionCurves) otherFace._junctionCurves = [];
         otherFace._junctionCurves.push({
           curve: intCurve.curve,
-          intPtVK: _edgeVKey(intPt),
         });
       }
 
