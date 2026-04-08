@@ -13,6 +13,7 @@ import { getSnappedPosition } from './snap.js';
 import { undo, redo, takeSnapshot, setPartManager, getHistoryInfo, movePointer } from './history.js';
 import { downloadDXF, downloadFacesDXF } from './dxf/export.js';
 import { openDXFFile, pickDXFFile, addDXFToScene, dxfBounds, parseDXFGeometry } from './dxf/import.js';
+import { pickSVGFile, addSVGToScene, svgBounds, parseSVGGeometry } from './svg/import.js';
 import { importSTEP } from './cad/StepImport.js';
 import { exportSTEP } from './cad/StepExport.js';
 import { wasmTessellation } from './cad/WasmTessellation.js';
@@ -1919,6 +1920,7 @@ class App {
           case 'export-step': this._exportSTEPFile(); break;
           case 'import-dxf': this._importDXFToSketch(); break;
           case 'export-dxf': this._exportDXFFromFaces(); break;
+          case 'import-svg': this._importSVGToSketch(); break;
           // Dynamic examples are handled via event delegation below
           case 'toggle-grid': document.getElementById('btn-grid-toggle')?.click(); break;
           case 'toggle-snap': document.getElementById('btn-snap-toggle')?.click(); break;
@@ -9383,6 +9385,9 @@ class App {
     if (name.endsWith('.dxf')) {
       info('Dropped DXF file', { name: file.name, size: file.size });
       await this._handleDroppedDXF(file);
+    } else if (name.endsWith('.svg')) {
+      info('Dropped SVG file', { name: file.name, size: file.size });
+      await this._handleDroppedSVG(file);
     } else if (name.endsWith('.step') || name.endsWith('.stp')) {
       info('Dropped STEP file', { name: file.name, size: file.size });
       await this._handleDroppedSTEP(file);
@@ -9390,7 +9395,7 @@ class App {
       info('Dropped CMOD file', { name: file.name, size: file.size });
       await this._handleDroppedCMOD(file);
     } else {
-      this.setStatus(`Unsupported file type: ${file.name}. Supported formats: DXF, STEP, CMOD.`);
+      this.setStatus(`Unsupported file type: ${file.name}. Supported formats: SVG, DXF, STEP, CMOD.`);
     }
   }
 
@@ -9592,6 +9597,205 @@ class App {
     takeSnapshot();
     this._scheduleRender();
     this.setStatus(`Imported ${count} entities from ${filename} (scale ${scale})`);
+  }
+
+  // ---------------------------------------------------------------------------
+  // SVG import (menu + drag-drop)
+  // ---------------------------------------------------------------------------
+
+  async _importSVGToSketch() {
+    if (!this._sketchingOnPlane) {
+      this.setStatus('Start a sketch first before importing SVG');
+      return;
+    }
+    const picked = await pickSVGFile();
+    if (!picked) return;
+
+    const { items, filename } = picked;
+    if (!items || items.length === 0) {
+      this.setStatus('SVG file contains no geometry');
+      return;
+    }
+    const bounds = svgBounds(items);
+    const scaleStr = await showPrompt({
+      title: 'Import SVG',
+      message: `File: ${filename}\n${items.length} segments (${bounds.width.toFixed(1)} × ${bounds.height.toFixed(1)})\n\nScale factor:`,
+      defaultValue: '1',
+    });
+    if (scaleStr === null || scaleStr === undefined) return;
+    const scale = parseFloat(scaleStr) || 1;
+
+    const count = addSVGToScene(items, { offsetX: 0, offsetY: 0, scale, centerOnOrigin: true });
+    takeSnapshot();
+    this.viewport.fitEntities(state.entities);
+    this._scheduleRender();
+    this.setStatus(`Imported ${count} segments from ${filename} (scale ${scale})`);
+  }
+
+  async _handleDroppedSVG(file) {
+    const text = await file.text();
+    let items;
+    try {
+      items = parseSVGGeometry(text);
+    } catch (err) {
+      this.setStatus('Failed to parse SVG: ' + (err.message || err));
+      return;
+    }
+    if (!items || items.length === 0) {
+      this.setStatus('SVG file contains no geometry');
+      return;
+    }
+    const bounds = svgBounds(items);
+
+    if (this._workspaceMode !== 'part') {
+      this._enterWorkspace('part');
+    }
+
+    if (this._sketchingOnPlane) {
+      await this._svgImportToCurrentSketch(items, bounds, file.name);
+      return;
+    }
+
+    this._showSVGImportPanel(items, bounds, file.name);
+  }
+
+  _showSVGImportPanel(items, bounds, filename) {
+    const existing = document.getElementById('svg-import-panel');
+    if (existing) existing.remove();
+
+    const panel = document.createElement('div');
+    panel.id = 'svg-import-panel';
+    panel.className = 'dxf-import-panel'; // reuse DXF panel styling
+
+    const part = this._partManager.getPart();
+    const faceOptions = [];
+    if (part) {
+      const geo = part.getFinalGeometry();
+      if (geo && geo.faces) {
+        geo.faces.forEach((face, idx) => {
+          if (!face.isCurved) {
+            const n = face.normal;
+            faceOptions.push({ index: idx, label: `Face ${idx} (${n.x.toFixed(2)}, ${n.y.toFixed(2)}, ${n.z.toFixed(2)})` });
+          }
+        });
+      }
+    }
+
+    panel.innerHTML = `
+      <div class="dxf-import-title">Import SVG to Sketch</div>
+      <div class="dxf-import-info">
+        File: ${filename}<br>
+        ${items.length} segments (${bounds.width.toFixed(1)} × ${bounds.height.toFixed(1)} units)
+      </div>
+      <div class="dxf-import-section">
+        <label>Sketch Plane</label>
+        <select id="svg-plane-select">
+          <option value="XY">XY Plane (Top)</option>
+          <option value="XZ">XZ Plane (Front)</option>
+          <option value="YZ">YZ Plane (Right)</option>
+          ${faceOptions.map(f => `<option value="FACE:${f.index}">${f.label}</option>`).join('')}
+        </select>
+      </div>
+      <div class="dxf-import-section">
+        <label>Scale Factor</label>
+        <input type="number" id="svg-scale-input" value="1" min="0.001" step="0.1" />
+      </div>
+      <div class="dxf-import-section">
+        <label>
+          <input type="checkbox" id="svg-center-check" checked /> Center on origin
+        </label>
+      </div>
+      <div class="dxf-import-actions">
+        <button id="svg-import-cancel">Cancel</button>
+        <button id="svg-import-apply" class="primary">Create Sketch</button>
+      </div>
+    `;
+
+    document.body.appendChild(panel);
+
+    panel.addEventListener('keydown', (e) => e.stopPropagation());
+    panel.addEventListener('keypress', (e) => e.stopPropagation());
+    panel.addEventListener('keyup', (e) => e.stopPropagation());
+
+    const closePanel = () => { panel.remove(); };
+
+    const onEsc = (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); closePanel(); document.removeEventListener('keydown', onEsc, true); }
+    };
+    document.addEventListener('keydown', onEsc, true);
+
+    panel.querySelector('#svg-import-cancel').addEventListener('click', () => {
+      closePanel();
+      document.removeEventListener('keydown', onEsc, true);
+    });
+
+    panel.querySelector('#svg-import-apply').addEventListener('click', () => {
+      const planeValue = panel.querySelector('#svg-plane-select').value;
+      const scale = parseFloat(panel.querySelector('#svg-scale-input').value) || 1;
+      const center = panel.querySelector('#svg-center-check').checked;
+
+      document.removeEventListener('keydown', onEsc, true);
+      closePanel();
+
+      if (planeValue.startsWith('FACE:')) {
+        const faceIdx = parseInt(planeValue.split(':')[1], 10);
+        this._createSVGSketchOnFace(items, faceIdx, scale, center, filename);
+      } else {
+        this._createSVGSketchOnPlane(items, planeValue, scale, center, filename);
+      }
+    });
+  }
+
+  _createSVGSketchOnPlane(items, planeName, scale, centerOnOrigin, filename) {
+    this._startSketchOnPlane(planeName);
+    requestAnimationFrame(() => {
+      const count = addSVGToScene(items, { offsetX: 0, offsetY: 0, scale, centerOnOrigin });
+      takeSnapshot();
+      this._scheduleRender();
+      this.setStatus(`Imported ${count} segments from ${filename} to sketch on ${planeName} plane (scale ${scale})`);
+    });
+  }
+
+  _createSVGSketchOnFace(items, faceIndex, scale, centerOnOrigin, filename) {
+    const part = this._partManager.getPart();
+    if (!part) return;
+    const geo = part.getFinalGeometry();
+    if (!geo || !geo.faces || !geo.faces[faceIndex]) {
+      this.setStatus('Selected face no longer exists');
+      return;
+    }
+    const face = geo.faces[faceIndex];
+    const centroid = { x: 0, y: 0, z: 0 };
+    if (face.vertices && face.vertices.length > 0) {
+      for (const v of face.vertices) {
+        centroid.x += v.x; centroid.y += v.y; centroid.z += v.z;
+      }
+      centroid.x /= face.vertices.length;
+      centroid.y /= face.vertices.length;
+      centroid.z /= face.vertices.length;
+    }
+    this._startSketchOnFace({ face, point: centroid, faceIndex });
+    requestAnimationFrame(() => {
+      const count = addSVGToScene(items, { offsetX: 0, offsetY: 0, scale, centerOnOrigin });
+      takeSnapshot();
+      this._scheduleRender();
+      this.setStatus(`Imported ${count} segments from ${filename} to sketch on Face ${faceIndex} (scale ${scale})`);
+    });
+  }
+
+  async _svgImportToCurrentSketch(items, bounds, filename) {
+    const scaleStr = await showPrompt({
+      title: 'Import SVG to Current Sketch',
+      message: `File: ${filename}\n${items.length} segments (${bounds.width.toFixed(1)} × ${bounds.height.toFixed(1)})\n\nScale factor:`,
+      defaultValue: '1',
+    });
+    if (scaleStr === null || scaleStr === undefined) return;
+    const scale = parseFloat(scaleStr) || 1;
+
+    const count = addSVGToScene(items, { offsetX: 0, offsetY: 0, scale, centerOnOrigin: true });
+    takeSnapshot();
+    this._scheduleRender();
+    this.setStatus(`Imported ${count} segments from ${filename} (scale ${scale})`);
   }
 
   // ---------------------------------------------------------------------------
