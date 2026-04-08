@@ -85,28 +85,42 @@ export function constrainedTriangulate(outerLoop, holes = [], steinerPoints = []
   );
 
   // --- Step 2: Bowyer-Watson incremental insertion ---
-  // Triangle: [i, j, k] with adjacency info
-  // Using half-edge-free approach: store triangles as index triples + adjacency
+  // Optimized with edge→triangle map for O(1) adjacency lookups.
 
-  // Working triangle list — each entry: { v: [i,j,k], adj: [t_opposite_v0, t_opposite_v1, t_opposite_v2] }
-  // adj[i] = index of triangle sharing edge opposite vertex i, or -1
-  let triangles = [{ v: [n, n + 1, n + 2], adj: [-1, -1, -1] }];
+  // Working triangle list — index-based, nulled out on removal.
+  let triangles = [[n, n + 1, n + 2]];
+  let triCount = 1;
 
-  // Build a mapping for adjacency updates
-  function _findAdjacentTriangle(triIdx, edgeA, edgeB) {
-    // Find the triangle adjacent to triIdx across edge (edgeA, edgeB)
-    for (let t = 0; t < triangles.length; t++) {
-      if (t === triIdx || !triangles[t]) continue;
-      const tv = triangles[t].v;
-      let hasA = false, hasB = false;
-      for (let k = 0; k < 3; k++) {
-        if (tv[k] === edgeA) hasA = true;
-        if (tv[k] === edgeB) hasB = true;
-      }
-      if (hasA && hasB) return t;
+  // Edge → [triIdx, triIdx] map for fast adjacency
+  const bwEdge = new Map();
+  function bwKey(a, b) { return a < b ? (a * 131071 + b) : (b * 131071 + a); }
+
+  function bwAddTri(t) {
+    const tri = triangles[t];
+    const [a, b, c] = tri;
+    for (const [e0, e1] of [[a, b], [b, c], [c, a]]) {
+      const k = bwKey(e0, e1);
+      const arr = bwEdge.get(k);
+      if (!arr) bwEdge.set(k, [t]);
+      else arr.push(t);
     }
-    return -1;
   }
+
+  function bwRemoveTri(t) {
+    const tri = triangles[t];
+    const [a, b, c] = tri;
+    for (const [e0, e1] of [[a, b], [b, c], [c, a]]) {
+      const k = bwKey(e0, e1);
+      const arr = bwEdge.get(k);
+      if (arr) {
+        const idx = arr.indexOf(t);
+        if (idx >= 0) arr.splice(idx, 1);
+        if (arr.length === 0) bwEdge.delete(k);
+      }
+    }
+  }
+
+  bwAddTri(0);
 
   function _inCircumcircle(px, py, ax, ay, bx, by, cx, cy) {
     const dxA = ax - px, dyA = ay - py;
@@ -121,60 +135,101 @@ export function constrainedTriangulate(outerLoop, holes = [], steinerPoints = []
     return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
   }
 
+  function _isInCircum(t, px, py) {
+    const [a, b, c] = triangles[t];
+    const pa = points[a], pb = points[b], pc = points[c];
+    const orient = _orient2D(pa.x, pa.y, pb.x, pb.y, pc.x, pc.y);
+    if (orient > EPSILON) return _inCircumcircle(px, py, pa.x, pa.y, pb.x, pb.y, pc.x, pc.y);
+    if (orient < -EPSILON) return _inCircumcircle(px, py, pa.x, pa.y, pc.x, pc.y, pb.x, pb.y);
+    return true; // degenerate
+  }
+
+  // Locate triangle containing point by walking from a seed
+  // Falls back to brute-force if walk fails
+  function _locateTriangle(px, py) {
+    // Start from last active triangle
+    for (let t = triangles.length - 1; t >= 0; t--) {
+      if (triangles[t]) {
+        // Simple walk: check if centroid is closer
+        const [a, b, c] = triangles[t];
+        const pa = points[a], pb = points[b], pc = points[c];
+        // Point-in-triangle test
+        const d1 = _orient2D(px, py, pa.x, pa.y, pb.x, pb.y);
+        const d2 = _orient2D(px, py, pb.x, pb.y, pc.x, pc.y);
+        const d3 = _orient2D(px, py, pc.x, pc.y, pa.x, pa.y);
+        const hasNeg = (d1 < 0) || (d2 < 0) || (d3 < 0);
+        const hasPos = (d1 > 0) || (d2 > 0) || (d3 > 0);
+        if (!(hasNeg && hasPos)) return t; // Inside this triangle
+      }
+    }
+    return -1;
+  }
+
   // Insert each point using Bowyer-Watson
   for (let pi = 0; pi < n; pi++) {
     const px = points[pi].x, py = points[pi].y;
 
     // Find all triangles whose circumcircle contains the point
+    // Start from a seed triangle and BFS through adjacency
     const badTriangles = new Set();
-    for (let t = 0; t < triangles.length; t++) {
-      if (!triangles[t]) continue;
-      const [a, b, c] = triangles[t].v;
-      const pa = points[a], pb = points[b], pc = points[c];
-      // Ensure CCW for circumcircle test
-      const orient = _orient2D(pa.x, pa.y, pb.x, pb.y, pc.x, pc.y);
-      if (orient > EPSILON) {
-        if (_inCircumcircle(px, py, pa.x, pa.y, pb.x, pb.y, pc.x, pc.y)) {
-          badTriangles.add(t);
-        }
-      } else if (orient < -EPSILON) {
-        if (_inCircumcircle(px, py, pa.x, pa.y, pc.x, pc.y, pb.x, pb.y)) {
-          badTriangles.add(t);
-        }
-      } else {
-        // Degenerate triangle — remove it
-        badTriangles.add(t);
-      }
-    }
+    const seed = _locateTriangle(px, py);
 
-    // Find boundary polygon of the hole left by removing bad triangles
-    const boundary = []; // Array of [edgeA, edgeB]
-    for (const t of badTriangles) {
-      const [a, b, c] = triangles[t].v;
-      const edges = [[a, b], [b, c], [c, a]];
-      for (const [ea, eb] of edges) {
-        // An edge is boundary if it's not shared with another bad triangle
-        let shared = false;
-        for (const t2 of badTriangles) {
-          if (t2 === t) continue;
-          const v2 = triangles[t2].v;
-          let hasA = false, hasB = false;
-          for (let k = 0; k < 3; k++) {
-            if (v2[k] === ea) hasA = true;
-            if (v2[k] === eb) hasB = true;
+    if (seed >= 0 && _isInCircum(seed, px, py)) {
+      // BFS from seed through edge-connected neighbours
+      const queue = [seed];
+      badTriangles.add(seed);
+      while (queue.length > 0) {
+        const curr = queue.pop();
+        const [a, b, c] = triangles[curr];
+        for (const [e0, e1] of [[a, b], [b, c], [c, a]]) {
+          const k = bwKey(e0, e1);
+          const arr = bwEdge.get(k);
+          if (!arr) continue;
+          for (const nb of arr) {
+            if (nb === curr || badTriangles.has(nb) || !triangles[nb]) continue;
+            if (_isInCircum(nb, px, py)) {
+              badTriangles.add(nb);
+              queue.push(nb);
+            }
           }
-          if (hasA && hasB) { shared = true; break; }
         }
-        if (!shared) boundary.push([ea, eb]);
+      }
+    } else {
+      // Fallback: scan all triangles
+      for (let t = 0; t < triangles.length; t++) {
+        if (!triangles[t]) continue;
+        if (_isInCircum(t, px, py)) badTriangles.add(t);
       }
     }
 
-    // Remove bad triangles (null them out)
-    for (const t of badTriangles) triangles[t] = null;
+    // Find boundary polygon using edge counts (much faster than nested loops)
+    const edgeCounts = new Map();
+    for (const t of badTriangles) {
+      const [a, b, c] = triangles[t];
+      for (const [ea, eb] of [[a, b], [b, c], [c, a]]) {
+        const k = bwKey(ea, eb);
+        edgeCounts.set(k, (edgeCounts.get(k) || 0) + 1);
+      }
+    }
+    const boundary = [];
+    for (const t of badTriangles) {
+      const [a, b, c] = triangles[t];
+      for (const [ea, eb] of [[a, b], [b, c], [c, a]]) {
+        if (edgeCounts.get(bwKey(ea, eb)) === 1) boundary.push([ea, eb]);
+      }
+    }
+
+    // Remove bad triangles
+    for (const t of badTriangles) {
+      bwRemoveTri(t);
+      triangles[t] = null;
+    }
 
     // Create new triangles from each boundary edge to the inserted point
     for (const [ea, eb] of boundary) {
-      triangles.push({ v: [ea, eb, pi], adj: [-1, -1, -1] });
+      const t = triangles.length;
+      triangles.push([ea, eb, pi]);
+      bwAddTri(t);
     }
   }
 
@@ -182,7 +237,7 @@ export function constrainedTriangulate(outerLoop, holes = [], steinerPoints = []
   const result = [];
   for (let t = 0; t < triangles.length; t++) {
     if (!triangles[t]) continue;
-    const [a, b, c] = triangles[t].v;
+    const [a, b, c] = triangles[t];
     if (a >= n || b >= n || c >= n) continue;
     result.push([a, b, c]);
   }
@@ -208,83 +263,132 @@ export function constrainedTriangulate(outerLoop, holes = [], steinerPoints = []
 /**
  * Enforce constraint edges by flipping crossing edges.
  * Uses the incremental edge-flipping approach from Sloan (1993).
+ *
+ * Maintains an edge→triangle-index map for O(1) adjacency lookups
+ * and a vertex→triangle-set index to avoid scanning all triangles.
  */
 function _enforceConstraints(points, triList, constraintEdges) {
-  // Build edge → triangle indices map
-  function edgeKey(a, b) { return a < b ? `${a},${b}` : `${b},${a}`; }
+  // --- Edge → triangle index map (undirected) ---
+  const edgeMap = new Map();
+  function ekey(a, b) { return a < b ? (a * 131071 + b) : (b * 131071 + a); }
+
+  // --- Vertex → triangle index set ---
+  const vtxTris = new Map();
+
+  function _addTri(t) {
+    const tri = triList[t];
+    if (!tri) return;
+    const [a, b, c] = tri;
+    for (const [e0, e1] of [[a, b], [b, c], [c, a]]) {
+      const k = ekey(e0, e1);
+      let s = edgeMap.get(k);
+      if (!s) { s = new Set(); edgeMap.set(k, s); }
+      s.add(t);
+    }
+    for (const v of [a, b, c]) {
+      let s = vtxTris.get(v);
+      if (!s) { s = new Set(); vtxTris.set(v, s); }
+      s.add(t);
+    }
+  }
+
+  function _removeTri(t) {
+    const tri = triList[t];
+    if (!tri) return;
+    const [a, b, c] = tri;
+    for (const [e0, e1] of [[a, b], [b, c], [c, a]]) {
+      const k = ekey(e0, e1);
+      const s = edgeMap.get(k);
+      if (s) { s.delete(t); if (s.size === 0) edgeMap.delete(k); }
+    }
+    for (const v of [a, b, c]) {
+      const s = vtxTris.get(v);
+      if (s) s.delete(t);
+    }
+  }
+
+  // Build initial indices
+  for (let t = 0; t < triList.length; t++) {
+    if (triList[t]) _addTri(t);
+  }
+
+  function edgeExists(a, b) {
+    const s = edgeMap.get(ekey(a, b));
+    return s ? s.size > 0 : false;
+  }
+
+  function findAdj(excludeIdx, e0, e1) {
+    const s = edgeMap.get(ekey(e0, e1));
+    if (!s) return -1;
+    for (const t of s) {
+      if (t !== excludeIdx && triList[t]) return t;
+    }
+    return -1;
+  }
+
+  // Collect all triangles near the constraint by walking from vertex ca
+  // through triangles that might have crossing edges.
+  function findCrossingFlip(ca, cb) {
+    // Gather candidate triangles: all tris incident to any vertex that
+    // lies near the constraint segment. Start with tris around ca.
+    const seen = new Set();
+    const stack = [];
+
+    // Seed with triangles incident to ca
+    const seedA = vtxTris.get(ca);
+    if (seedA) for (const t of seedA) { seen.add(t); stack.push(t); }
+
+    // BFS outward along edges that cross the constraint
+    while (stack.length > 0) {
+      const t = stack.pop();
+      const tri = triList[t];
+      if (!tri) continue;
+      const [a, b, c] = tri;
+
+      const edges = [[a, b, c], [b, c, a], [c, a, b]];
+      for (const [e0, e1, eOpp] of edges) {
+        if (e0 === ca || e0 === cb || e1 === ca || e1 === cb) continue;
+        if (!_edgesCross(points, ca, cb, e0, e1)) continue;
+
+        const adjIdx = findAdj(t, e0, e1);
+        if (adjIdx === -1) continue;
+        const adjTri = triList[adjIdx];
+        if (!adjTri) continue;
+        const adjOpp = adjTri.find(v => v !== e0 && v !== e1);
+        if (adjOpp === undefined) continue;
+
+        const o1 = _orient(points, eOpp, adjOpp, e0);
+        const o2 = _orient(points, eOpp, adjOpp, e1);
+        if (o1 * o2 >= 0) {
+          // Can't flip — explore neighbour
+          if (!seen.has(adjIdx)) { seen.add(adjIdx); stack.push(adjIdx); }
+          continue;
+        }
+
+        // Flip
+        _removeTri(t);
+        _removeTri(adjIdx);
+        triList[t] = [eOpp, adjOpp, e1];
+        triList[adjIdx] = [eOpp, e0, adjOpp];
+        _addTri(t);
+        _addTri(adjIdx);
+        return true;
+      }
+    }
+    return false;
+  }
 
   for (const [ca, cb] of constraintEdges) {
-    // Check if the constraint edge already exists in the triangulation
-    if (_edgeExists(triList, ca, cb)) continue;
+    if (edgeExists(ca, cb)) continue;
 
-    // Find and flip edges that cross this constraint
-    // Simple approach: repeatedly find crossing edges and flip them
-    let maxIter = triList.length * 4;
-    while (!_edgeExists(triList, ca, cb) && maxIter-- > 0) {
-      let flipped = false;
-      for (let t = 0; t < triList.length; t++) {
-        const tri = triList[t];
-        if (!tri) continue;
-        const [a, b, c] = tri;
-
-        // Check each edge of this triangle for crossing with constraint
-        const edges = [[a, b, c], [b, c, a], [c, a, b]];
-        for (const [e0, e1, eOpp] of edges) {
-          if (!_edgesCross(points, ca, cb, e0, e1)) continue;
-          if (e0 === ca || e0 === cb || e1 === ca || e1 === cb) continue;
-
-          // Find the adjacent triangle sharing edge (e0, e1)
-          const adjIdx = _findAdjacentTri(triList, t, e0, e1);
-          if (adjIdx === -1) continue;
-
-          const adjTri = triList[adjIdx];
-          if (!adjTri) continue;
-
-          // Find the opposite vertex in the adjacent triangle
-          const adjOpp = adjTri.find(v => v !== e0 && v !== e1);
-          if (adjOpp === undefined) continue;
-
-          // Flip: replace (e0,e1) with (eOpp, adjOpp)
-          // Check that the flip produces valid (non-degenerate) triangles
-          const o1 = _orient(points, eOpp, adjOpp, e0);
-          const o2 = _orient(points, eOpp, adjOpp, e1);
-          if (o1 * o2 >= 0) continue; // Flip would create degenerate/overlapping triangles
-
-          triList[t] = [eOpp, adjOpp, e1];
-          triList[adjIdx] = [eOpp, e0, adjOpp];
-          flipped = true;
-          break;
-        }
-        if (flipped) break;
-      }
-      if (!flipped) break;  // No more flips possible
+    let maxIter = triList.length * 2;
+    while (!edgeExists(ca, cb) && maxIter-- > 0) {
+      if (!findCrossingFlip(ca, cb)) break;
     }
   }
 }
 
-function _edgeExists(triList, a, b) {
-  for (const tri of triList) {
-    if (!tri) continue;
-    const ia = tri.indexOf(a);
-    if (ia === -1) continue;
-    if (tri[(ia + 1) % 3] === b || tri[(ia + 2) % 3] === b) return true;
-  }
-  return false;
-}
 
-function _findAdjacentTri(triList, excludeIdx, e0, e1) {
-  for (let t = 0; t < triList.length; t++) {
-    if (t === excludeIdx || !triList[t]) continue;
-    const tri = triList[t];
-    let has0 = false, has1 = false;
-    for (let k = 0; k < 3; k++) {
-      if (tri[k] === e0) has0 = true;
-      if (tri[k] === e1) has1 = true;
-    }
-    if (has0 && has1) return t;
-  }
-  return -1;
-}
 
 function _orient(points, a, b, c) {
   const pa = points[a], pb = points[b], pc = points[c];

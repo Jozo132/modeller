@@ -296,6 +296,12 @@ export class Scene {
     yield* this.dimensions;
   }
 
+  /** Fast count of drawable shapes (avoids array allocation). */
+  entityCount() {
+    return this.segments.length + this.circles.length + this.arcs.length +
+      this.splines.length + this.texts.length + this.dimensions.length;
+  }
+
   /** All primitives including bare points. */
   *allPrimitives() {
     yield* this.points;

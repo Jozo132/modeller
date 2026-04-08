@@ -84,11 +84,14 @@ export class SketchFeature extends Feature {
       ...this.sketch.splines,
     ];
 
+    // Build spatial adjacency map for fast lookups and angle-based junction handling
+    const adjMap = _buildAdjacencyMap(traceableEdges);
+
     // Find all closed loops of connected edges in the sketch
     for (const edge of traceableEdges) {
       if (visited.has(edge.id || edge._arcId)) continue;
       
-      const profile = this._traceProfileEdges(edge, traceableEdges, visited);
+      const profile = this._traceProfileEdges(edge, traceableEdges, visited, adjMap);
       if (profile && profile.closed) {
         profiles.push(profile);
       }
@@ -103,12 +106,15 @@ export class SketchFeature extends Feature {
   /**
    * Trace a profile starting from an edge, following connected edges
    * through matching p1/p2 endpoints.
+   * Uses angle-based selection at junctions (degree ≥ 3 vertices) to
+   * pick the tightest CW turn, which traces the minimal face boundary.
    * @param {Object} startEdge - Starting edge (segment, arc-wrapper, or spline)
    * @param {Array} allEdges - All traceable edges
    * @param {Set} visited - Set of visited edge IDs
+   * @param {Object} adjMap - Adjacency map from _buildAdjacencyMap
    * @returns {Object|null} Profile object or null
    */
-  _traceProfileEdges(startEdge, allEdges, visited) {
+  _traceProfileEdges(startEdge, allEdges, visited, adjMap) {
     const points = [];
     const edges = [];
     const edgeId = e => e.id || e._arcId;
@@ -137,10 +143,31 @@ export class SketchFeature extends Feature {
       }
       edges.push(_buildEdgeMeta(current, forward, pointStartIndex, edgePoints.length));
       
-      // Find next connected edge
-      const connected = allEdges.find(e => 
-        !visited.has(edgeId(e)) && (_ptEq(e.p1, currentEnd) || _ptEq(e.p2, currentEnd))
-      );
+      // Find next connected edge using adjacency map with angle-based selection
+      const candidates = adjMap.getCandidates(currentEnd, visited, edgeId);
+      
+      let connected = null;
+      if (candidates.length === 1) {
+        connected = candidates[0].edge;
+      } else if (candidates.length > 1) {
+        // Junction: pick the edge making the tightest CW turn from the
+        // incoming direction. This traces the minimal face boundary (the
+        // face to the left of the directed edge).
+        const backAngle = Math.atan2(prevEnd.y - currentEnd.y, prevEnd.x - currentEnd.x);
+        let bestDelta = Infinity;
+        for (const cand of candidates) {
+          const outAngle = Math.atan2(cand.otherEnd.y - currentEnd.y, cand.otherEnd.x - currentEnd.x);
+          // CW angular distance from back direction
+          let delta = backAngle - outAngle;
+          // Normalize to (0, 2π] — exclude exact reverse (delta ≈ 0)
+          while (delta < 1e-9) delta += Math.PI * 2;
+          while (delta > Math.PI * 2 + 1e-9) delta -= Math.PI * 2;
+          if (delta < bestDelta) {
+            bestDelta = delta;
+            connected = cand.edge;
+          }
+        }
+      }
       
       if (!connected) break;
       
@@ -302,6 +329,58 @@ function _classifyProfileNesting(profiles) {
       profiles[pi].holes.push(i);
     }
   }
+}
+
+/**
+ * Build a spatial adjacency map for fast edge lookups at vertices.
+ * Groups edges by quantized endpoint coordinates so that getCandidates()
+ * is O(degree) instead of O(n) at each vertex.
+ * @param {Array} edges - All traceable edges (segments, arc-wrappers, splines)
+ * @returns {{getCandidates: Function}} Adjacency map with lookup method
+ */
+function _buildAdjacencyMap(edges) {
+  const cellSize = 1e-4; // must be > PT_TOL to group nearby points
+  const grid = new Map();
+  const ckey = (x, y) => `${Math.round(x / cellSize)},${Math.round(y / cellSize)}`;
+
+  for (const edge of edges) {
+    const eid = edge.id || edge._arcId;
+    // Register both directions of each edge
+    for (const [thisEnd, otherEnd] of [[edge.p1, edge.p2], [edge.p2, edge.p1]]) {
+      const key = ckey(thisEnd.x, thisEnd.y);
+      if (!grid.has(key)) grid.set(key, []);
+      grid.get(key).push({ edge, eid, thisEnd, otherEnd });
+    }
+  }
+
+  return {
+    /**
+     * Get all unvisited edge candidates at a given vertex.
+     * @param {{x:number,y:number}} pt - Vertex position
+     * @param {Set} visitedSet - Set of visited edge IDs
+     * @param {Function} edgeIdFn - Function to extract edge ID
+     * @returns {Array<{edge, otherEnd}>}
+     */
+    getCandidates(pt, visitedSet, edgeIdFn) {
+      const cx = Math.round(pt.x / cellSize);
+      const cy = Math.round(pt.y / cellSize);
+      const result = [];
+      // Check this cell and 8 neighbours to handle boundary tolerance
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          const entries = grid.get(`${cx + dx},${cy + dy}`);
+          if (!entries) continue;
+          for (const entry of entries) {
+            if (visitedSet.has(entry.eid)) continue;
+            if (_ptEq(entry.thisEnd, pt)) {
+              result.push(entry);
+            }
+          }
+        }
+      }
+      return result;
+    }
+  };
 }
 
 /**

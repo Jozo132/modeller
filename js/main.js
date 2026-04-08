@@ -9,7 +9,7 @@ import { HistoryTree } from './ui/historyTree.js';
 import { FeatureEditSession, EditSessionState } from './ui/featureEditSession.js';
 import { DiagnosticsPanel } from './ui/diagnosticsPanel.js';
 import { getFeatureIconSVG } from './ui/featureIcons.js';
-import { getSnappedPosition } from './snap.js';
+import { getSnappedPosition, invalidateSnapGrid } from './snap.js';
 import { undo, redo, takeSnapshot, setPartManager, getHistoryInfo, movePointer } from './history.js';
 import { downloadDXF, downloadFacesDXF } from './dxf/export.js';
 import { downloadSTL } from './stl/export.js';

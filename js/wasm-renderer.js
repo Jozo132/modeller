@@ -1863,8 +1863,15 @@ export class WasmRenderer {
 
     // --- Push points to WASM ---
     if (scene.points) {
+      // Pre-compute point reference counts in one pass to avoid O(points × entities)
+      const ptRefs = new Map();
+      for (const s of scene.segments) { ptRefs.set(s.p1, (ptRefs.get(s.p1) || 0) + 1); ptRefs.set(s.p2, (ptRefs.get(s.p2) || 0) + 1); }
+      for (const c of scene.circles) { ptRefs.set(c.center, (ptRefs.get(c.center) || 0) + 1); }
+      for (const a of scene.arcs) { ptRefs.set(a.center, (ptRefs.get(a.center) || 0) + 1); }
+      for (const spl of scene.splines) { for (const p of spl.points) ptRefs.set(p, (ptRefs.get(p) || 0) + 1); }
+
       scene.points.forEach((point) => {
-        const refs = scene.shapesUsingPoint ? scene.shapesUsingPoint(point).length : 1;
+        const refs = ptRefs.get(point) || 0;
         const isHover = hoverEntity && hoverEntity.id === point.id;
         const isFCPt = fc.points.has(point);
         if (refs <= 1 && !point.selected && !point.fixed && !isHover && !isFCPt) return;

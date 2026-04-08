@@ -5,6 +5,35 @@ import { debug, warn } from './logger.js';
 
 const SNAP_RADIUS = 15; // screen pixels
 
+// --- Spatial hash for snap points ---
+// Rebuilt lazily when entity count changes. World-space grid
+// lets findSnap check only nearby snap points instead of all entities.
+const _SNAP_CELL = 10; // world units per cell
+let _snapGrid = null;   // Map<string, Array<{x,y,type}>>
+let _snapGridCount = -1; // entity count when grid was built
+
+function _rebuildSnapGrid() {
+  const grid = new Map();
+  for (const entity of state.scene.shapes()) {
+    if (!entity.visible) continue;
+    if (!state.isLayerVisible(entity.layer)) continue;
+    const snaps = entity.getSnapPoints();
+    for (const snap of snaps) {
+      const cx = Math.floor(snap.x / _SNAP_CELL);
+      const cy = Math.floor(snap.y / _SNAP_CELL);
+      const key = `${cx},${cy}`;
+      if (!grid.has(key)) grid.set(key, []);
+      grid.get(key).push(snap);
+    }
+  }
+  _snapGrid = grid;
+}
+
+/** Invalidate the snap grid so it will be rebuilt on next findSnap call. */
+export function invalidateSnapGrid() {
+  _snapGridCount = -1;
+}
+
 /**
  * Find the best snap point near a screen position.
  * @param {number} sx - screen X
@@ -14,24 +43,43 @@ const SNAP_RADIUS = 15; // screen pixels
  */
 export function findSnap(sx, sy, viewport) {
   const opts = arguments[3] || {};
-  const t0 = performance.now();
   if (!state.snapEnabled) return null;
 
+  // Lazily rebuild the spatial grid when entities change
+  const count = state.scene.entityCount();
+  if (!_snapGrid || _snapGridCount !== count) {
+    _rebuildSnapGrid();
+    _snapGridCount = count;
+  }
+
   const world = viewport.screenToWorld(sx, sy);
+  // Convert snap radius to world coordinates for grid query
+  const worldRadius = SNAP_RADIUS / viewport.zoom;
+
   let bestDist = Infinity;
   let bestSnap = null;
 
-  // Entity snap points
-  for (const entity of state.entities) {
-    if (!entity.visible) continue;
-    if (!state.isLayerVisible(entity.layer)) continue;
-    const snaps = entity.getSnapPoints();
-    for (const snap of snaps) {
-      const s = viewport.worldToScreen(snap.x, snap.y);
-      const dist = Math.hypot(s.x - sx, s.y - sy);
-      if (dist < SNAP_RADIUS && dist < bestDist) {
-        bestDist = dist;
-        bestSnap = snap;
+  // Query only nearby grid cells
+  const minCX = Math.floor((world.x - worldRadius) / _SNAP_CELL);
+  const maxCX = Math.floor((world.x + worldRadius) / _SNAP_CELL);
+  const minCY = Math.floor((world.y - worldRadius) / _SNAP_CELL);
+  const maxCY = Math.floor((world.y + worldRadius) / _SNAP_CELL);
+
+  for (let cx = minCX; cx <= maxCX; cx++) {
+    for (let cy = minCY; cy <= maxCY; cy++) {
+      const snaps = _snapGrid.get(`${cx},${cy}`);
+      if (!snaps) continue;
+      for (const snap of snaps) {
+        // Quick world-space rejection before expensive screen transform
+        const dx = snap.x - world.x;
+        const dy = snap.y - world.y;
+        if (dx > worldRadius || dx < -worldRadius || dy > worldRadius || dy < -worldRadius) continue;
+        const s = viewport.worldToScreen(snap.x, snap.y);
+        const dist = Math.hypot(s.x - sx, s.y - sy);
+        if (dist < SNAP_RADIUS && dist < bestDist) {
+          bestDist = dist;
+          bestSnap = snap;
+        }
       }
     }
   }
@@ -54,18 +102,10 @@ export function findSnap(sx, sy, viewport) {
     const gs_screen = viewport.worldToScreen(gx, gy);
     const gridDist = Math.hypot(gs_screen.x - sx, gs_screen.y - sy);
     if (gridDist < SNAP_RADIUS) {
-      const dt = performance.now() - t0;
-      if (dt > 8) {
-        warn('findSnap slow (grid)', { ms: dt.toFixed(2), entities: state.entities.length });
-      }
       return { x: gx, y: gy, type: 'grid' };
     }
   }
 
-  const dt = performance.now() - t0;
-  if (dt > 8) {
-    warn('findSnap slow', { ms: dt.toFixed(2), entities: state.entities.length });
-  }
   return null;
 }
 
