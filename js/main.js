@@ -1466,6 +1466,8 @@ class App {
               this._selectedPlane = null;
               this._renderer3d.clearFaceSelection();
               this._renderer3d.clearEdgeSelection();
+              this._renderer3d.setHoveredEdge(-1);
+              this._renderer3d.setHoveredFace(-1);
               if (this._featurePanel) this._featurePanel.selectFeature(null);
               this._renderer3d.setSelectedFeature(null);
               if (this._parametersPanel) this._parametersPanel.clear();
@@ -5645,6 +5647,10 @@ class App {
       this._renderer3d.setHoveredPlane(null);
       this._renderer3d.setSelectedFeature(null);
       this._renderer3d.selectFace(-1);
+      this._renderer3d.clearGhostPreview();
+      this._renderer3d.clearExtrudeArrow();
+      this._renderer3d.setHoveredEdge(-1);
+      this._renderer3d.setHoveredFace(-1);
     }
 
     if (this._workspaceMode === 'part') {
@@ -6909,6 +6915,10 @@ class App {
       this._renderer3d._sketchPlaneDef = null;
       this._renderer3d.setMode('3d');
       this._renderer3d.setVisible(true);
+      this._renderer3d.clearGhostPreview();
+      this._renderer3d.clearExtrudeArrow();
+      this._renderer3d.setHoveredEdge(-1);
+      this._renderer3d.setHoveredFace(-1);
       // Restore camera orientation from before entering sketch mode
       if (this._savedOrbitState) {
         this._renderer3d.restoreOrbitState(this._savedOrbitState);
@@ -8082,6 +8092,10 @@ class App {
       this._renderer3d._sketchPlaneDef = null;
       this._renderer3d.setMode('3d');
       this._renderer3d.setVisible(true);
+      this._renderer3d.clearGhostPreview();
+      this._renderer3d.clearExtrudeArrow();
+      this._renderer3d.setHoveredEdge(-1);
+      this._renderer3d.setHoveredFace(-1);
       // Restore camera orientation from before entering sketch mode
       if (this._savedOrbitState) {
         this._renderer3d.restoreOrbitState(this._savedOrbitState);
@@ -8685,6 +8699,8 @@ class App {
     if (this._renderer3d) {
       this._renderer3d.clearGhostPreview();
       this._renderer3d.clearExtrudeArrow();
+      this._renderer3d.setHoveredEdge(-1);
+      this._renderer3d.setHoveredFace(-1);
     }
     this._extrudeHandleInfo = null;
     this._draggingExtrudeHandle = false;

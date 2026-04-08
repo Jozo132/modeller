@@ -140,11 +140,11 @@ function _drawFaceHighlightOverlay(gl, exec, mvp, highlightVerts, color) {
 
   const contextAttrs = typeof gl.getContextAttributes === 'function' ? gl.getContextAttributes() : null;
   const hasStencil = !!(contextAttrs && contextAttrs.stencil);
-  gl.enable(gl.BLEND);
+  exec.setBlend(true);
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-  gl.depthFunc(gl.LEQUAL);
-  gl.depthMask(false);
-  gl.disable(gl.CULL_FACE);
+  exec.setDepthFunc(gl.LEQUAL);
+  exec.setDepthWrite(false);
+  exec.setCullFace(false);
 
   if (hasStencil) {
     gl.enable(gl.STENCIL_TEST);
@@ -171,9 +171,9 @@ function _drawFaceHighlightOverlay(gl, exec, mvp, highlightVerts, color) {
     gl.stencilMask(0xFF);
   }
 
-  gl.depthMask(true);
-  gl.disable(gl.BLEND);
-  gl.enable(gl.CULL_FACE);
+  exec.setDepthWrite(true);
+  exec.setBlend(false);
+  exec.setCullFace(true);
   gl.cullFace(gl.BACK);
 }
 
@@ -2872,9 +2872,9 @@ export class WasmRenderer {
     if (!mvp) return;
 
     // Enable depth testing and backface culling for correct solid rendering
-    gl.enable(gl.DEPTH_TEST);
-    gl.depthFunc(gl.LEQUAL);
-    gl.enable(gl.CULL_FACE);
+    exec.setDepthTest(true);
+    exec.setDepthFunc(gl.LEQUAL);
+    exec.setCullFace(true);
     gl.cullFace(gl.BACK);
 
     if (hasMesh) {
@@ -2905,11 +2905,11 @@ export class WasmRenderer {
       });
 
       if (this._diagnosticBackfaceHatchEnabled) {
-        gl.enable(gl.BLEND);
+        exec.setBlend(true);
         gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-        gl.enable(gl.CULL_FACE);
+        exec.setCullFace(true);
         gl.cullFace(gl.FRONT);
-        gl.depthFunc(gl.LEQUAL);
+        exec.setDepthFunc(gl.LEQUAL);
 
         gl.useProgram(exec.programs[2]);
         gl.uniformMatrix4fv(exec.uniforms[2].uMVP, false, mvp);
@@ -2920,8 +2920,8 @@ export class WasmRenderer {
         gl.drawArrays(gl.TRIANGLES, 0, this._meshTriangleCount);
         gl.bindVertexArray(null);
 
-        gl.disable(gl.BLEND);
-        gl.enable(gl.CULL_FACE);
+        exec.setBlend(false);
+        exec.setCullFace(true);
         gl.cullFace(gl.BACK);
       }
 
@@ -2957,14 +2957,14 @@ export class WasmRenderer {
           gl.uniformMatrix4fv(exec.uniforms[1].uMVP, false, mvp);
           gl.uniform4f(exec.uniforms[1].uColor, 0.0, 0.8, 1.0, 1.0);
           gl.lineWidth(1.0);
-          gl.disable(gl.DEPTH_TEST);
+          exec.setDepthTest(false);
 
           gl.bindVertexArray(exec.vaoLine);
           gl.bindBuffer(gl.ARRAY_BUFFER, exec.vbo);
           gl.bufferData(gl.ARRAY_BUFFER, selEdgeData, gl.DYNAMIC_DRAW);
           gl.drawArrays(gl.LINES, 0, selEdgeVerts.length / 3);
           gl.bindVertexArray(null);
-          gl.enable(gl.DEPTH_TEST);
+          exec.setDepthTest(true);
         }
       }
 
@@ -2996,14 +2996,14 @@ export class WasmRenderer {
             gl.uniform4f(exec.uniforms[1].uColor, 1.0, 0.9, 0.0, 1.0);
           }
           gl.lineWidth(1.0);
-          gl.disable(gl.DEPTH_TEST);
+          exec.setDepthTest(false);
 
           gl.bindVertexArray(exec.vaoLine);
           gl.bindBuffer(gl.ARRAY_BUFFER, exec.vbo);
           gl.bufferData(gl.ARRAY_BUFFER, hovData, gl.DYNAMIC_DRAW);
           gl.drawArrays(gl.LINES, 0, hovVerts.length / 3);
           gl.bindVertexArray(null);
-          gl.enable(gl.DEPTH_TEST);
+          exec.setDepthTest(true);
         }
       }
 
@@ -3040,14 +3040,14 @@ export class WasmRenderer {
 
     // Draw ghost preview (semi-transparent extrude preview)
     if (hasGhost) {
-      gl.enable(gl.DEPTH_TEST);
-      gl.depthFunc(gl.LEQUAL);
-      gl.enable(gl.BLEND);
+      exec.setDepthTest(true);
+      exec.setDepthFunc(gl.LEQUAL);
+      exec.setBlend(true);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-      gl.disable(gl.CULL_FACE);
+      exec.setCullFace(false);
 
       // Ghost solid triangles
-      gl.enable(gl.POLYGON_OFFSET_FILL);
+      exec.setPolygonOffset(true);
       gl.polygonOffset(1.0, 1.0);
 
       gl.useProgram(exec.programs[0]);
@@ -3060,11 +3060,11 @@ export class WasmRenderer {
       gl.drawArrays(gl.TRIANGLES, 0, this._ghostTriangleCount);
       gl.bindVertexArray(null);
 
-      gl.disable(gl.POLYGON_OFFSET_FILL);
+      exec.setPolygonOffset(false);
 
       // Ghost wireframe edges (drawn through all geometry)
       if (this._ghostEdges && this._ghostEdgeVertexCount > 0) {
-        gl.disable(gl.DEPTH_TEST);
+        exec.setDepthTest(false);
         gl.useProgram(exec.programs[1]);
         gl.uniformMatrix4fv(exec.uniforms[1].uMVP, false, mvp);
         gl.uniform4f(exec.uniforms[1].uColor, 0.4, 0.7, 1.0, 1.0);
@@ -3086,7 +3086,7 @@ export class WasmRenderer {
           target: this._orbitTarget,
         });
         if (ghostSilData) {
-          gl.disable(gl.DEPTH_TEST);
+          exec.setDepthTest(false);
           gl.useProgram(exec.programs[1]);
           gl.uniformMatrix4fv(exec.uniforms[1].uMVP, false, mvp);
           gl.uniform4f(exec.uniforms[1].uColor, 0.4, 0.7, 1.0, 1.0);
@@ -3100,16 +3100,16 @@ export class WasmRenderer {
         }
       }
 
-      gl.enable(gl.DEPTH_TEST);
+      exec.setDepthTest(true);
 
-      gl.disable(gl.BLEND);
-      gl.enable(gl.CULL_FACE);
+      exec.setBlend(false);
+      exec.setCullFace(true);
       gl.cullFace(gl.BACK);
     }
 
     // Draw extrude handle arrow (always visible, drawn on top)
     if (hasArrow) {
-      gl.disable(gl.DEPTH_TEST);
+      exec.setDepthTest(false);
       gl.useProgram(exec.programs[1]);
       gl.uniformMatrix4fv(exec.uniforms[1].uMVP, false, mvp);
       if (this._extrudeArrowHovered) {
@@ -3123,7 +3123,7 @@ export class WasmRenderer {
       gl.bufferData(gl.ARRAY_BUFFER, this._extrudeArrowLines, gl.DYNAMIC_DRAW);
       gl.drawArrays(gl.LINES, 0, this._extrudeArrowVertexCount);
       gl.bindVertexArray(null);
-      gl.enable(gl.DEPTH_TEST);
+      exec.setDepthTest(true);
     }
 
     // Draw sketch wireframes (visible sketch primitives in 3D)
@@ -3131,9 +3131,9 @@ export class WasmRenderer {
     // z-fighting. Keep depth test enabled so sketches are properly occluded when
     // viewed from behind the face they lie on.
     if (hasSketchEdges) {
-      gl.enable(gl.DEPTH_TEST);
-      gl.depthFunc(gl.LEQUAL);
-      gl.disable(gl.CULL_FACE);
+      exec.setDepthTest(true);
+      exec.setDepthFunc(gl.LEQUAL);
+      exec.setCullFace(false);
       gl.useProgram(exec.programs[1]);
       gl.uniformMatrix4fv(exec.uniforms[1].uMVP, false, mvp);
       gl.uniform4f(exec.uniforms[1].uColor, 0.4, 0.7, 1.0, 1.0);
@@ -3148,9 +3148,9 @@ export class WasmRenderer {
 
     // Draw inactive sketch wireframes in grey (non-active sketches when editing one)
     if (hasInactiveEdges) {
-      gl.enable(gl.DEPTH_TEST);
-      gl.depthFunc(gl.LEQUAL);
-      gl.disable(gl.CULL_FACE);
+      exec.setDepthTest(true);
+      exec.setDepthFunc(gl.LEQUAL);
+      exec.setCullFace(false);
       gl.useProgram(exec.programs[1]);
       gl.uniformMatrix4fv(exec.uniforms[1].uMVP, false, mvp);
       gl.uniform4f(exec.uniforms[1].uColor, 0, 0, 0, 1.0);
@@ -3165,9 +3165,9 @@ export class WasmRenderer {
 
     // Draw selected sketch wireframes in highlight color (when sketch selected in tree)
     if (hasSelectedEdges) {
-      gl.enable(gl.DEPTH_TEST);
-      gl.depthFunc(gl.LEQUAL);
-      gl.disable(gl.CULL_FACE);
+      exec.setDepthTest(true);
+      exec.setDepthFunc(gl.LEQUAL);
+      exec.setCullFace(false);
       gl.useProgram(exec.programs[1]);
       gl.uniformMatrix4fv(exec.uniforms[1].uMVP, false, mvp);
       gl.uniform4f(exec.uniforms[1].uColor, 0.2, 0.6, 1.0, 1.0); // bright blue highlight
@@ -3185,8 +3185,8 @@ export class WasmRenderer {
     // them first, but the mesh overlay covers them. Re-render here with depth test
     // disabled so they always appear on top of the solid face.
     if (hasActiveScene) {
-      gl.disable(gl.DEPTH_TEST);
-      gl.disable(gl.CULL_FACE);
+      exec.setDepthTest(false);
+      exec.setCullFace(false);
       gl.useProgram(exec.programs[1]);
       gl.uniformMatrix4fv(exec.uniforms[1].uMVP, false, mvp);
       gl.uniform4f(exec.uniforms[1].uColor, 0.612, 0.863, 0.996, 1.0); // #9CDCFE sketch color
@@ -3197,15 +3197,15 @@ export class WasmRenderer {
       gl.bufferData(gl.ARRAY_BUFFER, this._activeSceneEdges, gl.DYNAMIC_DRAW);
       gl.drawArrays(gl.LINES, 0, this._activeSceneEdgeVertexCount);
       gl.bindVertexArray(null);
-      gl.enable(gl.DEPTH_TEST);
+      exec.setDepthTest(true);
     }
 
     // Restore WebGL state expected by the WASM executor on the next frame
     // (origin planes depend on blending for transparency).
-    gl.enable(gl.BLEND);
+    exec.setBlend(true);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-    gl.depthFunc(gl.LESS);
-    gl.disable(gl.CULL_FACE);
+    exec.setDepthFunc(gl.LESS);
+    exec.setCullFace(false);
   }
 
   /**
@@ -3338,6 +3338,15 @@ export class WasmRenderer {
     this._problemTriangleCount = 0;
     this._meshEdges = null;
     this._meshEdgeVertexCount = 0;
+    this._meshVisualEdges = null;
+    this._meshVisualEdgeVertexCount = 0;
+    this._meshDashedFeatureEdges = null;
+    this._meshDashedFeatureEdgeVertexCount = 0;
+    this._meshTriangleOverlayEdges = null;
+    this._meshTriangleOverlayEdgeVertexCount = 0;
+    this._meshSilhouetteCandidates = null;
+    this._meshBoundaryEdges = null;
+    this._meshBoundaryEdgeVertexCount = 0;
     this._meshFaces = null;
     this._triFaceMap = null;
     this._sketchEdges = null;
@@ -3353,6 +3362,10 @@ export class WasmRenderer {
     this._meshEdgePaths = null;
     this._edgeToPath = null;
     this._selectedEdgeIndices.clear();
+    this._hoveredEdgeIndex = -1;
+    this._hoveredFaceIndex = -1;
+    this.clearGhostPreview();
+    this.clearExtrudeArrow();
   }
 
   /**

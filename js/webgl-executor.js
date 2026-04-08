@@ -207,12 +207,66 @@ export class WebGLExecutor {
 
     gl.bindBuffer(gl.ARRAY_BUFFER, null);
 
+    // Software GL state shadow — avoids expensive getParameter/isEnabled GPU stalls
+    this._st = {
+      blend: false,
+      depthTest: false,
+      depthWrite: true,
+      depthFunc: gl.LESS,
+      cullFace: false,
+      polygonOffset: false,
+    };
+
     // Default state
     gl.enable(gl.DEPTH_TEST);
+    this._st.depthTest = true;
     gl.enable(gl.BLEND);
+    this._st.blend = true;
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
     this.currentProgram = -1;
+  }
+
+  // --- State management (updates shadow + GL, skips redundant calls) ---
+  setBlend(on) {
+    if (this._st.blend !== on) {
+      this._st.blend = on;
+      if (on) this.gl.enable(this.gl.BLEND);
+      else this.gl.disable(this.gl.BLEND);
+    }
+  }
+  setDepthTest(on) {
+    if (this._st.depthTest !== on) {
+      this._st.depthTest = on;
+      if (on) this.gl.enable(this.gl.DEPTH_TEST);
+      else this.gl.disable(this.gl.DEPTH_TEST);
+    }
+  }
+  setDepthWrite(on) {
+    if (this._st.depthWrite !== on) {
+      this._st.depthWrite = on;
+      this.gl.depthMask(on);
+    }
+  }
+  setDepthFunc(fn) {
+    if (this._st.depthFunc !== fn) {
+      this._st.depthFunc = fn;
+      this.gl.depthFunc(fn);
+    }
+  }
+  setCullFace(on) {
+    if (this._st.cullFace !== on) {
+      this._st.cullFace = on;
+      if (on) this.gl.enable(this.gl.CULL_FACE);
+      else this.gl.disable(this.gl.CULL_FACE);
+    }
+  }
+  setPolygonOffset(on) {
+    if (this._st.polygonOffset !== on) {
+      this._st.polygonOffset = on;
+      if (on) this.gl.enable(this.gl.POLYGON_OFFSET_FILL);
+      else this.gl.disable(this.gl.POLYGON_OFFSET_FILL);
+    }
   }
 
   resize(width, height) {
@@ -228,22 +282,20 @@ export class WebGLExecutor {
 
   drawTriangleBuffer(data, vertexCount, options) {
     const gl = this.gl;
-    const previousBlend = gl.isEnabled(gl.BLEND);
-    const previousCull = gl.isEnabled(gl.CULL_FACE);
-    const previousPolygonOffset = gl.isEnabled(gl.POLYGON_OFFSET_FILL);
+    const prevBlend = this._st.blend;
+    const prevCull = this._st.cullFace;
+    const prevPolyOff = this._st.polygonOffset;
 
     gl.viewport(0, 0, this.width, this.height);
     if ((options.color?.[3] ?? 1) < 1) {
-      gl.enable(gl.BLEND);
+      this.setBlend(true);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-    } else if (!previousBlend) {
-      gl.disable(gl.BLEND);
     }
-    gl.enable(gl.CULL_FACE);
+    this.setCullFace(true);
     gl.cullFace(gl.BACK);
 
     if (options.polygonOffset) {
-      gl.enable(gl.POLYGON_OFFSET_FILL);
+      this.setPolygonOffset(true);
       gl.polygonOffset(options.polygonOffset[0], options.polygonOffset[1]);
     }
 
@@ -260,24 +312,24 @@ export class WebGLExecutor {
     gl.drawArrays(gl.TRIANGLES, 0, vertexCount);
     gl.bindVertexArray(null);
 
-    if (!previousPolygonOffset) gl.disable(gl.POLYGON_OFFSET_FILL);
-    if (!previousCull) gl.disable(gl.CULL_FACE);
-    if (!previousBlend) gl.disable(gl.BLEND);
+    this.setPolygonOffset(prevPolyOff);
+    this.setCullFace(prevCull);
+    this.setBlend(prevBlend);
   }
 
   drawTriangleBufferNormalColor(data, vertexCount, options) {
     const gl = this.gl;
-    const prevBlend = gl.isEnabled(gl.BLEND);
-    const prevCull = gl.isEnabled(gl.CULL_FACE);
-    const prevPolyOff = gl.isEnabled(gl.POLYGON_OFFSET_FILL);
+    const prevBlend = this._st.blend;
+    const prevCull = this._st.cullFace;
+    const prevPolyOff = this._st.polygonOffset;
 
     gl.viewport(0, 0, this.width, this.height);
-    gl.disable(gl.BLEND);
-    gl.enable(gl.CULL_FACE);
+    this.setBlend(false);
+    this.setCullFace(true);
     gl.cullFace(gl.BACK);
 
     if (options.polygonOffset) {
-      gl.enable(gl.POLYGON_OFFSET_FILL);
+      this.setPolygonOffset(true);
       gl.polygonOffset(options.polygonOffset[0], options.polygonOffset[1]);
     }
 
@@ -293,42 +345,36 @@ export class WebGLExecutor {
     gl.drawArrays(gl.TRIANGLES, 0, vertexCount);
     gl.bindVertexArray(null);
 
-    if (!prevPolyOff) gl.disable(gl.POLYGON_OFFSET_FILL);
-    if (!prevCull) gl.disable(gl.CULL_FACE);
-    if (!prevBlend) gl.disable(gl.BLEND);
+    this.setPolygonOffset(prevPolyOff);
+    this.setCullFace(prevCull);
+    this.setBlend(prevBlend);
   }
 
   drawLineBuffer(data, vertexCount, options) {
     const gl = this.gl;
-    const previousBlend = gl.isEnabled(gl.BLEND);
-    const previousDepthTest = gl.isEnabled(gl.DEPTH_TEST);
-    const previousDepthWrite = gl.getParameter(gl.DEPTH_WRITEMASK);
-    const previousDepthFunc = gl.getParameter(gl.DEPTH_FUNC);
+    const prevBlend = this._st.blend;
+    const prevDepthTest = this._st.depthTest;
+    const prevDepthWrite = this._st.depthWrite;
+    const prevDepthFunc = this._st.depthFunc;
 
     gl.viewport(0, 0, this.width, this.height);
     if ((options.color?.[3] ?? 1) < 1) {
-      gl.enable(gl.BLEND);
+      this.setBlend(true);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-    } else if (!previousBlend) {
-      gl.disable(gl.BLEND);
     }
 
-    if (options.depthTest === false) {
-      gl.disable(gl.DEPTH_TEST);
-    } else {
-      gl.enable(gl.DEPTH_TEST);
-    }
+    this.setDepthTest(options.depthTest !== false);
 
     if (options.depthFunc === 'greater') {
-      gl.depthFunc(gl.GREATER);
+      this.setDepthFunc(gl.GREATER);
     } else if (options.depthFunc === 'always') {
-      gl.depthFunc(gl.ALWAYS);
+      this.setDepthFunc(gl.ALWAYS);
     } else {
-      gl.depthFunc(gl.LEQUAL);
+      this.setDepthFunc(gl.LEQUAL);
     }
 
     if (Object.prototype.hasOwnProperty.call(options, 'depthWrite')) {
-      gl.depthMask(!!options.depthWrite);
+      this.setDepthWrite(!!options.depthWrite);
     }
 
     gl.useProgram(this.programs[1]);
@@ -342,23 +388,20 @@ export class WebGLExecutor {
     gl.drawArrays(gl.LINES, 0, vertexCount);
     gl.bindVertexArray(null);
 
-    if (!previousBlend) gl.disable(gl.BLEND);
-    if (previousDepthTest) gl.enable(gl.DEPTH_TEST);
-    else gl.disable(gl.DEPTH_TEST);
-    gl.depthMask(previousDepthWrite);
-    gl.depthFunc(previousDepthFunc);
+    this.setBlend(prevBlend);
+    this.setDepthTest(prevDepthTest);
+    this.setDepthWrite(prevDepthWrite);
+    this.setDepthFunc(prevDepthFunc);
   }
 
   drawPointBuffer(data, vertexCount, options) {
     const gl = this.gl;
-    const previousBlend = gl.isEnabled(gl.BLEND);
+    const prevBlend = this._st.blend;
 
     gl.viewport(0, 0, this.width, this.height);
     if ((options.color?.[3] ?? 1) < 1) {
-      gl.enable(gl.BLEND);
+      this.setBlend(true);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-    } else if (!previousBlend) {
-      gl.disable(gl.BLEND);
     }
 
     gl.useProgram(this.programs[1]);
@@ -372,7 +415,7 @@ export class WebGLExecutor {
     gl.drawArrays(gl.POINTS, 0, vertexCount);
     gl.bindVertexArray(null);
 
-    if (!previousBlend) gl.disable(gl.BLEND);
+    this.setBlend(prevBlend);
   }
 
   execute(commandBuffer, length) {
@@ -492,11 +535,7 @@ export class WebGLExecutor {
         case CMD_SET_DEPTH_TEST: {
           const enabled = i32View[pos];
           pos++;
-          if (enabled) {
-            gl.enable(gl.DEPTH_TEST);
-          } else {
-            gl.disable(gl.DEPTH_TEST);
-          }
+          this.setDepthTest(!!enabled);
           break;
         }
 
@@ -510,7 +549,7 @@ export class WebGLExecutor {
         case CMD_SET_DEPTH_WRITE: {
           const enabled = i32View[pos];
           pos++;
-          gl.depthMask(!!enabled);
+          this.setDepthWrite(!!enabled);
           break;
         }
 
