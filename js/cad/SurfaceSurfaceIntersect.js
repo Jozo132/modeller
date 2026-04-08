@@ -96,11 +96,52 @@ function _planePlane(planeA, planeB, tol) {
 
   const curve = NurbsCurve.createLine(p0, p1);
 
+  // Compute proper UV parameters on both surfaces for the line endpoints.
+  // For NurbsSurface.createPlane(origin, uDir, vDir) the parameterization is
+  // S(u,v) = origin + u*uDir + v*vDir, so we solve for (u,v) analytically.
+  const paramsA = [_computePlaneUV(planeA, p0), _computePlaneUV(planeA, p1)];
+  const paramsB = [_computePlaneUV(planeB, p0), _computePlaneUV(planeB, p1)];
+
   return [{
     curve,
-    paramsA: [{ u: 0, v: 0 }, { u: 1, v: 1 }],
-    paramsB: [{ u: 0, v: 0 }, { u: 1, v: 1 }],
+    paramsA,
+    paramsB,
   }];
+}
+
+/**
+ * Compute (u,v) parameters on a planar NurbsSurface for a given 3D point.
+ *
+ * For a surface created via NurbsSurface.createPlane(origin, uDir, vDir),
+ * the control points are [origin, origin+vDir, origin+uDir, origin+uDir+vDir]
+ * giving S(u,v) = origin + u*uDir + v*vDir.
+ *
+ * We solve (p - origin) = u*uDir + v*vDir via a 2×2 linear system.
+ */
+function _computePlaneUV(planeSurface, point3D) {
+  const cp = planeSurface.controlPoints;
+  if (!cp || cp.length < 4) return { u: 0, v: 0 };
+
+  // Extract basis: CP layout is [origin, origin+vDir, origin+uDir, origin+uDir+vDir]
+  const orig = cp[0];
+  const uDir = { x: cp[2].x - cp[0].x, y: cp[2].y - cp[0].y, z: cp[2].z - cp[0].z };
+  const vDir = { x: cp[1].x - cp[0].x, y: cp[1].y - cp[0].y, z: cp[1].z - cp[0].z };
+  const dp = { x: point3D.x - orig.x, y: point3D.y - orig.y, z: point3D.z - orig.z };
+
+  // Gram matrix entries
+  const uu = uDir.x * uDir.x + uDir.y * uDir.y + uDir.z * uDir.z;
+  const uv = uDir.x * vDir.x + uDir.y * vDir.y + uDir.z * vDir.z;
+  const vv = vDir.x * vDir.x + vDir.y * vDir.y + vDir.z * vDir.z;
+  const up = uDir.x * dp.x + uDir.y * dp.y + uDir.z * dp.z;
+  const vp = vDir.x * dp.x + vDir.y * dp.y + vDir.z * dp.z;
+
+  const det = uu * vv - uv * uv;
+  if (Math.abs(det) < 1e-20) return { u: 0, v: 0 };
+
+  return {
+    u: (vv * up - uv * vp) / det,
+    v: (uu * vp - uv * up) / det,
+  };
 }
 
 // -----------------------------------------------------------------------

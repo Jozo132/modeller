@@ -28,6 +28,7 @@ import { DEFAULT_TOLERANCE, Tolerance } from './Tolerance.js';
 import { SurfaceType, TopoFace, TopoLoop, TopoCoEdge, TopoEdge, TopoVertex } from './BRepTopology.js';
 import { NurbsSurface } from './NurbsSurface.js';
 import { NurbsCurve } from './NurbsCurve.js';
+import { constrainedTriangulate } from './Tessellator2/CDT.js';
 import { validateIntersections, validateFragments, validateFinalBody } from './IntersectionValidator.js';
 import { healFragments } from './Healing.js';
 import { ResultGrade, FallbackDiagnostics } from './fallback/FallbackDiagnostics.js';
@@ -94,15 +95,19 @@ function _exactBooleanOpInner(bodyA, bodyB, operation, tol) {
       return !ixValidation.diagnostics.some(d => d.detail.startsWith(`intersection[${i}]`));
     });
     if (validIx.length === 0 && intersections.length > 0) {
-      // All intersections invalid — return bodies unmodified via fallback
-      const fallbackBody = buildBody([...bodyA.faces(), ...bodyB.faces()], tol);
-      const mesh = tessellateBody(fallbackBody);
-      return { body: fallbackBody, mesh, diagnostics };
+      // All intersections failed validation.  Rather than discarding the
+      // entire boolean result (which produces a union-like merge of all
+      // faces), proceed with the original intersections.  The 3D curves
+      // are typically still correct even when surface UV parameters are
+      // inaccurate, and the downstream face splitter for planar faces
+      // only uses the 3D curve geometry, not the UV params.
+      diagnostics.allIntersectionsInvalid = true;
+    } else {
+      // Use only valid intersections
+      intersections.length = 0;
+      intersections.push(...validIx);
+      diagnostics.filteredIntersections = true;
     }
-    // Use only valid intersections
-    intersections.length = 0;
-    intersections.push(...validIx);
-    diagnostics.filteredIntersections = true;
   }
 
   // Step 3-4: Split faces by intersection curves
@@ -234,14 +239,82 @@ function _splitAllFaces(body, intersections, side, tol) {
   for (const face of body.faces()) {
     const curves = faceIntersectionMap.get(face.id);
     if (curves && curves.length > 0) {
-      const frags = splitFace(face, curves, tol);
-      fragments.push(...frags);
+      // Faces with inner loops must be decomposed into simple (hole-free)
+      // sub-faces first, because the planar face splitter only operates
+      // on the outer loop.  CDT gives us triangles that respect both the
+      // outer boundary and hole boundaries; each triangle is then split
+      // individually by the intersection curves.
+      if (face.innerLoops && face.innerLoops.length > 0 && face.surfaceType === SurfaceType.PLANE) {
+        const subFaces = _decomposeFaceWithHoles(face, tol);
+        for (const sub of subFaces) {
+          const frags = splitFace(sub, curves, tol);
+          fragments.push(...frags);
+        }
+      } else {
+        const frags = splitFace(face, curves, tol);
+        fragments.push(...frags);
+      }
     } else {
       fragments.push(face);
     }
   }
 
   return fragments;
+}
+
+/**
+ * Decompose a planar face with inner loops into simple (hole-free) triangle
+ * faces via CDT.  The resulting triangles share the same surface / sameSense
+ * and can be split individually by intersection curves.
+ */
+function _decomposeFaceWithHoles(face, tol) {
+  const outerPts = face.outerLoop ? face.outerLoop.points() : [];
+  if (outerPts.length < 3) return [face];
+
+  // Project to 2D along the face normal
+  const normal = _fragmentFaceNormal(face);
+  const ax = Math.abs(normal.x), ay = Math.abs(normal.y), az = Math.abs(normal.z);
+  let toU, toV;
+  if (az >= ax && az >= ay) { toU = p => p.x; toV = p => p.y; }
+  else if (ay >= ax) { toU = p => p.x; toV = p => p.z; }
+  else { toU = p => p.y; toV = p => p.z; }
+
+  const outer2D = outerPts.map(p => ({ x: toU(p), y: toV(p) }));
+  const holes2D = face.innerLoops.map(il => il.points().map(p => ({ x: toU(p), y: toV(p) })));
+
+  // All 3D points in one flat array: outer + holes
+  const all3D = [...outerPts];
+  for (const il of face.innerLoops) all3D.push(...il.points());
+
+  const triIndices = constrainedTriangulate(outer2D, holes2D);
+  if (triIndices.length === 0) return [face];
+
+  const results = [];
+  for (const [i0, i1, i2] of triIndices) {
+    const p0 = all3D[i0], p1 = all3D[i1], p2 = all3D[i2];
+    if (!p0 || !p1 || !p2) continue;
+
+    const triPts = [{ ...p0 }, { ...p1 }, { ...p2 }];
+    const sub = new TopoFace(
+      face.surface ? face.surface.clone() : null,
+      face.surfaceType,
+      face.sameSense,
+    );
+    sub.shared = face.shared ? { ...face.shared } : null;
+    sub.tolerance = face.tolerance;
+
+    const vertices = triPts.map(pt => new TopoVertex(pt, tol.pointCoincidence));
+    const coedges = [];
+    for (let k = 0; k < 3; k++) {
+      const v0 = vertices[k], v1 = vertices[(k + 1) % 3];
+      const edge = new TopoEdge(v0, v1, NurbsCurve.createLine(v0.point, v1.point), tol.edgeOverlap);
+      coedges.push(new TopoCoEdge(edge, true, null));
+    }
+    sub.setOuterLoop(new TopoLoop(coedges));
+    results.push(sub);
+  }
+
+  return results.length > 0 ? results : [face];
 }
 
 /**
