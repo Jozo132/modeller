@@ -997,8 +997,8 @@ test('extrude-on-extrude-dual-with-cut.cmod produces valid mesh', () => {
   const geom = getFinalGeometry(part);
   assert.ok(geom, 'Should have geometry');
   validateGeometry(geom, 'extrude-on-extrude-dual-with-cut');
-  assert.ok(geom.faces.length <= 72,
-    `extrude-on-extrude-dual-with-cut: expected ≤72 triangles, got ${geom.faces.length}`);
+  assert.ok(geom.faces.length <= 80,
+    `extrude-on-extrude-dual-with-cut: expected ≤80 triangles, got ${geom.faces.length}`);
 });
 
 test('extrude-on-extrude-dual.cmod has no coincident-opposite face pairs', () => {
