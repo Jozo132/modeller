@@ -342,7 +342,21 @@ function _refineCoincidentClassification(fragment, body, tol) {
       z: fragCentroid.z - fragN.z * probeOffset,
     };
     const probeResult = containmentClassifyPoint(body, probePt, { tolerance: tol });
-    return (probeResult.state === 'inside') ? 'coincident' : 'outside';
+    if (probeResult.state === 'inside') return 'coincident';
+
+    // Interior side is outside: for opposite-sense normals, probe the
+    // exterior side to detect touching solids (see _classifyPlanarPolygon).
+    if (dotN < 0) {
+      const extProbePt = {
+        x: fragCentroid.x + fragN.x * probeOffset,
+        y: fragCentroid.y + fragN.y * probeOffset,
+        z: fragCentroid.z + fragN.z * probeOffset,
+      };
+      const extResult = containmentClassifyPoint(body, extProbePt, { tolerance: tol });
+      if (extResult.state === 'inside') return 'coincident-opposite';
+    }
+
+    return 'outside';
   }
 
   // No coplanar overlap found — the fragment was near the boundary but
@@ -382,12 +396,18 @@ function _fragmentFaceNormal(face) {
 /**
  * Determine whether to keep a fragment based on classification and operation.
  *
- * @param {'inside'|'outside'|'coincident'} classification
+ * @param {'inside'|'outside'|'coincident'|'coincident-opposite'} classification
  * @param {'union'|'subtract'|'intersect'} operation
  * @param {'A'|'B'} operand
  * @returns {boolean}
  */
 function _shouldKeep(classification, operation, operand) {
+  // Coincident-opposite faces are always internal boundaries where two
+  // solids touch at a shared face with opposite normals.  They must be
+  // discarded in every boolean operation to avoid leaving double-faced
+  // internal surfaces in the result.
+  if (classification === 'coincident-opposite') return false;
+
   switch (operation) {
     case 'union':
       // Keep outside fragments from both operands
@@ -588,6 +608,24 @@ function _classifyPlanarPolygon(poly, body, tol) {
       // at this face.  The face is an internal boundary → 'coincident'.
       return 'coincident';
     }
+
+    // Interior side is outside the other body.  For opposite-sense coplanar
+    // faces (dotN < 0) this may indicate two solids touching at a shared
+    // boundary.  Probe the exterior side: if the exterior is inside the
+    // other body, this face is an internal interface between touching solids
+    // and must be classified as 'coincident-opposite' so it gets discarded.
+    if (dotN < 0) {
+      const extProbePt = {
+        x: c.x + n.x * probeOffset,
+        y: c.y + n.y * probeOffset,
+        z: c.z + n.z * probeOffset,
+      };
+      const extResult = containmentClassifyPoint(body, extProbePt, { tolerance: tol });
+      if (extResult.state === 'inside') {
+        return 'coincident-opposite';
+      }
+    }
+
     // The interior side is outside the other body → bodies merely touch.
     // The face sits on the exterior of the other body → 'outside'.
     return 'outside';
