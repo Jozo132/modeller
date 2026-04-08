@@ -2495,7 +2495,9 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
 
     // Order the three vertices so the resulting face normal points
     // outward (away from the solid interior).  The outward direction
-    // is from the interior towards the sphere center.
+    // is from the sphere center towards the surface (centroid - center).
+    // `centerToVert` = sphereCenter − centroid points INWARD, so if the
+    // polygon normal aligns with it, the winding is inward and must flip.
     const v0 = triVertices[0], v1 = triVertices[1], v2 = triVertices[2];
     const polyNormal = _computePolygonNormal([v0, v1, v2]);
     const centerToVert = _vec3Normalize(_vec3Sub(sphereCenter, {
@@ -2503,14 +2505,16 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
       y: (v0.y + v1.y + v2.y) / 3,
       z: (v0.z + v1.z + v2.z) / 3,
     }));
-    const outward = polyNormal && _vec3Dot(polyNormal, centerToVert) > 0;
-    const orderedVerts = outward ? [v0, v1, v2] : [v0, v2, v1];
+    // If polyNormal aligns with centerToVert, it points inward → need flip
+    const inward = polyNormal && _vec3Dot(polyNormal, centerToVert) > 0;
+    const orderedVerts = inward ? [v0, v2, v1] : [v0, v1, v2];
 
     // Store the arc curves and sphere metadata on the corner face
     // so _buildExactTrihedronFaceDesc can use them for edge curves.
+    const outNormal = inward ? _vec3Scale(polyNormal, -1) : polyNormal;
     trimmedFaces.push({
       vertices: orderedVerts.map(v => ({ ...v })),
-      normal: outward ? polyNormal : _vec3Scale(polyNormal, -1),
+      normal: outNormal,
       isCorner: true,
       _triVerts: orderedVerts.map(v => ({ ...v })),
       _sphereCenter: { ...sphereCenter },
