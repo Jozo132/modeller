@@ -3538,6 +3538,15 @@ export class WasmRenderer {
   }
 
   /**
+   * Get raw mesh triangle data for export.
+   * @returns {{triangles: Float32Array, vertexCount: number}|null}
+   */
+  getMeshTriangles() {
+    if (!this._meshTriangles || this._meshTriangleCount <= 0) return null;
+    return { triangles: this._meshTriangles, vertexCount: this._meshTriangleCount };
+  }
+
+  /**
    * Check whether part mesh geometry has been built.
    * @returns {boolean} True if mesh triangles exist
    */

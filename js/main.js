@@ -12,6 +12,7 @@ import { getFeatureIconSVG } from './ui/featureIcons.js';
 import { getSnappedPosition } from './snap.js';
 import { undo, redo, takeSnapshot, setPartManager, getHistoryInfo, movePointer } from './history.js';
 import { downloadDXF, downloadFacesDXF } from './dxf/export.js';
+import { downloadSTL } from './stl/export.js';
 import { openDXFFile, pickDXFFile, addDXFToScene, dxfBounds, parseDXFGeometry } from './dxf/import.js';
 import { pickSVGFile, addSVGToScene, svgBounds, parseSVGGeometry } from './svg/import.js';
 import { importSTEP } from './cad/StepImport.js';
@@ -1920,6 +1921,7 @@ class App {
           case 'export-step': this._exportSTEPFile(); break;
           case 'import-dxf': this._importDXFToSketch(); break;
           case 'export-dxf': this._exportDXFFromFaces(); break;
+          case 'export-stl': this._exportSTLFile(); break;
           case 'import-svg': this._importSVGToSketch(); break;
           // Dynamic examples are handled via event delegation below
           case 'toggle-grid': document.getElementById('btn-grid-toggle')?.click(); break;
@@ -6142,6 +6144,22 @@ class App {
       error('STEP export failed:', err);
       this.setStatus(`STEP export failed: ${err.message}`);
     }
+  }
+
+  _exportSTLFile() {
+    if (!this._renderer3d) {
+      this.setStatus('3D renderer not available');
+      return;
+    }
+    const mesh = this._renderer3d.getMeshTriangles();
+    if (!mesh) {
+      this.setStatus('No mesh geometry to export');
+      return;
+    }
+    const part = this._partManager?.getPart();
+    const name = part?.name || 'part';
+    downloadSTL(mesh.triangles, mesh.vertexCount, { filename: name + '.stl', name });
+    this.setStatus('STL file exported');
   }
 
   _exportDXFFromFaces() {
