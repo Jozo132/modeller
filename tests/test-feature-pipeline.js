@@ -905,6 +905,11 @@ test('extrude-on-extrude.cmod produces valid mesh', () => {
   const geom = getFinalGeometry(part);
   assert.ok(geom, 'Should have geometry');
   validateGeometry(geom, 'extrude-on-extrude');
+  // After AABB culling + collinear vertex removal, non-intersecting faces
+  // should remain simple quads. A box+box union produces 11 BRep faces:
+  // 10 simple quads (2 tris each) + 1 face-with-hole (~8 tris) = ~28.
+  assert.ok(geom.faces.length <= 36,
+    `extrude-on-extrude: expected ≤36 triangles, got ${geom.faces.length}`);
 });
 
 test('extrude-on-extrude-dual.cmod produces valid mesh', () => {
@@ -913,6 +918,8 @@ test('extrude-on-extrude-dual.cmod produces valid mesh', () => {
   const geom = getFinalGeometry(part);
   assert.ok(geom, 'Should have geometry');
   validateGeometry(geom, 'extrude-on-extrude-dual');
+  assert.ok(geom.faces.length <= 60,
+    `extrude-on-extrude-dual: expected ≤60 triangles, got ${geom.faces.length}`);
 });
 
 test('extrude-on-extrude-dual-failing-sketch-select.cmod produces valid mesh', () => {
@@ -929,6 +936,8 @@ test('extrude-on-extrude-dual-with-cut.cmod produces valid mesh', () => {
   const geom = getFinalGeometry(part);
   assert.ok(geom, 'Should have geometry');
   validateGeometry(geom, 'extrude-on-extrude-dual-with-cut');
+  assert.ok(geom.faces.length <= 72,
+    `extrude-on-extrude-dual-with-cut: expected ≤72 triangles, got ${geom.faces.length}`);
 });
 
 test('extrude-on-extrude-dual-with-cut-and-radius.cmod (fillet after cut) produces valid mesh', () => {
