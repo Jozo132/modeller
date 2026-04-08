@@ -23,7 +23,7 @@ import { splitFace, classifyFragment } from './FaceSplitter.js';
 import { classifyPoint as containmentClassifyPoint } from './Containment.js';
 import { buildBody } from './ShellBuilder.js';
 import { tessellateBody } from './Tessellation.js';
-import { mergeCoplanarFaces } from './CoplanarMerge.js';
+import { mergeCoplanarFaces, removeCollinearEdgeVertices } from './CoplanarMerge.js';
 import { DEFAULT_TOLERANCE, Tolerance } from './Tolerance.js';
 import { SurfaceType, TopoFace, TopoLoop, TopoCoEdge, TopoEdge, TopoVertex } from './BRepTopology.js';
 import { NurbsSurface } from './NurbsSurface.js';
@@ -134,6 +134,7 @@ function _exactBooleanOpInner(bodyA, bodyB, operation, tol) {
   // single original face. This consolidation step reduces face count
   // and downstream triangle output.
   mergeCoplanarFaces(resultBody, tol);
+  removeCollinearEdgeVertices(resultBody, tol);
 
   // Step 9: Validate final body — attach diagnostics
   const bodyValidation = validateFinalBody(resultBody, tol);
@@ -202,6 +203,7 @@ function _exactPlanarBoolean(bodyA, bodyB, operation, tol) {
   const faces = stitchedPolys.map(poly => _polygonToTopoFace(poly, tol)).filter(Boolean);
   const resultBody = buildBody(faces, tol);
   mergeCoplanarFaces(resultBody, tol);
+  removeCollinearEdgeVertices(resultBody, tol);
   const mesh = tessellateBody(resultBody);
   return { body: resultBody, mesh };
 }
@@ -324,13 +326,58 @@ function _splitPolygonsByBody(polygons, body, tol) {
       normal: splitter.normal,
       w: _dot(splitter.normal, splitter.vertices[0]),
     };
+    // Only split fragments whose bounding box overlaps the splitter face's
+    // bounding box.  Planes of distant faces cannot represent actual body
+    // boundaries in the region of the fragment, so splitting by them is
+    // unnecessary and produces excess fragments / triangles.
+    const sBounds = _polygonBounds(splitter.vertices);
     const next = [];
     for (const poly of fragments) {
-      next.push(..._splitPolygonByPlane(poly, plane, tol));
+      const pBounds = _polygonBounds(poly.vertices);
+      if (_boundsOverlap(pBounds, sBounds, tol)) {
+        next.push(..._splitPolygonByPlane(poly, plane, tol));
+      } else {
+        next.push(poly);
+      }
     }
     fragments = next;
   }
   return fragments;
+}
+
+/**
+ * Compute axis-aligned bounding box for a set of vertices.
+ * @param {Array<{x:number,y:number,z:number}>} verts
+ * @returns {{minX:number,maxX:number,minY:number,maxY:number,minZ:number,maxZ:number}}
+ */
+function _polygonBounds(verts) {
+  let minX = Infinity, maxX = -Infinity;
+  let minY = Infinity, maxY = -Infinity;
+  let minZ = Infinity, maxZ = -Infinity;
+  for (const v of verts) {
+    if (v.x < minX) minX = v.x;
+    if (v.x > maxX) maxX = v.x;
+    if (v.y < minY) minY = v.y;
+    if (v.y > maxY) maxY = v.y;
+    if (v.z < minZ) minZ = v.z;
+    if (v.z > maxZ) maxZ = v.z;
+  }
+  return { minX, maxX, minY, maxY, minZ, maxZ };
+}
+
+/**
+ * Check if two 3D bounding boxes overlap (within tolerance).
+ * @param {{minX:number,maxX:number,minY:number,maxY:number,minZ:number,maxZ:number}} a
+ * @param {{minX:number,maxX:number,minY:number,maxY:number,minZ:number,maxZ:number}} b
+ * @param {Object} tol
+ * @returns {boolean}
+ */
+function _boundsOverlap(a, b, tol) {
+  const eps = tol.intersection ?? 1e-6;
+  if (a.maxX < b.minX - eps || a.minX > b.maxX + eps) return false;
+  if (a.maxY < b.minY - eps || a.minY > b.maxY + eps) return false;
+  if (a.maxZ < b.minZ - eps || a.minZ > b.maxZ + eps) return false;
+  return true;
 }
 
 function _splitPolygonByPlane(poly, plane, tol) {
