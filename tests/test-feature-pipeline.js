@@ -780,10 +780,12 @@ test('box-fillet-2-s.cmod (two sequential fillets) produces valid mesh', () => {
 });
 
 test('box-fillet-2-s.cmod junction has no boundary notch', () => {
-  // Verify that the sequential fillet junction extends the trim smoothly:
-  // on the shared planar face (right face, x=10), the boundary should
-  // go from the fillet offset at z=9.5 directly to the intersection
-  // with the previous fillet's arc, without a z>9.5 "notch".
+  // Verify that the sequential fillet junction handles the trim smoothly:
+  // on the shared planar face (right face, x=10), there should be NO
+  // vertices with z > 9.51 between the fillet-2 rail and the fillet-1 arc.
+  // With the intersection curve approach, the old trim vertex at (10,1,9.5)
+  // is replaced by the intersection point at ~(10,0.134,9.5), and the
+  // corner face is eliminated entirely.
   const part = loadCMOD('box-fillet-2-s.cmod');
   assert.ok(part, 'Should load box-fillet-2-s.cmod');
   const geom = getFinalGeometry(part);
@@ -805,23 +807,27 @@ test('box-fillet-2-s.cmod junction has no boundary notch', () => {
   }
   assert.ok(rightFace, 'Should find right face');
 
-  // Extract boundary z-values near y=1 (the junction)
+  // Extract boundary vertices
   const coedges = rightFace.outerLoop.coedges;
   const verts = coedges.map(ce =>
     ce.sameSense !== false ? ce.edge.startVertex.point : ce.edge.endVertex.point);
 
-  // Find the trim vertex near (10, 1, 9.5)
-  const trimIdx = verts.findIndex(v =>
-    Math.abs(v.x - 10) < 0.01 && Math.abs(v.y - 1) < 0.01 && Math.abs(v.z - 9.5) < 0.01);
-  assert.ok(trimIdx >= 0, 'Should find trim vertex at (10,1,9.5)');
+  // No vertex on the right face should have z > 9.51 (no notch above z=9.5)
+  for (const v of verts) {
+    assert.ok(v.z <= 9.51,
+      `Right face vertex should have z≤9.51, got z=${v.z.toFixed(3)} at y=${v.y.toFixed(3)} (notch detected)`);
+  }
 
-  // The next vertex after the trim should be the intersection point,
-  // NOT an arc point with z > 9.5. Check that z <= 9.51 for the
-  // next vertex (allowing small tolerance).
-  const nextIdx = (trimIdx + 1) % verts.length;
-  const nextV = verts[nextIdx];
-  assert.ok(nextV.z <= 9.51,
-    `Next vertex after trim should have z≤9.51, got z=${nextV.z.toFixed(3)} (notch detected)`);
+  // Should have the intersection point near (10, 0.134, 9.5)
+  const intPtIdx = verts.findIndex(v =>
+    Math.abs(v.x - 10) < 0.01 && v.y < 0.2 && Math.abs(v.z - 9.5) < 0.01);
+  assert.ok(intPtIdx >= 0, 'Should find intersection point near (10, 0.134, 9.5)');
+
+  // Should NOT have the old corner face trim vertex at (10, 1, 9.5)
+  const oldTrimIdx = verts.findIndex(v =>
+    Math.abs(v.x - 10) < 0.01 && Math.abs(v.y - 1) < 0.01 && Math.abs(v.z - 9.5) < 0.01);
+  assert.ok(oldTrimIdx < 0,
+    'Should NOT have old trim vertex at (10,1,9.5) — intersection curve replaces it');
 });
 
 test('box-fillet-3-p.cmod (two parallel fillets then single fillet) produces valid mesh', () => {

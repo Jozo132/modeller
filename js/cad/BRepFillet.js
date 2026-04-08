@@ -586,48 +586,54 @@ function _buildExactFilletFaceDesc(data) {
   const trimB = data && (data.sharedTrimB || data.arcB);
   if (!surface || !trimA || !trimB || trimA.length < 2 || trimB.length < 2) return null;
 
+  // Junction curves override standard arc endpoints at junction ends
+  const juncA = data._junctionCurveA;
+  const juncB = data._junctionCurveB;
+  const hasJuncA = !!(juncA && juncA.length >= 2);
+  const hasJuncB = !!(juncB && juncB.length >= 2);
+
+  // Effective arc boundaries: junction curve replaces standard arc at junctions
+  // Junction curve goes from face0-trim to intPt (replacing face1-trim)
+  const effArcA = hasJuncA ? juncA : trimA;
+  const effArcB = hasJuncB ? juncB : trimB;
+
   const denseBoundary = [
-    ...trimA.map((point) => ({ ...point })),
-    ...[...trimB].reverse().map((point) => ({ ...point })),
+    ...effArcA.map((point) => ({ ...point })),
+    ...[...effArcB].reverse().map((point) => ({ ...point })),
   ];
 
   let vertices = [
-    { ...trimA[0] },
-    { ...trimA[trimA.length - 1] },
-    { ...trimB[trimB.length - 1] },
-    { ...trimB[0] },
+    { ...effArcA[0] },
+    { ...effArcA[effArcA.length - 1] },
+    { ...effArcB[effArcB.length - 1] },
+    { ...effArcB[0] },
   ];
 
   // Build edge curves for the fillet face.
   // Edges 0 and 2 are the arc cross-section boundaries (A and B sides).
   // Edges 1 and 3 are straight-line connections between the rails.
-  //
-  // When the fillet is used in a BRep context (only 4 corner vertices),
-  // the side boundary edges (edges 0 and 2) must use straight lines so
-  // they can be shared with adjacent planar faces via buildTopoBody's
-  // edge deduplication. The NURBS surface itself provides the actual arc
-  // geometry; the edge curves just define the topological boundary.
   const useSimpleSideEdges = data._brepSideEdges !== false;
   let edgeCurves;
   if (useSimpleSideEdges) {
-    // For non-shared arcs, use straight lines — they will be replaced later
-    // by _replaceEdgesWithArcCurves to match adjacent planar faces.
-    // For shared trim edges (where two fillet strips meet at a corner),
-    // use the actual trim curve (polyline or elliptic arc) instead of a
-    // straight line.  This produces the correct smooth boundary at
-    // multi-edge fillet intersections rather than a diagonal artifact.
     const hasSharedA = !!(data && data.sharedTrimA);
     const hasSharedB = !!(data && data.sharedTrimB);
 
-    let edgeCurve0 = NurbsCurve.createLine(trimA[0], trimA[trimA.length - 1]);
-    let edgeCurve2 = NurbsCurve.createLine(trimB[trimB.length - 1], trimB[0]);
+    let edgeCurve0 = NurbsCurve.createLine(effArcA[0], effArcA[effArcA.length - 1]);
+    let edgeCurve2 = NurbsCurve.createLine(effArcB[effArcB.length - 1], effArcB[0]);
 
-    if (hasSharedA && trimA.length > 2) {
+    // Junction curve: use polyline from sampled intersection points
+    if (hasJuncA && juncA.length > 2) {
+      const curve = _curveFromSampledPoints(juncA);
+      if (curve) edgeCurve0 = curve;
+    } else if (hasSharedA && trimA.length > 2) {
       const curve = _buildExactFilletBoundaryCurve(data, trimA, 'A', true);
       if (curve) edgeCurve0 = curve;
     }
-    if (hasSharedB && trimB.length > 2) {
-      // Edge 2 runs from trimB[last] to trimB[0] — reversed direction
+    if (hasJuncB && juncB.length > 2) {
+      const reversed = [...juncB].reverse();
+      const curve = _curveFromSampledPoints(reversed);
+      if (curve) edgeCurve2 = curve;
+    } else if (hasSharedB && trimB.length > 2) {
       const reversedTrimB = [...trimB].reverse();
       const curve = _buildExactFilletBoundaryCurve(data, reversedTrimB, 'B', true);
       if (curve) edgeCurve2 = curve;
@@ -635,9 +641,9 @@ function _buildExactFilletFaceDesc(data) {
 
     edgeCurves = [
       edgeCurve0,
-      NurbsCurve.createLine(trimA[trimA.length - 1], trimB[trimB.length - 1]),
+      NurbsCurve.createLine(effArcA[effArcA.length - 1], effArcB[effArcB.length - 1]),
       edgeCurve2,
-      NurbsCurve.createLine(trimB[0], trimA[0]),
+      NurbsCurve.createLine(effArcB[0], effArcA[0]),
     ];
   } else {
     edgeCurves = [
@@ -1170,46 +1176,229 @@ function _replaceEdgesWithArcCurves(faceDescs, edgeDataList, faces, origTopoFace
 // -----------------------------------------------------------------------
 
 /**
+ * Compute the 3D intersection curve between two fillet cylinders.
+ *
+ * The previous fillet has axis `prevAxisDir` and radius R1.
+ * The new fillet has axis `newAxisDir` and radius R2.
+ * The intersection is parameterized along d3 = cross(prevAxisDir, newAxisDir).
+ *
+ * @param {Object} prevFillet - { axisStart, axisEnd, radius, topoFaceId }
+ * @param {Object} newData   - Current fillet edge data
+ * @param {Array<Object>} faces
+ * @param {number} radius    - New fillet radius
+ * @param {boolean} isA      - Which end of the new fillet edge
+ * @param {Object} origTopoBody
+ * @param {number} segments  - Number of curve samples
+ * @returns {{ curve: Array<{x,y,z}>, intPt: {x,y,z} } | null}
+ */
+function _computeFilletFilletIntersectionCurve(
+  prevFillet, newData, faces, radius, isA, origTopoBody, segments = 16,
+) {
+  if (!prevFillet || !prevFillet.axisStart || !prevFillet.axisEnd || !prevFillet.radius) return null;
+  if (!origTopoBody || !origTopoBody.shells) return null;
+
+  const edgeVertex = isA ? newData.edgeA : newData.edgeB;
+  const R1 = prevFillet.radius;
+  const R2 = radius;
+
+  // Previous fillet axis direction
+  const prevAxisDir = _vec3Normalize(_vec3Sub(prevFillet.axisEnd, prevFillet.axisStart));
+
+  // Find previous fillet TopoFace
+  let prevTopoFace = null;
+  for (const shell of origTopoBody.shells) {
+    for (const face of (shell.faces || [])) {
+      if (face.id === prevFillet.topoFaceId) {
+        prevTopoFace = face;
+        break;
+      }
+    }
+    if (prevTopoFace) break;
+  }
+  if (!prevTopoFace || !prevTopoFace.outerLoop) return null;
+
+  // Extract vertices of previous fillet face
+  const prevVerts = prevTopoFace.outerLoop.coedges.map(ce =>
+    ce.sameSense !== false ? ce.edge.startVertex.point : ce.edge.endVertex.point);
+
+  // Find vertices at the junction cross-section (same axis parameter as edgeVertex)
+  const evProj = _vec3Dot(_vec3Sub(edgeVertex, prevFillet.axisStart), prevAxisDir);
+  const junctionVerts = prevVerts.filter(v => {
+    const proj = _vec3Dot(_vec3Sub(v, prevFillet.axisStart), prevAxisDir);
+    return Math.abs(proj - evProj) < 0.01;
+  });
+  if (junctionVerts.length < 2) return null;
+
+  // Find the two distinct arc endpoints on the previous fillet
+  const arcP0 = junctionVerts[0];
+  let arcP1 = null;
+  for (let i = 1; i < junctionVerts.length; i++) {
+    if (_vec3Len(_vec3Sub(junctionVerts[i], arcP0)) > 0.01) {
+      arcP1 = junctionVerts[i];
+      break;
+    }
+  }
+  if (!arcP1) return null;
+
+  // Compute previous fillet's arc center using chord midpoint + height
+  const chord = _vec3Sub(arcP1, arcP0);
+  const midpt = _vec3Lerp(arcP0, arcP1, 0.5);
+  const chordLen = _vec3Len(chord);
+  const halfChord = chordLen / 2;
+  if (halfChord >= R1 - 1e-8) return null;
+
+  const h = Math.sqrt(Math.max(0, R1 * R1 - halfChord * halfChord));
+  const chordDir = _vec3Scale(chord, 1 / chordLen);
+  const perpDir = _vec3Normalize(_vec3Cross(chordDir, prevAxisDir));
+  if (_vec3Len(perpDir) < 1e-6) return null;
+
+  // Two possible centers; choose the one farther from the ORIGINAL edge
+  // point (projected onto the previous fillet's axis). The correct center
+  // is the one offset INTO the body, away from the original sharp edge.
+  const center1 = _vec3Add(midpt, _vec3Scale(perpDir, h));
+  const center2 = _vec3Sub(midpt, _vec3Scale(perpDir, h));
+  const origEdgePt = _vec3Add(prevFillet.axisStart, _vec3Scale(prevAxisDir, evProj));
+  const dc1 = _vec3Len(_vec3Sub(center1, origEdgePt));
+  const dc2 = _vec3Len(_vec3Sub(center2, origEdgePt));
+  const prevCylCenter = dc1 > dc2 ? center1 : center2;
+
+  // Compute new fillet cylinder center
+  const { offsDir0, offsDir1 } = _computeOffsetDirs(
+    faces[newData.fi0], faces[newData.fi1], newData.edgeA, newData.edgeB,
+  );
+  const alpha2 = Math.acos(Math.max(-1, Math.min(1, _vec3Dot(offsDir0, offsDir1))));
+  if (alpha2 < 1e-6) return null;
+  const centerDist2 = R2 / Math.sin(alpha2 / 2);
+  const bisector2 = _vec3Normalize(_vec3Add(offsDir0, offsDir1));
+  if (_vec3Len(bisector2) < 1e-6) return null; // opposite offset dirs
+  const newAxisDir = _vec3Normalize(_vec3Sub(newData.edgeB, newData.edgeA));
+  const newCylCenter = _vec3Add(edgeVertex, _vec3Scale(bisector2, centerDist2));
+
+  // Compute 3D intersection curve using orthogonal projection
+  const d3 = _vec3Normalize(_vec3Cross(prevAxisDir, newAxisDir));
+  if (_vec3Len(d3) < 1e-6) return null; // parallel axes
+
+  // Project cylinder centers onto the three orthogonal axes
+  const prevC_d1 = _vec3Dot(prevCylCenter, prevAxisDir);
+  const prevC_d2 = _vec3Dot(prevCylCenter, newAxisDir);
+  const prevC_d3 = _vec3Dot(prevCylCenter, d3);
+
+  const newC_d1 = _vec3Dot(newCylCenter, prevAxisDir);
+  const newC_d2 = _vec3Dot(newCylCenter, newAxisDir);
+  const newC_d3 = _vec3Dot(newCylCenter, d3);
+
+  // Restrict d3 range to arc overlap
+  const arcP0_d3 = _vec3Dot(arcP0, d3);
+  const arcP1_d3 = _vec3Dot(arcP1, d3);
+  const prevArc_d3_min = Math.min(arcP0_d3, arcP1_d3);
+  const prevArc_d3_max = Math.max(arcP0_d3, arcP1_d3);
+
+  const face0Trim = isA ? newData.p0a : newData.p0b;
+  const face1Trim = isA ? newData.p1a : newData.p1b;
+  const ft0_d3 = _vec3Dot(face0Trim, d3);
+  const ft1_d3 = _vec3Dot(face1Trim, d3);
+  const newArc_d3_min = Math.min(ft0_d3, ft1_d3);
+  const newArc_d3_max = Math.max(ft0_d3, ft1_d3);
+
+  const eff_d3_min = Math.max(prevArc_d3_min, newArc_d3_min, prevC_d3 - R1, newC_d3 - R2);
+  const eff_d3_max = Math.min(prevArc_d3_max, newArc_d3_max, prevC_d3 + R1, newC_d3 + R2);
+  if (eff_d3_max - eff_d3_min < 1e-8) return null;
+
+  // Determine which branch of sqrt to use
+  const arcP0_d2 = _vec3Dot(arcP0, newAxisDir);
+  const arcP1_d2 = _vec3Dot(arcP1, newAxisDir);
+  const arcMid_d2 = (arcP0_d2 + arcP1_d2) / 2;
+  const sign_prev_d2 = arcMid_d2 > prevC_d2 ? 1 : -1;
+
+  const ft0_d1 = _vec3Dot(face0Trim, prevAxisDir);
+  const ft1_d1 = _vec3Dot(face1Trim, prevAxisDir);
+  const ftMid_d1 = (ft0_d1 + ft1_d1) / 2;
+  const sign_new_d1 = ftMid_d1 > newC_d1 ? 1 : -1;
+
+  // Sample the intersection curve
+  const numSamples = Math.max(segments, 8);
+  const curvePoints = [];
+  for (let i = 0; i <= numSamples; i++) {
+    const d3val = eff_d3_min + (i / numSamples) * (eff_d3_max - eff_d3_min);
+
+    const sq_prev = R1 * R1 - (d3val - prevC_d3) * (d3val - prevC_d3);
+    const sq_new = R2 * R2 - (d3val - newC_d3) * (d3val - newC_d3);
+    if (sq_prev < 0 || sq_new < 0) continue;
+
+    const d1val = newC_d1 + sign_new_d1 * Math.sqrt(sq_new);
+    const d2val = prevC_d2 + sign_prev_d2 * Math.sqrt(sq_prev);
+
+    const comp_d1 = _vec3Scale(prevAxisDir, d1val);
+    const comp_d2 = _vec3Scale(newAxisDir, d2val);
+    const comp_d3 = _vec3Scale(d3, d3val);
+    const pt = _vec3Add(_vec3Add(comp_d1, comp_d2), comp_d3);
+    curvePoints.push(pt);
+  }
+
+  if (curvePoints.length < 2) return null;
+
+  // Orient curve to start near face0 trim, end near face1 trim
+  const dFirst = _vec3Len(_vec3Sub(curvePoints[0], face0Trim));
+  const dLast = _vec3Len(_vec3Sub(curvePoints[curvePoints.length - 1], face0Trim));
+  if (dLast < dFirst) curvePoints.reverse();
+
+  const intPt = curvePoints[curvePoints.length - 1];
+  return { curve: curvePoints, intPt };
+}
+
+/**
  * Extend fillet trim lines at junctions with previous fillet arcs.
  *
  * When a new fillet meets a previous fillet at a shared vertex on a planar
  * face, the boundary creates an abrupt "notch" where the new fillet's
  * offset jumps back to the previous fillet's arc.  This function detects
- * such junctions and:
+ * such junctions and either:
  *
- * 1. Computes where the new fillet's offset line intersects the previous
- *    fillet's arc on the shared planar face.
- * 2. Removes arc vertices that are "above" (closer to the original edge
- *    than) the offset distance.
- * 3. Inserts the intersection point for a smooth transition.
- * 4. Creates a corner face to fill the triangular gap.
+ * (a) Computes the 3D intersection curve between the two fillet cylinders
+ *     and uses it to smoothly clip the first fillet (no corner face), or
  *
- * Mutates trimmedFaces in place, and pushes corner faces into the array.
+ * (b) Falls back to the old approach: removes above-offset arc vertices,
+ *     inserts the offset-arc intersection point, and creates a corner face.
  *
  * @param {Array<Object>} trimmedFaces - Trimmed mesh-level faces (mutated)
  * @param {Array<Object>} edgeDataList - Fillet edge data
  * @param {Array<Object>} faces        - Original extracted faces (pre-trim)
  * @param {Object}        origTopoBody - Input TopoBody (may have previous fillet surfaces)
+ * @param {number}        radius       - New fillet radius
  */
-function _extendTrimsAtPreviousFilletJunctions(trimmedFaces, edgeDataList, faces, origTopoBody) {
+function _extendTrimsAtPreviousFilletJunctions(trimmedFaces, edgeDataList, faces, origTopoBody, radius) {
   if (!origTopoBody || !origTopoBody.shells) return;
 
-  // Build lookup: vertex key → has non-planar adjacent face?
-  const vertexHasNonPlanar = new Set();
+  // Build lookup: vertex key → previous fillet info (axis, radius, topoFaceId) | null
+  const vertexPrevFillet = new Map();
   for (const shell of origTopoBody.shells) {
     for (const topoFace of (shell.faces || [])) {
       if (topoFace.surfaceType === 'plane') continue;
       if (!topoFace.outerLoop) continue;
+      const shared = topoFace.shared;
+      const hasMeta = shared && shared.isFillet &&
+        shared._exactAxisStart && shared._exactAxisEnd && shared._exactRadius;
       for (const ce of topoFace.outerLoop.coedges) {
-        vertexHasNonPlanar.add(_edgeVKey(ce.edge.startVertex.point));
-        vertexHasNonPlanar.add(_edgeVKey(ce.edge.endVertex.point));
+        const sk = _edgeVKey(ce.edge.startVertex.point);
+        const ek = _edgeVKey(ce.edge.endVertex.point);
+        if (hasMeta) {
+          const info = {
+            axisStart: shared._exactAxisStart,
+            axisEnd: shared._exactAxisEnd,
+            radius: shared._exactRadius,
+            topoFaceId: topoFace.id,
+          };
+          vertexPrevFillet.set(sk, info);
+          vertexPrevFillet.set(ek, info);
+        } else {
+          if (!vertexPrevFillet.has(sk)) vertexPrevFillet.set(sk, null);
+          if (!vertexPrevFillet.has(ek)) vertexPrevFillet.set(ek, null);
+        }
       }
     }
   }
 
   for (const data of edgeDataList) {
-    // Compute tangent distance from the trim points (available before
-    // _exactRadius is set in the surface-building step).
     const tangentDist = _vec3Len(_vec3Sub(data.p0a, data.edgeA));
     if (!tangentDist || tangentDist < 1e-10) continue;
 
@@ -1219,40 +1408,227 @@ function _extendTrimsAtPreviousFilletJunctions(trimmedFaces, edgeDataList, faces
 
     for (const isA of [true, false]) {
       const edgeVertex = isA ? data.edgeA : data.edgeB;
-      if (!vertexHasNonPlanar.has(_edgeVKey(edgeVertex))) continue;
+      const evk = _edgeVKey(edgeVertex);
+      if (!vertexPrevFillet.has(evk)) continue;
 
-      // This endpoint is at a previous fillet junction.
-      // Process both adjacent planar faces (fi0 and fi1).
-      const sideParams = [
-        { fi: data.fi0, offsDir: offsDir0, p: isA ? data.p0a : data.p0b },
-        { fi: data.fi1, offsDir: offsDir1, p: isA ? data.p1a : data.p1b },
-      ];
+      const prevFillet = vertexPrevFillet.get(evk);
 
-      for (const { fi, offsDir, p: trimPt } of sideParams) {
-        const origFace = faces[fi];
-        if (!origFace) continue;
-        const topoFaceId = origFace.topoFaceId;
-        if (topoFaceId === undefined) continue;
-
-        // Find the trimmed face for this planar face
-        const trimmedFace = trimmedFaces.find(
-          (f) => f.topoFaceId === topoFaceId,
-        );
-        if (!trimmedFace) continue;
-
-        const trimVK = _edgeVKey(trimPt);
-        const n = trimmedFace.vertices.length;
-        const trimIdx = trimmedFace.vertices.findIndex(
-          (v) => _edgeVKey(v) === trimVK,
-        );
-        if (trimIdx < 0) continue;
-
-        // Try both walk directions from the trim point
-        _tryExtendTrimDirection(
-          trimmedFace, trimmedFaces, trimIdx, edgeVertex,
-          offsDir, tangentDist, trimPt,
+      // Attempt to compute 3D intersection curve
+      let intCurve = null;
+      if (prevFillet) {
+        intCurve = _computeFilletFilletIntersectionCurve(
+          prevFillet, data, faces, radius, isA, origTopoBody,
         );
       }
+
+      if (intCurve && intCurve.curve && intCurve.curve.length >= 2) {
+        // Store the junction curve on the edge data for _buildExactFilletFaceDesc
+        if (isA) {
+          data._junctionCurveA = intCurve.curve;
+          data._junctionIntPtA = intCurve.intPt;
+        } else {
+          data._junctionCurveB = intCurve.curve;
+          data._junctionIntPtB = intCurve.intPt;
+        }
+
+        // Modify mesh-level trimmed faces at the junction
+        _applyJunctionCurveToMesh(
+          trimmedFaces, data, faces, edgeVertex,
+          offsDir0, offsDir1, tangentDist, intCurve, isA,
+        );
+      } else {
+        // Fallback: old flat-clip approach (corner face + offset intersection)
+        const sideParams = [
+          { fi: data.fi0, offsDir: offsDir0, p: isA ? data.p0a : data.p0b },
+          { fi: data.fi1, offsDir: offsDir1, p: isA ? data.p1a : data.p1b },
+        ];
+        for (const { fi, offsDir, p: trimPt } of sideParams) {
+          const origFace = faces[fi];
+          if (!origFace) continue;
+          const topoFaceId = origFace.topoFaceId;
+          if (topoFaceId === undefined) continue;
+          const trimmedFace = trimmedFaces.find(
+            (f) => f.topoFaceId === topoFaceId,
+          );
+          if (!trimmedFace) continue;
+          const trimVK = _edgeVKey(trimPt);
+          const trimIdx = trimmedFace.vertices.findIndex(
+            (v) => _edgeVKey(v) === trimVK,
+          );
+          if (trimIdx < 0) continue;
+          _tryExtendTrimDirection(
+            trimmedFace, trimmedFaces, trimIdx, edgeVertex,
+            offsDir, tangentDist, trimPt,
+          );
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Apply the 3D intersection curve to mesh-level trimmed faces.
+ *
+ * For each adjacent planar face at the junction:
+ * - Finds above-offset arc vertices between the trim point and the
+ *   first vertex below the intersection.
+ * - Removes the trim point AND the above-offset vertices.
+ * - Inserts the intersection point (intPt) in their place.
+ *
+ * For the previous fillet face:
+ * - Removes arc vertices above the intersection.
+ * - Inserts intPt into the boundary and stores the junction curve.
+ *
+ * Does NOT create a corner face — the junction is handled by the
+ * intersection curve shared between the two fillet surfaces.
+ */
+function _applyJunctionCurveToMesh(
+  trimmedFaces, data, faces, edgeVertex,
+  offsDir0, offsDir1, tangentDist, intCurve, isA,
+) {
+  const { intPt } = intCurve;
+
+  // Process the fi1 side (the face that has above-offset arc vertices)
+  const sideParams = [
+    { fi: data.fi1, offsDir: offsDir1, p: isA ? data.p1a : data.p1b },
+    { fi: data.fi0, offsDir: offsDir0, p: isA ? data.p0a : data.p0b },
+  ];
+
+  for (const { fi, offsDir, p: trimPt } of sideParams) {
+    const origFace = faces[fi];
+    if (!origFace) continue;
+    const topoFaceId = origFace.topoFaceId;
+    if (topoFaceId === undefined) continue;
+
+    const trimmedFace = trimmedFaces.find(
+      (f) => f.topoFaceId === topoFaceId,
+    );
+    if (!trimmedFace) continue;
+
+    const trimVK = _edgeVKey(trimPt);
+    const n = trimmedFace.vertices.length;
+    const trimIdx = trimmedFace.vertices.findIndex(
+      (v) => _edgeVKey(v) === trimVK,
+    );
+    if (trimIdx < 0) continue;
+
+    // Walk from trimPt to find consecutive above-offset arc vertices
+    for (const walkDir of [1, -1]) {
+      const above = [];
+      let idx = (trimIdx + walkDir + n) % n;
+
+      for (let step = 0; step < n - 1; step++) {
+        const v = trimmedFace.vertices[idx];
+        const d = _vec3Dot(_vec3Sub(v, edgeVertex), offsDir);
+        if (d > 1e-8 && d < tangentDist - 1e-6) {
+          above.push({ idx, vertex: v, d });
+        } else {
+          break;
+        }
+        idx = (idx + walkDir + n) % n;
+      }
+
+      if (above.length < 2) continue;
+
+      // Find the below-vertex (first vertex past the above span)
+      const lastAbove = above[above.length - 1];
+      const belowIdx = (lastAbove.idx + walkDir + n) % n;
+      const belowV = trimmedFace.vertices[belowIdx];
+
+      // Remove BOTH trimPt AND above-offset vertices, insert intPt
+      const removeSet = new Set(above.map((a) => a.idx));
+      removeSet.add(trimIdx); // also remove the trim point itself
+
+      const newVerts = [];
+      for (let vi = 0; vi < n; vi++) {
+        if (removeSet.has(vi)) continue;
+        newVerts.push(trimmedFace.vertices[vi]);
+      }
+
+      // Find where to insert intPt — between the vertex before trimPt
+      // and belowV in the new boundary.
+      const belowVK = _edgeVKey(belowV);
+      // The vertex before trimIdx in walkDir is the "rail vertex" (e.g., (10,10,9.5))
+      const railIdx = (trimIdx - walkDir + n) % n;
+      const railV = trimmedFace.vertices[railIdx];
+      const railVK = _edgeVKey(railV);
+
+      let insertPos = -1;
+      for (let vi = 0; vi < newVerts.length; vi++) {
+        const curVK = _edgeVKey(newVerts[vi]);
+        const nextVK = _edgeVKey(newVerts[(vi + 1) % newVerts.length]);
+        if ((curVK === railVK && nextVK === belowVK) ||
+            (curVK === belowVK && nextVK === railVK)) {
+          insertPos = vi + 1;
+          break;
+        }
+      }
+      if (insertPos >= 0) {
+        newVerts.splice(insertPos, 0, { ...intPt });
+      }
+
+      if (newVerts.length >= 3) {
+        trimmedFace.vertices = newVerts;
+      }
+
+      // Update the previous fillet face: remove above-intersection arc
+      // vertices and insert intPt.
+      for (const otherFace of trimmedFaces) {
+        if (otherFace === trimmedFace) continue;
+        const otherN = otherFace.vertices.length;
+        const firstAboveVK = _edgeVKey(above[0].vertex);
+        const hasAbove = otherFace.vertices.some(
+          (v) => _edgeVKey(v) === firstAboveVK,
+        );
+        if (!hasAbove) continue;
+
+        // Find and remove the above-offset vertices from the fillet face
+        const otherAboveVKs = new Set(above.map(a => _edgeVKey(a.vertex)));
+        // Also remove the old connection point (trimPt) from the fillet face
+        otherAboveVKs.add(trimVK);
+
+        const keptVerts = [];
+        for (let vi = 0; vi < otherN; vi++) {
+          const vk = _edgeVKey(otherFace.vertices[vi]);
+          if (otherAboveVKs.has(vk)) continue;
+          keptVerts.push(otherFace.vertices[vi]);
+        }
+
+        // Insert intPt between belowV and the nearest kept vertex
+        // from the original arc direction
+        let otherInsertPos = -1;
+        for (let vi = 0; vi < keptVerts.length; vi++) {
+          const curVK = _edgeVKey(keptVerts[vi]);
+          if (curVK === belowVK) {
+            otherInsertPos = vi + 1;
+            break;
+          }
+        }
+        if (otherInsertPos < 0) {
+          // Try inserting before belowV
+          for (let vi = 0; vi < keptVerts.length; vi++) {
+            if (_edgeVKey(keptVerts[vi]) === belowVK) {
+              otherInsertPos = vi;
+              break;
+            }
+          }
+        }
+        if (otherInsertPos >= 0) {
+          keptVerts.splice(otherInsertPos, 0, { ...intPt });
+        }
+
+        if (keptVerts.length >= 3) {
+          otherFace.vertices = keptVerts;
+        }
+
+        // Store junction curve metadata for BRep edge curve building
+        if (!otherFace._junctionCurves) otherFace._junctionCurves = [];
+        otherFace._junctionCurves.push({
+          curve: intCurve.curve,
+        });
+      }
+
+      break; // only process one direction per trim point
     }
   }
 }
@@ -1448,6 +1824,14 @@ function _buildExactFilletTopoBody(faces, edgeDataList, origTopoBody = null) {
     if (face1 && face1.topoFaceId !== undefined) filletAdjacentFaceIds.add(face1.topoFaceId);
   }
 
+  // Also consider faces with junction curves as adjacent —
+  // they need the junction curve edge handling in the adjacent branch
+  for (const f of faces) {
+    if (f._junctionCurves && f._junctionCurves.length > 0 && f.topoFaceId !== undefined) {
+      filletAdjacentFaceIds.add(f.topoFaceId);
+    }
+  }
+
   // Build a set of face indices that are adjacent to current fillet edges
   const filletAdjacentIndices = new Set();
   for (const data of edgeDataList) {
@@ -1483,10 +1867,36 @@ function _buildExactFilletTopoBody(faces, edgeDataList, origTopoBody = null) {
         // so the curved surface is preserved in the output TopoBody.
         const trimmedVerts = face.vertices.map(v => ({ ...v }));
         if (trimmedVerts.length >= 3) {
+          const junctionCurves = face._junctionCurves || [];
           const edgeCurves = [];
           for (let i = 0; i < trimmedVerts.length; i++) {
-            const next = trimmedVerts[(i + 1) % trimmedVerts.length];
-            edgeCurves.push(NurbsCurve.createLine(trimmedVerts[i], next));
+            const v1 = trimmedVerts[i];
+            const v2 = trimmedVerts[(i + 1) % trimmedVerts.length];
+            let edgeCurve = NurbsCurve.createLine(v1, v2);
+
+            // Check if this edge matches a stored junction curve
+            if (junctionCurves.length > 0) {
+              const v1k = _edgeVKey(v1);
+              const v2k = _edgeVKey(v2);
+              for (const jc of junctionCurves) {
+                const curveStart = jc.curve[0];
+                const curveEnd = jc.curve[jc.curve.length - 1];
+                const csVK = _edgeVKey(curveStart);
+                const ceVK = _edgeVKey(curveEnd);
+                if (v1k === csVK && v2k === ceVK) {
+                  const c = _curveFromSampledPoints(jc.curve);
+                  if (c) edgeCurve = c;
+                  break;
+                } else if (v1k === ceVK && v2k === csVK) {
+                  const reversed = [...jc.curve].reverse();
+                  const c = _curveFromSampledPoints(reversed);
+                  if (c) edgeCurve = c;
+                  break;
+                }
+              }
+            }
+
+            edgeCurves.push(edgeCurve);
           }
           faceDescs.push({
             surface: origFace.surface,
@@ -1869,7 +2279,7 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
   // planar face, extend the trim to the arc–offset intersection so the
   // boundary transitions smoothly instead of creating a "notch".
   _extendTrimsAtPreviousFilletJunctions(
-    trimmedFaces, edgeDataList, faces, topoBody,
+    trimmedFaces, edgeDataList, faces, topoBody, radius,
   );
 
   // Step 5: Build exact NURBS fillet surfaces for each edge data
