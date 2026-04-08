@@ -779,6 +779,51 @@ test('box-fillet-2-s.cmod (two sequential fillets) produces valid mesh', () => {
   validateGeometry(geom, 'box-fillet-2-s');
 });
 
+test('box-fillet-2-s.cmod junction has no boundary notch', () => {
+  // Verify that the sequential fillet junction extends the trim smoothly:
+  // on the shared planar face (right face, x=10), the boundary should
+  // go from the fillet offset at z=9.5 directly to the intersection
+  // with the previous fillet's arc, without a z>9.5 "notch".
+  const part = loadCMOD('box-fillet-2-s.cmod');
+  assert.ok(part, 'Should load box-fillet-2-s.cmod');
+  const geom = getFinalGeometry(part);
+  assert.ok(geom, 'Should have geometry');
+
+  const topoBody = geom.topoBody;
+  assert.ok(topoBody, 'Should have topoBody');
+
+  // Find the right face (x=10 plane, normal ~(1,0,0))
+  let rightFace = null;
+  for (const shell of topoBody.shells) {
+    for (const face of shell.faces) {
+      if (face.surfaceType !== 'plane') continue;
+      if (!face.surface) continue;
+      const n = face.surface.normal(0.5, 0.5);
+      if (Math.abs(n.x - 1) < 0.01) { rightFace = face; break; }
+    }
+    if (rightFace) break;
+  }
+  assert.ok(rightFace, 'Should find right face');
+
+  // Extract boundary z-values near y=1 (the junction)
+  const coedges = rightFace.outerLoop.coedges;
+  const verts = coedges.map(ce =>
+    ce.sameSense !== false ? ce.edge.startVertex.point : ce.edge.endVertex.point);
+
+  // Find the trim vertex near (10, 1, 9.5)
+  const trimIdx = verts.findIndex(v =>
+    Math.abs(v.x - 10) < 0.01 && Math.abs(v.y - 1) < 0.01 && Math.abs(v.z - 9.5) < 0.01);
+  assert.ok(trimIdx >= 0, 'Should find trim vertex at (10,1,9.5)');
+
+  // The next vertex after the trim should be the intersection point,
+  // NOT an arc point with z > 9.5. Check that z <= 9.51 for the
+  // next vertex (allowing small tolerance).
+  const nextIdx = (trimIdx + 1) % verts.length;
+  const nextV = verts[nextIdx];
+  assert.ok(nextV.z <= 9.51,
+    `Next vertex after trim should have z≤9.51, got z=${nextV.z.toFixed(3)} (notch detected)`);
+});
+
 test('box-fillet-3-p.cmod (two parallel fillets then single fillet) produces valid mesh', () => {
   const part = loadCMOD('box-fillet-3-p.cmod');
   assert.ok(part, 'Should load box-fillet-3-p.cmod');
