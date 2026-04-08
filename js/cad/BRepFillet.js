@@ -1166,6 +1166,263 @@ function _replaceEdgesWithArcCurves(faceDescs, edgeDataList, faces, origTopoFace
 }
 
 // -----------------------------------------------------------------------
+// Sequential fillet junction extension
+// -----------------------------------------------------------------------
+
+/**
+ * Extend fillet trim lines at junctions with previous fillet arcs.
+ *
+ * When a new fillet meets a previous fillet at a shared vertex on a planar
+ * face, the boundary creates an abrupt "notch" where the new fillet's
+ * offset jumps back to the previous fillet's arc.  This function detects
+ * such junctions and:
+ *
+ * 1. Computes where the new fillet's offset line intersects the previous
+ *    fillet's arc on the shared planar face.
+ * 2. Removes arc vertices that are "above" (closer to the original edge
+ *    than) the offset distance.
+ * 3. Inserts the intersection point for a smooth transition.
+ * 4. Creates a corner face to fill the triangular gap.
+ *
+ * Mutates trimmedFaces in place, and pushes corner faces into the array.
+ *
+ * @param {Array<Object>} trimmedFaces - Trimmed mesh-level faces (mutated)
+ * @param {Array<Object>} edgeDataList - Fillet edge data
+ * @param {Array<Object>} faces        - Original extracted faces (pre-trim)
+ * @param {Object}        origTopoBody - Input TopoBody (may have previous fillet surfaces)
+ */
+function _extendTrimsAtPreviousFilletJunctions(trimmedFaces, edgeDataList, faces, origTopoBody) {
+  if (!origTopoBody || !origTopoBody.shells) return;
+
+  // Build lookup: vertex key → has non-planar adjacent face?
+  const vertexHasNonPlanar = new Set();
+  for (const shell of origTopoBody.shells) {
+    for (const topoFace of (shell.faces || [])) {
+      if (topoFace.surfaceType === 'plane') continue;
+      if (!topoFace.outerLoop) continue;
+      for (const ce of topoFace.outerLoop.coedges) {
+        vertexHasNonPlanar.add(_edgeVKey(ce.edge.startVertex.point));
+        vertexHasNonPlanar.add(_edgeVKey(ce.edge.endVertex.point));
+      }
+    }
+  }
+
+  for (const data of edgeDataList) {
+    // Compute tangent distance from the trim points (available before
+    // _exactRadius is set in the surface-building step).
+    const tangentDist = _vec3Len(_vec3Sub(data.p0a, data.edgeA));
+    if (!tangentDist || tangentDist < 1e-10) continue;
+
+    const { offsDir0, offsDir1 } = _computeOffsetDirs(
+      faces[data.fi0], faces[data.fi1], data.edgeA, data.edgeB,
+    );
+
+    for (const isA of [true, false]) {
+      const edgeVertex = isA ? data.edgeA : data.edgeB;
+      if (!vertexHasNonPlanar.has(_edgeVKey(edgeVertex))) continue;
+
+      // This endpoint is at a previous fillet junction.
+      // Process both adjacent planar faces (fi0 and fi1).
+      const sideParams = [
+        { fi: data.fi0, offsDir: offsDir0, p: isA ? data.p0a : data.p0b },
+        { fi: data.fi1, offsDir: offsDir1, p: isA ? data.p1a : data.p1b },
+      ];
+
+      for (const { fi, offsDir, p: trimPt } of sideParams) {
+        const origFace = faces[fi];
+        if (!origFace) continue;
+        const topoFaceId = origFace.topoFaceId;
+        if (topoFaceId === undefined) continue;
+
+        // Find the trimmed face for this planar face
+        const trimmedFace = trimmedFaces.find(
+          (f) => f.topoFaceId === topoFaceId,
+        );
+        if (!trimmedFace) continue;
+
+        const trimVK = _edgeVKey(trimPt);
+        const n = trimmedFace.vertices.length;
+        const trimIdx = trimmedFace.vertices.findIndex(
+          (v) => _edgeVKey(v) === trimVK,
+        );
+        if (trimIdx < 0) continue;
+
+        // Try both walk directions from the trim point
+        _tryExtendTrimDirection(
+          trimmedFace, trimmedFaces, trimIdx, edgeVertex,
+          offsDir, tangentDist, trimPt,
+        );
+      }
+    }
+  }
+}
+
+/**
+ * Walk from trimIdx in both directions; for the first direction that has
+ * ≥2 "above-offset" arc vertices, clip them and insert the intersection
+ * point.  Also create a corner face from the removed vertices.
+ */
+function _tryExtendTrimDirection(
+  trimmedFace, trimmedFaces, trimIdx, edgeVertex,
+  offsDir, tangentDist, trimPt,
+) {
+  const n = trimmedFace.vertices.length;
+
+  for (const walkDir of [1, -1]) {
+    // Collect consecutive vertices that are "above" the offset
+    // (their offset distance < tangentDist, meaning closer to edge).
+    const above = [];
+    let idx = (trimIdx + walkDir + n) % n;
+
+    for (let step = 0; step < n - 1; step++) {
+      const v = trimmedFace.vertices[idx];
+      const d = _vec3Dot(_vec3Sub(v, edgeVertex), offsDir);
+      if (d > 1e-8 && d < tangentDist - 1e-6) {
+        above.push({ idx, vertex: v, d });
+      } else {
+        break;
+      }
+      idx = (idx + walkDir + n) % n;
+    }
+
+    if (above.length < 2) continue;
+
+    // Find the first vertex *below* the offset (the one kept).
+    const lastAbove = above[above.length - 1];
+    const belowIdx = (lastAbove.idx + walkDir + n) % n;
+    const belowV = trimmedFace.vertices[belowIdx];
+    const belowD = _vec3Dot(_vec3Sub(belowV, edgeVertex), offsDir);
+
+    // Interpolate to find intersection with offset line
+    if (Math.abs(belowD - lastAbove.d) < 1e-12) continue;
+    const t = (tangentDist - lastAbove.d) / (belowD - lastAbove.d);
+    if (t < -0.01 || t > 1.01) continue;
+    const intPt = _vec3Lerp(lastAbove.vertex, belowV, Math.max(0, Math.min(1, t)));
+
+    // ── Build corner face from removed vertices ──
+    // The corner face is a planar polygon on the same plane as the
+    // parent face, bounded by:
+    //   trimPt → intPt          (straight line at offset distance)
+    //   intPt → above[n-1] → … → above[0] → trimPt   (the removed arc)
+    //
+    // Walk direction determines vertex order:
+    //   walkDir=+1: above[] is in boundary order (trimPt → above[0] … above[n-1])
+    //   walkDir=-1: above[] is in reverse boundary order
+    const cornerVerts = [];
+    if (walkDir === 1) {
+      cornerVerts.push({ ...trimPt });
+      for (const a of above) cornerVerts.push({ ...a.vertex });
+      cornerVerts.push({ ...intPt });
+    } else {
+      cornerVerts.push({ ...trimPt });
+      cornerVerts.push({ ...intPt });
+      for (let i = above.length - 1; i >= 0; i--) {
+        cornerVerts.push({ ...above[i].vertex });
+      }
+    }
+
+    if (cornerVerts.length >= 3) {
+      const parentNormal = trimmedFace.normal
+        ? { ...trimmedFace.normal }
+        : _computePolygonNormal(trimmedFace.vertices);
+      trimmedFaces.push({
+        vertices: cornerVerts,
+        normal: parentNormal,
+        shared: trimmedFace.shared ? { ...trimmedFace.shared } : null,
+      });
+    }
+
+    // ── Modify the planar face: remove above-offset vertices,
+    //    insert the intersection point in their place. ──
+    const removeSet = new Set(above.map((a) => a.idx));
+    const newVerts = [];
+    let intInserted = false;
+
+    // Walk in boundary order (index 0 … n-1) and rebuild.
+    for (let vi = 0; vi < n; vi++) {
+      if (removeSet.has(vi)) {
+        // Insert intersection point once, at the boundary position
+        // closest to the "below" side.
+        if (!intInserted) {
+          // For walkDir=+1 the first removed index comes right after
+          // trimIdx in boundary order → insert intPt at the END of
+          // the removed span (just before the below vertex).
+          // For walkDir=-1, the first removed index is just before
+          // trimIdx → insert intPt at the START of the removed span.
+          // We'll collect them all and splice once below.
+        }
+        continue;
+      }
+      newVerts.push(trimmedFace.vertices[vi]);
+    }
+
+    // Now insert intPt in the correct position.
+    // The intersection point replaces the removed span.  In boundary
+    // order the span sits between trimPt and belowV.  Find where
+    // belowV ended up in newVerts and insert intPt next to it.
+    const belowVK = _edgeVKey(belowV);
+    const trimVK = _edgeVKey(trimPt);
+    let insertPos = -1;
+    for (let vi = 0; vi < newVerts.length; vi++) {
+      const curVK = _edgeVKey(newVerts[vi]);
+      const nextVK = _edgeVKey(newVerts[(vi + 1) % newVerts.length]);
+      // intPt goes between trimPt and belowV
+      if ((curVK === trimVK && nextVK === belowVK) ||
+          (curVK === belowVK && nextVK === trimVK)) {
+        insertPos = vi + 1;
+        break;
+      }
+    }
+    if (insertPos >= 0) {
+      newVerts.splice(insertPos, 0, { ...intPt });
+    }
+
+    if (newVerts.length >= 3) {
+      trimmedFace.vertices = newVerts;
+    }
+
+    // ── Also modify the previous fillet face that shares these arc
+    //    edges.  The fillet face KEEPS the above-offset arc vertices
+    //    (they become shared edges with the corner face) but needs the
+    //    intersection point inserted between the last kept vertex and
+    //    the first above-offset vertex. ──
+    for (const otherFace of trimmedFaces) {
+      if (otherFace === trimmedFace) continue;
+      // Check if this face contains the above-offset vertices
+      const otherN = otherFace.vertices.length;
+      const firstAboveVK = _edgeVKey(above[0].vertex);
+      const hasAbove = otherFace.vertices.some(
+        (v) => _edgeVKey(v) === firstAboveVK,
+      );
+      if (!hasAbove) continue;
+
+      // Find the position just before/after the above-offset arc span
+      // and insert the intersection point there.
+      const lastAboveVK = _edgeVKey(above[above.length - 1].vertex);
+      const belowVK2 = _edgeVKey(belowV);
+      let otherInsertPos = -1;
+      for (let vi = 0; vi < otherN; vi++) {
+        const curVK = _edgeVKey(otherFace.vertices[vi]);
+        const nextVK = _edgeVKey(otherFace.vertices[(vi + 1) % otherN]);
+        // Insert between belowV and lastAbove (they should be adjacent
+        // on the fillet face since the boundary is reversed)
+        if ((curVK === belowVK2 && nextVK === lastAboveVK) ||
+            (curVK === lastAboveVK && nextVK === belowVK2)) {
+          otherInsertPos = vi + 1;
+          break;
+        }
+      }
+      if (otherInsertPos >= 0) {
+        otherFace.vertices.splice(otherInsertPos, 0, { ...intPt });
+      }
+    }
+
+    // Only process one direction per trim point
+    break;
+  }
+}
+
+// -----------------------------------------------------------------------
 // Main entry point
 // -----------------------------------------------------------------------
 
@@ -1606,6 +1863,14 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
       normal: face.normal,
     });
   }
+
+  // Step 4b: Extend fillet trims at sequential fillet junctions.
+  // Where the new fillet meets a previous fillet's arc boundary on a shared
+  // planar face, extend the trim to the arc–offset intersection so the
+  // boundary transitions smoothly instead of creating a "notch".
+  _extendTrimsAtPreviousFilletJunctions(
+    trimmedFaces, edgeDataList, faces, topoBody,
+  );
 
   // Step 5: Build exact NURBS fillet surfaces for each edge data
   for (const data of edgeDataList) {
