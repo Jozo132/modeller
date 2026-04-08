@@ -1005,20 +1005,34 @@ export class FaceTriangulator {
       const na = surface.normal(ua.u, ua.v);
       const nb = surface.normal(ub.u, ub.v);
       const nc = surface.normal(uc.u, uc.v);
-      const triGeoN = calculateNormal(pa, pb, pc);
-      const vna = _orientNormal(sameSense ? na : { x: -na.x, y: -na.y, z: -na.z }, triGeoN);
-      const vnb = _orientNormal(sameSense ? nb : { x: -nb.x, y: -nb.y, z: -nb.z }, triGeoN);
-      const vnc = _orientNormal(sameSense ? nc : { x: -nc.x, y: -nc.y, z: -nc.z }, triGeoN);
+      // Use the sameSense-adjusted surface normals directly.  Do NOT
+      // orient them against the triangle's geometric winding — on curved
+      // faces that span a large arc (>90°), vertex normals at the
+      // extremes legitimately oppose the geometric normal, and flipping
+      // them would corrupt the shading direction.
+      const flip = sameSense ? 1 : -1;
+      let vna = _normalize(na ? { x: na.x * flip, y: na.y * flip, z: na.z * flip } : refNormal);
+      let vnb = _normalize(nb ? { x: nb.x * flip, y: nb.y * flip, z: nb.z * flip } : refNormal);
+      let vnc = _normalize(nc ? { x: nc.x * flip, y: nc.y * flip, z: nc.z * flip } : refNormal);
       let faceN = _normalize({
         x: (vna.x + vnb.x + vnc.x) / 3,
         y: (vna.y + vnb.y + vnc.y) / 3,
         z: (vna.z + vnb.z + vnc.z) / 3,
       });
-      // Orient shading normal to agree with the triangle's geometric winding.
-      // On cylinders/spheres the surface normal is nearly perpendicular to
-      // boundaryNormal, so dot(faceN, boundaryNormal) ≈ 0 → unreliable sign.
-      if (_dot(faceN, triGeoN) < 0) {
-        faceN = { x: -faceN.x, y: -faceN.y, z: -faceN.z };
+      // Fall back to refNormal if vertex normals cancel out (very
+      // unlikely but possible on extremely curved patches).
+      if (!faceN || (faceN.x === 0 && faceN.y === 0 && faceN.z === 0)) {
+        faceN = refNormal;
+      }
+
+      // Ensure winding agrees with the correct face normal.  The initial
+      // winding fix (above) uses the centroid-based refNormal, but the
+      // face normal derived from averaged vertex normals may differ on
+      // very curved patches.  Fix winding rather than flipping the normal.
+      const geoN = calculateNormal(pa, pb, pc);
+      if (_dot(faceN, geoN) < 0) {
+        [pb, pc] = [pc, pb];
+        [vnb, vnc] = [vnc, vnb];
       }
 
       meshFaces.push({
@@ -1592,16 +1606,21 @@ export class FaceTriangulator {
     // Winding has already been globally corrected in the post-CDT check above.
     const meshFaces = [];
     const meshVertices = [];
-    for (const [a, b, c] of triangles) {
+    for (let ti = 0; ti < triangles.length; ti++) {
+      let [a, b, c] = triangles[ti];
       // Skip truly degenerate triangles (collapsed to a line or point).
       // Use a small absolute threshold — the CDT + subdivision produces
       // valid thin triangles that must not be removed or gaps appear.
       if (_triangleArea3D(a, b, c) < 1e-12) continue;
 
-      // Per-vertex surface normals for shading
+      // Per-vertex surface normals for shading.  Use the sameSense-adjusted
+      // surface normals directly rather than orienting them against the
+      // triangle's geometric winding.  On strongly curved surfaces (e.g.
+      // cylinders spanning >90°), vertex normals at the extremes
+      // legitimately oppose the geometric normal.
       let nx = 0, ny = 0, nz = 0;
-      const triGeoN = calculateNormal(a, b, c);
       const vertexNormals = [];
+      const flip = sameSense ? 1 : -1;
       for (const v of [a, b, c]) {
         let vn;
         try {
@@ -1610,26 +1629,26 @@ export class FaceTriangulator {
         } catch (_e) {
           vn = surfNormal;
         }
-        vn = _orientNormal(sameSense ? vn : { x: -vn.x, y: -vn.y, z: -vn.z }, triGeoN);
+        vn = _normalize(vn ? { x: vn.x * flip, y: vn.y * flip, z: vn.z * flip } : surfNormal);
+        if (!vn || (vn.x === 0 && vn.y === 0 && vn.z === 0)) vn = surfNormal;
         vertexNormals.push(vn);
         nx += vn.x; ny += vn.y; nz += vn.z;
       }
       nx /= 3; ny /= 3; nz /= 3;
       const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
-      const faceN = len > 1e-14
+      const outNormal = len > 1e-14
         ? { x: nx / len, y: ny / len, z: nz / len }
         : surfNormal;
 
-      // Orient the shading normal to agree with the triangle's geometric
-      // winding (which was already corrected globally above).  On strongly
-      // curved faces (cylinders, spheres) the surface normal is nearly
-      // perpendicular to projNormal, so dotting against projNormal gives
-      // unreliable ≈0 values.  Instead, dot the surface normal against the
-      // triangle's geometric normal — they should agree in sign.
-      const faceDot = faceN.x * triGeoN.x + faceN.y * triGeoN.y + faceN.z * triGeoN.z;
-      const outNormal = faceDot >= 0
-        ? faceN
-        : { x: -faceN.x, y: -faceN.y, z: -faceN.z };
+      // Ensure winding agrees with the correct face normal.
+      // Fix winding rather than flipping the normal.
+      const geoN = calculateNormal(a, b, c);
+      if (_dot(outNormal, geoN) < 0) {
+        [b, c] = [c, b];
+        const tmpVn = vertexNormals[1];
+        vertexNormals[1] = vertexNormals[2];
+        vertexNormals[2] = tmpVn;
+      }
 
       meshFaces.push({
         vertices: [{ ...a }, { ...b }, { ...c }],
