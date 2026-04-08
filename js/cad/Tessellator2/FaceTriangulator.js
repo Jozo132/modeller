@@ -1273,12 +1273,27 @@ export class FaceTriangulator {
     // Steiner points require valid UV to evaluate the surface.
     const steiner2D = [];
     const steiner3D = [];
+    const isFillet = !!(face.shared && face.shared.isFillet);
     if (uvValid) {
-      const gridRes = Math.max(1, Math.ceil(surfaceSegments / 8));
-      const uStep = (uMax - uMin) / (gridRes + 1);
-      const vStep = (vMax - vMin) / (gridRes + 1);
-      for (let gi = 1; gi <= gridRes; gi++) {
-        for (let gj = 1; gj <= gridRes; gj++) {
+      let uGridRes, vGridRes;
+      if (isFillet) {
+        // Fillet surfaces are degree (1,2) NURBS — linear in u (along edge),
+        // quadratic arc in v (across fillet).  Use a denser grid that respects
+        // the UV domain aspect ratio to avoid the fan/star CDT pattern that
+        // appears when a single Steiner point serves 30+ boundary vertices.
+        const uRange = uMax - uMin;
+        const vRange = vMax - vMin;
+        const aspect = uRange / Math.max(vRange, 1e-10);
+        vGridRes = Math.max(3, Math.ceil(surfaceSegments / 2));
+        uGridRes = Math.max(2, Math.round(vGridRes * Math.min(aspect, 8)));
+      } else {
+        uGridRes = Math.max(1, Math.ceil(surfaceSegments / 8));
+        vGridRes = uGridRes;
+      }
+      const uStep = (uMax - uMin) / (uGridRes + 1);
+      const vStep = (vMax - vMin) / (vGridRes + 1);
+      for (let gi = 1; gi <= uGridRes; gi++) {
+        for (let gj = 1; gj <= vGridRes; gj++) {
           const gu = uMin + gi * uStep;
           const gv = vMin + gj * vStep;
           try {
@@ -1412,12 +1427,16 @@ export class FaceTriangulator {
     // passes.  BRep faces carry infinite-detail geometry so the mesh is
     // only for visualization; per-vertex normals handle smooth shading.
     const maxPasses = uvValid
-      ? Math.min(Math.ceil(surfaceSegments / 4), 2)
+      ? isFillet
+        ? Math.min(surfaceSegments, 4)
+        : Math.min(Math.ceil(surfaceSegments / 4), 2)
       : 0;
 
     // Scale deviation tolerance relative to face bounding box diagonal.
     // An absolute tolerance (e.g. 1e-3) causes explosive subdivision on
     // large models where even small arcs exceed the threshold.
+    // Fillet surfaces use a tighter scale (same as the analytic cylinder
+    // path) because a denser initial grid already captures most geometry.
     let bbMinX = Infinity, bbMinY = Infinity, bbMinZ = Infinity;
     let bbMaxX = -Infinity, bbMaxY = -Infinity, bbMaxZ = -Infinity;
     for (const p of allPts) {
@@ -1428,7 +1447,7 @@ export class FaceTriangulator {
     const faceDiag = Math.sqrt(
       (bbMaxX - bbMinX) ** 2 + (bbMaxY - bbMinY) ** 2 + (bbMaxZ - bbMinZ) ** 2
     );
-    const deviationTol = Math.max(faceDiag * 0.01, 1e-8);
+    const deviationTol = Math.max(faceDiag * (isFillet ? 0.005 : 0.01), 1e-8);
 
     const midCache = new Map();
     function _ptKey(v) {
