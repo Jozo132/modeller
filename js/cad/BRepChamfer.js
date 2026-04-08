@@ -100,7 +100,9 @@ function _buildPlanarBoundarySegments(vertices, edgeDataList) {
   const segments = [];
   let edgeCount = 0;
   let index = 0;
+  let _loopGuard = 0;
   while (edgeCount < vertices.length) {
+    if (++_loopGuard > 10_000_000) throw new Error('_buildPlanarBoundarySegments: exceeded 10M iterations — likely infinite loop');
     let best = null;
 
     for (const candidate of candidates) {

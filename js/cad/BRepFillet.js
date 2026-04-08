@@ -239,7 +239,10 @@ function _samplePolyline(points, samples) {
   for (let i = 0; i <= samples; i++) {
     const target = (i / samples) * total;
     let seg = 1;
-    while (seg < lengths.length && lengths[seg] < target) seg++;
+    while (seg < lengths.length && lengths[seg] < target) {
+      seg++;
+      if (seg > 10_000_000) throw new Error('_resamplePolylineByArcLength: exceeded 10M iterations');
+    }
     const lo = Math.max(0, seg - 1);
     const hi = Math.min(points.length - 1, seg);
     const segLen = lengths[hi] - lengths[lo];
@@ -485,8 +488,10 @@ function _createExactCylinderPlaneTrimCurve(
 
       let angle = Math.atan2(v, u);
       if (prevAngle != null) {
-        while (angle - prevAngle > Math.PI) angle -= 2 * Math.PI;
-        while (angle - prevAngle < -Math.PI) angle += 2 * Math.PI;
+        let _angleGuard1 = 0;
+        while (angle - prevAngle > Math.PI) { angle -= 2 * Math.PI; if (++_angleGuard1 > 10_000_000) throw new Error('_precomputeFilletEdge angle wrap+: exceeded 10M iterations'); }
+        let _angleGuard2 = 0;
+        while (angle - prevAngle < -Math.PI) { angle += 2 * Math.PI; if (++_angleGuard2 > 10_000_000) throw new Error('_precomputeFilletEdge angle wrap-: exceeded 10M iterations'); }
         const diff = angle - prevAngle;
         if (Math.abs(diff) > 1e-8) {
           const sign = diff > 0 ? 1 : -1;
@@ -906,6 +911,228 @@ function _buildOriginalFaceDesc(topoFace, vertexReplacements = null) {
 }
 
 // -----------------------------------------------------------------------
+// Cross-face arc curve coordination
+// -----------------------------------------------------------------------
+
+/**
+ * Replace straight-line edge curves with arc polyline curves on face
+ * descriptors whose edge endpoints match a fillet arc.
+ *
+ * Both the fillet face and its adjacent planar face must carry the same
+ * arc curve so that `buildTopoBody` deduplicates them into a single
+ * shared `TopoEdge`.  The `EdgeSampler` then produces arc-faithful
+ * boundary samples on both faces, preventing T-junctions and the
+ * "balloon" boundary artefact caused by flat straight-line edges.
+ *
+ * Only arcs that border exclusively PLANAR adjacent faces (fi0/fi1) are
+ * included.  Arcs where an adjacent face is non-planar (e.g., from a
+ * previous fillet) are excluded because both the fillet face and the
+ * non-planar face would produce incompatible CDT triangulations.
+ *
+ * @param {Array<Object>} faceDescs - Face descriptors (mutated in place)
+ * @param {Array<Object>} edgeDataList - Precomputed fillet edge data
+ * @param {Array<Object>} faces - Trimmed mesh faces
+ * @param {Map<number,Object>} origTopoFaces - Map topoFaceId → original TopoFace
+ */
+function _replaceEdgesWithArcCurves(faceDescs, edgeDataList, faces, origTopoFaces) {
+  // Build lookup: unordered vertex-key pair → canonical (forward) arc curve.
+  // Always provide the same forward curve for both directions, since
+  // buildTopoBody's getOrCreateEdge deduplicates edges by comparing curve
+  // midpoints — using a single canonical direction ensures both the fillet
+  // face and the adjacent planar face pass the check.
+  // (Reversed curves evaluate differently at parameter 0.5 for polylines
+  // whose knot range isn't [0,1], causing false negatives.)
+  const arcCurveLookup = new Map();
+
+  for (const data of edgeDataList) {
+    // Check if either adjacent face is non-planar (e.g. previous fillet surface)
+    const face0 = faces[data.fi0];
+    const face1 = faces[data.fi1];
+    const orig0 = face0?.topoFaceId !== undefined ? origTopoFaces.get(face0.topoFaceId) : null;
+    const orig1 = face1?.topoFaceId !== undefined ? origTopoFaces.get(face1.topoFaceId) : null;
+    const hasNonPlanar = (orig0 && orig0.surfaceType !== 'plane') ||
+                          (orig1 && orig1.surfaceType !== 'plane');
+    if (hasNonPlanar) continue;
+
+    // Add non-shared arc cross-section curves
+    if (!data.sharedTrimA && data.arcA && data.arcA.length >= 2 && data._exactArcCurveA) {
+      const k1 = _edgeVKey(data.arcA[0]);
+      const k2 = _edgeVKey(data.arcA[data.arcA.length - 1]);
+      if (k1 !== k2) {
+        const unordered = k1 < k2 ? `${k1}|${k2}` : `${k2}|${k1}`;
+        arcCurveLookup.set(unordered, data._exactArcCurveA);
+      }
+    }
+    if (!data.sharedTrimB && data.arcB && data.arcB.length >= 2 && data._exactArcCurveB) {
+      const k1 = _edgeVKey(data.arcB[0]);
+      const k2 = _edgeVKey(data.arcB[data.arcB.length - 1]);
+      if (k1 !== k2) {
+        const unordered = k1 < k2 ? `${k1}|${k2}` : `${k2}|${k1}`;
+        arcCurveLookup.set(unordered, data._exactArcCurveB);
+      }
+    }
+  }
+
+  // Also add non-trivial edge curves from the original TopoBody.  These
+  // preserve arc curves from previous fillet operations so that planar faces
+  // referencing inherited arc-sample intermediates can be consolidated back
+  // into a single arc-curve edge matching the preserved non-planar face's edge.
+  if (origTopoFaces && origTopoFaces.size > 0) {
+    // Gather edge curves from all origTopoFaces
+    const seen = new Set();
+    for (const [, topoFace] of origTopoFaces) {
+      if (!topoFace.outerLoop) continue;
+      for (const coedge of topoFace.outerLoop.coedges) {
+        const e = coedge.edge;
+        if (seen.has(e.id)) continue;
+        seen.add(e.id);
+        if (!e.curve || e.curve.degree !== 1) continue;
+        const cps = e.curve.controlPoints;
+        if (!cps || cps.length <= 2) continue;
+        const sk = _edgeVKey(e.startVertex.point);
+        const ek = _edgeVKey(e.endVertex.point);
+        if (sk === ek) continue;
+        const unordered = sk < ek ? `${sk}|${ek}` : `${ek}|${sk}`;
+        if (!arcCurveLookup.has(unordered)) {
+          arcCurveLookup.set(unordered, e.curve);
+        }
+      }
+    }
+  }
+
+  if (arcCurveLookup.size === 0) return;
+
+  // Build a count of how many non-planar face descriptors reference each arc
+  // vertex-pair key.  Arcs shared between TWO non-planar faces (e.g. a new
+  // fillet face and a previous fillet's trimmed face) would cause CDT
+  // T-junctions because both surfaces produce incompatible internal
+  // triangulations.  An arc referenced by exactly ONE non-planar face (the
+  // fillet face itself) is fine — the other face sharing the edge is planar.
+  const nonPlanarEdgeKeys = new Set();
+  {
+    const counts = new Map();
+    for (const desc of faceDescs) {
+      if (!desc.vertices || !desc.edgeCurves) continue;
+      const isNonPlanar = desc.surfaceType && desc.surfaceType !== 'plane';
+      if (!isNonPlanar) continue;
+      const nv = desc.vertices.length;
+      for (let i = 0; i < nv; i++) {
+        const k1 = _edgeVKey(desc.vertices[i]);
+        const k2 = _edgeVKey(desc.vertices[(i + 1) % nv]);
+        const unordered = k1 < k2 ? `${k1}|${k2}` : `${k2}|${k1}`;
+        if (arcCurveLookup.has(unordered)) {
+          counts.set(unordered, (counts.get(unordered) || 0) + 1);
+        }
+      }
+    }
+    for (const [k, count] of counts) {
+      if (count >= 2) nonPlanarEdgeKeys.add(k);
+    }
+  }
+
+  // Replace matching straight-line edge curves with arc curves.
+  // Two modes of operation:
+  //
+  // 1. **Single-edge replacement**: A straight-line edge (2 control points)
+  //    whose endpoints match an arc lookup entry is replaced directly.
+  //
+  // 2. **Sequence consolidation**: Multiple consecutive straight-line edges
+  //    whose combined span (first vertex → last vertex) matches an arc lookup
+  //    entry are collapsed into a single arc curve edge, removing intermediate
+  //    vertices.  This handles faces that inherited intermediate arc sample
+  //    points from a previous fillet operation.
+  for (const desc of faceDescs) {
+    if (!desc.vertices || !desc.edgeCurves) continue;
+
+    // --- Pass 1: single-edge replacement ---
+    const n = desc.vertices.length;
+    for (let i = 0; i < n; i++) {
+      const curve = desc.edgeCurves[i];
+      if (!curve || curve.degree !== 1 || !curve.controlPoints || curve.controlPoints.length !== 2) continue;
+      const v1 = desc.vertices[i];
+      const v2 = desc.vertices[(i + 1) % n];
+      const k1 = _edgeVKey(v1);
+      const k2 = _edgeVKey(v2);
+      const unordered = k1 < k2 ? `${k1}|${k2}` : `${k2}|${k1}`;
+      const arcCurve = arcCurveLookup.get(unordered);
+      if (arcCurve && !nonPlanarEdgeKeys.has(unordered)) {
+        const arcStart = _edgeVKey(arcCurve.controlPoints[0]);
+        desc.edgeCurves[i] = arcStart === k1 ? arcCurve.clone() : arcCurve.reversed();
+      }
+    }
+
+    // --- Pass 2: sequence consolidation ---
+    // Look for runs of consecutive straight-line edges whose overall span
+    // matches an arc endpoint pair.  Only consider sequences of length ≥ 2
+    // to avoid duplicating Pass 1 work.
+    if (desc.vertices.length <= 3) continue; // can't remove vertices from a triangle
+    let changed = true;
+    let _consolidateGuard = 0;
+    while (changed) {
+      if (++_consolidateGuard > 10_000_000) throw new Error('_replaceEdgesWithArcCurves: consolidation exceeded 10M iterations');
+      changed = false;
+      const m = desc.vertices.length;
+      for (let start = 0; start < m; start++) {
+        // Try longer runs first (greedy)
+        for (let runLen = Math.min(m - 3, m - 1); runLen >= 2; runLen--) {
+          // Check that every edge in [start, start+runLen-1] is a straight line
+          let allLines = true;
+          for (let j = 0; j < runLen; j++) {
+            const idx = (start + j) % m;
+            const c = desc.edgeCurves[idx];
+            if (!c || c.degree !== 1 || !c.controlPoints || c.controlPoints.length !== 2) {
+              allLines = false;
+              break;
+            }
+          }
+          if (!allLines) continue;
+
+          const firstVert = desc.vertices[start];
+          const lastVert = desc.vertices[(start + runLen) % m];
+          const fk = _edgeVKey(firstVert);
+          const lk = _edgeVKey(lastVert);
+          if (fk === lk) continue;
+          const unordered = fk < lk ? `${fk}|${lk}` : `${lk}|${fk}`;
+          const arcCurve = arcCurveLookup.get(unordered);
+          if (!arcCurve || nonPlanarEdgeKeys.has(unordered)) continue;
+
+          // Found a match — consolidate: remove intermediate vertices and edges
+          const arcStart = _edgeVKey(arcCurve.controlPoints[0]);
+          const replacement = arcStart === fk ? arcCurve.clone() : arcCurve.reversed();
+
+          // Build new arrays without the intermediate vertices
+          const newVerts = [];
+          const newCurves = [];
+          for (let j = 0; j < m; j++) {
+            const isIntermediate = (j > start && j < start + runLen) ||
+              (start + runLen > m && (j > start || j < (start + runLen) % m));
+            if (isIntermediate) continue;
+            newVerts.push(desc.vertices[j]);
+            if (j === start) {
+              newCurves.push(replacement);
+            } else {
+              const isSkippedCurve = (j > start && j <= start + runLen - 1) ||
+                (start + runLen > m && (j > start || j <= (start + runLen - 1) % m));
+              if (!isSkippedCurve) {
+                newCurves.push(desc.edgeCurves[j]);
+              }
+            }
+          }
+
+          if (newVerts.length >= 3) {
+            desc.vertices = newVerts;
+            desc.edgeCurves = newCurves;
+            changed = true;
+            break; // restart scanning with updated arrays
+          }
+        }
+        if (changed) break;
+      }
+    }
+  }
+}
+
+// -----------------------------------------------------------------------
 // Main entry point
 // -----------------------------------------------------------------------
 
@@ -1001,6 +1228,14 @@ function _buildExactFilletTopoBody(faces, edgeDataList, origTopoBody = null) {
   faceDescs.push(...cornerDescs);
 
   if (faceDescs.length === 0) return null;
+
+  // Replace straight-line edge curves with arc curves on edges that match
+  // fillet arc endpoints.  This must happen AFTER all face descriptors are
+  // assembled so both the fillet face and its adjacent planar/non-planar
+  // neighbours receive the same curve, ensuring buildTopoBody's edge
+  // deduplication succeeds.
+  _replaceEdgesWithArcCurves(faceDescs, edgeDataList, faces, origTopoFaces);
+
   return buildTopoBody(faceDescs);
 }
 
