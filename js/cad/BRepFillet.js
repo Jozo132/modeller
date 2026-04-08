@@ -136,6 +136,8 @@ function _precomputeFilletEdge(faces, edgeKey, radius, segments, exactAdjacencyB
     p0a: t0a, p0b: t0b, p1a: t1a, p1b: t1b,
     arcA, arcB,
     isConcave,
+    radius,
+    _sweep: sweep,
     shared: face0.shared ? { ...face0.shared } : null,
   };
 }
@@ -159,14 +161,6 @@ function _precomputeFilletEdge(faces, edgeKey, radius, segments, exactAdjacencyB
 function _mergeSharedVertexPositions(edgeDataList, vertexEdgeMap) {
   for (const [vk, edgeIndices] of vertexEdgeMap) {
     if (edgeIndices.length < 2) continue;
-
-    // Linear merged trim vertices are correct for chamfers and can help the
-    // 2-edge fillet case, but they are wrong for a 3-edge rolling-ball
-    // corner: they create fake planar points like (9,9,10) that leave a
-    // residual loop later healed into sliver faces. Let the trihedron be
-    // bounded only by the strip arcs in that case.
-    const hasFillet = edgeIndices.some((di) => !!edgeDataList[di].arcA);
-    if (hasFillet && edgeIndices.length >= 3) continue;
 
     // Get original vertex position
     const d0 = edgeDataList[edgeIndices[0]];
@@ -369,66 +363,140 @@ function _applyTwoEdgeFilletSharedTrims(edgeDataList, origFaces, vertexEdgeMap) 
         edgeInfo1.data._sharedTrimPlaneBNormal = { ...trimInfo.planeNormal };
       }
     } else if (edgeIndices.length >= 3) {
-      // 3+ edge corner: process all pairs to compute shared trims
-      // Each pair of edges sharing a common face gets a shared trim curve
-      const trimEndpoints = [];
+      // 3+ edge corner: do NOT apply pairwise shared trims because
+      // they overwrite each other and produce inconsistent boundaries.
+      // Instead, leave the original arcs as the fillet strip boundaries
+      // at this vertex end, and collect the arc-endpoint data needed to
+      // build a spherical corner patch in Step 6.
+      //
+      // After _mergeSharedVertexPositions, each face's trim positions at
+      // this vertex are merged (identical for all edges touching that face).
+      // The unique merged positions form the 3 vertices of the spherical
+      // corner triangle.  The sphere center is derived from these: each
+      // merged vertex = origV + sum(face_offsets_on_that_face), so
+      // sphereCenter = origV + (sum_of_merged - 3*origV) / 2.
 
-      for (let i = 0; i < edgeIndices.length; i++) {
-        for (let j = i + 1; j < edgeIndices.length; j++) {
-          const data0 = edgeDataList[edgeIndices[i]];
-          const data1 = edgeDataList[edgeIndices[j]];
-          const edgeInfo0 = {
-            data: data0,
-            isA: _edgeVKey(data0.edgeA) === vk,
-            arc: _edgeVKey(data0.edgeA) === vk ? data0.arcA : data0.arcB,
-          };
-          const edgeInfo1 = {
-            data: data1,
-            isA: _edgeVKey(data1.edgeA) === vk,
-            arc: _edgeVKey(data1.edgeA) === vk ? data1.arcA : data1.arcB,
-          };
-          if (!edgeInfo0.arc || !edgeInfo1.arc) continue;
+      const d0 = edgeDataList[edgeIndices[0]];
+      const origV = _edgeVKey(d0.edgeA) === vk ? d0.edgeA : d0.edgeB;
 
-          const trimInfo = _buildTwoEdgeFilletTrim(edgeInfo0, edgeInfo1, origFaces);
-          if (!trimInfo) continue;
-
-          // Apply shared trims to each edge
-          if (edgeInfo0.isA) edgeInfo0.data.sharedTrimA = trimInfo.trimFor0;
-          else edgeInfo0.data.sharedTrimB = trimInfo.trimFor0;
-          if (edgeInfo1.isA) edgeInfo1.data.sharedTrimA = trimInfo.trimFor1;
-          else edgeInfo1.data.sharedTrimB = trimInfo.trimFor1;
-
-          if (edgeInfo0.isA) {
-            edgeInfo0.data._sharedTrimPlaneAOrigin = { ...trimInfo.planeOrigin };
-            edgeInfo0.data._sharedTrimPlaneANormal = { ...trimInfo.planeNormal };
-          } else {
-            edgeInfo0.data._sharedTrimPlaneBOrigin = { ...trimInfo.planeOrigin };
-            edgeInfo0.data._sharedTrimPlaneBNormal = { ...trimInfo.planeNormal };
-          }
-          if (edgeInfo1.isA) {
-            edgeInfo1.data._sharedTrimPlaneAOrigin = { ...trimInfo.planeOrigin };
-            edgeInfo1.data._sharedTrimPlaneANormal = { ...trimInfo.planeNormal };
-          } else {
-            edgeInfo1.data._sharedTrimPlaneBOrigin = { ...trimInfo.planeOrigin };
-            edgeInfo1.data._sharedTrimPlaneBNormal = { ...trimInfo.planeNormal };
-          }
-
-          // Collect the trim endpoint closest to the shared vertex for corner patch
-          // The shared trim on the common face side near the vertex
-          const trimPts = trimInfo.trimFor0;
-          if (trimPts && trimPts.length > 0) {
-            trimEndpoints.push({ ...trimPts[0] });
+      // Collect unique merged trim positions at this vertex
+      const triVertices = [];
+      const seen = new Set();
+      for (const di of edgeIndices) {
+        const d = edgeDataList[di];
+        const isA = _edgeVKey(d.edgeA) === vk;
+        const p0 = isA ? d.p0a : d.p0b;
+        const p1 = isA ? d.p1a : d.p1b;
+        for (const pt of [p0, p1]) {
+          const ptk = _edgeVKey(pt);
+          if (!seen.has(ptk)) {
+            seen.add(ptk);
+            triVertices.push({ ...pt });
           }
         }
       }
 
-      if (trimEndpoints.length >= 3) {
-        cornerTrimEndpoints.set(vk, trimEndpoints);
+      if (triVertices.length >= 3) {
+        // Compute the sphere center from the 3 merged vertices.
+        // sphere_center = origV + (sum_merged - 3*origV) / 2
+        const sumX = triVertices[0].x + triVertices[1].x + triVertices[2].x;
+        const sumY = triVertices[0].y + triVertices[1].y + triVertices[2].y;
+        const sumZ = triVertices[0].z + triVertices[1].z + triVertices[2].z;
+        const sphereCenter = {
+          x: origV.x + (sumX - 3 * origV.x) / 2,
+          y: origV.y + (sumY - 3 * origV.y) / 2,
+          z: origV.z + (sumZ - 3 * origV.z) / 2,
+        };
+        cornerTrimEndpoints.set(vk, {
+          triVertices: triVertices.slice(0, 3),
+          sphereCenter,
+          edgeIndices: [...edgeIndices],
+        });
       }
     }
   }
 
   return cornerTrimEndpoints;
+}
+
+/**
+ * For each fillet edge at a 3-edge corner, recompute the vertex-end arc
+ * at the merged position.  After _mergeSharedVertexPositions the trim
+ * points (p0a/p1a) have been moved to the merged sphere-vertex positions.
+ * The pre-merge arc was computed at the original vertex, whose cross-section
+ * center is different from the sphere center.  The recomputed arc shares
+ * its endpoints with the sphere vertices and lies on both the fillet
+ * cylinder and the corner sphere.
+ */
+function _recomputeCornerArcs(edgeDataList, vertexEdgeMap, cornerTrimEndpoints, segments, faces) {
+  if (!cornerTrimEndpoints || cornerTrimEndpoints.size === 0) return;
+
+  for (const [vk, cornerData] of cornerTrimEndpoints) {
+    const { edgeIndices } = cornerData;
+    if (!edgeIndices) continue;
+
+    for (const di of edgeIndices) {
+      const d = edgeDataList[di];
+      const isA = _edgeVKey(d.edgeA) === vk;
+      // Merged arc endpoints
+      const p0 = isA ? d.p0a : d.p0b;  // face0 side merged position
+      const p1 = isA ? d.p1a : d.p1b;  // face1 side merged position
+
+      // The arc center at the merged position: project the merged point onto
+      // the edge line to find where on the axis the cross-section sits.
+      // edgeDir = normalize(edgeB - edgeA).  The cross-section center is
+      // the rolling-ball center at that axis parameter.
+      const edgeDir = _vec3Normalize(_vec3Sub(d.edgeB, d.edgeA));
+      const vertexPos = isA ? d.edgeA : d.edgeB;
+      // The merged p0 lies on the face0 plane and on the cylinder.
+      // Its projection onto the edge axis gives the slice position.
+      const sliceT = _vec3Dot(_vec3Sub(p0, d.edgeA), edgeDir);
+      const axisPoint = _vec3Add(d.edgeA, _vec3Scale(edgeDir, sliceT));
+      // The arc center is offset from the axis point along the bisector
+      const { offsDir0, offsDir1 } = _computeOffsetDirs(
+        faces[d.fi0], faces[d.fi1], d.edgeA, d.edgeB
+      );
+      const bisector = _vec3Normalize(_vec3Add(offsDir0, offsDir1));
+      const halfAngle = Math.acos(Math.max(-1, Math.min(1, _vec3Dot(offsDir0, offsDir1)))) / 2;
+      const centerDist = d.radius / Math.cos(halfAngle);
+      const arcCenter = _vec3Add(axisPoint, _vec3Scale(bisector, centerDist));
+
+      // Compute arc from p0 to p1 around arcCenter
+      const e0 = _vec3Normalize(_vec3Sub(p0, arcCenter));
+      const t1rel = _vec3Sub(p1, arcCenter);
+      const t1proj = _vec3Dot(t1rel, e0);
+      const rawE1 = _vec3Sub(t1rel, _vec3Scale(e0, t1proj));
+      const rawE1Len = _vec3Len(rawE1);
+      const e1 = rawE1Len > 1e-10
+        ? _vec3Scale(rawE1, 1 / rawE1Len)
+        : _vec3Normalize(_vec3Cross(edgeDir, e0));
+      const sweep = d._sweep || Math.PI / 2;
+
+      let newArc;
+      try {
+        const nurbsArc = NurbsCurve.createArc(arcCenter, d.radius, e0, e1, 0, sweep);
+        newArc = nurbsArc.tessellate(segments).map(p => ({ x: p.x, y: p.y, z: p.z }));
+      } catch (_) {
+        // Fallback: simple theta-based
+        newArc = [];
+        for (let s = 0; s <= segments; s++) {
+          const theta = (s / segments) * sweep;
+          newArc.push(_vec3Add(arcCenter, _vec3Add(
+            _vec3Scale(e0, d.radius * Math.cos(theta)),
+            _vec3Scale(e1, d.radius * Math.sin(theta))
+          )));
+        }
+      }
+
+      if (isA) {
+        d.arcA = newArc;
+        d._exactArcCurveA = _curveFromSampledPoints(newArc);
+      } else {
+        d.arcB = newArc;
+        d._exactArcCurveB = _curveFromSampledPoints(newArc);
+      }
+    }
+  }
 }
 
 function _curveFromSampledPoints(points) {
@@ -628,6 +696,10 @@ function _buildExactFilletFaceDesc(data) {
     } else if (hasSharedA && trimA.length > 2) {
       const curve = _buildExactFilletBoundaryCurve(data, trimA, 'A', true);
       if (curve) edgeCurve0 = curve;
+    } else if (data._useArcCurveA && data._exactArcCurveA) {
+      // 3-edge corner: use the arc polyline so the fillet strip and
+      // sphere corner patch share the same TopoEdge curve.
+      edgeCurve0 = data._exactArcCurveA.clone();
     }
     if (hasJuncB && juncB.length > 2) {
       const reversed = [...juncB].reverse();
@@ -637,6 +709,10 @@ function _buildExactFilletFaceDesc(data) {
       const reversedTrimB = [...trimB].reverse();
       const curve = _buildExactFilletBoundaryCurve(data, reversedTrimB, 'B', true);
       if (curve) edgeCurve2 = curve;
+    } else if (data._useArcCurveB && data._exactArcCurveB) {
+      // 3-edge corner: use the reversed arc polyline so the fillet strip
+      // and sphere corner patch share the same TopoEdge curve.
+      edgeCurve2 = data._exactArcCurveB.reversed();
     }
 
     edgeCurves = [
@@ -786,11 +862,32 @@ function _buildExactTrihedronFaceDesc(cornerGroup) {
   }
 
   const vertices = triVerts.map(v => ({ ...v }));
-  const edgeCurves = [
-    NurbsCurve.createLine(triVerts[0], triVerts[1]),
-    NurbsCurve.createLine(triVerts[1], triVerts[2]),
-    NurbsCurve.createLine(triVerts[2], triVerts[0]),
-  ];
+
+  // Build edge curves.  If arc polylines are available (from the fillet
+  // strip arcs), use them so that the sphere patch shares exact edge
+  // curves with the adjacent fillet faces.  Otherwise fall back to lines.
+  const arcCurves = cornerGroup.find(f => f._arcCurves)?._arcCurves || [];
+  const edgeCurves = [];
+  for (let i = 0; i < 3; i++) {
+    const vA = triVerts[i];
+    const vB = triVerts[(i + 1) % 3];
+    const vAk = _edgeVKey(vA);
+    const vBk = _edgeVKey(vB);
+
+    // Find an arc curve that connects vA → vB (or vB → vA, reversed)
+    let matched = null;
+    for (const ac of arcCurves) {
+      if (ac.startVK === vAk && ac.endVK === vBk) {
+        matched = _curveFromSampledPoints(ac.points);
+        break;
+      } else if (ac.startVK === vBk && ac.endVK === vAk) {
+        const reversed = [...ac.points].reverse();
+        matched = _curveFromSampledPoints(reversed);
+        break;
+      }
+    }
+    edgeCurves.push(matched || NurbsCurve.createLine(vA, vB));
+  }
 
   const polyNormal = _computePolygonNormal(vertices);
   let sameSense = true;
@@ -802,13 +899,17 @@ function _buildExactTrihedronFaceDesc(cornerGroup) {
     if (surfNormal) sameSense = _vec3Dot(polyNormal, surfNormal) >= 0;
   }
 
+  const sharedData = cornerGroup[0].shared ? { ...cornerGroup[0].shared, isCorner: true } : { isCorner: true };
+  if (sphereCenter) sharedData._sphereCenter = { ...sphereCenter };
+  if (sphereRadius > 0) sharedData._sphereRadius = sphereRadius;
+
   return {
     surface,
     surfaceType: surface ? SurfaceType.SPHERE : SurfaceType.PLANE,
     vertices,
     edgeCurves,
     sameSense,
-    shared: cornerGroup[0].shared ? { ...cornerGroup[0].shared, isCorner: true } : { isCorner: true },
+    shared: sharedData,
   };
 }
 
@@ -1042,17 +1143,20 @@ function _replaceEdgesWithArcCurves(faceDescs, edgeDataList, faces, origTopoFace
   if (arcCurveLookup.size === 0) return;
 
   // Build a count of how many non-planar face descriptors reference each arc
-  // vertex-pair key.  Arcs shared between TWO non-planar faces (e.g. a new
-  // fillet face and a previous fillet's trimmed face) would cause CDT
-  // T-junctions because both surfaces produce incompatible internal
+  // vertex-pair key.  Arcs shared between TWO non-planar cylinder faces
+  // (e.g. a new fillet face and a previous fillet's trimmed face) would cause
+  // CDT T-junctions because both surfaces produce incompatible internal
   // triangulations.  An arc referenced by exactly ONE non-planar face (the
   // fillet face itself) is fine — the other face sharing the edge is planar.
+  // Sphere faces are excluded from this count because they don't cause
+  // T-junction issues with planar faces sharing their boundary arcs.
   const nonPlanarEdgeKeys = new Set();
   {
     const counts = new Map();
     for (const desc of faceDescs) {
       if (!desc.vertices || !desc.edgeCurves) continue;
-      const isNonPlanar = desc.surfaceType && desc.surfaceType !== 'plane';
+      const isNonPlanar = desc.surfaceType && desc.surfaceType !== 'plane'
+        && desc.surfaceType !== 'sphere';
       if (!isNonPlanar) continue;
       const nv = desc.vertices.length;
       for (let i = 0; i < nv; i++) {
@@ -2088,6 +2192,13 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
   _mergeSharedVertexPositions(edgeDataList, vertexEdgeMap);
   const cornerTrimEndpoints = _applyTwoEdgeFilletSharedTrims(edgeDataList, faces, vertexEdgeMap);
 
+  // Step 3b: Recompute fillet arcs at 3-edge corners.
+  // _mergeSharedVertexPositions updated p0a/p1a to the merged positions but
+  // the arcA/arcB arrays still use the pre-merge arc computed at the original
+  // vertex.  For 3-edge corners the fillet strip must end at the merged
+  // position (the sphere vertex), so recompute each arc there.
+  _recomputeCornerArcs(edgeDataList, vertexEdgeMap, cornerTrimEndpoints, segments, faces);
+
   // Step 4: Trim original faces and build fillet face descriptors
   // Create a set of face indices that are adjacent to fillet edges
   const filletFaceIndices = new Set();
@@ -2304,25 +2415,37 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
     const centerDist = alpha > 1e-6 ? radius / Math.sin(alpha / 2) : radius;
     const bisector = _vec3Normalize(_vec3Add(offsDir0, offsDir1));
 
-    // Two edge positions: edgeA (start) and edgeB (end)
+    // Two edge positions: edgeA (start) and edgeB (end).
+    // For recomputed corner arcs, the arc start may not be at the
+    // original vertex — project arc midpoints onto the edge axis
+    // to find the correct center positions.
     const rail0 = [
-      { ...arcA[0] },                      // face0 trim at edgeA
-      { ...arcB[0] },                      // face0 trim at edgeB
+      { ...arcA[0] },                      // face0 trim at edgeA end
+      { ...arcB[0] },                      // face0 trim at edgeB end
     ];
     const rail1 = [
-      { ...arcA[arcA.length - 1] },        // face1 trim at edgeA
-      { ...arcB[arcB.length - 1] },        // face1 trim at edgeB
+      { ...arcA[arcA.length - 1] },        // face1 trim at edgeA end
+      { ...arcB[arcB.length - 1] },        // face1 trim at edgeB end
     ];
+
+    // Compute the arc center at each end by projecting the arc midpoint
+    // onto the edge axis.
+    const midA = arcA[Math.floor(arcA.length / 2)];
+    const midB = arcB[Math.floor(arcB.length / 2)];
+    const tA = _vec3Dot(_vec3Sub(midA, data.edgeA), edgeDir);
+    const tB = _vec3Dot(_vec3Sub(midB, data.edgeA), edgeDir);
+    const axisA = _vec3Add(data.edgeA, _vec3Scale(edgeDir, tA));
+    const axisB = _vec3Add(data.edgeA, _vec3Scale(edgeDir, tB));
     const centers = [
-      _vec3Add(data.edgeA, _vec3Scale(bisector, centerDist)),  // center at edgeA
-      _vec3Add(data.edgeB, _vec3Scale(bisector, centerDist)),  // center at edgeB
+      _vec3Add(axisA, _vec3Scale(bisector, centerDist)),
+      _vec3Add(axisB, _vec3Scale(bisector, centerDist)),
     ];
 
     try {
       const surface = NurbsSurface.createFilletSurface(rail0, rail1, centers, radius, edgeDir);
       data._exactSurface = surface;
-      data._exactAxisStart = { ...data.edgeA };
-      data._exactAxisEnd = { ...data.edgeB };
+      data._exactAxisStart = { ...axisA };
+      data._exactAxisEnd = { ...axisB };
       data._exactRadius = radius;
 
       // Build NURBS arc curves for the arcs if not already present
@@ -2338,13 +2461,78 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
     }
   }
 
-  // Step 6: Generate corner patch faces for 3+ edge vertices
-  // At vertices where 3+ fillet edges meet, the shared trims leave
-  // gaps. Currently, corner patches are only generated when the shared
-  // trims produce exactly matching edge endpoints. Complex 3-edge
-  // corners may leave boundary edges.
-  // TODO: Implement proper spherical corner patch generation for
-  // 3+ edge fillet corners with matching edge topology.
+  // Step 6: Generate spherical corner patch faces for 3-edge vertices.
+  // At vertices where 3 fillet edges meet, the three fillet strips each
+  // end in an arc whose endpoints are shared with adjacent strips.
+  // The gap between the three strips is filled by a spherical triangle
+  // patch centered at the original vertex.
+  for (const [vk, cornerData] of cornerTrimEndpoints) {
+    const { triVertices, sphereCenter, edgeIndices: cornerEdgeIndices } = cornerData;
+    if (!triVertices || triVertices.length < 3) continue;
+
+    // Compute the sphere radius: distance from the sphere center to any
+    // of the triangle vertices (they should all be equidistant for an
+    // equal-radius corner on orthogonal faces).
+    const dx = triVertices[0].x - sphereCenter.x;
+    const dy = triVertices[0].y - sphereCenter.y;
+    const dz = triVertices[0].z - sphereCenter.z;
+    const sphereRadius = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (sphereRadius < 1e-10) continue;
+
+    // Collect the arc polylines at this vertex from each edge.
+    // These arcs form the boundary curves shared between the fillet
+    // strip faces and the spherical corner patch.
+    const arcCurves = []; // [{startVK, endVK, points}]
+    for (const di of cornerEdgeIndices) {
+      const d = edgeDataList[di];
+      const isA = _edgeVKey(d.edgeA) === vk;
+      const arc = isA ? d.arcA : d.arcB;
+      if (!arc || arc.length < 2) continue;
+      const startVK = _edgeVKey(arc[0]);
+      const endVK = _edgeVKey(arc[arc.length - 1]);
+      arcCurves.push({ startVK, endVK, points: arc });
+    }
+
+    // Order the three vertices so the resulting face normal points
+    // outward (away from the solid interior).  The outward direction
+    // is from the sphere center towards the surface (centroid - center).
+    // `inwardDir` = sphereCenter − centroid points INWARD, so if the
+    // polygon normal aligns with it, the winding is inward and must flip.
+    const v0 = triVertices[0], v1 = triVertices[1], v2 = triVertices[2];
+    const polyNormal = _computePolygonNormal([v0, v1, v2]);
+    const inwardDir = _vec3Normalize(_vec3Sub(sphereCenter, {
+      x: (v0.x + v1.x + v2.x) / 3,
+      y: (v0.y + v1.y + v2.y) / 3,
+      z: (v0.z + v1.z + v2.z) / 3,
+    }));
+    // If polyNormal aligns with inwardDir, it points inward → need flip
+    const inward = polyNormal && _vec3Dot(polyNormal, inwardDir) > 0;
+    const orderedVerts = inward ? [v0, v2, v1] : [v0, v1, v2];
+
+    // Store the arc curves and sphere metadata on the corner face
+    // so _buildExactTrihedronFaceDesc can use them for edge curves.
+    const outNormal = inward ? _vec3Scale(polyNormal, -1) : polyNormal;
+    trimmedFaces.push({
+      vertices: orderedVerts.map(v => ({ ...v })),
+      normal: outNormal,
+      isCorner: true,
+      _triVerts: orderedVerts.map(v => ({ ...v })),
+      _sphereCenter: { ...sphereCenter },
+      _sphereRadius: sphereRadius,
+      _arcCurves: arcCurves,
+      shared: { isCorner: true, isFillet: true },
+    });
+
+    // Mark each fillet edge at this vertex to use arc polyline curves
+    // instead of straight lines.  This ensures the fillet strip face
+    // and sphere patch share the same TopoEdge curve.
+    for (const di of cornerEdgeIndices) {
+      const d = edgeDataList[di];
+      const isA = _edgeVKey(d.edgeA) === vk;
+      if (isA) d._useArcCurveA = true;
+      else d._useArcCurveB = true;
+    }
+  }
 
   // Step 7: Build the exact fillet TopoBody
   // Mark fillet faces in trimmed faces
@@ -2396,6 +2584,33 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
 
   const edgeResult = computeFeatureEdges(mesh.faces);
 
+  // Build a lightweight BRep view from the TopoBody so downstream code
+  // (tests, export) can inspect exact surface data.
+  let brep = null;
+  if (newTopoBody && newTopoBody.shells) {
+    const brepFaces = [];
+    for (const shell of newTopoBody.shells) {
+      for (const face of (shell.faces || [])) {
+        const entry = {
+          id: face.id,
+          // Convert internal 'sphere' type to 'spherical' for BRep output
+          // to match STEP/external convention used by tests and export.
+          surfaceType: face.surfaceType === 'sphere' ? 'spherical' : face.surfaceType,
+          surface: face.surface || null,
+          sameSense: face.sameSense,
+          shared: face.shared || null,
+        };
+        // Attach sphere metadata if present
+        if (face.shared && face.shared._sphereCenter) {
+          entry.sphereCenter = { ...face.shared._sphereCenter };
+          entry.sphereRadius = face.shared._sphereRadius || 0;
+        }
+        brepFaces.push(entry);
+      }
+    }
+    brep = { faces: brepFaces };
+  }
+
   return {
     vertices: mesh.vertices || [],
     faces: mesh.faces,
@@ -2403,6 +2618,7 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
     paths: edgeResult.paths,
     visualEdges: edgeResult.visualEdges,
     topoBody: newTopoBody,
+    brep,
   };
 }
 // Exports
