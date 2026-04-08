@@ -145,6 +145,67 @@ function countTopoBodyBoundaryEdges(body) {
 }
 
 /**
+ * Count coincident-opposite face pairs in a TopoBody.
+ * These are pairs of faces that occupy the same plane region with
+ * opposite normals, indicating internal boundary faces that should
+ * have been removed by the boolean operation.
+ */
+function countCoincidentOppositePairs(body) {
+  if (!body) return 0;
+  const faces = body.faces();
+  let count = 0;
+  for (let i = 0; i < faces.length; i++) {
+    const fi = faces[i];
+    const ptsI = fi.outerLoop?.points();
+    if (!ptsI || ptsI.length < 3) continue;
+    const ni = _topoFaceNormal(fi);
+    const biI = _faceBounds(ptsI);
+    for (let j = i + 1; j < faces.length; j++) {
+      const fj = faces[j];
+      const ptsJ = fj.outerLoop?.points();
+      if (!ptsJ || ptsJ.length < 3) continue;
+      const nj = _topoFaceNormal(fj);
+      // Opposite normals
+      if (ni.x * nj.x + ni.y * nj.y + ni.z * nj.z > -0.99) continue;
+      // Overlapping bounds (same plane region)
+      const biJ = _faceBounds(ptsJ);
+      if (Math.abs(biI.minX - biJ.minX) > 0.1 || Math.abs(biI.maxX - biJ.maxX) > 0.1) continue;
+      if (Math.abs(biI.minY - biJ.minY) > 0.1 || Math.abs(biI.maxY - biJ.maxY) > 0.1) continue;
+      if (Math.abs(biI.minZ - biJ.minZ) > 0.1 || Math.abs(biI.maxZ - biJ.maxZ) > 0.1) continue;
+      count++;
+    }
+  }
+  return count;
+}
+
+function _topoFaceNormal(face) {
+  const pts = face.outerLoop.points();
+  let nx = 0, ny = 0, nz = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const c = pts[i], n = pts[(i + 1) % pts.length];
+    nx += (c.y - n.y) * (c.z + n.z);
+    ny += (c.z - n.z) * (c.x + n.x);
+    nz += (c.x - n.x) * (c.y + n.y);
+  }
+  const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+  if (len > 1e-10) { nx /= len; ny /= len; nz /= len; }
+  if (face.sameSense === false) { nx = -nx; ny = -ny; nz = -nz; }
+  return { x: nx, y: ny, z: nz };
+}
+
+function _faceBounds(pts) {
+  let minX = Infinity, maxX = -Infinity;
+  let minY = Infinity, maxY = -Infinity;
+  let minZ = Infinity, maxZ = -Infinity;
+  for (const v of pts) {
+    if (v.x < minX) minX = v.x; if (v.x > maxX) maxX = v.x;
+    if (v.y < minY) minY = v.y; if (v.y > maxY) maxY = v.y;
+    if (v.z < minZ) minZ = v.z; if (v.z > maxZ) maxZ = v.z;
+  }
+  return { minX, maxX, minY, maxY, minZ, maxZ };
+}
+
+/**
  * Full geometry validation for a feature result.
  */
 function validateGeometry(geom, label, opts = {}) {
@@ -938,6 +999,39 @@ test('extrude-on-extrude-dual-with-cut.cmod produces valid mesh', () => {
   validateGeometry(geom, 'extrude-on-extrude-dual-with-cut');
   assert.ok(geom.faces.length <= 72,
     `extrude-on-extrude-dual-with-cut: expected ≤72 triangles, got ${geom.faces.length}`);
+});
+
+test('extrude-on-extrude-dual.cmod has no coincident-opposite face pairs', () => {
+  const part = loadCMOD('extrude-on-extrude-dual.cmod');
+  assert.ok(part, 'Should load extrude-on-extrude-dual.cmod');
+  const geom = getFinalGeometry(part);
+  assert.ok(geom?.topoBody, 'Should have topoBody');
+  const pairs = countCoincidentOppositePairs(geom.topoBody);
+  assert.strictEqual(pairs, 0,
+    `extrude-on-extrude-dual: expected 0 coincident-opposite face pairs, got ${pairs}`);
+});
+
+test('extrude-on-extrude-dual-with-cut.cmod has no coincident-opposite face pairs', () => {
+  const part = loadCMOD('extrude-on-extrude-dual-with-cut.cmod');
+  assert.ok(part, 'Should load extrude-on-extrude-dual-with-cut.cmod');
+  const geom = getFinalGeometry(part);
+  assert.ok(geom?.topoBody, 'Should have topoBody');
+  const pairs = countCoincidentOppositePairs(geom.topoBody);
+  assert.strictEqual(pairs, 0,
+    `extrude-on-extrude-dual-with-cut: expected 0 coincident-opposite face pairs, got ${pairs}`);
+});
+
+test('simple-extrude-cut.cmod produces valid mesh with no internal faces', () => {
+  const part = loadCMOD('simple-extrude-cut.cmod');
+  assert.ok(part, 'Should load simple-extrude-cut.cmod');
+  const geom = getFinalGeometry(part);
+  assert.ok(geom, 'Should have geometry');
+  validateGeometry(geom, 'simple-extrude-cut');
+  if (geom.topoBody) {
+    const pairs = countCoincidentOppositePairs(geom.topoBody);
+    assert.strictEqual(pairs, 0,
+      `simple-extrude-cut: expected 0 coincident-opposite face pairs, got ${pairs}`);
+  }
 });
 
 test('extrude-on-extrude-dual-with-cut-and-radius.cmod (fillet after cut) produces valid mesh', () => {
