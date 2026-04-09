@@ -105,6 +105,16 @@
     ]
   },
   {
+    "file": "custom-part-1.cmod",
+    "label": "Custom Part 1",
+    "featureTypes": [
+      "sketch",
+      "extrude",
+      "fillet",
+      "chamfer"
+    ]
+  },
+  {
     "file": "extrude-on-extrude-dual-failing-sketch-select.cmod",
     "label": "Extrude On Extrude Dual Failing Sketch Select",
     "featureTypes": [
@@ -166,6 +176,50 @@
     "featureTypes": [
       "sketch",
       "extrude"
+    ]
+  },
+  {
+    "file": "puzzle-extrude-cc.cmod",
+    "label": "Puzzle Extrude Cc",
+    "featureTypes": [
+      "sketch",
+      "extrude",
+      "chamfer"
+    ]
+  },
+  {
+    "file": "puzzle-extrude-cc2.cmod",
+    "label": "Puzzle Extrude Cc2",
+    "featureTypes": [
+      "sketch",
+      "extrude",
+      "chamfer"
+    ]
+  },
+  {
+    "file": "puzzle-extrude-cc3.cmod",
+    "label": "Puzzle Extrude Cc3",
+    "featureTypes": [
+      "sketch",
+      "extrude",
+      "chamfer"
+    ]
+  },
+  {
+    "file": "puzzle-extrude.cmod",
+    "label": "Puzzle Extrude",
+    "featureTypes": [
+      "sketch",
+      "extrude"
+    ]
+  },
+  {
+    "file": "simple-extrude-cut.cmod",
+    "label": "Simple Extrude Cut",
+    "featureTypes": [
+      "sketch",
+      "extrude",
+      "extrude-cut"
     ]
   }
 ]
