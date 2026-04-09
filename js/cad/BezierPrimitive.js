@@ -210,8 +210,8 @@ export class PBezier extends Primitive {
 
       newVertex = {
         point: newPt,
-        handleIn: { dx: r0x - pt.x, dy: r0y - pt.y },
-        handleOut: { dx: r1x - pt.x, dy: r1y - pt.y },
+        handleIn: { dx: r0x - newPt.x, dy: r0y - newPt.y },
+        handleOut: { dx: r1x - newPt.x, dy: r1y - newPt.y },
         tangent: true,
       };
     } else {
