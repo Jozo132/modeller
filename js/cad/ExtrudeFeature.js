@@ -507,41 +507,32 @@ export class ExtrudeFeature extends Feature {
           };
 
           if (type === 'circle') {
-            const halfIndex = Math.floor(spanIndices.length / 2);
-            const circleHalves = [
-              {
-                startIdx: spanIndices[0],
-                endIdx: spanIndices[halfIndex],
-                tangentIdx: spanIndices[1] ?? spanIndices[0],
-              },
-              {
-                startIdx: spanIndices[halfIndex],
-                endIdx: spanIndices[0],
-                tangentIdx: spanIndices[(halfIndex + 1) % spanIndices.length] ?? spanIndices[halfIndex],
-              },
-            ];
+            // Create a single full-circle edge info with a seam at spanIndices[0].
+            // buildTopoBody handles the self-loop edges (same start/end vertex)
+            // by comparing curve direction to determine sameSense, so the
+            // cylinder face and the planar cap faces correctly share the arcs.
+            const seamIdx = spanIndices[0];
+            const r0 = _sub(bottomVerts[seamIdx], center3D);
+            const r0Len = Math.sqrt(r0.x * r0.x + r0.y * r0.y + r0.z * r0.z);
+            const xAx = r0Len > 1e-14 ? { x: r0.x / r0Len, y: r0.y / r0Len, z: r0.z / r0Len } : plane.xAxis;
+            const positiveYAx = _normalize(_cross(extDir, xAx));
+            const tangentIdx = spanIndices[1] ?? seamIdx;
+            const tangent = _normalize(_sub(bottomVerts[tangentIdx], bottomVerts[seamIdx]));
+            const yAx = _dot(tangent, positiveYAx) >= 0
+              ? positiveYAx
+              : { x: -positiveYAx.x, y: -positiveYAx.y, z: -positiveYAx.z };
 
-            for (const half of circleHalves) {
-              const r0 = _sub(bottomVerts[half.startIdx], center3D);
-              const r0Len = Math.sqrt(r0.x * r0.x + r0.y * r0.y + r0.z * r0.z);
-              const xAx = r0Len > 1e-14 ? { x: r0.x / r0Len, y: r0.y / r0Len, z: r0.z / r0Len } : plane.xAxis;
-              const positiveYAx = _normalize(_cross(extDir, xAx));
-              const tangent = _normalize(_sub(bottomVerts[half.tangentIdx], bottomVerts[half.startIdx]));
-              const yAx = _dot(tangent, positiveYAx) >= 0
-                ? positiveYAx
-                : { x: -positiveYAx.x, y: -positiveYAx.y, z: -positiveYAx.z };
-
-              edgeInfos.push({
-                type,
-                startIdx: half.startIdx,
-                endIdx: half.endIdx,
-                spanIndices: [half.startIdx, half.endIdx],
-                isArc: true,
-                bottomCurve: NurbsCurve.createArc(center3D, range.radius, xAx, yAx, 0, Math.PI),
-                topCurve: NurbsCurve.createArc(topCenter3D, range.radius, xAx, yAx, 0, Math.PI),
-                cylSurf: NurbsSurface.createCylinder(center3D, extDir, range.radius, extHeight, xAx, yAx, 0, Math.PI),
-              });
-            }
+            edgeInfos.push({
+              type,
+              startIdx: seamIdx,
+              endIdx: seamIdx,
+              spanIndices: [seamIdx],
+              isArc: true,
+              isFullCircle: true,
+              bottomCurve: NurbsCurve.createArc(center3D, range.radius, xAx, yAx, 0, 2 * Math.PI),
+              topCurve: NurbsCurve.createArc(topCenter3D, range.radius, xAx, yAx, 0, 2 * Math.PI),
+              cylSurf: NurbsSurface.createCylinder(center3D, extDir, range.radius, extHeight, xAx, yAx, 0, 2 * Math.PI),
+            });
             continue;
           }
 
@@ -625,6 +616,32 @@ export class ExtrudeFeature extends Feature {
           const bEnd = profileData.bottomVerts[info.endIdx];
           const tStart = profileData.topVerts[info.startIdx];
           const tEnd = profileData.topVerts[info.endIdx];
+
+          if (info.isFullCircle) {
+            // Full-circle cylinder: 4 edges with a seam.
+            // Bottom/top arcs are self-loop edges (same start/end vertex),
+            // seam line appears twice (forward and reverse).
+            let vertices = [bStart, bStart, tStart, tStart];
+            let edgeCurves = [
+              info.bottomCurve,
+              NurbsCurve.createLine(bStart, tStart),
+              info.topCurve.reversed(),
+              NurbsCurve.createLine(tStart, bStart),
+            ];
+            if (this.direction < 0) {
+              vertices = [...vertices].reverse();
+              edgeCurves = edgeCurves.reverse();
+            }
+            faceDescs.push({
+              surface: info.cylSurf,
+              surfaceType: SurfaceType.CYLINDER,
+              vertices,
+              edgeCurves,
+              shared: { sourceFeatureId: this.id },
+            });
+            continue;
+          }
+
           let vertices = [bStart, bEnd, tEnd, tStart];
           let edgeCurves = [
             info.bottomCurve,
