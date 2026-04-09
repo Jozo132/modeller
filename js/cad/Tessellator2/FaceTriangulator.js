@@ -765,11 +765,15 @@ export class FaceTriangulator {
     }
 
     const steiner2D = [];
+    // For non-periodic analytic surfaces, use enough interior Steiner
+    // points to prevent a single high-valence fan vertex at the centre.
+    // With only 1 Steiner point (the old default), the CDT creates a
+    // fan/star pattern with 30+ triangles radiating from one vertex.
     const gridRes = surface.type === 'torus'
       ? Math.max(4, Math.ceil(surfaceSegments / 2))
       : periodicSurface
         ? Math.max(4, Math.ceil(surfaceSegments / 2))
-        : Math.max(1, Math.ceil(surfaceSegments / 8));
+        : Math.max(3, Math.ceil(surfaceSegments / 3));
     const uStep = (uMax - uMin) / (gridRes + 1 || 1);
     const vStep = (vMax - vMin) / (gridRes + 1 || 1);
     for (let i = 1; i <= gridRes; i++) {
@@ -988,19 +992,19 @@ export class FaceTriangulator {
 
     const meshFaces = [];
     const meshVertices = [];
+    const flip = sameSense ? 1 : -1;
     for (const [a, b, c] of triangles) {
-      let ua = a, ub = b, uc = c;
-      let pa = evalPoint(ua), pb = evalPoint(ub), pc = evalPoint(uc);
+      const ua = a, ub = b, uc = c;
+      const pa = evalPoint(ua), pb = evalPoint(ub), pc = evalPoint(uc);
       const areaThreshold = faceDiag > 0 ? faceDiag * faceDiag * 1e-8 : 1e-14;
       if (_triangleArea3D(pa, pb, pc) < areaThreshold) continue;
 
-      const refNormal = periodicSurface
-        ? triangleSurfaceNormal(ua, ub, uc)
-        : outwardRef;
-      if (_dot(calculateNormal(pa, pb, pc), refNormal) < 0) {
-        [ub, uc] = [uc, ub];
-        [pb, pc] = [pc, pb];
-      }
+      // Do NOT swap vertices per-triangle here.  The global winding fix
+      // (above, before subdivision) already oriented ALL CDT triangles
+      // consistently.  Per-triangle swaps break shared-edge consistency
+      // on strongly curved faces (cones, large-arc cylinders), producing
+      // fan/cross artifacts in smooth shading because adjacent triangles
+      // end up with inconsistent vertex normals at shared vertices.
 
       const na = surface.normal(ua.u, ua.v);
       const nb = surface.normal(ub.u, ub.v);
@@ -1010,39 +1014,33 @@ export class FaceTriangulator {
       // faces that span a large arc (>90°), vertex normals at the
       // extremes legitimately oppose the geometric normal, and flipping
       // them would corrupt the shading direction.
-      const flip = sameSense ? 1 : -1;
-      let vna = _normalize(na ? { x: na.x * flip, y: na.y * flip, z: na.z * flip } : refNormal);
-      let vnb = _normalize(nb ? { x: nb.x * flip, y: nb.y * flip, z: nb.z * flip } : refNormal);
-      let vnc = _normalize(nc ? { x: nc.x * flip, y: nc.y * flip, z: nc.z * flip } : refNormal);
-      let faceN = _normalize({
-        x: (vna.x + vnb.x + vnc.x) / 3,
-        y: (vna.y + vnb.y + vnc.y) / 3,
-        z: (vna.z + vnb.z + vnc.z) / 3,
-      });
-      // Fall back to refNormal if vertex normals cancel out (very
-      // unlikely but possible on extremely curved patches).
-      if (!faceN || (faceN.x === 0 && faceN.y === 0 && faceN.z === 0)) {
-        faceN = refNormal;
-      }
+      const vna = _normalize(na ? { x: na.x * flip, y: na.y * flip, z: na.z * flip } : outwardRef);
+      const vnb = _normalize(nb ? { x: nb.x * flip, y: nb.y * flip, z: nb.z * flip } : outwardRef);
+      const vnc = _normalize(nc ? { x: nc.x * flip, y: nc.y * flip, z: nc.z * flip } : outwardRef);
 
-      // Ensure face normal agrees with the geometric winding direction.
-      // The initial winding fix (above) uses the centroid-based refNormal,
-      // but the face normal derived from averaged vertex normals may differ
-      // on very curved patches.  Rather than swapping vertices (which would
-      // break shared-edge consistency across the CDT, producing fan/cross
-      // winding artifacts), evaluate the surface normal at the triangle's
-      // centroid UV and flip it if it disagrees with the geometric winding.
+      // Compute face normal from centroid surface normal for a stable
+      // outward direction.  The averaged vertex normals can cancel on
+      // strongly curved triangles; the centroid evaluation is always
+      // well-defined for analytic surfaces.
+      let faceN;
       {
-        let centroidFaceN = faceN;
         const cu = (ua.u + ub.u + uc.u) / 3;
         const cv = (ua.v + ub.v + uc.v) / 3;
         const cn = surface.normal(cu, cv);
         if (cn) {
-          const cfn = _normalize({ x: cn.x * flip, y: cn.y * flip, z: cn.z * flip });
-          if (cfn) centroidFaceN = cfn;
+          faceN = _normalize({ x: cn.x * flip, y: cn.y * flip, z: cn.z * flip });
         }
-        const geoN = calculateNormal(pa, pb, pc);
-        faceN = _dot(centroidFaceN, geoN) >= 0 ? centroidFaceN : { x: -centroidFaceN.x, y: -centroidFaceN.y, z: -centroidFaceN.z };
+      }
+      if (!faceN || (faceN.x === 0 && faceN.y === 0 && faceN.z === 0)) {
+        faceN = outwardRef;
+      }
+
+      // On strongly curved triangles the centroid surface normal may still
+      // oppose the geometric winding — flip the face normal so the
+      // renderer's front-face determination matches the vertex order.
+      const geoN = calculateNormal(pa, pb, pc);
+      if (_dot(faceN, geoN) < 0) {
+        faceN = { x: -faceN.x, y: -faceN.y, z: -faceN.z };
       }
 
       meshFaces.push({
@@ -1300,19 +1298,38 @@ export class FaceTriangulator {
     const isFillet = !!(face.shared && face.shared.isFillet);
     if (uvValid) {
       let uGridRes, vGridRes;
+      // Curved faces need enough interior Steiner points to prevent a
+      // single high-valence fan vertex at the centre.  Scale the grid
+      // to the UV aspect ratio and boundary complexity so the CDT
+      // distributes triangles evenly.
+      const uRange = uMax - uMin;
+      const vRange = vMax - vMin;
+      const aspect = uRange / Math.max(vRange, 1e-10);
       if (isFillet) {
         // Fillet surfaces are degree (1,2) NURBS — linear in u (along edge),
         // quadratic arc in v (across fillet).  Use a denser grid that respects
         // the UV domain aspect ratio to avoid the fan/star CDT pattern that
         // appears when a single Steiner point serves 30+ boundary vertices.
-        const uRange = uMax - uMin;
-        const vRange = vMax - vMin;
-        const aspect = uRange / Math.max(vRange, 1e-10);
         vGridRes = Math.max(3, Math.ceil(surfaceSegments / 2));
         uGridRes = Math.max(2, Math.round(vGridRes * Math.min(aspect, 8)));
       } else {
-        uGridRes = Math.max(1, Math.ceil(surfaceSegments / 8));
-        vGridRes = uGridRes;
+        // General curved faces (cylinders, cones, NURBS from chamfer etc.)
+        // With only 1 Steiner point, the CDT creates a single fan centre
+        // with 30+ triangles radiating outward — the visible "fan/cross"
+        // artefact.  Use enough interior points so no vertex fans more than
+        // ~10 triangles — typically a 3×3 grid (9 points) for the default
+        // surfaceSegments=8.
+        const base = Math.max(3, Math.ceil(surfaceSegments / 3));
+        if (aspect > 2) {
+          vGridRes = base;
+          uGridRes = Math.max(base, Math.round(base * Math.min(aspect, 6)));
+        } else if (aspect < 0.5) {
+          uGridRes = base;
+          vGridRes = Math.max(base, Math.round(base * Math.min(1 / aspect, 6)));
+        } else {
+          uGridRes = base;
+          vGridRes = base;
+        }
       }
       const uStep = (uMax - uMin) / (uGridRes + 1);
       const vStep = (vMax - vMin) / (vGridRes + 1);
