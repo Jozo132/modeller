@@ -1187,6 +1187,20 @@ function _reverseSingleEdgeMeta(edge) {
     reversed.startAngle = edge.startAngle !== undefined ? edge.startAngle + edge.sweepAngle : edge.startAngle;
     reversed.sweepAngle = -edge.sweepAngle;
   }
+  if (edge.type === 'spline' && edge.controlPoints2D && edge.knots) {
+    // Reverse control points and flip knot vector
+    reversed.controlPoints2D = [...edge.controlPoints2D].reverse();
+    const kMin = edge.knots[0], kMax = edge.knots[edge.knots.length - 1];
+    reversed.knots = edge.knots.map(k => kMax + kMin - k).reverse();
+  }
+  if (edge.type === 'bezier' && edge.bezierVertices) {
+    // Reverse vertex order and swap/negate handles
+    reversed.bezierVertices = [...edge.bezierVertices].reverse().map(v => ({
+      x: v.x, y: v.y,
+      handleOut: v.handleIn ? { dx: -v.handleIn.dx, dy: -v.handleIn.dy } : null,
+      handleIn: v.handleOut ? { dx: -v.handleOut.dx, dy: -v.handleOut.dy } : null,
+    }));
+  }
   return reversed;
 }
 
