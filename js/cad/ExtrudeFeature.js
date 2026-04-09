@@ -16,6 +16,9 @@ import {
   SurfaceType, buildTopoBody,
 } from './BRepTopology.js';
 
+/** Monotonically increasing ID for fused half-cylinder face groups. */
+let _nextFusedId = 1;
+
 /**
  * ExtrudeFeature extrudes a 2D sketch profile along its normal to create 3D geometry.
  */
@@ -507,10 +510,11 @@ export class ExtrudeFeature extends Feature {
           };
 
           if (type === 'circle') {
-            // Create a single full-circle edge info with a seam at spanIndices[0].
-            // buildTopoBody handles the self-loop edges (same start/end vertex)
-            // by comparing curve direction to determine sameSense, so the
-            // cylinder face and the planar cap faces correctly share the arcs.
+            // Split the full circle into two half-cylinder faces (each
+            // spanning π radians) to avoid self-loop seam edges whose
+            // self-touching boundary polygon causes self-intersecting
+            // tessellation.  This mirrors standard B-Rep practice
+            // (OpenCascade, Parasolid) for full-revolution surfaces.
             const seamIdx = spanIndices[0];
             const r0 = _sub(bottomVerts[seamIdx], center3D);
             const r0Len = Math.sqrt(r0.x * r0.x + r0.y * r0.y + r0.z * r0.z);
@@ -522,16 +526,52 @@ export class ExtrudeFeature extends Feature {
               ? positiveYAx
               : { x: -positiveYAx.x, y: -positiveYAx.y, z: -positiveYAx.z };
 
+            // Add the antipodal vertex (at angle π from seam) to the
+            // vertex arrays so both halves reference it.
+            const midBotPt = {
+              x: center3D.x - range.radius * xAx.x,
+              y: center3D.y - range.radius * xAx.y,
+              z: center3D.z - range.radius * xAx.z,
+            };
+            const midTopPt = {
+              x: topCenter3D.x - range.radius * xAx.x,
+              y: topCenter3D.y - range.radius * xAx.y,
+              z: topCenter3D.z - range.radius * xAx.z,
+            };
+            const midIdx = bottomVerts.length;
+            bottomVerts.push(midBotPt);
+            topVerts.push(midTopPt);
+
+            // Tag both halves with a shared fusedGroupId so that the
+            // edge analysis and selection logic treat them as one
+            // logical face (suppress the seam, select as one surface).
+            const fusedId = `cyl-${_nextFusedId++}`;
+
+            // First half: 0 → π
             edgeInfos.push({
-              type,
+              type: 'arc',
               startIdx: seamIdx,
-              endIdx: seamIdx,
-              spanIndices: [seamIdx],
+              endIdx: midIdx,
+              spanIndices: [seamIdx, midIdx],
               isArc: true,
-              isFullCircle: true,
-              bottomCurve: NurbsCurve.createArc(center3D, range.radius, xAx, yAx, 0, 2 * Math.PI),
-              topCurve: NurbsCurve.createArc(topCenter3D, range.radius, xAx, yAx, 0, 2 * Math.PI),
-              cylSurf: NurbsSurface.createCylinder(center3D, extDir, range.radius, extHeight, xAx, yAx, 0, 2 * Math.PI),
+              bottomCurve: NurbsCurve.createArc(center3D, range.radius, xAx, yAx, 0, Math.PI),
+              topCurve: NurbsCurve.createArc(topCenter3D, range.radius, xAx, yAx, 0, Math.PI),
+              cylSurf: NurbsSurface.createCylinder(center3D, extDir, range.radius, extHeight, xAx, yAx, 0, Math.PI),
+              cylSurfaceInfo: { type: 'cylinder', origin: center3D, axis: extDir, xDir: xAx, yDir: yAx, radius: range.radius },
+              fusedGroupId: fusedId,
+            });
+            // Second half: π → 2π  (startAngle=π, sweepAngle=π)
+            edgeInfos.push({
+              type: 'arc',
+              startIdx: midIdx,
+              endIdx: seamIdx,
+              spanIndices: [midIdx, seamIdx],
+              isArc: true,
+              bottomCurve: NurbsCurve.createArc(center3D, range.radius, xAx, yAx, Math.PI, Math.PI),
+              topCurve: NurbsCurve.createArc(topCenter3D, range.radius, xAx, yAx, Math.PI, Math.PI),
+              cylSurf: NurbsSurface.createCylinder(center3D, extDir, range.radius, extHeight, xAx, yAx, Math.PI, Math.PI),
+              cylSurfaceInfo: { type: 'cylinder', origin: center3D, axis: extDir, xDir: xAx, yDir: yAx, radius: range.radius },
+              fusedGroupId: fusedId,
             });
             continue;
           }
@@ -567,6 +607,7 @@ export class ExtrudeFeature extends Feature {
             bottomCurve: NurbsCurve.createArc(center3D, range.radius, xAx, yAx, 0, sweep),
             topCurve: NurbsCurve.createArc(topCenter3D, range.radius, xAx, yAx, 0, sweep),
             cylSurf: NurbsSurface.createCylinder(center3D, extDir, range.radius, extHeight, xAx, yAx, 0, sweep),
+            cylSurfaceInfo: { type: 'cylinder', origin: center3D, axis: extDir, xDir: xAx, yDir: yAx, radius: range.radius },
           });
         } else {
           edgeInfos.push({
@@ -617,31 +658,6 @@ export class ExtrudeFeature extends Feature {
           const tStart = profileData.topVerts[info.startIdx];
           const tEnd = profileData.topVerts[info.endIdx];
 
-          if (info.isFullCircle) {
-            // Full-circle cylinder: 4 edges with a seam.
-            // Bottom/top arcs are self-loop edges (same start/end vertex),
-            // seam line appears twice (forward and reverse).
-            let vertices = [bStart, bStart, tStart, tStart];
-            let edgeCurves = [
-              info.bottomCurve,
-              NurbsCurve.createLine(bStart, tStart),
-              info.topCurve.reversed(),
-              NurbsCurve.createLine(tStart, bStart),
-            ];
-            if (this.direction < 0) {
-              vertices = [...vertices].reverse();
-              edgeCurves = edgeCurves.reverse();
-            }
-            faceDescs.push({
-              surface: info.cylSurf,
-              surfaceType: SurfaceType.CYLINDER,
-              vertices,
-              edgeCurves,
-              shared: { sourceFeatureId: this.id },
-            });
-            continue;
-          }
-
           let vertices = [bStart, bEnd, tEnd, tStart];
           let edgeCurves = [
             info.bottomCurve,
@@ -658,6 +674,8 @@ export class ExtrudeFeature extends Feature {
           faceDescs.push({
             surface: info.cylSurf,
             surfaceType: SurfaceType.CYLINDER,
+            surfaceInfo: info.cylSurfaceInfo || null,
+            fusedGroupId: info.fusedGroupId || null,
             vertices,
             edgeCurves,
             shared: { sourceFeatureId: this.id },

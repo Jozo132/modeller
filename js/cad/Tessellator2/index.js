@@ -101,6 +101,7 @@ export function robustTessellateBody(body, opts = {}) {
       // can properly group all triangles from the same topological face and
       // mark curved surfaces for smooth-normal interpolation.
       faceMesh.topoFaceId = face.id;
+      faceMesh.fusedGroupId = face.fusedGroupId || null;
       faceMesh.faceType = face.surfaceType === 'plane' ? 'planar'
         : face.surfaceType ? `curved-${face.surfaceType}` : 'unknown';
       faceMeshes.push(faceMesh);

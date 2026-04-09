@@ -325,6 +325,14 @@ export class TopoFace {
      * @type {{ type:string, origin:{x,y,z}, axis?:{x,y,z}, radius?:number, semiAngle?:number, majorR?:number, minorR?:number }|null}
      */
     this.surfaceInfo = null;
+    /**
+     * Identifier shared by multiple faces that represent a single logical
+     * surface (e.g. two half-cylinder faces split at the seam).  Faces with
+     * the same fusedGroupId are merged for selection and suppress the seam
+     * as a visible edge.
+     * @type {string|null}
+     */
+    this.fusedGroupId = null;
     /** @type {TopoLoop|null} Outer boundary loop */
     this.outerLoop = null;
     /** @type {TopoLoop[]} Inner loops (holes) */
@@ -403,6 +411,7 @@ export class TopoFace {
     );
     f.shared = this.shared ? { ...this.shared } : null;
     f.surfaceInfo = this.surfaceInfo ? { ...this.surfaceInfo } : null;
+    f.fusedGroupId = this.fusedGroupId;
     f.tolerance = this.tolerance;
     f.id = this.id;
     if (this.outerLoop) f.setOuterLoop(this.outerLoop.clone());
@@ -417,6 +426,7 @@ export class TopoFace {
       surface: this.surface ? this.surface.serialize() : null,
       sameSense: this.sameSense,
       surfaceInfo: this.surfaceInfo || null,
+      fusedGroupId: this.fusedGroupId || null,
       outerLoopId: this.outerLoop ? this.outerLoop.id : null,
       innerLoopIds: this.innerLoops.map(l => l.id),
       shared: this.shared,
@@ -674,6 +684,7 @@ export class TopoBody {
       face.id = fd.id;
       face.shared = fd.shared || null;
       face.surfaceInfo = fd.surfaceInfo || null;
+      face.fusedGroupId = fd.fusedGroupId || null;
       face.tolerance = fd.tolerance || 0;
       if (fd.outerLoopId != null) {
         const ol = loopMap.get(fd.outerLoopId);
@@ -898,6 +909,8 @@ export function buildTopoBody(faceDescs, tol = DEFAULT_TOLERANCE) {
       face.addInnerLoop(buildLoop(innerLoop));
     }
     face.shared = fd.shared || null;
+    if (fd.surfaceInfo) face.surfaceInfo = fd.surfaceInfo;
+    if (fd.fusedGroupId) face.fusedGroupId = fd.fusedGroupId;
     faces.push(face);
   }
 

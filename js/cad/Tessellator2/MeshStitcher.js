@@ -60,6 +60,7 @@ export class MeshStitcher {
     for (const fm of faceMeshes) {
       const shared = fm.shared || null;
       const topoFaceId = fm.topoFaceId;
+      const fusedGroupId = fm.fusedGroupId || null;
       const faceType = fm.faceType;
       const isFillet = !!fm.isFillet;
       const isCorner = !!fm.isCorner;
@@ -76,6 +77,9 @@ export class MeshStitcher {
         if (topoFaceId !== undefined) {
           out.topoFaceId = topoFaceId;
           out.faceGroup = topoFaceId;
+        }
+        if (fusedGroupId) {
+          out.fusedGroupId = fusedGroupId;
         }
         if (faceType) {
           out.faceType = faceType;
