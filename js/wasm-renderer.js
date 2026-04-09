@@ -613,6 +613,9 @@ export class WasmRenderer {
       // lookAt view matrix already positions the camera relative to target.
       this.wasm.setOrthoBounds(-halfW, halfW, -halfH, halfH);
     } else {
+      // Always sync WASM FOV before setting perspective mode so the grid
+      // and model use the same field of view (prevents mismatch on refresh).
+      this.wasm.setFov(this._fov);
       this.wasm.setCameraMode(1);
     }
   }

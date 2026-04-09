@@ -216,6 +216,7 @@ class App {
     this._applyInvisibleEdgesState();
     this._applyMeshTriangleOverlayState();
     this._syncDiagnosticHatchUI();
+    this._syncNormalColorShadingUI();
     this._applyBarVisibility();
     this._bindDragDropEvents();
     this._setupMobileUI();
@@ -291,8 +292,8 @@ class App {
     const isMobile = typeof window !== 'undefined' && window.innerWidth <= 780;
     if (!isMobile) return;
 
-    // ── Collapsible properties panel ──
-    const panel = document.getElementById('properties-panel');
+    // ── Collapsible left panel (moved to bottom on mobile) ──
+    const panel = document.getElementById('left-panel');
     if (panel && !panel.querySelector('.mobile-sidebar-toggle')) {
       const toggle = document.createElement('div');
       toggle.className = 'mobile-sidebar-toggle';
@@ -966,9 +967,21 @@ class App {
     if (!this._sketchingOnPlane || !this._activeSketchPlaneDef || !this._renderer3d) return null;
     const renderer = this._renderer3d;
     const planeDef = this._activeSketchPlaneDef;
+    // Compute an effective zoom (screen pixels per world unit) so the snap
+    // system can convert its screen-pixel radius to world coordinates.
+    // Project two points 1 world unit apart on the sketch plane and measure
+    // their screen-pixel distance.
+    let effectiveZoom = 1;
+    const s0 = renderer.sketchToScreen(0, 0);
+    const s1 = renderer.sketchToScreen(1, 0);
+    if (s0 && s1) {
+      const d = Math.hypot(s1.x - s0.x, s1.y - s0.y);
+      if (d > 1e-6) effectiveZoom = d;
+    }
     return {
       screenToWorld: (sx, sy) => renderer.rayToPlane(sx, sy, planeDef),
       worldToScreen: (wx, wy) => renderer.sketchToScreen(wx, wy),
+      zoom: effectiveZoom,
     };
   }
 
@@ -8111,6 +8124,11 @@ class App {
     this.setActiveTool('select');
     this._update3DView();
     this._updateOperationButtons();
+    // Select the sketch feature so the user can immediately add features to it
+    if (this._lastSketchFeatureId && this._featurePanel) {
+      this._featurePanel.selectFeature(this._lastSketchFeatureId);
+      if (this._renderer3d) this._renderer3d._selectedFeatureId = this._lastSketchFeatureId;
+    }
     this.setStatus('Returned to Part Design mode.');
     this._recorder.sketchFinished(this._lastSketchFeatureId, 0);
     info('Finished sketch-on-plane, returned to Part Design mode');

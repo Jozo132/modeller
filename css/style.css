@@ -1381,25 +1381,28 @@ html, body {
     --panel-width: 0px;
   }
 
-  #left-panel {
+  /* Hide the right sidebar on mobile — it's not useful for touch */
+  #properties-panel {
     display: none;
   }
 
-  /* ── Collapsible lower sidebar on mobile ── */
-  #properties-panel {
+  /* ── Collapsible lower sidebar on mobile (left panel moved to bottom) ── */
+  #left-panel {
+    position: fixed;
     right: 0;
     left: 0;
     top: auto;
     bottom: var(--bottom-offset);
     height: 36vh;
     width: auto;
-    border-left: none;
+    border-right: none;
     border-top: 1px solid var(--border);
     transition: height 0.2s ease;
+    z-index: 200;
   }
 
-  /* When the entire sidebar is collapsed, shrink to just the toggle bar */
-  #properties-panel.mobile-collapsed {
+  /* When the left panel is collapsed, shrink to just the toggle bar */
+  #left-panel.mobile-collapsed {
     height: 32px;
     min-height: 32px;
     overflow: hidden;
@@ -1427,12 +1430,12 @@ html, body {
     font-size: 10px;
     transition: transform 0.2s ease;
   }
-  #properties-panel.mobile-collapsed .mobile-sidebar-toggle-arrow {
+  #left-panel.mobile-collapsed .mobile-sidebar-toggle-arrow {
     transform: rotate(180deg);
   }
 
   /* Collapsible sidebar sections on mobile */
-  #properties-panel .sidebar-section.collapsed > :not(.history-tree-header):not(.feature-panel-header) {
+  #left-panel .sidebar-section.collapsed > :not(.history-tree-header):not(.feature-panel-header) {
     display: none;
   }
   .history-tree-header,
@@ -1464,11 +1467,11 @@ html, body {
   }
 
   /* When sidebar is collapsed, viewport expands to fill */
-  #properties-panel.mobile-collapsed ~ #cad-canvas,
-  body:has(#properties-panel.mobile-collapsed) #cad-canvas {
+  #left-panel.mobile-collapsed ~ #cad-canvas,
+  body:has(#left-panel.mobile-collapsed) #cad-canvas {
     bottom: calc(var(--bottom-offset) + 32px);
   }
-  body:has(#properties-panel.mobile-collapsed) #view-3d {
+  body:has(#left-panel.mobile-collapsed) #view-3d {
     bottom: calc(var(--bottom-offset) + 32px);
   }
 
