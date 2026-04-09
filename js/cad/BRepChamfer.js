@@ -797,6 +797,10 @@ function _buildChamferRuledSurface(offset0, offset1) {
       const midDist = vec3Len(vec3Sub(mid0, mid1));
       const endDist = vec3Len(vec3Sub(offset0.startPt, offset1.startPt));
       if (midDist > 3 * Math.max(endDist, 1e-6)) {
+        // Factor of 3: on a correctly paired chamfer the arc midpoints are
+        // roughly `distance` apart (≈ endDist).  A factor of 3 gives ample
+        // margin while reliably catching the opposite-half case where the
+        // midpoint distance ≈ diameter (≫ endDist).
         // Reverse c1 so its parametrization matches c0
         c1 = c1.reversed();
       }
@@ -828,7 +832,9 @@ function _buildChamferRuledSurface(offset0, offset1) {
     const midB = rowB.evaluate(0.5);
     if (midA && midB) {
       const dux = midB.x - midA.x, duy = midB.y - midA.y, duz = midB.z - midA.z;
-      // Approximate dS/dv via finite difference on the row0 curve
+      // Approximate dS/dv via finite difference on the row0 curve.
+      // A ±0.01 step around v=0.5 gives a stable tangent estimate — small
+      // enough to be local, large enough to avoid floating-point noise.
       const vLo = rowA.evaluate(0.49);
       const vHi = rowA.evaluate(0.51);
       if (vLo && vHi) {
