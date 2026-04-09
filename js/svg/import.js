@@ -294,8 +294,19 @@ export function parseSVGGeometry(svgContent) {
 
   // SVG Y-axis points down; flip to CAD Y-up convention
   for (const item of items) {
-    item.y1 = -item.y1;
-    item.y2 = -item.y2;
+    if (item.type === 'cubicBezier') {
+      item.y0 = -item.y0;
+      item.cp1y = -item.cp1y;
+      item.cp2y = -item.cp2y;
+      item.y = -item.y;
+    } else if (item.type === 'quadBezier') {
+      item.y0 = -item.y0;
+      item.cpy = -item.cpy;
+      item.y = -item.y;
+    } else {
+      item.y1 = -item.y1;
+      item.y2 = -item.y2;
+    }
   }
 
   return items;
