@@ -1117,6 +1117,10 @@ function _replaceEdgesWithArcCurves(faceDescs, edgeDataList, faces, origTopoFace
   // preserve arc curves from previous fillet operations so that planar faces
   // referencing inherited arc-sample intermediates can be consolidated back
   // into a single arc-curve edge matching the preserved non-planar face's edge.
+  // This includes both degree-1 polyline arcs (from previous fillets) and
+  // higher-degree NURBS arc curves (from cylinder/cone faces etc.) so that
+  // rebuilt planar faces can consolidate sampled arc points back into the
+  // original curve, maintaining edge sharing with non-planar faces.
   if (origTopoFaces && origTopoFaces.size > 0) {
     // Gather edge curves from all origTopoFaces
     const seen = new Set();
@@ -1126,9 +1130,13 @@ function _replaceEdgesWithArcCurves(faceDescs, edgeDataList, faces, origTopoFace
         const e = coedge.edge;
         if (seen.has(e.id)) continue;
         seen.add(e.id);
-        if (!e.curve || e.curve.degree !== 1) continue;
-        const cps = e.curve.controlPoints;
-        if (!cps || cps.length <= 2) continue;
+        if (!e.curve) continue;
+        // Include degree-1 polyline arcs (>2 control points) and
+        // higher-degree NURBS curves (arcs from cylinders, cones, etc.)
+        if (e.curve.degree === 1) {
+          const cps = e.curve.controlPoints;
+          if (!cps || cps.length <= 2) continue; // skip simple lines
+        }
         const sk = _edgeVKey(e.startVertex.point);
         const ek = _edgeVKey(e.endVertex.point);
         if (sk === ek) continue;
