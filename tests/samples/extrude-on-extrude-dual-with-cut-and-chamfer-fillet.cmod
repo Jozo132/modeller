@@ -1,11 +1,12 @@
 {
   "format": "CAD Modeller Open Design",
-  "version": 1,
+  "version": 2,
   "scene": {
     "points": [],
     "segments": [],
     "circles": [],
     "arcs": [],
+    "splines": [],
     "constraints": [],
     "texts": [],
     "dimensions": [],
@@ -37,7 +38,7 @@
     "name": "Part1",
     "description": "",
     "created": "2026-03-23T10:02:35.825Z",
-    "modified": "2026-03-23T13:12:10.723Z",
+    "modified": "2026-04-09T18:56:55.855Z",
     "featureTree": {
       "features": [
         {
@@ -130,6 +131,7 @@
               ],
               "circles": [],
               "arcs": [],
+              "splines": [],
               "constraints": [],
               "texts": [],
               "dimensions": [],
@@ -341,6 +343,7 @@
               ],
               "circles": [],
               "arcs": [],
+              "splines": [],
               "constraints": [],
               "texts": [],
               "dimensions": [],
@@ -484,6 +487,7 @@
               ],
               "circles": [],
               "arcs": [],
+              "splines": [],
               "constraints": [],
               "texts": [],
               "dimensions": [],
@@ -554,6 +558,13 @@
             "2.91644,8.85195,6.22307|2.91644,8.85195,7.87930",
             "2.91644,8.85195,5.43442|2.91644,8.85195,6.22307",
             "2.91644,8.85195,0.00000|2.91644,8.85195,5.43442"
+          ],
+          "stableEdgeKeys": [
+            "sek1:E:2.91644,8.85195,10.00000|2.91644,8.85195,8.92546:feature_18",
+            "sek1:E:2.91644,8.85195,7.87930|2.91644,8.85195,8.92546:feature_18",
+            "sek1:E:2.91644,8.85195,6.22307|2.91644,8.85195,7.87930:feature_18",
+            "sek1:E:2.91644,8.85195,5.43442|2.91644,8.85195,6.22307:feature_18",
+            "sek1:E:2.91644,8.85195,0.00000|2.91644,8.85195,5.43442:feature_18"
           ]
         },
         {
@@ -563,17 +574,20 @@
           "suppressed": false,
           "visible": true,
           "created": "2026-03-23T13:12:10.723Z",
-          "modified": "2026-03-23T13:12:10.723Z",
+          "modified": "2026-04-09T18:56:55.814Z",
           "dependencies": [],
           "children": [],
           "radius": 0.6,
           "segments": 8,
           "edgeKeys": [
-            "6.76601,8.85195,0.00000|6.76601,8.85195,5.43442",
-            "6.76601,8.85195,5.43442|6.76601,8.85195,6.22307",
-            "6.76601,8.85195,6.22307|6.76601,8.85195,7.87930",
-            "6.76601,8.85195,7.87930|6.76601,8.85195,8.92546",
-            "6.76601,8.85195,10.00000|6.76601,8.85195,8.92546"
+            "6.76601,8.85195,0.00000|6.76601,8.85195,10.00000"
+          ],
+          "stableEdgeKeys": [
+            "sek1:E:6.76601,8.85195,0.00000|6.76601,8.85195,5.43442:feature_21",
+            "sek1:E:6.76601,8.85195,5.43442|6.76601,8.85195,6.22307:feature_21",
+            "sek1:E:6.76601,8.85195,6.22307|6.76601,8.85195,7.87930:feature_21",
+            "sek1:E:6.76601,8.85195,7.87930|6.76601,8.85195,8.92546:feature_21",
+            "sek1:E:6.76601,8.85195,10.00000|6.76601,8.85195,8.92546:feature_21"
           ]
         }
       ]
@@ -595,22 +609,31 @@
     "originPlanesAutoHidden": true,
     "material": null,
     "mass": 0,
-    "volume": 982.1046011788096,
+    "volume": 639.5538165422125,
     "centerOfMass": {
       "x": 0,
       "y": 0,
       "z": 0
+    },
+    "tessellationConfig": {
+      "curveSegments": 16,
+      "surfaceSegments": 8,
+      "edgeSegments": 16,
+      "adaptiveSubdivision": true,
+      "tessellator": "legacy"
     }
   },
   "orbit": {
-    "theta": 2.055398163397441,
-    "phi": 0.5349999999999995,
+    "theta": 1.8053981633974383,
+    "phi": 0.9599999999999997,
     "radius": 15.390362008148266,
     "target": {
       "x": 5.902306305323182,
       "y": 6.5517346821566615,
       "z": 5.70842435271568
-    }
+    },
+    "fovDegrees": 45,
+    "ortho3D": false
   },
   "workspaceMode": "part",
   "sessionState": {
@@ -625,9 +648,10 @@
     ],
     "rollbackIndex": -1
   },
+  "scenes": [],
   "metadata": {
     "createdWith": "CAD Modeller Open Design",
-    "exportedAt": "2026-03-23T13:14:01.125Z",
+    "exportedAt": "2026-04-09T18:57:15.867Z",
     "featureCount": 8,
     "featureTypes": [
       "sketch",
@@ -639,9 +663,9 @@
       "chamfer",
       "fillet"
     ],
-    "faceCount": 98,
-    "volume": 983.504668,
-    "surfaceArea": 659.252514,
+    "faceCount": 176,
+    "volume": 639.553817,
+    "surfaceArea": 659.086181,
     "boundingBox": {
       "min": {
         "x": 0,
@@ -657,11 +681,11 @@
     "width": 10,
     "height": 12,
     "depth": 10,
-    "edgeCount": 156,
+    "edgeCount": 96,
     "pathCount": 66,
     "bodyCount": 1,
     "bodySizes": [
-      376
+      176
     ],
     "minWallThickness": 0.807514,
     "maxWallThickness": 12,

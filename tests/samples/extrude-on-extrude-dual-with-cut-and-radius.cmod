@@ -1,11 +1,12 @@
 {
   "format": "CAD Modeller Open Design",
-  "version": 1,
+  "version": 2,
   "scene": {
     "points": [],
     "segments": [],
     "circles": [],
     "arcs": [],
+    "splines": [],
     "constraints": [],
     "texts": [],
     "dimensions": [],
@@ -37,7 +38,7 @@
     "name": "Part1",
     "description": "",
     "created": "2026-03-23T10:02:35.825Z",
-    "modified": "2026-03-23T12:25:52.120Z",
+    "modified": "2026-04-09T18:59:35.688Z",
     "featureTree": {
       "features": [
         {
@@ -130,6 +131,7 @@
               ],
               "circles": [],
               "arcs": [],
+              "splines": [],
               "constraints": [],
               "texts": [],
               "dimensions": [],
@@ -341,6 +343,7 @@
               ],
               "circles": [],
               "arcs": [],
+              "splines": [],
               "constraints": [],
               "texts": [],
               "dimensions": [],
@@ -484,6 +487,7 @@
               ],
               "circles": [],
               "arcs": [],
+              "splines": [],
               "constraints": [],
               "texts": [],
               "dimensions": [],
@@ -544,17 +548,20 @@
           "suppressed": false,
           "visible": true,
           "created": "2026-03-23T12:25:52.120Z",
-          "modified": "2026-03-23T12:25:52.120Z",
+          "modified": "2026-04-09T18:59:35.648Z",
           "dependencies": [],
           "children": [],
           "radius": 0.5,
           "segments": 8,
           "edgeKeys": [
-            "2.91644,8.85195,10.00000|2.91644,8.85195,8.92546",
-            "2.91644,8.85195,7.87930|2.91644,8.85195,8.92546",
-            "2.91644,8.85195,6.22307|2.91644,8.85195,7.87930",
-            "2.91644,8.85195,5.43442|2.91644,8.85195,6.22307",
-            "2.91644,8.85195,0.00000|2.91644,8.85195,5.43442"
+            "6.76601,8.85195,0.00000|6.76601,8.85195,10.00000"
+          ],
+          "stableEdgeKeys": [
+            "sek1:E:2.91644,8.85195,10.00000|2.91644,8.85195,8.92546:feature_28",
+            "sek1:E:2.91644,8.85195,7.87930|2.91644,8.85195,8.92546:feature_28",
+            "sek1:E:2.91644,8.85195,6.22307|2.91644,8.85195,7.87930:feature_28",
+            "sek1:E:2.91644,8.85195,5.43442|2.91644,8.85195,6.22307:feature_28",
+            "sek1:E:2.91644,8.85195,0.00000|2.91644,8.85195,5.43442:feature_28"
           ]
         }
       ]
@@ -576,22 +583,31 @@
     "originPlanesAutoHidden": true,
     "material": null,
     "mass": 0,
-    "volume": 995.7463629652375,
+    "volume": 636.8553779915094,
     "centerOfMass": {
       "x": 0,
       "y": 0,
       "z": 0
+    },
+    "tessellationConfig": {
+      "curveSegments": 16,
+      "surfaceSegments": 8,
+      "edgeSegments": 16,
+      "adaptiveSubdivision": true,
+      "tessellator": "legacy"
     }
   },
   "orbit": {
-    "theta": 0.7853981633974483,
-    "phi": 1.0471975511965976,
-    "radius": 29.999999999999996,
+    "theta": 1.8453981633974519,
+    "phi": 0.6321975511965968,
+    "radius": 17.7147,
     "target": {
       "x": 5,
       "y": 5.999999999999999,
       "z": 5
-    }
+    },
+    "fovDegrees": 45,
+    "ortho3D": false
   },
   "workspaceMode": "part",
   "sessionState": {
@@ -606,9 +622,10 @@
     ],
     "rollbackIndex": -1
   },
+  "scenes": [],
   "metadata": {
     "createdWith": "CAD Modeller Open Design",
-    "exportedAt": "2026-03-23T12:32:23.026Z",
+    "exportedAt": "2026-04-09T18:59:42.435Z",
     "featureCount": 7,
     "featureTypes": [
       "sketch",
@@ -619,9 +636,9 @@
       "extrude-cut",
       "fillet"
     ],
-    "faceCount": 388,
-    "volume": 1039.231912,
-    "surfaceArea": 670.223762,
+    "faceCount": 172,
+    "volume": 636.855378,
+    "surfaceArea": 663.083253,
     "boundingBox": {
       "min": {
         "x": 0,
@@ -637,13 +654,13 @@
     "width": 10,
     "height": 12,
     "depth": 10,
-    "edgeCount": 177,
-    "pathCount": 92,
+    "edgeCount": 93,
+    "pathCount": 63,
     "bodyCount": 1,
     "bodySizes": [
-      388
+      172
     ],
-    "minWallThickness": 0.525764,
+    "minWallThickness": 0.807514,
     "maxWallThickness": 12,
     "invertedFaceCount": 0
   }
