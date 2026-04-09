@@ -898,6 +898,7 @@ export function buildTopoBody(faceDescs, tol = DEFAULT_TOLERANCE) {
       face.addInnerLoop(buildLoop(innerLoop));
     }
     face.shared = fd.shared || null;
+    if (fd.surfaceInfo) face.surfaceInfo = fd.surfaceInfo;
     faces.push(face);
   }
 
