@@ -406,6 +406,7 @@ export class Scene {
         if (prim.type === 'point') return pts.includes(prim);
         if (prim.type === 'segment') return pts.includes(prim.p1) || pts.includes(prim.p2);
         if (prim.type === 'circle' || prim.type === 'arc') return pts.includes(prim.center);
+        if (prim.type === 'spline' || prim.type === 'bezier') return prim.points.some(p => pts.includes(p));
         return false;
       }
       const pts = c.involvedPoints();
@@ -414,6 +415,7 @@ export class Scene {
         pts.includes(prim.p1) || pts.includes(prim.p2);
       if (prim.type === 'circle' || prim.type === 'arc') return c.circle === prim || c.shape === prim ||
         pts.includes(prim.center);
+      if (prim.type === 'spline' || prim.type === 'bezier') return prim.points.some(p => pts.includes(p));
       return false;
     });
   }

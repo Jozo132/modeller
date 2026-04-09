@@ -76,12 +76,13 @@ export class SketchFeature extends Feature {
       });
     }
 
-    // Build a combined list of traceable edges (segments, arcs, splines)
+    // Build a combined list of traceable edges (segments, arcs, splines, beziers)
     // Each edge has p1 and p2 endpoints for tracing.
     const traceableEdges = [
       ...this.sketch.segments,
       ...this.sketch.arcs.map(arc => _arcAsEdge(arc)),
       ...this.sketch.splines,
+      ...this.sketch.beziers,
     ];
 
     // Build spatial adjacency map for fast lookups and angle-based junction handling
@@ -507,6 +508,12 @@ function _tessellateEdge(edge, forward) {
   if (edge.type === 'spline') {
     // Spline: tessellate using the spline's own method
     const pts = edge.tessellate2D(32);
+    return forward ? pts : [...pts].reverse();
+  }
+
+  if (edge.type === 'bezier') {
+    // Bezier: tessellate using the bezier's own method
+    const pts = edge.tessellate2D(16);
     return forward ? pts : [...pts].reverse();
   }
 

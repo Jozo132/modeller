@@ -4089,6 +4089,16 @@ function _computeFullyConstrained(scene) {
   for (const arc of scene.arcs) {
     if (fcPoints.has(arc.center)) fcEntities.add(arc);
   }
+  if (scene.splines) {
+    for (const spl of scene.splines) {
+      if (spl.points.every(p => fcPoints.has(p))) fcEntities.add(spl);
+    }
+  }
+  if (scene.beziers) {
+    for (const bez of scene.beziers) {
+      if (bez.points.every(p => fcPoints.has(p))) fcEntities.add(bez);
+    }
+  }
 
   return { points: fcPoints, entities: fcEntities };
 }
