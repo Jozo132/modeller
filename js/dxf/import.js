@@ -183,6 +183,38 @@ function createEntity(ent) {
       return null;
     }
 
+    case 'SPLINE': {
+      // DXF SPLINE entity — import as PSpline (B-spline) or PBezier
+      const degree = parseInt(p[71], 10) || 3;
+      // Control points (code 10/20 may be arrays)
+      const xs = Array.isArray(p[10]) ? p[10] : (p[10] != null ? [p[10]] : []);
+      const ys = Array.isArray(p[20]) ? p[20] : (p[20] != null ? [p[20]] : []);
+      const controlPts = [];
+      for (let i = 0; i < xs.length; i++) {
+        controlPts.push({ x: parseFloat(xs[i]) || 0, y: parseFloat(ys[i]) || 0 });
+      }
+      if (controlPts.length < 2) return null;
+
+      // Check if this is a bezier spline (knot vector = [0,0,...,0,1,1,...,1])
+      const knots = Array.isArray(p[40]) ? p[40].map(Number) : (p[40] != null ? [Number(p[40])] : []);
+      const isBezierKnots = knots.length > 0 && degree === 3 && controlPts.length === 4 &&
+        knots.slice(0, 4).every(k => k === 0) && knots.slice(4).every(k => k === 1);
+
+      if (isBezierKnots && controlPts.length === 4) {
+        // Import as bezier — 4 control points means cubic bezier
+        const p0 = controlPts[0], c1 = controlPts[1], c2 = controlPts[2], p3 = controlPts[3];
+        const bez = state.scene.addBezier([
+          { x: p0.x, y: p0.y, handleOut: { dx: c1.x - p0.x, dy: c1.y - p0.y }, tangent: true },
+          { x: p3.x, y: p3.y, handleIn: { dx: c2.x - p3.x, dy: c2.y - p3.y }, tangent: true },
+        ], { merge: true, layer });
+        return bez;
+      } else {
+        // Import as B-spline
+        const spl = state.scene.addSpline(controlPts, { merge: true, layer });
+        return spl;
+      }
+    }
+
     case 'TEXT': {
       const tp = new TextPrimitive(
         parseFloat(p[10]) || 0, parseFloat(p[20]) || 0,

@@ -57,27 +57,11 @@ function flattenSVGPath(d, bezierSegments = 16) {
     };
 
     const emitCubic = (x0, y0, cp1x, cp1y, cp2x, cp2y, x, y) => {
-      let px = x0, py = y0;
-      for (let s = 1; s <= bezierSegments; s++) {
-        const t = s / bezierSegments;
-        const mt = 1 - t;
-        const nx = mt * mt * mt * x0 + 3 * mt * mt * t * cp1x + 3 * mt * t * t * cp2x + t * t * t * x;
-        const ny = mt * mt * mt * y0 + 3 * mt * mt * t * cp1y + 3 * mt * t * t * cp2y + t * t * t * y;
-        emitLine(px, py, nx, ny);
-        px = nx; py = ny;
-      }
+      items.push({ type: 'cubicBezier', x0, y0, cp1x, cp1y, cp2x, cp2y, x, y });
     };
 
     const emitQuad = (x0, y0, cpx, cpy, x, y) => {
-      let px = x0, py = y0;
-      for (let s = 1; s <= bezierSegments; s++) {
-        const t = s / bezierSegments;
-        const mt = 1 - t;
-        const nx = mt * mt * x0 + 2 * mt * t * cpx + t * t * x;
-        const ny = mt * mt * y0 + 2 * mt * t * cpy + t * t * y;
-        emitLine(px, py, nx, ny);
-        px = nx; py = ny;
-      }
+      items.push({ type: 'quadBezier', x0, y0, cpx, cpy, x, y });
     };
 
     const emitArc = (x0, y0, rx, ry, xRot, largeArc, sweep, x, y) => {
@@ -615,10 +599,22 @@ function _attrNum(attrString, name) {
 export function svgBounds(items) {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (const item of items) {
-    minX = Math.min(minX, item.x1, item.x2);
-    minY = Math.min(minY, item.y1, item.y2);
-    maxX = Math.max(maxX, item.x1, item.x2);
-    maxY = Math.max(maxY, item.y1, item.y2);
+    if (item.type === 'line') {
+      minX = Math.min(minX, item.x1, item.x2);
+      minY = Math.min(minY, item.y1, item.y2);
+      maxX = Math.max(maxX, item.x1, item.x2);
+      maxY = Math.max(maxY, item.y1, item.y2);
+    } else if (item.type === 'cubicBezier') {
+      minX = Math.min(minX, item.x0, item.cp1x, item.cp2x, item.x);
+      minY = Math.min(minY, item.y0, item.cp1y, item.cp2y, item.y);
+      maxX = Math.max(maxX, item.x0, item.cp1x, item.cp2x, item.x);
+      maxY = Math.max(maxY, item.y0, item.cp1y, item.cp2y, item.y);
+    } else if (item.type === 'quadBezier') {
+      minX = Math.min(minX, item.x0, item.cpx, item.x);
+      minY = Math.min(minY, item.y0, item.cpy, item.y);
+      maxX = Math.max(maxX, item.x0, item.cpx, item.x);
+      maxY = Math.max(maxY, item.y0, item.cpy, item.y);
+    }
   }
   const width = maxX - minX;
   const height = maxY - minY;
@@ -647,6 +643,32 @@ export function addSVGToScene(items, { offsetX = 0, offsetY = 0, scale = 1, cent
       const x2 = (item.x2 + shiftX) * scale + offsetX;
       const y2 = (item.y2 + shiftY) * scale + offsetY;
       state.scene.addSegment(x1, y1, x2, y2, { merge: true });
+      count++;
+    } else if (item.type === 'cubicBezier') {
+      const x0 = (item.x0 + shiftX) * scale + offsetX;
+      const y0 = (item.y0 + shiftY) * scale + offsetY;
+      const cp1x = (item.cp1x + shiftX) * scale + offsetX;
+      const cp1y = (item.cp1y + shiftY) * scale + offsetY;
+      const cp2x = (item.cp2x + shiftX) * scale + offsetX;
+      const cp2y = (item.cp2y + shiftY) * scale + offsetY;
+      const x = (item.x + shiftX) * scale + offsetX;
+      const y = (item.y + shiftY) * scale + offsetY;
+      state.scene.addBezier([
+        { x: x0, y: y0, handleOut: { dx: cp1x - x0, dy: cp1y - y0 }, tangent: true },
+        { x: x, y: y, handleIn: { dx: cp2x - x, dy: cp2y - y }, tangent: true },
+      ], { merge: true });
+      count++;
+    } else if (item.type === 'quadBezier') {
+      const x0 = (item.x0 + shiftX) * scale + offsetX;
+      const y0 = (item.y0 + shiftY) * scale + offsetY;
+      const cpx = (item.cpx + shiftX) * scale + offsetX;
+      const cpy = (item.cpy + shiftY) * scale + offsetY;
+      const x = (item.x + shiftX) * scale + offsetX;
+      const y = (item.y + shiftY) * scale + offsetY;
+      state.scene.addBezier([
+        { x: x0, y: y0, handleOut: { dx: cpx - x0, dy: cpy - y0 }, tangent: false },
+        { x: x, y: y, tangent: false },
+      ], { merge: true });
       count++;
     }
   }

@@ -13,6 +13,7 @@ import { getSnappedPosition, invalidateSnapGrid } from './snap.js';
 import { undo, redo, takeSnapshot, setPartManager, getHistoryInfo, movePointer } from './history.js';
 import { downloadDXF, downloadFacesDXF } from './dxf/export.js';
 import { downloadSTL } from './stl/export.js';
+import { downloadSVG } from './svg/export.js';
 import { openDXFFile, pickDXFFile, addDXFToScene, dxfBounds, parseDXFGeometry } from './dxf/import.js';
 import { pickSVGFile, addSVGToScene, svgBounds, parseSVGGeometry } from './svg/import.js';
 import { importSTEP } from './cad/StepImport.js';
@@ -1939,6 +1940,7 @@ class App {
           case 'export-dxf': this._exportDXFFromFaces(); break;
           case 'export-stl': this._exportSTLFile(); break;
           case 'import-svg': this._importSVGToSketch(); break;
+          case 'export-svg': downloadSVG(); break;
           // Dynamic examples are handled via event delegation below
           case 'toggle-grid': document.getElementById('btn-grid-toggle')?.click(); break;
           case 'toggle-snap': document.getElementById('btn-snap-toggle')?.click(); break;
