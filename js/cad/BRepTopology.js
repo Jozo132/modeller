@@ -815,13 +815,40 @@ export function buildTopoBody(faceDescs, tol = DEFAULT_TOLERANCE) {
     } catch { return true; }
   };
 
+  /**
+   * For self-loop edges (v1 === v2), determine if two compatible curves
+   * traverse the same direction.  We compare at the 1/4-parameter point
+   * instead of the midpoint because for full-circle self-loop curves the
+   * midpoint is the same regardless of direction.
+   */
+  const _curvesSameDirection = (c1, c2) => {
+    if (!c1 || !c2) return true;
+    if (c1 === c2) return true;
+    try {
+      const k1s = c1.knots, k2s = c2.knots;
+      const t1 = k1s[0] + (k1s[k1s.length - 1] - k1s[0]) * 0.25;
+      const t2 = k2s[0] + (k2s[k2s.length - 1] - k2s[0]) * 0.25;
+      const p1 = c1.evaluate(t1);
+      const p2 = c2.evaluate(t2);
+      const d = Math.sqrt((p1.x - p2.x) ** 2 + (p1.y - p2.y) ** 2 + (p1.z - p2.z) ** 2);
+      return d < 1e-4;
+    } catch { return true; }
+  };
+
   const getOrCreateEdge = (v1, v2, curve) => {
     const k1 = `${v1.id},${v2.id}`;
     const k2 = `${v2.id},${v1.id}`;
     const fwd = edgeMap.get(k1);
     if (fwd) {
       for (const e of fwd) {
-        if (_curvesCompatible(e.curve, curve)) return { edge: e, sameSense: true };
+        if (_curvesCompatible(e.curve, curve)) {
+          // For self-loop edges (v1 === v2), vertex order can't distinguish
+          // forward from reverse.  Use curve direction to determine sameSense.
+          if (v1 === v2) {
+            return { edge: e, sameSense: _curvesSameDirection(e.curve, curve) };
+          }
+          return { edge: e, sameSense: true };
+        }
       }
     }
     const rev = edgeMap.get(k2);

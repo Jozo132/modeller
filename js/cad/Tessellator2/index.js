@@ -16,6 +16,7 @@ import { MeshStitcher } from './MeshStitcher.js';
 import { computeMeshHash, meshSummary } from './MeshHash.js';
 import { recommendEdgeSegments, detectCriticalRegions } from './Refinement.js';
 import { validateMesh, detectBoundaryEdges, detectSelfIntersections, checkWatertight } from '../MeshValidator.js';
+import { GeometryEvaluator } from '../GeometryEvaluator.js';
 import { getFlag } from '../../featureFlags.js';
 
 // ── Shadow tessellation disagreement log ────────────────────────────
@@ -171,6 +172,14 @@ function _triangulateFace(face, edgeSampler, triangulator, surfSegs, edgeSegs) {
     return triangulator.triangulateAnalyticSurface(face, outerPts, holePts, surfSegs);
   }
 
+  // Full-circle cylinder faces have self-loop arc edges whose boundary
+  // polygon is self-touching at the seam vertices.  CDT cannot handle
+  // self-touching boundaries, so use a grid-based tessellation instead.
+  if (face.surface && face.surfaceType !== 'plane') {
+    const seamMesh = _tessellateSeamFace(face, edgeSampler, edgeSegs, surfSegs);
+    if (seamMesh) return seamMesh;
+  }
+
   // Choose triangulation strategy based on face type.
   if (face.surface && face.surfaceType !== 'plane') {
     // Check if this NURBS surface is effectively planar (e.g. a degree 1×1
@@ -231,6 +240,157 @@ function _isEffectivelyPlanar(surface, tol = 1e-6) {
     if (dist > tol) return false;
   }
   return true;
+}
+
+/**
+ * Grid-based tessellation for faces whose outer loop contains self-loop
+ * (seam) edges — typically a full-circle cylinder produced by an extrude.
+ *
+ * The outer loop visits each seam vertex twice, creating a self-touching
+ * boundary polygon that CDT cannot triangulate.  Instead, we identify the
+ * two arc coedge sample arrays (bottom and top) and build a ruled grid
+ * between them, using the shared edge samples as the grid's first and
+ * last rows so the resulting mesh stitches perfectly with adjacent faces.
+ *
+ * Returns null if the face isn't eligible (no self-loop coedges or the
+ * structure doesn't match the expected 4-coedge seam pattern).
+ *
+ * @param {import('../BRepTopology.js').TopoFace} face
+ * @param {EdgeSampler} edgeSampler
+ * @param {number} edgeSegs
+ * @param {number} surfSegs
+ * @returns {{ vertices: Array, faces: Array } | null}
+ * @private
+ */
+function _tessellateSeamFace(face, edgeSampler, edgeSegs, surfSegs) {
+  const coedges = face.outerLoop?.coedges;
+  if (!coedges || coedges.length !== 4) return null;
+
+  // Identify arc (self-loop) coedges and line (seam) coedges
+  const arcCEs = [];
+  const lineCEs = [];
+  for (const ce of coedges) {
+    if (ce.edge.startVertex === ce.edge.endVertex) {
+      arcCEs.push(ce);
+    } else {
+      lineCEs.push(ce);
+    }
+  }
+  if (arcCEs.length !== 2 || lineCEs.length !== 2) return null;
+
+  // Verify line coedges share the same edge (seam used forward + reverse)
+  if (lineCEs[0].edge !== lineCEs[1].edge) return null;
+
+  // Get arc boundary samples (shared with adjacent cap faces)
+  // The two arcs trace the full circle at two different heights.
+  // Order them so row0 = first arc and rowN = second arc along the
+  // extrusion direction.
+  const arcSamples0 = edgeSampler.sampleCoEdge(arcCEs[0], edgeSegs);
+  const arcSamples1 = edgeSampler.sampleCoEdge(arcCEs[1], edgeSegs);
+
+  if (arcSamples0.length < 3 || arcSamples1.length < 3) return null;
+  if (arcSamples0.length !== arcSamples1.length) return null;
+
+  // Remove trailing duplicate point (full circle has first == last)
+  const row0 = [...arcSamples0];
+  const rowN = [...arcSamples1];
+  const _dist = (a, b) => Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2);
+  if (row0.length > 1 && _dist(row0[0], row0[row0.length - 1]) < 1e-10) row0.pop();
+  if (rowN.length > 1 && _dist(rowN[0], rowN[rowN.length - 1]) < 1e-10) rowN.pop();
+
+  if (row0.length !== rowN.length || row0.length < 3) return null;
+
+  const nCols = row0.length;
+  // Determine intermediate height steps for the ruled grid
+  const nRows = Math.max(2, Math.ceil(surfSegs / 2));
+
+  // Build grid rows: row 0 = first arc, row nRows-1 = second arc,
+  // intermediate rows are evaluated on the surface via linear interpolation
+  // in parameter space.
+  const surface = face.surface;
+  const rows = [row0];
+
+  if (surface && nRows > 2) {
+    for (let ri = 1; ri < nRows - 1; ri++) {
+      const t = ri / (nRows - 1);
+      const row = [];
+      for (let ci = 0; ci < nCols; ci++) {
+        const p0 = row0[ci];
+        const pN = rowN[ci];
+        // Linearly interpolate in 3D, then project to surface
+        const px = p0.x + t * (pN.x - p0.x);
+        const py = p0.y + t * (pN.y - p0.y);
+        const pz = p0.z + t * (pN.z - p0.z);
+        try {
+          const uv = surface.closestPointUV({ x: px, y: py, z: pz });
+          const sp = surface.evaluate(uv.u, uv.v);
+          row.push({ x: sp.x, y: sp.y, z: sp.z });
+        } catch (_) {
+          row.push({ x: px, y: py, z: pz });
+        }
+      }
+      rows.push(row);
+    }
+  }
+  rows.push(rowN);
+
+  // Triangulate the grid into quads → 2 triangles each.
+  // The winding direction must match the face's outward normal.
+  const sameSense = face.sameSense !== false;
+  const allVerts = [];
+  const allFaces = [];
+
+  for (const row of rows) {
+    for (const pt of row) allVerts.push(pt);
+  }
+
+  for (let ri = 0; ri < rows.length - 1; ri++) {
+    for (let ci = 0; ci < nCols; ci++) {
+      const ci1 = (ci + 1) % nCols; // wrap around for full circle
+      const v00 = allVerts[ri * nCols + ci];
+      const v01 = allVerts[ri * nCols + ci1];
+      const v10 = allVerts[(ri + 1) * nCols + ci];
+      const v11 = allVerts[(ri + 1) * nCols + ci1];
+
+      // For each triangle, compute its geometric winding normal, then
+      // compare with the surface outward normal at the triangle centroid.
+      // Flip the vertex order if they disagree so winding matches shading.
+      const tris = [[v00, v01, v10], [v10, v01, v11]];
+      for (const tri of tris) {
+        const [a, b, c] = tri;
+        // Geometric winding normal
+        const e1x = b.x - a.x, e1y = b.y - a.y, e1z = b.z - a.z;
+        const e2x = c.x - a.x, e2y = c.y - a.y, e2z = c.z - a.z;
+        let gnx = e1y * e2z - e1z * e2y;
+        let gny = e1z * e2x - e1x * e2z;
+        let gnz = e1x * e2y - e1y * e2x;
+
+        // Surface outward normal at triangle centroid
+        const cx = (a.x + b.x + c.x) / 3;
+        const cy = (a.y + b.y + c.y) / 3;
+        const cz = (a.z + b.z + c.z) / 3;
+        let snx = gnx, sny = gny, snz = gnz; // fallback
+        try {
+          const uv = surface.closestPointUV({ x: cx, y: cy, z: cz });
+          const ev = GeometryEvaluator.evalSurface(surface, uv.u, uv.v);
+          if (ev.n) {
+            const flip = sameSense ? 1 : -1;
+            snx = ev.n.x * flip; sny = ev.n.y * flip; snz = ev.n.z * flip;
+          }
+        } catch (_) { /* keep geometric normal */ }
+
+        const dot = gnx * snx + gny * sny + gnz * snz;
+        const faceNorm = { x: snx, y: sny, z: snz };
+        if (dot < 0) {
+          allFaces.push({ vertices: [a, c, b], normal: faceNorm });
+        } else {
+          allFaces.push({ vertices: [a, b, c], normal: faceNorm });
+        }
+      }
+    }
+  }
+
+  return { vertices: allVerts, faces: allFaces };
 }
 
 /**

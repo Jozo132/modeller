@@ -533,7 +533,13 @@ function _offsetEdgeOnSurface(topoEdge, face, coedge, dist) {
         // both positive and negative sweeps.
         const isSemicircle = Math.abs(Math.abs(sweep) - Math.PI) < 0.1;
         if (isSemicircle) {
-          if (sweep < 0) sweep += 2 * Math.PI;
+          // For semicircular arcs, atan2 can return either +π or -π due to
+          // floating-point ambiguity when sinA ≈ 0.  Use the midpoint error
+          // to select the geometrically correct direction: one direction has
+          // midError ≈ 0 (correct side), the other has midError ≈ 2R (wrong).
+          if (midError > 0.1 * newR) {
+            sweep = -sweep;
+          }
         } else if (midError > 0.1 * newR) {
           sweep = sweep > 0 ? sweep - 2 * Math.PI : sweep + 2 * Math.PI;
         }
@@ -623,7 +629,10 @@ function _offsetEdgeOnSurface(topoEdge, face, coedge, dist) {
           const midErrorCyl = vec3Len(vec3Sub(computedMidCyl, expectedMidCyl));
           const isSemicircleCyl = Math.abs(Math.abs(sweep) - Math.PI) < 0.1;
           if (isSemicircleCyl) {
-            if (sweep < 0) sweep += 2 * Math.PI;
+            // Same midpoint-based direction check as the planar case.
+            if (midErrorCyl > 0.1 * cylR) {
+              sweep = -sweep;
+            }
           } else if (midErrorCyl > 0.1 * cylR) {
             sweep = sweep > 0 ? sweep - 2 * Math.PI : sweep + 2 * Math.PI;
           }
@@ -764,31 +773,101 @@ function _offsetEdgeLinearFallback(topoEdge, face, dist) {
  * When both offsets produce arcs, this creates a conical or cylindrical ruled surface.
  */
 function _buildChamferRuledSurface(offset0, offset1) {
-  const c0 = offset0.curve;
-  const c1 = offset1.curve;
+  let c0 = offset0.curve;
+  let c1 = offset1.curve;
 
   // If both curves are NURBS arcs with compatible parametrization, build a ruled surface
   if (c0.degree === 2 && c1.degree === 2 &&
       c0.controlPoints.length === c1.controlPoints.length &&
       c0.knots.length === c1.knots.length) {
-    const nCols = c0.controlPoints.length;
+
+    // For semicircular arcs, the sweep direction may differ between the
+    // planar and cylindrical offsets due to floating-point ambiguity in
+    // atan2 (returning +π vs -π) combined with different local coordinate
+    // frames (faceNormal vs axisDir).  Both sweeps are individually correct,
+    // but they may trace opposite halves of the circle.  Check whether the
+    // curves' midpoints are compatible; if not, reverse one curve so the
+    // ruled surface pairs corresponding control points correctly.
+    const mid0 = c0.evaluate(0.5);
+    const mid1 = c1.evaluate(0.5);
+    if (mid0 && mid1) {
+      // For a well-formed chamfer, the midpoints of the two offset arcs
+      // should be close (separated only by the chamfer distance).  If they
+      // are far apart, the curves trace opposite halves of the circle.
+      const midDist = vec3Len(vec3Sub(mid0, mid1));
+      const endDist = vec3Len(vec3Sub(offset0.startPt, offset1.startPt));
+      if (midDist > 3 * Math.max(endDist, 1e-6)) {
+        // Factor of 3: on a correctly paired chamfer the arc midpoints are
+        // roughly `distance` apart (≈ endDist).  A factor of 3 gives ample
+        // margin while reliably catching the opposite-half case where the
+        // midpoint distance ≈ diameter (≫ endDist).
+        // Reverse c1 so its parametrization matches c0
+        c1 = c1.reversed();
+      }
+    }
+
+    // Build the surface with c0 in row 0 (u=0) and c1 in row 1 (u=1).
+    // The face vertex quad will be [off0.start, off0.end, off1.end, off1.start].
+    // We need the surface normal (dS/du × dS/dv) to agree with the Newell
+    // normal of that quad so that _computeSameSense returns true and the
+    // tessellator produces correctly oriented triangles.
+    //
+    // Compute the vertex-quad Newell normal and compare with the surface
+    // normal; if they disagree, swap rows to flip the surface normal.
+    const verts = [offset0.startPt, offset0.endPt, offset1.endPt, offset1.startPt];
+    let lnx = 0, lny = 0, lnz = 0;
+    for (let i = 0; i < verts.length; i++) {
+      const vc = verts[i];
+      const vn = verts[(i + 1) % verts.length];
+      lnx += (vc.y - vn.y) * (vc.z + vn.z);
+      lny += (vc.z - vn.z) * (vc.x + vn.x);
+      lnz += (vc.x - vn.x) * (vc.y + vn.y);
+    }
+
+    let rowA = c0, rowB = c1;      // row 0, row 1
+
+    // Surface normal ≈ cross(dS/du, dS/dv) at the parametric center.
+    // dS/du = (row1_mid - row0_mid), dS/dv ≈ tangent along the arc at v=0.5.
+    const midA = rowA.evaluate(0.5);
+    const midB = rowB.evaluate(0.5);
+    if (midA && midB) {
+      const dux = midB.x - midA.x, duy = midB.y - midA.y, duz = midB.z - midA.z;
+      // Approximate dS/dv via finite difference on the row0 curve.
+      // A ±0.01 step around v=0.5 gives a stable tangent estimate — small
+      // enough to be local, large enough to avoid floating-point noise.
+      const vLo = rowA.evaluate(0.49);
+      const vHi = rowA.evaluate(0.51);
+      if (vLo && vHi) {
+        const dvx = vHi.x - vLo.x, dvy = vHi.y - vLo.y, dvz = vHi.z - vLo.z;
+        const snx = duy * dvz - duz * dvy;
+        const sny = duz * dvx - dux * dvz;
+        const snz = dux * dvy - duy * dvx;
+        const dot = lnx * snx + lny * sny + lnz * snz;
+        if (dot < 0) {
+          // Swap rows so surface normal agrees with vertex winding
+          rowA = c1; rowB = c0;
+        }
+      }
+    }
+
+    const nCols = rowA.controlPoints.length;
     const nRows = 2;
     const controlPoints = [];
     const weights = [];
     for (let j = 0; j < nCols; j++) {
-      controlPoints.push({ ...c0.controlPoints[j] });
-      weights.push(c0.weights[j]);
+      controlPoints.push({ ...rowA.controlPoints[j] });
+      weights.push(rowA.weights[j]);
     }
     for (let j = 0; j < nCols; j++) {
-      controlPoints.push({ ...c1.controlPoints[j] });
-      weights.push(c1.weights[j]);
+      controlPoints.push({ ...rowB.controlPoints[j] });
+      weights.push(rowB.weights[j]);
     }
     return new NurbsSurface(
-      1, c0.degree,       // linear in u, quadratic in v
+      1, rowA.degree,       // linear in u, quadratic in v
       nRows, nCols,
       controlPoints,
       [0, 0, 1, 1],       // linear u-knots
-      [...c0.knots],       // arc v-knots
+      [...rowA.knots],       // arc v-knots
       weights
     );
   }
@@ -1312,16 +1391,58 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
       ? SurfaceType.CONE
       : SurfaceType.PLANE;
 
+    let verts = [off0.startPt, off0.endPt, off1.endPt, off1.startPt];
+    let curves = [
+      off0.curve,
+      NurbsCurve.createLine(off0.endPt, off1.endPt),
+      off1.curve.reversed(),
+      NurbsCurve.createLine(off1.startPt, off0.startPt),
+    ];
+
+    // Verify the chamfer face vertex winding produces an outward-pointing
+    // Newell normal.  The expected outward direction is the average of the
+    // two adjacent faces' outward normals at the original edge midpoint.
+    // If the vertex winding disagrees, reverse the vertex/curve order so
+    // that buildTopoBody computes the correct sameSense and the tessellator
+    // orients triangles outward.  This applies to all chamfer face types
+    // (cone for arc-edge chamfers, plane for straight-edge chamfers).
+    {
+      // Compute Newell normal of the vertex quad
+      let lnx = 0, lny = 0, lnz = 0;
+      for (let i = 0; i < verts.length; i++) {
+        const vc = verts[i];
+        const vn = verts[(i + 1) % verts.length];
+        lnx += (vc.y - vn.y) * (vc.z + vn.z);
+        lny += (vc.z - vn.z) * (vc.x + vn.x);
+        lnz += (vc.x - vn.x) * (vc.y + vn.y);
+      }
+      // Compute expected outward direction from adjacent face normals
+      let outX = 0, outY = 0, outZ = 0;
+      for (const face of [ci.face0, ci.face1]) {
+        if (!face.surface || typeof face.surface.normal !== 'function') continue;
+        try {
+          const n = face.surface.normal(0.5, 0.5);
+          const flip = face.sameSense !== false ? 1 : -1;
+          outX += n.x * flip; outY += n.y * flip; outZ += n.z * flip;
+        } catch (_) { /* ignore */ }
+      }
+      // If the vertex Newell normal opposes the expected outward, reverse
+      if (lnx * outX + lny * outY + lnz * outZ < 0) {
+        verts = [off0.startPt, off1.startPt, off1.endPt, off0.endPt];
+        curves = [
+          NurbsCurve.createLine(off0.startPt, off1.startPt),
+          off1.curve,
+          NurbsCurve.createLine(off1.endPt, off0.endPt),
+          off0.curve.reversed(),
+        ];
+      }
+    }
+
     faceDescs.push({
       surface,
       surfaceType: surfType,
-      vertices: [off0.startPt, off0.endPt, off1.endPt, off1.startPt],
-      edgeCurves: [
-        off0.curve,
-        NurbsCurve.createLine(off0.endPt, off1.endPt),
-        off1.curve.reversed(),
-        NurbsCurve.createLine(off1.startPt, off0.startPt),
-      ],
+      vertices: verts,
+      edgeCurves: curves,
       shared: ci.face0.shared ? { ...ci.face0.shared, isChamfer: true } : { isChamfer: true },
     });
   }
