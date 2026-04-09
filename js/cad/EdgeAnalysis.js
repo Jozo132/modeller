@@ -87,6 +87,17 @@ export function assignCoplanarFaceGroups(faces) {
     }
   }
 
+  // Pre-unite faces that share a fusedGroupId (e.g. two half-cylinder
+  // faces that represent one logical cylinder surface).
+  const fusedRep = new Map();
+  for (let fi = 0; fi < faces.length; fi++) {
+    const fid = faces[fi].fusedGroupId;
+    if (fid) {
+      if (fusedRep.has(fid)) unite(fi, fusedRep.get(fid));
+      else fusedRep.set(fid, fi);
+    }
+  }
+
   for (const [, group] of planeGroups) {
     if (group.length <= 1) continue;
 
@@ -165,7 +176,11 @@ export function assignCoplanarFaceGroups(faces) {
           // STEP import tags each mesh face with topoFaceId — these
           // represent distinct B-Rep surfaces that must remain
           // independently selectable (e.g. separate fillet cylinders).
-          if (fa.topoFaceId !== undefined && fb.topoFaceId !== undefined && fa.topoFaceId !== fb.topoFaceId) continue;
+          // Exception: faces with matching fusedGroupId are parts of one
+          // logical surface (e.g. two half-cylinders) and must merge.
+          if (fa.topoFaceId !== undefined && fb.topoFaceId !== undefined && fa.topoFaceId !== fb.topoFaceId) {
+            if (!fa.fusedGroupId || fa.fusedGroupId !== fb.fusedGroupId) continue;
+          }
           unite(fis[i], fis[j]);
         }
       }
@@ -430,6 +445,14 @@ export function computeFeatureEdges(faces) {
           isFeature = false;
         }
       }
+      // Suppress seam edges between fused half-cylinder faces — the seam
+      // is an internal tessellation split, not a real B-Rep boundary.
+      if (isFeature && info.faceIndices.length >= 2) {
+        const fa = faces[info.faceIndices[0]], fb = faces[info.faceIndices[1]];
+        if (fa.fusedGroupId && fa.fusedGroupId === fb.fusedGroupId) {
+          isFeature = false;
+        }
+      }
       // Faces already merged into one logical coplanar face must never
       // expose their internal triangulation seam as a selectable feature edge.
       if (isFeature && sameGroup) {
@@ -450,7 +473,8 @@ export function computeFeatureEdges(faces) {
           // face — these are internal subdivision artifacts on curved surfaces
           // (e.g. sphere patches) that should never show wireframe lines.
           const topoIds = new Set(info.faceIndices.map(fi => faces[fi].topoFaceId).filter(id => id !== undefined));
-          if (topoIds.size > 1 || topoIds.size === 0) {
+          const fusedIds = new Set(info.faceIndices.map(fi => faces[fi].fusedGroupId).filter(id => !!id));
+          if ((topoIds.size > 1 || topoIds.size === 0) && fusedIds.size !== 1) {
             visualEdges.push({ start: info.start, end: info.end });
           }
         }

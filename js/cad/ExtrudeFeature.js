@@ -16,6 +16,9 @@ import {
   SurfaceType, buildTopoBody,
 } from './BRepTopology.js';
 
+/** Monotonically increasing ID for fused half-cylinder face groups. */
+let _nextFusedId = 1;
+
 /**
  * ExtrudeFeature extrudes a 2D sketch profile along its normal to create 3D geometry.
  */
@@ -539,6 +542,11 @@ export class ExtrudeFeature extends Feature {
             bottomVerts.push(midBotPt);
             topVerts.push(midTopPt);
 
+            // Tag both halves with a shared fusedGroupId so that the
+            // edge analysis and selection logic treat them as one
+            // logical face (suppress the seam, select as one surface).
+            const fusedId = `cyl-${_nextFusedId++}`;
+
             // First half: 0 → π
             edgeInfos.push({
               type: 'arc',
@@ -550,6 +558,7 @@ export class ExtrudeFeature extends Feature {
               topCurve: NurbsCurve.createArc(topCenter3D, range.radius, xAx, yAx, 0, Math.PI),
               cylSurf: NurbsSurface.createCylinder(center3D, extDir, range.radius, extHeight, xAx, yAx, 0, Math.PI),
               cylSurfaceInfo: { type: 'cylinder', origin: center3D, axis: extDir, xDir: xAx, yDir: yAx, radius: range.radius },
+              fusedGroupId: fusedId,
             });
             // Second half: π → 2π  (startAngle=π, sweepAngle=π)
             edgeInfos.push({
@@ -562,6 +571,7 @@ export class ExtrudeFeature extends Feature {
               topCurve: NurbsCurve.createArc(topCenter3D, range.radius, xAx, yAx, Math.PI, Math.PI),
               cylSurf: NurbsSurface.createCylinder(center3D, extDir, range.radius, extHeight, xAx, yAx, Math.PI, Math.PI),
               cylSurfaceInfo: { type: 'cylinder', origin: center3D, axis: extDir, xDir: xAx, yDir: yAx, radius: range.radius },
+              fusedGroupId: fusedId,
             });
             continue;
           }
@@ -665,6 +675,7 @@ export class ExtrudeFeature extends Feature {
             surface: info.cylSurf,
             surfaceType: SurfaceType.CYLINDER,
             surfaceInfo: info.cylSurfaceInfo || null,
+            fusedGroupId: info.fusedGroupId || null,
             vertices,
             edgeCurves,
             shared: { sourceFeatureId: this.id },

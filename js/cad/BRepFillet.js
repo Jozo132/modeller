@@ -1022,6 +1022,7 @@ function _buildOriginalFaceDesc(topoFace, vertexReplacements = null) {
     return {
       surface: topoFace.surface || null,
       surfaceType: topoFace.surfaceType || SurfaceType.PLANE,
+      fusedGroupId: topoFace.fusedGroupId || null,
       vertices: newVertices,
       edgeCurves,
       sameSense: topoFace.sameSense,
@@ -1043,6 +1044,7 @@ function _buildOriginalFaceDesc(topoFace, vertexReplacements = null) {
   return {
     surface: topoFace.surface || null,
     surfaceType: topoFace.surfaceType || SurfaceType.PLANE,
+    fusedGroupId: topoFace.fusedGroupId || null,
     vertices: origLoopVerts,
     edgeCurves,
     sameSense: topoFace.sameSense,
@@ -2012,6 +2014,7 @@ function _buildExactFilletTopoBody(faces, edgeDataList, origTopoBody = null) {
           faceDescs.push({
             surface: origFace.surface,
             surfaceType: origFace.surfaceType || SurfaceType.BSPLINE,
+            fusedGroupId: origFace.fusedGroupId || null,
             vertices: trimmedVerts,
             edgeCurves,
             sameSense: origFace.sameSense,

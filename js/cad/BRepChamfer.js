@@ -1372,6 +1372,8 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
       faceDescs.push({
         surface: face.surface,
         surfaceType: face.surfaceType,
+        surfaceInfo: face.surfaceInfo || null,
+        fusedGroupId: face.fusedGroupId || null,
         vertices: finalVerts,
         edgeCurves: finalCurves,
         innerLoops: face.innerLoops.map((loop) => _extractLoopDesc(loop)),
