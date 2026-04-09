@@ -1025,14 +1025,24 @@ export class FaceTriangulator {
         faceN = refNormal;
       }
 
-      // Ensure winding agrees with the correct face normal.  The initial
-      // winding fix (above) uses the centroid-based refNormal, but the
-      // face normal derived from averaged vertex normals may differ on
-      // very curved patches.  Fix winding rather than flipping the normal.
-      const geoN = calculateNormal(pa, pb, pc);
-      if (_dot(faceN, geoN) < 0) {
-        [pb, pc] = [pc, pb];
-        [vnb, vnc] = [vnc, vnb];
+      // Ensure face normal agrees with the geometric winding direction.
+      // The initial winding fix (above) uses the centroid-based refNormal,
+      // but the face normal derived from averaged vertex normals may differ
+      // on very curved patches.  Rather than swapping vertices (which would
+      // break shared-edge consistency across the CDT, producing fan/cross
+      // winding artifacts), evaluate the surface normal at the triangle's
+      // centroid UV and flip it if it disagrees with the geometric winding.
+      {
+        let centroidFaceN = faceN;
+        const cu = (ua.u + ub.u + uc.u) / 3;
+        const cv = (ua.v + ub.v + uc.v) / 3;
+        const cn = surface.normal(cu, cv);
+        if (cn) {
+          const cfn = _normalize({ x: cn.x * flip, y: cn.y * flip, z: cn.z * flip });
+          if (cfn) centroidFaceN = cfn;
+        }
+        const geoN = calculateNormal(pa, pb, pc);
+        faceN = _dot(centroidFaceN, geoN) >= 0 ? centroidFaceN : { x: -centroidFaceN.x, y: -centroidFaceN.y, z: -centroidFaceN.z };
       }
 
       meshFaces.push({
@@ -1650,11 +1660,33 @@ export class FaceTriangulator {
       // On curved surfaces the averaged per-vertex shading normal may
       // oppose the triangle's geometric winding (e.g. triangles on a
       // cylinder spanning >90° where vertex normals at the extremes
-      // diverge from the flat face).  Use the geometric winding normal
-      // for the face normal so the triangle renders with correct front/back
-      // orientation, while keeping the per-vertex normals for smooth shading.
+      // diverge from the flat face).  Evaluate the surface normal at the
+      // triangle's centroid UV for a stable outward direction, then ensure
+      // it agrees with the geometric winding so the renderer shows the
+      // correct front face.
+      let faceNormal = outNormal;
+      {
+        const cu = (a._u + b._u + c._u) / 3;
+        const cv = (a._v + b._v + c._v) / 3;
+        try {
+          const evalResult = GeometryEvaluator.evalSurface(surface, cu, cv);
+          if (evalResult.n) {
+            const en = evalResult.n;
+            const fn = _normalize({ x: en.x * flip, y: en.y * flip, z: en.z * flip });
+            if (fn) faceNormal = fn;
+          }
+        } catch (_e) {
+          // Keep the averaged outNormal when centroid eval fails.
+        }
+      }
+      // Ensure the face normal agrees with the geometric winding direction.
+      // On very curved triangles, the surface normal at the centroid can
+      // still oppose the geometric winding — flip in that case so the
+      // renderer's front-face determination matches the vertex order.
       const geoN = calculateNormal(a, b, c);
-      const faceNormal = _dot(outNormal, geoN) >= 0 ? outNormal : geoN;
+      if (_dot(faceNormal, geoN) < 0) {
+        faceNormal = { x: -faceNormal.x, y: -faceNormal.y, z: -faceNormal.z };
+      }
 
       meshFaces.push({
         vertices: [{ ...a }, { ...b }, { ...c }],
