@@ -260,9 +260,10 @@ test('Extrude spline profile: produces topoBody with NURBS surfaces', () => {
   const body = geom.topoBody;
   assert.strictEqual(body.shells.length, 1, 'Should have 1 shell');
 
-  // Should have 6 faces: bottom cap, top cap, 3 planar side faces, 1 BSPLINE side face
+  // Should have 8 faces: bottom cap, top cap, 3 planar side faces, 3 BSPLINE side faces
+  // (spline has 3 control points → max(3,3) = 3 sub-faces)
   const faces = body.faces();
-  assert.strictEqual(faces.length, 6, `Spline extrude should have 6 faces, got ${faces.length}`);
+  assert.strictEqual(faces.length, 8, `Spline extrude should have 8 faces, got ${faces.length}`);
 
   const bsplineFaces = faces.filter(f => f.surfaceType === 'bspline');
   assert.ok(bsplineFaces.length >= 1, `Should have at least 1 bspline face from spline extrusion, got ${bsplineFaces.length}`);
@@ -342,7 +343,7 @@ test('Extrude bezier profile: produces topoBody with NURBS surfaces', () => {
 
   const body = geom.topoBody;
   const faces = body.faces();
-  assert.strictEqual(faces.length, 6, `Bezier extrude should have 6 faces, got ${faces.length}`);
+  assert.strictEqual(faces.length, 8, `Bezier extrude should have 8 faces, got ${faces.length}`);
 
   const bsplineFaces = faces.filter(f => f.surfaceType === 'bspline');
   assert.ok(bsplineFaces.length >= 1, `Should have at least 1 bspline face from bezier extrusion, got ${bsplineFaces.length}`);
