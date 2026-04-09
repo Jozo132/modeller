@@ -921,12 +921,25 @@ function _polygonToTopoFace(poly, tol) {
     const edge = new TopoEdge(a, b, NurbsCurve.createLine(a.point, b.point), tol.edgeOverlap);
     coedges.push(new TopoCoEdge(edge, true, null));
   }
+  let uDir = _sub(cleaned.vertices[1], cleaned.vertices[0]);
+  let vDir = _sub(cleaned.vertices[cleaned.vertices.length - 1], cleaned.vertices[0]);
+  // For non-convex polygons (e.g. L-shaped fragments from extrude-cut
+  // splitting a face perpendicular to the cut direction),
+  // cross(v1-v0, vLast-v0) may point opposite to the polygon's Newell
+  // winding normal.  When the surface normal disagrees with the Newell
+  // normal, _orientedFacePoints in ShellBuilder reverses the loop points,
+  // producing incorrect edge directions for the BFS in _orientShell and
+  // causing it to flip the face's sameSense incorrectly.
+  // Swapping uDir/vDir flips the surface normal to match the Newell
+  // normal, preventing the spurious reversal.
+  const polyN = poly.normal || _polygonNormal(cleaned.vertices);
+  if (_dot(_cross(uDir, vDir), polyN) < 0) {
+    const tmp = uDir;
+    uDir = vDir;
+    vDir = tmp;
+  }
   const face = new TopoFace(
-    NurbsSurface.createPlane(
-      cleaned.vertices[0],
-      _sub(cleaned.vertices[1], cleaned.vertices[0]),
-      _sub(cleaned.vertices[cleaned.vertices.length - 1], cleaned.vertices[0]),
-    ),
+    NurbsSurface.createPlane(cleaned.vertices[0], uDir, vDir),
     SurfaceType.PLANE,
     true,
   );
