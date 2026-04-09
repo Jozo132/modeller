@@ -1894,7 +1894,24 @@ export class WasmRenderer {
         const refs = ptRefs.get(point) || 0;
         const isHover = hoverEntity && hoverEntity.id === point.id;
         const isFCPt = fc.points.has(point);
-        if (refs <= 1 && !point.selected && !point.fixed && !isHover && !isFCPt) return;
+        // Show points that are: referenced by 2+ entities (junction), selected, fixed,
+        // hovered, or fully constrained. Also always show spline/bezier endpoints
+        // (p1/p2) so the user can see and drag them.
+        if (refs < 1 && !point.selected && !point.fixed && !isHover && !isFCPt) return;
+        // For single-reference points, only show if they are spline/bezier endpoints
+        // (interior control points stay hidden until the spline is selected)
+        if (refs === 1 && !point.selected && !point.fixed && !isHover && !isFCPt) {
+          let isEndpoint = false;
+          for (const spl of scene.splines) {
+            if (spl.p1 === point || spl.p2 === point) { isEndpoint = true; break; }
+          }
+          if (!isEndpoint && scene.beziers) {
+            for (const bez of scene.beziers) {
+              if (bez.p1 === point || bez.p2 === point) { isEndpoint = true; break; }
+            }
+          }
+          if (!isEndpoint) return;
+        }
         let flags = F_VISIBLE;
         if (point.selected) flags |= F_SELECTED;
         if (isHover) flags |= F_HOVER;
@@ -1960,6 +1977,12 @@ export class WasmRenderer {
         } else if (entity.type === 'spline' && entity.points && entity.points.length >= 2) {
           // Tessellate spline into line segments for WASM rendering
           const pts = entity.tessellate2D(32);
+          for (let i = 0; i < pts.length - 1; i++) {
+            wasm.addEntitySegment(pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y, flags, 0, 0.749, 1, 1);
+          }
+        } else if (entity.type === 'bezier' && entity.vertices && entity.vertices.length >= 2) {
+          // Tessellate bezier into line segments for WASM rendering
+          const pts = entity.tessellate2D(16);
           for (let i = 0; i < pts.length - 1; i++) {
             wasm.addEntitySegment(pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y, flags, 0, 0.749, 1, 1);
           }
@@ -2277,6 +2300,66 @@ export class WasmRenderer {
         ctx.restore();
       });
     }
+
+    // --- Preview entity handles (shown during drawing with bezier/spline tools) ---
+    if (previewEntities && previewEntities.length > 0) {
+      for (const entity of previewEntities) {
+        if (!entity) continue;
+        if (entity.type === 'spline' && entity.points && entity.points.length >= 2) {
+          // Draw control polygon for preview spline
+          ctx.save();
+          ctx.setLineDash([4, 4]);
+          ctx.strokeStyle = 'rgba(0, 191, 255, 0.5)';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          const sp0 = sketchPtToScreen(entity.points[0].x, entity.points[0].y);
+          ctx.moveTo(sp0.x, sp0.y);
+          for (let i = 1; i < entity.points.length; i++) {
+            const sp = sketchPtToScreen(entity.points[i].x, entity.points[i].y);
+            ctx.lineTo(sp.x, sp.y);
+          }
+          ctx.stroke();
+          ctx.setLineDash([]);
+          // Draw control point markers
+          for (let i = 0; i < entity.points.length; i++) {
+            const cp = entity.points[i];
+            const sp = sketchPtToScreen(cp.x, cp.y);
+            const isEnd = i === 0 || i === entity.points.length - 1;
+            ctx.fillStyle = isEnd ? '#00bfff' : 'rgba(0, 191, 255, 0.6)';
+            ctx.fillRect(sp.x - 3, sp.y - 3, 6, 6);
+          }
+          ctx.restore();
+        } else if (entity.type === 'bezier' && entity.vertices && entity.vertices.length >= 2) {
+          // Draw handle lines and markers for preview bezier
+          ctx.save();
+          for (let vi = 0; vi < entity.vertices.length; vi++) {
+            const v = entity.vertices[vi];
+            const sp = sketchPtToScreen(v.point.x, v.point.y);
+            ctx.strokeStyle = 'rgba(0, 191, 255, 0.6)';
+            ctx.lineWidth = 1;
+            if (v.handleIn) {
+              const hx = v.point.x + v.handleIn.dx, hy = v.point.y + v.handleIn.dy;
+              const hs = sketchPtToScreen(hx, hy);
+              ctx.beginPath(); ctx.moveTo(sp.x, sp.y); ctx.lineTo(hs.x, hs.y); ctx.stroke();
+              ctx.fillStyle = '#00bfff';
+              ctx.beginPath(); ctx.arc(hs.x, hs.y, 3, 0, Math.PI * 2); ctx.fill();
+            }
+            if (v.handleOut) {
+              const hx = v.point.x + v.handleOut.dx, hy = v.point.y + v.handleOut.dy;
+              const hs = sketchPtToScreen(hx, hy);
+              ctx.beginPath(); ctx.moveTo(sp.x, sp.y); ctx.lineTo(hs.x, hs.y); ctx.stroke();
+              ctx.fillStyle = '#00bfff';
+              ctx.beginPath(); ctx.arc(hs.x, hs.y, 3, 0, Math.PI * 2); ctx.fill();
+            }
+            // Vertex marker
+            ctx.fillStyle = '#00bfff';
+            ctx.fillRect(sp.x - 3, sp.y - 3, 6, 6);
+          }
+          ctx.restore();
+        }
+      }
+    }
+
     if (this._sketchPlane) {
       const pd = this._sketchPlaneDef;
       const axisLen = in3DSketch ? 50 : Math.max(this._orthoBounds.right - this._orthoBounds.left, this._orthoBounds.top - this._orthoBounds.bottom) * 0.6;

@@ -29,6 +29,16 @@ export class BezierTool extends BaseTool {
       this._draggingHandle = false;
       return;
     }
+    // If we have 2+ vertices and click near the first, close the loop
+    if (this._vertices.length >= 2) {
+      const first = this._vertices[0];
+      const closeTol = 5 / this._effectiveZoom();
+      if (Math.hypot(wx - first.x, wy - first.y) < closeTol) {
+        this._vertices.push({ x: first.x, y: first.y, tangent: false });
+        this._finish();
+        return;
+      }
+    }
     this._addVertex(wx, wy);
   }
 
