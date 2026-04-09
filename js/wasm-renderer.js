@@ -2525,7 +2525,18 @@ export class WasmRenderer {
     if (closedLoops.length > 0) {
       ctx.beginPath();
       for (const loop of closedLoops) {
-        if (loop.edges.some(e => !isLayerVisible(e.layer))) continue;
+        if (loop.edges.some(e => e.layer != null && !isLayerVisible(e.layer))) continue;
+        // Self-closing curves (single edge where points are already tessellated)
+        if (loop.edges.length === 1 && (loop.edges[0].type === 'spline' || loop.edges[0].type === 'bezier') && loop.points.length >= 3) {
+          const fp = sketchPtToScreen(loop.points[0].x, loop.points[0].y);
+          ctx.moveTo(fp.x, fp.y);
+          for (let j = 1; j < loop.points.length; j++) {
+            const sp = sketchPtToScreen(loop.points[j].x, loop.points[j].y);
+            ctx.lineTo(sp.x, sp.y);
+          }
+          ctx.closePath();
+          continue;
+        }
         const fp = sketchPtToScreen(loop.points[0].x, loop.points[0].y);
         ctx.moveTo(fp.x, fp.y);
         for (let i = 0; i < loop.edges.length; i++) {
@@ -3068,6 +3079,11 @@ export class WasmRenderer {
         for (const loop of loops) {
           // Build 2D polygon from loop points (with arc/spline tessellation)
           const poly2D = [];
+
+          // Self-closing curves: points are already tessellated
+          if (loop.edges.length === 1 && (loop.edges[0].type === 'spline' || loop.edges[0].type === 'bezier') && loop.points.length >= 3) {
+            for (const pt of loop.points) poly2D.push({ x: pt.x, y: pt.y });
+          } else {
           for (let li = 0; li < loop.points.length; li++) {
             const edge = loop.edges[li];
             const curPt = loop.points[li];
@@ -3092,6 +3108,7 @@ export class WasmRenderer {
             } else {
               poly2D.push({ x: curPt.x, y: curPt.y });
             }
+          }
           }
           if (poly2D.length < 3) continue;
           // Ear-clipping triangulation of the 2D polygon
@@ -4195,6 +4212,7 @@ function _findClosedLoops(scene) {
   const TOL = 1e-4;
   const adj = new Map();
   const ensure = (pt) => { if (!adj.has(pt)) adj.set(pt, []); };
+  const selfClosedLoops = []; // Loops formed by a single self-closing curve (p1 === p2)
 
   for (const seg of scene.segments) {
     if (!seg.visible || seg.construction) continue;
@@ -4225,7 +4243,14 @@ function _findClosedLoops(scene) {
     for (const spl of scene.splines) {
       if (!spl.visible || spl.construction) continue;
       const p1 = spl.p1, p2 = spl.p2;
-      if (p1 && p2 && p1 !== p2) {
+      if (p1 && p2 && p1 === p2) {
+        // Self-closing spline — forms its own loop
+        // Tessellate the curve to get the polygon points for the loop
+        const pts = spl.tessellate2D(32);
+        if (pts.length >= 3) {
+          selfClosedLoops.push({ points: pts.map(p => ({ x: p.x, y: p.y })), edges: [spl] });
+        }
+      } else if (p1 && p2) {
         ensure(p1);
         ensure(p2);
         adj.get(p1).push({ edge: spl, other: p2 });
@@ -4239,7 +4264,13 @@ function _findClosedLoops(scene) {
     for (const bez of scene.beziers) {
       if (!bez.visible || bez.construction) continue;
       const p1 = bez.p1, p2 = bez.p2;
-      if (p1 && p2 && p1 !== p2) {
+      if (p1 && p2 && p1 === p2) {
+        // Self-closing bezier — forms its own loop
+        const pts = bez.tessellate2D(16);
+        if (pts.length >= 3) {
+          selfClosedLoops.push({ points: pts.map(p => ({ x: p.x, y: p.y })), edges: [bez] });
+        }
+      } else if (p1 && p2) {
         ensure(p1);
         ensure(p2);
         adj.get(p1).push({ edge: bez, other: p2 });
@@ -4284,6 +4315,11 @@ function _findClosedLoops(scene) {
       current = next.other;
     }
     loops.push({ points: orderedPts, edges: orderedEdges });
+  }
+
+  // Add self-closing loops (single curves with p1 === p2)
+  for (const sl of selfClosedLoops) {
+    loops.push(sl);
   }
 
   return loops;

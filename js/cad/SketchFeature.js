@@ -76,13 +76,57 @@ export class SketchFeature extends Feature {
       });
     }
 
+    // Handle self-closing splines (p1 === p2): they form their own closed profile
+    for (const spl of this.sketch.splines) {
+      if (spl.construction || !spl.visible) continue;
+      if (spl.p1 && spl.p2 && spl.p1 === spl.p2) {
+        visited.add(spl.id);
+        const pts = spl.tessellate2D(32);
+        if (pts.length >= 3) {
+          // Remove the duplicate closing point if present
+          const last = pts[pts.length - 1];
+          const first = pts[0];
+          if (Math.hypot(last.x - first.x, last.y - first.y) < 1e-6) {
+            pts.pop();
+          }
+          profiles.push({
+            points: pts,
+            edges: [{ type: 'spline', pointStartIndex: 0, pointCount: pts.length }],
+            closed: true,
+          });
+        }
+      }
+    }
+
+    // Handle self-closing beziers (p1 === p2): they form their own closed profile
+    for (const bez of this.sketch.beziers) {
+      if (bez.construction || !bez.visible) continue;
+      if (bez.p1 && bez.p2 && bez.p1 === bez.p2) {
+        visited.add(bez.id);
+        const pts = bez.tessellate2D(16);
+        if (pts.length >= 3) {
+          const last = pts[pts.length - 1];
+          const first = pts[0];
+          if (Math.hypot(last.x - first.x, last.y - first.y) < 1e-6) {
+            pts.pop();
+          }
+          profiles.push({
+            points: pts,
+            edges: [{ type: 'bezier', pointStartIndex: 0, pointCount: pts.length }],
+            closed: true,
+          });
+        }
+      }
+    }
+
     // Build a combined list of traceable edges (segments, arcs, splines, beziers)
     // Each edge has p1 and p2 endpoints for tracing.
+    // Exclude self-closing curves (already handled above).
     const traceableEdges = [
       ...this.sketch.segments,
       ...this.sketch.arcs.map(arc => _arcAsEdge(arc)),
-      ...this.sketch.splines,
-      ...this.sketch.beziers,
+      ...this.sketch.splines.filter(spl => !visited.has(spl.id)),
+      ...this.sketch.beziers.filter(bez => !visited.has(bez.id)),
     ];
 
     // Build spatial adjacency map for fast lookups and angle-based junction handling
