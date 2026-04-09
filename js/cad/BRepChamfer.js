@@ -443,7 +443,26 @@ function _offsetEdgeOnSurface(topoEdge, face, coedge, dist) {
   const ep = oriented.end;
   const edgeVec = vec3Sub(ep, sp);
   const edgeLen = vec3Len(edgeVec);
-  const edgeDir = edgeLen > 1e-14 ? vec3Scale(edgeVec, 1 / edgeLen) : { x: 1, y: 0, z: 0 };
+
+  // For self-closing edges (start === end), the chord direction is zero.
+  // Use the curve tangent at the midpoint instead.
+  let edgeDir;
+  if (edgeLen > 1e-14) {
+    edgeDir = vec3Scale(edgeVec, 1 / edgeLen);
+  } else if (topoEdge.curve && typeof topoEdge.curve.evaluate === 'function') {
+    // Self-loop: evaluate tangent at midpoint
+    const p0 = topoEdge.curve.evaluate(0.45);
+    const p1 = topoEdge.curve.evaluate(0.55);
+    if (p0 && p1) {
+      const tangent = vec3Sub(p1, p0);
+      const tLen = vec3Len(tangent);
+      edgeDir = tLen > 1e-14 ? vec3Scale(tangent, 1 / tLen) : { x: 1, y: 0, z: 0 };
+    } else {
+      edgeDir = { x: 1, y: 0, z: 0 };
+    }
+  } else {
+    edgeDir = { x: 1, y: 0, z: 0 };
+  }
 
   if (sType === SurfaceType.PLANE) {
     // Get face normal from evaluation or from surface
@@ -696,6 +715,78 @@ function _offsetEdgeOnSurface(topoEdge, face, coedge, dist) {
         endVertexPoint: ep,
       };
     }
+
+  } else if (sType === SurfaceType.BSPLINE || sType === SurfaceType.EXTRUSION) {
+    // Detect linear-extrusion surfaces: degreeU === 1, numRowsU === 2.
+    // These surfaces are linear in the u-direction (extrusion axis) and
+    // follow the cross-section curve in the v-direction.
+    const surf = face.surface;
+    if (surf && surf.degreeU === 1 && surf.numRowsU === 2 && surf.numColsV >= 2) {
+      // Extract extrusion axis from control point rows
+      const nCols = surf.numColsV;
+      const row0_0 = surf.controlPoints[0];
+      const row1_0 = surf.controlPoints[nCols];
+      const extAxis = vec3Sub(row1_0, row0_0);
+      const extLen = vec3Len(extAxis);
+      if (extLen > 1e-14) {
+        const axisDir = vec3Scale(extAxis, 1 / extLen);
+        const edgeDotAxis = Math.abs(vec3Dot(edgeDir, axisDir));
+
+        if (edgeDotAxis < 0.1) {
+          // Profile edge (circumferential, perpendicular to extrusion axis)
+          // Offset = shift along the extrusion axis direction (into the face)
+          const centroid = faceCentroid(face);
+          const edgeMid = vec3Lerp(sp, ep, 0.5);
+          const towardFace = vec3Sub(centroid, edgeMid);
+          const axisDist = vec3Dot(towardFace, axisDir);
+          const offDir = axisDist > 0 ? axisDir : vec3Scale(axisDir, -1);
+
+          const newSp = vec3Add(sp, vec3Scale(offDir, dist));
+          const newEp = vec3Add(ep, vec3Scale(offDir, dist));
+
+          // Preserve curve type: if the edge is a NURBS curve, translate it
+          const curve = topoEdge.curve;
+          let offCurve;
+          if (curve && curve.degree >= 2 && curve.controlPoints && curve.controlPoints.length >= 3) {
+            // Translate the curve control points along the extrusion axis
+            const offCPs = curve.controlPoints.map(cp => vec3Add(cp, vec3Scale(offDir, dist)));
+            offCurve = new NurbsCurve(curve.degree, offCPs, curve.knots.slice(), curve.weights.slice());
+          } else {
+            offCurve = NurbsCurve.createLine(newSp, newEp);
+          }
+          return {
+            curve: offCurve,
+            startPt: newSp,
+            endPt: newEp,
+            startVertexPoint: sp,
+            endVertexPoint: ep,
+          };
+
+        } else {
+          // Axial edge (along extrusion direction)
+          // Offset = move perpendicular to axis on the surface.
+          const centroid = faceCentroid(face);
+          const edgeMid = vec3Lerp(sp, ep, 0.5);
+          const towardFace = vec3Sub(centroid, edgeMid);
+          // Remove axial component to get purely cross-sectional direction
+          const crossComp = vec3Sub(towardFace, vec3Scale(axisDir, vec3Dot(towardFace, axisDir)));
+          const crossLen = vec3Len(crossComp);
+          const offDir = crossLen > 1e-14
+            ? vec3Scale(crossComp, 1 / crossLen)
+            : vec3Normalize(vec3Sub(towardFace, vec3Scale(edgeDir, vec3Dot(towardFace, edgeDir))));
+
+          const newSp = vec3Add(sp, vec3Scale(offDir, dist));
+          const newEp = vec3Add(ep, vec3Scale(offDir, dist));
+          return {
+            curve: NurbsCurve.createLine(newSp, newEp),
+            startPt: newSp,
+            endPt: newEp,
+            startVertexPoint: sp,
+            endVertexPoint: ep,
+          };
+        }
+      }
+    }
   }
 
   // Fallback: linear offset (approximate for unsupported surface types)
@@ -910,6 +1001,24 @@ function _getOrientedCoedgeCurve(coedge) {
   }
 
   return coedge.sameSense !== false ? edge.curve : edge.curve.reversed();
+}
+
+/**
+ * Split a NURBS curve at its midpoint into two half-curves.
+ * Returns [firstHalf, secondHalf], each going from original start/end to mid.
+ * Uses polyline (degree-1) curves for robustness.
+ */
+function _splitCurveAtMid(curve, midPt) {
+  if (!curve || !midPt) return [null, null];
+  const cps = curve.controlPoints;
+  if (!cps || cps.length < 2) return [null, null];
+  const start = cps[0];
+  const end = cps[cps.length - 1];
+  // First half: start → midPt, Second half: midPt → end
+  // For degree >= 2 curves, sample intermediate points for better approximation
+  const c0 = NurbsCurve.createLine(start, midPt);
+  const c1 = NurbsCurve.createLine(midPt, end);
+  return [c0, c1];
 }
 
 function _orientOffsetAlongTopoEdge(offset, topoEdge) {
@@ -1326,13 +1435,42 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
           ep = resolveEndpoint(edgeEp);
           const endpointsUnchanged = pointsCoincident3D(sp, edgeSp) && pointsCoincident3D(ep, edgeEp);
 
-          rebuiltEdges.push({
-            start: sp,
-            end: ep,
-            curve: endpointsUnchanged
-              ? (_getOrientedCoedgeCurve(coedge) || NurbsCurve.createLine(sp, ep))
-              : NurbsCurve.createLine(sp, ep),
-          });
+          // For curve edges (degree >= 2, e.g. spline/bezier/arc) whose
+          // endpoints have been adjusted by an adjacent chamfer, create a
+          // modified curve with updated first/last control points instead
+          // of replacing the entire curve with a line.  This preserves the
+          // curve's interior shape and prevents 2-edge faces (e.g. lens
+          // profiles) from degenerating into < 3 vertex faces that would
+          // be skipped, which causes boundary-edge topology failures.
+          const originalCurve = _getOrientedCoedgeCurve(coedge);
+          const isCurveEdge = originalCurve && originalCurve.degree >= 2;
+
+          let curve;
+          if (endpointsUnchanged) {
+            curve = originalCurve || NurbsCurve.createLine(sp, ep);
+          } else if (isCurveEdge && originalCurve.controlPoints && originalCurve.controlPoints.length >= 3) {
+            // Adjust curve control points to match the new endpoints.
+            // For a clamped NURBS curve, cp[0] = start, cp[n-1] = end.
+            // Linearly interpolate the endpoint displacement across all
+            // control points so interior shape is approximately preserved.
+            const cps = originalCurve.controlPoints;
+            const n = cps.length;
+            const dSp = vec3Sub(sp, cps[0]);
+            const dEp = vec3Sub(ep, cps[n - 1]);
+            const newCPs = cps.map((cp, idx) => {
+              const t = n > 1 ? idx / (n - 1) : 0;
+              return vec3Add(cp, vec3Lerp(dSp, dEp, t));
+            });
+            curve = new NurbsCurve(
+              originalCurve.degree, newCPs,
+              originalCurve.knots.slice(),
+              originalCurve.weights.slice()
+            );
+          } else {
+            curve = NurbsCurve.createLine(sp, ep);
+          }
+
+          rebuiltEdges.push({ start: sp, end: ep, curve });
         } else {
           // Chamfered edge: replace with offset curve on this face
           const off = chamInfo.face0 === face ? chamInfo.off0 : chamInfo.off1;
