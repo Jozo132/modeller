@@ -551,7 +551,7 @@ export class ExtrudeFeature extends Feature {
               cylSurf: NurbsSurface.createCylinder(center3D, extDir, range.radius, extHeight, xAx, yAx, 0, Math.PI),
               cylSurfaceInfo: { type: 'cylinder', origin: center3D, axis: extDir, xDir: xAx, yDir: yAx, radius: range.radius },
             });
-            // Second half: π → 2π
+            // Second half: π → 2π  (startAngle=π, sweepAngle=π)
             edgeInfos.push({
               type: 'arc',
               startIdx: midIdx,
