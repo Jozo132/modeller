@@ -1636,18 +1636,18 @@ export class FaceTriangulator {
       }
       nx /= 3; ny /= 3; nz /= 3;
       const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
-      const outNormal = len > 1e-14
+      let outNormal = len > 1e-14
         ? { x: nx / len, y: ny / len, z: nz / len }
         : surfNormal;
 
-      // Ensure winding agrees with the correct face normal.
-      // Fix winding rather than flipping the normal.
+      // Ensure the face normal agrees with the geometric winding direction.
+      // Flip the face normal if needed, but preserve the vertex winding order
+      // to maintain consistent edge traversal across the mesh.  Per-vertex
+      // shading normals are left unchanged — on curved surfaces the per-vertex
+      // normals legitimately diverge from the geometric winding.
       const geoN = calculateNormal(a, b, c);
       if (_dot(outNormal, geoN) < 0) {
-        [b, c] = [c, b];
-        const tmpVn = vertexNormals[1];
-        vertexNormals[1] = vertexNormals[2];
-        vertexNormals[2] = tmpVn;
+        outNormal = { x: -outNormal.x, y: -outNormal.y, z: -outNormal.z };
       }
 
       meshFaces.push({
