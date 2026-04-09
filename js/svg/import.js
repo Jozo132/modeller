@@ -347,9 +347,23 @@ function _parsePath(node, m, items) {
   if (!d) return;
   const segs = flattenSVGPath(d);
   for (const seg of segs) {
-    const [x1, y1] = _applyMatrix(m, seg.x1, seg.y1);
-    const [x2, y2] = _applyMatrix(m, seg.x2, seg.y2);
-    items.push({ type: 'line', x1, y1, x2, y2 });
+    if (seg.type === 'cubicBezier') {
+      const [x0, y0] = _applyMatrix(m, seg.x0, seg.y0);
+      const [cp1x, cp1y] = _applyMatrix(m, seg.cp1x, seg.cp1y);
+      const [cp2x, cp2y] = _applyMatrix(m, seg.cp2x, seg.cp2y);
+      const [x, y] = _applyMatrix(m, seg.x, seg.y);
+      items.push({ type: 'cubicBezier', x0, y0, cp1x, cp1y, cp2x, cp2y, x, y });
+    } else if (seg.type === 'quadBezier') {
+      const [x0, y0] = _applyMatrix(m, seg.x0, seg.y0);
+      const [cpx, cpy] = _applyMatrix(m, seg.cpx, seg.cpy);
+      const [x, y] = _applyMatrix(m, seg.x, seg.y);
+      items.push({ type: 'quadBezier', x0, y0, cpx, cpy, x, y });
+    } else {
+      // 'line' type
+      const [x1, y1] = _applyMatrix(m, seg.x1, seg.y1);
+      const [x2, y2] = _applyMatrix(m, seg.x2, seg.y2);
+      items.push({ type: 'line', x1, y1, x2, y2 });
+    }
   }
 }
 
@@ -514,7 +528,13 @@ function _regexParseSVG(svgContent, items) {
   while ((pm = pathRe.exec(svgContent)) !== null) {
     const segs = flattenSVGPath(pm[1]);
     for (const seg of segs) {
-      items.push({ type: 'line', x1: seg.x1, y1: seg.y1, x2: seg.x2, y2: seg.y2 });
+      if (seg.type === 'cubicBezier') {
+        items.push(seg);
+      } else if (seg.type === 'quadBezier') {
+        items.push(seg);
+      } else {
+        items.push({ type: 'line', x1: seg.x1, y1: seg.y1, x2: seg.x2, y2: seg.y2 });
+      }
     }
   }
 
@@ -598,22 +618,23 @@ function _attrNum(attrString, name) {
  */
 export function svgBounds(items) {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  const update = (x, y) => {
+    if (x != null && isFinite(x)) { if (x < minX) minX = x; if (x > maxX) maxX = x; }
+    if (y != null && isFinite(y)) { if (y < minY) minY = y; if (y > maxY) maxY = y; }
+  };
   for (const item of items) {
     if (item.type === 'line') {
-      minX = Math.min(minX, item.x1, item.x2);
-      minY = Math.min(minY, item.y1, item.y2);
-      maxX = Math.max(maxX, item.x1, item.x2);
-      maxY = Math.max(maxY, item.y1, item.y2);
+      update(item.x1, item.y1);
+      update(item.x2, item.y2);
     } else if (item.type === 'cubicBezier') {
-      minX = Math.min(minX, item.x0, item.cp1x, item.cp2x, item.x);
-      minY = Math.min(minY, item.y0, item.cp1y, item.cp2y, item.y);
-      maxX = Math.max(maxX, item.x0, item.cp1x, item.cp2x, item.x);
-      maxY = Math.max(maxY, item.y0, item.cp1y, item.cp2y, item.y);
+      update(item.x0, item.y0);
+      update(item.cp1x, item.cp1y);
+      update(item.cp2x, item.cp2y);
+      update(item.x, item.y);
     } else if (item.type === 'quadBezier') {
-      minX = Math.min(minX, item.x0, item.cpx, item.x);
-      minY = Math.min(minY, item.y0, item.cpy, item.y);
-      maxX = Math.max(maxX, item.x0, item.cpx, item.x);
-      maxY = Math.max(maxY, item.y0, item.cpy, item.y);
+      update(item.x0, item.y0);
+      update(item.cpx, item.cpy);
+      update(item.x, item.y);
     }
   }
   const width = maxX - minX;
