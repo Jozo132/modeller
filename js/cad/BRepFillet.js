@@ -1133,10 +1133,9 @@ function _replaceEdgesWithArcCurves(faceDescs, edgeDataList, faces, origTopoFace
         if (!e.curve) continue;
         // Include degree-1 polyline arcs (>2 control points) and
         // higher-degree NURBS curves (arcs from cylinders, cones, etc.)
-        if (e.curve.degree === 1) {
-          const cps = e.curve.controlPoints;
-          if (!cps || cps.length <= 2) continue; // skip simple lines
-        }
+        const cps = e.curve.controlPoints;
+        if (!cps || cps.length < 2) continue;
+        if (e.curve.degree === 1 && cps.length <= 2) continue; // skip simple lines
         const sk = _edgeVKey(e.startVertex.point);
         const ek = _edgeVKey(e.endVertex.point);
         if (sk === ek) continue;
