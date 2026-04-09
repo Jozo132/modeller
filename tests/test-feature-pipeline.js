@@ -693,6 +693,28 @@ test('puzzle-extrude-cc3.cmod produces valid mesh if present', () => {
   validateGeometry(geom, 'puzzle-extrude-cc3');
 });
 
+test('puzzle-extrude fillet on concave edge near cylinder face produces closed mesh', () => {
+  const part = loadCMOD('puzzle-extrude.cmod');
+  assert.ok(part, 'Should load puzzle-extrude.cmod');
+  const geom = getFinalGeometry(part);
+  assert.ok(geom, 'Should have geometry');
+
+  // Find a concave vertical edge at the inner corner (10,10)
+  const edges = geom.edges || [];
+  const concaveEdge = edges.find(e => {
+    const a = e.start, b = e.end;
+    return Math.abs(a.x - 10) < 0.1 && Math.abs(a.y - 10) < 0.1 &&
+           Math.abs(a.z - b.z) > 1 && Math.abs(a.x - b.x) < 0.01 && Math.abs(a.y - b.y) < 0.01;
+  });
+  assert.ok(concaveEdge, 'Should find concave vertical edge at (10,10)');
+
+  const key = edgeKey(concaveEdge.start, concaveEdge.end);
+  const fillet = part.fillet([key], 2);
+  const filletGeom = fillet.result?.geometry || fillet.result;
+  assert.ok(filletGeom, 'Fillet should produce geometry');
+  validateGeometry(filletGeom, 'puzzle-extrude-concave-fillet');
+});
+
 test('box-with-chamfer.cmod produces valid mesh', () => {
   const part = loadCMOD('box-with-chamfer.cmod');
   assert.ok(part, 'Should load box-with-chamfer.cmod');
