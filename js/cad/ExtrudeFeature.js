@@ -584,18 +584,57 @@ export class ExtrudeFeature extends Feature {
           };
           const bottomCurve = _spline2Dto3D(range.controlPoints2D, range.degree, range.knots, toBottomWorld);
           const topCurve = _spline2Dto3D(range.controlPoints2D, range.degree, range.knots, toTopWorld);
-          const extrudedSurf = NurbsSurface.createExtrudedSurface(bottomCurve, extDir, extHeight);
-          edgeInfos.push({
-            type,
-            startIdx,
-            endIdx,
-            spanIndices,
-            isArc: false,
-            isCurve: true,
-            bottomCurve,
-            topCurve,
-            extrudedSurf,
-          });
+
+          // Split into N sub-faces (N = max(3, numControlPoints)) so each
+          // sub-face has a simple NURBS surface and the chamfer/fillet can
+          // operate on individual sub-edges with 3+ vertex face boundaries.
+          const N = Math.max(3, range.controlPoints2D.length);
+          const bottomParts = bottomCurve.splitUniform(N);
+          const topParts = topCurve.splitUniform(N);
+
+          if (bottomParts && topParts && bottomParts.length === N && topParts.length === N) {
+            // Add intermediate split-point vertices
+            const splitVertIds = [startIdx];
+            for (let i = 1; i < N; i++) {
+              const bPt = bottomParts[i].evaluate(bottomParts[i].uMin);
+              const tPt = topParts[i].evaluate(topParts[i].uMin);
+              const idx = bottomVerts.length;
+              bottomVerts.push(bPt);
+              topVerts.push(tPt);
+              splitVertIds.push(idx);
+            }
+            splitVertIds.push(endIdx);
+
+            // Create N sub-edge infos
+            for (let i = 0; i < N; i++) {
+              const subExtSurf = NurbsSurface.createExtrudedSurface(bottomParts[i], extDir, extHeight);
+              edgeInfos.push({
+                type,
+                startIdx: splitVertIds[i],
+                endIdx: splitVertIds[i + 1],
+                spanIndices: [splitVertIds[i], splitVertIds[i + 1]],
+                isArc: false,
+                isCurve: true,
+                bottomCurve: bottomParts[i],
+                topCurve: topParts[i],
+                extrudedSurf: subExtSurf,
+              });
+            }
+          } else {
+            // Fallback: single face
+            const extrudedSurf = NurbsSurface.createExtrudedSurface(bottomCurve, extDir, extHeight);
+            edgeInfos.push({
+              type,
+              startIdx,
+              endIdx,
+              spanIndices,
+              isArc: false,
+              isCurve: true,
+              bottomCurve,
+              topCurve,
+              extrudedSurf,
+            });
+          }
         } else if (type === 'bezier' && range.bezierVertices) {
           const toBottomWorld = (p) => {
             const w = this.sketchToWorld(p, plane);
@@ -611,18 +650,53 @@ export class ExtrudeFeature extends Feature {
           };
           const bottomCurve = _bezierVertices2Dto3D(range.bezierVertices, toBottomWorld);
           const topCurve = _bezierVertices2Dto3D(range.bezierVertices, toTopWorld);
-          const extrudedSurf = NurbsSurface.createExtrudedSurface(bottomCurve, extDir, extHeight);
-          edgeInfos.push({
-            type,
-            startIdx,
-            endIdx,
-            spanIndices,
-            isArc: false,
-            isCurve: true,
-            bottomCurve,
-            topCurve,
-            extrudedSurf,
-          });
+
+          // Split bezier into N sub-faces (N = max(3, numVertices))
+          const N = Math.max(3, range.bezierVertices.length);
+          const bottomParts = bottomCurve.splitUniform(N);
+          const topParts = topCurve.splitUniform(N);
+
+          if (bottomParts && topParts && bottomParts.length === N && topParts.length === N) {
+            const splitVertIds = [startIdx];
+            for (let i = 1; i < N; i++) {
+              const bPt = bottomParts[i].evaluate(bottomParts[i].uMin);
+              const tPt = topParts[i].evaluate(topParts[i].uMin);
+              const idx = bottomVerts.length;
+              bottomVerts.push(bPt);
+              topVerts.push(tPt);
+              splitVertIds.push(idx);
+            }
+            splitVertIds.push(endIdx);
+
+            for (let i = 0; i < N; i++) {
+              const subExtSurf = NurbsSurface.createExtrudedSurface(bottomParts[i], extDir, extHeight);
+              edgeInfos.push({
+                type,
+                startIdx: splitVertIds[i],
+                endIdx: splitVertIds[i + 1],
+                spanIndices: [splitVertIds[i], splitVertIds[i + 1]],
+                isArc: false,
+                isCurve: true,
+                bottomCurve: bottomParts[i],
+                topCurve: topParts[i],
+                extrudedSurf: subExtSurf,
+              });
+            }
+          } else {
+            // Fallback: single face
+            const extrudedSurf = NurbsSurface.createExtrudedSurface(bottomCurve, extDir, extHeight);
+            edgeInfos.push({
+              type,
+              startIdx,
+              endIdx,
+              spanIndices,
+              isArc: false,
+              isCurve: true,
+              bottomCurve,
+              topCurve,
+              extrudedSurf,
+            });
+          }
         } else {
           edgeInfos.push({
             type,
