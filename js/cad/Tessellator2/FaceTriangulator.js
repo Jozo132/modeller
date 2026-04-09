@@ -1415,9 +1415,16 @@ export class FaceTriangulator {
       // Keep UV-domain trims watertight by reorienting locally misaligned
       // triangles instead of deleting them. The projected fallback still
       // drops folded artifacts later because it has no trustworthy UV trim.
-      if (useUvDomain) {
-        triangles = triangles.map((tri) => orientTriangleToLocalSurface(tri));
-      } else {
+      //
+      // NOTE: For non-periodic UV-domain surfaces, skip per-triangle
+      // reorientation — the global winding check above already oriented
+      // all triangles consistently.  Per-triangle flipping based on the
+      // local surface normal at the triangle centroid would break shared-
+      // edge consistency on strongly curved faces (e.g. cone chamfer
+      // faces where the surface normal varies significantly across the
+      // face).  The output step below handles the rare case where a
+      // triangle's geometric winding opposes the per-vertex normal.
+      if (!useUvDomain) {
         triangles = triangles.filter(([a, b, c]) => {
           const n = calculateNormal(a, b, c);
           return (n.x * outX + n.y * outY + n.z * outZ) > 0;
@@ -1636,23 +1643,22 @@ export class FaceTriangulator {
       }
       nx /= 3; ny /= 3; nz /= 3;
       const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
-      let outNormal = len > 1e-14
+      const outNormal = len > 1e-14
         ? { x: nx / len, y: ny / len, z: nz / len }
         : surfNormal;
 
-      // Ensure the face normal agrees with the geometric winding direction.
-      // Flip the face normal if needed, but preserve the vertex winding order
-      // to maintain consistent edge traversal across the mesh.  Per-vertex
-      // shading normals are left unchanged — on curved surfaces the per-vertex
-      // normals legitimately diverge from the geometric winding.
+      // On curved surfaces the averaged per-vertex shading normal may
+      // oppose the triangle's geometric winding (e.g. triangles on a
+      // cylinder spanning >90° where vertex normals at the extremes
+      // diverge from the flat face).  Use the geometric winding normal
+      // for the face normal so the triangle renders with correct front/back
+      // orientation, while keeping the per-vertex normals for smooth shading.
       const geoN = calculateNormal(a, b, c);
-      if (_dot(outNormal, geoN) < 0) {
-        outNormal = { x: -outNormal.x, y: -outNormal.y, z: -outNormal.z };
-      }
+      const faceNormal = _dot(outNormal, geoN) >= 0 ? outNormal : geoN;
 
       meshFaces.push({
         vertices: [{ ...a }, { ...b }, { ...c }],
-        normal: outNormal,
+        normal: faceNormal,
         vertexNormals: vertexNormals.map((vn) => ({ ...vn })),
       });
       meshVertices.push({ ...a }, { ...b }, { ...c });
