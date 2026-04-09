@@ -35,7 +35,7 @@ import { union } from './cad/Operations.js';
 import { motionAnalysis } from './motion.js';
 import {
   SelectTool, LineTool, RectangleTool, CircleTool,
-  ArcTool, PolylineTool, SplineTool, TextTool, DimensionTool,
+  ArcTool, PolylineTool, SplineTool, BezierTool, TextTool, DimensionTool,
   MoveTool, CopyTool,
   TrimTool, SplitTool, DisconnectTool, UnionTool,
   CoincidentTool, HorizontalTool, VerticalTool,
@@ -156,6 +156,7 @@ class App {
       arc:           new ArcTool(this),
       polyline:      new PolylineTool(this),
       spline:        new SplineTool(this),
+      bezier:        new BezierTool(this),
       text:          new TextTool(this),
       dimension:     new DimensionTool(this),
       move:          new MoveTool(this),

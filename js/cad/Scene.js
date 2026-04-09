@@ -4,6 +4,7 @@ import { PSegment } from './Segment.js';
 import { PArc } from './ArcPrimitive.js';
 import { PCircle } from './CirclePrimitive.js';
 import { PSpline } from './SplinePrimitive.js';
+import { PBezier } from './BezierPrimitive.js';
 import { TextPrimitive } from './TextPrimitive.js';
 import { DimensionPrimitive } from './DimensionPrimitive.js';
 import { solve } from './Solver.js';
@@ -28,6 +29,7 @@ export class Scene {
     this.arcs = [];         // PArc[]
     this.circles = [];      // PCircle[]
     this.splines = [];      // PSpline[]
+    this.beziers = [];      // PBezier[]
     this.constraints = [];  // Constraint[]
     this.texts = [];        // TextPrimitive[] (pass-through, non-constraint)
     this.dimensions = [];   // DimensionPrimitive[] (pass-through)
@@ -160,6 +162,26 @@ export class Scene {
     return spl;
   }
 
+  /**
+   * Add a bezier curve from vertex descriptors.
+   * @param {Array<{x:number, y:number, handleIn?:{dx:number,dy:number}, handleOut?:{dx:number,dy:number}, tangent?:boolean}>} vertexDescs
+   * @param {Object} [options]
+   */
+  addBezier(vertexDescs, { merge = true, layer = '0', color = null, construction = false } = {}) {
+    const vertices = vertexDescs.map(v => ({
+      point: merge ? this.getOrCreatePoint(v.x, v.y) : this.addPoint(v.x, v.y),
+      handleIn: v.handleIn || null,
+      handleOut: v.handleOut || null,
+      tangent: v.tangent !== false,
+    }));
+    const bez = new PBezier(vertices);
+    bez.layer = layer;
+    bez.color = color;
+    bez.construction = construction;
+    this.beziers.push(bez);
+    return bez;
+  }
+
   // -----------------------------------------------------------------------
   // Constraint management
   // -----------------------------------------------------------------------
@@ -195,6 +217,7 @@ export class Scene {
     this.circles = this.circles.filter(c => c.center !== pt);
     this.arcs = this.arcs.filter(a => a.center !== pt);
     this.splines = this.splines.filter(spl => !spl.points.includes(pt));
+    this.beziers = this.beziers.filter(bez => !bez.points.includes(pt));
     // Remove constraints referencing this point
     this.constraints = this.constraints.filter(c => !c.involvedPoints().includes(pt));
     // Remove the point itself
@@ -240,6 +263,15 @@ export class Scene {
     this._cleanOrphanPoints();
   }
 
+  removeBezier(bez) {
+    this.beziers = this.beziers.filter(b => b !== bez);
+    this.constraints = this.constraints.filter(c => {
+      if (c.sourceA === bez || c.sourceB === bez) return false;
+      return true;
+    });
+    this._cleanOrphanPoints();
+  }
+
   removePrimitive(prim) {
     switch (prim.type) {
       case 'point':     this.removePoint(prim); break;
@@ -247,6 +279,7 @@ export class Scene {
       case 'circle':    this.removeCircle(prim); break;
       case 'arc':       this.removeArc(prim); break;
       case 'spline':    this.removeSpline(prim); break;
+      case 'bezier':    this.removeBezier(prim); break;
       case 'text':
         this.texts = this.texts.filter(t => t !== prim);
         break;
@@ -265,6 +298,7 @@ export class Scene {
     for (const c of this.circles) { used.add(c.center); }
     for (const a of this.arcs) { used.add(a.center); }
     for (const spl of this.splines) { for (const p of spl.points) used.add(p); }
+    for (const bez of this.beziers) { for (const p of bez.points) used.add(p); }
     this.points = this.points.filter(p => used.has(p));
     this.constraints = this.constraints.filter(c =>
       c.involvedPoints().every(pt => this.points.includes(pt) || (pt && pt._isReference))
@@ -292,6 +326,7 @@ export class Scene {
     yield* this.circles;
     yield* this.arcs;
     yield* this.splines;
+    yield* this.beziers;
     yield* this.texts;
     yield* this.dimensions;
   }
@@ -299,7 +334,7 @@ export class Scene {
   /** Fast count of drawable shapes (avoids array allocation). */
   entityCount() {
     return this.segments.length + this.circles.length + this.arcs.length +
-      this.splines.length + this.texts.length + this.dimensions.length;
+      this.splines.length + this.beziers.length + this.texts.length + this.dimensions.length;
   }
 
   /** All primitives including bare points. */
@@ -309,6 +344,7 @@ export class Scene {
     yield* this.circles;
     yield* this.arcs;
     yield* this.splines;
+    yield* this.beziers;
     yield* this.texts;
     yield* this.dimensions;
   }
@@ -356,6 +392,7 @@ export class Scene {
     for (const c of this.circles) if (c.center === pt) out.push(c);
     for (const a of this.arcs) if (a.center === pt) out.push(a);
     for (const spl of this.splines) if (spl.points.includes(pt)) out.push(spl);
+    for (const bez of this.beziers) if (bez.points.includes(pt)) out.push(bez);
     return out;
   }
 
@@ -408,6 +445,7 @@ export class Scene {
     this.arcs = [];
     this.circles = [];
     this.splines = [];
+    this.beziers = [];
     this.constraints = [];
     this.texts = [];
     this.dimensions = [];
@@ -427,6 +465,7 @@ export class Scene {
       circles: this.circles.map(c => c.serialize()),
       arcs: this.arcs.map(a => a.serialize()),
       splines: this.splines.map(s => s.serialize()),
+      beziers: this.beziers.map(b => b.serialize()),
       // Exclude dimension-type constraints — they are serialized via dimensions[]
       constraints: this.constraints.filter(c => c.type !== 'dimension').map(c => c.serialize()),
       texts: this.texts.map(t => t.serialize()),
@@ -532,7 +571,28 @@ export class Scene {
       if (d.id > maxPrimId) maxPrimId = d.id;
     }
 
-    // 6. Rebuild texts
+    // 6. Rebuild beziers
+    for (const d of (data.beziers || [])) {
+      const verts = (d.vertices || []).map(v => {
+        const pt = ptMap.get(v.point);
+        if (!pt) return null;
+        return { point: pt, handleIn: v.handleIn || null, handleOut: v.handleOut || null, tangent: v.tangent !== false };
+      });
+      if (verts.some(v => !v) || verts.length < 2) continue;
+      const bez = new PBezier(verts);
+      bez.id = d.id;
+      bez.layer = d.layer || '0';
+      bez.color = d.color || null;
+      if (d.construction) bez.construction = true;
+      if (d.constructionType) bez.constructionType = d.constructionType;
+      if (d.constructionDash) bez.constructionDash = d.constructionDash;
+      if (d.lineWidth != null) bez.lineWidth = d.lineWidth;
+      scene.beziers.push(bez);
+      shapeMap.set(d.id, bez);
+      if (d.id > maxPrimId) maxPrimId = d.id;
+    }
+
+    // 7. Rebuild texts
     for (const d of (data.texts || [])) {
       const t = new TextPrimitive(d.x, d.y, d.text, d.height);
       t.id = d.id;

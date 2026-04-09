@@ -6,6 +6,7 @@ export { CircleTool } from './CircleTool.js';
 export { ArcTool } from './ArcTool.js';
 export { PolylineTool } from './PolylineTool.js';
 export { SplineTool } from './SplineTool.js';
+export { BezierTool } from './BezierTool.js';
 export { TextTool } from './TextTool.js';
 export { DimensionTool } from './DimensionTool.js';
 export { MoveTool } from './MoveTool.js';
