@@ -55,6 +55,74 @@ import {
 // Fillet helpers
 // -----------------------------------------------------------------------
 
+/**
+ * Clip a fillet trim point to the neighboring face edge at a terminal vertex.
+ *
+ * At non-90° corners, the simple perpendicular offset (vertex + offsDir * tangentDist)
+ * may not lie on the non-adjacent face's plane.  This causes non-planar faces and
+ * visual artifacts.  By finding the point on the neighboring edge that is at the
+ * correct perpendicular distance from the filleted edge, we ensure the trim point
+ * lies on the face boundary (shared with the non-adjacent face).
+ *
+ * This is analogous to the chamfer's _intersectPlanarOffsetWithNeighbor.
+ */
+function _clipTrimToNeighborEdge(face, vertex, offsDir, tangentDist, defaultPt, filletEdgeDir) {
+  const verts = face.vertices;
+  if (!verts || verts.length < 3) return defaultPt;
+
+  const n = verts.length;
+  // Find vertex index in the face
+  let idx = -1;
+  for (let i = 0; i < n; i++) {
+    if (_vec3Len(_vec3Sub(verts[i], vertex)) < 1e-6) { idx = i; break; }
+  }
+  if (idx < 0) return defaultPt;
+
+  // The two adjacent edges at this vertex go to prev and next vertices.
+  // One of them is the filleted edge — we want the other (the neighbor edge).
+  const prev = verts[(idx - 1 + n) % n];
+  const next = verts[(idx + 1) % n];
+  const dirPrev = _vec3Normalize(_vec3Sub(prev, vertex));
+  const dirNext = _vec3Normalize(_vec3Sub(next, vertex));
+
+  // Choose the direction least aligned with the filleted edge
+  const dotPrev = Math.abs(_vec3Dot(dirPrev, filletEdgeDir));
+  const dotNext = Math.abs(_vec3Dot(dirNext, filletEdgeDir));
+  const neighborDir = dotPrev < dotNext ? dirPrev : dirNext;
+  const neighborVert = dotPrev < dotNext ? prev : next;
+
+  // Perpendicular distance from vertex + t*neighborDir to the filleted edge
+  // (line through vertex in direction filletEdgeDir):
+  //   perp_dist = |t| * |cross(neighborDir, filletEdgeDir)|
+  // Solve for perp_dist = tangentDist:
+  const crossLen = _vec3Len(_vec3Cross(neighborDir, filletEdgeDir));
+  if (crossLen < 0.01) return defaultPt; // Nearly parallel — fallback
+
+  const t = tangentDist / crossLen;
+
+  // Guard: the adapted point must not extend past 80% of the neighboring
+  // edge length.  This prevents degenerate faces when the non-90° angle
+  // is very large (e.g., chamfer+fillet sequences where the bevel face
+  // creates a ~45° neighbor edge).
+  const neighborEdgeLen = _vec3Len(_vec3Sub(neighborVert, vertex));
+  if (neighborEdgeLen < 1e-8 || t > 0.8 * neighborEdgeLen) return defaultPt;
+
+  const adaptedPt = _vec3Add(vertex, _vec3Scale(neighborDir, t));
+
+  // Verify the adapted point is on the correct side (same as offsDir)
+  if (_vec3Dot(_vec3Sub(adaptedPt, vertex), offsDir) < 0) {
+    return defaultPt;
+  }
+
+  // Only use the adapted point if it actually differs from the default
+  // (i.e., the corner is non-90°).  For 90° corners, the adapted point
+  // matches the default within tolerance.
+  const diff = _vec3Len(_vec3Sub(adaptedPt, defaultPt));
+  if (diff < 1e-8) return defaultPt;
+
+  return adaptedPt;
+}
+
 function _precomputeFilletEdge(faces, edgeKey, radius, segments, exactAdjacencyByKey = null) {
   const adj = (exactAdjacencyByKey && exactAdjacencyByKey.get(edgeKey)) || _findAdjacentFaces(faces, edgeKey);
   if (adj.length < 2) return null;
@@ -79,22 +147,33 @@ function _precomputeFilletEdge(faces, edgeKey, radius, segments, exactAdjacencyB
   const bisector = _vec3Normalize(_vec3Add(offsDir0, offsDir1));
   const edgeDir = _vec3Normalize(_vec3Sub(edgeB, edgeA));
 
-  const t0a = _vec3Add(edgeA, _vec3Scale(offsDir0, tangentDist));
-  const t0b = _vec3Add(edgeB, _vec3Scale(offsDir0, tangentDist));
-  const t1a = _vec3Add(edgeA, _vec3Scale(offsDir1, tangentDist));
-  const t1b = _vec3Add(edgeB, _vec3Scale(offsDir1, tangentDist));
+  // Standard perpendicular offsets (correct for 90° corners)
+  const t0a_raw = _vec3Add(edgeA, _vec3Scale(offsDir0, tangentDist));
+  const t0b_raw = _vec3Add(edgeB, _vec3Scale(offsDir0, tangentDist));
+  const t1a_raw = _vec3Add(edgeA, _vec3Scale(offsDir1, tangentDist));
+  const t1b_raw = _vec3Add(edgeB, _vec3Scale(offsDir1, tangentDist));
 
-  function computeArc(vertex) {
+  // Clip trim points to neighboring face edges for correct corner geometry.
+  // At non-90° corners, the simple perpendicular offset may not lie on the
+  // non-adjacent face's plane.  Clipping ensures the trim point is on the
+  // face boundary edge shared with the non-adjacent face.
+  const t0a = _clipTrimToNeighborEdge(face0, edgeA, offsDir0, tangentDist, t0a_raw, _vec3Scale(edgeDir, -1));
+  const t0b = _clipTrimToNeighborEdge(face0, edgeB, offsDir0, tangentDist, t0b_raw, edgeDir);
+  const t1a = _clipTrimToNeighborEdge(face1, edgeA, offsDir1, tangentDist, t1a_raw, _vec3Scale(edgeDir, -1));
+  const t1b = _clipTrimToNeighborEdge(face1, edgeB, offsDir1, tangentDist, t1b_raw, edgeDir);
+
+  function computeArc(vertex, trimPt0, trimPt1) {
     const center = _vec3Add(vertex, _vec3Scale(bisector, centerDist));
-    const t0 = _vec3Add(vertex, _vec3Scale(offsDir0, tangentDist));
-    const e0 = _vec3Normalize(_vec3Sub(t0, center));
-    const t1 = _vec3Add(vertex, _vec3Scale(offsDir1, tangentDist));
-    // Compute the arc sweep basis vector from center and t1, which is
+    // Use the standard perpendicular offsets for arc basis vectors
+    const stdPt0 = _vec3Add(vertex, _vec3Scale(offsDir0, tangentDist));
+    const stdPt1 = _vec3Add(vertex, _vec3Scale(offsDir1, tangentDist));
+    const e0 = _vec3Normalize(_vec3Sub(stdPt0, center));
+    // Compute the arc sweep basis vector from center and stdPt1, which is
     // independent of edge vertex ordering.  The previous approach using
     // cross(edgeDir, e0) depended on the direction of edgeDir and
     // produced arcs sweeping the wrong way when the edge vertices were
     // ordered differently (common for non-axis-aligned / non-90° edges).
-    const t1rel = _vec3Sub(t1, center);
+    const t1rel = _vec3Sub(stdPt1, center);
     const t1proj = _vec3Dot(t1rel, e0);
     const rawE1 = _vec3Sub(t1rel, _vec3Scale(e0, t1proj));
     const rawE1Len = _vec3Len(rawE1);
@@ -103,31 +182,56 @@ function _precomputeFilletEdge(faces, edgeKey, radius, segments, exactAdjacencyB
       : _vec3Normalize(_vec3Cross(edgeDir, e0));
     // Use NURBS arc tessellation to match EdgeSampler's parameterization.
     // This ensures polygon arc boundaries align exactly with NURBS edge samples.
+    let arcPoints;
     try {
       const nurbsArc = NurbsCurve.createArc(center, radius, e0, e1, 0, sweep);
       const tessPoints = nurbsArc.tessellate(segments);
-      return tessPoints.map(p => ({ x: p.x, y: p.y, z: p.z }));
+      arcPoints = tessPoints.map(p => ({ x: p.x, y: p.y, z: p.z }));
     } catch (e) {
       // Fallback to simple theta-based sampling if NURBS fails
       const cosSweep = Math.cos(sweep);
       const sinSweep = Math.sin(sweep);
       const perp = sinSweep > 1e-10
-        ? _vec3Scale(_vec3Sub(_vec3Normalize(_vec3Sub(t1, center)), _vec3Scale(e0, cosSweep)), 1 / sinSweep)
+        ? _vec3Scale(_vec3Sub(_vec3Normalize(_vec3Sub(stdPt1, center)), _vec3Scale(e0, cosSweep)), 1 / sinSweep)
         : e1;
-      const points = [];
+      arcPoints = [];
       for (let s = 0; s <= segments; s++) {
         const theta = (s / segments) * sweep;
-        points.push(_vec3Add(center, _vec3Add(
+        arcPoints.push(_vec3Add(center, _vec3Add(
           _vec3Scale(e0, radius * Math.cos(theta)),
           _vec3Scale(perp, radius * Math.sin(theta))
         )));
       }
-      return points;
     }
+
+    // Blend arc endpoints to match corner-adapted trim points.
+    // For 90° corners, trimPt0/trimPt1 match the standard offsets, so
+    // the displacement is zero and the arc is unchanged.
+    // For non-90° corners, the endpoints are smoothly shifted to align
+    // with the neighboring face edges, producing correct watertight geometry.
+    const nPts = arcPoints.length - 1;
+    if (nPts >= 1) {
+      const d0 = _vec3Sub(trimPt0, arcPoints[0]);
+      const d1 = _vec3Sub(trimPt1, arcPoints[nPts]);
+      const d0Len = _vec3Len(d0);
+      const d1Len = _vec3Len(d1);
+      if (d0Len > 1e-8 || d1Len > 1e-8) {
+        for (let i = 0; i <= nPts; i++) {
+          const t = i / nPts;
+          arcPoints[i] = {
+            x: arcPoints[i].x + d0.x * (1 - t) + d1.x * t,
+            y: arcPoints[i].y + d0.y * (1 - t) + d1.y * t,
+            z: arcPoints[i].z + d0.z * (1 - t) + d1.z * t,
+          };
+        }
+      }
+    }
+
+    return arcPoints;
   }
 
-  const arcA = computeArc(edgeA);
-  const arcB = computeArc(edgeB);
+  const arcA = computeArc(edgeA, t0a, t1a);
+  const arcB = computeArc(edgeB, t0b, t1b);
 
   // p0a/p0b/p1a/p1b for trim compatibility with batch helpers
   return {
