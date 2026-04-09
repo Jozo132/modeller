@@ -1399,13 +1399,14 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
       NurbsCurve.createLine(off1.startPt, off0.startPt),
     ];
 
-    // For cone (arc-edge) chamfer faces, verify the vertex winding
-    // produces an outward-pointing Newell normal.  The expected outward
-    // direction is the average of the two adjacent faces' outward normals
-    // at the original edge midpoint.  If the vertex winding disagrees,
-    // reverse the vertex/curve order so that buildTopoBody computes the
-    // correct sameSense and the tessellator orients triangles outward.
-    if (surfType === SurfaceType.CONE) {
+    // Verify the chamfer face vertex winding produces an outward-pointing
+    // Newell normal.  The expected outward direction is the average of the
+    // two adjacent faces' outward normals at the original edge midpoint.
+    // If the vertex winding disagrees, reverse the vertex/curve order so
+    // that buildTopoBody computes the correct sameSense and the tessellator
+    // orients triangles outward.  This applies to all chamfer face types
+    // (cone for arc-edge chamfers, plane for straight-edge chamfers).
+    {
       // Compute Newell normal of the vertex quad
       let lnx = 0, lny = 0, lnz = 0;
       for (let i = 0; i < verts.length; i++) {
