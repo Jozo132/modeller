@@ -533,7 +533,13 @@ function _offsetEdgeOnSurface(topoEdge, face, coedge, dist) {
         // both positive and negative sweeps.
         const isSemicircle = Math.abs(Math.abs(sweep) - Math.PI) < 0.1;
         if (isSemicircle) {
-          if (sweep < 0) sweep += 2 * Math.PI;
+          // For semicircular arcs, atan2 can return either +π or -π due to
+          // floating-point ambiguity when sinA ≈ 0.  Use the midpoint error
+          // to select the geometrically correct direction: one direction has
+          // midError ≈ 0 (correct side), the other has midError ≈ 2R (wrong).
+          if (midError > 0.1 * newR) {
+            sweep = -sweep;
+          }
         } else if (midError > 0.1 * newR) {
           sweep = sweep > 0 ? sweep - 2 * Math.PI : sweep + 2 * Math.PI;
         }
@@ -623,7 +629,10 @@ function _offsetEdgeOnSurface(topoEdge, face, coedge, dist) {
           const midErrorCyl = vec3Len(vec3Sub(computedMidCyl, expectedMidCyl));
           const isSemicircleCyl = Math.abs(Math.abs(sweep) - Math.PI) < 0.1;
           if (isSemicircleCyl) {
-            if (sweep < 0) sweep += 2 * Math.PI;
+            // Same midpoint-based direction check as the planar case.
+            if (midErrorCyl > 0.1 * cylR) {
+              sweep = -sweep;
+            }
           } else if (midErrorCyl > 0.1 * cylR) {
             sweep = sweep > 0 ? sweep - 2 * Math.PI : sweep + 2 * Math.PI;
           }
@@ -764,13 +773,35 @@ function _offsetEdgeLinearFallback(topoEdge, face, dist) {
  * When both offsets produce arcs, this creates a conical or cylindrical ruled surface.
  */
 function _buildChamferRuledSurface(offset0, offset1) {
-  const c0 = offset0.curve;
-  const c1 = offset1.curve;
+  let c0 = offset0.curve;
+  let c1 = offset1.curve;
 
   // If both curves are NURBS arcs with compatible parametrization, build a ruled surface
   if (c0.degree === 2 && c1.degree === 2 &&
       c0.controlPoints.length === c1.controlPoints.length &&
       c0.knots.length === c1.knots.length) {
+
+    // For semicircular arcs, the sweep direction may differ between the
+    // planar and cylindrical offsets due to floating-point ambiguity in
+    // atan2 (returning +π vs -π) combined with different local coordinate
+    // frames (faceNormal vs axisDir).  Both sweeps are individually correct,
+    // but they may trace opposite halves of the circle.  Check whether the
+    // curves' midpoints are compatible; if not, reverse one curve so the
+    // ruled surface pairs corresponding control points correctly.
+    const mid0 = c0.evaluate(0.5);
+    const mid1 = c1.evaluate(0.5);
+    if (mid0 && mid1) {
+      // For a well-formed chamfer, the midpoints of the two offset arcs
+      // should be close (separated only by the chamfer distance).  If they
+      // are far apart, the curves trace opposite halves of the circle.
+      const midDist = vec3Len(vec3Sub(mid0, mid1));
+      const endDist = vec3Len(vec3Sub(offset0.startPt, offset1.startPt));
+      if (midDist > 3 * Math.max(endDist, 1e-6)) {
+        // Reverse c1 so its parametrization matches c0
+        c1 = c1.reversed();
+      }
+    }
+
     const nCols = c0.controlPoints.length;
     const nRows = 2;
     const controlPoints = [];
