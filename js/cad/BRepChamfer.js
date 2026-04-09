@@ -1003,24 +1003,6 @@ function _getOrientedCoedgeCurve(coedge) {
   return coedge.sameSense !== false ? edge.curve : edge.curve.reversed();
 }
 
-/**
- * Split a NURBS curve at its midpoint into two half-curves.
- * Returns [firstHalf, secondHalf], each going from original start/end to mid.
- * Uses polyline (degree-1) curves for robustness.
- */
-function _splitCurveAtMid(curve, midPt) {
-  if (!curve || !midPt) return [null, null];
-  const cps = curve.controlPoints;
-  if (!cps || cps.length < 2) return [null, null];
-  const start = cps[0];
-  const end = cps[cps.length - 1];
-  // First half: start → midPt, Second half: midPt → end
-  // For degree >= 2 curves, sample intermediate points for better approximation
-  const c0 = NurbsCurve.createLine(start, midPt);
-  const c1 = NurbsCurve.createLine(midPt, end);
-  return [c0, c1];
-}
-
 function _orientOffsetAlongTopoEdge(offset, topoEdge) {
   const topoStart = topoEdge.startVertex.point;
   const sameDirection = pointsCoincident3D(offset.startVertexPoint || topoStart, topoStart);
