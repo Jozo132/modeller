@@ -76,12 +76,70 @@ export class SketchFeature extends Feature {
       });
     }
 
-    // Build a combined list of traceable edges (segments, arcs, splines)
+    // Handle self-closing splines (p1 === p2): they form their own closed profile
+    for (const spl of this.sketch.splines) {
+      if (spl.construction || !spl.visible) continue;
+      if (spl.p1 && spl.p2 && spl.p1 === spl.p2) {
+        visited.add(spl.id);
+        const pts = spl.tessellate2D(32);
+        if (pts.length >= 3) {
+          // Remove the duplicate closing point if present
+          const last = pts[pts.length - 1];
+          const first = pts[0];
+          if (Math.hypot(last.x - first.x, last.y - first.y) < 1e-6) {
+            pts.pop();
+          }
+          const { knots, degree } = spl._knotVector();
+          const controlPoints2D = spl.points.map(p => ({ x: p.x, y: p.y }));
+          profiles.push({
+            points: pts,
+            edges: [{
+              type: 'spline', pointStartIndex: 0, pointCount: pts.length,
+              controlPoints2D, degree, knots,
+            }],
+            closed: true,
+          });
+        }
+      }
+    }
+
+    // Handle self-closing beziers (p1 === p2): they form their own closed profile
+    for (const bez of this.sketch.beziers) {
+      if (bez.construction || !bez.visible) continue;
+      if (bez.p1 && bez.p2 && bez.p1 === bez.p2) {
+        visited.add(bez.id);
+        const pts = bez.tessellate2D(16);
+        if (pts.length >= 3) {
+          const last = pts[pts.length - 1];
+          const first = pts[0];
+          if (Math.hypot(last.x - first.x, last.y - first.y) < 1e-6) {
+            pts.pop();
+          }
+          const bezierVertices = bez.vertices.map(v => ({
+            x: v.point.x, y: v.point.y,
+            handleOut: v.handleOut || null,
+            handleIn: v.handleIn || null,
+          }));
+          profiles.push({
+            points: pts,
+            edges: [{
+              type: 'bezier', pointStartIndex: 0, pointCount: pts.length,
+              bezierVertices,
+            }],
+            closed: true,
+          });
+        }
+      }
+    }
+
+    // Build a combined list of traceable edges (segments, arcs, splines, beziers)
     // Each edge has p1 and p2 endpoints for tracing.
+    // Exclude self-closing curves (already handled above).
     const traceableEdges = [
       ...this.sketch.segments,
       ...this.sketch.arcs.map(arc => _arcAsEdge(arc)),
-      ...this.sketch.splines,
+      ...this.sketch.splines.filter(spl => !visited.has(spl.id)),
+      ...this.sketch.beziers.filter(bez => !visited.has(bez.id)),
     ];
 
     // Build spatial adjacency map for fast lookups and angle-based junction handling
@@ -468,6 +526,33 @@ function _buildEdgeMeta(edge, forward, pointStartIndex, pointCount) {
     meta.startAngle = forward ? startAngle : startAngle + sweep;
     meta.sweepAngle = forward ? sweep : -sweep;
   }
+  if (edge.type === 'spline') {
+    // Preserve exact B-spline definition: control points (2D), degree, knot vector.
+    // PSpline._knotVector() gives {knots, degree}.
+    const { knots, degree } = edge._knotVector();
+    const controlPoints = forward
+      ? edge.points.map(p => ({ x: p.x, y: p.y }))
+      : [...edge.points].reverse().map(p => ({ x: p.x, y: p.y }));
+    // When reversed, the knot vector must be flipped: k_i' = kMax + kMin - k_{n-i}
+    const kMin = knots[0], kMax = knots[knots.length - 1];
+    meta.controlPoints2D = controlPoints;
+    meta.degree = degree;
+    meta.knots = forward ? knots : knots.map(k => kMax + kMin - k).reverse();
+  }
+  if (edge.type === 'bezier') {
+    // Preserve exact Bezier vertex data: for each vertex store anchor (2D)
+    // and handle offsets so the extruder can reconstruct exact NURBS curves.
+    const verts = forward ? edge.vertices : [...edge.vertices].reverse();
+    meta.bezierVertices = verts.map((v, i) => {
+      // When reversed, handleIn and handleOut swap roles
+      const isReversed = !forward;
+      return {
+        x: v.point.x, y: v.point.y,
+        handleOut: isReversed ? (v.handleIn ? { dx: -v.handleIn.dx, dy: -v.handleIn.dy } : null) : (v.handleOut || null),
+        handleIn: isReversed ? (v.handleOut ? { dx: -v.handleOut.dx, dy: -v.handleOut.dy } : null) : (v.handleIn || null),
+      };
+    });
+  }
   return meta;
 }
 
@@ -507,6 +592,12 @@ function _tessellateEdge(edge, forward) {
   if (edge.type === 'spline') {
     // Spline: tessellate using the spline's own method
     const pts = edge.tessellate2D(32);
+    return forward ? pts : [...pts].reverse();
+  }
+
+  if (edge.type === 'bezier') {
+    // Bezier: tessellate using the bezier's own method
+    const pts = edge.tessellate2D(16);
     return forward ? pts : [...pts].reverse();
   }
 

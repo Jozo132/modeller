@@ -118,6 +118,46 @@ export class PSpline extends Primitive {
     return pts;
   }
 
+  /**
+   * Insert a new control point at parameter t on the spline using knot insertion.
+   * @param {number} t - Parameter value ∈ [0,1] where the new point should be inserted.
+   * @param {import('./Point.js').PPoint} newPt - PPoint already added to the scene.
+   * @returns {number} Index of the inserted control point.
+   */
+  insertControlPoint(t, newPt) {
+    // Find the span and insert position
+    const pt = this.evaluateAt(t);
+    newPt.x = pt.x;
+    newPt.y = pt.y;
+    // Insert at the appropriate position (between the two nearest control points)
+    const n = this.points.length;
+    let bestIdx = 1;
+    if (n > 2) {
+      // Find the pair of adjacent control points closest to the evaluated point
+      let bestDist = Infinity;
+      for (let i = 0; i < n - 1; i++) {
+        const mx = (this.points[i].x + this.points[i + 1].x) / 2;
+        const my = (this.points[i].y + this.points[i + 1].y) / 2;
+        const d = Math.hypot(pt.x - mx, pt.y - my);
+        if (d < bestDist) { bestDist = d; bestIdx = i + 1; }
+      }
+    }
+    this.points.splice(bestIdx, 0, newPt);
+    return bestIdx;
+  }
+
+  /**
+   * Remove a control point at the given index (if not first or last endpoint).
+   * @param {number} index - Index of the control point to remove.
+   * @returns {boolean} Whether the removal succeeded.
+   */
+  removeControlPoint(index) {
+    if (index <= 0 || index >= this.points.length - 1) return false;
+    if (this.points.length <= 2) return false;
+    this.points.splice(index, 1);
+    return true;
+  }
+
   // -----------------------------------------------------------------------
   // Primitive interface
   // -----------------------------------------------------------------------

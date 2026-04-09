@@ -125,6 +125,71 @@ function writeEntity(w, entity) {
       w(1, entity.displayLabel);
       break;
     }
+
+    case 'spline': {
+      // DXF SPLINE entity: export as cubic B-spline with clamped uniform knots
+      const pts = entity.points;
+      if (!pts || pts.length < 2) break;
+      const n = pts.length;
+      const degree = Math.min(3, n - 1);
+      const knotCount = n + degree + 1;
+      w(0, 'SPLINE');
+      w(8, entity.layer);
+      if (entity.color) w(62, colorToAci(entity.color));
+      w(70, 8);      // flag: planar
+      w(71, degree);  // degree
+      w(72, knotCount); // number of knots
+      w(73, n);       // number of control points
+      // Knot vector (clamped uniform)
+      for (let i = 0; i < knotCount; i++) {
+        let kv;
+        if (i <= degree) kv = 0;
+        else if (i >= knotCount - degree - 1) kv = 1;
+        else kv = (i - degree) / (n - degree);
+        w(40, kv);
+      }
+      // Control points
+      for (const cp of pts) {
+        w(10, cp.x); w(20, cp.y); w(30, 0);
+      }
+      break;
+    }
+
+    case 'bezier': {
+      // DXF doesn't have a native bezier entity; export each segment as a SPLINE
+      // by converting bezier control points into cubic SPLINE control points.
+      for (let si = 0; si < entity.segmentCount; si++) {
+        const v0 = entity.vertices[si];
+        const v1 = entity.vertices[si + 1];
+        const p0 = v0.point, p3 = v1.point;
+        const ho = v0.handleOut;
+        const hi = v1.handleIn;
+        if (ho && hi) {
+          // Full cubic: 4 control points
+          const c1x = p0.x + ho.dx, c1y = p0.y + ho.dy;
+          const c2x = p3.x + hi.dx, c2y = p3.y + hi.dy;
+          w(0, 'SPLINE');
+          w(8, entity.layer);
+          if (entity.color) w(62, colorToAci(entity.color));
+          w(70, 8); w(71, 3); w(72, 8); w(73, 4);
+          // Bezier knot vector: [0,0,0,0,1,1,1,1]
+          w(40, 0); w(40, 0); w(40, 0); w(40, 0);
+          w(40, 1); w(40, 1); w(40, 1); w(40, 1);
+          w(10, p0.x); w(20, p0.y); w(30, 0);
+          w(10, c1x); w(20, c1y); w(30, 0);
+          w(10, c2x); w(20, c2y); w(30, 0);
+          w(10, p3.x); w(20, p3.y); w(30, 0);
+        } else {
+          // Linear fallback — export as LINE
+          w(0, 'LINE');
+          w(8, entity.layer);
+          if (entity.color) w(62, colorToAci(entity.color));
+          w(10, p0.x); w(20, p0.y); w(30, 0);
+          w(11, p3.x); w(21, p3.y); w(31, 0);
+        }
+      }
+      break;
+    }
   }
 }
 

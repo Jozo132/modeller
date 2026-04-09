@@ -18,10 +18,21 @@ export class SplineTool extends BaseTool {
   }
 
   onClick(wx, wy) {
+    // If we have 2+ points and the click is near the first point, close the loop
+    if (this._controlPoints.length >= 2) {
+      const first = this._controlPoints[0];
+      const closeTol = 5 / this._effectiveZoom(); // 5 pixels in world units
+      if (Math.hypot(wx - first.x, wy - first.y) < closeTol) {
+        // Snap to the first point and close the loop
+        this._controlPoints.push({ x: first.x, y: first.y });
+        this._finish();
+        return;
+      }
+    }
     this._controlPoints.push({ x: wx, y: wy });
     this.step = this._controlPoints.length;
     if (this._controlPoints.length >= 2) {
-      this.setStatus(`Spline: ${this._controlPoints.length} points — click more, Enter/double-click to finish, Esc to cancel`);
+      this.setStatus(`Spline: ${this._controlPoints.length} points — click more, click near start to close, Enter/double-click to finish, Esc to cancel`);
     } else {
       this.setStatus('Spline: Click next control point');
     }

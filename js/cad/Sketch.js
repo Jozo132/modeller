@@ -66,6 +66,11 @@ export class Sketch {
     return this.scene.addSpline(controlCoords, options);
   }
 
+  addBezier(vertexDescs, options) {
+    this.modified = new Date();
+    return this.scene.addBezier(vertexDescs, options);
+  }
+
   // Constraint management
   addConstraint(c) {
     this.modified = new Date();
@@ -105,6 +110,11 @@ export class Sketch {
   removeSpline(spl) {
     this.modified = new Date();
     return this.scene.removeSpline(spl);
+  }
+
+  removeBezier(bez) {
+    this.modified = new Date();
+    return this.scene.removeBezier(bez);
   }
 
   removePrimitive(prim) {
@@ -158,6 +168,7 @@ export class Sketch {
   get arcs() { return this.scene.arcs; }
   get circles() { return this.scene.circles; }
   get splines() { return this.scene.splines; }
+  get beziers() { return this.scene.beziers; }
   get constraints() { return this.scene.constraints; }
   get texts() { return this.scene.texts; }
   get dimensions() { return this.scene.dimensions; }

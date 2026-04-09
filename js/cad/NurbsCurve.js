@@ -232,6 +232,138 @@ export class NurbsCurve {
   }
 
   /**
+   * Split this curve at parameter `u` into two sub-curves.
+   * Uses repeated knot insertion (Boehm's algorithm) until the knot
+   * has multiplicity equal to the curve degree, then extracts two
+   * independent sub-curves that together represent the original curve.
+   *
+   * @param {number} u - Split parameter (must be within the domain)
+   * @returns {[NurbsCurve, NurbsCurve]} [left, right] sub-curves
+   */
+  splitAt(u) {
+    const p = this.degree;
+
+    // Clamp u within the curve domain
+    if (u <= this.uMin || u >= this.uMax) return null;
+
+    // Build a working copy of CPs, weights, knots
+    let cps = this.controlPoints.map(pt => ({ x: pt.x, y: pt.y, z: pt.z }));
+    let wts = [...this.weights];
+    let kts = [...this.knots];
+
+    // Count existing multiplicity of u in the knot vector
+    const EPS = 1e-12;
+    let mult = 0;
+    for (const k of kts) { if (Math.abs(k - u) < EPS) mult++; }
+
+    // Insert knot until multiplicity === degree
+    const insertionsNeeded = p - mult;
+    for (let ins = 0; ins < insertionsNeeded; ins++) {
+      // Find span: knots[k] <= u < knots[k+1]
+      let k = -1;
+      for (let i = 0; i < kts.length - 1; i++) {
+        if (kts[i] <= u + EPS && u < kts[i + 1] + EPS && kts[i] < kts[i + 1]) { k = i; break; }
+      }
+      if (k < 0) break;
+
+      // Boehm knot insertion: insert u between knots[k] and knots[k+1]
+      const newCps = [];
+      const newWts = [];
+      for (let i = 0; i <= k - p; i++) {
+        newCps.push(cps[i]);
+        newWts.push(wts[i]);
+      }
+      for (let i = k - p + 1; i <= k; i++) {
+        const alpha = (u - kts[i]) / (kts[i + p] - kts[i]);
+        const w0 = wts[i - 1], w1 = wts[i];
+        const wa = (1 - alpha) * w0 + alpha * w1;
+        newCps.push({
+          x: ((1 - alpha) * cps[i - 1].x * w0 + alpha * cps[i].x * w1) / wa,
+          y: ((1 - alpha) * cps[i - 1].y * w0 + alpha * cps[i].y * w1) / wa,
+          z: ((1 - alpha) * cps[i - 1].z * w0 + alpha * cps[i].z * w1) / wa,
+        });
+        newWts.push(wa);
+      }
+      for (let i = k; i < cps.length; i++) {
+        newCps.push(cps[i]);
+        newWts.push(wts[i]);
+      }
+
+      const newKts = [...kts.slice(0, k + 1), u, ...kts.slice(k + 1)];
+      cps = newCps;
+      wts = newWts;
+      kts = newKts;
+    }
+
+    // Now u has multiplicity === p in kts.
+    // Find the first index where knots[i] == u.
+    let splitKnotIdx = -1;
+    for (let i = 0; i < kts.length; i++) {
+      if (Math.abs(kts[i] - u) < EPS) { splitKnotIdx = i; break; }
+    }
+    if (splitKnotIdx < 0) return null;
+
+    // The shared control point is at index (splitKnotIdx - 1): it is the
+    // last CP of the left sub-curve and the first CP of the right sub-curve.
+    const splitCpIdx = splitKnotIdx - 1;
+
+    // Find last occurrence of u in the refined knots
+    let lastUIdx = splitKnotIdx;
+    while (lastUIdx + 1 < kts.length && Math.abs(kts[lastUIdx + 1] - u) < EPS) lastUIdx++;
+
+    // Left sub-curve: CPs [0 .. splitCpIdx], clamped knots ending with p+1 copies of u
+    const leftCps = cps.slice(0, splitCpIdx + 1);
+    const leftWts = wts.slice(0, splitCpIdx + 1);
+    const leftKnots = [...kts.slice(0, splitKnotIdx)];
+    for (let i = 0; i <= p; i++) leftKnots.push(u);
+
+    // Right sub-curve: CPs [splitCpIdx .. end], clamped knots starting with p+1 copies of u
+    const rightCps = cps.slice(splitCpIdx);
+    const rightWts = wts.slice(splitCpIdx);
+    const rightKnots = [];
+    for (let i = 0; i <= p; i++) rightKnots.push(u);
+    rightKnots.push(...kts.slice(lastUIdx + 1));
+
+    try {
+      const left = new NurbsCurve(p, leftCps, leftKnots, leftWts);
+      const right = new NurbsCurve(p, rightCps, rightKnots, rightWts);
+      return [left, right];
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Split this curve into N sub-curves at uniformly spaced parameters.
+   *
+   * @param {number} nParts - Number of parts to split into (must be >= 2)
+   * @returns {NurbsCurve[]|null} Array of sub-curves, or null on failure
+   */
+  splitUniform(nParts) {
+    if (nParts < 2) return null;
+    const parts = [];
+    let remaining = this;
+    const du = (this.uMax - this.uMin) / nParts;
+    for (let i = 1; i < nParts; i++) {
+      const u = this.uMin + i * du;
+      // Re-map u into the remaining curve's parameter domain
+      const tNorm = (u - this.uMin) / (this.uMax - this.uMin);
+      const uLocal = remaining.uMin + tNorm * (remaining.uMax - remaining.uMin);
+      // For the split parameter within 'remaining', we need to compute
+      // the fraction of the remaining curve to split at
+      const totalRemaining = this.uMax - (this.uMin + (i - 1) * du);
+      const splitFrac = du / totalRemaining;
+      const uSplit = remaining.uMin + splitFrac * (remaining.uMax - remaining.uMin);
+      const result = remaining.splitAt(uSplit);
+      if (!result) return null;
+      parts.push(result[0]);
+      remaining = result[1];
+    }
+    parts.push(remaining);
+    return parts;
+  }
+
+  /**
    * Serialize to a plain object.
    */
   serialize() {

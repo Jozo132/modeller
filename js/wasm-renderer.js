@@ -613,6 +613,9 @@ export class WasmRenderer {
       // lookAt view matrix already positions the camera relative to target.
       this.wasm.setOrthoBounds(-halfW, halfW, -halfH, halfH);
     } else {
+      // Always sync WASM FOV before setting perspective mode so the grid
+      // and model use the same field of view (prevents mismatch on refresh).
+      this.wasm.setFov(this._fov);
       this.wasm.setCameraMode(1);
     }
   }
@@ -1861,6 +1864,22 @@ export class WasmRenderer {
       });
     }
 
+    // --- Push beziers to WASM (tessellated as line segments) ---
+    if (scene.beziers) {
+      scene.beziers.forEach((bez) => {
+        if (!bez.visible || !isLayerVisible(bez.layer)) return;
+        let flags = F_VISIBLE;
+        if (bez.selected) flags |= F_SELECTED;
+        if (bez.construction) flags |= F_CONSTRUCTION;
+        if (hoverEntity && hoverEntity.id === bez.id) flags |= F_HOVER;
+        const [r, g, b, a] = entityColor(bez);
+        const pts = bez.tessellate2D(16);
+        for (let i = 0; i < pts.length - 1; i++) {
+          wasm.addEntitySegment(pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y, flags, r, g, b, a);
+        }
+      });
+    }
+
     // --- Push points to WASM ---
     if (scene.points) {
       // Pre-compute point reference counts in one pass to avoid O(points × entities)
@@ -1869,12 +1888,30 @@ export class WasmRenderer {
       for (const c of scene.circles) { ptRefs.set(c.center, (ptRefs.get(c.center) || 0) + 1); }
       for (const a of scene.arcs) { ptRefs.set(a.center, (ptRefs.get(a.center) || 0) + 1); }
       for (const spl of scene.splines) { for (const p of spl.points) ptRefs.set(p, (ptRefs.get(p) || 0) + 1); }
+      if (scene.beziers) { for (const bez of scene.beziers) { for (const p of bez.points) ptRefs.set(p, (ptRefs.get(p) || 0) + 1); } }
 
       scene.points.forEach((point) => {
         const refs = ptRefs.get(point) || 0;
         const isHover = hoverEntity && hoverEntity.id === point.id;
         const isFCPt = fc.points.has(point);
-        if (refs <= 1 && !point.selected && !point.fixed && !isHover && !isFCPt) return;
+        // Show points that are: referenced by 2+ entities (junction), selected, fixed,
+        // hovered, or fully constrained. Also always show spline/bezier endpoints
+        // (p1/p2) so the user can see and drag them.
+        if (refs < 1 && !point.selected && !point.fixed && !isHover && !isFCPt) return;
+        // For single-reference points, only show if they are spline/bezier endpoints
+        // (interior control points stay hidden until the spline is selected)
+        if (refs === 1 && !point.selected && !point.fixed && !isHover && !isFCPt) {
+          let isEndpoint = false;
+          for (const spl of scene.splines) {
+            if (spl.p1 === point || spl.p2 === point) { isEndpoint = true; break; }
+          }
+          if (!isEndpoint && scene.beziers) {
+            for (const bez of scene.beziers) {
+              if (bez.p1 === point || bez.p2 === point) { isEndpoint = true; break; }
+            }
+          }
+          if (!isEndpoint) return;
+        }
         let flags = F_VISIBLE;
         if (point.selected) flags |= F_SELECTED;
         if (isHover) flags |= F_HOVER;
@@ -1940,6 +1977,12 @@ export class WasmRenderer {
         } else if (entity.type === 'spline' && entity.points && entity.points.length >= 2) {
           // Tessellate spline into line segments for WASM rendering
           const pts = entity.tessellate2D(32);
+          for (let i = 0; i < pts.length - 1; i++) {
+            wasm.addEntitySegment(pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y, flags, 0, 0.749, 1, 1);
+          }
+        } else if (entity.type === 'bezier' && entity.vertices && entity.vertices.length >= 2) {
+          // Tessellate bezier into line segments for WASM rendering
+          const pts = entity.tessellate2D(16);
           for (let i = 0; i < pts.length - 1; i++) {
             wasm.addEntitySegment(pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y, flags, 0, 0.749, 1, 1);
           }
@@ -2202,7 +2245,121 @@ export class WasmRenderer {
       });
     }
 
-    // --- Sketch plane reference axes (colored, from world origin) ---
+    // --- Bezier control point handles (overlay, shown when selected) ---
+    if (scene.beziers) {
+      scene.beziers.forEach((bez) => {
+        if (!bez.visible || !isLayerVisible(bez.layer)) return;
+        if (!bez.selected) return;
+
+        ctx.save();
+        for (let vi = 0; vi < bez.vertices.length; vi++) {
+          const v = bez.vertices[vi];
+          const sp = sketchPtToScreen(v.point.x, v.point.y);
+
+          // Draw handle lines and control points
+          ctx.strokeStyle = v.tangent ? 'rgba(255, 152, 0, 0.7)' : 'rgba(136, 136, 136, 0.7)';
+          ctx.lineWidth = 1;
+
+          if (v.handleIn) {
+            const hx = v.point.x + v.handleIn.dx, hy = v.point.y + v.handleIn.dy;
+            const hs = sketchPtToScreen(hx, hy);
+            ctx.beginPath();
+            ctx.moveTo(sp.x, sp.y);
+            ctx.lineTo(hs.x, hs.y);
+            ctx.stroke();
+            ctx.fillStyle = v.tangent ? '#ff9800' : '#888';
+            ctx.beginPath();
+            ctx.arc(hs.x, hs.y, 3, 0, Math.PI * 2);
+            ctx.fill();
+          }
+          if (v.handleOut) {
+            const hx = v.point.x + v.handleOut.dx, hy = v.point.y + v.handleOut.dy;
+            const hs = sketchPtToScreen(hx, hy);
+            ctx.beginPath();
+            ctx.moveTo(sp.x, sp.y);
+            ctx.lineTo(hs.x, hs.y);
+            ctx.stroke();
+            ctx.fillStyle = v.tangent ? '#ff9800' : '#888';
+            ctx.beginPath();
+            ctx.arc(hs.x, hs.y, 3, 0, Math.PI * 2);
+            ctx.fill();
+          }
+
+          // Vertex point (diamond for tangent, square for corner)
+          ctx.fillStyle = '#00bfff';
+          if (v.tangent) {
+            ctx.save();
+            ctx.translate(sp.x, sp.y);
+            ctx.rotate(Math.PI / 4);
+            ctx.fillRect(-3, -3, 6, 6);
+            ctx.restore();
+          } else {
+            ctx.fillRect(sp.x - 3, sp.y - 3, 6, 6);
+          }
+        }
+        ctx.restore();
+      });
+    }
+
+    // --- Preview entity handles (shown during drawing with bezier/spline tools) ---
+    if (previewEntities && previewEntities.length > 0) {
+      for (const entity of previewEntities) {
+        if (!entity) continue;
+        if (entity.type === 'spline' && entity.points && entity.points.length >= 2) {
+          // Draw control polygon for preview spline
+          ctx.save();
+          ctx.setLineDash([4, 4]);
+          ctx.strokeStyle = 'rgba(0, 191, 255, 0.5)';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          const sp0 = sketchPtToScreen(entity.points[0].x, entity.points[0].y);
+          ctx.moveTo(sp0.x, sp0.y);
+          for (let i = 1; i < entity.points.length; i++) {
+            const sp = sketchPtToScreen(entity.points[i].x, entity.points[i].y);
+            ctx.lineTo(sp.x, sp.y);
+          }
+          ctx.stroke();
+          ctx.setLineDash([]);
+          // Draw control point markers
+          for (let i = 0; i < entity.points.length; i++) {
+            const cp = entity.points[i];
+            const sp = sketchPtToScreen(cp.x, cp.y);
+            const isEnd = i === 0 || i === entity.points.length - 1;
+            ctx.fillStyle = isEnd ? '#00bfff' : 'rgba(0, 191, 255, 0.6)';
+            ctx.fillRect(sp.x - 3, sp.y - 3, 6, 6);
+          }
+          ctx.restore();
+        } else if (entity.type === 'bezier' && entity.vertices && entity.vertices.length >= 2) {
+          // Draw handle lines and markers for preview bezier
+          ctx.save();
+          for (let vi = 0; vi < entity.vertices.length; vi++) {
+            const v = entity.vertices[vi];
+            const sp = sketchPtToScreen(v.point.x, v.point.y);
+            ctx.strokeStyle = 'rgba(0, 191, 255, 0.6)';
+            ctx.lineWidth = 1;
+            if (v.handleIn) {
+              const hx = v.point.x + v.handleIn.dx, hy = v.point.y + v.handleIn.dy;
+              const hs = sketchPtToScreen(hx, hy);
+              ctx.beginPath(); ctx.moveTo(sp.x, sp.y); ctx.lineTo(hs.x, hs.y); ctx.stroke();
+              ctx.fillStyle = '#00bfff';
+              ctx.beginPath(); ctx.arc(hs.x, hs.y, 3, 0, Math.PI * 2); ctx.fill();
+            }
+            if (v.handleOut) {
+              const hx = v.point.x + v.handleOut.dx, hy = v.point.y + v.handleOut.dy;
+              const hs = sketchPtToScreen(hx, hy);
+              ctx.beginPath(); ctx.moveTo(sp.x, sp.y); ctx.lineTo(hs.x, hs.y); ctx.stroke();
+              ctx.fillStyle = '#00bfff';
+              ctx.beginPath(); ctx.arc(hs.x, hs.y, 3, 0, Math.PI * 2); ctx.fill();
+            }
+            // Vertex marker
+            ctx.fillStyle = '#00bfff';
+            ctx.fillRect(sp.x - 3, sp.y - 3, 6, 6);
+          }
+          ctx.restore();
+        }
+      }
+    }
+
     if (this._sketchPlane) {
       const pd = this._sketchPlaneDef;
       const axisLen = in3DSketch ? 50 : Math.max(this._orthoBounds.right - this._orthoBounds.left, this._orthoBounds.top - this._orthoBounds.bottom) * 0.6;
@@ -2345,7 +2502,10 @@ export class WasmRenderer {
       });
     }
 
-    // --- Closed-region fills (subtle white fill for closed polygon/circle loops) ---
+    // --- Closed-region fills (paint closed polygon/circle loops with holes subtracted) ---
+    // Use even-odd fill rule so that overlapping/nested loops correctly subtract holes.
+    const PROFILE_FILL = 'rgba(100,180,255,0.10)';
+
     if (scene.circles) {
       scene.circles.forEach((circ) => {
         if (!circ.visible || circ.construction || !isLayerVisible(circ.layer)) return;
@@ -2354,40 +2514,65 @@ export class WasmRenderer {
         const r = Math.abs(edgePt.x - c.x);
         ctx.beginPath();
         ctx.arc(c.x, c.y, r, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(255,255,255,0.035)';
-        ctx.fill();
+        ctx.fillStyle = PROFILE_FILL;
+        ctx.fill('evenodd');
       });
     }
 
     const closedLoops = _findClosedLoops(scene);
-    for (const loop of closedLoops) {
-      if (loop.edges.some(e => !isLayerVisible(e.layer))) continue;
+    // Build all closed loop sub-paths into a single compound path so that
+    // nested loops (holes) are correctly subtracted via the even-odd rule.
+    if (closedLoops.length > 0) {
       ctx.beginPath();
-      const fp = sketchPtToScreen(loop.points[0].x, loop.points[0].y);
-      ctx.moveTo(fp.x, fp.y);
-      for (let i = 0; i < loop.edges.length; i++) {
-        const edge = loop.edges[i];
-        const nextPt = loop.points[(i + 1) % loop.points.length];
-        if (edge.type === 'segment') {
-          const np = sketchPtToScreen(nextPt.x, nextPt.y);
-          ctx.lineTo(np.x, np.y);
-        } else if (edge.type === 'arc') {
-          const c = sketchPtToScreen(edge.center.x, edge.center.y);
-          const edgePt = sketchPtToScreen(edge.center.x + edge.radius, edge.center.y);
-          const r = Math.abs(edgePt.x - c.x);
-          const curPt = loop.points[i];
-          const sp = edge.startPt;
-          const isForward = Math.hypot(curPt.x - sp.x, curPt.y - sp.y) < 1e-4;
-          if (isForward) {
-            ctx.arc(c.x, c.y, r, -edge.startAngle, -edge.endAngle, true);
-          } else {
-            ctx.arc(c.x, c.y, r, -edge.endAngle, -edge.startAngle, false);
+      for (const loop of closedLoops) {
+        if (loop.edges.some(e => e.layer != null && !isLayerVisible(e.layer))) continue;
+        // Self-closing curves (single edge where points are already tessellated)
+        if (loop.edges.length === 1 && (loop.edges[0].type === 'spline' || loop.edges[0].type === 'bezier') && loop.points.length >= 3) {
+          const fp = sketchPtToScreen(loop.points[0].x, loop.points[0].y);
+          ctx.moveTo(fp.x, fp.y);
+          for (let j = 1; j < loop.points.length; j++) {
+            const sp = sketchPtToScreen(loop.points[j].x, loop.points[j].y);
+            ctx.lineTo(sp.x, sp.y);
+          }
+          ctx.closePath();
+          continue;
+        }
+        const fp = sketchPtToScreen(loop.points[0].x, loop.points[0].y);
+        ctx.moveTo(fp.x, fp.y);
+        for (let i = 0; i < loop.edges.length; i++) {
+          const edge = loop.edges[i];
+          const nextPt = loop.points[(i + 1) % loop.points.length];
+          if (edge.type === 'segment') {
+            const np = sketchPtToScreen(nextPt.x, nextPt.y);
+            ctx.lineTo(np.x, np.y);
+          } else if (edge.type === 'arc') {
+            const c = sketchPtToScreen(edge.center.x, edge.center.y);
+            const edgePt = sketchPtToScreen(edge.center.x + edge.radius, edge.center.y);
+            const r = Math.abs(edgePt.x - c.x);
+            const curPt = loop.points[i];
+            const sp = edge.startPt;
+            const isForward = Math.hypot(curPt.x - sp.x, curPt.y - sp.y) < 1e-4;
+            if (isForward) {
+              ctx.arc(c.x, c.y, r, -edge.startAngle, -edge.endAngle, true);
+            } else {
+              ctx.arc(c.x, c.y, r, -edge.endAngle, -edge.startAngle, false);
+            }
+          } else if (edge.type === 'spline' || edge.type === 'bezier') {
+            // Tessellate spline/bezier edge along the path
+            const curPt = loop.points[i];
+            const isForward = edge.p1 === curPt;
+            const pts = edge.tessellate2D(16);
+            if (!isForward) pts.reverse();
+            for (let j = 1; j < pts.length; j++) {
+              const sp = sketchPtToScreen(pts[j].x, pts[j].y);
+              ctx.lineTo(sp.x, sp.y);
+            }
           }
         }
+        ctx.closePath();
       }
-      ctx.closePath();
-      ctx.fillStyle = 'rgba(255,255,255,0.035)';
-      ctx.fill();
+      ctx.fillStyle = PROFILE_FILL;
+      ctx.fill('evenodd');
     }
 
     // --- Selection grips (blue squares at snap points of selected entities) ---
@@ -2396,6 +2581,8 @@ export class WasmRenderer {
       ...(scene.segments || []),
       ...(scene.circles || []),
       ...(scene.arcs || []),
+      ...(scene.splines || []),
+      ...(scene.beziers || []),
       ...(scene.dimensions || []),
     ];
     for (const entity of allEntities) {
@@ -2648,6 +2835,18 @@ export class WasmRenderer {
       }
     }
 
+    if (scene.beziers) {
+      for (const bez of scene.beziers) {
+        if (!bez.visible) continue;
+        const pts = bez.tessellate2D(16);
+        for (let i = 0; i < pts.length - 1; i++) {
+          const p1 = toWorld(pts[i].x, pts[i].y);
+          const p2 = toWorld(pts[i + 1].x, pts[i + 1].y);
+          lines.push(p1.x, p1.y, p1.z, p2.x, p2.y, p2.z);
+        }
+      }
+    }
+
     // Include preview entities (lines being drawn interactively but not yet committed)
     if (previewEntities && previewEntities.length > 0) {
       for (const entity of previewEntities) {
@@ -2698,6 +2897,13 @@ export class WasmRenderer {
             const wp2 = toWorld(pts[i + 1].x, pts[i + 1].y);
             lines.push(wp1.x, wp1.y, wp1.z, wp2.x, wp2.y, wp2.z);
           }
+        } else if (entity.type === 'bezier' && entity.vertices && entity.vertices.length >= 2) {
+          const pts = entity.tessellate2D(16);
+          for (let i = 0; i < pts.length - 1; i++) {
+            const wp1 = toWorld(pts[i].x, pts[i].y);
+            const wp2 = toWorld(pts[i + 1].x, pts[i + 1].y);
+            lines.push(wp1.x, wp1.y, wp1.z, wp2.x, wp2.y, wp2.z);
+          }
         }
       }
     }
@@ -2724,6 +2930,8 @@ export class WasmRenderer {
     this._sketchInactiveEdgeVertexCount = 0;
     this._sketchSelectedEdges = null;
     this._sketchSelectedEdgeVertexCount = 0;
+    this._sketchFaceTriangles = null;
+    this._sketchFaceTriangleCount = 0;
     this._sketchPickSegments = []; // per-feature line segments for picking
 
     const sketches = part.getSketches();
@@ -2733,6 +2941,7 @@ export class WasmRenderer {
     const selectedId = this._selectedFeatureId || null;
     const activeLines = [];
     const inactiveLines = [];
+    const faceVerts = []; // triangulated face fill data [x,y,z,nx,ny,nz, ...]
     const selectedLines = [];
 
     for (const sketchFeature of sketches) {
@@ -2828,11 +3037,109 @@ export class WasmRenderer {
         }
       }
 
+      // Splines (tessellate as line segments)
+      if (sketch.splines) {
+        for (const spl of sketch.splines) {
+          if (!spl.visible || spl.construction || !spl.p1 || !spl.p2) continue;
+          const pts = spl.tessellate2D(32);
+          for (let i = 0; i < pts.length - 1; i++) {
+            const p1 = toWorld(pts[i].x, pts[i].y);
+            const p2 = toWorld(pts[i + 1].x, pts[i + 1].y);
+            lines.push(p1.x, p1.y, p1.z, p2.x, p2.y, p2.z);
+            featureSegments.push({ a: p1, b: p2 });
+          }
+        }
+      }
+
+      // Beziers (tessellate as line segments)
+      if (sketch.beziers) {
+        for (const bez of sketch.beziers) {
+          if (!bez.visible || bez.construction || !bez.p1 || !bez.p2) continue;
+          const pts = bez.tessellate2D(16);
+          for (let i = 0; i < pts.length - 1; i++) {
+            const p1 = toWorld(pts[i].x, pts[i].y);
+            const p2 = toWorld(pts[i + 1].x, pts[i + 1].y);
+            lines.push(p1.x, p1.y, p1.z, p2.x, p2.y, p2.z);
+            featureSegments.push({ a: p1, b: p2 });
+          }
+        }
+      }
+
       if (featureSegments.length > 0) {
         this._sketchPickSegments.push({
           featureId: sketchFeature.id,
           segments: featureSegments,
         });
+      }
+
+      // Build triangulated face fill for closed profiles (extrudable faces)
+      // so they are visually painted in feature mode just like in sketch mode.
+      if (!isActive || !this._sketchPlane) {
+        const loops = _findClosedLoops(sketch.scene || sketch);
+        for (const loop of loops) {
+          // Build 2D polygon from loop points (with arc/spline tessellation)
+          const poly2D = [];
+
+          // Self-closing curves: points are already tessellated
+          if (loop.edges.length === 1 && (loop.edges[0].type === 'spline' || loop.edges[0].type === 'bezier') && loop.points.length >= 3) {
+            for (const pt of loop.points) poly2D.push({ x: pt.x, y: pt.y });
+          } else {
+          for (let li = 0; li < loop.points.length; li++) {
+            const edge = loop.edges[li];
+            const curPt = loop.points[li];
+            if (edge.type === 'arc') {
+              const numSegs = 16;
+              let startA = edge.startAngle || 0;
+              let endA = edge.endAngle || Math.PI;
+              let sweep = endA - startA;
+              if (sweep < 0) sweep += Math.PI * 2;
+              const sp = edge.startPt;
+              const isForward = Math.hypot(curPt.x - sp.x, curPt.y - sp.y) < 1e-4;
+              for (let ai = 0; ai < numSegs; ai++) {
+                const t = isForward ? ai / numSegs : (numSegs - ai) / numSegs;
+                const a = startA + t * sweep;
+                poly2D.push({ x: edge.center.x + Math.cos(a) * edge.radius, y: edge.center.y + Math.sin(a) * edge.radius });
+              }
+            } else if ((edge.type === 'spline' || edge.type === 'bezier') && edge.tessellate2D) {
+              const pts = edge.tessellate2D(16);
+              const isForward = edge.p1 === curPt;
+              if (!isForward) pts.reverse();
+              for (let si = 0; si < pts.length - 1; si++) poly2D.push(pts[si]);
+            } else {
+              poly2D.push({ x: curPt.x, y: curPt.y });
+            }
+          }
+          }
+          if (poly2D.length < 3) continue;
+          // Ear-clipping triangulation of the 2D polygon
+          const tris = _earClipTriangulate(poly2D);
+          for (const tri of tris) {
+            const a = toWorld(tri[0].x, tri[0].y);
+            const b = toWorld(tri[1].x, tri[1].y);
+            const c = toWorld(tri[2].x, tri[2].y);
+            faceVerts.push(a.x, a.y, a.z, nx, ny, nz);
+            faceVerts.push(b.x, b.y, b.z, nx, ny, nz);
+            faceVerts.push(c.x, c.y, c.z, nx, ny, nz);
+          }
+        }
+        // Also handle full circles as face fills
+        if (sketch.circles) {
+          for (const circle of sketch.circles) {
+            if (!circle.visible || circle.construction || !circle.center) continue;
+            const numSegs = 32;
+            const cx = circle.center.x, cy = circle.center.y, r = circle.radius;
+            const cw = toWorld(cx, cy);
+            for (let ci = 0; ci < numSegs; ci++) {
+              const a1 = (ci / numSegs) * Math.PI * 2;
+              const a2 = ((ci + 1) / numSegs) * Math.PI * 2;
+              const p1 = toWorld(cx + Math.cos(a1) * r, cy + Math.sin(a1) * r);
+              const p2 = toWorld(cx + Math.cos(a2) * r, cy + Math.sin(a2) * r);
+              faceVerts.push(cw.x, cw.y, cw.z, nx, ny, nz);
+              faceVerts.push(p1.x, p1.y, p1.z, nx, ny, nz);
+              faceVerts.push(p2.x, p2.y, p2.z, nx, ny, nz);
+            }
+          }
+        }
       }
     }
 
@@ -2850,6 +3157,11 @@ export class WasmRenderer {
       this._sketchSelectedEdges = new Float32Array(selectedLines);
       this._sketchSelectedEdgeVertexCount = selectedLines.length / 3;
     }
+
+    if (faceVerts.length > 0) {
+      this._sketchFaceTriangles = new Float32Array(faceVerts);
+      this._sketchFaceTriangleCount = faceVerts.length / 6;
+    }
   }
 
   /**
@@ -2865,7 +3177,8 @@ export class WasmRenderer {
     const hasInactiveEdges = this._sketchInactiveEdges && this._sketchInactiveEdgeVertexCount > 0;
     const hasSelectedEdges = this._sketchSelectedEdges && this._sketchSelectedEdgeVertexCount > 0;
     const hasActiveScene = this._activeSceneEdges && this._activeSceneEdgeVertexCount > 0;
-    if (!hasMesh && !hasGhost && !hasArrow && !hasSketchEdges && !hasInactiveEdges && !hasSelectedEdges && !hasActiveScene) return;
+    const hasSketchFaces = this._sketchFaceTriangles && this._sketchFaceTriangleCount > 0;
+    if (!hasMesh && !hasGhost && !hasArrow && !hasSketchEdges && !hasInactiveEdges && !hasSelectedEdges && !hasActiveScene && !hasSketchFaces) return;
 
     // Compute the same MVP as the WASM camera
     const mvp = this._computeMVP();
@@ -3126,6 +3439,27 @@ export class WasmRenderer {
       exec.setDepthTest(true);
     }
 
+    // Draw sketch face fills (semi-transparent extrudable profile faces)
+    if (hasSketchFaces) {
+      exec.setDepthTest(true);
+      exec.setDepthFunc(gl.LEQUAL);
+      exec.setCullFace(false);
+      exec.setDepthWrite(false);
+      exec.setBlend(true);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      gl.useProgram(exec.programs[0]);
+      gl.uniformMatrix4fv(exec.uniforms[0].uMVP, false, mvp);
+      gl.uniform4f(exec.uniforms[0].uColor, 0.4, 0.7, 1.0, 0.12);
+
+      gl.bindVertexArray(exec.vaoSolid);
+      gl.bindBuffer(gl.ARRAY_BUFFER, exec.vbo);
+      gl.bufferData(gl.ARRAY_BUFFER, this._sketchFaceTriangles, gl.DYNAMIC_DRAW);
+      gl.drawArrays(gl.TRIANGLES, 0, this._sketchFaceTriangleCount);
+      gl.bindVertexArray(null);
+      exec.setDepthWrite(true);
+      exec.setBlend(false);
+    }
+
     // Draw sketch wireframes (visible sketch primitives in 3D)
     // Wireframe vertices are offset slightly along the sketch plane normal to prevent
     // z-fighting. Keep depth test enabled so sketches are properly occluded when
@@ -3355,6 +3689,8 @@ export class WasmRenderer {
     this._sketchInactiveEdgeVertexCount = 0;
     this._sketchSelectedEdges = null;
     this._sketchSelectedEdgeVertexCount = 0;
+    this._sketchFaceTriangles = null;
+    this._sketchFaceTriangleCount = 0;
     this._activeSceneEdges = null;
     this._activeSceneEdgeVertexCount = 0;
     this._selectedFaceIndices.clear();
@@ -3853,6 +4189,16 @@ function _computeFullyConstrained(scene) {
   for (const arc of scene.arcs) {
     if (fcPoints.has(arc.center)) fcEntities.add(arc);
   }
+  if (scene.splines) {
+    for (const spl of scene.splines) {
+      if (spl.points.every(p => fcPoints.has(p))) fcEntities.add(spl);
+    }
+  }
+  if (scene.beziers) {
+    for (const bez of scene.beziers) {
+      if (bez.points.every(p => fcPoints.has(p))) fcEntities.add(bez);
+    }
+  }
 
   return { points: fcPoints, entities: fcEntities };
 }
@@ -3866,6 +4212,7 @@ function _findClosedLoops(scene) {
   const TOL = 1e-4;
   const adj = new Map();
   const ensure = (pt) => { if (!adj.has(pt)) adj.set(pt, []); };
+  const selfClosedLoops = []; // Loops formed by a single self-closing curve (p1 === p2)
 
   for (const seg of scene.segments) {
     if (!seg.visible || seg.construction) continue;
@@ -3888,6 +4235,47 @@ function _findClosedLoops(scene) {
       ensure(pEnd);
       adj.get(pStart).push({ edge: arc, other: pEnd });
       adj.get(pEnd).push({ edge: arc, other: pStart });
+    }
+  }
+
+  // Include splines in the adjacency graph (endpoints participate in loops)
+  if (scene.splines) {
+    for (const spl of scene.splines) {
+      if (!spl.visible || spl.construction) continue;
+      const p1 = spl.p1, p2 = spl.p2;
+      if (p1 && p2 && p1 === p2) {
+        // Self-closing spline — forms its own loop
+        // Tessellate the curve to get the polygon points for the loop
+        const pts = spl.tessellate2D(32);
+        if (pts.length >= 3) {
+          selfClosedLoops.push({ points: pts.map(p => ({ x: p.x, y: p.y })), edges: [spl] });
+        }
+      } else if (p1 && p2) {
+        ensure(p1);
+        ensure(p2);
+        adj.get(p1).push({ edge: spl, other: p2 });
+        adj.get(p2).push({ edge: spl, other: p1 });
+      }
+    }
+  }
+
+  // Include beziers in the adjacency graph (endpoints participate in loops)
+  if (scene.beziers) {
+    for (const bez of scene.beziers) {
+      if (!bez.visible || bez.construction) continue;
+      const p1 = bez.p1, p2 = bez.p2;
+      if (p1 && p2 && p1 === p2) {
+        // Self-closing bezier — forms its own loop
+        const pts = bez.tessellate2D(16);
+        if (pts.length >= 3) {
+          selfClosedLoops.push({ points: pts.map(p => ({ x: p.x, y: p.y })), edges: [bez] });
+        }
+      } else if (p1 && p2) {
+        ensure(p1);
+        ensure(p2);
+        adj.get(p1).push({ edge: bez, other: p2 });
+        adj.get(p2).push({ edge: bez, other: p1 });
+      }
     }
   }
 
@@ -3929,7 +4317,75 @@ function _findClosedLoops(scene) {
     loops.push({ points: orderedPts, edges: orderedEdges });
   }
 
+  // Add self-closing loops (single curves with p1 === p2)
+  for (const sl of selfClosedLoops) {
+    loops.push(sl);
+  }
+
   return loops;
+}
+
+/**
+ * Simple ear-clipping triangulation for a 2D polygon.
+ * @param {Array<{x:number,y:number}>} polygon - Array of 2D points (CCW or CW winding)
+ * @returns {Array<[{x:number,y:number},{x:number,y:number},{x:number,y:number}]>} triangles
+ */
+function _earClipTriangulate(polygon) {
+  if (polygon.length < 3) return [];
+  if (polygon.length === 3) return [[polygon[0], polygon[1], polygon[2]]];
+
+  const tris = [];
+  const pts = polygon.map(p => ({ x: p.x, y: p.y }));
+
+  // Determine winding direction (signed area)
+  let area = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const j = (i + 1) % pts.length;
+    area += (pts[j].x - pts[i].x) * (pts[j].y + pts[i].y);
+  }
+  const ccw = area < 0; // in screen coords, negative area = CCW
+
+  const isConvex = (a, b, c) => {
+    const cross = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+    return ccw ? cross > 0 : cross < 0;
+  };
+
+  const pointInTriangle = (p, a, b, c) => {
+    const d1 = (p.x - b.x) * (a.y - b.y) - (a.x - b.x) * (p.y - b.y);
+    const d2 = (p.x - c.x) * (b.y - c.y) - (b.x - c.x) * (p.y - c.y);
+    const d3 = (p.x - a.x) * (c.y - a.y) - (c.x - a.x) * (p.y - a.y);
+    const hasNeg = (d1 < 0) || (d2 < 0) || (d3 < 0);
+    const hasPos = (d1 > 0) || (d2 > 0) || (d3 > 0);
+    return !(hasNeg && hasPos);
+  };
+
+  const indices = [];
+  for (let i = 0; i < pts.length; i++) indices.push(i);
+
+  let safe = indices.length * 2;
+  while (indices.length > 2 && safe-- > 0) {
+    let earFound = false;
+    for (let i = 0; i < indices.length; i++) {
+      const prev = indices[(i + indices.length - 1) % indices.length];
+      const cur = indices[i];
+      const next = indices[(i + 1) % indices.length];
+      const a = pts[prev], b = pts[cur], c = pts[next];
+      if (!isConvex(a, b, c)) continue;
+      let hasInside = false;
+      for (let j = 0; j < indices.length; j++) {
+        const idx = indices[j];
+        if (idx === prev || idx === cur || idx === next) continue;
+        if (pointInTriangle(pts[idx], a, b, c)) { hasInside = true; break; }
+      }
+      if (hasInside) continue;
+      tris.push([a, b, c]);
+      indices.splice(i, 1);
+      earFound = true;
+      break;
+    }
+    if (!earFound) break;
+  }
+  return tris;
 }
 
 // ---------------------------------------------------------------------------
