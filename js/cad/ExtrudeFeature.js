@@ -568,6 +568,61 @@ export class ExtrudeFeature extends Feature {
             topCurve: NurbsCurve.createArc(topCenter3D, range.radius, xAx, yAx, 0, sweep),
             cylSurf: NurbsSurface.createCylinder(center3D, extDir, range.radius, extHeight, xAx, yAx, 0, sweep),
           });
+        } else if (type === 'spline' && range.controlPoints2D && range.knots) {
+          // Create exact B-spline curves for bottom and top cap edges
+          const toBottomWorld = (p) => {
+            const w = this.sketchToWorld(p, plane);
+            return { x: w.x + baseOffset.x, y: w.y + baseOffset.y, z: w.z + baseOffset.z };
+          };
+          const toTopWorld = (p) => {
+            const w = this.sketchToWorld(p, plane);
+            return {
+              x: w.x + extrusionVector.x + tipOffset.x,
+              y: w.y + extrusionVector.y + tipOffset.y,
+              z: w.z + extrusionVector.z + tipOffset.z,
+            };
+          };
+          const bottomCurve = _spline2Dto3D(range.controlPoints2D, range.degree, range.knots, toBottomWorld);
+          const topCurve = _spline2Dto3D(range.controlPoints2D, range.degree, range.knots, toTopWorld);
+          const extrudedSurf = NurbsSurface.createExtrudedSurface(bottomCurve, extDir, extHeight);
+          edgeInfos.push({
+            type,
+            startIdx,
+            endIdx,
+            spanIndices,
+            isArc: false,
+            isCurve: true,
+            bottomCurve,
+            topCurve,
+            extrudedSurf,
+          });
+        } else if (type === 'bezier' && range.bezierVertices) {
+          const toBottomWorld = (p) => {
+            const w = this.sketchToWorld(p, plane);
+            return { x: w.x + baseOffset.x, y: w.y + baseOffset.y, z: w.z + baseOffset.z };
+          };
+          const toTopWorld = (p) => {
+            const w = this.sketchToWorld(p, plane);
+            return {
+              x: w.x + extrusionVector.x + tipOffset.x,
+              y: w.y + extrusionVector.y + tipOffset.y,
+              z: w.z + extrusionVector.z + tipOffset.z,
+            };
+          };
+          const bottomCurve = _bezierVertices2Dto3D(range.bezierVertices, toBottomWorld);
+          const topCurve = _bezierVertices2Dto3D(range.bezierVertices, toTopWorld);
+          const extrudedSurf = NurbsSurface.createExtrudedSurface(bottomCurve, extDir, extHeight);
+          edgeInfos.push({
+            type,
+            startIdx,
+            endIdx,
+            spanIndices,
+            isArc: false,
+            isCurve: true,
+            bottomCurve,
+            topCurve,
+            extrudedSurf,
+          });
         } else {
           edgeInfos.push({
             type,
@@ -590,7 +645,7 @@ export class ExtrudeFeature extends Feature {
       const verts = curveKey === 'bottomCurve' ? profileData.bottomVerts : profileData.topVerts;
 
       for (const info of infos) {
-        if (info.isArc) {
+        if (info.isArc || info.isCurve) {
           vertices.push(reversed ? verts[info.endIdx] : verts[info.startIdx]);
           edgeCurves.push(reversed ? info[curveKey].reversed() : info[curveKey]);
           continue;
@@ -658,6 +713,36 @@ export class ExtrudeFeature extends Feature {
           faceDescs.push({
             surface: info.cylSurf,
             surfaceType: SurfaceType.CYLINDER,
+            vertices,
+            edgeCurves,
+            shared: { sourceFeatureId: this.id },
+          });
+          continue;
+        }
+
+        if (info.isCurve) {
+          // Side face for a spline/bezier edge — extruded NURBS surface
+          const bStart = profileData.bottomVerts[info.startIdx];
+          const bEnd = profileData.bottomVerts[info.endIdx];
+          const tStart = profileData.topVerts[info.startIdx];
+          const tEnd = profileData.topVerts[info.endIdx];
+
+          let vertices = [bStart, bEnd, tEnd, tStart];
+          let edgeCurves = [
+            info.bottomCurve,
+            NurbsCurve.createLine(bEnd, tEnd),
+            info.topCurve.reversed(),
+            NurbsCurve.createLine(tStart, bStart),
+          ];
+
+          if (this.direction < 0) {
+            vertices = [...vertices].reverse();
+            edgeCurves = edgeCurves.reverse();
+          }
+
+          faceDescs.push({
+            surface: info.extrudedSurf,
+            surfaceType: SurfaceType.BSPLINE,
             vertices,
             edgeCurves,
             shared: { sourceFeatureId: this.id },
@@ -1142,6 +1227,12 @@ function _buildEdgeRanges(profileEdges, totalPoints) {
       radius: edge.radius,
       sweepAngle: edge.sweepAngle,
       startAngle: edge.startAngle,
+      // Propagate exact spline data
+      controlPoints2D: edge.controlPoints2D,
+      degree: edge.degree,
+      knots: edge.knots,
+      // Propagate exact bezier data
+      bezierVertices: edge.bezierVertices,
     });
 
     currentIdx = endIdx;
@@ -1167,4 +1258,91 @@ function _buildCapEdgeCurves(capVerts, edgeRanges, n, isBottom) {
   return capVerts.map((v, i) =>
     NurbsCurve.createLine(v, capVerts[(i + 1) % capVerts.length])
   );
+}
+
+/**
+ * Create a 3D NurbsCurve from 2D B-spline control points by transforming
+ * each control point from sketch space to world 3D via a plane+offset.
+ * @param {Array<{x:number,y:number}>} controlPoints2D
+ * @param {number} degree
+ * @param {number[]} knots
+ * @param {Function} toWorld - (sketchPt2D) => {x,y,z}
+ * @returns {NurbsCurve}
+ */
+function _spline2Dto3D(controlPoints2D, degree, knots, toWorld) {
+  const cps3D = controlPoints2D.map(p => toWorld(p));
+  return new NurbsCurve(degree, cps3D, knots);
+}
+
+/**
+ * Convert piecewise bezier vertices (with handles) into a NURBS curve.
+ *
+ * A piecewise cubic bezier with N segments is a degree-3 B-spline with
+ * 3N+1 control points and a specific knot pattern (clamped, with
+ * multiplicity 3 at inner joins).
+ *
+ * Quadratic/linear segments are degree-elevated to cubic so that the
+ * entire curve is a uniform degree-3 B-spline.
+ *
+ * @param {Array<{x:number,y:number,handleOut?:{dx:number,dy:number},handleIn?:{dx:number,dy:number}}>} vertices
+ * @param {Function} toWorld - (sketchPt2D) => {x,y,z}
+ * @returns {NurbsCurve}
+ */
+function _bezierVertices2Dto3D(vertices, toWorld) {
+  if (vertices.length < 2) throw new Error('Need at least 2 bezier vertices');
+  const nSegs = vertices.length - 1;
+
+  // Build the list of cubic Bezier control points for each segment.
+  // Each segment contributes 4 control points (P0, C1, C2, P3), where
+  // consecutive segments share the last/first control point (P3 of seg i = P0 of seg i+1).
+  const allCPs = [];
+
+  for (let s = 0; s < nSegs; s++) {
+    const v0 = vertices[s];
+    const v1 = vertices[s + 1];
+    const p0 = { x: v0.x, y: v0.y };
+    const p3 = { x: v1.x, y: v1.y };
+    const ho = v0.handleOut;
+    const hi = v1.handleIn;
+
+    let c1, c2;
+    if (ho && hi) {
+      // Cubic bezier
+      c1 = { x: p0.x + ho.dx, y: p0.y + ho.dy };
+      c2 = { x: p3.x + hi.dx, y: p3.y + hi.dy };
+    } else if (ho) {
+      // Quadratic → elevate to cubic:  C1 = P0 + 2/3*(Q-P0), C2 = P3 + 2/3*(Q-P3)
+      const q = { x: p0.x + ho.dx, y: p0.y + ho.dy };
+      c1 = { x: p0.x + 2 / 3 * (q.x - p0.x), y: p0.y + 2 / 3 * (q.y - p0.y) };
+      c2 = { x: p3.x + 2 / 3 * (q.x - p3.x), y: p3.y + 2 / 3 * (q.y - p3.y) };
+    } else if (hi) {
+      const q = { x: p3.x + hi.dx, y: p3.y + hi.dy };
+      c1 = { x: p0.x + 2 / 3 * (q.x - p0.x), y: p0.y + 2 / 3 * (q.y - p0.y) };
+      c2 = { x: p3.x + 2 / 3 * (q.x - p3.x), y: p3.y + 2 / 3 * (q.y - p3.y) };
+    } else {
+      // Linear → elevate to cubic
+      c1 = { x: p0.x + (p3.x - p0.x) / 3, y: p0.y + (p3.y - p0.y) / 3 };
+      c2 = { x: p0.x + 2 * (p3.x - p0.x) / 3, y: p0.y + 2 * (p3.y - p0.y) / 3 };
+    }
+
+    if (s === 0) allCPs.push(p0);
+    allCPs.push(c1, c2, p3);
+  }
+
+  // Build clamped knot vector with C0 continuity (multiplicity 3) at joins.
+  // For nSegs cubic segments: n_cps = 3*nSegs + 1, degree = 3
+  // knots = [0,0,0,0, 1,1,1, 2,2,2, ..., nSegs,nSegs,nSegs,nSegs]
+  const degree = 3;
+  const knots = [];
+  // Clamped start
+  for (let i = 0; i <= degree; i++) knots.push(0);
+  // Inner knots (multiplicity 3 for C0)
+  for (let s = 1; s < nSegs; s++) {
+    for (let m = 0; m < degree; m++) knots.push(s);
+  }
+  // Clamped end
+  for (let i = 0; i <= degree; i++) knots.push(nSegs);
+
+  const cps3D = allCPs.map(p => toWorld(p));
+  return new NurbsCurve(degree, cps3D, knots);
 }

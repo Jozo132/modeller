@@ -89,9 +89,14 @@ export class SketchFeature extends Feature {
           if (Math.hypot(last.x - first.x, last.y - first.y) < 1e-6) {
             pts.pop();
           }
+          const { knots, degree } = spl._knotVector();
+          const controlPoints2D = spl.points.map(p => ({ x: p.x, y: p.y }));
           profiles.push({
             points: pts,
-            edges: [{ type: 'spline', pointStartIndex: 0, pointCount: pts.length }],
+            edges: [{
+              type: 'spline', pointStartIndex: 0, pointCount: pts.length,
+              controlPoints2D, degree, knots,
+            }],
             closed: true,
           });
         }
@@ -110,9 +115,17 @@ export class SketchFeature extends Feature {
           if (Math.hypot(last.x - first.x, last.y - first.y) < 1e-6) {
             pts.pop();
           }
+          const bezierVertices = bez.vertices.map(v => ({
+            x: v.point.x, y: v.point.y,
+            handleOut: v.handleOut || null,
+            handleIn: v.handleIn || null,
+          }));
           profiles.push({
             points: pts,
-            edges: [{ type: 'bezier', pointStartIndex: 0, pointCount: pts.length }],
+            edges: [{
+              type: 'bezier', pointStartIndex: 0, pointCount: pts.length,
+              bezierVertices,
+            }],
             closed: true,
           });
         }
@@ -512,6 +525,33 @@ function _buildEdgeMeta(edge, forward, pointStartIndex, pointCount) {
     meta.radius = arc.radius;
     meta.startAngle = forward ? startAngle : startAngle + sweep;
     meta.sweepAngle = forward ? sweep : -sweep;
+  }
+  if (edge.type === 'spline') {
+    // Preserve exact B-spline definition: control points (2D), degree, knot vector.
+    // PSpline._knotVector() gives {knots, degree}.
+    const { knots, degree } = edge._knotVector();
+    const controlPoints = forward
+      ? edge.points.map(p => ({ x: p.x, y: p.y }))
+      : [...edge.points].reverse().map(p => ({ x: p.x, y: p.y }));
+    // When reversed, the knot vector must be flipped: k_i' = kMax + kMin - k_{n-i}
+    const kMin = knots[0], kMax = knots[knots.length - 1];
+    meta.controlPoints2D = controlPoints;
+    meta.degree = degree;
+    meta.knots = forward ? knots : knots.map(k => kMax + kMin - k).reverse();
+  }
+  if (edge.type === 'bezier') {
+    // Preserve exact Bezier vertex data: for each vertex store anchor (2D)
+    // and handle offsets so the extruder can reconstruct exact NURBS curves.
+    const verts = forward ? edge.vertices : [...edge.vertices].reverse();
+    meta.bezierVertices = verts.map((v, i) => {
+      // When reversed, handleIn and handleOut swap roles
+      const isReversed = !forward;
+      return {
+        x: v.point.x, y: v.point.y,
+        handleOut: isReversed ? (v.handleIn ? { dx: -v.handleIn.dx, dy: -v.handleIn.dy } : null) : (v.handleOut || null),
+        handleIn: isReversed ? (v.handleOut ? { dx: -v.handleOut.dx, dy: -v.handleOut.dy } : null) : (v.handleIn || null),
+      };
+    });
   }
   return meta;
 }

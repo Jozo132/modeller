@@ -472,6 +472,52 @@ export class NurbsSurface {
   }
 
   /**
+   * Create a NURBS surface by extruding (translating) a cross-section curve
+   * linearly along a direction.  The result is a ruled surface whose
+   * v-direction follows the input curve and whose u-direction is linear
+   * (degree 1) along the extrusion.
+   *
+   * This is the general counterpart of `createCylinder` — it works for
+   * arbitrary NURBS profile curves (splines, beziers, etc.).
+   *
+   * @param {NurbsCurve} crossSection - Profile curve (bottom)
+   * @param {{x:number,y:number,z:number}} direction - Extrusion direction (unit vector)
+   * @param {number} height - Extrusion distance along `direction`
+   * @returns {NurbsSurface}
+   */
+  static createExtrudedSurface(crossSection, direction, height) {
+    const numCols = crossSection.controlPoints.length;
+    const numRows = 2; // linear in extrusion direction
+    const controlPoints = [];
+    const weights = [];
+
+    for (let row = 0; row < numRows; row++) {
+      const offset = row * height;
+      for (let col = 0; col < numCols; col++) {
+        const cp = crossSection.controlPoints[col];
+        const w = crossSection.weights[col];
+        controlPoints.push({
+          x: cp.x + offset * direction.x,
+          y: cp.y + offset * direction.y,
+          z: cp.z + offset * direction.z,
+        });
+        weights.push(w);
+      }
+    }
+
+    const knotsU = [0, 0, 1, 1]; // linear in extrusion direction
+
+    return new NurbsSurface(
+      1, crossSection.degree,
+      numRows, numCols,
+      controlPoints,
+      knotsU,
+      crossSection.knots,
+      weights
+    );
+  }
+
+  /**
    * Create a NURBS surface representing a fillet rolling-ball blend.
    *
    * The surface is defined by two rail curves (the trim lines on each face)

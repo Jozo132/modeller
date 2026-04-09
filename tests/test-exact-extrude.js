@@ -226,6 +226,165 @@ test('Extrude with negative direction produces valid topoBody', () => {
 });
 
 // ============================================================
+// Spline / Bezier B-Rep Extrusion Tests
+// ============================================================
+console.log('\n=== Spline/Bezier Exact Extrude Tests ===\n');
+
+test('Extrude spline profile: produces topoBody with NURBS surfaces', () => {
+  resetFeatureIds();
+  resetTopoIds();
+  const part = new Part('SplineTest');
+  // Create a closed profile: 4 segments forming a square with one edge replaced by a spline
+  const sketch = new Sketch();
+  // Bottom line: (0,0) -> (10,0)
+  sketch.addSegment(0, 0, 10, 0);
+  // Right line: (10,0) -> (10,10)
+  sketch.addSegment(10, 0, 10, 10);
+  // Top spline: (10,10) -> (5,12) -> (0,10) — a curved top edge
+  sketch.addSpline([{ x: 10, y: 10 }, { x: 5, y: 13 }, { x: 0, y: 10 }]);
+  // Left line: (0,10) -> (0,0)
+  sketch.addSegment(0, 10, 0, 0);
+
+  const plane = {
+    origin: { x: 0, y: 0, z: 0 },
+    normal: { x: 0, y: 0, z: 1 },
+    xAxis: { x: 1, y: 0, z: 0 },
+    yAxis: { x: 0, y: 1, z: 0 },
+  };
+  part.addSketch(sketch, plane);
+  part.extrude(part.getSketches()[0].id, 5);
+
+  const geom = part.featureTree.features.find(f => f.type === 'extrude').result.geometry;
+  assert.ok(geom.topoBody, 'Spline extrusion should produce a topoBody');
+
+  const body = geom.topoBody;
+  assert.strictEqual(body.shells.length, 1, 'Should have 1 shell');
+
+  // Should have 6 faces: bottom cap, top cap, 3 planar side faces, 1 BSPLINE side face
+  const faces = body.faces();
+  assert.strictEqual(faces.length, 6, `Spline extrude should have 6 faces, got ${faces.length}`);
+
+  const bsplineFaces = faces.filter(f => f.surfaceType === 'bspline');
+  assert.ok(bsplineFaces.length >= 1, `Should have at least 1 bspline face from spline extrusion, got ${bsplineFaces.length}`);
+
+  // All faces should have surfaces
+  for (const face of faces) {
+    assert.ok(face.surface, `Face ${face.id} should have a NURBS surface`);
+  }
+
+  // All edges should have curves
+  for (const edge of body.edges()) {
+    assert.ok(edge.curve, `Edge ${edge.id} should have an exact curve`);
+  }
+
+  // Validate topology
+  for (const face of faces) {
+    assert.ok(face.outerLoop, `Face ${face.id} should have outer loop`);
+    assert.ok(face.outerLoop.isClosed(), `Face ${face.id} outer loop should be closed`);
+  }
+});
+
+test('Extrude spline profile: topoBody can be tessellated', () => {
+  resetFeatureIds();
+  resetTopoIds();
+  const part = new Part('SplineTessTest');
+  const sketch = new Sketch();
+  sketch.addSegment(0, 0, 10, 0);
+  sketch.addSegment(10, 0, 10, 10);
+  sketch.addSpline([{ x: 10, y: 10 }, { x: 5, y: 13 }, { x: 0, y: 10 }]);
+  sketch.addSegment(0, 10, 0, 0);
+
+  const plane = {
+    origin: { x: 0, y: 0, z: 0 },
+    normal: { x: 0, y: 0, z: 1 },
+    xAxis: { x: 1, y: 0, z: 0 },
+    yAxis: { x: 0, y: 1, z: 0 },
+  };
+  part.addSketch(sketch, plane);
+  part.extrude(part.getSketches()[0].id, 5);
+
+  const geom = part.featureTree.features.find(f => f.type === 'extrude').result.geometry;
+  assert.ok(geom.topoBody, 'Should have topoBody');
+
+  const mesh = tessellateBody(geom.topoBody);
+  assert.ok(mesh.faces.length > 0, 'Tessellated mesh should have faces');
+  assert.ok(mesh.vertices.length > 0, 'Tessellated mesh should have vertices');
+});
+
+test('Extrude bezier profile: produces topoBody with NURBS surfaces', () => {
+  resetFeatureIds();
+  resetTopoIds();
+  const part = new Part('BezierTest');
+  const sketch = new Sketch();
+  // Bottom line: (0,0) -> (10,0)
+  sketch.addSegment(0, 0, 10, 0);
+  // Right line: (10,0) -> (10,10)
+  sketch.addSegment(10, 0, 10, 10);
+  // Top bezier: (10,10) -> (0,10) with cubic handles
+  sketch.addBezier([
+    { x: 10, y: 10, handleOut: { dx: -2, dy: 5 } },
+    { x: 0, y: 10, handleIn: { dx: 2, dy: 5 } },
+  ]);
+  // Left line: (0,10) -> (0,0)
+  sketch.addSegment(0, 10, 0, 0);
+
+  const plane = {
+    origin: { x: 0, y: 0, z: 0 },
+    normal: { x: 0, y: 0, z: 1 },
+    xAxis: { x: 1, y: 0, z: 0 },
+    yAxis: { x: 0, y: 1, z: 0 },
+  };
+  part.addSketch(sketch, plane);
+  part.extrude(part.getSketches()[0].id, 5);
+
+  const geom = part.featureTree.features.find(f => f.type === 'extrude').result.geometry;
+  assert.ok(geom.topoBody, 'Bezier extrusion should produce a topoBody');
+
+  const body = geom.topoBody;
+  const faces = body.faces();
+  assert.strictEqual(faces.length, 6, `Bezier extrude should have 6 faces, got ${faces.length}`);
+
+  const bsplineFaces = faces.filter(f => f.surfaceType === 'bspline');
+  assert.ok(bsplineFaces.length >= 1, `Should have at least 1 bspline face from bezier extrusion, got ${bsplineFaces.length}`);
+
+  for (const face of faces) {
+    assert.ok(face.surface, `Face ${face.id} should have a NURBS surface`);
+    assert.ok(face.outerLoop, `Face ${face.id} should have outer loop`);
+    assert.ok(face.outerLoop.isClosed(), `Face ${face.id} outer loop should be closed`);
+  }
+});
+
+test('Extrude bezier profile: topoBody can be tessellated', () => {
+  resetFeatureIds();
+  resetTopoIds();
+  const part = new Part('BezierTessTest');
+  const sketch = new Sketch();
+  sketch.addSegment(0, 0, 10, 0);
+  sketch.addSegment(10, 0, 10, 10);
+  sketch.addBezier([
+    { x: 10, y: 10, handleOut: { dx: -2, dy: 5 } },
+    { x: 0, y: 10, handleIn: { dx: 2, dy: 5 } },
+  ]);
+  sketch.addSegment(0, 10, 0, 0);
+
+  const plane = {
+    origin: { x: 0, y: 0, z: 0 },
+    normal: { x: 0, y: 0, z: 1 },
+    xAxis: { x: 1, y: 0, z: 0 },
+    yAxis: { x: 0, y: 1, z: 0 },
+  };
+  part.addSketch(sketch, plane);
+  part.extrude(part.getSketches()[0].id, 5);
+
+  const geom = part.featureTree.features.find(f => f.type === 'extrude').result.geometry;
+  assert.ok(geom.topoBody, 'Should have topoBody');
+
+  const mesh = tessellateBody(geom.topoBody);
+  assert.ok(mesh.faces.length > 0, 'Tessellated mesh should have faces');
+  assert.ok(mesh.vertices.length > 0, 'Tessellated mesh should have vertices');
+});
+
+// ============================================================
 console.log('\n=== Results ===\n');
 console.log(`${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
