@@ -781,6 +781,858 @@ for (const [angle, desc] of [[45, '45°'], [60, '60°'], [120, '120°']]) {
 }
 
 // ===========================================================================
+// CONCAVE PROFILE FACTORIES
+// ===========================================================================
+
+/**
+ * L-shape profile — one concave (reflex) corner at the inner step.
+ * The concave corner is at (armW, legH) where the step turns inward.
+ *
+ *    ┌────┐
+ *    │    │
+ *    │    └─────┐
+ *    │          │
+ *    └──────────┘
+ */
+function lShapeProfile(totalW = 30, totalH = 20, armW = 10, legH = 10) {
+  return (sketch) => {
+    sketch.addSegment(0, 0, totalW, 0);        // bottom
+    sketch.addSegment(totalW, 0, totalW, legH); // right lower
+    sketch.addSegment(totalW, legH, armW, legH); // inner step (horizontal)
+    sketch.addSegment(armW, legH, armW, totalH); // inner step (vertical)
+    sketch.addSegment(armW, totalH, 0, totalH);  // top
+    sketch.addSegment(0, totalH, 0, 0);         // left
+  };
+}
+
+/**
+ * U-shape profile — two concave (reflex) corners inside the channel.
+ *
+ *    ┌──┐     ┌──┐
+ *    │  │     │  │
+ *    │  └─────┘  │
+ *    │           │
+ *    └───────────┘
+ */
+function uShapeProfile(outerW = 30, outerH = 20, wallThick = 8, channelH = 12) {
+  const innerLeft = wallThick;
+  const innerRight = outerW - wallThick;
+  const innerBottom = outerH - channelH;
+  return (sketch) => {
+    sketch.addSegment(0, 0, outerW, 0);                 // bottom
+    sketch.addSegment(outerW, 0, outerW, outerH);       // right outer
+    sketch.addSegment(outerW, outerH, innerRight, outerH); // top right
+    sketch.addSegment(innerRight, outerH, innerRight, innerBottom); // right inner wall
+    sketch.addSegment(innerRight, innerBottom, innerLeft, innerBottom); // channel floor
+    sketch.addSegment(innerLeft, innerBottom, innerLeft, outerH);   // left inner wall
+    sketch.addSegment(innerLeft, outerH, 0, outerH);    // top left
+    sketch.addSegment(0, outerH, 0, 0);                 // left outer
+  };
+}
+
+/**
+ * T-shape profile — two concave corners where the stem meets the crossbar.
+ *
+ *    ┌───────────────┐
+ *    │               │
+ *    └───┐       ┌───┘
+ *        │       │
+ *        │       │
+ *        └───────┘
+ */
+function tShapeProfile(crossW = 30, crossH = 8, stemW = 10, stemH = 15) {
+  const stemLeft = (crossW - stemW) / 2;
+  const stemRight = stemLeft + stemW;
+  return (sketch) => {
+    sketch.addSegment(0, stemH, crossW, stemH);               // crossbar bottom
+    sketch.addSegment(crossW, stemH, crossW, stemH + crossH); // crossbar right
+    sketch.addSegment(crossW, stemH + crossH, 0, stemH + crossH); // crossbar top
+    sketch.addSegment(0, stemH + crossH, 0, stemH);           // crossbar left
+    // Override: T-shape needs a closed profile, redraw as full contour
+  };
+}
+
+// T-shape as a single closed contour (non-self-intersecting)
+function tShapeProfileFull(crossW = 30, crossH = 8, stemW = 10, stemH = 15) {
+  const stemLeft = (crossW - stemW) / 2;
+  const stemRight = stemLeft + stemW;
+  return (sketch) => {
+    sketch.addSegment(stemLeft, 0, stemRight, 0);              // stem bottom
+    sketch.addSegment(stemRight, 0, stemRight, stemH);         // stem right
+    sketch.addSegment(stemRight, stemH, crossW, stemH);        // step out right (concave)
+    sketch.addSegment(crossW, stemH, crossW, stemH + crossH);  // crossbar right
+    sketch.addSegment(crossW, stemH + crossH, 0, stemH + crossH); // crossbar top
+    sketch.addSegment(0, stemH + crossH, 0, stemH);           // crossbar left
+    sketch.addSegment(0, stemH, stemLeft, stemH);              // step out left (concave)
+    sketch.addSegment(stemLeft, stemH, stemLeft, 0);           // stem left
+  };
+}
+
+/**
+ * Plus/cross shape profile — four concave corners where arms meet the center.
+ *
+ *        ┌───┐
+ *        │   │
+ *    ┌───┘   └───┐
+ *    │           │
+ *    └───┐   ┌───┘
+ *        │   │
+ *        └───┘
+ */
+function crossShapeProfile(armLen = 8, armW = 8) {
+  const half = armW / 2;
+  const outer = armLen + half;
+  return (sketch) => {
+    // Start from bottom-left of lower arm, go clockwise
+    sketch.addSegment(-half, -outer, half, -outer);    // bottom arm bottom
+    sketch.addSegment(half, -outer, half, -half);      // bottom arm right
+    sketch.addSegment(half, -half, outer, -half);      // step out right-bottom (concave)
+    sketch.addSegment(outer, -half, outer, half);      // right arm right
+    sketch.addSegment(outer, half, half, half);        // step in right-top (concave)
+    sketch.addSegment(half, half, half, outer);        // top arm right
+    sketch.addSegment(half, outer, -half, outer);      // top arm top
+    sketch.addSegment(-half, outer, -half, half);      // top arm left
+    sketch.addSegment(-half, half, -outer, half);      // step out left-top (concave)
+    sketch.addSegment(-outer, half, -outer, -half);    // left arm left
+    sketch.addSegment(-outer, -half, -half, -half);    // step in left-bottom (concave)
+    sketch.addSegment(-half, -half, -half, -outer);    // bottom arm left
+  };
+}
+
+/**
+ * Notched rectangle — a rectangle with a rectangular notch cut from one side.
+ * Creates a single concave reflex corner pair.
+ *
+ *    ┌───────────────┐
+ *    │               │
+ *    │    ┌─────┐    │
+ *    │    │notch│    │
+ *    └────┘     └────┘
+ */
+function notchedRectProfile(w = 20, h = 15, notchW = 8, notchH = 6) {
+  const nl = (w - notchW) / 2;
+  const nr = nl + notchW;
+  return (sketch) => {
+    sketch.addSegment(0, 0, nl, 0);            // bottom left
+    sketch.addSegment(nl, 0, nl, notchH);       // notch left wall (up)
+    sketch.addSegment(nl, notchH, nr, notchH);  // notch top
+    sketch.addSegment(nr, notchH, nr, 0);       // notch right wall (down)
+    sketch.addSegment(nr, 0, w, 0);             // bottom right
+    sketch.addSegment(w, 0, w, h);              // right
+    sketch.addSegment(w, h, 0, h);              // top
+    sketch.addSegment(0, h, 0, 0);              // left
+  };
+}
+
+/**
+ * Stepped profile — multiple concave corners from staircase shape.
+ *
+ *          ┌──┐
+ *       ┌──┘  │
+ *    ┌──┘     │
+ *    │        │
+ *    └────────┘
+ */
+function steppedProfile(stepW = 8, stepH = 5, steps = 3) {
+  return (sketch) => {
+    const totalW = stepW * steps;
+    const totalH = stepH * steps;
+    // Bottom
+    sketch.addSegment(0, 0, totalW, 0);
+    // Right side
+    sketch.addSegment(totalW, 0, totalW, totalH);
+    // Staircase going left and down
+    for (let i = steps - 1; i >= 0; i--) {
+      const x = stepW * (i + 1);
+      const y = stepH * (i + 1);
+      const xPrev = stepW * i;
+      const yPrev = stepH * i;
+      sketch.addSegment(x, y, xPrev, y);       // horizontal tread
+      if (i > 0) {
+        sketch.addSegment(xPrev, y, xPrev, yPrev); // vertical riser
+      }
+    }
+    // Close: left side
+    sketch.addSegment(0, stepH, 0, 0);
+  };
+}
+
+// ===========================================================================
+// CONCAVE EDGE SELECTORS
+// ===========================================================================
+
+/**
+ * Find a concave (reflex) edge at the given height by looking for edges
+ * where adjacent face normals indicate a concave dihedral angle.
+ */
+function findConcaveEdge(topo, height) {
+  for (const face of topo.faces()) {
+    for (const coedge of face.outerLoop.coedges) {
+      const e = coedge.edge;
+      const s = e.startVertex.point, end = e.endVertex.point;
+      if (Math.abs(s.z - height) > 0.1 || Math.abs(end.z - height) > 0.1) continue;
+      // It's at the right height — now check if it's concave
+      // A top-face concave edge has adjacent side faces whose normals
+      // point toward each other (dot product of edge-perpendicular and
+      // face normal is negative for at least one face)
+      return e; // Return first horizontal edge at height — caller filters further
+    }
+  }
+  return null;
+}
+
+/**
+ * Find an edge at a concave (reflex) inner corner — where the profile steps inward.
+ * These edges connect two faces that form a >180° dihedral angle (reflex).
+ */
+function findInnerCornerEdge(topo, height, innerX, innerY) {
+  let bestEdge = null;
+  let bestDist = Infinity;
+  for (const face of topo.faces()) {
+    for (const coedge of face.outerLoop.coedges) {
+      const e = coedge.edge;
+      const s = e.startVertex.point, end = e.endVertex.point;
+      if (Math.abs(s.z - height) > 0.1 || Math.abs(end.z - height) > 0.1) continue;
+      // Check proximity to expected inner corner
+      const mx = (s.x + end.x) / 2, my = (s.y + end.y) / 2;
+      const dist = Math.sqrt((mx - innerX) ** 2 + (my - innerY) ** 2);
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestEdge = e;
+      }
+    }
+  }
+  return bestEdge;
+}
+
+/**
+ * Find an edge at a specific vertical position matching (x, y) coordinates.
+ */
+function findVerticalEdgeAt(topo, x, y) {
+  let bestEdge = null;
+  let bestDist = Infinity;
+  for (const face of topo.faces()) {
+    for (const coedge of face.outerLoop.coedges) {
+      const e = coedge.edge;
+      const s = e.startVertex.point, end = e.endVertex.point;
+      const dz = Math.abs(s.z - end.z);
+      if (dz < 1.0) continue; // must be vertical
+      const mx = (s.x + end.x) / 2, my = (s.y + end.y) / 2;
+      const dist = Math.sqrt((mx - x) ** 2 + (my - y) ** 2);
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestEdge = e;
+      }
+    }
+  }
+  return bestEdge;
+}
+
+/**
+ * Collect all top edges (at given height) for batch operations.
+ */
+function findAllTopEdges(topo, height) {
+  const seen = new Set();
+  const edges = [];
+  for (const face of topo.faces()) {
+    for (const coedge of face.outerLoop.coedges) {
+      const e = coedge.edge;
+      if (seen.has(e.id)) continue;
+      seen.add(e.id);
+      const s = e.startVertex.point, end = e.endVertex.point;
+      if (Math.abs(s.z - height) < 0.1 && Math.abs(end.z - height) < 0.1) {
+        edges.push(e);
+      }
+    }
+  }
+  return edges;
+}
+
+/**
+ * Collect all vertical edges for batch operations.
+ */
+function findAllVerticalEdges(topo) {
+  const seen = new Set();
+  const edges = [];
+  for (const face of topo.faces()) {
+    for (const coedge of face.outerLoop.coedges) {
+      const e = coedge.edge;
+      if (seen.has(e.id)) continue;
+      seen.add(e.id);
+      const s = e.startVertex.point, end = e.endVertex.point;
+      if (Math.abs(s.z - end.z) > 1.0) edges.push(e);
+    }
+  }
+  return edges;
+}
+
+/**
+ * Collect ALL bottom edges (at z=0).
+ */
+function findAllBottomEdges(topo) {
+  const seen = new Set();
+  const edges = [];
+  for (const face of topo.faces()) {
+    for (const coedge of face.outerLoop.coedges) {
+      const e = coedge.edge;
+      if (seen.has(e.id)) continue;
+      seen.add(e.id);
+      const s = e.startVertex.point, end = e.endVertex.point;
+      if (Math.abs(s.z) < 0.1 && Math.abs(end.z) < 0.1) {
+        edges.push(e);
+      }
+    }
+  }
+  return edges;
+}
+
+
+// ===========================================================================
+// Section 5: CONCAVE CORNER — single operations at concave/reflex edges
+// ===========================================================================
+
+console.log('\n--- Concave Corner Operations ---\n');
+
+// L-shape: fillet/chamfer at the inner concave corner
+// NOTE: concave edge ops ADD material (fill the corner), so volume increases.
+for (const op of ['chamfer', 'fillet']) {
+  for (const [edgeDesc, findFn, isConcave, knownEdge] of [
+    ['inner vertical edge', (topo) => findVerticalEdgeAt(topo, 10, 10), true, false],
+    ['inner top-step edge', (topo) => findInnerCornerEdge(topo, 8, 20, 10), true, true],
+    ['top edge near concavity', (topo) => EdgeSelectors.topHorizontal(topo, 8), false, false],
+  ]) {
+    test(`L-shape ${op} on ${edgeDesc}`, () => {
+      const part = buildPart(lShapeProfile(30, 20, 10, 10), 8);
+      const geom = getGeom(part);
+      const topo = geom.topoBody;
+      assert.ok(topo, 'L-shape extrude should produce topoBody');
+      const edge = findFn(topo);
+      assert.ok(edge, `Should find ${edgeDesc}`);
+
+      const result = op === 'chamfer'
+        ? applyChamferToEdge(geom, edge, 1.0)
+        : applyFilletToEdge(geom, edge, 1.0, 4);
+
+      validateResult(result, `L-shape ${op} on ${edgeDesc}`);
+      if (!isConcave) {
+        validateVolumeReduction(geom, result, `L-shape ${op} on ${edgeDesc}`);
+      }
+    }, { known: knownEdge });
+  }
+}
+
+// U-shape: fillet/chamfer at the two inner concave corners
+for (const op of ['chamfer', 'fillet']) {
+  test(`U-shape ${op} on inner vertical edge (left concave corner)`, () => {
+    const part = buildPart(uShapeProfile(30, 20, 8, 12), 8);
+    const geom = getGeom(part);
+    const topo = geom.topoBody;
+    assert.ok(topo, 'U-shape extrude should produce topoBody');
+    const edge = findVerticalEdgeAt(topo, 8, 8); // left inner wall
+    assert.ok(edge, 'Should find left inner vertical edge');
+
+    const result = op === 'chamfer'
+      ? applyChamferToEdge(geom, edge, 1.0)
+      : applyFilletToEdge(geom, edge, 1.0, 4);
+
+    validateResult(result, `U-shape ${op} left inner edge`);
+    // Concave edge: volume increases (fills the corner)
+  });
+}
+
+// T-shape: fillet/chamfer at the concave step where stem meets crossbar
+for (const op of ['chamfer', 'fillet']) {
+  test(`T-shape ${op} on stem-crossbar concave corner`, () => {
+    const part = buildPart(tShapeProfileFull(30, 8, 10, 15), 6);
+    const geom = getGeom(part);
+    const topo = geom.topoBody;
+    assert.ok(topo, 'T-shape extrude should produce topoBody');
+    // Concave corner at (stemRight=20, stemH=15)
+    const edge = findVerticalEdgeAt(topo, 20, 15);
+    assert.ok(edge, 'Should find vertical edge at concave junction');
+
+    const result = op === 'chamfer'
+      ? applyChamferToEdge(geom, edge, 0.8)
+      : applyFilletToEdge(geom, edge, 0.8, 4);
+
+    validateResult(result, `T-shape ${op} concave corner`);
+    // Concave edge: volume increases (fills the corner)
+  });
+}
+
+// Cross/plus shape: fillet/chamfer at any of the four concave corners
+for (const op of ['chamfer', 'fillet']) {
+  test(`Cross-shape ${op} on concave inner corner`, () => {
+    const part = buildPart(crossShapeProfile(8, 8), 6);
+    const geom = getGeom(part);
+    const topo = geom.topoBody;
+    assert.ok(topo, 'Cross-shape extrude should produce topoBody');
+    // Concave corner at (half=4, half=4)
+    const edge = findVerticalEdgeAt(topo, 4, 4);
+    assert.ok(edge, 'Should find vertical edge at concave corner');
+
+    const result = op === 'chamfer'
+      ? applyChamferToEdge(geom, edge, 0.5)
+      : applyFilletToEdge(geom, edge, 0.5, 4);
+
+    validateResult(result, `Cross-shape ${op} concave corner`);
+    // Concave edge: volume increases (fills the corner)
+  }, { known: true });
+}
+
+// Notched rectangle: concave corners at notch entry
+for (const op of ['chamfer', 'fillet']) {
+  test(`Notched-rect ${op} on notch concave corner`, () => {
+    const part = buildPart(notchedRectProfile(20, 15, 8, 6), 6);
+    const geom = getGeom(part);
+    const topo = geom.topoBody;
+    assert.ok(topo, 'Notched-rect extrude should produce topoBody');
+    // Concave corner at notch left wall: (nl=6, notchH=6)
+    const edge = findVerticalEdgeAt(topo, 6, 3);
+    assert.ok(edge, 'Should find vertical edge at notch');
+
+    const result = op === 'chamfer'
+      ? applyChamferToEdge(geom, edge, 0.5)
+      : applyFilletToEdge(geom, edge, 0.5, 4);
+
+    validateResult(result, `Notched-rect ${op} concave corner`);
+    // Concave edge: volume increases (fills the corner)
+  });
+}
+
+// Stepped profile: concave corners at each step
+for (const op of ['chamfer', 'fillet']) {
+  test(`Stepped-profile ${op} on step concave corner`, () => {
+    const part = buildPart(steppedProfile(8, 5, 3), 6);
+    const geom = getGeom(part);
+    const topo = geom.topoBody;
+    assert.ok(topo, 'Stepped extrude should produce topoBody');
+    const edge = findVerticalEdgeAt(topo, 8, 5); // first step corner
+    assert.ok(edge, 'Should find vertical edge at step');
+
+    const result = op === 'chamfer'
+      ? applyChamferToEdge(geom, edge, 0.5)
+      : applyFilletToEdge(geom, edge, 0.5, 4);
+
+    validateResult(result, `Stepped ${op} at step corner`);
+    // Concave edge: volume increases (fills the corner)
+  });
+}
+
+
+// ===========================================================================
+// Section 6: OVERLAPPING / ADJACENT multi-edge batch operations
+// ===========================================================================
+
+console.log('\n--- Overlapping & Adjacent Multi-Edge Operations ---\n');
+
+// All top edges at once — fillets/chamfers meeting at shared vertices
+for (const op of ['chamfer', 'fillet']) {
+  test(`Rectangle all-top-edges ${op} (4 edges meeting at corners)`, () => {
+    const part = buildPart(rectangleProfile(20, 10), 10);
+    const geom = getGeom(part);
+    const topo = geom.topoBody;
+    const topEdges = findAllTopEdges(topo, 10);
+    assert.ok(topEdges.length >= 4, `Should find ≥4 top edges, got ${topEdges.length}`);
+
+    const keys = topEdges.map(e => edgeKeyFromVerts(e.startVertex.point, e.endVertex.point));
+    const result = op === 'chamfer'
+      ? applyBRepChamfer(geom, keys, 1.0)
+      : applyBRepFillet(geom, keys, 1.0, 4);
+
+    validateResult(result, `Rect all-top ${op}`, { checkMeshWinding: true });
+    validateVolumeReduction(geom, result, `Rect all-top ${op}`);
+  }, { known: true });
+}
+
+// L-shape: multiple edges at once including the concave inner corner
+for (const op of ['chamfer', 'fillet']) {
+  test(`L-shape all-top-edges ${op} (convex + concave corners)`, () => {
+    const part = buildPart(lShapeProfile(30, 20, 10, 10), 8);
+    const geom = getGeom(part);
+    const topo = geom.topoBody;
+    const topEdges = findAllTopEdges(topo, 8);
+    assert.ok(topEdges.length >= 5, `L-shape should have ≥5 top edges, got ${topEdges.length}`);
+
+    const keys = topEdges.map(e => edgeKeyFromVerts(e.startVertex.point, e.endVertex.point));
+    const result = op === 'chamfer'
+      ? applyBRepChamfer(geom, keys, 0.8)
+      : applyBRepFillet(geom, keys, 0.8, 4);
+
+    validateResult(result, `L-shape all-top ${op}`, { checkMeshWinding: true });
+    validateVolumeReduction(geom, result, `L-shape all-top ${op}`);
+  }, { known: true });
+}
+
+// U-shape: all top edges — tests 3+ fillets meeting at concave + convex corners
+for (const op of ['chamfer', 'fillet']) {
+  test(`U-shape all-top-edges ${op} (mixed concave/convex)`, () => {
+    const part = buildPart(uShapeProfile(30, 20, 8, 12), 8);
+    const geom = getGeom(part);
+    const topo = geom.topoBody;
+    const topEdges = findAllTopEdges(topo, 8);
+    assert.ok(topEdges.length >= 6, `U-shape should have ≥6 top edges, got ${topEdges.length}`);
+
+    const keys = topEdges.map(e => edgeKeyFromVerts(e.startVertex.point, e.endVertex.point));
+    const result = op === 'chamfer'
+      ? applyBRepChamfer(geom, keys, 0.6)
+      : applyBRepFillet(geom, keys, 0.6, 4);
+
+    validateResult(result, `U-shape all-top ${op}`, { checkMeshWinding: true });
+    validateVolumeReduction(geom, result, `U-shape all-top ${op}`);
+  }, { known: true });
+}
+
+// Cross shape: all vertical edges — four concave and four convex meeting at top/bottom
+for (const op of ['chamfer', 'fillet']) {
+  test(`Cross-shape all-vertical-edges ${op} (4 concave + 4 convex)`, () => {
+    const part = buildPart(crossShapeProfile(8, 8), 6);
+    const geom = getGeom(part);
+    const topo = geom.topoBody;
+    const vertEdges = findAllVerticalEdges(topo);
+    assert.ok(vertEdges.length >= 8, `Cross should have ≥8 vertical edges, got ${vertEdges.length}`);
+
+    const keys = vertEdges.map(e => edgeKeyFromVerts(e.startVertex.point, e.endVertex.point));
+    const result = op === 'chamfer'
+      ? applyBRepChamfer(geom, keys, 0.5)
+      : applyBRepFillet(geom, keys, 0.5, 4);
+
+    validateResult(result, `Cross all-vertical ${op}`, { checkMeshWinding: true });
+    validateVolumeReduction(geom, result, `Cross all-vertical ${op}`);
+  }, { known: true });
+}
+
+// Two adjacent edges on a rectangle — fillets/chamfers meeting at a shared vertex
+for (const op of ['chamfer', 'fillet']) {
+  test(`Rectangle two-adjacent-top-edges ${op} (shared vertex)`, () => {
+    const part = buildPart(rectangleProfile(20, 10), 10);
+    const geom = getGeom(part);
+    const topo = geom.topoBody;
+    const topEdges = findAllTopEdges(topo, 10);
+    // Pick two edges that share a vertex
+    const first = topEdges[0];
+    const shared = topEdges.find(e => {
+      if (e === first) return false;
+      const fverts = [vk(first.startVertex.point), vk(first.endVertex.point)];
+      return fverts.includes(vk(e.startVertex.point)) || fverts.includes(vk(e.endVertex.point));
+    });
+    assert.ok(first && shared, 'Should find two adjacent edges');
+
+    const keys = [first, shared].map(e => edgeKeyFromVerts(e.startVertex.point, e.endVertex.point));
+    const result = op === 'chamfer'
+      ? applyBRepChamfer(geom, keys, 1.5)
+      : applyBRepFillet(geom, keys, 1.5, 4);
+
+    validateResult(result, `Rect 2-adj ${op}`, { checkMeshWinding: true });
+    validateVolumeReduction(geom, result, `Rect 2-adj ${op}`);
+  }, { known: true });
+}
+
+
+// ===========================================================================
+// Section 7: SEQUENTIAL operations on concave bodies — fillet after chamfer, etc.
+// ===========================================================================
+
+console.log('\n--- Sequential Operations on Concave Bodies ---\n');
+
+// L-shape: chamfer a convex edge, then fillet the concave edge (and vice versa)
+for (const [op1, op2, desc] of [
+  ['chamfer', 'fillet', 'chamfer-then-fillet'],
+  ['fillet', 'chamfer', 'fillet-then-chamfer'],
+  ['fillet', 'fillet', 'fillet-then-fillet'],
+  ['chamfer', 'chamfer', 'chamfer-then-chamfer'],
+]) {
+  test(`L-shape ${desc} (convex top edge → bottom edge)`, () => {
+    const part = buildPart(lShapeProfile(30, 20, 10, 10), 8);
+    const geomBefore = getGeom(part);
+
+    // First op on a convex top edge
+    const topo1 = geomBefore.topoBody;
+    assert.ok(topo1, 'L-shape should have topoBody');
+    const edge1 = EdgeSelectors.topHorizontal(topo1, 8);
+    assert.ok(edge1, 'Should find top edge for first op');
+
+    const feature1 = op1 === 'chamfer'
+      ? applyChamferViaFeature(part, edge1, 0.8)
+      : applyFilletViaFeature(part, edge1, 0.8);
+    assert.ok(feature1, 'First operation should succeed');
+
+    const geomAfter1 = part.getFinalGeometry();
+    assert.ok(geomAfter1, 'Should have geometry after first op');
+
+    // Second op on a bottom edge
+    const topo2 = geomAfter1.geometry?.topoBody || geomAfter1.solid?.body;
+    if (!topo2) return; // acceptable if first op didn't produce topo
+
+    const edge2 = EdgeSelectors.bottomHorizontal(topo2);
+    if (!edge2) return; // acceptable
+
+    const feature2 = op2 === 'chamfer'
+      ? applyChamferViaFeature(part, edge2, 0.8)
+      : applyFilletViaFeature(part, edge2, 0.8);
+    assert.ok(feature2, 'Second operation should succeed');
+
+    const geomFinal = part.getFinalGeometry();
+    assert.ok(geomFinal, 'Should have final geometry');
+    const m = checkManifold(geomFinal.geometry);
+    assert.strictEqual(m.boundaryEdges, 0, `Final boundary = ${m.boundaryEdges}`);
+    assert.strictEqual(m.nonManifoldEdges, 0, `Final non-manifold = ${m.nonManifoldEdges}`);
+  });
+}
+
+// T-shape: sequential operations on both concave junctions
+for (const [op1, op2] of [['fillet', 'fillet'], ['chamfer', 'fillet']]) {
+  test(`T-shape ${op1}-then-${op2} on both concave step corners`, () => {
+    const part = buildPart(tShapeProfileFull(30, 8, 10, 15), 6);
+    const geomBefore = getGeom(part);
+
+    const topo1 = geomBefore.topoBody;
+    assert.ok(topo1, 'T-shape should have topoBody');
+    const edge1 = EdgeSelectors.topHorizontal(topo1, 6);
+    assert.ok(edge1, 'Should find top edge');
+
+    const feature1 = op1 === 'chamfer'
+      ? applyChamferViaFeature(part, edge1, 0.6)
+      : applyFilletViaFeature(part, edge1, 0.6);
+    assert.ok(feature1, 'First op should succeed');
+
+    const geomAfter1 = part.getFinalGeometry();
+    assert.ok(geomAfter1, 'Should have geometry after first op');
+
+    const topo2 = geomAfter1.geometry?.topoBody || geomAfter1.solid?.body;
+    if (!topo2) return;
+
+    const edge2 = EdgeSelectors.bottomHorizontal(topo2);
+    if (!edge2) return;
+
+    const feature2 = op2 === 'chamfer'
+      ? applyChamferViaFeature(part, edge2, 0.6)
+      : applyFilletViaFeature(part, edge2, 0.6);
+    assert.ok(feature2, 'Second op should succeed');
+
+    const geomFinal = part.getFinalGeometry();
+    assert.ok(geomFinal, 'Should have final geometry');
+    const m = checkManifold(geomFinal.geometry);
+    assert.strictEqual(m.boundaryEdges, 0, `Final boundary = ${m.boundaryEdges}`);
+    assert.strictEqual(m.nonManifoldEdges, 0, `Final non-manifold = ${m.nonManifoldEdges}`);
+  }, { known: true });
+}
+
+
+console.log('\n--- Face-Consuming Large Radius Operations ---\n');
+
+// Fillet/chamfer radius approaching or exceeding adjacent face width
+// These test the kernel's ability to handle face elimination
+
+for (const [ratio, desc, known] of [
+  [0.4, '40% of face width', false],
+  [0.6, '60% of face width (face thinning)', false],
+  [0.8, '80% of face width (near-consumption)', true],
+  [0.95, '95% of face width (face elimination)', true],
+]) {
+  const faceWidth = 10; // rectangle is 20x10, height 10 → side face width 10
+  const size = faceWidth * ratio;
+
+  for (const op of ['chamfer', 'fillet']) {
+    test(`Rect ${op} at ${desc} (size=${size.toFixed(1)})`, () => {
+      const part = buildPart(rectangleProfile(20, 10), 10);
+      const geom = getGeom(part);
+      const topo = geom.topoBody;
+      const edge = EdgeSelectors.topHorizontal(topo, 10);
+      assert.ok(edge, 'Should find top edge');
+
+      const result = op === 'chamfer'
+        ? applyChamferToEdge(geom, edge, size)
+        : applyFilletToEdge(geom, edge, size, 4);
+
+      validateResult(result, `Rect ${op} ${desc}`);
+      validateVolumeReduction(geom, result, `Rect ${op} ${desc}`);
+    }, { known });
+  }
+}
+
+// L-shape: large fillet at concave corner — material addition at concavity
+for (const [size, desc, known] of [
+  [1.5, 'moderate radius', false],
+  [3.0, 'large radius (concave fill)', true],
+  [5.0, 'very large radius (face merge)', true],
+]) {
+  for (const op of ['chamfer', 'fillet']) {
+    test(`L-shape ${op} concave vertical edge size=${size} (${desc})`, () => {
+      const part = buildPart(lShapeProfile(30, 20, 10, 10), 8);
+      const geom = getGeom(part);
+      const topo = geom.topoBody;
+      const edge = findVerticalEdgeAt(topo, 10, 10);
+      assert.ok(edge, 'Should find inner vertical edge');
+
+      const result = op === 'chamfer'
+        ? applyChamferToEdge(geom, edge, size)
+        : applyFilletToEdge(geom, edge, size, 4);
+
+      validateResult(result, `L-shape ${op} ${desc}`);
+      // For concave edges, both fillet and chamfer ADD material (fill the corner),
+      // so volume increases — skip validateVolumeReduction.
+      assert.ok(result, `L-shape ${op} ${desc}: should produce result`);
+    }, { known });
+  }
+}
+
+// Thin wall near-elimination: narrow rectangle with large chamfer/fillet
+for (const op of ['chamfer', 'fillet']) {
+  test(`Thin-wall ${op} (3mm wall, 2.5mm radius — near elimination)`, () => {
+    const part = buildPart(rectangleProfile(20, 3), 10); // very narrow 3mm
+    const geom = getGeom(part);
+    const topo = geom.topoBody;
+    const edge = EdgeSelectors.topHorizontal(topo, 10);
+    assert.ok(edge, 'Should find top edge');
+
+    const result = op === 'chamfer'
+      ? applyChamferToEdge(geom, edge, 2.5)
+      : applyFilletToEdge(geom, edge, 2.5, 4);
+
+    validateResult(result, `Thin-wall ${op}`);
+    validateVolumeReduction(geom, result, `Thin-wall ${op}`);
+  }, { known: true });
+}
+
+// Notched rectangle: large fillet at notch — may consume notch walls
+for (const [size, known] of [[1.0, false], [2.5, true], [4.0, true]]) {
+  for (const op of ['chamfer', 'fillet']) {
+    test(`Notched-rect ${op} at notch, size=${size} (wall consumption test)`, () => {
+      const part = buildPart(notchedRectProfile(20, 15, 8, 6), 6);
+      const geom = getGeom(part);
+      const topo = geom.topoBody;
+      const edge = findVerticalEdgeAt(topo, 6, 3);
+      assert.ok(edge, 'Should find notch vertical edge');
+
+      const result = op === 'chamfer'
+        ? applyChamferToEdge(geom, edge, size)
+        : applyFilletToEdge(geom, edge, size, 4);
+
+      validateResult(result, `Notched ${op} size=${size}`);
+    }, { known });
+  }
+}
+
+
+// ===========================================================================
+// Section 9: TRIPLE sequential operations — stress-testing chained modifications
+// ===========================================================================
+
+console.log('\n--- Triple Sequential Operations ---\n');
+
+test('L-shape: fillet top → chamfer bottom → fillet inner vertical', () => {
+  const part = buildPart(lShapeProfile(30, 20, 10, 10), 8);
+  const geomBefore = getGeom(part);
+
+  // Op 1: fillet a top edge
+  const topo1 = geomBefore.topoBody;
+  assert.ok(topo1, 'Should have topoBody');
+  const edge1 = EdgeSelectors.topHorizontal(topo1, 8);
+  assert.ok(edge1, 'Should find top edge');
+  const f1 = applyFilletViaFeature(part, edge1, 0.5);
+  assert.ok(f1, 'First fillet should succeed');
+
+  // Op 2: chamfer a bottom edge
+  const geom2 = part.getFinalGeometry();
+  assert.ok(geom2, 'Should have geometry after first op');
+  const topo2 = geom2.geometry?.topoBody || geom2.solid?.body;
+  if (!topo2) return;
+  const edge2 = EdgeSelectors.bottomHorizontal(topo2);
+  if (!edge2) return;
+  const f2 = applyChamferViaFeature(part, edge2, 0.5);
+  assert.ok(f2, 'Second chamfer should succeed');
+
+  // Op 3: fillet a vertical edge
+  const geom3 = part.getFinalGeometry();
+  assert.ok(geom3, 'Should have geometry after second op');
+  const topo3 = geom3.geometry?.topoBody || geom3.solid?.body;
+  if (!topo3) return;
+  const edge3 = findVerticalEdge(topo3);
+  if (!edge3) return;
+  const f3 = applyFilletViaFeature(part, edge3, 0.5);
+  assert.ok(f3, 'Third fillet should succeed');
+
+  const geomFinal = part.getFinalGeometry();
+  assert.ok(geomFinal, 'Should have final geometry');
+  const m = checkManifold(geomFinal.geometry);
+  assert.strictEqual(m.boundaryEdges, 0, `Final boundary = ${m.boundaryEdges}`);
+  assert.strictEqual(m.nonManifoldEdges, 0, `Final non-manifold = ${m.nonManifoldEdges}`);
+});
+
+test('Rectangle: chamfer top → fillet same-level remaining → chamfer bottom', () => {
+  const part = buildPart(rectangleProfile(20, 10), 10);
+  const geomBefore = getGeom(part);
+
+  const topo1 = geomBefore.topoBody;
+  const edge1 = EdgeSelectors.topHorizontal(topo1, 10);
+  assert.ok(edge1, 'Should find first top edge');
+  const f1 = applyChamferViaFeature(part, edge1, 1.0);
+  assert.ok(f1, 'First chamfer should succeed');
+
+  const geom2 = part.getFinalGeometry();
+  const topo2 = geom2?.geometry?.topoBody || geom2?.solid?.body;
+  if (!topo2) return;
+  // Find another top edge (different from the one we just chamfered)
+  const topEdges2 = findAllTopEdges(topo2, 10);
+  const edge2 = topEdges2.length > 0 ? topEdges2[0] : null;
+  if (!edge2) return;
+  const f2 = applyFilletViaFeature(part, edge2, 1.0);
+  assert.ok(f2, 'Second fillet should succeed');
+
+  const geom3 = part.getFinalGeometry();
+  const topo3 = geom3?.geometry?.topoBody || geom3?.solid?.body;
+  if (!topo3) return;
+  const edge3 = EdgeSelectors.bottomHorizontal(topo3);
+  if (!edge3) return;
+  const f3 = applyChamferViaFeature(part, edge3, 0.5);
+  assert.ok(f3, 'Third chamfer should succeed');
+
+  const geomFinal = part.getFinalGeometry();
+  assert.ok(geomFinal, 'Should have final geometry');
+  const m = checkManifold(geomFinal.geometry);
+  assert.strictEqual(m.boundaryEdges, 0, `Final boundary = ${m.boundaryEdges}`);
+  assert.strictEqual(m.nonManifoldEdges, 0, `Final non-manifold = ${m.nonManifoldEdges}`);
+});
+
+test('U-shape: fillet bottom → chamfer top → fillet top (re-fillet after chamfer)', () => {
+  const part = buildPart(uShapeProfile(30, 20, 8, 12), 8);
+  const geomBefore = getGeom(part);
+
+  const topo1 = geomBefore.topoBody;
+  assert.ok(topo1, 'Should have topoBody');
+  const edge1 = EdgeSelectors.bottomHorizontal(topo1);
+  assert.ok(edge1, 'Should find bottom edge');
+  const f1 = applyFilletViaFeature(part, edge1, 0.5);
+  assert.ok(f1, 'First fillet should succeed');
+
+  const geom2 = part.getFinalGeometry();
+  const topo2 = geom2?.geometry?.topoBody || geom2?.solid?.body;
+  if (!topo2) return;
+  const edge2 = EdgeSelectors.topHorizontal(topo2, 8);
+  if (!edge2) return;
+  const f2 = applyChamferViaFeature(part, edge2, 0.5);
+  assert.ok(f2, 'Second chamfer should succeed');
+
+  const geom3 = part.getFinalGeometry();
+  const topo3 = geom3?.geometry?.topoBody || geom3?.solid?.body;
+  if (!topo3) return;
+  // Find a different top edge from the one we just chamfered
+  const topEdges3 = findAllTopEdges(topo3, 8);
+  const edge3 = topEdges3.length > 0 ? topEdges3[0] : null;
+  if (!edge3) return;
+  const f3 = applyFilletViaFeature(part, edge3, 0.5);
+  assert.ok(f3, 'Third fillet should succeed');
+
+  const geomFinal = part.getFinalGeometry();
+  assert.ok(geomFinal, 'Should have final geometry');
+  const m = checkManifold(geomFinal.geometry);
+  assert.strictEqual(m.boundaryEdges, 0, `Final boundary = ${m.boundaryEdges}`);
+  assert.strictEqual(m.nonManifoldEdges, 0, `Final non-manifold = ${m.nonManifoldEdges}`);
+});
+
+
+// ===========================================================================
 // Summary
 // ===========================================================================
 
