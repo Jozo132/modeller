@@ -865,10 +865,16 @@ export class FaceTriangulator {
       } catch (_e) { /* keep boundaryNormal */ }
     }
 
-    if (!periodicSurface && triangles.length > 0) {
+    if (triangles.length > 0) {
       const [ua, ub, uc] = triangles[0];
       const triN = calculateNormal(evalPoint(ua), evalPoint(ub), evalPoint(uc));
-      if (_dot(triN, outwardRef) < 0) {
+      // For periodic surfaces (cylinders, etc.) the analytic UV parameterization
+      // may produce a parametric normal that disagrees with the NURBS surface's
+      // sameSense convention.  Use the boundary polygon Newell normal as the
+      // winding reference — it is always correct because the coedge orientation
+      // from the B-Rep topology guarantees a correctly wound boundary.
+      const windingRef = periodicSurface ? boundaryNormal : outwardRef;
+      if (_dot(triN, windingRef) < 0) {
         triangles = triangles.map(([a, b, c]) => [a, c, b]);
       }
     }
