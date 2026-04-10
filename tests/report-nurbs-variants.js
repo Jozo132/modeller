@@ -300,7 +300,7 @@ function buildSingleOpVariants() {
       surfacePairing: 'PLANE+PLANE non-orthogonal',
     });
     variants.push({
-      name: `Trapezoid ${op} on slanted edge (PLANE+PLANE, ~110°)`,
+      name: `Trapezoid ${op} on vertical/slanted edge (PLANE+PLANE, ~110°)`,
       profile: trapezoidProfile(20, 10, 10), extrudeHeight: 8,
       edgeSelector: 'vertical', operation: op, param,
       surfacePairing: 'PLANE+PLANE slanted',
@@ -695,8 +695,9 @@ async function generateReport(outputPath) {
     .text('NURBS Fillet/Chamfer', MARGIN, PAGE_H / 2 - 80, { align: 'center', width: PAGE_W - 2 * MARGIN })
     .text('Variant Test Report', { align: 'center', width: PAGE_W - 2 * MARGIN });
   doc.moveDown(2);
+  const timestamp = new Date().toISOString().slice(0, 19).replace('T', ' ');
   doc.fontSize(14).fillColor('#8899bb')
-    .text(`Generated: ${new Date().toISOString().slice(0, 19).replace('T', ' ')} UTC`, { align: 'center', width: PAGE_W - 2 * MARGIN })
+    .text(`Generated: ${timestamp} UTC`, { align: 'center', width: PAGE_W - 2 * MARGIN })
     .text(`${results.length} tests — ${passCount} passed, ${failCount} failed, ${knownCount} known edge cases`, { align: 'center', width: PAGE_W - 2 * MARGIN });
 
   doc.moveDown(4);
