@@ -51,7 +51,8 @@
     "test:workers": "node tests/test-worker-dispatcher.js",
     "test:telemetry": "node tests/test-telemetry.js",
     "test:assembly": "node tests/test-assembly-design.js",
-    "test:e2e": "npx playwright test"
+    "test:e2e": "npx playwright test",
+    "report:nurbs-variants": "node tests/report-nurbs-variants.js"
   },
   "files": [
     "js/",
