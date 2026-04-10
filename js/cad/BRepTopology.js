@@ -49,21 +49,32 @@ export class TopoVertex {
     this.edges = [];
     /** Unique id for topology graph traversal */
     this.id = TopoVertex._nextId++;
+    /**
+     * Creation-history-based stable identifier.
+     * Survives recompute, save/load, and upstream parameter edits as long as
+     * the topological structure of the creating feature remains the same.
+     * @type {string|null}
+     */
+    this.stableHash = null;
   }
 
   clone() {
     const v = new TopoVertex({ ...this.point }, this.tolerance);
     v.id = this.id;
+    v.stableHash = this.stableHash;
     return v;
   }
 
   serialize() {
-    return { id: this.id, point: { ...this.point }, tolerance: this.tolerance };
+    const data = { id: this.id, point: { ...this.point }, tolerance: this.tolerance };
+    if (this.stableHash) data.stableHash = this.stableHash;
+    return data;
   }
 
   static deserialize(data) {
     const v = new TopoVertex(data.point, data.tolerance || 0);
     v.id = data.id ?? v.id;
+    v.stableHash = data.stableHash || null;
     return v;
   }
 }
@@ -104,6 +115,11 @@ export class TopoEdge {
     /** @type {TopoCoEdge[]} Adjacent coedges (one per face sharing this edge) */
     this.coedges = [];
     this.id = TopoEdge._nextId++;
+    /**
+     * Creation-history-based stable identifier.
+     * @type {string|null}
+     */
+    this.stableHash = null;
 
     // Register with vertices
     if (startVertex && !startVertex.edges.includes(this)) startVertex.edges.push(this);
@@ -147,17 +163,20 @@ export class TopoEdge {
       this.tolerance,
     );
     e.id = this.id;
+    e.stableHash = this.stableHash;
     return e;
   }
 
   serialize() {
-    return {
+    const data = {
       id: this.id,
       startVertexId: this.startVertex ? this.startVertex.id : null,
       endVertexId: this.endVertex ? this.endVertex.id : null,
       curve: this.curve ? this.curve.serialize() : null,
       tolerance: this.tolerance,
     };
+    if (this.stableHash) data.stableHash = this.stableHash;
+    return data;
   }
 }
 TopoEdge._nextId = 0;
@@ -343,6 +362,14 @@ export class TopoFace {
     this.shared = null;
     this.tolerance = 0;
     this.id = TopoFace._nextId++;
+    /**
+     * Creation-history-based stable identifier.
+     * Assigned by the creating feature (e.g., ExtrudeFeature) and derived
+     * from the feature ID + structural role of the face in the feature
+     * (e.g., "feature_2_Face_Side_3").
+     * @type {string|null}
+     */
+    this.stableHash = null;
   }
 
   /**
@@ -414,13 +441,14 @@ export class TopoFace {
     f.fusedGroupId = this.fusedGroupId;
     f.tolerance = this.tolerance;
     f.id = this.id;
+    f.stableHash = this.stableHash;
     if (this.outerLoop) f.setOuterLoop(this.outerLoop.clone());
     for (const il of this.innerLoops) f.addInnerLoop(il.clone());
     return f;
   }
 
   serialize() {
-    return {
+    const data = {
       id: this.id,
       surfaceType: this.surfaceType,
       surface: this.surface ? this.surface.serialize() : null,
@@ -432,6 +460,8 @@ export class TopoFace {
       shared: this.shared,
       tolerance: this.tolerance,
     };
+    if (this.stableHash) data.stableHash = this.stableHash;
+    return data;
   }
 }
 TopoFace._nextId = 0;
@@ -654,6 +684,7 @@ export class TopoBody {
       const curve = ed.curve ? NurbsCurve.deserialize(ed.curve) : null;
       const e = new TopoEdge(sv, ev, curve, ed.tolerance || 0);
       e.id = ed.id;
+      e.stableHash = ed.stableHash || null;
       edgeMap.set(e.id, e);
     }
 
@@ -685,6 +716,7 @@ export class TopoBody {
       face.shared = fd.shared || null;
       face.surfaceInfo = fd.surfaceInfo || null;
       face.fusedGroupId = fd.fusedGroupId || null;
+      face.stableHash = fd.stableHash || null;
       face.tolerance = fd.tolerance || 0;
       if (fd.outerLoopId != null) {
         const ol = loopMap.get(fd.outerLoopId);
@@ -911,10 +943,56 @@ export function buildTopoBody(faceDescs, tol = DEFAULT_TOLERANCE) {
     face.shared = fd.shared || null;
     if (fd.surfaceInfo) face.surfaceInfo = fd.surfaceInfo;
     if (fd.fusedGroupId) face.fusedGroupId = fd.fusedGroupId;
+    if (fd.stableHash) face.stableHash = fd.stableHash;
     faces.push(face);
   }
 
   const shell = new TopoShell(faces);
   shell.closed = true; // Assume closed solid
   return new TopoBody([shell]);
+}
+
+// -----------------------------------------------------------------------
+// Stable hash derivation for edges and vertices
+// -----------------------------------------------------------------------
+
+/**
+ * Derive stable hashes for edges and vertices from adjacent face hashes.
+ *
+ * Edge hash: sorted join of adjacent face stableHashes separated by '+'.
+ * Vertex hash: sorted join of all adjacent face stableHashes separated by '+'.
+ *
+ * Only entities without an existing stableHash are assigned one, and only
+ * when at least one adjacent face has a stableHash.
+ *
+ * @param {TopoBody} body
+ */
+export function deriveEdgeAndVertexHashes(body) {
+  if (!body || !body.shells) return;
+
+  // Derive edge hashes from the pair of faces sharing each edge
+  for (const edge of body.edges()) {
+    if (edge.stableHash) continue;
+    const adjHashes = [];
+    for (const ce of edge.coedges) {
+      if (ce.face && ce.face.stableHash) adjHashes.push(ce.face.stableHash);
+    }
+    if (adjHashes.length === 0) continue;
+    adjHashes.sort();
+    edge.stableHash = `E:${adjHashes.join('+')}`;
+  }
+
+  // Derive vertex hashes from all adjacent faces
+  for (const vertex of body.vertices()) {
+    if (vertex.stableHash) continue;
+    const adjFaceHashes = new Set();
+    for (const edge of vertex.edges) {
+      for (const ce of edge.coedges) {
+        if (ce.face && ce.face.stableHash) adjFaceHashes.add(ce.face.stableHash);
+      }
+    }
+    if (adjFaceHashes.size === 0) continue;
+    const sorted = [...adjFaceHashes].sort();
+    vertex.stableHash = `V:${sorted.join('+')}`;
+  }
 }
