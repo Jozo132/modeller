@@ -57,9 +57,17 @@ return {
 
 ### Known Gaps
 
-- `applyChamfer()` / `applyFillet()` in `CSG.js` operate on mesh geometry,
-  not `TopoBody`. They return a minimal `BRep` but not a full `TopoBody`,
-  breaking the exact topology chain for downstream features.
+- **BSPLINE+BSPLINE fillet/chamfer**: Chamfering/filleting edges between two
+  BSPLINE faces (e.g., lens-shaped profiles) can produce topology gaps or
+  excessive volume removal. Tracked by the `test-nurbs-fillet-chamfer-variants`
+  test suite (8 known edge cases).
+- **Bezier bottom-edge chamfer**: Chamfering the bottom straight edge of a
+  mixed bezier profile produces boundary edges in some orientations.
+- **Sequential BSPLINE operations**: Chaining chamfer/fillet on BSPLINE faces
+  after a first operation can leave boundary edges in the mesh output.
+- **Tessellation winding**: BSPLINE face tessellation may produce inconsistent
+  triangle winding. The topology (TopoBody) is correct; only the mesh output
+  is affected.
 
 ---
 
@@ -81,14 +89,14 @@ js/
   part-manager.js   3D part workflow manager
   snap.js           Snap-to-grid/objects
   logger.js         Console logging
-  cad/              CAD kernel (45 modules)
+  cad/              CAD kernel (59 modules)
   dxf/              DXF import/export
   render/           Rendering pipeline
   ui/               UI panels and dialogs
   tools/            2D sketch tools
   entities/         Entity definitions
   workers/          Web workers
-tests/              Test suite (25+ test files)
+tests/              Test suite (53 test files)
 tools/              CLI render tools
 ```
 
@@ -218,6 +226,39 @@ Exact pipeline (`BooleanKernel.exactBooleanOp`):
 
 Supporting modules: `CurveCurveIntersect.js`, `CurveSurfaceIntersect.js`,
 `SurfaceSurfaceIntersect.js`, `Intersections.js` (dispatch).
+
+### Chamfer & Fillet — `js/cad/BRepChamfer.js`, `js/cad/BRepFillet.js`
+
+Both operate directly on `TopoBody`, preserving the exact topology chain:
+
+**Chamfer** (`applyBRepChamfer`):
+1. Compute offset directions perpendicular to edge on each adjacent face
+2. Create 4 trim points defining a quadrilateral bevel surface
+3. Trim original faces at offset points
+4. Insert planar bevel face with NURBS boundary curves
+5. Build new `TopoBody` with closure validation
+
+**Fillet** (`applyBRepFillet`):
+1. Precompute rolling-ball offset on each adjacent face
+2. Generate NURBS arc cross-sections via `NurbsCurve.createArc()`
+3. Clip trim points to neighboring edges for non-90° corners
+4. Merge shared vertex positions at multi-edge junctions
+5. Handle 3-edge corners with sphere-center patches
+6. Build exact `TopoBody` with fillet, trimmed, and corner faces
+
+**Surface pairing support**:
+
+| Pairing | Chamfer | Fillet | Notes |
+|---------|---------|--------|-------|
+| PLANE + PLANE (90°) | ✅ | ✅ | Full support |
+| PLANE + PLANE (non-90°) | ✅ | ✅ | Angles 45°–135° tested |
+| PLANE + BSPLINE | ✅ | ✅ | Via extruded-surface offset handler |
+| PLANE + CYLINDER | ⚠ | ⚠ | Known failures on round edges |
+| BSPLINE + BSPLINE | ⚠ | ⚠ | Known topology gaps (lens profiles) |
+
+Shared helpers between chamfer and fillet: `_computeOffsetDirs`,
+`_buildPlanarFaceDesc`, `_buildPlanarBoundarySegments`,
+`_extractFeatureFacesFromTopoBody`.
 
 ### Tessellation — `js/cad/Tessellation.js`
 
@@ -457,19 +498,32 @@ npm test                  # Full test suite
 npm run test:parametric   # Parametric feature tests
 ```
 
-25+ test files covering:
+53 test files (~22k lines) covering:
 
 | Area | Tests |
 |------|-------|
-| Geometry | test-nurbs, test-wasm-tessellation |
+| Geometry | test-nurbs, test-wasm-tessellation, test-mesh-quality (85 tests) |
 | Features | test-exact-extrude, test-exact-revolve, test-multi-body-chamfer-fillet |
-| Booleans | test-boolean-analytic, test-boolean-nurbs, test-csg-tjunction-fix |
-| Topology | test-brep-topology, test-coplanar-merge |
+| Chamfer/Fillet | test-brep-chamfer, test-spline-chamfer (17), test-nurbs-fillet-chamfer-variants (52) |
+| Booleans | test-boolean-analytic, test-boolean-nurbs, test-boolean-hardening |
+| Topology | test-brep-topology (29), test-coplanar-merge, test-stable-hash (21) |
 | STEP | test-step-import, test-step-export |
-| Sketching | test-sketch-drag, test-spline-multi-extrude, test-multi-sketch-planes |
+| Pipeline | test-feature-pipeline (46), test-toolkit (82), test-history-replay (60) |
+| Sketching | test-sketch-drag, test-spline-multi-extrude (23), test-multi-sketch-planes |
 | I/O | test-cmod-import-export, test-geometry-persistence |
 | UI | test-ui-workflow, test-face-selection, test-interaction-recorder |
 | Patterns | test-mirror-pattern |
+
+### Shared Test Helpers — `tests/test-helpers.js`
+
+Common utilities extracted to reduce duplication across test files:
+
+- `createTestContext(name)` — scoped test runner with pass/fail tracking
+- `assertApprox()` — floating-point approximate equality
+- `checkManifold()` / `assertManifold()` — mesh manifoldness validation
+- `countBoundaryEdges()` / `assertTopoClosed()` — TopoBody closure checks
+- `makeRectSketch()`, `makeCircleSketch()`, `makeBoxPart()` — sketch/part factories
+- `edgeKey()`, `findEdge()`, `getExtrudeResult()` — edge selection utilities
 
 ---
 

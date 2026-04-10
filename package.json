@@ -3,9 +3,25 @@
   "version": "1.0.0",
   "description": "Multipurpose parametric CAD modelling library — 3D viewer, 2D viewer, mesher, converter and tester in one. Usable as an NPM package for both Node.js (backend) and browser (frontend) environments.",
   "keywords": [
-    "cad", "modeller", "3d", "2d", "parametric", "nurbs", "brep", "csg",
-    "mesh", "sketch", "extrude", "revolve", "fillet", "chamfer",
-    "viewer", "converter", "step", "dxf", "cmod"
+    "cad",
+    "modeller",
+    "3d",
+    "2d",
+    "parametric",
+    "nurbs",
+    "brep",
+    "csg",
+    "mesh",
+    "sketch",
+    "extrude",
+    "revolve",
+    "fillet",
+    "chamfer",
+    "viewer",
+    "converter",
+    "step",
+    "dxf",
+    "cmod"
   ],
   "author": "Jozo132 <jozo132@gmail.com>",
   "license": "MIT",
@@ -35,7 +51,8 @@
     "test:workers": "node tests/test-worker-dispatcher.js",
     "test:telemetry": "node tests/test-telemetry.js",
     "test:assembly": "node tests/test-assembly-design.js",
-    "test:e2e": "npx playwright test"
+    "test:e2e": "npx playwright test",
+    "report:nurbs-variants": "node tests/report-nurbs-variants.js"
   },
   "files": [
     "js/",
@@ -47,7 +64,8 @@
   ],
   "devDependencies": {
     "@napi-rs/canvas": "^0.1.68",
-    "assemblyscript": "^0.28.9"
+    "assemblyscript": "^0.28.9",
+    "pdfkit": "^0.18.0"
   },
   "exports": {
     ".": {

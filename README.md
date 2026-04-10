@@ -1,54 +1,74 @@
 # CAD Modeller
 
-A browser-based 2D CAD modeller with parametric 3D part modeling capabilities. Built with vanilla JavaScript and HTML5 Canvas. Supports drawing, editing, and exporting geometry in DXF format.
+A browser-based parametric CAD modeller with exact NURBS/B-Rep geometry kernel, 2D sketch tools, and 3D part modeling. Built with vanilla JavaScript (ES modules) and an AssemblyScript → WebAssembly acceleration layer. Zero runtime dependencies. Runs in the browser and as a headless Node.js library.
 
 ## Features
 
-### 2D Drawing
-- **Drawing Tools** — Line, Rectangle, Circle, Arc, Polyline, Text, Dimension
+### Exact Geometry Kernel
+- **B-Rep Topology** — Full boundary representation: `TopoBody → TopoShell → TopoFace → TopoLoop → TopoCoEdge → TopoEdge → TopoVertex`
+- **NURBS Curves & Surfaces** — Rational B-splines with Cox-de Boor evaluation, arc/circle/ellipse factories, splitting, tessellation
+- **Analytic Surface Types** — Plane, Cylinder, Cone, Sphere, Torus, Extrusion, Revolution, B-Spline
+- **Exact Booleans** — Surface-surface intersection, face splitting, inside/outside classification, shell building
+- **WASM Acceleration** — Compiled AssemblyScript for NURBS evaluation, constraint solving, and 2D rendering with automatic JS fallback
+
+### 3D Operations
+- ✅ **Extrude** — Linear extrusion of 2D profiles (segments, arcs, splines, beziers) into exact NURBS solids
+- ✅ **Revolve** — Revolve profiles around an axis with angle control
+- ✅ **Chamfer** — Flat bevel on edges (PLANE+PLANE, PLANE+BSPLINE at various dihedral angles)
+- ✅ **Fillet** — Rolling-ball blend on edges with NURBS arc surfaces and sphere-patch corners
+- ✅ **Boolean** — Union, subtraction, intersection via exact B-Rep kernel (mesh BSP fallback)
+- ✅ **Multi-body** — Multiple disjoint solids from separate sketch profiles
+
+### 2D Sketch System
+- **Drawing Tools** — Line, Rectangle, Circle, Arc, Polyline, Spline, Bezier, Text, Dimension
 - **Editing Tools** — Select, Move, Copy
 - **Snap System** — Endpoint, Midpoint, Center, Quadrant, Grid snapping
-- **DXF Import/Export** — Read and write AutoCAD DXF R2000 ASCII files
-- **Layers** — Multiple layers with color, visibility, and lock control
-- **Undo/Redo** — Full history support
-- **Persistent State** — Project auto-saves to localStorage across page refreshes
-- **Responsive UI** — Adapts to different screen sizes with touch support
+- **Constraint Solver** — 10 types: Coincident, Distance, Fixed, Horizontal, Vertical, Parallel, Perpendicular, EqualLength, Tangent, Angle
+- **Profile Extraction** — Automatic closed-loop detection for splines, beziers, and mixed profiles
 
-### Parametric 3D Part Modeling (Integrated!)
-- **Feature Tree** — Industry-standard parametric history tree with UI panel
-- **Sketch + Operation Workflow** — Draw in 2D, convert to 3D parts with extrude/revolve
-- **Split View Interface** — 2D canvas + 3D viewport with AssemblyScript WASM WebGL rendering
-- **Recursive Recalculation** — Changing lower-level features automatically updates everything
-- **Dependency Tracking** — Features declare dependencies; system validates operations
-- **Feature Management** — Add, remove, reorder, suppress features with automatic validation
-- **Interactive Parameters Panel** — Edit feature properties with live 3D preview updates
-- **3D Operations**:
-  - ✅ Extrude — Extrude 2D sketches to create 3D solids
-  - ✅ Revolve — Revolve sketches around an axis
-  - ⏳ Fillet, Chamfer (coming soon)
-  - ⏳ Boolean operations (coming soon)
+### Import / Export
+- **STEP** (ISO 10303) — Full B-Rep topology import and export (AP203/AP214/AP242)
+- **DXF** — AutoCAD DXF R2000 ASCII 2D import/export
+- **SVG** — Import and export with cubic/quadratic bezier support
+- **.cmod** — Native JSON project format (feature tree, sketches, camera, metadata)
+- **STL** — Triangle mesh export
+
+### Parametric Feature System
+- **Feature Tree** — Ordered parametric operations with dependency tracking
+- **Recursive Recalculation** — Modifying a feature automatically recomputes all dependents
+- **Stable Entity Keys** — History-based identity that survives parameter changes and serialization
+- **Feature Types**: SketchFeature, ExtrudeFeature, ExtrudeCutFeature, MultiSketchExtrudeFeature, RevolveFeature, ChamferFeature, FilletFeature, StepImportFeature
+
+### Application
+- **Split View** — 2D canvas + 3D WebGL viewport
+- **Undo/Redo** — Full history snapshots (max 50)
+- **Auto-save** — Debounced persistence to LocalStorage
+- **Layers** — Multiple layers with color, visibility, lock control
+- **Touch Support** — Responsive UI with gesture handling
 
 ## Using the 3D Workflow
 
-1. **Draw your sketch** — Use the 2D drawing tools (Line, Rectangle, Circle, etc.) to create geometry
+1. **Draw your sketch** — Use the 2D drawing tools (Line, Rectangle, Circle, Arc, Spline, Bezier) to create geometry
 2. **Toggle 3D mode** — Click the "Toggle 3D View (3)" button in the toolbar
 3. **Add sketch to part** — Click "Add Sketch to Part" to convert your 2D sketch to a feature
 4. **Apply operations**:
-   - Click "Extrude Sketch" and enter a distance to create a 3D solid
-   - Or click "Revolve Sketch" and enter an angle to revolve around an axis
+   - Click "Extrude Sketch" to create a 3D solid (supports exact NURBS/B-Rep topology)
+   - Click "Revolve Sketch" to revolve around an axis
+   - Select edges in 3D, then apply Chamfer or Fillet
 5. **Modify parameters** — Select features in the Feature Tree to edit their properties
 6. **Watch live updates** — The 3D view automatically updates as you modify features
 
 ## Architecture
 
-The project features a modular architecture with three main design interfaces:
+The project features a topology-first architecture with three main design interfaces:
 
 - **Sketch** — 2D drawing interface for creating parametric geometry with constraints
-- **Part** — Parametric 3D part modeling with feature tree and recursive recalculation
+- **Part** — Parametric 3D part modeling with feature tree and exact B-Rep topology
 - **Assembly** — (Stub) Future support for multi-part assemblies with constraints and BOM
 
+The CAD kernel (~30k lines across 59 modules in `js/cad/`) uses exact NURBS/B-Rep topology as the source of truth. Triangle meshes are generated only for rendering. All feature operations (extrude, revolve, chamfer, fillet, boolean) work directly on the topology graph — never on tessellated mesh faces.
+
 See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed documentation.
-See [NURBS_BOOLEAN_UPGRADE.md](NURBS_BOOLEAN_UPGRADE.md) for the exact-geometry roadmap from mesh CSG to STEP-oriented B-Rep and NURBS booleans.
 
 ## Library Usage (NPM package)
 
@@ -169,17 +189,36 @@ The standalone render API lives under `js/render/`, so backend code can drive th
 
 ## Testing
 
-Test the parametric 3D modeling system:
+Run the full test suite:
 ```bash
-npm run test:parametric
+npm test
 ```
 
-This demonstrates:
-- Creating sketches and adding them as features
-- Extruding and revolving sketches  
-- Modifying features and triggering automatic recalculation
-- Feature suppression and dependency tracking
-- Serialization and deserialization
+Run individual test areas:
+```bash
+node tests/test-feature-pipeline.js          # Feature tree execution (46+ tests)
+node tests/test-multi-body-chamfer-fillet.js  # Chamfer/fillet operations (25+ tests)
+node tests/test-nurbs-fillet-chamfer-variants.js  # NURBS intersection edge cases (52 tests)
+node tests/test-spline-chamfer.js             # Spline/bezier chamfer (17 tests)
+node tests/test-toolkit.js                    # Toolkit utilities (82 tests)
+node tests/test-mesh-quality.js               # Mesh quality validation (85 tests)
+node tests/test-nurbs.js                      # NURBS curve/surface (25+ tests)
+node tests/test-boolean-analytic.js           # Exact boolean kernel (18+ tests)
+```
+
+The test suite covers:
+
+| Area | Key Tests |
+|------|-----------|
+| Geometry | NURBS curves/surfaces, WASM tessellation, mesh quality |
+| Features | Extrude (exact), revolve, chamfer, fillet, multi-body |
+| Booleans | Analytic booleans, NURBS booleans, T-junction fixes |
+| Topology | B-Rep topology, coplanar merge, stable hashes |
+| Edge cases | NURBS fillet/chamfer variants (52 tests across 7 profile types, 6+ dihedral angles) |
+| STEP | Import and export with topology roundtrip |
+| Sketching | Spline/bezier extrusion, multi-sketch planes, drag |
+| I/O | CMOD import/export, geometry persistence, history replay |
+| UI | Workflow recordings, face selection, feature editor |
 
 ## Parametric Modeling Example
 
