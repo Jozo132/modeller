@@ -72,7 +72,7 @@ export { BRep, BRepVertex, BRepEdge, BRepFace, tessellateNurbsFaces } from './BR
 export { Tolerance, DEFAULT_TOLERANCE } from './Tolerance.js';
 export {
   TopoBody, TopoShell, TopoFace, TopoLoop, TopoCoEdge, TopoEdge, TopoVertex,
-  SurfaceType, buildTopoBody, resetTopoIds,
+  SurfaceType, buildTopoBody, resetTopoIds, deriveEdgeAndVertexHashes,
 } from './BRepTopology.js';
 export { ValidationResult, validateBody, validateIncidence, validateNoDuplicateEdges, validateFull } from './BRepValidator.js';
 export { tessellateBody, tessellateFace, tessellateForSTL } from './Tessellation.js';

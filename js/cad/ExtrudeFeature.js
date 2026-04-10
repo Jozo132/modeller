@@ -801,7 +801,6 @@ export class ExtrudeFeature extends Feature {
             edgeCurves = edgeCurves.reverse();
           }
 
-          const halfSuffix = info.fusedGroupId ? `_h${info === profileData.edgeInfos[ei] && ei > 0 && profileData.edgeInfos[ei - 1].fusedGroupId === info.fusedGroupId ? '1' : '0'}` : '';
           faceDescs.push({
             surface: info.cylSurf,
             surfaceType: SurfaceType.CYLINDER,
