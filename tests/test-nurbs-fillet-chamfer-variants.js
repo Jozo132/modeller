@@ -61,7 +61,9 @@ function test(name, fn, { known = false } = {}) {
 // ---------------------------------------------------------------------------
 
 const PREC = 5;
-const fmt = (n) => (Math.abs(n) < 5e-6 ? 0 : n).toFixed(PREC);
+/** Threshold below which a value is treated as zero in vertex key formatting. */
+const VERTEX_ZERO_THRESHOLD = 5e-6;
+const fmt = (n) => (Math.abs(n) < VERTEX_ZERO_THRESHOLD ? 0 : n).toFixed(PREC);
 const vk = (v) => `${fmt(v.x)},${fmt(v.y)},${fmt(v.z)}`;
 
 function checkManifold(geometry) {
@@ -702,14 +704,17 @@ for (const size of [0.5, 1.0, 2.0, 3.0]) {
 // --- Section 4: Orientation variants — profiles rotated by different amounts ---
 console.log('\n--- Orientation Variants ---\n');
 
+const ORIENT_BASE_W = 20;   // Base width of trapezoid profile
+const ORIENT_HEIGHT = 10;   // Height of trapezoid profile
+
 for (const [angle, desc] of [[45, '45°'], [60, '60°'], [120, '120°']]) {
   const radians = (angle * Math.PI) / 180;
-  const topW = 20 - 2 * 10 * Math.tan(Math.PI / 2 - radians);
+  const topW = ORIENT_BASE_W - 2 * ORIENT_HEIGHT * Math.tan(Math.PI / 2 - radians);
   // Only generate if topW is positive (valid trapezoid)
   if (topW > 2) {
     for (const op of ['chamfer', 'fillet']) {
       test(`Trapezoid ${op} top edge with ${desc} sidewall angle`, () => {
-        const part = buildPart(trapezoidProfile(20, Math.max(2, topW), 10), 8);
+        const part = buildPart(trapezoidProfile(ORIENT_BASE_W, Math.max(2, topW), ORIENT_HEIGHT), 8);
         const geom = getGeom(part);
         const topo = geom.topoBody;
         const edge = EdgeSelectors.topHorizontal(topo, 8);

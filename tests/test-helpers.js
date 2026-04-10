@@ -66,8 +66,11 @@ export function assertApprox(actual, expected, tolerance, msg) {
 // Manifold / mesh quality helpers
 // ---------------------------------------------------------------------------
 
+// Mesh edge key formatting — vertex positions rounded to PREC digits.
 const PREC = 5;
-const fmt = (n) => (Math.abs(n) < 5e-6 ? 0 : n).toFixed(PREC);
+/** Threshold below which a value is treated as zero in vertex key formatting. */
+export const VERTEX_ZERO_THRESHOLD = 5e-6;
+const fmt = (n) => (Math.abs(n) < VERTEX_ZERO_THRESHOLD ? 0 : n).toFixed(PREC);
 const vk = (v) => `${fmt(v.x)},${fmt(v.y)},${fmt(v.z)}`;
 
 /**
