@@ -13,11 +13,12 @@
  *   - Manifold/winding/boundary stats per test
  *   - Volume before/after/error metrics
  *   - Summary table
+ *   - Per-test composite PNG images for easy standalone presentation
  *
  * Usage:
- *   node tests/report-nurbs-variants.js [--output path/to/report.pdf]
+ *   node tests/report-nurbs-variants.js [--output path/to/report.pdf] [--no-images]
  *
- * Output is git-ignored (tests/reports/*.pdf)
+ * Output is git-ignored (tests/reports/)
  */
 
 import fs from 'node:fs';
@@ -648,7 +649,172 @@ async function renderGeometryToCanvas(geometry, options = {}) {
 // PDF report generation
 // ---------------------------------------------------------------------------
 
-async function generateReport(outputPath) {
+/**
+ * Render all 6 sub-images for a single test result, returning PNG buffers.
+ * Shared by both PDF embedding and standalone composite image generation.
+ */
+async function renderTestImages(r, cellW, cellH) {
+  const images = { before: null, after: null, diagHatch: null, wireframe: null, altRearLeft: null, altFront: null };
+  if (!r.beforeGeom) return images;
+
+  const w = Math.round(cellW * 2);
+  const h = Math.round(cellH * 2);
+
+  images.before = await renderGeometryToPngBuffer(r.beforeGeom, {
+    width: w, height: h,
+    highlightEdgeKey: r.edgeKey,
+    label: 'BEFORE — selected edge highlighted',
+  });
+
+  if (r.afterGeom) {
+    images.after = await renderGeometryToPngBuffer(r.afterGeom, {
+      width: w, height: h,
+      faceColor: [0.55, 0.68, 0.85, 1],
+      label: `AFTER — ${r.operation} result`,
+    });
+
+    const diagGeom = r.afterGeom;
+    images.diagHatch = await renderGeometryToPngBuffer(diagGeom, {
+      width: w, height: h,
+      diagnosticHatch: true,
+      meshOverlay: true,
+      label: 'Diagnostic hatch (red = flipped, pink boundary = holes)',
+    });
+
+    images.wireframe = await renderGeometryToPngBuffer(diagGeom, {
+      width: w, height: h,
+      meshOverlay: true,
+      label: 'Triangle mesh wireframe',
+    });
+
+    images.altRearLeft = await renderGeometryToPngBuffer(r.afterGeom, {
+      width: w, height: h,
+      theta: Math.PI * 0.75,
+      phi: Math.PI / 4,
+      label: 'Rear-left view',
+    });
+
+    images.altFront = await renderGeometryToPngBuffer(r.afterGeom, {
+      width: w, height: h,
+      theta: 0,
+      phi: Math.PI / 2.5,
+      faceColor: [0.55, 0.68, 0.85, 1],
+      label: 'Front view — feature highlight',
+    });
+  }
+
+  return images;
+}
+
+// Composite image layout constants
+const COMP_PADDING = 12;
+const COMP_HEADER_H = 80;
+const COMP_ROW_LABEL_H = 16;
+const COMP_BG = '#1e1e24';
+const COMP_TEXT = '#e0e0e0';
+const COMP_HEADER_BG = '#1a2744';
+
+/**
+ * Compose a single presentation-ready PNG for one test result.
+ * Layout: header with title/metrics, then 3 rows × 2 columns of images.
+ */
+async function composeTestImage(r, images, index, total) {
+  const cellW = CELL_W * 2;   // use high-res cell size
+  const cellH = Math.round(cellW * 0.75);
+  const cols = 2;
+  const rows = 3;
+  const totalW = COMP_PADDING * 2 + cols * cellW + COMP_PADDING;
+  const totalH = COMP_PADDING + COMP_HEADER_H + rows * (COMP_ROW_LABEL_H + cellH + COMP_PADDING);
+
+  const canvas = createCanvas(totalW, totalH);
+  const ctx = canvas.getContext('2d');
+
+  // Background
+  ctx.fillStyle = COMP_BG;
+  ctx.fillRect(0, 0, totalW, totalH);
+
+  // Header bar
+  ctx.fillStyle = COMP_HEADER_BG;
+  ctx.fillRect(0, 0, totalW, COMP_HEADER_H);
+
+  // Title
+  const statusColor = r.status === 'pass' ? '#4caf50' : r.status === 'known' ? '#ff9800' : '#f44336';
+  const statusText = r.status === 'pass' ? 'PASS' : r.status === 'known' ? 'KNOWN EDGE CASE' : 'FAIL';
+  ctx.fillStyle = COMP_TEXT;
+  ctx.font = 'bold 20px sans-serif';
+  ctx.fillText(`Test ${index + 1}/${total}: ${r.name}`, COMP_PADDING, 28);
+
+  ctx.fillStyle = statusColor;
+  ctx.font = 'bold 16px sans-serif';
+  ctx.fillText(statusText, totalW - COMP_PADDING - ctx.measureText(statusText).width, 28);
+
+  // Metrics line
+  ctx.fillStyle = '#aabbcc';
+  ctx.font = '13px sans-serif';
+  const metricsLine = [
+    `Op: ${r.operation}(${r.param})`,
+    `Pairing: ${r.surfacePairing}`,
+    `Faces: ${r.faceCountBefore}→${r.faceCountAfter}`,
+    `Tris: ${r.triCountBefore}→${r.triCountAfter}`,
+  ].join('  |  ');
+  ctx.fillText(metricsLine, COMP_PADDING, 50);
+
+  // Volume + manifold line
+  const volLine = [
+    `Vol: ${r.volumeBefore.toFixed(1)} → ${r.volumeAfter.toFixed(1)} (−${r.volumeError.toFixed(1)}%)`,
+  ];
+  if (r.manifold) {
+    const m = r.manifold;
+    volLine.push(`Boundary: ${m.boundaryEdges}  Non-manifold: ${m.nonManifoldEdges}  Winding: ${m.windingErrors}  Topo-bnd: ${r.topoBoundary}`);
+  }
+  if (r.error) volLine.push(`Error: ${r.error}`);
+  ctx.fillText(volLine.join('  |  '), COMP_PADDING, 68);
+
+  // Draw image grid: 3 rows × 2 cols
+  const rowLabels = ['Standard View', 'Diagnostic View', 'Alternate Angles'];
+  const imageGrid = [
+    [images.before, images.after],
+    [images.diagHatch, images.wireframe],
+    [images.altRearLeft, images.altFront],
+  ];
+
+  let y = COMP_HEADER_H + COMP_PADDING;
+  for (let row = 0; row < rows; row++) {
+    // Row label
+    ctx.fillStyle = '#8899bb';
+    ctx.font = '12px sans-serif';
+    ctx.fillText(rowLabels[row], COMP_PADDING, y + 12);
+    y += COMP_ROW_LABEL_H;
+
+    for (let col = 0; col < cols; col++) {
+      const buf = imageGrid[row][col];
+      const x = COMP_PADDING + col * (cellW + COMP_PADDING);
+      if (buf) {
+        // Draw the PNG buffer onto the composite canvas
+        const { Image } = await import('@napi-rs/canvas');
+        const img = new Image();
+        img.src = buf;
+        ctx.drawImage(img, x, y, cellW, cellH);
+      } else {
+        // Empty slot
+        ctx.fillStyle = '#2a2a32';
+        ctx.fillRect(x, y, cellW, cellH);
+        ctx.fillStyle = '#555';
+        ctx.font = '14px sans-serif';
+        ctx.fillText('No geometry', x + cellW / 2 - 40, y + cellH / 2);
+      }
+    }
+    y += cellH + COMP_PADDING;
+  }
+
+  return canvas.encode('png');
+}
+
+// ---------------------------------------------------------------------------
+// PDF report generation
+// ---------------------------------------------------------------------------
+
+async function generateReport(outputPath, { generateImages = true } = {}) {
   console.log('=== NURBS Fillet/Chamfer Variant Report ===\n');
 
   // Collect all variants
@@ -774,8 +940,16 @@ async function generateReport(outputPath) {
   }
 
   // ---- Individual test pages ----
+  const imagesDir = path.join(path.dirname(outputPath), 'images');
+  if (generateImages) {
+    fs.mkdirSync(imagesDir, { recursive: true });
+    console.log(`Saving standalone images to: ${imagesDir}/`);
+  }
+
   for (let i = 0; i < results.length; i++) {
     const r = results[i];
+    process.stdout.write(`  Rendering [${i + 1}/${results.length}] ${r.name}... `);
+
     doc.addPage();
 
     // Test header
@@ -830,83 +1004,53 @@ async function generateReport(outputPath) {
       y += 16;
     }
 
-    // --- Render images ---
+    // --- Render images (shared between PDF and standalone) ---
     const imgW = (PAGE_W - 2 * MARGIN - IMG_GAP) / 2;
     const imgH = imgW * 0.75;
 
     if (r.beforeGeom) {
       try {
-        // Row 1: Standard view — before (with selected edge) and after
+        const images = await renderTestImages(r, imgW, imgH);
+
+        // Row 1: Standard view
         doc.fontSize(9).fillColor('#333').text('Standard View', MARGIN, y);
         y += 14;
-
-        const beforeStd = await renderGeometryToPngBuffer(r.beforeGeom, {
-          width: Math.round(imgW * 2), height: Math.round(imgH * 2),
-          highlightEdgeKey: r.edgeKey,
-          label: 'BEFORE — selected edge highlighted',
-        });
-
-        doc.image(beforeStd, MARGIN, y, { width: imgW, height: imgH });
-
-        if (r.afterGeom) {
-          const afterStd = await renderGeometryToPngBuffer(r.afterGeom, {
-            width: Math.round(imgW * 2), height: Math.round(imgH * 2),
-            faceColor: [0.55, 0.68, 0.85, 1],
-            label: `AFTER — ${r.operation} result`,
-          });
-          doc.image(afterStd, MARGIN + imgW + IMG_GAP, y, { width: imgW, height: imgH });
-        }
+        if (images.before) doc.image(images.before, MARGIN, y, { width: imgW, height: imgH });
+        if (images.after) doc.image(images.after, MARGIN + imgW + IMG_GAP, y, { width: imgW, height: imgH });
         y += imgH + 10;
 
-        // Row 2: Diagnostic view — mesh overlay + hatched flipped faces
+        // Row 2: Diagnostic view
         if (y + imgH + 20 < PAGE_H - MARGIN) {
           doc.fontSize(9).fillColor('#333').text('Diagnostic View — wireframe + hatched flipped faces + boundary holes', MARGIN, y);
           y += 14;
-
-          const diagAfterGeom = r.afterGeom || r.beforeGeom;
-          const diagHatch = await renderGeometryToPngBuffer(diagAfterGeom, {
-            width: Math.round(imgW * 2), height: Math.round(imgH * 2),
-            diagnosticHatch: true,
-            meshOverlay: true,
-            label: 'Diagnostic hatch (red = flipped, pink boundary = holes)',
-          });
-          doc.image(diagHatch, MARGIN, y, { width: imgW, height: imgH });
-
-          // Normal color view
-          const normalView = await renderGeometryToPngBuffer(diagAfterGeom, {
-            width: Math.round(imgW * 2), height: Math.round(imgH * 2),
-            meshOverlay: true,
-            label: 'Triangle mesh wireframe',
-          });
-          doc.image(normalView, MARGIN + imgW + IMG_GAP, y, { width: imgW, height: imgH });
+          if (images.diagHatch) doc.image(images.diagHatch, MARGIN, y, { width: imgW, height: imgH });
+          if (images.wireframe) doc.image(images.wireframe, MARGIN + imgW + IMG_GAP, y, { width: imgW, height: imgH });
           y += imgH + 10;
         }
 
-        // Row 3: Alt angle views
-        if (y + imgH + 20 < PAGE_H - MARGIN && r.afterGeom) {
+        // Row 3: Alternate angles
+        if (y + imgH + 20 < PAGE_H - MARGIN) {
           doc.fontSize(9).fillColor('#333').text('Alternate Angles', MARGIN, y);
           y += 14;
-
-          const altAngle1 = await renderGeometryToPngBuffer(r.afterGeom, {
-            width: Math.round(imgW * 2), height: Math.round(imgH * 2),
-            theta: Math.PI * 0.75,
-            phi: Math.PI / 4,
-            label: 'Rear-left view',
-          });
-          doc.image(altAngle1, MARGIN, y, { width: imgW, height: imgH });
-
-          const altAngle2 = await renderGeometryToPngBuffer(r.afterGeom, {
-            width: Math.round(imgW * 2), height: Math.round(imgH * 2),
-            theta: 0,
-            phi: Math.PI / 2.5,
-            faceColor: [0.55, 0.68, 0.85, 1],
-            label: 'Front view — feature highlight',
-          });
-          doc.image(altAngle2, MARGIN + imgW + IMG_GAP, y, { width: imgW, height: imgH });
+          if (images.altRearLeft) doc.image(images.altRearLeft, MARGIN, y, { width: imgW, height: imgH });
+          if (images.altFront) doc.image(images.altFront, MARGIN + imgW + IMG_GAP, y, { width: imgW, height: imgH });
         }
+
+        // Generate standalone composite image
+        if (generateImages) {
+          const composite = await composeTestImage(r, images, i, results.length);
+          const slug = r.name.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '').toLowerCase();
+          const imgPath = path.join(imagesDir, `${String(i + 1).padStart(2, '0')}-${slug}.png`);
+          fs.writeFileSync(imgPath, composite);
+        }
+
+        console.log('✓');
       } catch (renderErr) {
         doc.fontSize(9).fillColor(COLOR_FAIL).text(`Render error: ${renderErr.message}`, MARGIN, y);
+        console.log(`✗ (${renderErr.message})`);
       }
+    } else {
+      console.log('- (no geometry)');
     }
   }
 
@@ -977,14 +1121,16 @@ async function generateReport(outputPath) {
 
 const args = process.argv.slice(2);
 let outputPath = path.join('tests', 'reports', 'nurbs-fillet-chamfer-variants.pdf');
+let generateImages = true;
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--output' && args[i + 1]) outputPath = args[i + 1];
+  if (args[i] === '--no-images') generateImages = false;
 }
 
 // Ensure output directory exists
 fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 
-generateReport(outputPath).catch(err => {
+generateReport(outputPath, { generateImages }).catch(err => {
   console.error('Report generation failed:', err.message);
   process.exit(1);
 });
