@@ -13,7 +13,7 @@ import { NurbsCurve } from './NurbsCurve.js';
 import { NurbsSurface } from './NurbsSurface.js';
 import {
   TopoBody, TopoShell, TopoFace, TopoLoop, TopoCoEdge, TopoEdge, TopoVertex,
-  SurfaceType, buildTopoBody,
+  SurfaceType, buildTopoBody, deriveEdgeAndVertexHashes,
 } from './BRepTopology.js';
 
 /** Monotonically increasing ID for fused half-cylinder face groups. */
@@ -779,8 +779,9 @@ export class ExtrudeFeature extends Feature {
       return { vertices, edgeCurves };
     };
 
-    const addSideFaces = (profileData) => {
-      for (const info of profileData.edgeInfos) {
+    const addSideFaces = (profileData, hashPrefix) => {
+      for (let ei = 0; ei < profileData.edgeInfos.length; ei++) {
+        const info = profileData.edgeInfos[ei];
         if (info.isArc) {
           const bStart = profileData.bottomVerts[info.startIdx];
           const bEnd = profileData.bottomVerts[info.endIdx];
@@ -800,6 +801,7 @@ export class ExtrudeFeature extends Feature {
             edgeCurves = edgeCurves.reverse();
           }
 
+          const halfSuffix = info.fusedGroupId ? `_h${info === profileData.edgeInfos[ei] && ei > 0 && profileData.edgeInfos[ei - 1].fusedGroupId === info.fusedGroupId ? '1' : '0'}` : '';
           faceDescs.push({
             surface: info.cylSurf,
             surfaceType: SurfaceType.CYLINDER,
@@ -808,6 +810,7 @@ export class ExtrudeFeature extends Feature {
             vertices,
             edgeCurves,
             shared: { sourceFeatureId: this.id },
+            stableHash: `${this.id}_Face_Side_${hashPrefix}_${ei}`,
           });
           continue;
         }
@@ -838,6 +841,7 @@ export class ExtrudeFeature extends Feature {
             vertices,
             edgeCurves,
             shared: { sourceFeatureId: this.id },
+            stableHash: `${this.id}_Face_Side_${hashPrefix}_${ei}`,
           });
           continue;
         }
@@ -854,6 +858,7 @@ export class ExtrudeFeature extends Feature {
           ];
           if (this.direction < 0) vertices = [...vertices].reverse();
 
+          const segSuffix = segmentCount > 1 ? `_s${si}` : '';
           faceDescs.push({
             surface: NurbsSurface.createPlane(vertices[0], _sub(vertices[1], vertices[0]), _sub(vertices[3], vertices[0])),
             surfaceType: SurfaceType.PLANE,
@@ -865,6 +870,7 @@ export class ExtrudeFeature extends Feature {
               NurbsCurve.createLine(vertices[3], vertices[0]),
             ],
             shared: { sourceFeatureId: this.id },
+            stableHash: `${this.id}_Face_Side_${hashPrefix}_${ei}${segSuffix}`,
           });
         }
       }
@@ -890,6 +896,7 @@ export class ExtrudeFeature extends Feature {
         edgeCurves: bottomOuterLoop.edgeCurves,
         innerLoops: holeData.map((holeProfile) => buildCapLoop(holeProfile, 'bottomCurve', true)),
         shared: { sourceFeatureId: this.id },
+        stableHash: `${this.id}_Face_Bottom_p${profileIndex}`,
       });
 
       faceDescs.push({
@@ -903,15 +910,18 @@ export class ExtrudeFeature extends Feature {
         edgeCurves: topOuterLoop.edgeCurves,
         innerLoops: holeData.map((holeProfile) => buildCapLoop(holeProfile, 'topCurve', false)),
         shared: { sourceFeatureId: this.id },
+        stableHash: `${this.id}_Face_Top_p${profileIndex}`,
       });
 
-      addSideFaces(outerData);
-      for (const holeProfile of holeData) {
-        addSideFaces(holeProfile);
+      addSideFaces(outerData, `p${profileIndex}`);
+      for (let hi = 0; hi < holeData.length; hi++) {
+        addSideFaces(holeData[hi], `p${profileIndex}_h${hi}`);
       }
     }
 
-    return buildTopoBody(faceDescs);
+    const body = buildTopoBody(faceDescs);
+    deriveEdgeAndVertexHashes(body);
+    return body;
   }
 
   /**
