@@ -24,7 +24,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import PDFDocument from 'pdfkit';
-import { createCanvas } from '@napi-rs/canvas';
+import { createCanvas, loadImage } from '@napi-rs/canvas';
 
 import { Part } from '../js/cad/Part.js';
 import { Sketch } from '../js/cad/Sketch.js';
@@ -372,14 +372,38 @@ function buildSingleOpVariants() {
     }
   }
 
-  // Parametric sweep
-  for (const size of [0.5, 1.0, 2.0, 3.0]) {
+  // Parametric sweep — rectangle at multiple sizes
+  for (const size of [0.25, 0.5, 1.0, 2.0, 3.0, 4.0]) {
     for (const op of ['chamfer', 'fillet']) {
       variants.push({
         name: `Rectangle ${op} size=${size} on top edge`,
         profile: rectangleProfile(20, 10), extrudeHeight: 10,
         edgeSelector: 'topHorizontal', operation: op, param: size,
         surfacePairing: 'PLANE+PLANE',
+      });
+    }
+  }
+
+  // Parametric sweep — trapezoid at multiple sizes
+  for (const size of [0.25, 0.5, 1.0, 2.0]) {
+    for (const op of ['chamfer', 'fillet']) {
+      variants.push({
+        name: `Trapezoid ${op} size=${size} on top edge (~70°)`,
+        profile: trapezoidProfile(20, 10, 10), extrudeHeight: 8,
+        edgeSelector: 'topHorizontal', operation: op, param: size,
+        surfacePairing: 'PLANE+PLANE non-orthogonal',
+      });
+    }
+  }
+
+  // Parametric sweep — mixed-spline at multiple sizes
+  for (const size of [0.25, 0.5, 1.0]) {
+    for (const op of ['chamfer', 'fillet']) {
+      variants.push({
+        name: `Mixed-spline ${op} size=${size} on vertical-junction`,
+        profile: mixedSplineProfile(10, 10), extrudeHeight: 5,
+        edgeSelector: 'vertical', operation: op, param: size,
+        surfacePairing: 'PLANE+BSPLINE',
       });
     }
   }
@@ -439,6 +463,7 @@ function runVariant(variant) {
     faceCountAfter: 0,
     triCountBefore: 0,
     triCountAfter: 0,
+    featureTopoFaceIds: null,  // Set of topoFaceIds belonging to the new feature
   };
 
   try {
@@ -467,6 +492,19 @@ function runVariant(variant) {
     if (!afterGeom) { result.error = 'Operation returned null'; return result; }
 
     result.afterGeom = afterGeom;
+
+    // Identify feature faces: topo faces in the after body that weren't in
+    // the before body. The chamfer/fillet rebuilds the topo body from scratch
+    // with N_before modified faces + K new feature faces appended at the end.
+    if (afterGeom.topoBody && topo) {
+      const beforeTopoCount = topo.shells[0].faces.length;
+      const afterTopoFaces = afterGeom.topoBody.shells[0].faces;
+      const featureIds = new Set();
+      for (let fi = beforeTopoCount; fi < afterTopoFaces.length; fi++) {
+        featureIds.add(afterTopoFaces[fi].id);
+      }
+      result.featureTopoFaceIds = featureIds;
+    }
     result.volumeAfter = calculateMeshVolume(afterGeom);
     result.faceCountAfter = afterGeom.faces?.length || 0;
     result.triCountAfter = countTriangles(afterGeom);
@@ -645,16 +683,175 @@ async function renderGeometryToCanvas(geometry, options = {}) {
   return canvas;
 }
 
-// ---------------------------------------------------------------------------
-// PDF report generation
-// ---------------------------------------------------------------------------
+/**
+ * Render a feature preview: the after geometry with feature faces in blue
+ * and the remaining body faces in muted grey, providing a clear visual
+ * of what the chamfer/fillet operation adds.
+ *
+ * @param {Object} afterGeom - The geometry after the chamfer/fillet
+ * @param {Set<number>} featureTopoFaceIds - topoFaceIds of the new feature faces
+ * @param {Object} options - Rendering options (width, height, theta, phi, label)
+ * @returns {Promise<Buffer>} PNG buffer
+ */
+async function renderFeaturePreviewToPngBuffer(afterGeom, featureTopoFaceIds, options = {}) {
+  const {
+    width = CELL_W,
+    height = CELL_H,
+    theta = Math.PI / 4,
+    phi = Math.PI / 3,
+  } = options;
+
+  const canvas = createCanvas(width, height);
+  const executor = new CanvasCommandExecutor(canvas);
+  executor.clear([0.12, 0.12, 0.15, 1]);
+
+  const faces = afterGeom.faces || [];
+  if (faces.length === 0) return canvas.encode('png');
+
+  // Split faces into base body vs feature faces
+  const baseFaces = [];
+  const featureFaces = [];
+  for (const face of faces) {
+    if (featureTopoFaceIds && featureTopoFaceIds.has(face.topoFaceId)) {
+      featureFaces.push(face);
+    } else {
+      baseFaces.push(face);
+    }
+  }
+
+  // Compute bounds from all faces
+  let minX = Infinity, minY = Infinity, minZ = Infinity;
+  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  for (const face of faces) {
+    for (const v of face.vertices || []) {
+      if (v.x < minX) minX = v.x;
+      if (v.y < minY) minY = v.y;
+      if (v.z < minZ) minZ = v.z;
+      if (v.x > maxX) maxX = v.x;
+      if (v.y > maxY) maxY = v.y;
+      if (v.z > maxZ) maxZ = v.z;
+    }
+  }
+  const bounds = Number.isFinite(minX) ? {
+    min: { x: minX, y: minY, z: minZ },
+    max: { x: maxX, y: maxY, z: maxZ },
+  } : null;
+
+  const fit = computeFitViewState(bounds, 25);
+  const orbitState = { theta, phi, radius: fit.radius, target: fit.target };
+  const mvp = computeOrbitMvp({
+    width, height,
+    target: orbitState.target,
+    theta: orbitState.theta,
+    phi: orbitState.phi,
+    radius: orbitState.radius,
+    fov: Math.PI / 4,
+    fovDegrees: 45,
+    ortho3D: false,
+    orthoBounds: null,
+  });
+
+  if (!mvp) return canvas.encode('png');
+
+  // Build render data for the full geometry first (for edges/silhouettes)
+  const fullRenderData = buildMeshRenderData(afterGeom);
+
+  // Render base faces in muted grey
+  const baseGeom = { faces: baseFaces, edges: afterGeom.edges || [] };
+  const baseRenderData = buildMeshRenderData(baseGeom);
+  renderBaseMeshOverlay(executor, {
+    meshTriangles: baseRenderData._meshTriangles,
+    meshTriangleCount: baseRenderData._meshTriangleCount,
+    meshVisualEdges: null,
+    meshVisualEdgeVertexCount: 0,
+    meshDashedFeatureEdges: null,
+    meshDashedFeatureEdgeVertexCount: 0,
+    meshTriangleOverlayEdges: null,
+    meshTriangleOverlayEdgeVertexCount: 0,
+    meshEdges: null,
+    meshEdgeVertexCount: 0,
+    meshSilhouetteCandidates: null,
+    meshBoundaryEdges: null,
+    meshBoundaryEdgeVertexCount: 0,
+    orbitState,
+    mvp,
+    faceColor: [0.45, 0.48, 0.52, 1],
+    diagnosticHatch: false,
+    showInvisibleEdges: false,
+    meshTriangleOverlayMode: 'off',
+  });
+
+  // Render feature faces in bright blue
+  if (featureFaces.length > 0) {
+    const featureGeom = { faces: featureFaces, edges: [] };
+    const featureRenderData = buildMeshRenderData(featureGeom);
+    renderBaseMeshOverlay(executor, {
+      meshTriangles: featureRenderData._meshTriangles,
+      meshTriangleCount: featureRenderData._meshTriangleCount,
+      meshVisualEdges: null,
+      meshVisualEdgeVertexCount: 0,
+      meshDashedFeatureEdges: null,
+      meshDashedFeatureEdgeVertexCount: 0,
+      meshTriangleOverlayEdges: null,
+      meshTriangleOverlayEdgeVertexCount: 0,
+      meshEdges: null,
+      meshEdgeVertexCount: 0,
+      meshSilhouetteCandidates: null,
+      meshBoundaryEdges: null,
+      meshBoundaryEdgeVertexCount: 0,
+      orbitState,
+      mvp,
+      faceColor: [0.22, 0.52, 0.92, 1],
+      diagnosticHatch: false,
+      showInvisibleEdges: false,
+      meshTriangleOverlayMode: 'off',
+    });
+  }
+
+  // Draw edges and silhouettes from full geometry on top
+  renderBaseMeshOverlay(executor, {
+    meshTriangles: null,
+    meshTriangleCount: 0,
+    meshVisualEdges: fullRenderData._meshVisualEdges,
+    meshVisualEdgeVertexCount: fullRenderData._meshVisualEdgeVertexCount,
+    meshDashedFeatureEdges: null,
+    meshDashedFeatureEdgeVertexCount: 0,
+    meshTriangleOverlayEdges: null,
+    meshTriangleOverlayEdgeVertexCount: 0,
+    meshEdges: fullRenderData._meshEdges,
+    meshEdgeVertexCount: fullRenderData._meshEdgeVertexCount,
+    meshSilhouetteCandidates: fullRenderData._meshSilhouetteCandidates,
+    meshBoundaryEdges: fullRenderData._meshBoundaryEdges,
+    meshBoundaryEdgeVertexCount: fullRenderData._meshBoundaryEdgeVertexCount,
+    orbitState,
+    mvp,
+    faceColor: [0, 0, 0, 0],
+    diagnosticHatch: false,
+    showInvisibleEdges: false,
+    meshTriangleOverlayMode: 'off',
+  });
+
+  // Label
+  if (options.label) {
+    const ctx = canvas.getContext('2d');
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,0.65)';
+    ctx.fillRect(0, 0, width, 18);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '10px sans-serif';
+    ctx.fillText(options.label, 4, 13);
+    ctx.restore();
+  }
+
+  return canvas.encode('png');
+}
 
 /**
  * Render all 6 sub-images for a single test result, returning PNG buffers.
  * Shared by both PDF embedding and standalone composite image generation.
  */
 async function renderTestImages(r, cellW, cellH) {
-  const images = { before: null, after: null, diagHatch: null, wireframe: null, altRearLeft: null, altFront: null };
+  const images = { before: null, after: null, featurePreview: null, diagHatch: null, wireframe: null, altRearLeft: null, altFront: null, featurePreviewAlt: null };
   if (!r.beforeGeom) return images;
 
   const w = Math.round(cellW * 2);
@@ -672,6 +869,21 @@ async function renderTestImages(r, cellW, cellH) {
       faceColor: [0.55, 0.68, 0.85, 1],
       label: `AFTER — ${r.operation} result`,
     });
+
+    // Feature preview: show new feature faces in blue, rest muted
+    if (r.featureTopoFaceIds && r.featureTopoFaceIds.size > 0) {
+      images.featurePreview = await renderFeaturePreviewToPngBuffer(r.afterGeom, r.featureTopoFaceIds, {
+        width: w, height: h,
+        label: `FEATURE PREVIEW — ${r.operation} faces highlighted`,
+      });
+
+      images.featurePreviewAlt = await renderFeaturePreviewToPngBuffer(r.afterGeom, r.featureTopoFaceIds, {
+        width: w, height: h,
+        theta: Math.PI * 0.75,
+        phi: Math.PI / 4,
+        label: `FEATURE PREVIEW — rear-left angle`,
+      });
+    }
 
     const diagGeom = r.afterGeom;
     images.diagHatch = await renderGeometryToPngBuffer(diagGeom, {
@@ -716,13 +928,13 @@ const COMP_HEADER_BG = '#1a2744';
 
 /**
  * Compose a single presentation-ready PNG for one test result.
- * Layout: header with title/metrics, then 3 rows × 2 columns of images.
+ * Layout: header with title/metrics, then 4 rows × 2 columns of images.
  */
 async function composeTestImage(r, images, index, total) {
   const cellW = CELL_W * 2;   // use high-res cell size
   const cellH = Math.round(cellW * 0.75);
   const cols = 2;
-  const rows = 3;
+  const rows = 4;
   const totalW = COMP_PADDING * 2 + cols * cellW + COMP_PADDING;
   const totalH = COMP_PADDING + COMP_HEADER_H + rows * (COMP_ROW_LABEL_H + cellH + COMP_PADDING);
 
@@ -770,10 +982,11 @@ async function composeTestImage(r, images, index, total) {
   if (r.error) volLine.push(`Error: ${r.error}`);
   ctx.fillText(volLine.join('  |  '), COMP_PADDING, 68);
 
-  // Draw image grid: 3 rows × 2 cols
-  const rowLabels = ['Standard View', 'Diagnostic View', 'Alternate Angles'];
+  // Draw image grid: 4 rows × 2 cols
+  const rowLabels = ['Standard View', 'Feature Preview', 'Diagnostic View', 'Alternate Angles'];
   const imageGrid = [
     [images.before, images.after],
+    [images.featurePreview, images.featurePreviewAlt],
     [images.diagHatch, images.wireframe],
     [images.altRearLeft, images.altFront],
   ];
@@ -791,9 +1004,7 @@ async function composeTestImage(r, images, index, total) {
       const x = COMP_PADDING + col * (cellW + COMP_PADDING);
       if (buf) {
         // Draw the PNG buffer onto the composite canvas
-        const { Image } = await import('@napi-rs/canvas');
-        const img = new Image();
-        img.src = buf;
+        const img = await loadImage(buf);
         ctx.drawImage(img, x, y, cellW, cellH);
       } else {
         // Empty slot
@@ -1019,22 +1230,36 @@ async function generateReport(outputPath, { generateImages = true } = {}) {
         if (images.after) doc.image(images.after, MARGIN + imgW + IMG_GAP, y, { width: imgW, height: imgH });
         y += imgH + 10;
 
-        // Row 2: Diagnostic view
-        if (y + imgH + 20 < PAGE_H - MARGIN) {
-          doc.fontSize(9).fillColor('#333').text('Diagnostic View — wireframe + hatched flipped faces + boundary holes', MARGIN, y);
+        // Row 2: Feature preview (new feature faces highlighted in blue)
+        if (y + imgH + 20 < PAGE_H - MARGIN && (images.featurePreview || images.featurePreviewAlt)) {
+          doc.fontSize(9).fillColor('#333').text('Feature Preview — new feature faces in blue', MARGIN, y);
           y += 14;
-          if (images.diagHatch) doc.image(images.diagHatch, MARGIN, y, { width: imgW, height: imgH });
-          if (images.wireframe) doc.image(images.wireframe, MARGIN + imgW + IMG_GAP, y, { width: imgW, height: imgH });
+          if (images.featurePreview) doc.image(images.featurePreview, MARGIN, y, { width: imgW, height: imgH });
+          if (images.featurePreviewAlt) doc.image(images.featurePreviewAlt, MARGIN + imgW + IMG_GAP, y, { width: imgW, height: imgH });
           y += imgH + 10;
         }
 
-        // Row 3: Alternate angles
-        if (y + imgH + 20 < PAGE_H - MARGIN) {
-          doc.fontSize(9).fillColor('#333').text('Alternate Angles', MARGIN, y);
-          y += 14;
-          if (images.altRearLeft) doc.image(images.altRearLeft, MARGIN, y, { width: imgW, height: imgH });
-          if (images.altFront) doc.image(images.altFront, MARGIN + imgW + IMG_GAP, y, { width: imgW, height: imgH });
+        // Row 3: Diagnostic view
+        // If we're running out of space, start a new page
+        if (y + imgH + 20 >= PAGE_H - MARGIN) {
+          doc.addPage();
+          y = MARGIN;
         }
+        doc.fontSize(9).fillColor('#333').text('Diagnostic View — wireframe + hatched flipped faces + boundary holes', MARGIN, y);
+        y += 14;
+        if (images.diagHatch) doc.image(images.diagHatch, MARGIN, y, { width: imgW, height: imgH });
+        if (images.wireframe) doc.image(images.wireframe, MARGIN + imgW + IMG_GAP, y, { width: imgW, height: imgH });
+        y += imgH + 10;
+
+        // Row 4: Alternate angles
+        if (y + imgH + 20 >= PAGE_H - MARGIN) {
+          doc.addPage();
+          y = MARGIN;
+        }
+        doc.fontSize(9).fillColor('#333').text('Alternate Angles', MARGIN, y);
+        y += 14;
+        if (images.altRearLeft) doc.image(images.altRearLeft, MARGIN, y, { width: imgW, height: imgH });
+        if (images.altFront) doc.image(images.altFront, MARGIN + imgW + IMG_GAP, y, { width: imgW, height: imgH });
 
         // Generate standalone composite image
         if (generateImages) {

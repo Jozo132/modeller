@@ -679,7 +679,7 @@ for (const variant of doubleOpVariants) {
 // --- Section 3: Parametric sweep — varying chamfer/fillet size ---
 console.log('\n--- Parametric Sweep (varying size) ---\n');
 
-for (const size of [0.5, 1.0, 2.0, 3.0]) {
+for (const size of [0.25, 0.5, 1.0, 2.0, 3.0, 4.0]) {
   for (const op of ['chamfer', 'fillet']) {
     test(`Rectangle ${op} size=${size} on top edge`, () => {
       const part = buildPart(rectangleProfile(20, 10), 10);
@@ -697,6 +697,53 @@ for (const size of [0.5, 1.0, 2.0, 3.0]) {
 
       validateResult(result, `${op} size=${size}`);
       validateVolumeReduction(geom, result, `${op} size=${size}`);
+    });
+  }
+}
+
+// Parametric sweep — trapezoid at multiple sizes
+for (const size of [0.25, 0.5, 1.0, 2.0]) {
+  for (const op of ['chamfer', 'fillet']) {
+    test(`Trapezoid ${op} size=${size} on top edge (~70°)`, () => {
+      const part = buildPart(trapezoidProfile(20, 10, 10), 8);
+      const geom = getGeom(part);
+      const topo = geom.topoBody;
+      const edge = EdgeSelectors.topHorizontal(topo, 8);
+      assert.ok(edge, 'Should find top edge');
+
+      let result;
+      if (op === 'chamfer') {
+        result = applyChamferToEdge(geom, edge, size);
+      } else {
+        result = applyFilletToEdge(geom, edge, size, 4);
+      }
+
+      validateResult(result, `Trapezoid ${op} size=${size}`);
+      validateVolumeReduction(geom, result, `Trapezoid ${op} size=${size}`);
+    });
+  }
+}
+
+// Parametric sweep — mixed-spline at multiple sizes
+for (const size of [0.25, 0.5, 1.0]) {
+  for (const op of ['chamfer', 'fillet']) {
+    test(`Mixed-spline ${op} size=${size} on vertical-junction`, () => {
+      const part = buildPart(mixedSplineProfile(10, 10), 5);
+      const geom = getGeom(part);
+      const topo = geom.topoBody;
+      const edge = EdgeSelectors.vertical(topo);
+      assert.ok(edge, 'Should find vertical edge');
+
+      let result;
+      if (op === 'chamfer') {
+        result = applyChamferToEdge(geom, edge, size);
+      } else {
+        result = applyFilletToEdge(geom, edge, size, 4);
+      }
+
+      const hasBspline = true;
+      validateResult(result, `Mixed-spline ${op} size=${size}`, { checkMeshWinding: !hasBspline });
+      validateVolumeReduction(geom, result, `Mixed-spline ${op} size=${size}`);
     });
   }
 }
