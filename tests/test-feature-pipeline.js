@@ -634,6 +634,38 @@ test('puzzle-extrude-cc.cmod (chamfer on straight edge) produces valid mesh', ()
   validateGeometry(geom, 'puzzle-extrude-cc');
 });
 
+test('puzzle-extrude-cc.cmod chamfer does not invert cylinder face normals', () => {
+  const part = loadCMOD('puzzle-extrude-cc.cmod');
+  assert.ok(part, 'Should load puzzle-extrude-cc.cmod');
+  const geom = getFinalGeometry(part);
+  assert.ok(geom && geom.topoBody, 'Should have topoBody');
+
+  const tess = retessellate(geom.topoBody);
+  const shell = geom.topoBody.shells[0];
+
+  // Verify every cylinder face has 0 inverted mesh triangles
+  for (const face of shell.faces) {
+    if (face.surfaceType !== 'cylinder' || !face.surface) continue;
+    const surf = face.surface;
+    const uMid = (surf.uMin + surf.uMax) / 2;
+    const vMid = (surf.vMin + surf.vMax) / 2;
+    const sn = surf.normal(uMid, vMid);
+    if (!sn) continue;
+    const flip = face.sameSense !== false ? 1 : -1;
+    const expected = { x: sn.x * flip, y: sn.y * flip, z: sn.z * flip };
+    const meshFaces = tess.faces.filter((f) => f.topoFaceId === face.id);
+    let inverted = 0;
+    for (const mf of meshFaces) {
+      if (mf.normal) {
+        const dot = mf.normal.x * expected.x + mf.normal.y * expected.y + mf.normal.z * expected.z;
+        if (dot < 0) inverted++;
+      }
+    }
+    assert.strictEqual(inverted, 0,
+      `Cylinder face ${face.id} should have 0 inverted normals, got ${inverted}/${meshFaces.length}`);
+  }
+});
+
 test('puzzle-extrude-cc2.cmod (double chamfer with cone) produces valid re-tessellated mesh', () => {
   const part = loadCMOD('puzzle-extrude-cc2.cmod');
   assert.ok(part, 'Should load puzzle-extrude-cc2.cmod');
