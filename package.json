@@ -52,6 +52,7 @@
     "test:telemetry": "node tests/test-telemetry.js",
     "test:assembly": "node tests/test-assembly-design.js",
     "test:nist-step": "node tests/test-step-import-nist.js",
+    "test:nist-step:scorecard": "node tests/test-step-import-nist.js --write-scorecard tests/step-import-nist-scorecard.md --allow-failures",
     "test:e2e": "npx playwright test",
     "download": "node tests/download-public-nist-samples.js",
     "report:nurbs-variants": "node tests/report-nurbs-variants.js"

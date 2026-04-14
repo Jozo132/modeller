@@ -149,6 +149,9 @@ export function robustTessellateBody(body, opts = {}) {
  * @private
  */
 function _triangulateFace(face, edgeSampler, triangulator, surfSegs, edgeSegs) {
+  const selfLoopRingMesh = _tessellateSelfLoopRingFace(face, edgeSampler, edgeSegs, surfSegs);
+  if (selfLoopRingMesh) return selfLoopRingMesh;
+
   // Collect boundary points from coedge samples
   const outerPts = _collectLoopPoints(face.outerLoop, edgeSampler, edgeSegs);
 
@@ -392,6 +395,297 @@ function _tessellateSeamFace(face, edgeSampler, edgeSegs, surfSegs) {
   }
 
   return { vertices: allVerts, faces: allFaces };
+}
+
+function _tessellateSelfLoopRingFace(face, edgeSampler, edgeSegs, surfSegs) {
+  const analyticType = face.surfaceInfo?.type;
+  if (analyticType !== 'cylinder' && analyticType !== 'cone' && analyticType !== 'torus') return null;
+
+  const outerCoedges = face.outerLoop?.coedges;
+  if (!outerCoedges || outerCoedges.length !== 1) return null;
+  if (!outerCoedges[0]?.edge || outerCoedges[0].edge.startVertex !== outerCoedges[0].edge.endVertex) return null;
+  if (!Array.isArray(face.innerLoops) || face.innerLoops.length !== 1) return null;
+
+  const innerCoedges = face.innerLoops[0]?.coedges;
+  if (!innerCoedges || innerCoedges.length !== 1) return null;
+  if (!innerCoedges[0]?.edge || innerCoedges[0].edge.startVertex !== innerCoedges[0].edge.endVertex) return null;
+
+  const outerSamples = edgeSampler.sampleCoEdge(outerCoedges[0], edgeSegs);
+  const innerSamples = edgeSampler.sampleCoEdge(innerCoedges[0], edgeSegs);
+  const outerRow = _trimClosedLoopSamples(outerSamples);
+  const innerRowRaw = _trimClosedLoopSamples(innerSamples);
+
+  if (outerRow.length < 3 || innerRowRaw.length < 3) return null;
+  if (outerRow.length !== innerRowRaw.length) return null;
+
+  const innerRow = _alignClosedLoopSamples(outerRow, innerRowRaw);
+  const nCols = outerRow.length;
+  const nRows = Math.max(2, Math.ceil(surfSegs / 2));
+  const rows = [outerRow];
+
+  for (let ri = 1; ri < nRows - 1; ri++) {
+    const t = ri / (nRows - 1);
+    const row = [];
+    for (let ci = 0; ci < nCols; ci++) {
+      const p0 = outerRow[ci];
+      const p1 = innerRow[ci];
+      const raw = {
+        x: p0.x + t * (p1.x - p0.x),
+        y: p0.y + t * (p1.y - p0.y),
+        z: p0.z + t * (p1.z - p0.z),
+      };
+      row.push(_projectFacePoint(face, raw));
+    }
+    rows.push(row);
+  }
+  rows.push(innerRow);
+
+  const allVerts = [];
+  const allFaces = [];
+  for (const row of rows) {
+    for (const pt of row) allVerts.push(pt);
+  }
+
+  for (let ri = 0; ri < rows.length - 1; ri++) {
+    for (let ci = 0; ci < nCols; ci++) {
+      const ci1 = (ci + 1) % nCols;
+      const v00 = allVerts[ri * nCols + ci];
+      const v01 = allVerts[ri * nCols + ci1];
+      const v10 = allVerts[(ri + 1) * nCols + ci];
+      const v11 = allVerts[(ri + 1) * nCols + ci1];
+
+      const tris = [[v00, v01, v10], [v10, v01, v11]];
+      for (const tri of tris) {
+        const oriented = _orientTriangleToFace(face, tri[0], tri[1], tri[2]);
+        if (_triangleArea3(oriented[0], oriented[1], oriented[2]) < 1e-12) continue;
+        const centroid = {
+          x: (oriented[0].x + oriented[1].x + oriented[2].x) / 3,
+          y: (oriented[0].y + oriented[1].y + oriented[2].y) / 3,
+          z: (oriented[0].z + oriented[1].z + oriented[2].z) / 3,
+        };
+        allFaces.push({
+          vertices: oriented,
+          normal: _faceOutwardNormal(face, centroid),
+        });
+      }
+    }
+  }
+
+  return { vertices: allVerts, faces: allFaces };
+}
+
+function _trimClosedLoopSamples(samples) {
+  if (!Array.isArray(samples) || samples.length < 2) return [];
+  const row = [...samples];
+  if (_dist3(row[0], row[row.length - 1]) < 1e-10) row.pop();
+  return row;
+}
+
+function _alignClosedLoopSamples(baseRow, candidateRow) {
+  const orientations = [candidateRow, [...candidateRow].reverse()];
+  let bestRow = candidateRow;
+  let bestScore = Infinity;
+
+  for (const oriented of orientations) {
+    for (let shift = 0; shift < oriented.length; shift++) {
+      let score = 0;
+      for (let i = 0; i < baseRow.length; i++) {
+        const other = oriented[(i + shift) % oriented.length];
+        const dx = baseRow[i].x - other.x;
+        const dy = baseRow[i].y - other.y;
+        const dz = baseRow[i].z - other.z;
+        score += dx * dx + dy * dy + dz * dz;
+      }
+      if (score < bestScore) {
+        bestScore = score;
+        bestRow = oriented.map((_, i) => oriented[(i + shift) % oriented.length]);
+      }
+    }
+  }
+
+  return bestRow;
+}
+
+function _projectFacePoint(face, point) {
+  if (face.surface) {
+    try {
+      const uv = face.surface.closestPointUV(point);
+      const sp = face.surface.evaluate(uv.u, uv.v);
+      return { x: sp.x, y: sp.y, z: sp.z };
+    } catch (_) {
+      // Fall through to analytic projection or raw point.
+    }
+  }
+
+  return _projectOntoAnalyticSurface(point, face.surfaceInfo) || point;
+}
+
+function _projectOntoAnalyticSurface(point, surfaceInfo) {
+  if (!surfaceInfo) return null;
+
+  if (surfaceInfo.type === 'sphere') {
+    const ox = surfaceInfo.origin.x, oy = surfaceInfo.origin.y, oz = surfaceInfo.origin.z;
+    const dx = point.x - ox, dy = point.y - oy, dz = point.z - oz;
+    const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (len < 1e-14) return { x: ox + surfaceInfo.radius, y: oy, z: oz };
+    const s = surfaceInfo.radius / len;
+    return { x: ox + dx * s, y: oy + dy * s, z: oz + dz * s };
+  }
+
+  if (surfaceInfo.type === 'cylinder') {
+    const ox = surfaceInfo.origin.x, oy = surfaceInfo.origin.y, oz = surfaceInfo.origin.z;
+    const ax = surfaceInfo.axis.x, ay = surfaceInfo.axis.y, az = surfaceInfo.axis.z;
+    const dx = point.x - ox, dy = point.y - oy, dz = point.z - oz;
+    const axial = dx * ax + dy * ay + dz * az;
+    const rx = dx - axial * ax, ry = dy - axial * ay, rz = dz - axial * az;
+    const rLen = Math.sqrt(rx * rx + ry * ry + rz * rz);
+    if (rLen < 1e-14) return point;
+    const s = surfaceInfo.radius / rLen;
+    return { x: ox + axial * ax + rx * s, y: oy + axial * ay + ry * s, z: oz + axial * az + rz * s };
+  }
+
+  if (surfaceInfo.type === 'cone') {
+    const ox = surfaceInfo.origin.x, oy = surfaceInfo.origin.y, oz = surfaceInfo.origin.z;
+    const ax = surfaceInfo.axis.x, ay = surfaceInfo.axis.y, az = surfaceInfo.axis.z;
+    const dx = point.x - ox, dy = point.y - oy, dz = point.z - oz;
+    const axial = dx * ax + dy * ay + dz * az;
+    const rx = dx - axial * ax, ry = dy - axial * ay, rz = dz - axial * az;
+    const rLen = Math.sqrt(rx * rx + ry * ry + rz * rz);
+    const targetR = surfaceInfo.radius + axial * Math.tan(surfaceInfo.semiAngle);
+    if (rLen < 1e-14) return point;
+    const s = targetR / rLen;
+    return { x: ox + axial * ax + rx * s, y: oy + axial * ay + ry * s, z: oz + axial * az + rz * s };
+  }
+
+  if (surfaceInfo.type === 'torus') {
+    const ox = surfaceInfo.origin.x, oy = surfaceInfo.origin.y, oz = surfaceInfo.origin.z;
+    const ax = surfaceInfo.axis.x, ay = surfaceInfo.axis.y, az = surfaceInfo.axis.z;
+    const dx = point.x - ox, dy = point.y - oy, dz = point.z - oz;
+    const axial = dx * ax + dy * ay + dz * az;
+    const rx = dx - axial * ax, ry = dy - axial * ay, rz = dz - axial * az;
+    const rLen = Math.sqrt(rx * rx + ry * ry + rz * rz);
+    if (rLen < 1e-14) return point;
+    const mcx = ox + (rx / rLen) * surfaceInfo.majorR;
+    const mcy = oy + (ry / rLen) * surfaceInfo.majorR;
+    const mcz = oz + (rz / rLen) * surfaceInfo.majorR;
+    const mx = point.x - mcx, my = point.y - mcy, mz = point.z - mcz;
+    const mLen = Math.sqrt(mx * mx + my * my + mz * mz);
+    if (mLen < 1e-14) return point;
+    const s = surfaceInfo.minorR / mLen;
+    return { x: mcx + mx * s, y: mcy + my * s, z: mcz + mz * s };
+  }
+
+  return null;
+}
+
+function _faceOutwardNormal(face, point) {
+  if (face.surface) {
+    try {
+      const uv = face.surface.closestPointUV(point);
+      const ev = GeometryEvaluator.evalSurface(face.surface, uv.u, uv.v);
+      if (ev.n) {
+        return _normalize(face.sameSense === false
+          ? { x: -ev.n.x, y: -ev.n.y, z: -ev.n.z }
+          : ev.n);
+      }
+    } catch (_) {
+      // Fall through.
+    }
+  }
+
+  const normal = _analyticNormal(face.surfaceInfo, point);
+  if (!normal) return { x: 0, y: 0, z: 1 };
+  return face.sameSense === false
+    ? { x: -normal.x, y: -normal.y, z: -normal.z }
+    : normal;
+}
+
+function _analyticNormal(surfaceInfo, point) {
+  if (!surfaceInfo) return null;
+
+  switch (surfaceInfo.type) {
+    case 'plane':
+      return _normalize({ ...surfaceInfo.normal });
+    case 'cylinder': {
+      const dx = point.x - surfaceInfo.origin.x;
+      const dy = point.y - surfaceInfo.origin.y;
+      const dz = point.z - surfaceInfo.origin.z;
+      const ax = surfaceInfo.axis.x, ay = surfaceInfo.axis.y, az = surfaceInfo.axis.z;
+      const dot = dx * ax + dy * ay + dz * az;
+      return _normalize({ x: dx - dot * ax, y: dy - dot * ay, z: dz - dot * az });
+    }
+    case 'sphere':
+      return _normalize({ x: point.x - surfaceInfo.origin.x, y: point.y - surfaceInfo.origin.y, z: point.z - surfaceInfo.origin.z });
+    case 'cone': {
+      const dx = point.x - surfaceInfo.origin.x;
+      const dy = point.y - surfaceInfo.origin.y;
+      const dz = point.z - surfaceInfo.origin.z;
+      const ax = surfaceInfo.axis.x, ay = surfaceInfo.axis.y, az = surfaceInfo.axis.z;
+      const axial = dx * ax + dy * ay + dz * az;
+      const rx = dx - axial * ax, ry = dy - axial * ay, rz = dz - axial * az;
+      const radialLen = Math.sqrt(rx * rx + ry * ry + rz * rz);
+      if (radialLen < 1e-14) return _normalize({ x: ax, y: ay, z: az });
+      const cosA = Math.cos(surfaceInfo.semiAngle);
+      const sinA = Math.sin(surfaceInfo.semiAngle);
+      return _normalize({
+        x: (rx / radialLen) * cosA - ax * sinA,
+        y: (ry / radialLen) * cosA - ay * sinA,
+        z: (rz / radialLen) * cosA - az * sinA,
+      });
+    }
+    case 'torus': {
+      const dx = point.x - surfaceInfo.origin.x;
+      const dy = point.y - surfaceInfo.origin.y;
+      const dz = point.z - surfaceInfo.origin.z;
+      const ax = surfaceInfo.axis.x, ay = surfaceInfo.axis.y, az = surfaceInfo.axis.z;
+      const axial = dx * ax + dy * ay + dz * az;
+      const rx = dx - axial * ax, ry = dy - axial * ay, rz = dz - axial * az;
+      const radialLen = Math.sqrt(rx * rx + ry * ry + rz * rz);
+      if (radialLen < 1e-14) return _normalize({ x: ax, y: ay, z: az });
+      const cx = surfaceInfo.origin.x + (rx / radialLen) * surfaceInfo.majorR;
+      const cy = surfaceInfo.origin.y + (ry / radialLen) * surfaceInfo.majorR;
+      const cz = surfaceInfo.origin.z + (rz / radialLen) * surfaceInfo.majorR;
+      return _normalize({ x: point.x - cx, y: point.y - cy, z: point.z - cz });
+    }
+    default:
+      return null;
+  }
+}
+
+function _orientTriangleToFace(face, a, b, c) {
+  const normal = _faceOutwardNormal(face, {
+    x: (a.x + b.x + c.x) / 3,
+    y: (a.y + b.y + c.y) / 3,
+    z: (a.z + b.z + c.z) / 3,
+  });
+  const e1x = b.x - a.x, e1y = b.y - a.y, e1z = b.z - a.z;
+  const e2x = c.x - a.x, e2y = c.y - a.y, e2z = c.z - a.z;
+  const gx = e1y * e2z - e1z * e2y;
+  const gy = e1z * e2x - e1x * e2z;
+  const gz = e1x * e2y - e1y * e2x;
+  return (gx * normal.x + gy * normal.y + gz * normal.z) < 0
+    ? [a, c, b]
+    : [a, b, c];
+}
+
+function _dist3(a, b) {
+  return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2);
+}
+
+function _triangleArea3(a, b, c) {
+  const abx = b.x - a.x, aby = b.y - a.y, abz = b.z - a.z;
+  const acx = c.x - a.x, acy = c.y - a.y, acz = c.z - a.z;
+  const cx = aby * acz - abz * acy;
+  const cy = abz * acx - abx * acz;
+  const cz = abx * acy - aby * acx;
+  return 0.5 * Math.sqrt(cx * cx + cy * cy + cz * cz);
+}
+
+function _normalize(v) {
+  if (!v) return { x: 0, y: 0, z: 1 };
+  const len = Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+  if (len < 1e-14) return { x: 0, y: 0, z: 1 };
+  return { x: v.x / len, y: v.y / len, z: v.z / len };
 }
 
 /**

@@ -25,11 +25,13 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const NIST_ROOT = path.join(__dirname, 'nist-samples');
 const MANIFEST_PATH = path.join(NIST_ROOT, 'manifest.json');
+const DEFAULT_SCORECARD_PATH = path.join(__dirname, 'step-import-nist-scorecard.md');
 const IMPORT_OPTIONS = { curveSegments: 16, surfaceSegments: 12 };
 
 const INTERNAL_DEBUG_PREFIXES = [
   '[CAD-Fallback]',
   '[FaceTriangulator]',
+  '[NurbsCurve.tessellate]',
   '[robust-tessellate]',
 ];
 
@@ -56,6 +58,8 @@ const { validateFull } = await import('../js/cad/BRepValidator.js');
 
 function parseCliArgs(argv) {
   let samplePattern = '';
+  let writeScorecardPath = '';
+  let allowFailures = false;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -67,14 +71,39 @@ function parseCliArgs(argv) {
       samplePattern = arg.slice('--sample='.length);
       continue;
     }
+    if (arg === '--write-scorecard') {
+      const next = argv[i + 1];
+      if (next && !next.startsWith('--')) {
+        writeScorecardPath = next;
+        i++;
+      } else {
+        writeScorecardPath = DEFAULT_SCORECARD_PATH;
+      }
+      continue;
+    }
+    if (arg.startsWith('--write-scorecard=')) {
+      writeScorecardPath = arg.slice('--write-scorecard='.length) || DEFAULT_SCORECARD_PATH;
+      continue;
+    }
+    if (arg === '--allow-failures') {
+      allowFailures = true;
+      continue;
+    }
     if (arg === '--help' || arg === '-h') {
-      console.log('Usage: node tests/test-step-import-nist.js [--sample <substring>]');
+      console.log(
+        'Usage: node tests/test-step-import-nist.js ' +
+        '[--sample <substring>] [--write-scorecard [path]] [--allow-failures]',
+      );
       process.exit(0);
     }
     throw new Error(`Unknown argument: ${arg}`);
   }
 
-  return { samplePattern: samplePattern.trim().toLowerCase() };
+  return {
+    samplePattern: samplePattern.trim().toLowerCase(),
+    writeScorecardPath: writeScorecardPath ? path.resolve(process.cwd(), writeScorecardPath) : '',
+    allowFailures,
+  };
 }
 
 function refId(ref) {
@@ -326,6 +355,29 @@ function incrementBreakdown(map, key) {
   map[key] = (map[key] || 0) + 1;
 }
 
+function ratioScore(expected, actual) {
+  const lhs = Math.max(0, Number(expected) || 0);
+  const rhs = Math.max(0, Number(actual) || 0);
+  if (lhs === 0 && rhs === 0) return 1;
+  if (lhs === 0 || rhs === 0) return 0;
+  return Math.min(lhs, rhs) / Math.max(lhs, rhs);
+}
+
+function averageScore(values) {
+  const filtered = values.filter((value) => Number.isFinite(value));
+  if (!filtered.length) return null;
+  return filtered.reduce((sum, value) => sum + value, 0) / filtered.length;
+}
+
+function selectLikelyOuterLoop(loopStats) {
+  if (!loopStats.length) return null;
+  return [...loopStats].sort((a, b) =>
+    b.uniqueBoundaryVertices - a.uniqueBoundaryVertices ||
+    b.coedgeCount - a.coedgeCount ||
+    a.index - b.index
+  )[0];
+}
+
 function collectSourceTopologyStats(stepString) {
   const resolved = resolveEntities(parseEntities(stepString));
   const shells = findShells(resolved);
@@ -356,9 +408,12 @@ function collectSourceTopologyStats(stepString) {
       let outerCoedges = 0;
       let totalCoedges = 0;
       let selfLoopCoedges = 0;
+      const faceVertexIds = new Set();
+      const loopStats = [];
 
       const bounds = Array.isArray(face.args[1]) ? face.args[1] : [];
-      for (const boundRef of bounds) {
+      for (let boundIndex = 0; boundIndex < bounds.length; boundIndex++) {
+        const boundRef = bounds[boundIndex];
         const bound = getEntity(resolved, boundRef);
         if (!bound) continue;
         if (bound.type !== 'FACE_BOUND' && bound.type !== 'FACE_OUTER_BOUND') continue;
@@ -377,6 +432,8 @@ function collectSourceTopologyStats(stepString) {
         const orientedEdges = Array.isArray(loop.args[1]) ? loop.args[1] : [];
         totalCoedges += orientedEdges.length;
         if (bound.type === 'FACE_OUTER_BOUND') outerCoedges += orientedEdges.length;
+        const loopVertexIds = new Set();
+        let loopSelfLoopCoedges = 0;
 
         for (const oeRef of orientedEdges) {
           const oe = getEntity(resolved, oeRef);
@@ -387,13 +444,39 @@ function collectSourceTopologyStats(stepString) {
           edgeIds.add(edge.id);
           const startVertexId = refId(edge.args[1]);
           const endVertexId = refId(edge.args[2]);
-          if (startVertexId != null) vertexIds.add(startVertexId);
-          if (endVertexId != null) vertexIds.add(endVertexId);
-          if (startVertexId != null && startVertexId === endVertexId) selfLoopCoedges++;
+          if (startVertexId != null) {
+            vertexIds.add(startVertexId);
+            faceVertexIds.add(startVertexId);
+            loopVertexIds.add(startVertexId);
+          }
+          if (endVertexId != null) {
+            vertexIds.add(endVertexId);
+            faceVertexIds.add(endVertexId);
+            loopVertexIds.add(endVertexId);
+          }
+          if (startVertexId != null && startVertexId === endVertexId) {
+            selfLoopCoedges++;
+            loopSelfLoopCoedges++;
+          }
         }
+
+        loopStats.push({
+          index: boundIndex,
+          isOuter: bound.type === 'FACE_OUTER_BOUND',
+          coedgeCount: orientedEdges.length,
+          uniqueBoundaryVertices: loopVertexIds.size,
+          selfLoopCoedges: loopSelfLoopCoedges,
+        });
       }
 
       if (outerBounds === 0) facesWithoutExplicitOuterBound++;
+      const inferredOuter = outerBounds === 0 ? selectLikelyOuterLoop(loopStats) : null;
+      const normalizedOuterCoedges = outerBounds > 0
+        ? outerCoedges
+        : (inferredOuter?.coedgeCount || 0);
+      const normalizedInnerLoops = outerBounds > 0
+        ? faceInnerLoops
+        : Math.max(0, loopCount - (inferredOuter ? 1 : 0));
 
       faceDetails.push({
         sourceFaceId: face.id,
@@ -401,9 +484,13 @@ function collectSourceTopologyStats(stepString) {
         loops: loopCount,
         outerBounds,
         innerLoops: faceInnerLoops,
+        normalizedInnerLoops,
         outerCoedges,
+        normalizedOuterCoedges,
         totalCoedges,
         selfLoopCoedges,
+        uniqueBoundaryVertices: faceVertexIds.size,
+        hasCircularTrim: selfLoopCoedges > 0,
       });
     }
   }
@@ -414,6 +501,7 @@ function collectSourceTopologyStats(stepString) {
     faceCount: faceIds.size,
     loopCount: loopIds.size,
     innerLoopCount,
+    normalizedInnerLoopCount: faceDetails.reduce((sum, face) => sum + face.normalizedInnerLoops, 0),
     facesWithoutExplicitOuterBound,
     edgeCount: edgeIds.size,
     vertexCount: vertexIds.size,
@@ -435,10 +523,13 @@ function summarizeImportedBody(body) {
 
     let totalCoedges = 0;
     let selfLoopCoedges = 0;
+    const faceVertices = new Set();
     for (const loop of loops) {
       totalCoedges += loop.coedges.length;
       for (const coedge of loop.coedges) {
         if (coedge.edge.startVertex === coedge.edge.endVertex) selfLoopCoedges++;
+        faceVertices.add(coedge.edge.startVertex);
+        faceVertices.add(coedge.edge.endVertex);
       }
     }
 
@@ -447,9 +538,13 @@ function summarizeImportedBody(body) {
       surfaceType: face.surfaceType || 'unknown',
       loops: loops.length,
       innerLoops: face.innerLoops.length,
+      normalizedInnerLoops: face.innerLoops.length,
       outerCoedges: face.outerLoop?.coedges?.length || 0,
+      normalizedOuterCoedges: face.outerLoop?.coedges?.length || 0,
       totalCoedges,
       selfLoopCoedges,
+      uniqueBoundaryVertices: faceVertices.size,
+      hasCircularTrim: selfLoopCoedges > 0,
       outerLoopClosed: !!face.outerLoop?.isClosed?.(),
     };
 
@@ -534,6 +629,7 @@ function analyzeMesh(mesh, bodySummary) {
     triangleCount: mesh.faces.length,
     displayVertexCount: mesh.vertices.length,
     faceGroupCount: faceIdsWithTriangles.size,
+    faceIdsWithTriangles,
     boundaryEdges,
     nonManifoldEdges,
     degenerateTriangles,
@@ -706,6 +802,272 @@ function formatMeshSummary(mesh, body) {
     `${mesh.boundaryEdges} boundary edge(s), ${mesh.nonManifoldEdges} non-manifold edge(s)`;
 }
 
+function buildFacePairs(report) {
+  if (report.error || !report.body || !report.mesh) return [];
+
+  const importedFaces = report.body.faceDetails || [];
+  const faceIdsWithTriangles = report.mesh.faceIdsWithTriangles || new Set();
+
+  // The importer builds faces in STEP shell traversal order, so pairing by
+  // index gives a stable source/import comparison for diagnostics.
+  return report.source.faceDetails.map((sourceFace, index) => {
+    const importedFace = importedFaces[index] || null;
+    return {
+      index,
+      source: sourceFace,
+      imported: importedFace,
+      tessellated: !!(importedFace && faceIdsWithTriangles.has(importedFace.id)),
+    };
+  });
+}
+
+function surfaceFaceScore(pair) {
+  if (!pair.imported) return 0;
+
+  const source = pair.source;
+  const imported = pair.imported;
+  const surfaceMatch = source.surfaceType === imported.surfaceType ? 1 : 0;
+  const sourceOuterCoedges = source.outerCoedges || source.normalizedOuterCoedges;
+
+  return (
+    surfaceMatch * 0.15 +
+    ratioScore(source.loops, imported.loops) * 0.15 +
+    ratioScore(source.innerLoops, imported.innerLoops) * 0.2 +
+    ratioScore(sourceOuterCoedges, imported.outerCoedges) * 0.1 +
+    ratioScore(source.totalCoedges, imported.totalCoedges) * 0.15 +
+    (pair.tessellated ? 1 : 0) * 0.25
+  );
+}
+
+function circleFaceScore(pair) {
+  if (!pair.imported) return 0;
+  return (
+    ratioScore(pair.source.selfLoopCoedges, pair.imported.selfLoopCoedges) * 0.2 +
+    ratioScore(pair.source.innerLoops, pair.imported.innerLoops) * 0.15 +
+    ratioScore(pair.source.uniqueBoundaryVertices, pair.imported.uniqueBoundaryVertices) * 0.15 +
+    (pair.tessellated ? 1 : 0) * 0.5
+  );
+}
+
+function meshHealthScore(report) {
+  if (report.error || !report.body || !report.mesh) return 0;
+
+  const faceCount = Math.max(1, report.body.faceCount);
+  const vertexCount = Math.max(1, report.body.vertexCount);
+  const warningLoad = report.validation.errors.length + report.validation.warnings.length * 0.35;
+  const boundaryLoadByFace = report.mesh.boundaryEdges / faceCount;
+  const nonManifoldLoadByFace = report.mesh.nonManifoldEdges / faceCount;
+
+  return averageScore([
+    ratioScore(report.body.faceCount, report.mesh.faceGroupCount),
+    1 / (1 + boundaryLoadByFace * boundaryLoadByFace),
+    1 / (1 + nonManifoldLoadByFace * nonManifoldLoadByFace),
+    1 / (1 + warningLoad / faceCount),
+    1 / (1 + (report.mesh.boundaryEdges / vertexCount) * (report.mesh.boundaryEdges / vertexCount)),
+  ]) ?? 0;
+}
+
+function surfaceHealthFactor(report) {
+  if (report.error || !report.body || !report.mesh) return 0;
+
+  const faceCount = Math.max(1, report.body.faceCount);
+  const boundaryLoad = report.mesh.boundaryEdges / faceCount;
+  const nonManifoldLoad = report.mesh.nonManifoldEdges / faceCount;
+
+  const health = averageScore([
+    1 / (1 + report.validation.errors.length / faceCount),
+    1 / (1 + report.validation.warnings.length / (faceCount * 4)),
+    1 / (1 + boundaryLoad),
+    1 / (1 + nonManifoldLoad),
+  ]) ?? 0;
+
+  return 0.4 + health * 0.6;
+}
+
+function surfaceScore(facePairs, surfaceType, report) {
+  const raw = averageScore(
+    facePairs
+      .filter((pair) => pair.source.surfaceType === surfaceType)
+      .map(surfaceFaceScore),
+  );
+  if (raw == null) return null;
+  return raw * surfaceHealthFactor(report);
+}
+
+function computeScorecard(report) {
+  if (report.error || !report.body || !report.mesh) {
+    return {
+      planes: 0,
+      cylinders: 0,
+      cones: 0,
+      faces: 0,
+      holesExact: 0,
+      innerLoops: 0,
+      vertices: 0,
+      circles: 0,
+      overall: 0,
+    };
+  }
+
+  const facePairs = buildFacePairs(report);
+  const faces = meshHealthScore(report);
+  const holedPairs = facePairs.filter((pair) => pair.source.innerLoops > 0);
+  const holesExact = averageScore(holedPairs.map((pair) =>
+    pair.imported && pair.source.innerLoops === pair.imported.innerLoops ? 1 : 0,
+  )) ?? 1;
+  const innerLoops = (
+    (averageScore(facePairs.map((pair) =>
+      ratioScore(pair.source.innerLoops, pair.imported?.innerLoops ?? 0),
+    )) ?? 0) * 0.5 +
+    ratioScore(report.source.innerLoopCount, report.body.innerLoopCount) * 0.5
+  );
+  const boundaryVertexLoad = report.mesh.boundaryEdges / Math.max(1, report.body.vertexCount);
+  const nonManifoldVertexLoad = report.mesh.nonManifoldEdges / Math.max(1, report.body.vertexCount);
+  const vertices = averageScore([
+    ratioScore(report.source.vertexCount, report.body.vertexCount),
+    1 / (1 + boundaryVertexLoad * boundaryVertexLoad),
+    1 / (1 + nonManifoldVertexLoad * nonManifoldVertexLoad),
+  ]) ?? 0;
+  const circles = averageScore(
+    facePairs
+      .filter((pair) => pair.source.hasCircularTrim)
+      .map(circleFaceScore),
+  );
+  const surfaceFactor = surfaceHealthFactor(report);
+
+  const scorecard = {
+    planes: surfaceScore(facePairs, 'plane', report),
+    cylinders: surfaceScore(facePairs, 'cylinder', report),
+    cones: surfaceScore(facePairs, 'cone', report),
+    faces,
+    holesExact,
+    innerLoops,
+    vertices,
+    circles: circles == null ? null : circles * surfaceFactor,
+  };
+
+  scorecard.overall = averageScore(Object.values(scorecard)) ?? 0;
+  return scorecard;
+}
+
+function formatPercent(value) {
+  return value == null ? 'n/a' : `${(value * 100).toFixed(1)}%`;
+}
+
+function modelLabel(file) {
+  const match = file.match(/(?:nist_)?((?:ctc|ftc)_\d+)/i);
+  if (match) return match[1].toUpperCase();
+  return file.replace(/\.[^.]+$/, '').toUpperCase();
+}
+
+function buildScoreTableString(reports) {
+  const columns = [
+    { key: 'file', title: 'File', align: 'left' },
+    { key: 'planes', title: 'Planes', align: 'right' },
+    { key: 'cylinders', title: 'Cylinders', align: 'right' },
+    { key: 'cones', title: 'Cones', align: 'right' },
+    { key: 'faces', title: 'Faces', align: 'right' },
+    { key: 'holesExact', title: 'HolesExact', align: 'right' },
+    { key: 'innerLoops', title: 'InnerLoops', align: 'right' },
+    { key: 'vertices', title: 'Vertices', align: 'right' },
+    { key: 'circles', title: 'Circles', align: 'right' },
+    { key: 'overall', title: 'OVERALL', align: 'right' },
+  ];
+
+  const rows = reports.map((report) => ({
+    file: modelLabel(report.file),
+    ...Object.fromEntries(
+      columns
+        .filter((column) => column.key !== 'file')
+        .map((column) => [column.key, formatPercent(report.scores[column.key])]),
+    ),
+  }));
+
+  const averageRow = { file: 'AVERAGE' };
+  for (const column of columns) {
+    if (column.key === 'file') continue;
+    averageRow[column.key] = formatPercent(
+      averageScore(reports.map((report) => report.scores[column.key])),
+    );
+  }
+  rows.push(averageRow);
+
+  const widths = {};
+  for (const column of columns) {
+    widths[column.key] = Math.max(
+      column.title.length,
+      ...rows.map((row) => String(row[column.key]).length),
+    );
+  }
+
+  const border = '+' + columns.map((column) => '-'.repeat(widths[column.key] + 2)).join('+') + '+';
+  const renderCell = (value, width, align) =>
+    align === 'left' ? String(value).padEnd(width, ' ') : String(value).padStart(width, ' ');
+  const renderRow = (row) =>
+    `| ${columns.map((column) => renderCell(row[column.key], widths[column.key], column.align)).join(' | ')} |`;
+
+  return [
+    border,
+    renderRow(Object.fromEntries(columns.map((column) => [column.key, column.title]))),
+    border,
+    ...rows.map(renderRow),
+    border,
+  ].join('\n');
+}
+
+function printScoreTable(reports) {
+  console.log(buildScoreTableString(reports));
+}
+
+function buildWorstFailures(reports, limit = 5) {
+  return [...reports]
+    .filter((report) => report.status === 'FAIL')
+    .sort((a, b) => severityScore(b) - severityScore(a))
+    .slice(0, limit);
+}
+
+function buildScorecardMarkdown({
+  reports,
+  passCount,
+  warnCount,
+  failCount,
+  worstReports,
+  samplePattern,
+}) {
+  const lines = [
+    '# NIST STEP Import Scorecard',
+    '',
+    'Tracked baseline snapshot for STEP importer and robust tessellator progress against the public NIST corpus.',
+    '',
+    `Generated by \`node tests/test-step-import-nist.js --write-scorecard\` on ${new Date().toISOString()}.`,
+    '',
+    `Models: ${reports.length}`,
+    `Import options: curveSegments=${IMPORT_OPTIONS.curveSegments}, surfaceSegments=${IMPORT_OPTIONS.surfaceSegments}`,
+    `Sample filter: ${samplePattern || 'full corpus'}`,
+    `Status counts: PASS ${passCount}, WARN ${warnCount}, FAIL ${failCount}`,
+    '',
+    '```text',
+    buildScoreTableString(reports),
+    '```',
+    '',
+    'Scoring notes:',
+    '- `Faces` blends B-Rep validator health with tessellated face coverage and watertightness symptoms.',
+    '- `HolesExact` measures exact hole-count preservation on holed faces.',
+    '- `Circles` tracks self-loop circular trims, which are currently a major STEP import/tessellation stress case.',
+  ];
+
+  if (worstReports.length) {
+    lines.push('', 'Current worst failures:');
+    for (const report of worstReports) {
+      const headline = report.analysis.failures[0] || report.error || 'failed';
+      lines.push(`- \`${modelLabel(report.file)}\`: ${headline}`);
+    }
+  }
+
+  lines.push('');
+  return lines.join('\n');
+}
+
 function printFaceSamples(label, faces) {
   if (!faces.length) return;
   console.log(`  ${label}:`);
@@ -754,6 +1116,7 @@ async function analyzeFile(stepPath) {
       error: null,
     };
     report.analysis = analyzeReport(report);
+    report.scores = computeScorecard(report);
     report.status = report.analysis.failures.length > 0
       ? 'FAIL'
       : report.analysis.warnings.length > 0
@@ -771,6 +1134,7 @@ async function analyzeFile(stepPath) {
       error: error.message,
     };
     report.analysis = analyzeReport(report);
+    report.scores = computeScorecard(report);
     report.status = 'FAIL';
     return report;
   }
@@ -823,7 +1187,7 @@ function printReport(report) {
 }
 
 async function main() {
-  const { samplePattern } = parseCliArgs(process.argv.slice(2));
+  const { samplePattern, writeScorecardPath, allowFailures } = parseCliArgs(process.argv.slice(2));
 
   let manifest;
   try {
@@ -870,10 +1234,12 @@ async function main() {
   console.log(`WARN: ${warnCount}`);
   console.log(`FAIL: ${failCount}`);
 
-  const worstReports = [...reports]
-    .filter((report) => report.status === 'FAIL')
-    .sort((a, b) => severityScore(b) - severityScore(a))
-    .slice(0, 5);
+  console.log('\n=== Scorecard ===');
+  printScoreTable(reports);
+  console.log('Scores combine source-vs-imported B-Rep fidelity with tessellated face coverage.');
+  console.log('`HolesExact` checks exact hole-count preservation on holed faces; `Circles` tracks self-loop circular trims.');
+
+  const worstReports = buildWorstFailures(reports);
 
   if (worstReports.length) {
     console.log('Worst failures:');
@@ -883,7 +1249,20 @@ async function main() {
     }
   }
 
-  if (failCount > 0) process.exitCode = 1;
+  if (writeScorecardPath) {
+    const markdown = buildScorecardMarkdown({
+      reports,
+      passCount,
+      warnCount,
+      failCount,
+      worstReports,
+      samplePattern,
+    });
+    await fs.writeFile(writeScorecardPath, markdown, 'utf8');
+    console.log(`Scorecard written to ${path.relative(process.cwd(), writeScorecardPath) || writeScorecardPath}`);
+  }
+
+  if (failCount > 0 && !allowFailures) process.exitCode = 1;
 }
 
 main().catch((error) => {

@@ -208,6 +208,11 @@ Run the dedicated NIST STEP corpus diagnostics after downloading the samples:
 npm run test:nist-step
 ```
 
+Refresh the tracked NIST scorecard baseline used to compare importer iterations:
+```bash
+npm run test:nist-step:scorecard
+```
+
 Run individual test areas:
 ```bash
 node tests/test-feature-pipeline.js          # Feature tree execution (46+ tests)

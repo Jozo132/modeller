@@ -645,7 +645,8 @@ function _buildFaceTopology(resolved, faceId, vertexCache, edgeCache) {
   const topoFace = new TopoFace(nurbsSurface, surfaceType, sameSense);
   topoFace.surfaceInfo = surfaceInfo;
 
-  const outerEntry = loopEntries.find(l => l.isOuter) || loopEntries[0];
+  const outerEntry = _selectOuterLoopEntry(loopEntries, surfaceInfo);
+  if (!outerEntry) return null;
   topoFace.setOuterLoop(outerEntry.topoLoop);
   for (const le of loopEntries) {
     if (le !== outerEntry) topoFace.addInnerLoop(le.topoLoop);
@@ -685,18 +686,13 @@ function _buildLoopTopology(resolved, orientedEdgeRefs, vertexCache, edgeCache) 
     const startVertexRef = edgeCurve.args[1];
     const endVertexRef = edgeCurve.args[2];
     const curveRef = edgeCurve.args[3];
-    const edgeSense = edgeCurve.args[4] === '.T.';
-
     const startPt = _getVertexPoint(resolved, startVertexRef);
     const endPt = _getVertexPoint(resolved, endVertexRef);
     if (!startPt || !endPt) continue;
 
-    const forward = oeSense === edgeSense;
-
     // Retrieve or create shared TopoVertex for each STEP VERTEX_POINT.
-    // The `forward` flag determines which STEP vertex becomes the coedge's
-    // start vs end, but the cache always maps the STEP entity ID to the
-    // same TopoVertex object regardless of coedge direction.
+    // The cache always maps the STEP entity ID to the same TopoVertex object
+    // regardless of coedge direction.
     const startVtxId = _refId(startVertexRef);
     const endVtxId = _refId(endVertexRef);
 
@@ -726,9 +722,13 @@ function _buildLoopTopology(resolved, orientedEdgeRefs, vertexCache, edgeCache) 
       if (edgeCurveId != null) edgeCache.set(edgeCurveId, topoEdge);
     }
 
-    // The coedge's `sameSense` flag indicates whether it traverses the
-    // edge in the same direction as the TopoEdge (STEP order).
-    const coedge = new TopoCoEdge(topoEdge, forward);
+    // ORIENTED_EDGE.orientation is the topological direction of the coedge
+    // relative to the underlying EDGE_CURVE's start/end vertices.
+    //
+    // EDGE_CURVE.same_sense is only the relationship between the curve
+    // parameterization and the topological edge direction; it must not be
+    // folded into the coedge orientation or loops stop closing correctly.
+    const coedge = new TopoCoEdge(topoEdge, oeSense);
     coedges.push(coedge);
   }
 
@@ -956,6 +956,77 @@ function _tessellateLoop(topoLoop, curveSegments) {
   }
 
   return { polygon, edgeBounds };
+}
+
+function _selectOuterLoopEntry(loopEntries, surfaceInfo) {
+  if (!Array.isArray(loopEntries) || loopEntries.length === 0) return null;
+
+  const explicitOuter = loopEntries.find((entry) => entry.isOuter);
+  if (explicitOuter) return explicitOuter;
+
+  let bestEntry = loopEntries[0];
+  let bestArea = -Infinity;
+  let bestPerimeter = -Infinity;
+  let bestPoints = -Infinity;
+  let bestCoedges = -Infinity;
+
+  for (const entry of loopEntries) {
+    const tess = _tessellateLoop(entry.topoLoop, 24);
+    const polygon = _deduplicateConsecutive(tess?.polygon || []);
+    const area = _estimateLoopAreaMagnitude(polygon, surfaceInfo);
+    const perimeter = _estimateLoopPerimeter(polygon);
+    const pointCount = polygon.length;
+    const coedgeCount = entry.topoLoop?.coedges?.length || 0;
+
+    const better = area > bestArea + 1e-9
+      || (Math.abs(area - bestArea) <= 1e-9 && perimeter > bestPerimeter + 1e-9)
+      || (Math.abs(area - bestArea) <= 1e-9 && Math.abs(perimeter - bestPerimeter) <= 1e-9 && pointCount > bestPoints)
+      || (Math.abs(area - bestArea) <= 1e-9 && Math.abs(perimeter - bestPerimeter) <= 1e-9 && pointCount === bestPoints && coedgeCount > bestCoedges);
+
+    if (better) {
+      bestEntry = entry;
+      bestArea = area;
+      bestPerimeter = perimeter;
+      bestPoints = pointCount;
+      bestCoedges = coedgeCount;
+    }
+  }
+
+  return bestEntry;
+}
+
+function _estimateLoopAreaMagnitude(polygon, surfaceInfo) {
+  if (!Array.isArray(polygon) || polygon.length < 3) return 0;
+
+  let nx = 0;
+  let ny = 0;
+  let nz = 0;
+  for (let i = 0; i < polygon.length; i++) {
+    const curr = polygon[i];
+    const next = polygon[(i + 1) % polygon.length];
+    nx += (curr.y - next.y) * (curr.z + next.z);
+    ny += (curr.z - next.z) * (curr.x + next.x);
+    nz += (curr.x - next.x) * (curr.y + next.y);
+  }
+
+  const normal = surfaceInfo?.type === 'plane' && surfaceInfo.normal
+    ? _normalize(surfaceInfo.normal)
+    : null;
+  if (normal) {
+    return Math.abs(nx * normal.x + ny * normal.y + nz * normal.z) * 0.5;
+  }
+
+  return 0.5 * Math.sqrt(nx * nx + ny * ny + nz * nz);
+}
+
+function _estimateLoopPerimeter(polygon) {
+  if (!Array.isArray(polygon) || polygon.length < 2) return 0;
+
+  let perimeter = 0;
+  for (let i = 0; i < polygon.length; i++) {
+    perimeter += _dist3D(polygon[i], polygon[(i + 1) % polygon.length]);
+  }
+  return perimeter;
 }
 
 /**
