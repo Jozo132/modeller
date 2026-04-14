@@ -6,6 +6,7 @@ test-sketch.js
 out/*.png
 tests/samples/*.png
 tests/step/*.png
+tests/nist-samples/
 tests/reports/
 playwright-report/
 test-results/

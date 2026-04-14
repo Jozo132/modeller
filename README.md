@@ -194,6 +194,15 @@ Run the full test suite:
 npm test
 ```
 
+Download the public CAD reference corpus used for STEP import interoperability work:
+```bash
+npm run download
+```
+
+The downloader currently fetches the public NIST PMI/FTC/CTC sample archive into `tests/nist-samples/` and writes a local manifest for regression use. These files are not authored by this project, are not checked into the repository, and remain subject to their original source terms.
+
+They are used here only as externally hosted reference fixtures for interoperability, parser validation, and STEP import quality work. The project does not claim ownership of the downloaded models and should not redistribute them by copying the archive into the repository. If upstream hosting or usage terms change, review those terms before using the corpus again.
+
 Run individual test areas:
 ```bash
 node tests/test-feature-pipeline.js          # Feature tree execution (46+ tests)
