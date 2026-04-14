@@ -203,6 +203,11 @@ The downloader currently fetches the public NIST PMI/FTC/CTC sample archive into
 
 They are used here only as externally hosted reference fixtures for interoperability, parser validation, and STEP import quality work. The project does not claim ownership of the downloaded models and should not redistribute them by copying the archive into the repository. If upstream hosting or usage terms change, review those terms before using the corpus again.
 
+Run the dedicated NIST STEP corpus diagnostics after downloading the samples:
+```bash
+npm run test:nist-step
+```
+
 Run individual test areas:
 ```bash
 node tests/test-feature-pipeline.js          # Feature tree execution (46+ tests)

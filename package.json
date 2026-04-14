@@ -51,6 +51,7 @@
     "test:workers": "node tests/test-worker-dispatcher.js",
     "test:telemetry": "node tests/test-telemetry.js",
     "test:assembly": "node tests/test-assembly-design.js",
+    "test:nist-step": "node tests/test-step-import-nist.js",
     "test:e2e": "npx playwright test",
     "download": "node tests/download-public-nist-samples.js",
     "report:nurbs-variants": "node tests/report-nurbs-variants.js"
