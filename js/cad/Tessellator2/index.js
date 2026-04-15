@@ -425,23 +425,35 @@ function _tessellateSelfLoopRingFace(face, edgeSampler, edgeSegs, surfSegs) {
   if (outerRow.length < 3 || innerRowRaw.length < 3) return null;
   if (outerRow.length !== innerRowRaw.length) return null;
 
-  const innerRow = _alignClosedLoopSamples(outerRow, innerRowRaw);
+  const analyticAlignment = _alignAnalyticRingRows(face.surfaceInfo, outerRow, innerRowRaw);
+  const alignedOuterRow = analyticAlignment?.outerRow || outerRow;
+  const outerUv = analyticAlignment?.outerUv || null;
+  const innerRow = analyticAlignment?.innerRow || _alignClosedLoopSamples(alignedOuterRow, innerRowRaw);
+  const innerUv = analyticAlignment?.innerUv || null;
   const nCols = outerRow.length;
   const nRows = Math.max(2, Math.ceil(surfSegs / 2));
-  const rows = [outerRow];
+  const rows = [alignedOuterRow];
 
   for (let ri = 1; ri < nRows - 1; ri++) {
     const t = ri / (nRows - 1);
     const row = [];
     for (let ci = 0; ci < nCols; ci++) {
-      const p0 = outerRow[ci];
+      if (outerUv && innerUv) {
+        const u0 = outerUv[ci].u;
+        const u1 = _wrapNearValue(innerUv[ci].u, u0, 2 * Math.PI);
+        const v0 = outerUv[ci].v;
+        const v1 = innerUv[ci].v;
+        row.push(_evaluateAnalyticSurface(face.surfaceInfo, u0 + t * (u1 - u0), v0 + t * (v1 - v0)));
+        continue;
+      }
+
+      const p0 = alignedOuterRow[ci];
       const p1 = innerRow[ci];
-      const raw = {
+      row.push(_projectFacePoint(face, {
         x: p0.x + t * (p1.x - p0.x),
         y: p0.y + t * (p1.y - p0.y),
         z: p0.z + t * (p1.z - p0.z),
-      };
-      row.push(_projectFacePoint(face, raw));
+      }));
     }
     rows.push(row);
   }
@@ -479,6 +491,83 @@ function _tessellateSelfLoopRingFace(face, edgeSampler, edgeSegs, surfSegs) {
   }
 
   return { vertices: allVerts, faces: allFaces };
+}
+
+function _alignAnalyticRingRows(surfaceInfo, outerRow, innerRowRaw) {
+  const analyticType = surfaceInfo?.type;
+  if (analyticType !== 'cylinder' && analyticType !== 'cone') return null;
+  if (!Array.isArray(outerRow) || !Array.isArray(innerRowRaw) || outerRow.length !== innerRowRaw.length) return null;
+
+  const periodU = 2 * Math.PI;
+  const mapRowToUv = (row) => {
+    const uvLoop = _normalizePeriodicUvLoop(
+      row.map((point, rowIndex) => {
+        const uv = _analyticClosestPointUV(surfaceInfo, point);
+        return uv ? { u: uv.u, v: uv.v, x: uv.u, y: uv.v, rowIndex } : null;
+      }).filter(Boolean),
+      periodU,
+    );
+    return uvLoop.length === row.length ? uvLoop : null;
+  };
+
+  const outerUv = mapRowToUv(outerRow);
+  if (!outerUv) return null;
+  const alignedOuterRow = outerUv.map((entry) => outerRow[entry.rowIndex]);
+
+  const candidates = [
+    { reverse: false, row: innerRowRaw },
+    { reverse: true, row: [...innerRowRaw].reverse() },
+  ].map((candidate) => {
+    const uv = mapRowToUv(candidate.row);
+    if (!uv) return null;
+    return {
+      ...candidate,
+      uv,
+      normalizedRow: uv.map((entry) => candidate.row[entry.rowIndex]),
+    };
+  }).filter(Boolean);
+  if (!candidates.length) return null;
+
+  let bestCandidate = null;
+  let bestShift = 0;
+  let bestScore = Infinity;
+  for (const candidate of candidates) {
+    for (let shift = 0; shift < candidate.row.length; shift++) {
+      let score = 0;
+      for (let i = 0; i < outerUv.length; i++) {
+        const outerPoint = outerUv[i];
+        const innerPoint = candidate.uv[(i + shift) % candidate.uv.length];
+        const du = _wrapNearValue(innerPoint.u, outerPoint.u, periodU) - outerPoint.u;
+        const a = alignedOuterRow[i];
+        const b = candidate.normalizedRow[(i + shift) % candidate.normalizedRow.length];
+        const dx = a.x - b.x;
+        const dy = a.y - b.y;
+        const dz = a.z - b.z;
+        score += du * du * 16 + dx * dx + dy * dy + dz * dz;
+      }
+      if (score < bestScore) {
+        bestScore = score;
+        bestCandidate = candidate;
+        bestShift = shift;
+      }
+    }
+  }
+  if (!bestCandidate) return null;
+
+  const alignedInnerRow = alignedOuterRow.map((_, i) => bestCandidate.normalizedRow[(i + bestShift) % bestCandidate.normalizedRow.length]);
+  const alignedInnerUv = alignedOuterRow.map((_, i) => {
+    const outerPoint = outerUv[i];
+    const innerPoint = bestCandidate.uv[(i + bestShift) % bestCandidate.uv.length];
+    const u = _wrapNearValue(innerPoint.u, outerPoint.u, periodU);
+    return { ...innerPoint, u, x: u, y: innerPoint.v };
+  });
+
+  return {
+    outerRow: alignedOuterRow,
+    outerUv: outerUv.map((point) => ({ ...point })),
+    innerRow: alignedInnerRow,
+    innerUv: alignedInnerUv,
+  };
 }
 
 function _tessellateSingularAnalyticCapFace(face, edgeSampler, edgeSegs) {
