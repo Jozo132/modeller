@@ -686,6 +686,7 @@ function _buildLoopTopology(resolved, orientedEdgeRefs, vertexCache, edgeCache) 
     const startVertexRef = edgeCurve.args[1];
     const endVertexRef = edgeCurve.args[2];
     const curveRef = edgeCurve.args[3];
+    const edgeCurveSameSense = edgeCurve.args[4] !== '.F.';
     const startPt = _getVertexPoint(resolved, startVertexRef);
     const endPt = _getVertexPoint(resolved, endVertexRef);
     if (!startPt || !endPt) continue;
@@ -717,7 +718,7 @@ function _buildLoopTopology(resolved, orientedEdgeRefs, vertexCache, edgeCache) 
     if (edgeCurveId != null && edgeCache.has(edgeCurveId)) {
       topoEdge = edgeCache.get(edgeCurveId);
     } else {
-      const nurbsCurve = _buildNurbsCurve(resolved, curveRef, startPt, endPt);
+      const nurbsCurve = _buildNurbsCurve(resolved, curveRef, startPt, endPt, edgeCurveSameSense);
       topoEdge = new TopoEdge(stepSv, stepEv, nurbsCurve);
       if (edgeCurveId != null) edgeCache.set(edgeCurveId, topoEdge);
     }
@@ -998,6 +999,9 @@ function _selectOuterLoopEntry(loopEntries, surfaceInfo) {
 function _estimateLoopAreaMagnitude(polygon, surfaceInfo) {
   if (!Array.isArray(polygon) || polygon.length < 3) return 0;
 
+  const uvArea = _estimateAnalyticUvAreaMagnitude(polygon, surfaceInfo);
+  if (uvArea > 1e-9) return uvArea;
+
   let nx = 0;
   let ny = 0;
   let nz = 0;
@@ -1017,6 +1021,56 @@ function _estimateLoopAreaMagnitude(polygon, surfaceInfo) {
   }
 
   return 0.5 * Math.sqrt(nx * nx + ny * ny + nz * nz);
+}
+
+function _estimateAnalyticUvAreaMagnitude(polygon, surfaceInfo) {
+  if (!surfaceInfo || (surfaceInfo.type !== 'cylinder' && surfaceInfo.type !== 'cone')) return 0;
+
+  const uvLoop = [];
+  for (const point of polygon) {
+    const uv = _analyticSurfaceUv(point, surfaceInfo);
+    if (!uv) return 0;
+    uvLoop.push(uv);
+  }
+  if (uvLoop.length < 3) return 0;
+
+  for (let i = 1; i < uvLoop.length; i++) {
+    uvLoop[i].u = _wrapNearPeriodicValue(uvLoop[i].u, uvLoop[i - 1].u, 2 * Math.PI);
+  }
+
+  let area = 0;
+  for (let i = 0; i < uvLoop.length; i++) {
+    const curr = uvLoop[i];
+    const next = uvLoop[(i + 1) % uvLoop.length];
+    area += curr.u * next.v - next.u * curr.v;
+  }
+  return Math.abs(area) * 0.5;
+}
+
+function _analyticSurfaceUv(point, surfaceInfo) {
+  const ox = surfaceInfo.origin.x;
+  const oy = surfaceInfo.origin.y;
+  const oz = surfaceInfo.origin.z;
+  const ax = surfaceInfo.axis.x;
+  const ay = surfaceInfo.axis.y;
+  const az = surfaceInfo.axis.z;
+  const dx = point.x - ox;
+  const dy = point.y - oy;
+  const dz = point.z - oz;
+  const axial = dx * ax + dy * ay + dz * az;
+  const rx = dx - axial * ax;
+  const ry = dy - axial * ay;
+  const rz = dz - axial * az;
+  const ux = rx * surfaceInfo.xDir.x + ry * surfaceInfo.xDir.y + rz * surfaceInfo.xDir.z;
+  const uy = rx * surfaceInfo.yDir.x + ry * surfaceInfo.yDir.y + rz * surfaceInfo.yDir.z;
+  return { u: Math.atan2(uy, ux), v: axial };
+}
+
+function _wrapNearPeriodicValue(value, reference, period) {
+  if (!Number.isFinite(value) || !Number.isFinite(reference) || !Number.isFinite(period) || period <= 0) {
+    return value;
+  }
+  return value + Math.round((reference - value) / period) * period;
 }
 
 function _estimateLoopPerimeter(polygon) {
@@ -1114,7 +1168,7 @@ function _getDirection(resolved, ref) {
  * Returns null for LINE (represented as a linear NurbsCurve would be wasteful)
  * or unsupported types.
  */
-function _buildNurbsCurve(resolved, curveRef, startPt, endPt) {
+function _buildNurbsCurve(resolved, curveRef, startPt, endPt, curveSameSense = true) {
   const curve = _getEntity(resolved, curveRef);
   if (!curve) return null;
 
@@ -1136,25 +1190,44 @@ function _buildNurbsCurve(resolved, curveRef, startPt, endPt) {
       if (!axis || !radius) return null;
       const yDir = _cross(axis.zDir, axis.xDir);
       const startAngle = _pointToAngle(startPt, axis.origin, axis.xDir, yDir);
-      let endAngle = _pointToAngle(endPt, axis.origin, axis.xDir, yDir);
-      let sweep = endAngle - startAngle;
-      if (sweep <= -Math.PI) sweep += 2 * Math.PI;
-      if (sweep > Math.PI) sweep -= 2 * Math.PI;
-      if (_dist3D(startPt, endPt) < 1e-8) sweep = 2 * Math.PI;
+      const endAngle = _pointToAngle(endPt, axis.origin, axis.xDir, yDir);
+      const sweep = _directedPeriodicSweep(
+        startAngle,
+        endAngle,
+        curveSameSense,
+        _dist3D(startPt, endPt) < 1e-8,
+      );
       return NurbsCurve.createArc(axis.origin, radius, axis.xDir, yDir, startAngle, sweep);
     }
 
     case 'B_SPLINE_CURVE_WITH_KNOTS':
-      return _buildBSplineCurveNurbs(resolved, geomCurve, false);
+      return _orientCurveToEdge(
+        _buildBSplineCurveNurbs(resolved, geomCurve, false),
+        curveSameSense,
+      );
 
     case 'RATIONAL_B_SPLINE_CURVE':
-      return _buildBSplineCurveNurbs(resolved, geomCurve, true);
+      return _orientCurveToEdge(
+        _buildBSplineCurveNurbs(resolved, geomCurve, true),
+        curveSameSense,
+      );
 
     case 'ELLIPSE': {
-      // Represent the ellipse arc as a polyline NurbsCurve by sampling
-      const pts = _sampleEllipse(resolved, geomCurve, startPt, endPt, 64);
-      if (!pts || pts.length < 2) return NurbsCurve.createLine(startPt, endPt);
-      return NurbsCurve.createPolyline(pts);
+      const axisRef = geomCurve.args[1];
+      const semiA = Number(geomCurve.args[2]);
+      const semiB = Number(geomCurve.args[3]);
+      const axis = _getAxis2Placement3D(resolved, axisRef);
+      if (!axis || !semiA || !semiB) return NurbsCurve.createLine(startPt, endPt);
+      const yDir = _cross(axis.zDir, axis.xDir);
+      const startAngle = _pointToEllipseAngle(startPt, axis.origin, axis.xDir, yDir, semiA, semiB);
+      const endAngle = _pointToEllipseAngle(endPt, axis.origin, axis.xDir, yDir, semiA, semiB);
+      const sweep = _directedPeriodicSweep(
+        startAngle,
+        endAngle,
+        curveSameSense,
+        _dist3D(startPt, endPt) < 1e-8,
+      );
+      return NurbsCurve.createEllipseArc(axis.origin, semiA, semiB, axis.xDir, yDir, startAngle, sweep);
     }
 
     default:
@@ -1162,6 +1235,30 @@ function _buildNurbsCurve(resolved, curveRef, startPt, endPt) {
       // correctly by _tessellateLoop (curve reversal via sameSense).
       return NurbsCurve.createLine(startPt, endPt);
   }
+}
+
+function _orientCurveToEdge(curve, curveSameSense) {
+  if (!curve) return null;
+  return curveSameSense ? curve : curve.reversed();
+}
+
+function _positiveModulo(value, period) {
+  if (!Number.isFinite(value) || !Number.isFinite(period) || period <= 0) return value;
+  const mod = value % period;
+  return mod < 0 ? mod + period : mod;
+}
+
+function _directedPeriodicSweep(startAngle, endAngle, curveSameSense, closedLoop = false) {
+  const tau = 2 * Math.PI;
+  if (closedLoop) return tau;
+
+  const delta = endAngle - startAngle;
+  if (curveSameSense) {
+    const forward = _positiveModulo(delta, tau);
+    return forward > 1e-12 ? forward : tau;
+  }
+  const reverse = _positiveModulo(-delta, tau);
+  return reverse > 1e-12 ? -reverse : -tau;
 }
 
 /**

@@ -705,7 +705,7 @@ function analyzeReport(report) {
     ['closed shell count', source.closedShellCount, body.closedShellCount],
     ['face count', source.faceCount, body.faceCount],
     ['loop count', source.loopCount, body.loopCount],
-    ['inner loop count', source.innerLoopCount, body.innerLoopCount],
+    ['effective inner loop count', source.normalizedInnerLoopCount, body.innerLoopCount],
     ['edge count', source.edgeCount, body.edgeCount],
     ['vertex count', source.vertexCount, body.vertexCount],
   ];
@@ -754,12 +754,12 @@ function analyzeReport(report) {
     notes.push('The importer is generating coincident duplicate TopoEdges instead of sewing shared edges cleanly.');
   }
   if (
-    source.innerLoopCount !== body.innerLoopCount &&
+    source.normalizedInnerLoopCount !== body.innerLoopCount &&
     source.facesWithoutExplicitOuterBound > 0 &&
-    source.innerLoopCount - body.innerLoopCount === source.facesWithoutExplicitOuterBound
+    source.innerLoopCount !== source.normalizedInnerLoopCount
   ) {
     notes.push(
-      `${source.facesWithoutExplicitOuterBound} source face(s) have no explicit FACE_OUTER_BOUND, and the importer is silently reclassifying the first FACE_BOUND as outer.`,
+      `${source.facesWithoutExplicitOuterBound} source face(s) have no explicit FACE_OUTER_BOUND, so outer/inner classification must be inferred from geometry.`,
     );
   }
   if (openOuterLoopErrors > 0 || openInnerLoopErrors > 0) {

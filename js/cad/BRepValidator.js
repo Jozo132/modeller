@@ -221,20 +221,64 @@ export function validateNoDuplicateEdges(body, tol = DEFAULT_TOLERANCE) {
   if (!body) return result;
 
   const allEdges = body.edges();
-  for (let i = 0; i < allEdges.length; i++) {
-    for (let j = i + 1; j < allEdges.length; j++) {
-      const ei = allEdges[i], ej = allEdges[j];
-      const sameForward = tol.pointsCoincident(ei.startVertex.point, ej.startVertex.point) &&
-                          tol.pointsCoincident(ei.endVertex.point, ej.endVertex.point);
-      const sameReverse = tol.pointsCoincident(ei.startVertex.point, ej.endVertex.point) &&
-                          tol.pointsCoincident(ei.endVertex.point, ej.startVertex.point);
-      if (sameForward || sameReverse) {
-        result.addError(`Edges ${ei.id} and ${ej.id} are coincident duplicates`);
+  const buckets = new Map();
+  for (const edge of allEdges) {
+    const signature = _duplicateEdgeSignature(edge);
+    if (!buckets.has(signature)) buckets.set(signature, []);
+    buckets.get(signature).push(edge);
+  }
+
+  for (const edges of buckets.values()) {
+    if (edges.length < 2) continue;
+    for (let i = 0; i < edges.length; i++) {
+      for (let j = i + 1; j < edges.length; j++) {
+        const ei = edges[i], ej = edges[j];
+        const sameForward = tol.pointsCoincident(ei.startVertex.point, ej.startVertex.point) &&
+                            tol.pointsCoincident(ei.endVertex.point, ej.endVertex.point);
+        const sameReverse = tol.pointsCoincident(ei.startVertex.point, ej.endVertex.point) &&
+                            tol.pointsCoincident(ei.endVertex.point, ej.startVertex.point);
+        if (sameForward || sameReverse) {
+          result.addError(`Edges ${ei.id} and ${ej.id} are coincident duplicates`);
+        }
       }
     }
   }
 
   return result;
+}
+
+function _duplicateEdgeSignature(edge) {
+  const a = _pointKey(edge.startVertex?.point);
+  const b = _pointKey(edge.endVertex?.point);
+  const endpointKey = a < b ? `${a}|${b}` : `${b}|${a}`;
+  return `${endpointKey}|${_curveDuplicateSignature(edge.curve)}`;
+}
+
+function _curveDuplicateSignature(curve) {
+  if (!curve) return 'line';
+
+  const forward = _curveDirectionSignature(curve.controlPoints, curve.weights, curve.degree);
+  const reverse = _curveDirectionSignature(
+    [...curve.controlPoints].reverse(),
+    [...curve.weights].reverse(),
+    curve.degree,
+  );
+  return forward < reverse ? forward : reverse;
+}
+
+function _curveDirectionSignature(controlPoints, weights, degree) {
+  const cpSig = controlPoints.map((point) => _pointKey(point)).join(';');
+  const weightSig = weights.map((weight) => _quantizeNumber(weight)).join(',');
+  return `d${degree}|cp${cpSig}|w${weightSig}`;
+}
+
+function _pointKey(point) {
+  if (!point) return 'null';
+  return `${_quantizeNumber(point.x)},${_quantizeNumber(point.y)},${_quantizeNumber(point.z)}`;
+}
+
+function _quantizeNumber(value, scale = 1e9) {
+  return Math.round((Number(value) || 0) * scale);
 }
 
 /**
