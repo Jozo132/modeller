@@ -13,6 +13,7 @@
 import { EdgeSampler } from './EdgeSampler.js';
 import { FaceTriangulator } from './FaceTriangulator.js';
 import { MeshStitcher } from './MeshStitcher.js';
+import { constrainedTriangulate } from './CDT.js';
 import { computeMeshHash, meshSummary } from './MeshHash.js';
 import { recommendEdgeSegments, detectCriticalRegions } from './Refinement.js';
 import { validateMesh, detectBoundaryEdges, detectSelfIntersections, checkWatertight } from '../MeshValidator.js';
@@ -149,6 +150,12 @@ export function robustTessellateBody(body, opts = {}) {
  * @private
  */
 function _triangulateFace(face, edgeSampler, triangulator, surfSegs, edgeSegs) {
+  const singularCapMesh = _tessellateSingularAnalyticCapFace(face, edgeSampler, edgeSegs);
+  if (singularCapMesh) return singularCapMesh;
+
+  const periodicStripMesh = _tessellatePeriodicStripFace(face, edgeSampler, edgeSegs, surfSegs);
+  if (periodicStripMesh) return periodicStripMesh;
+
   const selfLoopRingMesh = _tessellateSelfLoopRingFace(face, edgeSampler, edgeSegs, surfSegs);
   if (selfLoopRingMesh) return selfLoopRingMesh;
 
@@ -474,6 +481,258 @@ function _tessellateSelfLoopRingFace(face, edgeSampler, edgeSegs, surfSegs) {
   return { vertices: allVerts, faces: allFaces };
 }
 
+function _tessellateSingularAnalyticCapFace(face, edgeSampler, edgeSegs) {
+  const analyticType = face.surfaceInfo?.type;
+  if (analyticType !== 'cone' && analyticType !== 'sphere') return null;
+  if (!face.outerLoop || face.outerLoop.coedges.length !== 1) return null;
+  if (Array.isArray(face.innerLoops) && face.innerLoops.length > 0) return null;
+
+  const coedge = face.outerLoop.coedges[0];
+  if (!coedge?.edge || coedge.edge.startVertex !== coedge.edge.endVertex) return null;
+
+  const boundary = _trimClosedLoopSamples(edgeSampler.sampleCoEdge(coedge, edgeSegs));
+  if (boundary.length < 3) return null;
+
+  const singular = analyticType === 'cone'
+    ? _coneSingularPoint(face.surfaceInfo, boundary)
+    : _sphereCapPole(face.surfaceInfo, boundary);
+  if (!singular) return null;
+
+  const vertices = [...boundary, singular];
+  const faces = [];
+  for (let i = 0; i < boundary.length; i++) {
+    const a = singular;
+    const b = boundary[i];
+    const c = boundary[(i + 1) % boundary.length];
+    const oriented = _orientTriangleToFace(face, a, b, c);
+    if (_triangleArea3(oriented[0], oriented[1], oriented[2]) < 1e-12) continue;
+    faces.push({
+      vertices: oriented,
+      normal: _faceOutwardNormal(face, {
+        x: (oriented[0].x + oriented[1].x + oriented[2].x) / 3,
+        y: (oriented[0].y + oriented[1].y + oriented[2].y) / 3,
+        z: (oriented[0].z + oriented[1].z + oriented[2].z) / 3,
+      }),
+    });
+  }
+
+  return faces.length > 0 ? { vertices, faces } : null;
+}
+
+function _tessellatePeriodicStripFace(face, edgeSampler, edgeSegs, surfSegs) {
+  const analyticType = face.surfaceInfo?.type;
+  if (analyticType !== 'cylinder' && analyticType !== 'cone') return null;
+
+  const loops = [face.outerLoop, ...(face.innerLoops || [])].filter(Boolean);
+  if (loops.length < 3) return null;
+  if (loops.some((loop) => loop.coedges.length !== 1)) return null;
+  if (loops.some((loop) => !loop.coedges[0]?.edge || loop.coedges[0].edge.startVertex !== loop.coedges[0].edge.endVertex)) return null;
+
+  const periodU = 2 * Math.PI;
+  const loopEntries = [];
+  let faceDiag = 0;
+
+  for (const loop of loops) {
+    const pts = _trimClosedLoopSamples(edgeSampler.sampleCoEdge(loop.coedges[0], edgeSegs));
+    if (pts.length < 3) return null;
+    const uv = _normalizePeriodicUvLoop(
+      pts.map((pt) => {
+        const uvPoint = _analyticClosestPointUV(face.surfaceInfo, pt);
+        return uvPoint ? { x: uvPoint.u, y: uvPoint.v, u: uvPoint.u, v: uvPoint.v, _orig3D: pt } : null;
+      }).filter(Boolean),
+      periodU,
+    );
+    if (uv.length !== pts.length) return null;
+
+    let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+    let avgV = 0;
+    for (const p of uv) {
+      minU = Math.min(minU, p.u);
+      maxU = Math.max(maxU, p.u);
+      minV = Math.min(minV, p.v);
+      maxV = Math.max(maxV, p.v);
+      avgV += p.v;
+    }
+    avgV /= uv.length;
+
+    const bbox = _bbox3(pts);
+    faceDiag = Math.max(faceDiag, bbox.diag);
+    loopEntries.push({
+      loop,
+      pts,
+      uv,
+      avgV,
+      uSpan: maxU - minU,
+      vSpan: maxV - minV,
+    });
+  }
+
+  const ringToleranceV = Math.max(1e-5, faceDiag * 1e-3);
+  const ringEntries = loopEntries.filter((entry) => entry.uSpan >= periodU * 0.75 && entry.vSpan <= ringToleranceV);
+  if (ringEntries.length !== 2) return null;
+
+  ringEntries.sort((a, b) => a.avgV - b.avgV);
+  const lower = ringEntries[0];
+  const upper = ringEntries[1];
+  const otherEntries = loopEntries.filter((entry) => entry !== lower && entry !== upper);
+  if (otherEntries.length === 0) return null;
+
+  const alignment = _bestClosedLoopAlignment(lower.pts, upper.pts, (a, b) => {
+    const dx = a.x - b.x;
+    const dy = a.y - b.y;
+    const dz = a.z - b.z;
+    return dx * dx + dy * dy + dz * dz;
+  });
+  const upperUv = _applyClosedLoopAlignment(upper.uv, alignment, (point, i, base) => {
+    const ref = base[i];
+    const u = _wrapNearValue(point.u, ref.u, periodU);
+    return { ...point, u, v: point.v, x: u, y: point.v };
+  }, lower.uv);
+  const lowerUv = lower.uv.map((point) => ({ ...point }));
+  let outerUv = [...lowerUv, ...[...upperUv].reverse()];
+  if (_signedArea2D(outerUv) < 0) outerUv = [...outerUv].reverse();
+
+  const holeUvs = otherEntries
+    .map((entry) => {
+      const loop = entry.uv.map((point) => ({ ...point }));
+      return _signedArea2D(loop) > 0 ? [...loop].reverse() : loop;
+    })
+    .filter((loop) => loop.length >= 3);
+
+  const bbox = _bbox2([...outerUv, ...holeUvs.flat()]);
+  const steiner = [];
+  const gridResU = Math.max(4, Math.ceil(edgeSegs / 3));
+  const gridResV = Math.max(3, Math.ceil(surfSegs / 2));
+  for (let ui = 1; ui <= gridResU; ui++) {
+    for (let vi = 1; vi <= gridResV; vi++) {
+      const u = bbox.minX + (bbox.maxX - bbox.minX) * (ui / (gridResU + 1));
+      const v = bbox.minY + (bbox.maxY - bbox.minY) * (vi / (gridResV + 1));
+      if (!_pointInPoly2D(u, v, outerUv)) continue;
+      if (holeUvs.some((loop) => _pointInPoly2D(u, v, loop))) continue;
+      steiner.push({ x: u, y: v, u, v });
+    }
+  }
+
+  const allUv = [...outerUv];
+  for (const hole of holeUvs) allUv.push(...hole);
+  allUv.push(...steiner);
+
+  const triIndices = constrainedTriangulate(
+    outerUv.map((point) => ({ x: point.u, y: point.v })),
+    holeUvs.map((loop) => loop.map((point) => ({ x: point.u, y: point.v }))),
+    steiner.map((point) => ({ x: point.u, y: point.v })),
+  );
+  if (!triIndices.length) return null;
+
+  const pointCache = new Map();
+  const evalPoint = (uv) => {
+    const key = `${Math.round(_wrapNearValue(uv.u, 0, periodU) * 1e9)},${Math.round(uv.v * 1e9)}`;
+    if (pointCache.has(key)) return pointCache.get(key);
+    let out;
+    if (uv._orig3D) {
+      out = { x: uv._orig3D.x, y: uv._orig3D.y, z: uv._orig3D.z };
+    } else {
+      out = _evaluateAnalyticSurface(face.surfaceInfo, uv.u, uv.v);
+    }
+    pointCache.set(key, out);
+    return out;
+  };
+
+  const faces = [];
+  for (const [ia, ib, ic] of triIndices) {
+    const ua = allUv[ia];
+    const ub = allUv[ib];
+    const uc = allUv[ic];
+    if (!ua || !ub || !uc) continue;
+    const pa = evalPoint(ua);
+    const pb = evalPoint(ub);
+    const pc = evalPoint(uc);
+    const oriented = _orientTriangleToFace(face, pa, pb, pc);
+    if (_triangleArea3(oriented[0], oriented[1], oriented[2]) < 1e-12) continue;
+    faces.push({
+      vertices: oriented,
+      normal: _faceOutwardNormal(face, {
+        x: (oriented[0].x + oriented[1].x + oriented[2].x) / 3,
+        y: (oriented[0].y + oriented[1].y + oriented[2].y) / 3,
+        z: (oriented[0].z + oriented[1].z + oriented[2].z) / 3,
+      }),
+    });
+  }
+
+  return faces.length > 0
+    ? { vertices: [...pointCache.values()].map((point) => ({ ...point })), faces }
+    : null;
+}
+
+function _coneSingularPoint(surfaceInfo, boundary) {
+  if (!surfaceInfo?.axis || !surfaceInfo?.origin) return null;
+  const angle = _coneAngleRadians(surfaceInfo.semiAngle);
+  const tanAngle = Math.tan(angle);
+  if (!Number.isFinite(tanAngle) || Math.abs(tanAngle) < 1e-8) return null;
+
+  let avgAxial = 0;
+  let avgRadial = 0;
+  for (const point of boundary) {
+    const dx = point.x - surfaceInfo.origin.x;
+    const dy = point.y - surfaceInfo.origin.y;
+    const dz = point.z - surfaceInfo.origin.z;
+    const axial = dx * surfaceInfo.axis.x + dy * surfaceInfo.axis.y + dz * surfaceInfo.axis.z;
+    const rx = dx - axial * surfaceInfo.axis.x;
+    const ry = dy - axial * surfaceInfo.axis.y;
+    const rz = dz - axial * surfaceInfo.axis.z;
+    avgAxial += axial;
+    avgRadial += Math.sqrt(rx * rx + ry * ry + rz * rz);
+  }
+  avgAxial /= boundary.length;
+  avgRadial /= boundary.length;
+
+  const apexAxial = avgAxial - avgRadial / tanAngle;
+  return {
+    x: surfaceInfo.origin.x + surfaceInfo.axis.x * apexAxial,
+    y: surfaceInfo.origin.y + surfaceInfo.axis.y * apexAxial,
+    z: surfaceInfo.origin.z + surfaceInfo.axis.z * apexAxial,
+  };
+}
+
+function _sphereCapPole(surfaceInfo, boundary) {
+  if (!surfaceInfo?.origin || !surfaceInfo?.axis || !Number.isFinite(surfaceInfo.radius)) return null;
+
+  const candidates = [
+    {
+      x: surfaceInfo.origin.x + surfaceInfo.axis.x * surfaceInfo.radius,
+      y: surfaceInfo.origin.y + surfaceInfo.axis.y * surfaceInfo.radius,
+      z: surfaceInfo.origin.z + surfaceInfo.axis.z * surfaceInfo.radius,
+    },
+    {
+      x: surfaceInfo.origin.x - surfaceInfo.axis.x * surfaceInfo.radius,
+      y: surfaceInfo.origin.y - surfaceInfo.axis.y * surfaceInfo.radius,
+      z: surfaceInfo.origin.z - surfaceInfo.axis.z * surfaceInfo.radius,
+    },
+  ];
+
+  let best = null;
+  let bestScore = Infinity;
+  for (const candidate of candidates) {
+    let score = 0;
+    for (const point of boundary) {
+      const dx = point.x - candidate.x;
+      const dy = point.y - candidate.y;
+      const dz = point.z - candidate.z;
+      score += dx * dx + dy * dy + dz * dz;
+    }
+    if (score < bestScore) {
+      bestScore = score;
+      best = candidate;
+    }
+  }
+  return best;
+}
+
+function _coneAngleRadians(angle) {
+  if (!Number.isFinite(angle)) return 0;
+  return Math.abs(angle) > Math.PI * 2 ? (angle * Math.PI) / 180 : angle;
+}
+
 function _trimClosedLoopSamples(samples) {
   if (!Array.isArray(samples) || samples.length < 2) return [];
   const row = [...samples];
@@ -482,28 +741,210 @@ function _trimClosedLoopSamples(samples) {
 }
 
 function _alignClosedLoopSamples(baseRow, candidateRow) {
-  const orientations = [candidateRow, [...candidateRow].reverse()];
-  let bestRow = candidateRow;
+  const alignment = _bestClosedLoopAlignment(baseRow, candidateRow, (a, b) => {
+    const dx = a.x - b.x;
+    const dy = a.y - b.y;
+    const dz = a.z - b.z;
+    return dx * dx + dy * dy + dz * dz;
+  });
+  return _applyClosedLoopAlignment(candidateRow, alignment);
+}
+
+function _bestClosedLoopAlignment(baseRow, candidateRow, distanceFn) {
+  const orientations = [
+    { reverse: false, row: candidateRow },
+    { reverse: true, row: [...candidateRow].reverse() },
+  ];
+  let best = { reverse: false, shift: 0 };
   let bestScore = Infinity;
 
-  for (const oriented of orientations) {
-    for (let shift = 0; shift < oriented.length; shift++) {
+  for (const orientation of orientations) {
+    for (let shift = 0; shift < orientation.row.length; shift++) {
       let score = 0;
       for (let i = 0; i < baseRow.length; i++) {
-        const other = oriented[(i + shift) % oriented.length];
-        const dx = baseRow[i].x - other.x;
-        const dy = baseRow[i].y - other.y;
-        const dz = baseRow[i].z - other.z;
-        score += dx * dx + dy * dy + dz * dz;
+        score += distanceFn(baseRow[i], orientation.row[(i + shift) % orientation.row.length]);
       }
       if (score < bestScore) {
         bestScore = score;
-        bestRow = oriented.map((_, i) => oriented[(i + shift) % oriented.length]);
+        best = { reverse: orientation.reverse, shift };
       }
     }
   }
 
-  return bestRow;
+  return best;
+}
+
+function _applyClosedLoopAlignment(candidateRow, alignment, mapper = (point) => ({ ...point }), baseRow = null) {
+  const oriented = alignment.reverse ? [...candidateRow].reverse() : [...candidateRow];
+  return oriented.map((_, i) => mapper(oriented[(i + alignment.shift) % oriented.length], i, baseRow));
+}
+
+function _normalizePeriodicUvLoop(loop, periodU) {
+  if (!Array.isArray(loop) || loop.length < 2) return loop;
+
+  let cutAfter = -1;
+  let maxJump = -Infinity;
+  for (let i = 0; i < loop.length; i++) {
+    const curr = loop[i];
+    const next = loop[(i + 1) % loop.length];
+    const jump = Math.abs(next.u - curr.u);
+    if (jump > maxJump) {
+      maxJump = jump;
+      cutAfter = i;
+    }
+  }
+
+  const ordered = cutAfter >= 0
+    ? [...loop.slice(cutAfter + 1), ...loop.slice(0, cutAfter + 1)].map((point) => ({ ...point }))
+    : loop.map((point) => ({ ...point }));
+
+  for (let i = 1; i < ordered.length; i++) {
+    ordered[i].u = _wrapNearValue(ordered[i].u, ordered[i - 1].u, periodU);
+    ordered[i].x = ordered[i].u;
+    ordered[i].y = ordered[i].v;
+  }
+  ordered[0].x = ordered[0].u;
+  ordered[0].y = ordered[0].v;
+  return ordered;
+}
+
+function _wrapNearValue(value, reference, period) {
+  if (!Number.isFinite(value) || !Number.isFinite(reference) || !Number.isFinite(period) || period <= 0) {
+    return value;
+  }
+  return value + Math.round((reference - value) / period) * period;
+}
+
+function _analyticClosestPointUV(surfaceInfo, point) {
+  if (!surfaceInfo) return null;
+
+  const ox = surfaceInfo.origin.x;
+  const oy = surfaceInfo.origin.y;
+  const oz = surfaceInfo.origin.z;
+  const ax = surfaceInfo.axis?.x ?? 0;
+  const ay = surfaceInfo.axis?.y ?? 0;
+  const az = surfaceInfo.axis?.z ?? 1;
+  const dx = point.x - ox;
+  const dy = point.y - oy;
+  const dz = point.z - oz;
+
+  switch (surfaceInfo.type) {
+    case 'cylinder':
+    case 'cone': {
+      const axial = dx * ax + dy * ay + dz * az;
+      const rx = dx - axial * ax;
+      const ry = dy - axial * ay;
+      const rz = dz - axial * az;
+      const ux = rx * surfaceInfo.xDir.x + ry * surfaceInfo.xDir.y + rz * surfaceInfo.xDir.z;
+      const uy = rx * surfaceInfo.yDir.x + ry * surfaceInfo.yDir.y + rz * surfaceInfo.yDir.z;
+      return { u: Math.atan2(uy, ux), v: axial };
+    }
+    case 'sphere': {
+      const dir = _normalize({ x: dx, y: dy, z: dz });
+      const ux = dir.x * surfaceInfo.xDir.x + dir.y * surfaceInfo.xDir.y + dir.z * surfaceInfo.xDir.z;
+      const uy = dir.x * surfaceInfo.yDir.x + dir.y * surfaceInfo.yDir.y + dir.z * surfaceInfo.yDir.z;
+      const uz = dir.x * ax + dir.y * ay + dir.z * az;
+      return { u: Math.atan2(uy, ux), v: Math.atan2(uz, Math.sqrt(ux * ux + uy * uy)) };
+    }
+    default:
+      return null;
+  }
+}
+
+function _evaluateAnalyticSurface(surfaceInfo, u, v) {
+  if (!surfaceInfo) return { x: 0, y: 0, z: 0 };
+
+  const cu = Math.cos(u);
+  const su = Math.sin(u);
+  const radial = {
+    x: surfaceInfo.xDir.x * cu + surfaceInfo.yDir.x * su,
+    y: surfaceInfo.xDir.y * cu + surfaceInfo.yDir.y * su,
+    z: surfaceInfo.xDir.z * cu + surfaceInfo.yDir.z * su,
+  };
+
+  switch (surfaceInfo.type) {
+    case 'cylinder':
+      return {
+        x: surfaceInfo.origin.x + surfaceInfo.axis.x * v + radial.x * surfaceInfo.radius,
+        y: surfaceInfo.origin.y + surfaceInfo.axis.y * v + radial.y * surfaceInfo.radius,
+        z: surfaceInfo.origin.z + surfaceInfo.axis.z * v + radial.z * surfaceInfo.radius,
+      };
+    case 'cone': {
+      const angle = _coneAngleRadians(surfaceInfo.semiAngle);
+      const radius = surfaceInfo.radius + v * Math.tan(angle);
+      return {
+        x: surfaceInfo.origin.x + surfaceInfo.axis.x * v + radial.x * radius,
+        y: surfaceInfo.origin.y + surfaceInfo.axis.y * v + radial.y * radius,
+        z: surfaceInfo.origin.z + surfaceInfo.axis.z * v + radial.z * radius,
+      };
+    }
+    case 'sphere': {
+      const cv = Math.cos(v);
+      const sv = Math.sin(v);
+      return {
+        x: surfaceInfo.origin.x + (radial.x * cv + surfaceInfo.axis.x * sv) * surfaceInfo.radius,
+        y: surfaceInfo.origin.y + (radial.y * cv + surfaceInfo.axis.y * sv) * surfaceInfo.radius,
+        z: surfaceInfo.origin.z + (radial.z * cv + surfaceInfo.axis.z * sv) * surfaceInfo.radius,
+      };
+    }
+    default:
+      return { x: 0, y: 0, z: 0 };
+  }
+}
+
+function _signedArea2D(loop) {
+  let area = 0;
+  for (let i = 0; i < loop.length; i++) {
+    const curr = loop[i];
+    const next = loop[(i + 1) % loop.length];
+    area += curr.u * next.v - next.u * curr.v;
+  }
+  return area * 0.5;
+}
+
+function _pointInPoly2D(x, y, loop) {
+  let inside = false;
+  for (let i = 0, j = loop.length - 1; i < loop.length; j = i++) {
+    const xi = loop[i].u, yi = loop[i].v;
+    const xj = loop[j].u, yj = loop[j].v;
+    const intersects = ((yi > y) !== (yj > y))
+      && (x < ((xj - xi) * (y - yi)) / ((yj - yi) || 1e-16) + xi);
+    if (intersects) inside = !inside;
+  }
+  return inside;
+}
+
+function _bbox2(points) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const point of points) {
+    minX = Math.min(minX, point.u);
+    minY = Math.min(minY, point.v);
+    maxX = Math.max(maxX, point.u);
+    maxY = Math.max(maxY, point.v);
+  }
+  return { minX, minY, maxX, maxY };
+}
+
+function _bbox3(points) {
+  let minX = Infinity, minY = Infinity, minZ = Infinity;
+  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  for (const point of points) {
+    minX = Math.min(minX, point.x);
+    minY = Math.min(minY, point.y);
+    minZ = Math.min(minZ, point.z);
+    maxX = Math.max(maxX, point.x);
+    maxY = Math.max(maxY, point.y);
+    maxZ = Math.max(maxZ, point.z);
+  }
+  return {
+    minX,
+    minY,
+    minZ,
+    maxX,
+    maxY,
+    maxZ,
+    diag: Math.sqrt((maxX - minX) ** 2 + (maxY - minY) ** 2 + (maxZ - minZ) ** 2),
+  };
 }
 
 function _projectFacePoint(face, point) {
