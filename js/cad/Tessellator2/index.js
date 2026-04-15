@@ -153,6 +153,9 @@ function _triangulateFace(face, edgeSampler, triangulator, surfSegs, edgeSegs) {
   const singularCapMesh = _tessellateSingularAnalyticCapFace(face, edgeSampler, edgeSegs);
   if (singularCapMesh) return singularCapMesh;
 
+  const singularWedgeMesh = _tessellateSingularAnalyticWedgeFace(face, edgeSampler, edgeSegs);
+  if (singularWedgeMesh) return singularWedgeMesh;
+
   const periodicStripMesh = _tessellatePeriodicStripFace(face, edgeSampler, edgeSegs, surfSegs);
   if (periodicStripMesh) return periodicStripMesh;
 
@@ -848,6 +851,54 @@ function _tessellateSingularAnalyticCapFace(face, edgeSampler, edgeSegs) {
   return faces.length > 0 ? { vertices, faces } : null;
 }
 
+function _tessellateSingularAnalyticWedgeFace(face, edgeSampler, edgeSegs) {
+  const analyticType = face.surfaceInfo?.type;
+  if (analyticType !== 'cone' && analyticType !== 'sphere') return null;
+  if (!face.outerLoop || face.outerLoop.coedges.length < 3) return null;
+  if (Array.isArray(face.innerLoops) && face.innerLoops.length > 0) return null;
+
+  const boundary = _collectLoopPoints(face.outerLoop, edgeSampler, edgeSegs);
+  if (boundary.length < 3) return null;
+
+  const singularPoint = analyticType === 'cone'
+    ? _coneApexPoint(face.surfaceInfo)
+    : _spherePoleOnBoundary(face.surfaceInfo, boundary);
+  if (!singularPoint) return null;
+
+  const faceDiag = _bbox3(boundary).diag;
+  const singularTol = Math.max(1e-6, faceDiag * 1e-4);
+  const singularIndices = [];
+  for (let i = 0; i < boundary.length; i++) {
+    if (_dist3(boundary[i], singularPoint) <= singularTol) singularIndices.push(i);
+  }
+  if (singularIndices.length !== 1) return null;
+
+  const singularIndex = singularIndices[0];
+  const rotated = [...boundary.slice(singularIndex), ...boundary.slice(0, singularIndex)];
+  if (_dist3(rotated[0], singularPoint) > singularTol) return null;
+
+  const arcRow = rotated.slice(1);
+  if (arcRow.length < 2) return null;
+  if (_dist3(arcRow[0], arcRow[arcRow.length - 1]) < 1e-8) return null;
+
+  const vertices = [...rotated];
+  const faces = [];
+  for (let i = 0; i < arcRow.length - 1; i++) {
+    const oriented = _orientTriangleToFace(face, rotated[0], arcRow[i], arcRow[i + 1]);
+    if (_triangleArea3(oriented[0], oriented[1], oriented[2]) < 1e-12) continue;
+    faces.push({
+      vertices: oriented,
+      normal: _faceOutwardNormal(face, {
+        x: (oriented[0].x + oriented[1].x + oriented[2].x) / 3,
+        y: (oriented[0].y + oriented[1].y + oriented[2].y) / 3,
+        z: (oriented[0].z + oriented[1].z + oriented[2].z) / 3,
+      }),
+    });
+  }
+
+  return faces.length > 0 ? { vertices, faces } : null;
+}
+
 function _tessellatePeriodicStripFace(face, edgeSampler, edgeSegs, surfSegs) {
   const analyticType = face.surfaceInfo?.type;
   if (analyticType !== 'cylinder' && analyticType !== 'cone') return null;
@@ -1023,6 +1074,19 @@ function _coneSingularPoint(surfaceInfo, boundary) {
   };
 }
 
+function _coneApexPoint(surfaceInfo) {
+  if (!surfaceInfo?.axis || !surfaceInfo?.origin) return null;
+  const angle = _coneAngleRadians(surfaceInfo.semiAngle);
+  const tanAngle = Math.tan(angle);
+  if (!Number.isFinite(tanAngle) || Math.abs(tanAngle) < 1e-8) return null;
+  const axial = -(surfaceInfo.radius || 0) / tanAngle;
+  return {
+    x: surfaceInfo.origin.x + surfaceInfo.axis.x * axial,
+    y: surfaceInfo.origin.y + surfaceInfo.axis.y * axial,
+    z: surfaceInfo.origin.z + surfaceInfo.axis.z * axial,
+  };
+}
+
 function _sphereCapPole(surfaceInfo, boundary) {
   if (!surfaceInfo?.origin || !surfaceInfo?.axis || !Number.isFinite(surfaceInfo.radius)) return null;
 
@@ -1055,6 +1119,41 @@ function _sphereCapPole(surfaceInfo, boundary) {
     }
   }
   return best;
+}
+
+function _spherePoleOnBoundary(surfaceInfo, boundary) {
+  if (!surfaceInfo?.origin || !surfaceInfo?.axis || !Number.isFinite(surfaceInfo.radius) || !Array.isArray(boundary) || boundary.length === 0) {
+    return null;
+  }
+
+  const candidates = [
+    {
+      x: surfaceInfo.origin.x + surfaceInfo.axis.x * surfaceInfo.radius,
+      y: surfaceInfo.origin.y + surfaceInfo.axis.y * surfaceInfo.radius,
+      z: surfaceInfo.origin.z + surfaceInfo.axis.z * surfaceInfo.radius,
+    },
+    {
+      x: surfaceInfo.origin.x - surfaceInfo.axis.x * surfaceInfo.radius,
+      y: surfaceInfo.origin.y - surfaceInfo.axis.y * surfaceInfo.radius,
+      z: surfaceInfo.origin.z - surfaceInfo.axis.z * surfaceInfo.radius,
+    },
+  ];
+
+  let best = null;
+  let bestDist = Infinity;
+  for (const candidate of candidates) {
+    for (const point of boundary) {
+      const dist = _dist3(candidate, point);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = candidate;
+      }
+    }
+  }
+
+  const faceDiag = _bbox3(boundary).diag;
+  const tol = Math.max(1e-6, faceDiag * 1e-4);
+  return bestDist <= tol ? best : null;
 }
 
 function _coneAngleRadians(angle) {
