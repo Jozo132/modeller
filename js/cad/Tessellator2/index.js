@@ -156,6 +156,9 @@ function _triangulateFace(face, edgeSampler, triangulator, surfSegs, edgeSegs) {
   const periodicStripMesh = _tessellatePeriodicStripFace(face, edgeSampler, edgeSegs, surfSegs);
   if (periodicStripMesh) return periodicStripMesh;
 
+  const periodicSlotMesh = _tessellatePeriodicSlotFace(face, edgeSampler, edgeSegs, surfSegs);
+  if (periodicSlotMesh) return periodicSlotMesh;
+
   const selfLoopRingMesh = _tessellateSelfLoopRingFace(face, edgeSampler, edgeSegs, surfSegs);
   if (selfLoopRingMesh) return selfLoopRingMesh;
 
@@ -493,6 +496,75 @@ function _tessellateSelfLoopRingFace(face, edgeSampler, edgeSegs, surfSegs) {
   return { vertices: allVerts, faces: allFaces };
 }
 
+function _tessellatePeriodicSlotFace(face, edgeSampler, edgeSegs, surfSegs) {
+  const analyticType = face.surfaceInfo?.type;
+  if (analyticType !== 'cylinder' && analyticType !== 'cone') return null;
+
+  const outerCoedges = face.outerLoop?.coedges;
+  if (!outerCoedges || outerCoedges.length !== 1) return null;
+  if (!outerCoedges[0]?.edge || outerCoedges[0].edge.startVertex !== outerCoedges[0].edge.endVertex) return null;
+  if (!Array.isArray(face.innerLoops) || face.innerLoops.length !== 1) return null;
+
+  const innerLoop = face.innerLoops[0];
+  if (!innerLoop?.coedges || innerLoop.coedges.length < 3) return null;
+  if (innerLoop.coedges.every((coedge) => coedge?.edge?.startVertex === coedge?.edge?.endVertex)) return null;
+
+  const periodU = 2 * Math.PI;
+  const outerPts = _trimClosedLoopSamples(edgeSampler.sampleCoEdge(outerCoedges[0], edgeSegs));
+  const innerPts = _collectLoopPoints(innerLoop, edgeSampler, edgeSegs);
+  const outerUv = _collectAnalyticLoopUv(face.surfaceInfo, outerPts, periodU);
+  const innerUv = _collectAnalyticLoopUv(face.surfaceInfo, innerPts, periodU);
+
+  if (outerUv.length < 3 || innerUv.length < 4) return null;
+
+  const outerV = outerUv.reduce((sum, point) => sum + point.v, 0) / outerUv.length;
+  const innerSpan = innerUv[innerUv.length - 1].u - innerUv[0].u;
+  if (!Number.isFinite(innerSpan) || innerSpan <= periodU * 0.5 || innerSpan >= periodU - 1e-4) return null;
+
+  const gapSpan = periodU - innerSpan;
+  const vMin = innerUv.reduce((min, point) => Math.min(min, point.v), Infinity);
+  if (!Number.isFinite(vMin) || outerV - vMin < 1e-6) return null;
+
+  const uA = innerUv[0].u;
+  const uB = innerUv[innerUv.length - 1].u;
+  const outerLongArc = _extractAnalyticPeriodicArc(face.surfaceInfo, outerUv, uA, innerSpan, periodU);
+  const outerShortArc = _extractAnalyticPeriodicArc(face.surfaceInfo, outerUv, uB, gapSpan, periodU);
+  if (outerLongArc.length < 2 || outerShortArc.length < 2) return null;
+
+  const innerReversed = [...innerUv].reverse().map((point) => ({ ...point }));
+  const mainPatch = _triangulateAnalyticUvPatch(face, [
+    ...outerLongArc,
+    ...innerReversed,
+  ], [], surfSegs);
+  if (!mainPatch || !mainPatch.faces.length) return null;
+
+  const aWrapped = {
+    ...innerUv[0],
+    u: innerUv[0].u + periodU,
+    x: innerUv[0].u + periodU,
+    y: innerUv[0].v,
+  };
+  const bottomShortArc = _buildAnalyticStripArc(
+    face.surfaceInfo,
+    uB,
+    uB + gapSpan,
+    vMin,
+    Math.max(1, Math.ceil((edgeSegs * gapSpan) / periodU)),
+  ).slice(1, -1).reverse();
+  const webPatch = _triangulateAnalyticUvPatch(face, [
+    ...outerShortArc,
+    aWrapped,
+    ...bottomShortArc,
+    { ...innerUv[innerUv.length - 1] },
+  ], [], Math.max(3, Math.ceil(surfSegs / 2)));
+  if (!webPatch || !webPatch.faces.length) return null;
+
+  return {
+    vertices: [...mainPatch.vertices, ...webPatch.vertices],
+    faces: [...mainPatch.faces, ...webPatch.faces],
+  };
+}
+
 function _alignAnalyticRingRows(surfaceInfo, outerRow, innerRowRaw) {
   const analyticType = surfaceInfo?.type;
   if (analyticType !== 'cylinder' && analyticType !== 'cone') return null;
@@ -568,6 +640,174 @@ function _alignAnalyticRingRows(surfaceInfo, outerRow, innerRowRaw) {
     innerRow: alignedInnerRow,
     innerUv: alignedInnerUv,
   };
+}
+
+function _collectAnalyticLoopUv(surfaceInfo, loopPts, periodU) {
+  if (!surfaceInfo || !Array.isArray(loopPts) || loopPts.length < 3) return [];
+  const uvLoop = _normalizePeriodicUvLoop(
+    loopPts.map((point) => {
+      const uv = _analyticClosestPointUV(surfaceInfo, point);
+      return uv ? {
+        u: uv.u,
+        v: uv.v,
+        x: uv.u,
+        y: uv.v,
+        _orig3D: point,
+      } : null;
+    }).filter(Boolean),
+    periodU,
+  );
+  return _dedupeUvPolyline(uvLoop);
+}
+
+function _extractAnalyticPeriodicArc(surfaceInfo, loopUv, startU, spanU, periodU) {
+  if (!surfaceInfo || !Array.isArray(loopUv) || loopUv.length < 2 || !Number.isFinite(spanU) || spanU <= 1e-8) {
+    return [];
+  }
+  const endU = startU + spanU;
+  const arc = [];
+  const pushPoint = (point) => {
+    if (!point) return;
+    const prev = arc[arc.length - 1];
+    if (prev && Math.abs(prev.u - point.u) < 1e-10 && Math.abs(prev.v - point.v) < 1e-10) return;
+    arc.push(point);
+  };
+
+  pushPoint({
+    u: startU,
+    v: loopUv[0].v,
+    x: startU,
+    y: loopUv[0].v,
+    _orig3D: _evaluateAnalyticSurface(surfaceInfo, startU, loopUv[0].v),
+  });
+  for (const point of loopUv) {
+    let u = _wrapNearValue(point.u, startU, periodU);
+    while (u < startU - 1e-10) u += periodU;
+    if (u <= startU + 1e-10 || u >= endU - 1e-10) continue;
+    pushPoint({
+      ...point,
+      u,
+      x: u,
+      y: point.v,
+    });
+  }
+  pushPoint({
+    u: endU,
+    v: loopUv[0].v,
+    x: endU,
+    y: loopUv[0].v,
+    _orig3D: _evaluateAnalyticSurface(surfaceInfo, endU, loopUv[0].v),
+  });
+  return arc;
+}
+
+function _buildAnalyticStripArc(surfaceInfo, startU, endU, v, steps) {
+  const count = Math.max(1, steps);
+  const arc = [];
+  for (let i = 0; i <= count; i++) {
+    const t = i / count;
+    const u = startU + (endU - startU) * t;
+    arc.push({
+      u,
+      v,
+      x: u,
+      y: v,
+      _orig3D: _evaluateAnalyticSurface(surfaceInfo, u, v),
+    });
+  }
+  return _dedupeUvPolyline(arc);
+}
+
+function _triangulateAnalyticUvPatch(face, outerUv, holeUvs = [], surfSegs = 8) {
+  if (!Array.isArray(outerUv) || outerUv.length < 3) return null;
+
+  let outer = _dedupeUvPolyline(outerUv.map((point) => ({ ...point })));
+  if (outer.length < 3) return null;
+  if (_signedArea2D(outer) < 0) outer = [...outer].reverse();
+
+  const holes = holeUvs
+    .map((loop) => _dedupeUvPolyline(loop.map((point) => ({ ...point }))))
+    .filter((loop) => loop.length >= 3)
+    .map((loop) => (_signedArea2D(loop) > 0 ? [...loop].reverse() : loop));
+
+  const bbox = _bbox2([...outer, ...holes.flat()]);
+  const steiner = [];
+  const gridResU = Math.max(2, Math.ceil(surfSegs / 3));
+  const gridResV = Math.max(2, Math.ceil(surfSegs / 3));
+  for (let ui = 1; ui <= gridResU; ui++) {
+    for (let vi = 1; vi <= gridResV; vi++) {
+      const u = bbox.minX + (bbox.maxX - bbox.minX) * (ui / (gridResU + 1));
+      const v = bbox.minY + (bbox.maxY - bbox.minY) * (vi / (gridResV + 1));
+      if (!_pointInPoly2D(u, v, outer)) continue;
+      if (holes.some((loop) => _pointInPoly2D(u, v, loop))) continue;
+      steiner.push({ u, v, x: u, y: v });
+    }
+  }
+
+  const allUv = [...outer];
+  for (const hole of holes) allUv.push(...hole);
+  allUv.push(...steiner);
+
+  const triIndices = constrainedTriangulate(
+    outer.map((point) => ({ x: point.u, y: point.v })),
+    holes.map((loop) => loop.map((point) => ({ x: point.u, y: point.v }))),
+    steiner.map((point) => ({ x: point.u, y: point.v })),
+  );
+  if (!triIndices.length) return null;
+
+  const pointCache = new Map();
+  const evalPoint = (uv) => {
+    const key = `${Math.round(uv.u * 1e9)},${Math.round(uv.v * 1e9)}`;
+    if (pointCache.has(key)) return pointCache.get(key);
+    const point = uv._orig3D
+      ? { x: uv._orig3D.x, y: uv._orig3D.y, z: uv._orig3D.z }
+      : _evaluateAnalyticSurface(face.surfaceInfo, uv.u, uv.v);
+    pointCache.set(key, point);
+    return point;
+  };
+
+  const faces = [];
+  for (const [ia, ib, ic] of triIndices) {
+    const ua = allUv[ia];
+    const ub = allUv[ib];
+    const uc = allUv[ic];
+    if (!ua || !ub || !uc) continue;
+    const pa = evalPoint(ua);
+    const pb = evalPoint(ub);
+    const pc = evalPoint(uc);
+    const oriented = _orientTriangleToFace(face, pa, pb, pc);
+    if (_triangleArea3(oriented[0], oriented[1], oriented[2]) < 1e-12) continue;
+    faces.push({
+      vertices: oriented,
+      normal: _faceOutwardNormal(face, {
+        x: (oriented[0].x + oriented[1].x + oriented[2].x) / 3,
+        y: (oriented[0].y + oriented[1].y + oriented[2].y) / 3,
+        z: (oriented[0].z + oriented[1].z + oriented[2].z) / 3,
+      }),
+    });
+  }
+
+  return faces.length > 0
+    ? { vertices: [...pointCache.values()].map((point) => ({ ...point })), faces }
+    : null;
+}
+
+function _dedupeUvPolyline(points) {
+  if (!Array.isArray(points) || points.length === 0) return [];
+  const deduped = [];
+  for (const point of points) {
+    const prev = deduped[deduped.length - 1];
+    if (prev && Math.abs(prev.u - point.u) < 1e-10 && Math.abs(prev.v - point.v) < 1e-10) continue;
+    deduped.push(point);
+  }
+  if (deduped.length > 1) {
+    const first = deduped[0];
+    const last = deduped[deduped.length - 1];
+    if (Math.abs(first.u - last.u) < 1e-10 && Math.abs(first.v - last.v) < 1e-10) {
+      deduped.pop();
+    }
+  }
+  return deduped;
 }
 
 function _tessellateSingularAnalyticCapFace(face, edgeSampler, edgeSegs) {
