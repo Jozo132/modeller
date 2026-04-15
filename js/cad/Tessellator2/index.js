@@ -156,6 +156,9 @@ function _triangulateFace(face, edgeSampler, triangulator, surfSegs, edgeSegs) {
   const singularWedgeMesh = _tessellateSingularAnalyticWedgeFace(face, edgeSampler, edgeSegs);
   if (singularWedgeMesh) return singularWedgeMesh;
 
+  const ruledQuadMesh = _tessellateAnalyticRuledQuadFace(face, edgeSampler, edgeSegs);
+  if (ruledQuadMesh) return ruledQuadMesh;
+
   const periodicStripMesh = _tessellatePeriodicStripFace(face, edgeSampler, edgeSegs, surfSegs);
   if (periodicStripMesh) return periodicStripMesh;
 
@@ -899,6 +902,62 @@ function _tessellateSingularAnalyticWedgeFace(face, edgeSampler, edgeSegs) {
   return faces.length > 0 ? { vertices, faces } : null;
 }
 
+function _tessellateAnalyticRuledQuadFace(face, edgeSampler, edgeSegs) {
+  const analyticType = face.surfaceInfo?.type;
+  if (analyticType !== 'cylinder' && analyticType !== 'cone') return null;
+  if (!face.outerLoop || face.outerLoop.coedges.length !== 4) return null;
+  if (Array.isArray(face.innerLoops) && face.innerLoops.length > 0) return null;
+
+  const coedgeEntries = face.outerLoop.coedges.map((coedge, idx) => ({
+    idx,
+    coedge,
+    samples: edgeSampler.sampleCoEdge(coedge, edgeSegs),
+  }));
+  if (coedgeEntries.some((entry) => entry.samples.length < 2)) return null;
+  if (coedgeEntries.some((entry) => entry.coedge.edge.startVertex === entry.coedge.edge.endVertex)) return null;
+
+  const railEntries = coedgeEntries.filter((entry) => entry.samples.length > 2);
+  if (railEntries.length !== 2) return null;
+  if (((railEntries[0].idx - railEntries[1].idx + 4) % 4) !== 2) return null;
+  if (railEntries[0].samples.length !== railEntries[1].samples.length) return null;
+
+  const sideEntries = coedgeEntries.filter((entry) => entry.samples.length === 2);
+  if (sideEntries.length !== 2) return null;
+
+  const railA = railEntries[0].samples.map((point) => ({ ...point }));
+  const railB = _alignOpenSampleRow(
+    railA,
+    railEntries[1].samples.map((point) => ({ ...point })),
+  );
+
+  const vertices = [...railA, ...railB];
+  const faces = [];
+  for (let i = 0; i < railA.length - 1; i++) {
+    const a0 = railA[i];
+    const a1 = railA[i + 1];
+    const b0 = railB[i];
+    const b1 = railB[i + 1];
+    const tris = [
+      [a0, a1, b0],
+      [b0, a1, b1],
+    ];
+    for (const tri of tris) {
+      const oriented = _orientTriangleToFace(face, tri[0], tri[1], tri[2]);
+      if (_triangleArea3(oriented[0], oriented[1], oriented[2]) < 1e-12) continue;
+      faces.push({
+        vertices: oriented,
+        normal: _faceOutwardNormal(face, {
+          x: (oriented[0].x + oriented[1].x + oriented[2].x) / 3,
+          y: (oriented[0].y + oriented[1].y + oriented[2].y) / 3,
+          z: (oriented[0].z + oriented[1].z + oriented[2].z) / 3,
+        }),
+      });
+    }
+  }
+
+  return faces.length > 0 ? { vertices, faces } : null;
+}
+
 function _tessellatePeriodicStripFace(face, edgeSampler, edgeSegs, surfSegs) {
   const analyticType = face.surfaceInfo?.type;
   if (analyticType !== 'cylinder' && analyticType !== 'cone') return null;
@@ -1166,6 +1225,14 @@ function _trimClosedLoopSamples(samples) {
   const row = [...samples];
   if (_dist3(row[0], row[row.length - 1]) < 1e-10) row.pop();
   return row;
+}
+
+function _alignOpenSampleRow(baseRow, candidateRow) {
+  if (!Array.isArray(baseRow) || !Array.isArray(candidateRow) || baseRow.length !== candidateRow.length) return candidateRow;
+  const directScore = _dist3(baseRow[0], candidateRow[0]) + _dist3(baseRow[baseRow.length - 1], candidateRow[candidateRow.length - 1]);
+  const reversed = [...candidateRow].reverse();
+  const reversedScore = _dist3(baseRow[0], reversed[0]) + _dist3(baseRow[baseRow.length - 1], reversed[reversed.length - 1]);
+  return reversedScore < directScore ? reversed : candidateRow;
 }
 
 function _alignClosedLoopSamples(baseRow, candidateRow) {

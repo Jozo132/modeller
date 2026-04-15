@@ -135,6 +135,26 @@ function calculateNormal(p0, p1, p2) {
   return { x: nx / len, y: ny / len, z: nz / len };
 }
 
+function isSimpleLineEdge(edge) {
+  const curve = edge?.curve;
+  return !curve
+    || (curve.degree === 1
+      && Array.isArray(curve.controlPoints)
+      && curve.controlPoints.length === 2);
+}
+
+function isBoundaryOnlyCylinderStripFace(face) {
+  const outerCoedges = face?.outerLoop?.coedges || [];
+  if ((face?.innerLoops?.length || 0) !== 0) return false;
+  if (outerCoedges.length === 5) return true;
+  if (outerCoedges.length !== 8) return false;
+  let linearCount = 0;
+  for (const coedge of outerCoedges) {
+    if (isSimpleLineEdge(coedge?.edge)) linearCount++;
+  }
+  return linearCount === 4;
+}
+
 /**
  * Compute the area of a triangle from three 3D points.
  * @param {{x:number,y:number,z:number}} a
@@ -769,10 +789,16 @@ export class FaceTriangulator {
     // points to prevent a single high-valence fan vertex at the centre.
     // With only 1 Steiner point (the old default), the CDT creates a
     // fan/star pattern with 30+ triangles radiating from one vertex.
+    const preferBoundaryOnlyPeriodicCdt = periodicSurface
+      && surface.type === 'cylinder'
+      && holeUvs.length === 0
+      && isBoundaryOnlyCylinderStripFace(face);
     const gridRes = surface.type === 'torus'
       ? Math.max(4, Math.ceil(surfaceSegments / 2))
       : periodicSurface
-        ? Math.max(4, Math.ceil(surfaceSegments / 2))
+        ? preferBoundaryOnlyPeriodicCdt
+          ? 0
+          : Math.max(4, Math.ceil(surfaceSegments / 2))
         : Math.max(3, Math.ceil(surfaceSegments / 3));
     const uStep = (uMax - uMin) / (gridRes + 1 || 1);
     const vStep = (vMax - vMin) / (gridRes + 1 || 1);
