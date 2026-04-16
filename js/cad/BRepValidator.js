@@ -145,8 +145,9 @@ function validateFace(face, result, tol) {
     result.addError(`Face ${face.id}: outer loop is not closed`);
   }
 
-  // Outer loop must have at least 3 coedges
-  if (face.outerLoop.coedges.length < 3) {
+  // Polygonal loops need at least 3 coedges, but STEP commonly represents
+  // circular/seam trims as one closed curved edge.
+  if (face.outerLoop.coedges.length < 3 && !isValidShortCurvedLoop(face.outerLoop)) {
     result.addWarning(`Face ${face.id}: outer loop has fewer than 3 coedges`);
   }
 
@@ -169,6 +170,30 @@ function validateFace(face, result, tol) {
       }
     }
   }
+}
+
+function isValidShortCurvedLoop(loop) {
+  if (!loop || !loop.isClosed()) return false;
+  if (loop.coedges.length === 1) return isClosedCurveEdge(loop.coedges[0]?.edge);
+  if (loop.coedges.length === 2) {
+    const edgeA = loop.coedges[0]?.edge;
+    const edgeB = loop.coedges[1]?.edge;
+    return edgeA && edgeB && edgeA !== edgeB && (isCurvedEdge(edgeA) || isCurvedEdge(edgeB));
+  }
+  return false;
+}
+
+function isClosedCurveEdge(edge) {
+  if (!edge || edge.startVertex !== edge.endVertex || !edge.curve) return false;
+  return isCurvedEdge(edge);
+}
+
+function isCurvedEdge(edge) {
+  if (!edge?.curve) return false;
+  const controlPoints = edge.curve.controlPoints;
+  if (!Array.isArray(controlPoints) || controlPoints.length < 3) return false;
+  const distinct = new Set(controlPoints.map((point) => _pointKey(point)));
+  return distinct.size >= 3;
 }
 
 /**
@@ -201,7 +226,7 @@ export function validateIncidence(body) {
     if (!e.endVertex) {
       result.addError(`Edge ${e.id}: has no end vertex`);
     }
-    if (e.startVertex === e.endVertex) {
+    if (e.startVertex === e.endVertex && !isClosedCurveEdge(e)) {
       result.addWarning(`Edge ${e.id}: start and end vertex are the same (degenerate edge)`);
     }
   }

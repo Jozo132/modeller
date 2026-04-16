@@ -147,12 +147,43 @@ function isBoundaryOnlyCylinderStripFace(face) {
   const outerCoedges = face?.outerLoop?.coedges || [];
   if ((face?.innerLoops?.length || 0) !== 0) return false;
   if (outerCoedges.length === 5) return true;
+  if (outerCoedges.length === 6) return isNarrowSixCoedgeCylinderStripFace(face, outerCoedges);
   if (outerCoedges.length !== 8) return false;
   let linearCount = 0;
   for (const coedge of outerCoedges) {
     if (isSimpleLineEdge(coedge?.edge)) linearCount++;
   }
   return linearCount === 4;
+}
+
+function isNarrowSixCoedgeCylinderStripFace(face, outerCoedges) {
+  if (face?.surfaceInfo?.type !== 'cylinder') return false;
+  let linearCount = 0;
+  for (const coedge of outerCoedges) {
+    if (isSimpleLineEdge(coedge?.edge)) linearCount++;
+  }
+  if (linearCount !== 2) return false;
+
+  const surface = _makeAnalyticSurface(face.surfaceInfo);
+  if (!surface) return false;
+
+  let prevUv = null;
+  let uMin = Infinity, uMax = -Infinity, vMin = Infinity, vMax = -Infinity;
+  for (const coedge of outerCoedges) {
+    for (const vertex of [coedge.startVertex(), coedge.endVertex()]) {
+      if (!vertex?.point) return false;
+      const uv = surface.closestPointUV(vertex.point, 4, prevUv);
+      if (!uv) return false;
+      if (prevUv) uv.u = _wrapNear(uv.u, prevUv.u, surface.periodU);
+      prevUv = uv;
+      uMin = Math.min(uMin, uv.u);
+      uMax = Math.max(uMax, uv.u);
+      vMin = Math.min(vMin, uv.v);
+      vMax = Math.max(vMax, uv.v);
+    }
+  }
+
+  return (uMax - uMin) < 0.5 && (vMax - vMin) > 1;
 }
 
 /**
