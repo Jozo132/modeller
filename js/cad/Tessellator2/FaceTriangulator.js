@@ -147,21 +147,17 @@ function isBoundaryOnlyCylinderStripFace(face) {
   const outerCoedges = face?.outerLoop?.coedges || [];
   if ((face?.innerLoops?.length || 0) !== 0) return false;
   if (outerCoedges.length === 5) return true;
-  if (outerCoedges.length === 6) return isNarrowSixCoedgeCylinderStripFace(face, outerCoedges);
-  if (outerCoedges.length !== 8) return false;
-  let linearCount = 0;
-  for (const coedge of outerCoedges) {
-    if (isSimpleLineEdge(coedge?.edge)) linearCount++;
+  if (outerCoedges.length === 6) {
+    return isNarrowSixCoedgeCylinderStripFace(face, outerCoedges)
+      || countSimpleLineEdges(outerCoedges) === 3;
   }
-  return linearCount === 4;
+  if (outerCoedges.length !== 8) return false;
+  return countSimpleLineEdges(outerCoedges) === 4;
 }
 
 function isNarrowSixCoedgeCylinderStripFace(face, outerCoedges) {
   if (face?.surfaceInfo?.type !== 'cylinder') return false;
-  let linearCount = 0;
-  for (const coedge of outerCoedges) {
-    if (isSimpleLineEdge(coedge?.edge)) linearCount++;
-  }
+  const linearCount = countSimpleLineEdges(outerCoedges);
   if (linearCount !== 2) return false;
 
   const surface = _makeAnalyticSurface(face.surfaceInfo);
@@ -184,6 +180,243 @@ function isNarrowSixCoedgeCylinderStripFace(face, outerCoedges) {
   }
 
   return (uMax - uMin) < 0.5 && (vMax - vMin) > 1;
+}
+
+function countSimpleLineEdges(coedges) {
+  let linearCount = 0;
+  for (const coedge of coedges) {
+    if (isSimpleLineEdge(coedge?.edge)) linearCount++;
+  }
+  return linearCount;
+}
+
+function splitSkippedBoundaryChains(triangles, loops, edgeKey) {
+  let current = triangles;
+  for (let pass = 0; pass < 4; pass++) {
+    const split = findSkippedBoundaryChain(current, loops, edgeKey);
+    if (!split) break;
+
+    const next = [];
+    for (let i = 0; i < current.length; i++) {
+      if (i !== split.triangleIndex) {
+        next.push(current[i]);
+        continue;
+      }
+      const [a, b, c] = orientTriangleForSplit(current[i], split.edgeStart, split.edgeEnd);
+      const chain = split.chain;
+      if (!sameUvPoint(chain[0], a) || !sameUvPoint(chain[chain.length - 1], b)) {
+        next.push(current[i]);
+        continue;
+      }
+      for (let ci = 0; ci < chain.length - 1; ci++) {
+        next.push([chain[ci], chain[ci + 1], c]);
+      }
+    }
+    current = next;
+  }
+  return current;
+}
+
+function findSkippedBoundaryChain(triangles, loops, edgeKey) {
+  const edgeUses = new Map();
+  for (let triangleIndex = 0; triangleIndex < triangles.length; triangleIndex++) {
+    const tri = triangles[triangleIndex];
+    for (const [a, b] of [[tri[0], tri[1]], [tri[1], tri[2]], [tri[2], tri[0]]]) {
+      const key = edgeKey(a, b);
+      if (!edgeUses.has(key)) edgeUses.set(key, []);
+      edgeUses.get(key).push({ triangleIndex, a, b });
+    }
+  }
+
+  for (const uses of edgeUses.values()) {
+    if (uses.length !== 1) continue;
+    const use = uses[0];
+    for (const loop of loops) {
+      const chain = boundaryChainBetween(loop, use.a, use.b, edgeKey);
+      if (!chain || chain.length <= 2) continue;
+      return {
+        triangleIndex: use.triangleIndex,
+        edgeStart: use.a,
+        edgeEnd: use.b,
+        chain,
+      };
+    }
+  }
+  return null;
+}
+
+function boundaryChainBetween(loop, a, b, edgeKey) {
+  const n = loop.length;
+  if (n < 3) return null;
+  let ai = -1;
+  let bi = -1;
+  for (let i = 0; i < n; i++) {
+    if (sameUvPoint(loop[i], a)) ai = i;
+    if (sameUvPoint(loop[i], b)) bi = i;
+  }
+  if (ai < 0 || bi < 0 || ai === bi) return null;
+
+  const forwardSteps = (bi - ai + n) % n;
+  const backwardSteps = (ai - bi + n) % n;
+  const steps = Math.min(forwardSteps, backwardSteps);
+  if (steps <= 1 || steps >= n - 1) return null;
+
+  const chain = [];
+  if (forwardSteps <= backwardSteps) {
+    for (let offset = 0; offset <= forwardSteps; offset++) {
+      chain.push(loop[(ai + offset) % n]);
+    }
+    return chain;
+  }
+  for (let offset = 0; offset <= backwardSteps; offset++) {
+    chain.push(loop[(ai - offset + n) % n]);
+  }
+  return chain;
+}
+
+function orientTriangleForSplit(triangle, edgeStart, edgeEnd) {
+  for (let i = 0; i < 3; i++) {
+    const a = triangle[i];
+    const b = triangle[(i + 1) % 3];
+    if (a === edgeStart && b === edgeEnd) {
+      return [a, b, triangle[(i + 2) % 3]];
+    }
+    if (a === edgeEnd && b === edgeStart) {
+      return [b, a, triangle[(i + 2) % 3]];
+    }
+  }
+  return triangle;
+}
+
+function sameUvPoint(a, b) {
+  return Math.abs((a?.u ?? a?.x ?? 0) - (b?.u ?? b?.x ?? 0)) < 1e-8
+    && Math.abs((a?.v ?? a?.y ?? 0) - (b?.v ?? b?.y ?? 0)) < 1e-8;
+}
+
+function splitSkippedBoundaryMeshEdges(faces, loops3D) {
+  let current = faces;
+  for (let pass = 0; pass < 4; pass++) {
+    const split = findSkippedBoundaryMeshEdge(current, loops3D);
+    if (!split) break;
+
+    const next = [];
+    for (let i = 0; i < current.length; i++) {
+      if (i !== split.faceIndex) {
+        next.push(current[i]);
+        continue;
+      }
+      const oriented = orientMeshFaceForSplit(current[i], split.edgeStart, split.edgeEnd);
+      if (!oriented) {
+        next.push(current[i]);
+        continue;
+      }
+      const [a, b, c] = oriented;
+      const chain = meshPointKey(split.chain[0]) === meshPointKey(a)
+        ? split.chain
+        : [...split.chain].reverse();
+      if (meshPointKey(chain[0]) !== meshPointKey(a) || meshPointKey(chain[chain.length - 1]) !== meshPointKey(b)) {
+        next.push(current[i]);
+        continue;
+      }
+      for (let ci = 0; ci < chain.length - 1; ci++) {
+        next.push(copyMeshFaceWithVertices(current[i], [chain[ci], chain[ci + 1], c]));
+      }
+    }
+    current = next;
+  }
+  return current;
+}
+
+function findSkippedBoundaryMeshEdge(faces, loops3D) {
+  const edgeUses = new Map();
+  for (let faceIndex = 0; faceIndex < faces.length; faceIndex++) {
+    const verts = faces[faceIndex].vertices || [];
+    if (verts.length !== 3) continue;
+    for (let i = 0; i < 3; i++) {
+      const a = verts[i];
+      const b = verts[(i + 1) % 3];
+      const key = meshEdgeKey(a, b);
+      if (!edgeUses.has(key)) edgeUses.set(key, []);
+      edgeUses.get(key).push({ faceIndex, a, b });
+    }
+  }
+
+  for (const uses of edgeUses.values()) {
+    if (uses.length !== 1) continue;
+    const use = uses[0];
+    for (const loop of loops3D) {
+      const chain = meshBoundaryChainBetween(loop, use.a, use.b);
+      if (chain && chain.length > 2) {
+        return {
+          faceIndex: use.faceIndex,
+          edgeStart: use.a,
+          edgeEnd: use.b,
+          chain,
+        };
+      }
+    }
+  }
+  return null;
+}
+
+function meshBoundaryChainBetween(loop, a, b) {
+  const n = loop.length;
+  if (n < 3) return null;
+  const keyA = meshPointKey(a);
+  const keyB = meshPointKey(b);
+  let ai = -1;
+  let bi = -1;
+  for (let i = 0; i < n; i++) {
+    const key = meshPointKey(loop[i]);
+    if (key === keyA) ai = i;
+    if (key === keyB) bi = i;
+  }
+  if (ai < 0 || bi < 0 || ai === bi) return null;
+  const forwardSteps = (bi - ai + n) % n;
+  const backwardSteps = (ai - bi + n) % n;
+  const steps = Math.min(forwardSteps, backwardSteps);
+  if (steps <= 1 || steps >= n - 1) return null;
+
+  const chain = [];
+  if (forwardSteps <= backwardSteps) {
+    for (let offset = 0; offset <= forwardSteps; offset++) chain.push(loop[(ai + offset) % n]);
+    return chain;
+  }
+  for (let offset = 0; offset <= backwardSteps; offset++) chain.push(loop[(ai - offset + n) % n]);
+  return chain;
+}
+
+function orientMeshFaceForSplit(face, edgeStart, edgeEnd) {
+  const verts = face.vertices || [];
+  const startKey = meshPointKey(edgeStart);
+  const endKey = meshPointKey(edgeEnd);
+  for (let i = 0; i < 3; i++) {
+    const a = verts[i];
+    const b = verts[(i + 1) % 3];
+    if (meshPointKey(a) === startKey && meshPointKey(b) === endKey) return [a, b, verts[(i + 2) % 3]];
+    if (meshPointKey(a) === endKey && meshPointKey(b) === startKey) return [b, a, verts[(i + 2) % 3]];
+  }
+  return null;
+}
+
+function copyMeshFaceWithVertices(face, vertices) {
+  const out = {
+    ...face,
+    vertices: vertices.map((point) => ({ ...point })),
+    normal: face.normal ? { ...face.normal } : { x: 0, y: 0, z: 1 },
+  };
+  delete out.vertexNormals;
+  return out;
+}
+
+function meshEdgeKey(a, b) {
+  const ka = meshPointKey(a);
+  const kb = meshPointKey(b);
+  return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+}
+
+function meshPointKey(point) {
+  return `${point.x.toFixed(6)},${point.y.toFixed(6)},${point.z.toFixed(6)}`;
 }
 
 /**
@@ -902,6 +1135,7 @@ export class FaceTriangulator {
       if (_triangleArea3D(pa, pb, pc) < 1e-12) continue;
       triangles.push([ua, ub, uc]);
     }
+    triangles = splitSkippedBoundaryChains(triangles, [outerUv, ...holeUvs], edgeKey);
 
     // Compute the outward reference direction from the surface normal at the
     // UV centroid, adjusted for sameSense. This is more reliable than the
@@ -1053,7 +1287,7 @@ export class FaceTriangulator {
       if (!anySplit) break;
     }
 
-    const meshFaces = [];
+    let meshFaces = [];
     const meshVertices = [];
     const flip = sameSense ? 1 : -1;
     for (const [a, b, c] of triangles) {
@@ -1114,7 +1348,13 @@ export class FaceTriangulator {
       meshVertices.push({ ...pa }, { ...pb }, { ...pc });
     }
 
-    return { vertices: meshVertices, faces: meshFaces };
+    meshFaces = splitSkippedBoundaryMeshEdges(meshFaces, [outer3D, ...holeLoops3D]);
+    const stitchedBoundaryVertices = [];
+    for (const faceMesh of meshFaces) {
+      stitchedBoundaryVertices.push(...faceMesh.vertices.map((vertex) => ({ ...vertex })));
+    }
+
+    return { vertices: stitchedBoundaryVertices.length ? stitchedBoundaryVertices : meshVertices, faces: meshFaces };
   }
 
   /**

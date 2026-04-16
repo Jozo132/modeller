@@ -533,8 +533,9 @@ function _tessellatePeriodicSlotFace(face, edgeSampler, edgeSegs, surfSegs) {
 
   const uA = innerUv[0].u;
   const uB = innerUv[innerUv.length - 1].u;
-  const outerLongArc = _extractAnalyticPeriodicArc(face.surfaceInfo, outerUv, uA, innerSpan, periodU);
-  const outerShortArc = _extractAnalyticPeriodicArc(face.surfaceInfo, outerUv, uB, gapSpan, periodU);
+  const outerSplit = _splitPeriodicBoundaryLoopAtArc(outerUv, uB, gapSpan, periodU);
+  const outerLongArc = outerSplit.longArc;
+  const outerShortArc = outerSplit.shortArc;
   if (outerLongArc.length < 2 || outerShortArc.length < 2) return null;
 
   const innerReversed = [...innerUv].reverse().map((point) => ({ ...point }));
@@ -666,45 +667,53 @@ function _collectAnalyticLoopUv(surfaceInfo, loopPts, periodU) {
   return _dedupeUvPolyline(uvLoop);
 }
 
-function _extractAnalyticPeriodicArc(surfaceInfo, loopUv, startU, spanU, periodU) {
-  if (!surfaceInfo || !Array.isArray(loopUv) || loopUv.length < 2 || !Number.isFinite(spanU) || spanU <= 1e-8) {
-    return [];
+function _splitPeriodicBoundaryLoopAtArc(loopUv, startU, spanU, periodU) {
+  if (!Array.isArray(loopUv) || loopUv.length < 2 || !Number.isFinite(spanU) || spanU <= 1e-8) {
+    return { shortArc: [], longArc: [] };
   }
-  const endU = startU + spanU;
-  const arc = [];
-  const pushPoint = (point) => {
-    if (!point) return;
-    const prev = arc[arc.length - 1];
-    if (prev && Math.abs(prev.u - point.u) < 1e-10 && Math.abs(prev.v - point.v) < 1e-10) return;
-    arc.push(point);
-  };
 
-  pushPoint({
-    u: startU,
-    v: loopUv[0].v,
-    x: startU,
-    y: loopUv[0].v,
-    _orig3D: _evaluateAnalyticSurface(surfaceInfo, startU, loopUv[0].v),
-  });
-  for (const point of loopUv) {
-    let u = _wrapNearValue(point.u, startU, periodU);
-    while (u < startU - 1e-10) u += periodU;
-    if (u <= startU + 1e-10 || u >= endU - 1e-10) continue;
-    pushPoint({
-      ...point,
-      u,
-      x: u,
-      y: point.v,
-    });
+  const endU = startU + spanU;
+  const entries = loopUv
+    .map((point, index) => {
+      let u = _wrapNearValue(point.u, startU, periodU);
+      while (u < startU - periodU * 0.5) u += periodU;
+      while (u > startU + periodU * 1.5) u -= periodU;
+      return { ...point, u, x: u, y: point.v, _loopIndex: index };
+    })
+    .sort((a, b) => a.u - b.u);
+
+  if (entries.length < 2) return { shortArc: [], longArc: [] };
+
+  let startIdx = -1;
+  for (let i = 0; i < entries.length; i++) {
+    if (entries[i].u <= startU + 1e-10) startIdx = i;
   }
-  pushPoint({
-    u: endU,
-    v: loopUv[0].v,
-    x: endU,
-    y: loopUv[0].v,
-    _orig3D: _evaluateAnalyticSurface(surfaceInfo, endU, loopUv[0].v),
-  });
-  return arc;
+  if (startIdx < 0) {
+    const last = { ...entries[entries.length - 1], u: entries[entries.length - 1].u - periodU };
+    entries.unshift(last);
+    startIdx = 0;
+  }
+
+  let endIdx = -1;
+  for (let i = startIdx; i < entries.length; i++) {
+    if (entries[i].u >= endU - 1e-10) {
+      endIdx = i;
+      break;
+    }
+  }
+  if (endIdx < 0) {
+    entries.push({ ...entries[0], u: entries[0].u + periodU });
+    endIdx = entries.length - 1;
+  }
+
+  const shortArc = _dedupeUvPolyline(entries.slice(startIdx, endIdx + 1).map((point) => ({ ...point })));
+  const longArcRaw = [
+    ...entries.slice(endIdx),
+    ...entries.slice(0, startIdx + 1).map((point) => ({ ...point, u: point.u + periodU })),
+  ];
+  const longArc = _dedupeUvPolyline(longArcRaw.map((point) => ({ ...point, x: point.u, y: point.v })));
+
+  return { shortArc, longArc };
 }
 
 function _buildAnalyticStripArc(surfaceInfo, startU, endU, v, steps) {
@@ -1096,6 +1105,33 @@ function _tessellatePeriodicStripFace(face, edgeSampler, edgeSegs, surfSegs) {
         z: (oriented[0].z + oriented[1].z + oriented[2].z) / 3,
       }),
     });
+  }
+
+  // The UV strip is cut open at one meridian.  Add the missing wrap panel
+  // between the last and first ring samples so the artificial seam is not an
+  // exposed mesh boundary.  The panel uses original EdgeSampler points, so the
+  // circular edges still stitch to adjacent cap faces.
+  if (lowerUv.length >= 2 && upperUv.length === lowerUv.length) {
+    const lowerFirst = evalPoint(lowerUv[0]);
+    const lowerLast = evalPoint(lowerUv[lowerUv.length - 1]);
+    const upperFirst = evalPoint(upperUv[0]);
+    const upperLast = evalPoint(upperUv[upperUv.length - 1]);
+    const wrapTris = [
+      [lowerLast, lowerFirst, upperLast],
+      [upperLast, lowerFirst, upperFirst],
+    ];
+    for (const tri of wrapTris) {
+      const oriented = _orientTriangleToFace(face, tri[0], tri[1], tri[2]);
+      if (_triangleArea3(oriented[0], oriented[1], oriented[2]) < 1e-12) continue;
+      faces.push({
+        vertices: oriented,
+        normal: _faceOutwardNormal(face, {
+          x: (oriented[0].x + oriented[1].x + oriented[2].x) / 3,
+          y: (oriented[0].y + oriented[1].y + oriented[2].y) / 3,
+          z: (oriented[0].z + oriented[1].z + oriented[2].z) / 3,
+        }),
+      });
+    }
   }
 
   return faces.length > 0

@@ -256,6 +256,7 @@ export function constrainedTriangulate(outerLoop, holes = [], steinerPoints = []
   // When a constraint vertex is missing from all triangles, find the
   // constraint edge it lies on and split the adjacent triangle.
   _recoverMissingBoundaryVertices(points, interior, outerLoop.length, holes);
+  _splitTriangulationEdgesAtBoundaryVertices(points, interior, outerLoop.length, holes);
 
   return interior;
 }
@@ -677,6 +678,108 @@ function _recoverMissingBoundaryVertices(points, triList, outerCount, holes) {
     }
   }
   triList.length = write;
+}
+
+/**
+ * Split triangulation edges that skipped over existing boundary vertices.
+ *
+ * Incremental Delaunay can legally keep a long edge across several nearly
+ * collinear constraint samples.  All boundary vertices are then "used", so
+ * _recoverMissingBoundaryVertices() has nothing to insert, but the required
+ * consecutive constraint edges are still absent.  Splitting those long edges
+ * preserves the STEP edge sampling and prevents stitched meshes from leaving
+ * T-junction holes along shared curved trims.
+ *
+ * @param {Array<{x:number,y:number}>} points
+ * @param {Array<[number,number,number]>} triList
+ * @param {number} outerCount
+ * @param {Array<Array<{x:number,y:number}>>} holes
+ */
+function _splitTriangulationEdgesAtBoundaryVertices(points, triList, outerCount, holes) {
+  const boundaryIndices = [];
+  for (let i = 0; i < outerCount; i++) boundaryIndices.push(i);
+  let offset = outerCount;
+  for (const hole of holes) {
+    for (let i = 0; i < hole.length; i++) boundaryIndices.push(offset + i);
+    offset += hole.length;
+  }
+  if (boundaryIndices.length === 0) return;
+
+  const maxPasses = Math.max(1, boundaryIndices.length);
+  for (let pass = 0; pass < maxPasses; pass++) {
+    const split = _findSkippedBoundaryVertexOnTriangulationEdge(points, triList, boundaryIndices);
+    if (!split) break;
+    _splitTriangulationEdge(triList, split.edge[0], split.edge[1], split.vertex);
+  }
+}
+
+function _findSkippedBoundaryVertexOnTriangulationEdge(points, triList, boundaryIndices) {
+  const edgeKeys = new Set();
+  const edges = [];
+  const addEdge = (a, b) => {
+    const key = a < b ? `${a},${b}` : `${b},${a}`;
+    if (edgeKeys.has(key)) return;
+    edgeKeys.add(key);
+    edges.push([a, b]);
+  };
+
+  for (const tri of triList) {
+    if (!tri) continue;
+    addEdge(tri[0], tri[1]);
+    addEdge(tri[1], tri[2]);
+    addEdge(tri[2], tri[0]);
+  }
+
+  let best = null;
+  for (const [a, b] of edges) {
+    for (const vertex of boundaryIndices) {
+      if (vertex === a || vertex === b) continue;
+      const hit = _pointOnSegment2D(points, vertex, a, b);
+      if (!hit) continue;
+      if (!best || hit.distance < best.distance) {
+        best = { edge: [a, b], vertex, distance: hit.distance };
+      }
+    }
+  }
+  return best;
+}
+
+function _splitTriangulationEdge(triList, e0, e1, midx) {
+  const sharers = [];
+  for (let t = 0; t < triList.length; t++) {
+    const tri = triList[t];
+    if (!tri) continue;
+    if (tri.includes(e0) && tri.includes(e1)) sharers.push(t);
+  }
+
+  for (const t of sharers) {
+    const tri = triList[t];
+    if (!tri) continue;
+    const opp = tri.find(v => v !== e0 && v !== e1);
+    if (opp === undefined) continue;
+    triList[t] = [opp, e0, midx];
+    triList.push([opp, midx, e1]);
+  }
+}
+
+function _pointOnSegment2D(points, pidx, a, b) {
+  const p = points[pidx];
+  const pa = points[a];
+  const pb = points[b];
+  const dx = pb.x - pa.x;
+  const dy = pb.y - pa.y;
+  const len2 = dx * dx + dy * dy;
+  if (len2 < 1e-20) return null;
+
+  const t = ((p.x - pa.x) * dx + (p.y - pa.y) * dy) / len2;
+  if (t <= 1e-8 || t >= 1 - 1e-8) return null;
+
+  const projX = pa.x + t * dx;
+  const projY = pa.y + t * dy;
+  const distance = Math.sqrt((p.x - projX) ** 2 + (p.y - projY) ** 2);
+  const len = Math.sqrt(len2);
+  const tol = Math.max(1e-9, len * 1e-6);
+  return distance <= tol ? { t, distance } : null;
 }
 
 /**
