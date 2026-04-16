@@ -277,10 +277,12 @@ export function openDXFFile() {
  * Parse a DXF string and return an array of 2D geometry primitives
  * without adding them to state. Used for sketch-mode import.
  *
- * Each returned item has: { type: 'line'|'circle'|'arc', ...coords }
+ * Each returned item has: { type: 'line'|'circle'|'arc'|'spline'|'bezier', ...coords }
  * Lines: { type: 'line', x1, y1, x2, y2 }
  * Circles: { type: 'circle', cx, cy, radius }
  * Arcs: { type: 'arc', cx, cy, radius, startAngle, endAngle }
+ * Splines: { type: 'spline', controlPoints: [{x, y}, ...] }
+ * Beziers: { type: 'bezier', vertices: [{x, y, handleIn?, handleOut?, tangent?}, ...] }
  *
  * @param {string} dxfContent - Raw DXF file text
  * @returns {Array} Array of geometry primitives
@@ -331,6 +333,34 @@ export function parseDXFGeometry(dxfContent) {
         }
         break;
       }
+      case 'SPLINE': {
+        const degree = parseInt(p[71], 10) || 3;
+        const xs = Array.isArray(p[10]) ? p[10] : (p[10] != null ? [p[10]] : []);
+        const ys = Array.isArray(p[20]) ? p[20] : (p[20] != null ? [p[20]] : []);
+        const controlPts = [];
+        for (let i = 0; i < xs.length; i++) {
+          controlPts.push({ x: parseFloat(xs[i]) || 0, y: parseFloat(ys[i]) || 0 });
+        }
+        if (controlPts.length < 2) break;
+
+        const knots = Array.isArray(p[40]) ? p[40].map(Number) : (p[40] != null ? [Number(p[40])] : []);
+        const isBezierKnots = knots.length > 0 && degree === 3 && controlPts.length === 4 &&
+          knots.slice(0, 4).every(k => k === 0) && knots.slice(4).every(k => k === 1);
+
+        if (isBezierKnots && controlPts.length === 4) {
+          const p0 = controlPts[0], c1 = controlPts[1], c2 = controlPts[2], p3 = controlPts[3];
+          result.push({
+            type: 'bezier',
+            vertices: [
+              { x: p0.x, y: p0.y, handleOut: { dx: c1.x - p0.x, dy: c1.y - p0.y }, tangent: true },
+              { x: p3.x, y: p3.y, handleIn: { dx: c2.x - p3.x, dy: c2.y - p3.y }, tangent: true },
+            ],
+          });
+        } else {
+          result.push({ type: 'spline', controlPoints: controlPts });
+        }
+        break;
+      }
     }
   }
 
@@ -360,6 +390,20 @@ export function dxfBounds(items) {
       minY = Math.min(minY, item.cy - item.radius);
       maxX = Math.max(maxX, item.cx + item.radius);
       maxY = Math.max(maxY, item.cy + item.radius);
+    } else if (item.type === 'spline') {
+      for (const pt of item.controlPoints) {
+        minX = Math.min(minX, pt.x);
+        minY = Math.min(minY, pt.y);
+        maxX = Math.max(maxX, pt.x);
+        maxY = Math.max(maxY, pt.y);
+      }
+    } else if (item.type === 'bezier') {
+      for (const v of item.vertices) {
+        minX = Math.min(minX, v.x);
+        minY = Math.min(minY, v.y);
+        maxX = Math.max(maxX, v.x);
+        maxY = Math.max(maxY, v.y);
+      }
     }
   }
   const width = maxX - minX;
@@ -400,6 +444,23 @@ export function addDXFToScene(items, { offsetX = 0, offsetY = 0, scale = 1, cent
       const cx = (item.cx + shiftX) * scale + offsetX;
       const cy = (item.cy + shiftY) * scale + offsetY;
       state.scene.addArc(cx, cy, item.radius * scale, item.startAngle, item.endAngle, { merge: true });
+      count++;
+    } else if (item.type === 'spline') {
+      const pts = item.controlPoints.map(pt => ({
+        x: (pt.x + shiftX) * scale + offsetX,
+        y: (pt.y + shiftY) * scale + offsetY,
+      }));
+      state.scene.addSpline(pts, { merge: true });
+      count++;
+    } else if (item.type === 'bezier') {
+      const verts = item.vertices.map(v => ({
+        x: (v.x + shiftX) * scale + offsetX,
+        y: (v.y + shiftY) * scale + offsetY,
+        handleIn: v.handleIn ? { dx: v.handleIn.dx * scale, dy: v.handleIn.dy * scale } : null,
+        handleOut: v.handleOut ? { dx: v.handleOut.dx * scale, dy: v.handleOut.dy * scale } : null,
+        tangent: v.tangent,
+      }));
+      state.scene.addBezier(verts, { merge: true });
       count++;
     }
   }
