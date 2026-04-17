@@ -791,8 +791,15 @@ function analyzeReport(report) {
 }
 
 function formatTopologySummary(summary) {
+  const effectiveInnerSuffix = (
+    typeof summary.normalizedInnerLoopCount === 'number' &&
+    summary.normalizedInnerLoopCount !== summary.innerLoopCount
+  )
+    ? `, ${summary.normalizedInnerLoopCount} effective inner`
+    : '';
+
   return `${summary.shellCount} shell(s), ${summary.faceCount} face(s), ` +
-    `${summary.loopCount} loop(s) (${summary.innerLoopCount} inner), ` +
+    `${summary.loopCount} loop(s) (${summary.innerLoopCount} inner${effectiveInnerSuffix}), ` +
     `${summary.edgeCount} edge(s), ${summary.vertexCount} vertex/vertices`;
 }
 
@@ -821,18 +828,33 @@ function buildFacePairs(report) {
   });
 }
 
+function effectiveSourceInnerLoops(sourceFace) {
+  if (typeof sourceFace?.normalizedInnerLoops === 'number') {
+    return sourceFace.normalizedInnerLoops;
+  }
+  return sourceFace?.innerLoops || 0;
+}
+
+function effectiveSourceOuterCoedges(sourceFace) {
+  if (typeof sourceFace?.normalizedOuterCoedges === 'number') {
+    return sourceFace.normalizedOuterCoedges;
+  }
+  return sourceFace?.outerCoedges || 0;
+}
+
 function surfaceFaceScore(pair) {
   if (!pair.imported) return 0;
 
   const source = pair.source;
   const imported = pair.imported;
   const surfaceMatch = source.surfaceType === imported.surfaceType ? 1 : 0;
-  const sourceOuterCoedges = source.outerCoedges || source.normalizedOuterCoedges;
+  const sourceInnerLoops = effectiveSourceInnerLoops(source);
+  const sourceOuterCoedges = effectiveSourceOuterCoedges(source);
 
   return (
     surfaceMatch * 0.15 +
     ratioScore(source.loops, imported.loops) * 0.15 +
-    ratioScore(source.innerLoops, imported.innerLoops) * 0.2 +
+    ratioScore(sourceInnerLoops, imported.innerLoops) * 0.2 +
     ratioScore(sourceOuterCoedges, imported.outerCoedges) * 0.1 +
     ratioScore(source.totalCoedges, imported.totalCoedges) * 0.15 +
     (pair.tessellated ? 1 : 0) * 0.25
@@ -843,7 +865,7 @@ function circleFaceScore(pair) {
   if (!pair.imported) return 0;
   return (
     ratioScore(pair.source.selfLoopCoedges, pair.imported.selfLoopCoedges) * 0.2 +
-    ratioScore(pair.source.innerLoops, pair.imported.innerLoops) * 0.15 +
+    ratioScore(effectiveSourceInnerLoops(pair.source), pair.imported.innerLoops) * 0.15 +
     ratioScore(pair.source.uniqueBoundaryVertices, pair.imported.uniqueBoundaryVertices) * 0.15 +
     (pair.tessellated ? 1 : 0) * 0.5
   );
@@ -911,15 +933,15 @@ function computeScorecard(report) {
 
   const facePairs = buildFacePairs(report);
   const faces = meshHealthScore(report);
-  const holedPairs = facePairs.filter((pair) => pair.source.innerLoops > 0);
+  const holedPairs = facePairs.filter((pair) => effectiveSourceInnerLoops(pair.source) > 0);
   const holesExact = averageScore(holedPairs.map((pair) =>
-    pair.imported && pair.source.innerLoops === pair.imported.innerLoops ? 1 : 0,
+    pair.imported && effectiveSourceInnerLoops(pair.source) === pair.imported.innerLoops ? 1 : 0,
   )) ?? 1;
   const innerLoops = (
     (averageScore(facePairs.map((pair) =>
-      ratioScore(pair.source.innerLoops, pair.imported?.innerLoops ?? 0),
+      ratioScore(effectiveSourceInnerLoops(pair.source), pair.imported?.innerLoops ?? 0),
     )) ?? 0) * 0.5 +
-    ratioScore(report.source.innerLoopCount, report.body.innerLoopCount) * 0.5
+    ratioScore(report.source.normalizedInnerLoopCount, report.body.innerLoopCount) * 0.5
   );
   const boundaryVertexLoad = report.mesh.boundaryEdges / Math.max(1, report.body.vertexCount);
   const nonManifoldVertexLoad = report.mesh.nonManifoldEdges / Math.max(1, report.body.vertexCount);
@@ -1052,7 +1074,7 @@ function buildScorecardMarkdown({
     '',
     'Scoring notes:',
     '- `Faces` blends B-Rep validator health with tessellated face coverage and watertightness symptoms.',
-    '- `HolesExact` measures exact hole-count preservation on holed faces.',
+    '- `HolesExact` measures exact effective hole-count preservation; STEP faces without `FACE_OUTER_BOUND` first infer one outer loop.',
     '- `Circles` tracks self-loop circular trims, which are currently a major STEP import/tessellation stress case.',
   ];
 
@@ -1237,7 +1259,7 @@ async function main() {
   console.log('\n=== Scorecard ===');
   printScoreTable(reports);
   console.log('Scores combine source-vs-imported B-Rep fidelity with tessellated face coverage.');
-  console.log('`HolesExact` checks exact hole-count preservation on holed faces; `Circles` tracks self-loop circular trims.');
+  console.log('`HolesExact` checks effective B-Rep hole counts; `Circles` tracks self-loop circular trims.');
 
   const worstReports = buildWorstFailures(reports);
 
