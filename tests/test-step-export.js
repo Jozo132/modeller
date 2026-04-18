@@ -8,6 +8,8 @@
 
 import assert from 'assert';
 import { exportSTEP } from '../js/cad/StepExport.js';
+import { importSTEP, parseSTEPTopology } from '../js/cad/StepImport.js';
+import { validateFull } from '../js/cad/BRepValidator.js';
 import {
   TopoBody, TopoShell, TopoFace, TopoLoop, TopoCoEdge, TopoEdge, TopoVertex,
   SurfaceType, buildTopoBody, resetTopoIds,
@@ -28,6 +30,81 @@ function test(name, fn) {
     console.log(`    ${err.message}`);
     failed++;
   }
+}
+
+function buildBoxBody({ size = 10, useNurbsEdges = false, topAsBSpline = false } = {}) {
+  const corners = [
+    { x: 0, y: 0, z: 0 }, { x: size, y: 0, z: 0 },
+    { x: size, y: size, z: 0 }, { x: 0, y: size, z: 0 },
+    { x: 0, y: 0, z: size }, { x: size, y: 0, z: size },
+    { x: size, y: size, z: size }, { x: 0, y: size, z: size },
+  ];
+
+  const faceCornerIndices = [
+    [3, 2, 1, 0],
+    [4, 5, 6, 7],
+    [0, 1, 5, 4],
+    [2, 3, 7, 6],
+    [3, 0, 4, 7],
+    [1, 2, 6, 5],
+  ];
+
+  const faceDescs = faceCornerIndices.map((indices, faceIndex) => {
+    const vertices = indices.map(index => corners[index]);
+    const edgeCurves = useNurbsEdges
+      ? vertices.map((vertex, i) => NurbsCurve.createLine(vertex, vertices[(i + 1) % vertices.length]))
+      : null;
+
+    return {
+      surfaceType: topAsBSpline && faceIndex === 1 ? SurfaceType.BSPLINE : SurfaceType.PLANE,
+      vertices,
+      surface: NurbsSurface.createPlane(vertices[0], vertices[1], vertices[3]),
+      edgeCurves,
+      shared: null,
+    };
+  });
+
+  return buildTopoBody(faceDescs);
+}
+
+function summarizeBody(body) {
+  return {
+    shells: body.shells.length,
+    faces: body.faces().length,
+    edges: body.edges().length,
+    vertices: body.vertices().length,
+    loops: body.faces().reduce((count, face) => count + face.allLoops().length, 0),
+    coedges: body.faces().reduce(
+      (count, face) => count + face.allLoops().reduce((loopCount, loop) => loopCount + loop.coedges.length, 0),
+      0,
+    ),
+  };
+}
+
+function sortedPointKeys(points, digits = 6) {
+  return points
+    .map(point => `${point.x.toFixed(digits)},${point.y.toFixed(digits)},${point.z.toFixed(digits)}`)
+    .sort();
+}
+
+function boundsOfPoints(points) {
+  let minX = Infinity, minY = Infinity, minZ = Infinity;
+  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  for (const point of points) {
+    if (point.x < minX) minX = point.x;
+    if (point.y < minY) minY = point.y;
+    if (point.z < minZ) minZ = point.z;
+    if (point.x > maxX) maxX = point.x;
+    if (point.y > maxY) maxY = point.y;
+    if (point.z > maxZ) maxZ = point.z;
+  }
+  return {
+    minX, minY, minZ,
+    maxX, maxY, maxZ,
+    sizeX: maxX - minX,
+    sizeY: maxY - minY,
+    sizeZ: maxZ - minZ,
+  };
 }
 
 // ============================================================
@@ -203,6 +280,131 @@ test('exportSTEP: NURBS edge curves produce B_SPLINE_CURVE_WITH_KNOTS', () => {
 
   const step = exportSTEP(body);
   assert.ok(step.includes('B_SPLINE_CURVE_WITH_KNOTS'), 'NURBS edges should produce B-spline curves');
+});
+
+test('exportSTEP: analytic cylinder surfaceInfo exports the correct radius', () => {
+  resetTopoIds();
+  const body = buildTopoBody([
+    {
+      surfaceType: SurfaceType.CYLINDER,
+      vertices: [{ x: 7.5, y: 0, z: 0 }, { x: 0, y: 7.5, z: 0 }, { x: -7.5, y: 0, z: 0 }],
+      surface: null,
+      surfaceInfo: {
+        type: 'cylinder',
+        origin: { x: 0, y: 0, z: 0 },
+        axis: { x: 0, y: 0, z: 1 },
+        xDir: { x: 1, y: 0, z: 0 },
+        yDir: { x: 0, y: 1, z: 0 },
+        radius: 7.5,
+      },
+      edgeCurves: null,
+      shared: null,
+    },
+  ]);
+
+  const step = exportSTEP(body);
+  assert.match(step, /CYLINDRICAL_SURFACE\('',#\d+,7\.5000000000E0\)/,
+    'Analytic cylinder radius should come from surfaceInfo');
+});
+
+test('exportSTEP: analytic torus surfaceInfo exports TOROIDAL_SURFACE', () => {
+  resetTopoIds();
+  const body = buildTopoBody([
+    {
+      surfaceType: SurfaceType.TORUS,
+      vertices: [{ x: 7, y: 0, z: 0 }, { x: 0, y: 7, z: 0 }, { x: -7, y: 0, z: 0 }],
+      surface: null,
+      surfaceInfo: {
+        type: 'torus',
+        origin: { x: 1, y: 2, z: 3 },
+        axis: { x: 0, y: 0, z: 1 },
+        xDir: { x: 1, y: 0, z: 0 },
+        yDir: { x: 0, y: 1, z: 0 },
+        majorR: 6,
+        minorR: 1.5,
+      },
+      edgeCurves: null,
+      shared: null,
+    },
+  ]);
+
+  const step = exportSTEP(body);
+  assert.match(step, /TOROIDAL_SURFACE\('',#\d+,6\.,1\.5000000000E0\)/,
+    'Analytic torus should export as TOROIDAL_SURFACE with the correct radii');
+});
+
+test('exportSTEP: round-trips a surfaced box as valid exact topology', () => {
+  resetTopoIds();
+  const sourceBody = buildBoxBody();
+
+  const step = exportSTEP(sourceBody, { filename: 'roundtrip-box' });
+  const roundTrippedBody = parseSTEPTopology(step);
+  const validation = validateFull(roundTrippedBody);
+
+  assert.deepStrictEqual(
+    summarizeBody(roundTrippedBody),
+    summarizeBody(sourceBody),
+    'Round-tripped body should preserve shell/face/edge/vertex topology counts',
+  );
+  assert.deepStrictEqual(
+    sortedPointKeys(roundTrippedBody.vertices().map(vertex => vertex.point)),
+    sortedPointKeys(sourceBody.vertices().map(vertex => vertex.point)),
+    'Round-tripped body should preserve exact vertex positions',
+  );
+  assert.deepStrictEqual(validation.errors, [], validation.toString());
+  assert.deepStrictEqual(validation.warnings, [], validation.toString());
+});
+
+test('exportSTEP: round-tripped box imports as a tessellated solid with correct extents', () => {
+  resetTopoIds();
+  const body = buildBoxBody();
+
+  const step = exportSTEP(body, { filename: 'roundtrip-box-mesh' });
+  const mesh = importSTEP(step, { curveSegments: 8, surfaceSegments: 8 });
+  const bounds = boundsOfPoints(mesh.vertices);
+  const faceGroups = new Set(mesh.faces.map(face => face.faceGroup));
+
+  assert.ok(mesh.body, 'Round-tripped STEP should still yield an exact body');
+  assert.ok(mesh.faces.length > 0, 'Round-tripped STEP should tessellate into display triangles');
+  assert.strictEqual(faceGroups.size, 6, `Expected 6 face groups for the box (got ${faceGroups.size})`);
+  assert.ok(Math.abs(bounds.sizeX - 10) < 1e-4, `X extent should stay 10 (got ${bounds.sizeX})`);
+  assert.ok(Math.abs(bounds.sizeY - 10) < 1e-4, `Y extent should stay 10 (got ${bounds.sizeY})`);
+  assert.ok(Math.abs(bounds.sizeZ - 10) < 1e-4, `Z extent should stay 10 (got ${bounds.sizeZ})`);
+});
+
+test('exportSTEP: preserves B-spline faces and NURBS edges on round-trip', () => {
+  resetTopoIds();
+  const sourceBody = buildBoxBody({ useNurbsEdges: true, topAsBSpline: true });
+
+  const step = exportSTEP(sourceBody, { filename: 'roundtrip-bspline-box' });
+  const roundTrippedBody = parseSTEPTopology(step);
+  const validation = validateFull(roundTrippedBody);
+  const roundTrippedFaces = roundTrippedBody.faces();
+  const roundTrippedEdges = roundTrippedBody.edges();
+
+  assert.ok(step.includes('B_SPLINE_SURFACE_WITH_KNOTS'), 'STEP should contain a B-spline surface entity');
+  assert.ok(step.includes('B_SPLINE_CURVE_WITH_KNOTS'), 'STEP should contain B-spline curve entities');
+  assert.deepStrictEqual(
+    summarizeBody(roundTrippedBody),
+    summarizeBody(sourceBody),
+    'Round-tripped B-spline body should preserve topology counts',
+  );
+  assert.strictEqual(
+    roundTrippedFaces.filter(face => face.surfaceType === SurfaceType.BSPLINE).length,
+    1,
+    'Expected exactly one B-spline support face after round-trip',
+  );
+  assert.strictEqual(
+    roundTrippedEdges.filter(edge => edge.curve).length,
+    12,
+    'Expected every box edge to round-trip as an exact curve',
+  );
+  assert.ok(
+    roundTrippedEdges.every(edge => edge.curve && edge.curve.degree === 1),
+    'Round-tripped NURBS line edges should remain degree-1 curves',
+  );
+  assert.deepStrictEqual(validation.errors, [], validation.toString());
+  assert.deepStrictEqual(validation.warnings, [], validation.toString());
 });
 
 // ============================================================

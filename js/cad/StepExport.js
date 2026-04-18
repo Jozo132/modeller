@@ -228,6 +228,8 @@ function _writeSurface(writer, face) {
       return _writeConicalSurface(writer, face);
     case SurfaceType.SPHERE:
       return _writeSphericalSurface(writer, face);
+    case SurfaceType.TORUS:
+      return _writeToroidalSurface(writer, face);
     case SurfaceType.EXTRUSION:
       return _writeExtrusionSurface(writer, face);
     case SurfaceType.REVOLUTION:
@@ -242,11 +244,14 @@ function _writeSurface(writer, face) {
  * Write a plane to STEP.
  */
 function _writePlane(writer, face) {
+  const info = face.surfaceInfo && face.surfaceInfo.type === 'plane' ? face.surfaceInfo : null;
   if (!face.surface) {
-    // Fallback: create a default plane
-    const ptId = _writeCartesianPoint(writer, { x: 0, y: 0, z: 0 });
-    const dirId = _writeDirection(writer, { x: 0, y: 0, z: 1 });
-    const refId = _writeDirection(writer, { x: 1, y: 0, z: 0 });
+    const origin = info?.origin || _faceReferencePoint(face);
+    const normal = _normalizeDirection(info?.normal) || { x: 0, y: 0, z: 1 };
+    const refDir = _referenceDirection(info, normal);
+    const ptId = _writeCartesianPoint(writer, origin);
+    const dirId = _writeDirection(writer, normal);
+    const refId = _writeDirection(writer, refDir);
     const axisId = writer.newId();
     writer.addEntity(axisId, `AXIS2_PLACEMENT_3D('',#${ptId},#${dirId},#${refId})`);
     const planeId = writer.newId();
@@ -256,11 +261,11 @@ function _writePlane(writer, face) {
 
   // Get plane data from surface evaluation
   const origin = face.surface.evaluate(0, 0);
-  const normal = face.surface.normal(0.5, 0.5);
+  const normal = _normalizeDirection(face.surface.normal(0.5, 0.5)) || { x: 0, y: 0, z: 1 };
 
   const ptId = _writeCartesianPoint(writer, origin);
   const dirId = _writeDirection(writer, normal);
-  const refId = _writeDirection(writer, _perpendicular(normal));
+  const refId = _writeDirection(writer, _referenceDirection(info, normal));
   const axisId = writer.newId();
   writer.addEntity(axisId, `AXIS2_PLACEMENT_3D('',#${ptId},#${dirId},#${refId})`);
   const planeId = writer.newId();
@@ -272,16 +277,18 @@ function _writePlane(writer, face) {
  * Write a cylindrical surface to STEP.
  */
 function _writeCylindricalSurface(writer, face) {
-  const origin = face.surface ? face.surface.evaluate(0, 0) : { x: 0, y: 0, z: 0 };
-  const normal = face.surface ? face.surface.normal(0.5, 0.5) : { x: 0, y: 0, z: 1 };
+  const info = face.surfaceInfo && face.surfaceInfo.type === 'cylinder' ? face.surfaceInfo : null;
+  const origin = info?.origin || (face.surface ? face.surface.evaluate(0, 0) : _faceReferencePoint(face));
+  const normal = _normalizeDirection(info?.axis || (face.surface ? face.surface.normal(0.5, 0.5) : null)) || { x: 0, y: 0, z: 1 };
+  const refDir = _referenceDirection(info, normal);
+  const radius = Number.isFinite(info?.radius) ? info.radius : 1.0;
 
   const ptId = _writeCartesianPoint(writer, origin);
   const dirId = _writeDirection(writer, normal);
-  const refId = _writeDirection(writer, _perpendicular(normal));
+  const refId = _writeDirection(writer, refDir);
   const axisId = writer.newId();
   writer.addEntity(axisId, `AXIS2_PLACEMENT_3D('',#${ptId},#${dirId},#${refId})`);
 
-  const radius = 1.0; // TODO: extract from surface
   const surfId = writer.newId();
   writer.addEntity(surfId, `CYLINDRICAL_SURFACE('',#${axisId},${_real(radius)})`);
   return surfId;
@@ -291,17 +298,21 @@ function _writeCylindricalSurface(writer, face) {
  * Write a conical surface to STEP.
  */
 function _writeConicalSurface(writer, face) {
-  const origin = face.surface ? face.surface.evaluate(0, 0) : { x: 0, y: 0, z: 0 };
-  const normal = face.surface ? face.surface.normal(0.5, 0.5) : { x: 0, y: 0, z: 1 };
+  const info = face.surfaceInfo && face.surfaceInfo.type === 'cone' ? face.surfaceInfo : null;
+  const origin = info?.origin || (face.surface ? face.surface.evaluate(0, 0) : _faceReferencePoint(face));
+  const normal = _normalizeDirection(info?.axis || (face.surface ? face.surface.normal(0.5, 0.5) : null)) || { x: 0, y: 0, z: 1 };
+  const refDir = _referenceDirection(info, normal);
+  const radius = Number.isFinite(info?.radius) ? info.radius : 1.0;
+  const semiAngle = Number.isFinite(info?.semiAngle) ? info.semiAngle : 0.5;
 
   const ptId = _writeCartesianPoint(writer, origin);
   const dirId = _writeDirection(writer, normal);
-  const refId = _writeDirection(writer, _perpendicular(normal));
+  const refId = _writeDirection(writer, refDir);
   const axisId = writer.newId();
   writer.addEntity(axisId, `AXIS2_PLACEMENT_3D('',#${ptId},#${dirId},#${refId})`);
 
   const surfId = writer.newId();
-  writer.addEntity(surfId, `CONICAL_SURFACE('',#${axisId},${_real(1.0)},${_real(0.5)})`);
+  writer.addEntity(surfId, `CONICAL_SURFACE('',#${axisId},${_real(radius)},${_real(semiAngle)})`);
   return surfId;
 }
 
@@ -309,16 +320,42 @@ function _writeConicalSurface(writer, face) {
  * Write a spherical surface to STEP.
  */
 function _writeSphericalSurface(writer, face) {
-  const center = face.surface ? face.surface.evaluate(0.5, 0.5) : { x: 0, y: 0, z: 0 };
+  const info = face.surfaceInfo && face.surfaceInfo.type === 'sphere' ? face.surfaceInfo : null;
+  const center = info?.origin || (face.surface ? face.surface.evaluate(0.5, 0.5) : _faceReferencePoint(face));
+  const axis = _normalizeDirection(info?.axis) || { x: 0, y: 0, z: 1 };
+  const refDir = _referenceDirection(info, axis);
+  const radius = Number.isFinite(info?.radius) ? info.radius : 1.0;
 
   const ptId = _writeCartesianPoint(writer, center);
-  const dirId = _writeDirection(writer, { x: 0, y: 0, z: 1 });
-  const refId = _writeDirection(writer, { x: 1, y: 0, z: 0 });
+  const dirId = _writeDirection(writer, axis);
+  const refId = _writeDirection(writer, refDir);
   const axisId = writer.newId();
   writer.addEntity(axisId, `AXIS2_PLACEMENT_3D('',#${ptId},#${dirId},#${refId})`);
 
   const surfId = writer.newId();
-  writer.addEntity(surfId, `SPHERICAL_SURFACE('',#${axisId},${_real(1.0)})`);
+  writer.addEntity(surfId, `SPHERICAL_SURFACE('',#${axisId},${_real(radius)})`);
+  return surfId;
+}
+
+/**
+ * Write a toroidal surface to STEP.
+ */
+function _writeToroidalSurface(writer, face) {
+  const info = face.surfaceInfo && face.surfaceInfo.type === 'torus' ? face.surfaceInfo : null;
+  const origin = info?.origin || _faceReferencePoint(face);
+  const axis = _normalizeDirection(info?.axis) || { x: 0, y: 0, z: 1 };
+  const refDir = _referenceDirection(info, axis);
+  const majorR = Number.isFinite(info?.majorR) ? info.majorR : 1.0;
+  const minorR = Number.isFinite(info?.minorR) ? info.minorR : 0.25;
+
+  const ptId = _writeCartesianPoint(writer, origin);
+  const dirId = _writeDirection(writer, axis);
+  const refId = _writeDirection(writer, refDir);
+  const axisId = writer.newId();
+  writer.addEntity(axisId, `AXIS2_PLACEMENT_3D('',#${ptId},#${dirId},#${refId})`);
+
+  const surfId = writer.newId();
+  writer.addEntity(surfId, `TOROIDAL_SURFACE('',#${axisId},${_real(majorR)},${_real(minorR)})`);
   return surfId;
 }
 
@@ -468,6 +505,24 @@ function _writeGeometricContext(writer) {
     `GLOBAL_UNIT_ASSIGNED_CONTEXT((#${luId},#${auId},#${saId}))REPRESENTATION_CONTEXT('','3D'))`);
 
   return ctxId;
+}
+
+function _faceReferencePoint(face) {
+  const vertex = face?.outerLoop?.coedges?.[0]?.edge?.startVertex?.point;
+  return vertex ? { x: vertex.x, y: vertex.y, z: vertex.z } : { x: 0, y: 0, z: 0 };
+}
+
+function _normalizeDirection(dir) {
+  if (!dir) return null;
+  const len = Math.sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+  if (len < 1e-14) return null;
+  return { x: dir.x / len, y: dir.y / len, z: dir.z / len };
+}
+
+function _referenceDirection(surfaceInfo, normal) {
+  const ref = _normalizeDirection(surfaceInfo?.xDir);
+  if (ref) return ref;
+  return _perpendicular(normal);
 }
 
 // -----------------------------------------------------------------------
