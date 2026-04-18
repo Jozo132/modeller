@@ -662,7 +662,7 @@ function _tessellatePeriodicSlotFace(face, edgeSampler, edgeSegs, surfSegs) {
   if (!Array.isArray(face.innerLoops) || face.innerLoops.length !== 1) return null;
 
   const innerLoop = face.innerLoops[0];
-  if (!innerLoop?.coedges || innerLoop.coedges.length < 3) return null;
+  if (!innerLoop?.coedges || innerLoop.coedges.length < 1) return null;
   if (innerLoop.coedges.every((coedge) => coedge?.edge?.startVertex === coedge?.edge?.endVertex)) return null;
 
   const periodU = 2 * Math.PI;
@@ -688,7 +688,14 @@ function _tessellatePeriodicSlotFace(face, edgeSampler, edgeSegs, surfSegs) {
   const outerShortArc = outerSplit.shortArc;
   if (outerLongArc.length < 2 || outerShortArc.length < 2) return null;
 
-  const innerReversed = [...innerUv].reverse().map((point) => ({ ...point }));
+  const innerReversed = [...innerUv]
+    .reverse()
+    .map((point) => ({
+      ...point,
+      u: point.u + periodU,
+      x: point.u + periodU,
+      y: point.v,
+    }));
   const mainPatch = _triangulateAnalyticUvPatch(face, [
     ...outerLongArc,
     ...innerReversed,
@@ -714,7 +721,7 @@ function _tessellatePeriodicSlotFace(face, edgeSampler, edgeSegs, surfSegs) {
     ...bottomShortArc,
     { ...innerUv[innerUv.length - 1] },
   ], [], Math.max(3, Math.ceil(surfSegs / 2)));
-  if (!webPatch || !webPatch.faces.length) return null;
+  if (!webPatch || !webPatch.faces.length) return mainPatch;
 
   return {
     vertices: [...mainPatch.vertices, ...webPatch.vertices],

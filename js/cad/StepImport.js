@@ -35,6 +35,8 @@ import {
   TopoBody,
 } from './BRepTopology.js';
 
+const STEP_NUMBER_PATTERN = '[+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[Ee][+-]?\\d+)?';
+
 /** Snap a coordinate to 0 if it's within floating-point noise of zero. */
 function _snapZero(v) { return Math.abs(v) < 1e-12 ? 0 : v; }
 /** Snap an {x,y,z} point's coordinates to avoid -0 / tiny-epsilon issues. */
@@ -52,6 +54,8 @@ function _snapPoint(p) { return { x: _snapZero(p.x), y: _snapZero(p.y), z: _snap
  * @returns {TopoBody} Exact B-Rep topology body
  */
 export function parseSTEPTopology(stepString) {
+  const unitScales = _detectStepUnitScales(stepString);
+
   // ------------------------------------------------------------------
   // 1. Parse all entities from the DATA section
   // ------------------------------------------------------------------
@@ -88,7 +92,7 @@ export function parseSTEPTopology(stepString) {
       const faceId = _refId(faceRef);
       if (faceId == null) continue;
 
-      const topoFace = _buildFaceTopology(resolved, faceId, vertexCache, edgeCache);
+      const topoFace = _buildFaceTopology(resolved, faceId, vertexCache, edgeCache, unitScales);
       if (topoFace) topoFaces.push(topoFace);
     }
 
@@ -102,6 +106,58 @@ export function parseSTEPTopology(stepString) {
   }
 
   return new TopoBody(topoShells);
+}
+
+function _detectStepUnitScales(stepString) {
+  return {
+    planeAngle: _detectPlaneAngleScale(stepString),
+  };
+}
+
+function _detectPlaneAngleScale(stepString) {
+  const compact = stepString.replace(/\s+/g, ' ');
+  const conversionUnits = new Map();
+
+  const conversionRe = /#(\d+)\s*=\s*\([^;]*CONVERSION_BASED_UNIT\s*\(\s*'([^']+)'\s*,\s*#(\d+)\s*\)[^;]*PLANE_ANGLE_UNIT\s*\(\s*\)[^;]*\)\s*;/gi;
+  let conversionMatch;
+  while ((conversionMatch = conversionRe.exec(compact))) {
+    const unitId = conversionMatch[1];
+    const name = conversionMatch[2].toUpperCase();
+    const measureId = conversionMatch[3];
+    if (name !== 'DEGREE') continue;
+
+    const measureRe = new RegExp(
+      `#${measureId}\\s*=\\s*PLANE_ANGLE_MEASURE_WITH_UNIT\\s*\\(\\s*PLANE_ANGLE_MEASURE\\s*\\(\\s*(${STEP_NUMBER_PATTERN})\\s*\\)`,
+      'i',
+    );
+    const measureMatch = compact.match(measureRe);
+    const scale = measureMatch ? Number(measureMatch[1]) : Math.PI / 180;
+    if (Number.isFinite(scale) && scale > 0) conversionUnits.set(unitId, scale);
+  }
+
+  if (conversionUnits.size === 0) return 1;
+
+  const contextRe = /GLOBAL_UNIT_ASSIGNED_CONTEXT\s*\(\s*\(([^)]*)\)/gi;
+  let contextMatch;
+  while ((contextMatch = contextRe.exec(compact))) {
+    const assignedRefs = contextMatch[1];
+    for (const [unitId, scale] of conversionUnits) {
+      if (new RegExp(`#${unitId}(?!\\d)`).test(assignedRefs)) return scale;
+    }
+  }
+
+  return conversionUnits.values().next().value || 1;
+}
+
+function _scalePlaneAngle(value, unitScales = {}) {
+  const raw = Number(value) || 0;
+  const scale = unitScales.planeAngle || 1;
+  if (scale !== 1) return raw * scale;
+
+  // Some STEP files omit/lose the context while still writing degree values.
+  // CONICAL_SURFACE.semi_angle is a PLANE_ANGLE_MEASURE, so values outside
+  // a full radian revolution are not physically meaningful as radians.
+  return Math.abs(raw) > Math.PI * 2 ? raw * Math.PI / 180 : raw;
 }
 
 /**
@@ -202,8 +258,10 @@ function _applyAnalyticNormals(body, mesh) {
     // outward direction — it comes directly from the STEP surface
     // definition and is always correct.
     let nx = 0, ny = 0, nz = 0;
+    const analyticVertexNormals = [];
     for (const v of tri.vertices) {
       const vn = _computeVertexNormal(v, info.surfaceInfo, info.sameSense);
+      analyticVertexNormals.push(vn);
       nx += vn.x; ny += vn.y; nz += vn.z;
     }
     nx /= 3; ny /= 3; nz /= 3;
@@ -233,16 +291,29 @@ function _applyAnalyticNormals(body, mesh) {
           // Swap b and c to fix winding order
           tri.vertices[1] = c;
           tri.vertices[2] = b;
-          // Also swap corresponding vertex normals if present
-          if (Array.isArray(tri.vertexNormals) && tri.vertexNormals.length >= 3) {
-            const tmp = tri.vertexNormals[1];
-            tri.vertexNormals[1] = tri.vertexNormals[2];
-            tri.vertexNormals[2] = tmp;
-          }
+          const tmp = analyticVertexNormals[1];
+          analyticVertexNormals[1] = analyticVertexNormals[2];
+          analyticVertexNormals[2] = tmp;
         }
       }
 
-      tri.normal = out;
+      const ga = tri.vertices[0];
+      const gb = tri.vertices[1];
+      const gc = tri.vertices[2];
+      const abx = gb.x - ga.x;
+      const aby = gb.y - ga.y;
+      const abz = gb.z - ga.z;
+      const acx = gc.x - ga.x;
+      const acy = gc.y - ga.y;
+      const acz = gc.z - ga.z;
+      const gx = aby * acz - abz * acy;
+      const gy = abz * acx - abx * acz;
+      const gz = abx * acy - aby * acx;
+      const gl = Math.sqrt(gx * gx + gy * gy + gz * gz);
+      tri.normal = gl > 1e-14
+        ? { x: gx / gl, y: gy / gl, z: gz / gl }
+        : out;
+      tri.vertexNormals = analyticVertexNormals.map((normal) => ({ ...normal }));
     }
   }
 }
@@ -586,9 +657,10 @@ function _findShells(resolved) {
  * @param {number} faceId - Entity ID of the ADVANCED_FACE
  * @param {Map<number, TopoVertex>} vertexCache - Shared vertex cache (STEP VERTEX_POINT ID → TopoVertex)
  * @param {Map<number, TopoEdge>} edgeCache - Shared edge cache (STEP EDGE_CURVE ID → TopoEdge)
+ * @param {{planeAngle:number}} unitScales - STEP unit scale factors
  * @returns {TopoFace|null}
  */
-function _buildFaceTopology(resolved, faceId, vertexCache, edgeCache) {
+function _buildFaceTopology(resolved, faceId, vertexCache, edgeCache, unitScales = { planeAngle: 1 }) {
   const face = resolved.get(faceId);
   if (!face || face.type !== 'ADVANCED_FACE') return null;
 
@@ -605,7 +677,7 @@ function _buildFaceTopology(resolved, faceId, vertexCache, edgeCache) {
   const surfaceType = surfResult ? surfResult.type : SurfaceType.UNKNOWN;
 
   // Extract analytic surface geometry (axis, center, radius, etc.)
-  const surfaceInfo = _extractSurfaceInfo(resolved, surfaceRef);
+  const surfaceInfo = _extractSurfaceInfo(resolved, surfaceRef, unitScales);
 
   // Build topology loops
   const loopEntries = [];
@@ -1843,7 +1915,7 @@ function _extractSurfaceNormal(resolved, surfaceRef) {
  * Returns an object with { type, origin, axis, radius } for analytic surfaces,
  * or null if the surface type is not supported for vertex normals.
  */
-function _extractSurfaceInfo(resolved, surfaceRef) {
+function _extractSurfaceInfo(resolved, surfaceRef, unitScales = { planeAngle: 1 }) {
   const surf = _getEntity(resolved, surfaceRef);
   if (!surf) return null;
 
@@ -1882,7 +1954,7 @@ function _extractSurfaceInfo(resolved, surfaceRef) {
     case 'CONICAL_SURFACE': {
       const axis = _getAxis2Placement3D(resolved, surf.args[1]);
       const radius = Number(surf.args[2]);
-      const semiAngle = Number(surf.args[3]) || 0;
+      const semiAngle = _scalePlaneAngle(surf.args[3], unitScales);
       if (!axis) return null;
       return {
         type: 'cone',

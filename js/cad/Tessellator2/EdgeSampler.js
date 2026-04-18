@@ -155,13 +155,15 @@ export class EdgeSampler {
       }
     }
 
-    const pts = [];
-    for (let i = 0; i <= segments; i++) {
-      const t = i / segments;
-      const u = tStart + t * (tEnd - tStart);
+    const denseCount = Math.max(segments, segments * 4);
+    const densePts = [];
+    for (let i = 0; i <= denseCount; i++) {
+      const u = tStart + (i / denseCount) * (tEnd - tStart);
       const result = GeometryEvaluator.evalCurve(curve, u);
-      pts.push({ x: result.p.x, y: result.p.y, z: result.p.z });
+      densePts.push({ x: result.p.x, y: result.p.y, z: result.p.z });
     }
+
+    const pts = this._resamplePolyline(densePts, segments);
 
     // Snap first and last samples to exact vertex positions for watertight mesh
     if (startPt && pts.length > 0) {
@@ -176,6 +178,36 @@ export class EdgeSampler {
     }
 
     return pts;
+  }
+
+  _resamplePolyline(points, segments) {
+    if (!Array.isArray(points) || points.length <= 2) return points || [];
+
+    const cumulative = [0];
+    for (let i = 1; i < points.length; i++) {
+      cumulative.push(cumulative[i - 1] + _dist3D(points[i - 1], points[i]));
+    }
+    const total = cumulative[cumulative.length - 1];
+    if (total < 1e-12) return points.slice(0, segments + 1);
+
+    const out = [];
+    let src = 1;
+    for (let i = 0; i <= segments; i++) {
+      const target = (i / segments) * total;
+      while (src < cumulative.length - 1 && cumulative[src] < target) src++;
+      const prevLen = cumulative[src - 1];
+      const nextLen = cumulative[src];
+      const span = nextLen - prevLen;
+      const t = span > 1e-14 ? (target - prevLen) / span : 0;
+      const a = points[src - 1];
+      const b = points[src];
+      out.push({
+        x: a.x + (b.x - a.x) * t,
+        y: a.y + (b.y - a.y) * t,
+        z: a.z + (b.z - a.z) * t,
+      });
+    }
+    return out;
   }
 
   /**

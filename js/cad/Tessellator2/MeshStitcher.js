@@ -17,6 +17,25 @@ function vertexKey(v, precision = 10) {
   return `${fmt(v.x)},${fmt(v.y)},${fmt(v.z)}`;
 }
 
+function triangleNormal(vertices) {
+  if (!Array.isArray(vertices) || vertices.length < 3) return null;
+  const a = vertices[0];
+  const b = vertices[1];
+  const c = vertices[2];
+  const abx = b.x - a.x;
+  const aby = b.y - a.y;
+  const abz = b.z - a.z;
+  const acx = c.x - a.x;
+  const acy = c.y - a.y;
+  const acz = c.z - a.z;
+  const nx = aby * acz - abz * acy;
+  const ny = abz * acx - abx * acz;
+  const nz = abx * acy - aby * acx;
+  const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+  if (len < 1e-14) return null;
+  return { x: nx / len, y: ny / len, z: nz / len };
+}
+
 /**
  * MeshStitcher — combines per-face mesh results into a single body mesh.
  *
@@ -66,9 +85,15 @@ export class MeshStitcher {
       const isCorner = !!fm.isCorner;
       for (const face of fm.faces) {
         const dedupedVerts = face.vertices.map(v => dedup(v));
+        const geometricNormal = triangleNormal(dedupedVerts);
+        let normal = face.normal ? { ...face.normal } : geometricNormal;
+        if (geometricNormal && normal) {
+          const dot = normal.x * geometricNormal.x + normal.y * geometricNormal.y + normal.z * geometricNormal.z;
+          if (dot < 0.2) normal = geometricNormal;
+        }
         const out = {
           vertices: dedupedVerts,
-          normal: face.normal ? { ...face.normal } : { x: 0, y: 0, z: 1 },
+          normal: normal || { x: 0, y: 0, z: 1 },
           shared,
         };
         if (Array.isArray(face.vertexNormals) && face.vertexNormals.length === face.vertices.length) {
