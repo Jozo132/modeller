@@ -150,6 +150,9 @@ export function robustTessellateBody(body, opts = {}) {
  * @private
  */
 function _triangulateFace(face, edgeSampler, triangulator, surfSegs, edgeSegs) {
+  const sphereLoopMesh = _tessellateSphereLoopFace(face, edgeSampler, edgeSegs, surfSegs);
+  if (sphereLoopMesh) return sphereLoopMesh;
+
   const singularCapMesh = _tessellateSingularAnalyticCapFace(face, edgeSampler, edgeSegs);
   if (singularCapMesh) return singularCapMesh;
 
@@ -411,6 +414,153 @@ function _tessellateSeamFace(face, edgeSampler, edgeSegs, surfSegs) {
   }
 
   return { vertices: allVerts, faces: allFaces };
+}
+
+function _tessellateSphereLoopFace(face, edgeSampler, edgeSegs, surfSegs) {
+  if (face.surfaceInfo?.type !== 'sphere') return null;
+  if (!face.outerLoop || (face.innerLoops?.length || 0) !== 0) return null;
+
+  const boundary = _collectLoopPoints(face.outerLoop, edgeSampler, edgeSegs);
+  if (boundary.length < 3) return null;
+
+  const surfaceInfo = face.surfaceInfo;
+  if (!surfaceInfo?.origin || !Number.isFinite(surfaceInfo.radius)) return null;
+  const centerDir = _spherePatchCenterDirection(surfaceInfo, boundary, face.sameSense !== false);
+  if (!centerDir) return null;
+
+  const nCols = boundary.length;
+  const ringCount = Math.max(2, Math.ceil(surfSegs / 2));
+  const rows = [];
+  const centerPoint = {
+    x: surfaceInfo.origin.x + centerDir.x * surfaceInfo.radius,
+    y: surfaceInfo.origin.y + centerDir.y * surfaceInfo.radius,
+    z: surfaceInfo.origin.z + centerDir.z * surfaceInfo.radius,
+  };
+
+  for (let ri = 1; ri < ringCount; ri++) {
+    const t = ri / ringCount;
+    rows.push(boundary.map((point) => {
+      const boundaryDir = _spherePointDirection(surfaceInfo, point);
+      const dir = _slerpUnit(centerDir, boundaryDir, t);
+      return {
+        x: surfaceInfo.origin.x + dir.x * surfaceInfo.radius,
+        y: surfaceInfo.origin.y + dir.y * surfaceInfo.radius,
+        z: surfaceInfo.origin.z + dir.z * surfaceInfo.radius,
+      };
+    }));
+  }
+  rows.push(boundary);
+
+  const vertices = [centerPoint, ...rows.flat()];
+  const faces = [];
+  const pushTri = (a, b, c) => {
+    const oriented = _orientTriangleToFace(face, a, b, c);
+    if (_triangleArea3(oriented[0], oriented[1], oriented[2]) < 1e-12) return;
+    faces.push({
+      vertices: oriented,
+      normal: _faceOutwardNormal(face, {
+        x: (oriented[0].x + oriented[1].x + oriented[2].x) / 3,
+        y: (oriented[0].y + oriented[1].y + oriented[2].y) / 3,
+        z: (oriented[0].z + oriented[1].z + oriented[2].z) / 3,
+      }),
+    });
+  };
+
+  const firstRing = rows[0];
+  for (let ci = 0; ci < nCols; ci++) {
+    pushTri(centerPoint, firstRing[ci], firstRing[(ci + 1) % nCols]);
+  }
+
+  for (let ri = 0; ri < rows.length - 1; ri++) {
+    const rowA = rows[ri];
+    const rowB = rows[ri + 1];
+    for (let ci = 0; ci < nCols; ci++) {
+      const ci1 = (ci + 1) % nCols;
+      pushTri(rowA[ci], rowB[ci], rowA[ci1]);
+      pushTri(rowA[ci1], rowB[ci], rowB[ci1]);
+    }
+  }
+
+  return faces.length > 0 ? { vertices, faces } : null;
+}
+
+function _spherePatchCenterDirection(surfaceInfo, boundary, sameSense = true) {
+  const origin = surfaceInfo.origin;
+  let sx = 0, sy = 0, sz = 0;
+  for (const point of boundary) {
+    const dir = _spherePointDirection(surfaceInfo, point);
+    sx += dir.x;
+    sy += dir.y;
+    sz += dir.z;
+  }
+
+  let nx = 0, ny = 0, nz = 0;
+  for (let i = 0; i < boundary.length; i++) {
+    const a = {
+      x: boundary[i].x - origin.x,
+      y: boundary[i].y - origin.y,
+      z: boundary[i].z - origin.z,
+    };
+    const b = {
+      x: boundary[(i + 1) % boundary.length].x - origin.x,
+      y: boundary[(i + 1) % boundary.length].y - origin.y,
+      z: boundary[(i + 1) % boundary.length].z - origin.z,
+    };
+    nx += a.y * b.z - a.z * b.y;
+    ny += a.z * b.x - a.x * b.z;
+    nz += a.x * b.y - a.y * b.x;
+  }
+
+  const nLen = Math.sqrt(nx * nx + ny * ny + nz * nz);
+  if (nLen > 1e-12) {
+    const loopNormal = { x: nx / nLen, y: ny / nLen, z: nz / nLen };
+    return sameSense
+      ? loopNormal
+      : { x: -loopNormal.x, y: -loopNormal.y, z: -loopNormal.z };
+  }
+
+  const len = Math.sqrt(sx * sx + sy * sy + sz * sz);
+  if (len > boundary.length * 1e-5) {
+    return { x: sx / len, y: sy / len, z: sz / len };
+  }
+
+  return null;
+}
+
+function _spherePointDirection(surfaceInfo, point) {
+  return _normalize({
+    x: point.x - surfaceInfo.origin.x,
+    y: point.y - surfaceInfo.origin.y,
+    z: point.z - surfaceInfo.origin.z,
+  });
+}
+
+function _slerpUnit(a, b, t) {
+  const dot = Math.max(-1, Math.min(1, a.x * b.x + a.y * b.y + a.z * b.z));
+  if (dot > 0.9995) {
+    return _normalize({
+      x: a.x + (b.x - a.x) * t,
+      y: a.y + (b.y - a.y) * t,
+      z: a.z + (b.z - a.z) * t,
+    });
+  }
+  if (dot < -0.9995) {
+    return _normalize({
+      x: a.x + (b.x - a.x) * t,
+      y: a.y + (b.y - a.y) * t,
+      z: a.z + (b.z - a.z) * t,
+    });
+  }
+
+  const theta = Math.acos(dot);
+  const sinTheta = Math.sin(theta);
+  const wa = Math.sin((1 - t) * theta) / sinTheta;
+  const wb = Math.sin(t * theta) / sinTheta;
+  return _normalize({
+    x: a.x * wa + b.x * wb,
+    y: a.y * wa + b.y * wb,
+    z: a.z * wa + b.z * wb,
+  });
 }
 
 function _tessellateSelfLoopRingFace(face, edgeSampler, edgeSegs, surfSegs) {

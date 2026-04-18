@@ -546,6 +546,8 @@ function summarizeImportedBody(body) {
       uniqueBoundaryVertices: faceVertices.size,
       hasCircularTrim: selfLoopCoedges > 0,
       outerLoopClosed: !!face.outerLoop?.isClosed?.(),
+      sameSense: face.sameSense !== false,
+      surfaceInfo: face.surfaceInfo || null,
     };
 
     faceDetails.push(detail);
@@ -582,10 +584,138 @@ function triangleArea2(face) {
   return cx * cx + cy * cy + cz * cz;
 }
 
+function triangleNormal(face) {
+  if (!Array.isArray(face.vertices) || face.vertices.length < 3) return null;
+  const a = face.vertices[0];
+  const b = face.vertices[1];
+  const c = face.vertices[2];
+  const abx = b.x - a.x;
+  const aby = b.y - a.y;
+  const abz = b.z - a.z;
+  const acx = c.x - a.x;
+  const acy = c.y - a.y;
+  const acz = c.z - a.z;
+  return normalizeVector({
+    x: aby * acz - abz * acy,
+    y: abz * acx - abx * acz,
+    z: abx * acy - aby * acx,
+  });
+}
+
+function normalizeVector(vector) {
+  const len = Math.sqrt(vector.x * vector.x + vector.y * vector.y + vector.z * vector.z);
+  if (len < 1e-14) return null;
+  return { x: vector.x / len, y: vector.y / len, z: vector.z / len };
+}
+
+function triangleCentroid(face) {
+  if (!Array.isArray(face.vertices) || face.vertices.length < 3) return null;
+  return {
+    x: (face.vertices[0].x + face.vertices[1].x + face.vertices[2].x) / 3,
+    y: (face.vertices[0].y + face.vertices[1].y + face.vertices[2].y) / 3,
+    z: (face.vertices[0].z + face.vertices[1].z + face.vertices[2].z) / 3,
+  };
+}
+
+function analyticNormalAtPoint(surfaceInfo, point, sameSense = true) {
+  if (!surfaceInfo || !point) return null;
+
+  let normal = null;
+  switch (surfaceInfo.type) {
+    case 'plane':
+      normal = surfaceInfo.normal ? normalizeVector({ ...surfaceInfo.normal }) : null;
+      break;
+    case 'cylinder': {
+      if (!surfaceInfo.origin || !surfaceInfo.axis) break;
+      const dx = point.x - surfaceInfo.origin.x;
+      const dy = point.y - surfaceInfo.origin.y;
+      const dz = point.z - surfaceInfo.origin.z;
+      const ax = surfaceInfo.axis.x;
+      const ay = surfaceInfo.axis.y;
+      const az = surfaceInfo.axis.z;
+      const dot = dx * ax + dy * ay + dz * az;
+      normal = normalizeVector({ x: dx - dot * ax, y: dy - dot * ay, z: dz - dot * az });
+      break;
+    }
+    case 'sphere':
+      if (!surfaceInfo.origin) break;
+      normal = normalizeVector({
+        x: point.x - surfaceInfo.origin.x,
+        y: point.y - surfaceInfo.origin.y,
+        z: point.z - surfaceInfo.origin.z,
+      });
+      break;
+    case 'cone': {
+      if (!surfaceInfo.origin || !surfaceInfo.axis) break;
+      const dx = point.x - surfaceInfo.origin.x;
+      const dy = point.y - surfaceInfo.origin.y;
+      const dz = point.z - surfaceInfo.origin.z;
+      const ax = surfaceInfo.axis.x;
+      const ay = surfaceInfo.axis.y;
+      const az = surfaceInfo.axis.z;
+      const axial = dx * ax + dy * ay + dz * az;
+      const rx = dx - axial * ax;
+      const ry = dy - axial * ay;
+      const rz = dz - axial * az;
+      const radialLen = Math.sqrt(rx * rx + ry * ry + rz * rz);
+      if (radialLen < 1e-14) {
+        normal = normalizeVector({ x: ax, y: ay, z: az });
+        break;
+      }
+      const semiAngle = surfaceInfo.semiAngle || 0;
+      const cosA = Math.cos(semiAngle);
+      const sinA = Math.sin(semiAngle);
+      normal = normalizeVector({
+        x: (rx / radialLen) * cosA - ax * sinA,
+        y: (ry / radialLen) * cosA - ay * sinA,
+        z: (rz / radialLen) * cosA - az * sinA,
+      });
+      break;
+    }
+    case 'torus': {
+      if (!surfaceInfo.origin || !surfaceInfo.axis || !Number.isFinite(surfaceInfo.majorR)) break;
+      const dx = point.x - surfaceInfo.origin.x;
+      const dy = point.y - surfaceInfo.origin.y;
+      const dz = point.z - surfaceInfo.origin.z;
+      const ax = surfaceInfo.axis.x;
+      const ay = surfaceInfo.axis.y;
+      const az = surfaceInfo.axis.z;
+      const axial = dx * ax + dy * ay + dz * az;
+      const rx = dx - axial * ax;
+      const ry = dy - axial * ay;
+      const rz = dz - axial * az;
+      const radialLen = Math.sqrt(rx * rx + ry * ry + rz * rz);
+      if (radialLen < 1e-14) {
+        normal = normalizeVector({ x: ax, y: ay, z: az });
+        break;
+      }
+      const cx = surfaceInfo.origin.x + (rx / radialLen) * surfaceInfo.majorR;
+      const cy = surfaceInfo.origin.y + (ry / radialLen) * surfaceInfo.majorR;
+      const cz = surfaceInfo.origin.z + (rz / radialLen) * surfaceInfo.majorR;
+      normal = normalizeVector({ x: point.x - cx, y: point.y - cy, z: point.z - cz });
+      break;
+    }
+    default:
+      return null;
+  }
+
+  if (!normal) return null;
+  return sameSense
+    ? normal
+    : { x: -normal.x, y: -normal.y, z: -normal.z };
+}
+
 function analyzeMesh(mesh, bodySummary) {
   const faceIdsWithTriangles = new Set();
+  const bodyFaceById = new Map((bodySummary.faceDetails || []).map((face) => [face.id, face]));
+  const meshFacesByTopoFace = new Map();
   const edgeMap = new Map();
   let degenerateTriangles = 0;
+  let normalMismatchTriangles = 0;
+  const normalMismatchBreakdown = {};
+  let analyticNormalLowDotTriangles = 0;
+  let minAnalyticNormalDot = Infinity;
+  const analyticNormalLowDotBreakdown = {};
 
   const vertexKey = (v) => `${v.x.toFixed(6)},${v.y.toFixed(6)},${v.z.toFixed(6)}`;
   const edgeKey = (a, b) => {
@@ -595,8 +725,47 @@ function analyzeMesh(mesh, bodySummary) {
   };
 
   for (const face of mesh.faces) {
-    if (typeof face.topoFaceId === 'number') faceIdsWithTriangles.add(face.topoFaceId);
+    let bodyFace = null;
+    if (typeof face.topoFaceId === 'number') {
+      faceIdsWithTriangles.add(face.topoFaceId);
+      bodyFace = bodyFaceById.get(face.topoFaceId) || null;
+    }
     if (triangleArea2(face) < 1e-20) degenerateTriangles++;
+
+    if (bodyFace) {
+      if (!meshFacesByTopoFace.has(bodyFace.id)) meshFacesByTopoFace.set(bodyFace.id, []);
+      meshFacesByTopoFace.get(bodyFace.id).push({ face, surfaceType: bodyFace.surfaceType });
+    }
+
+    const geometricNormal = triangleNormal(face);
+    const storedNormal = face.normal ? normalizeVector(face.normal) : null;
+    if (geometricNormal && storedNormal) {
+      const dot = geometricNormal.x * storedNormal.x +
+        geometricNormal.y * storedNormal.y +
+        geometricNormal.z * storedNormal.z;
+      if (dot < 0.2) {
+        normalMismatchTriangles++;
+        incrementBreakdown(normalMismatchBreakdown, bodyFace?.surfaceType || 'unknown');
+      }
+    }
+
+    if (bodyFace?.surfaceInfo) {
+      const verts = face.vertices || [];
+      if (geometricNormal && verts.length >= 3) {
+        const centroid = triangleCentroid(face);
+        const analyticNormal = analyticNormalAtPoint(bodyFace.surfaceInfo, centroid, bodyFace.sameSense);
+        if (analyticNormal) {
+          const dot = geometricNormal.x * analyticNormal.x +
+            geometricNormal.y * analyticNormal.y +
+            geometricNormal.z * analyticNormal.z;
+          minAnalyticNormalDot = Math.min(minAnalyticNormalDot, dot);
+          if (dot < 0.2) {
+            analyticNormalLowDotTriangles++;
+            incrementBreakdown(analyticNormalLowDotBreakdown, bodyFace.surfaceType);
+          }
+        }
+      }
+    }
 
     const verts = face.vertices || [];
     for (let i = 0; i < verts.length; i++) {
@@ -604,6 +773,8 @@ function analyzeMesh(mesh, bodySummary) {
       edgeMap.set(key, (edgeMap.get(key) || 0) + 1);
     }
   }
+
+  const sameFaceSelfIntersections = detectSameFaceSelfIntersections(meshFacesByTopoFace);
 
   let boundaryEdges = 0;
   let nonManifoldEdges = 0;
@@ -633,12 +804,151 @@ function analyzeMesh(mesh, bodySummary) {
     boundaryEdges,
     nonManifoldEdges,
     degenerateTriangles,
+    normalMismatchTriangles,
+    normalMismatchBreakdown,
+    analyticNormalLowDotTriangles,
+    minAnalyticNormalDot: Number.isFinite(minAnalyticNormalDot) ? minAnalyticNormalDot : null,
+    analyticNormalLowDotBreakdown,
+    selfIntersectionPairs: sameFaceSelfIntersections.count,
+    selfIntersectionBreakdown: sameFaceSelfIntersections.breakdown,
+    selfIntersectionExamples: sameFaceSelfIntersections.examples,
     missingFaces,
     missingSurfaceBreakdown,
     missingWithInnerLoops,
     missingWithSingleCoedgeOuterLoop,
     missingWithSelfLoopCoedges,
   };
+}
+
+function detectSameFaceSelfIntersections(meshFacesByTopoFace) {
+  const breakdown = {};
+  const examples = [];
+  let count = 0;
+
+  for (const [topoFaceId, entries] of meshFacesByTopoFace) {
+    if (!entries || entries.length < 2) continue;
+
+    const triangles = entries
+      .map((entry, localIndex) => {
+        const vertices = entry.face.vertices || [];
+        if (vertices.length !== 3) return null;
+        return {
+          localIndex,
+          surfaceType: entry.surfaceType || 'unknown',
+          vertices,
+          bbox: triangleBBox(vertices),
+        };
+      })
+      .filter(Boolean);
+
+    for (let i = 0; i < triangles.length; i++) {
+      for (let j = i + 1; j < triangles.length; j++) {
+        const a = triangles[i];
+        const b = triangles[j];
+        if (trianglesShareVertex(a.vertices, b.vertices)) continue;
+        if (!bboxOverlap(a.bbox, b.bbox, 1e-9)) continue;
+        if (!trianglesIntersect3D(a.vertices, b.vertices)) continue;
+
+        count++;
+        incrementBreakdown(breakdown, a.surfaceType);
+        if (examples.length < 5) {
+          examples.push({
+            topoFaceId,
+            surfaceType: a.surfaceType,
+            triangles: [a.localIndex, b.localIndex],
+          });
+        }
+      }
+    }
+  }
+
+  return { count, breakdown, examples };
+}
+
+function triangleBBox(vertices) {
+  return {
+    minX: Math.min(vertices[0].x, vertices[1].x, vertices[2].x),
+    minY: Math.min(vertices[0].y, vertices[1].y, vertices[2].y),
+    minZ: Math.min(vertices[0].z, vertices[1].z, vertices[2].z),
+    maxX: Math.max(vertices[0].x, vertices[1].x, vertices[2].x),
+    maxY: Math.max(vertices[0].y, vertices[1].y, vertices[2].y),
+    maxZ: Math.max(vertices[0].z, vertices[1].z, vertices[2].z),
+  };
+}
+
+function bboxOverlap(a, b, eps = 0) {
+  return a.minX <= b.maxX + eps && a.maxX + eps >= b.minX &&
+    a.minY <= b.maxY + eps && a.maxY + eps >= b.minY &&
+    a.minZ <= b.maxZ + eps && a.maxZ + eps >= b.minZ;
+}
+
+function trianglesShareVertex(a, b, eps = 1e-8) {
+  for (const pa of a) {
+    for (const pb of b) {
+      if (
+        Math.abs(pa.x - pb.x) <= eps &&
+        Math.abs(pa.y - pb.y) <= eps &&
+        Math.abs(pa.z - pb.z) <= eps
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function trianglesIntersect3D(a, b) {
+  for (const [lhs, rhs] of [[a, b], [b, a]]) {
+    for (let i = 0; i < 3; i++) {
+      if (segmentTriangleIntersect(lhs[i], lhs[(i + 1) % 3], rhs[0], rhs[1], rhs[2])) return true;
+    }
+  }
+  return false;
+}
+
+function segmentTriangleIntersect(p0, p1, v0, v1, v2) {
+  const dir = {
+    x: p1.x - p0.x,
+    y: p1.y - p0.y,
+    z: p1.z - p0.z,
+  };
+  const e1 = {
+    x: v1.x - v0.x,
+    y: v1.y - v0.y,
+    z: v1.z - v0.z,
+  };
+  const e2 = {
+    x: v2.x - v0.x,
+    y: v2.y - v0.y,
+    z: v2.z - v0.z,
+  };
+  const h = {
+    x: dir.y * e2.z - dir.z * e2.y,
+    y: dir.z * e2.x - dir.x * e2.z,
+    z: dir.x * e2.y - dir.y * e2.x,
+  };
+  const a = e1.x * h.x + e1.y * h.y + e1.z * h.z;
+  if (Math.abs(a) < 1e-10) return false;
+
+  const f = 1 / a;
+  const s = {
+    x: p0.x - v0.x,
+    y: p0.y - v0.y,
+    z: p0.z - v0.z,
+  };
+  const u = f * (s.x * h.x + s.y * h.y + s.z * h.z);
+  if (u < 1e-8 || u > 1 - 1e-8) return false;
+
+  const q = {
+    x: s.y * e1.z - s.z * e1.y,
+    y: s.z * e1.x - s.x * e1.z,
+    z: s.x * e1.y - s.y * e1.x,
+  };
+  const v = f * (dir.x * q.x + dir.y * q.y + dir.z * q.z);
+  if (v < 1e-8 || u + v > 1 - 1e-8) return false;
+
+  const t = f * (e2.x * q.x + e2.y * q.y + e2.z * q.z);
+  return t > 1e-8 && t < 1 - 1e-8;
 }
 
 function normalizeValidationMessage(message) {
@@ -733,8 +1043,19 @@ function analyzeReport(report) {
   if (mesh.nonManifoldEdges > 0) {
     failures.push(`tessellated mesh has ${mesh.nonManifoldEdges} non-manifold edge(s)`);
   }
+  if (mesh.selfIntersectionPairs > 0) {
+    failures.push(`tessellated mesh has ${mesh.selfIntersectionPairs} same-face self-intersection pair(s)`);
+  }
+  if (mesh.normalMismatchTriangles > 0) {
+    failures.push(`tessellated mesh has ${mesh.normalMismatchTriangles} triangle normal/winding mismatch(es)`);
+  }
+  if (mesh.analyticNormalLowDotTriangles > 0) {
+    failures.push(
+      `tessellated mesh has ${mesh.analyticNormalLowDotTriangles} triangle(s) nearly tangent/inverted relative to their analytic support surface`,
+    );
+  }
   if (mesh.degenerateTriangles > 0) {
-    warnings.push(`tessellated mesh has ${mesh.degenerateTriangles} degenerate triangle(s)`);
+    failures.push(`tessellated mesh has ${mesh.degenerateTriangles} degenerate triangle(s)`);
   }
 
   const duplicateEdgeErrors = validation.errors.filter((message) => message.includes('coincident duplicates')).length;
@@ -783,6 +1104,15 @@ function analyzeReport(report) {
       notes.push(`${ordinaryMissingFaces} dropped faces are ordinary multi-edge faces, so the problem is not limited to seam-loop special cases.`);
     }
   }
+  if (mesh.analyticNormalLowDotTriangles > 0) {
+    notes.push(`Analytic normal failures by surface: ${formatBreakdown(mesh.analyticNormalLowDotBreakdown)}.`);
+  }
+  if (mesh.normalMismatchTriangles > 0) {
+    notes.push(`Stored normal/winding mismatches by surface: ${formatBreakdown(mesh.normalMismatchBreakdown)}.`);
+  }
+  if (mesh.selfIntersectionPairs > 0) {
+    notes.push(`Same-face self-intersections by surface: ${formatBreakdown(mesh.selfIntersectionBreakdown)}.`);
+  }
   if (shortOuterLoopWarnings > 0) {
     notes.push(`${shortOuterLoopWarnings} face(s) have fewer than 3 outer coedges after import, which should not happen for valid trimmed faces.`);
   }
@@ -806,7 +1136,8 @@ function formatTopologySummary(summary) {
 function formatMeshSummary(mesh, body) {
   return `${mesh.triangleCount} triangle(s), ${mesh.displayVertexCount} display verts, ` +
     `${mesh.faceGroupCount}/${body.faceCount} face groups, ` +
-    `${mesh.boundaryEdges} boundary edge(s), ${mesh.nonManifoldEdges} non-manifold edge(s)`;
+    `${mesh.boundaryEdges} boundary edge(s), ${mesh.nonManifoldEdges} non-manifold edge(s), ` +
+    `${mesh.normalMismatchTriangles} normal mismatch(es), ${mesh.selfIntersectionPairs} self-intersection(s)`;
 }
 
 function buildFacePairs(report) {
@@ -871,6 +1202,43 @@ function circleFaceScore(pair) {
   );
 }
 
+function meshValidityScore(report) {
+  if (report.error || !report.body || !report.mesh) return 0;
+
+  const faceCount = Math.max(1, report.body.faceCount);
+  const triCount = Math.max(1, report.mesh.triangleCount);
+  const validationErrorLoad = report.validation.errors.length / faceCount;
+  const validationWarningLoad = report.validation.warnings.length / (faceCount * 4);
+  const boundaryLoad = report.mesh.boundaryEdges / faceCount;
+  const nonManifoldLoad = report.mesh.nonManifoldEdges / faceCount;
+  const selfIntersectionLoad = report.mesh.selfIntersectionPairs / faceCount;
+  const degenerateLoad = report.mesh.degenerateTriangles / triCount;
+  const normalLoad = (
+    report.mesh.normalMismatchTriangles +
+    report.mesh.analyticNormalLowDotTriangles
+  ) / triCount;
+
+  const score = averageScore([
+    1 / (1 + validationErrorLoad * 2),
+    1 / (1 + validationWarningLoad),
+    1 / (1 + boundaryLoad * 2),
+    1 / (1 + nonManifoldLoad * 3),
+    1 / (1 + selfIntersectionLoad * 4),
+    1 / (1 + degenerateLoad * 50),
+    1 / (1 + normalLoad * 50),
+  ]) ?? 0;
+
+  const hasInvalidGeometry = report.validation.errors.length > 0 ||
+    report.mesh.boundaryEdges > 0 ||
+    report.mesh.nonManifoldEdges > 0 ||
+    report.mesh.selfIntersectionPairs > 0 ||
+    report.mesh.degenerateTriangles > 0 ||
+    report.mesh.normalMismatchTriangles > 0 ||
+    report.mesh.analyticNormalLowDotTriangles > 0;
+
+  return hasInvalidGeometry ? Math.min(score, 0.995) : score;
+}
+
 function meshHealthScore(report) {
   if (report.error || !report.body || !report.mesh) return 0;
 
@@ -880,13 +1248,15 @@ function meshHealthScore(report) {
   const boundaryLoadByFace = report.mesh.boundaryEdges / faceCount;
   const nonManifoldLoadByFace = report.mesh.nonManifoldEdges / faceCount;
 
-  return averageScore([
+  const health = averageScore([
     ratioScore(report.body.faceCount, report.mesh.faceGroupCount),
     1 / (1 + boundaryLoadByFace * boundaryLoadByFace),
     1 / (1 + nonManifoldLoadByFace * nonManifoldLoadByFace),
     1 / (1 + warningLoad / faceCount),
     1 / (1 + (report.mesh.boundaryEdges / vertexCount) * (report.mesh.boundaryEdges / vertexCount)),
   ]) ?? 0;
+
+  return health * meshValidityScore(report);
 }
 
 function surfaceHealthFactor(report) {
@@ -903,7 +1273,7 @@ function surfaceHealthFactor(report) {
     1 / (1 + nonManifoldLoad),
   ]) ?? 0;
 
-  return 0.4 + health * 0.6;
+  return (0.4 + health * 0.6) * meshValidityScore(report);
 }
 
 function surfaceScore(facePairs, surfaceType, report) {
@@ -922,7 +1292,11 @@ function computeScorecard(report) {
       planes: 0,
       cylinders: 0,
       cones: 0,
+      spheres: 0,
+      tori: 0,
+      bsplines: 0,
       faces: 0,
+      geometry: 0,
       holesExact: 0,
       innerLoops: 0,
       vertices: 0,
@@ -933,6 +1307,7 @@ function computeScorecard(report) {
 
   const facePairs = buildFacePairs(report);
   const faces = meshHealthScore(report);
+  const geometry = meshValidityScore(report);
   const holedPairs = facePairs.filter((pair) => effectiveSourceInnerLoops(pair.source) > 0);
   const holesExact = averageScore(holedPairs.map((pair) =>
     pair.imported && effectiveSourceInnerLoops(pair.source) === pair.imported.innerLoops ? 1 : 0,
@@ -961,7 +1336,11 @@ function computeScorecard(report) {
     planes: surfaceScore(facePairs, 'plane', report),
     cylinders: surfaceScore(facePairs, 'cylinder', report),
     cones: surfaceScore(facePairs, 'cone', report),
+    spheres: surfaceScore(facePairs, 'sphere', report),
+    tori: surfaceScore(facePairs, 'torus', report),
+    bsplines: surfaceScore(facePairs, 'bspline', report),
     faces,
+    geometry,
     holesExact,
     innerLoops,
     vertices,
@@ -988,7 +1367,11 @@ function buildScoreTableString(reports) {
     { key: 'planes', title: 'Planes', align: 'right' },
     { key: 'cylinders', title: 'Cylinders', align: 'right' },
     { key: 'cones', title: 'Cones', align: 'right' },
+    { key: 'spheres', title: 'Spheres', align: 'right' },
+    { key: 'tori', title: 'Tori', align: 'right' },
+    { key: 'bsplines', title: 'BSplines', align: 'right' },
     { key: 'faces', title: 'Faces', align: 'right' },
+    { key: 'geometry', title: 'Geometry', align: 'right' },
     { key: 'holesExact', title: 'HolesExact', align: 'right' },
     { key: 'innerLoops', title: 'InnerLoops', align: 'right' },
     { key: 'vertices', title: 'Vertices', align: 'right' },
@@ -1074,6 +1457,8 @@ function buildScorecardMarkdown({
     '',
     'Scoring notes:',
     '- `Faces` blends B-Rep validator health with tessellated face coverage and watertightness symptoms.',
+    '- `Geometry` penalizes invalid B-Rep/tessellation output: validator errors, open or non-manifold mesh edges, degenerate triangles, flipped/unsupported analytic normals, and same-face self-intersections.',
+    '- Surface columns score source-vs-imported B-Rep fidelity and tessellated coverage for each support surface type present in the corpus.',
     '- `HolesExact` measures exact effective hole-count preservation; STEP faces without `FACE_OUTER_BOUND` first infer one outer loop.',
     '- `Circles` tracks self-loop circular trims, which are currently a major STEP import/tessellation stress case.',
   ];
@@ -1107,6 +1492,10 @@ function severityScore(report) {
     report.analysis.failures.length * 100000 +
     report.validation.errors.length * 1000 +
     report.mesh.missingFaces.length * 100 +
+    report.mesh.selfIntersectionPairs * 10 +
+    report.mesh.normalMismatchTriangles +
+    report.mesh.analyticNormalLowDotTriangles +
+    report.mesh.degenerateTriangles +
     report.mesh.boundaryEdges +
     report.mesh.nonManifoldEdges
   );
@@ -1258,7 +1647,8 @@ async function main() {
 
   console.log('\n=== Scorecard ===');
   printScoreTable(reports);
-  console.log('Scores combine source-vs-imported B-Rep fidelity with tessellated face coverage.');
+  console.log('Scores combine source-vs-imported B-Rep fidelity with tessellated face coverage and geometry validity.');
+  console.log('`Geometry` penalizes open/non-manifold edges, degenerate triangles, normal failures, self-intersections, and B-Rep validation errors.');
   console.log('`HolesExact` checks effective B-Rep hole counts; `Circles` tracks self-loop circular trims.');
 
   const worstReports = buildWorstFailures(reports);
