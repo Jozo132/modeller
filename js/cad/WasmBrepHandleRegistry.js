@@ -381,6 +381,129 @@ export class WasmBrepHandleRegistry {
     getGpuSurfaceCount() {
         return _wasm.getGpuSurfaceCount();
     }
+
+    // ────────────────────── native transforms ──────────────────────
+
+    /**
+     * Load a 4×4 column-major matrix into the kernel's outMat buffer.
+     * @param {Float64Array|number[]} mat16 — 16-element column-major matrix
+     */
+    loadTransformMatrix(mat16) {
+        // Write to the outMat buffer via individual element setters.
+        // The kernel's outMat is at a fixed pointer — we write directly.
+        const ptr = _wasm.getTransformOutMatPtr();
+        const view = new Float64Array(_wasmMem.buffer, ptr, 16);
+        for (let i = 0; i < 16; i++) view[i] = mat16[i];
+    }
+
+    /**
+     * Build a translation matrix in the kernel's outMat buffer.
+     * @param {number} tx
+     * @param {number} ty
+     * @param {number} tz
+     */
+    setTranslation(tx, ty, tz) {
+        _wasm.transformTranslation(tx, ty, tz);
+    }
+
+    /**
+     * Build a scale matrix in the kernel's outMat buffer.
+     * @param {number} sx
+     * @param {number} sy
+     * @param {number} sz
+     */
+    setScale(sx, sy, sz) {
+        _wasm.transformScale(sx, sy, sz);
+    }
+
+    /**
+     * Build a rotation matrix in the kernel's outMat buffer (Rodrigues).
+     * @param {number} ax — axis X component
+     * @param {number} ay — axis Y component
+     * @param {number} az — axis Z component
+     * @param {number} angle — angle in radians
+     */
+    setRotation(ax, ay, az, angle) {
+        _wasm.transformRotation(ax, ay, az, angle);
+    }
+
+    /**
+     * Set outMat to identity.
+     */
+    setIdentity() {
+        _wasm.transformIdentity();
+    }
+
+    /**
+     * Transform a point using the current outMat.
+     * @param {number} px
+     * @param {number} py
+     * @param {number} pz
+     * @returns {{ x: number, y: number, z: number }}
+     */
+    transformPoint(px, py, pz) {
+        _wasm.transformPointByOutMat(px, py, pz);
+        const ptr = _wasm.getTransformOutPtPtr();
+        const view = new Float64Array(_wasmMem.buffer, ptr, 3);
+        return { x: view[0], y: view[1], z: view[2] };
+    }
+
+    /**
+     * Transform a direction using the current outMat (ignores translation).
+     * @param {number} dx
+     * @param {number} dy
+     * @param {number} dz
+     * @returns {{ x: number, y: number, z: number }}
+     */
+    transformDirection(dx, dy, dz) {
+        _wasm.transformDirectionByOutMat(dx, dy, dz);
+        const ptr = _wasm.getTransformOutPtPtr();
+        const view = new Float64Array(_wasmMem.buffer, ptr, 3);
+        return { x: view[0], y: view[1], z: view[2] };
+    }
+
+    /**
+     * Transform all vertex coordinates in the current body by the outMat.
+     * Operates in-place on WASM-side vertex data. Call after bodyBegin/bodyEnd.
+     */
+    transformAllVertices() {
+        const count = _wasm.vertexGetCount();
+        const ptr = _wasm.getVertexCoordsPtr();
+        const coords = new Float64Array(_wasmMem.buffer, ptr, count * 3);
+        for (let i = 0; i < count; i++) {
+            _wasm.transformPointByOutMat(coords[i * 3], coords[i * 3 + 1], coords[i * 3 + 2]);
+            const outPtr = _wasm.getTransformOutPtPtr();
+            const out = new Float64Array(_wasmMem.buffer, outPtr, 3);
+            coords[i * 3]     = out[0];
+            coords[i * 3 + 1] = out[1];
+            coords[i * 3 + 2] = out[2];
+        }
+    }
+
+    // ────────────────────── STEP export from handle ──────────────────────
+
+    /**
+     * Export the current WASM kernel topology as a STEP AP214 string.
+     *
+     * Flow: dehydrate → CBREP → readCbrep (IR reader) → TopoBody → exportSTEP.
+     * This allows bodies modified in WASM (e.g. transformed) to be exported
+     * without requiring the original JS TopoBody.
+     *
+     * @param {Object} [options]
+     * @param {string} [options.filename]
+     * @param {string} [options.author]
+     * @returns {Promise<string|null>} STEP string, or null if dehydration failed
+     */
+    async exportStep(options = {}) {
+        const cbrep = this.dehydrate();
+        if (!cbrep) return null;
+
+        const { readCbrep } = await import('../../packages/ir/reader.js');
+        const { exportSTEP } = await import('./StepExport.js');
+
+        const body = readCbrep(cbrep.buffer);
+        return exportSTEP(body, options);
+    }
 }
 
 export default WasmBrepHandleRegistry;

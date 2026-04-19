@@ -25,6 +25,72 @@ export class FeatureTree {
     // Recalculation state
     this.isRecalculating = false;
     this.needsRecalculation = false;
+
+    // Monotonic revision counter — bumped every time a solid result is produced.
+    // Each solid result gets stamped with the current value as exactBodyRevisionId.
+    this._revisionCounter = 0;
+
+    // Optional WASM B-Rep handle registry. Set via setHandleRegistry().
+    // When present, solid results get a wasmHandleId allocated on production
+    // and released on replacement/removal.
+    this._handleRegistry = null;
+  }
+
+  // -----------------------------------------------------------------------
+  // WASM B-Rep handle registry integration
+  // -----------------------------------------------------------------------
+
+  /**
+   * Attach a WasmBrepHandleRegistry for automatic handle lifecycle management.
+   * When set, solid results are stamped with exactBodyRevisionId and optionally
+   * allocated a wasmHandleId that is released when the result is replaced.
+   * @param {import('./WasmBrepHandleRegistry.js').WasmBrepHandleRegistry|null} registry
+   */
+  setHandleRegistry(registry) {
+    this._handleRegistry = registry;
+  }
+
+  /**
+   * Stamp a solid result with revision metadata and (optionally) allocate a
+   * WASM handle. Called internally after each successful feature execution.
+   * @param {string} featureId
+   * @param {Object} result
+   */
+  _stampSolidResult(featureId, result) {
+    if (!result || result.type !== 'solid') return;
+
+    // Assign a monotonic revision id
+    this._revisionCounter++;
+    result.exactBodyRevisionId = this._revisionCounter;
+
+    // Propagate irHash from the feature instance if available
+    const feature = this.featureMap.get(featureId);
+    if (feature && feature._irHash) {
+      result.irHash = feature._irHash;
+    }
+
+    // Allocate a WASM handle if a registry is attached
+    if (this._handleRegistry && this._handleRegistry.ready) {
+      const reg = this._handleRegistry;
+      const handle = reg.alloc();
+      if (handle !== 0) {
+        result.wasmHandleId = handle;
+        reg.setResidency(handle, reg.UNMATERIALIZED);
+        reg.setFeatureId(handle, this._revisionCounter);
+        reg.bumpRevision(handle);
+      }
+    }
+  }
+
+  /**
+   * Release the WASM handle associated with an old result being replaced.
+   * @param {Object} oldResult
+   */
+  _releaseResultHandle(oldResult) {
+    if (!oldResult || !oldResult.wasmHandleId) return;
+    if (!this._handleRegistry || !this._handleRegistry.ready) return;
+    this._handleRegistry.release(oldResult.wasmHandleId);
+    oldResult.wasmHandleId = 0;
   }
 
   // -----------------------------------------------------------------------
@@ -87,6 +153,7 @@ export class FeatureTree {
     }
     
     this.featureMap.delete(featureId);
+    this._releaseResultHandle(this.results[featureId]);
     delete this.results[featureId];
     
     return true;
@@ -257,6 +324,10 @@ export class FeatureTree {
    * @returns {Object} Execution results
    */
   executeAll() {
+    // Release all existing handles before clearing results
+    for (const fid of Object.keys(this.results)) {
+      this._releaseResultHandle(this.results[fid]);
+    }
     this.results = {};
     
     for (const feature of this.features) {
@@ -277,6 +348,7 @@ export class FeatureTree {
         const result = feature.execute(context);
         feature.result = result;
         feature.error = null;
+        this._stampSolidResult(feature.id, result);
         this.results[feature.id] = result;
       } catch (error) {
         feature.error = error.message;
@@ -313,6 +385,7 @@ export class FeatureTree {
       const feature = this.features[i];
       
       if (feature.suppressed) {
+        this._releaseResultHandle(this.results[feature.id]);
         this.results[feature.id] = { suppressed: true };
         continue;
       }
@@ -322,16 +395,21 @@ export class FeatureTree {
         
         if (!feature.canExecute(context)) {
           feature.error = 'Dependencies not satisfied';
+          this._releaseResultHandle(this.results[feature.id]);
           this.results[feature.id] = { error: feature.error };
           continue;
         }
         
+        const oldResult = this.results[feature.id];
         const result = feature.execute(context);
         feature.result = result;
         feature.error = null;
+        this._releaseResultHandle(oldResult);
+        this._stampSolidResult(feature.id, result);
         this.results[feature.id] = result;
       } catch (error) {
         feature.error = error.message;
+        this._releaseResultHandle(this.results[feature.id]);
         this.results[feature.id] = { error: error.message };
         console.error(`Error executing feature ${feature.name}:`, error);
       }
@@ -368,6 +446,10 @@ export class FeatureTree {
    * Clear all features from the tree.
    */
   clear() {
+    // Release all WASM handles
+    for (const fid of Object.keys(this.results)) {
+      this._releaseResultHandle(this.results[fid]);
+    }
     this.features = [];
     this.featureMap.clear();
     this.results = {};

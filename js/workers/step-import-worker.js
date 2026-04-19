@@ -51,39 +51,56 @@ function packVertices(faces) {
 
 /**
  * Attempt to write CBREP IR to IndexedDB cache (fire-and-forget).
+ * Returns { hash, cbrep } on success (before store), null on failure.
  * @param {Object} body
+ * @param {boolean} writeToIdb - whether to persist to IndexedDB
+ * @returns {Promise<{hash: string, cbrep: ArrayBuffer}|null>}
  */
-async function cacheToIdb(body) {
+async function produceCbrep(body, writeToIdb) {
   try {
     const { canonicalize } = await import('../../packages/ir/canonicalize.js');
     const { writeCbrep } = await import('../../packages/ir/writer.js');
     const { hashCbrep } = await import('../../packages/ir/hash.js');
-    const { BrowserIdbCacheStore } = await import('../../packages/cache/BrowserIdbCacheStore.js');
 
     const canon = canonicalize(body);
     const buf = writeCbrep(canon);
     const hash = hashCbrep(buf);
 
-    const store = new BrowserIdbCacheStore();
-    const exists = await store.has(hash);
-    if (!exists) {
-      await store.put(hash, buf);
-      telemetry.recordCacheMiss();
-    } else {
-      telemetry.recordCacheHit();
+    if (writeToIdb) {
+      try {
+        const { BrowserIdbCacheStore } = await import('../../packages/cache/BrowserIdbCacheStore.js');
+        const store = new BrowserIdbCacheStore();
+        const exists = await store.has(hash);
+        if (!exists) {
+          await store.put(hash, buf);
+          telemetry.recordCacheMiss();
+        } else {
+          telemetry.recordCacheHit();
+        }
+      } catch {
+        warnOnceForFallback({
+          id: 'cache:ir-recompute',
+          policy: 'allow-fallback',
+          reason: 'IR cache write to IndexedDB failed; import proceeds without caching',
+          kind: 'degraded-result',
+        });
+      }
     }
+
+    return { hash, cbrep: buf };
   } catch {
-    // Cache write must never break the import path
+    // CBREP production must never break the import path
     warnOnceForFallback({
       id: 'cache:ir-recompute',
       policy: 'allow-fallback',
-      reason: 'IR cache write to IndexedDB failed; import proceeds without caching',
+      reason: 'CBREP production failed; import proceeds without CBREP',
       kind: 'degraded-result',
     });
+    return null;
   }
 }
 
-self.onmessage = function (e) {
+self.onmessage = async function (e) {
   const { stepData, curveSegments = 16, cacheMode, _dispatchId } = e.data;
 
   try {
@@ -94,31 +111,45 @@ self.onmessage = function (e) {
 
     const duration = telemetry.endTimer('import');
 
-    // Fire-and-forget: cache the IR to IndexedDB when requested or when
-    // the IR cache flag is enabled.  Explicit cacheMode takes precedence;
-    // if omitted, the flag decides the default storage mode.
+    // Determine effective cache mode
     const effectiveCacheMode = cacheMode ?? (getFlag('CAD_USE_IR_CACHE') ? 'idb' : undefined);
-    if (effectiveCacheMode === 'idb' && result.body) {
-      cacheToIdb(result.body);
+
+    // Produce deterministic CBREP for the body.
+    // When effectiveCacheMode === 'idb', also persist to IndexedDB.
+    // Otherwise, produce the CBREP anyway so the main thread can hydrate.
+    let irHash = null;
+    let cbrepBuffer = null;
+    if (result.body) {
+      const cbrepResult = await produceCbrep(result.body, effectiveCacheMode === 'idb');
+      if (cbrepResult) {
+        irHash = cbrepResult.hash;
+        cbrepBuffer = cbrepResult.cbrep;
+      }
     }
 
     // Pack vertex data into a flat buffer for zero-copy transfer
     const packedVertices = packVertices(result.faces || []);
 
+    // Build transfer list — zero-copy for packed vertices and CBREP buffer
+    const transferables = [packedVertices.buffer];
+    if (cbrepBuffer) transferables.push(cbrepBuffer);
+
     // Post result back — the body (TopoBody) contains complex objects
     // that cannot be transferred, so we send it as a structured clone.
-    // The packed vertex buffer IS transferred (zero-copy).
+    // The packed vertex buffer and CBREP buffer ARE transferred (zero-copy).
     self.postMessage(
       {
         type: 'result',
         packedVertices,
         faces: result.faces,
         body: result.body,
+        irHash,
+        cbrepBuffer,
         timings: result.timings,
         duration,
         _dispatchId,
       },
-      [packedVertices.buffer],
+      transferables,
     );
   } catch (err) {
     self.postMessage({

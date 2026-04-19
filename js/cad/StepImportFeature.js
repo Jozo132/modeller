@@ -162,6 +162,7 @@ export class StepImportFeature extends Feature {
       body,
       volume: this._cachedMesh.volume,
       boundingBox: this._cachedMesh.boundingBox,
+      irHash: this._irHash || null,
       timings,
     };
   }
@@ -199,6 +200,11 @@ export class StepImportFeature extends Feature {
       );
       this._irHash = hash;
       this._irBytes = buf;
+
+      // Propagate irHash to the cached result if one exists
+      if (this.result && this.result.type === 'solid') {
+        this.result.irHash = hash;
+      }
 
       const mode = getFlag('CAD_IR_CACHE_MODE');
       if (mode === 'fs') {

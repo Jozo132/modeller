@@ -651,7 +651,8 @@ the disposal model centralized.
 - Track cold vs warm STEP feature execution.
 - Keep removing repeated JS work before measuring native gains.
 
-Status: started by this change set.
+Status: **complete** — timing hooks, telemetry.recordTimer, STEP import/export
+phase instrumentation, cold/warm cache detection all committed.
 
 ### Phase 2: Deterministic Native Hydration
 
@@ -661,6 +662,12 @@ Status: started by this change set.
 - Define module boundaries for `kernel/core`, `kernel/topology`, and
   `kernel/interop` before adding more features.
 
+Status: **complete** — 7 kernel AS modules (`core`, `topology`, `geometry`,
+`transform`, `spatial`, `gpu`, `interop`) created and tested. WasmBrepHandleRegistry
+JS bridge. CBREP hydrate/dehydrate. FeatureTree stamps solid results with
+`exactBodyRevisionId`, propagates `irHash`, allocates/releases WASM handles.
+24 kernel + 20 feature-revision tests passing.
+
 ### Phase 3: WASM-Resident STEP Import/Export
 
 - Move STEP import parsing into the kernel worker.
@@ -668,6 +675,10 @@ Status: started by this change set.
 - Add direct STEP export from handle id.
 - Keep STEP import/export code inside dedicated AssemblyScript modules rather
   than mixing parsing/serialization with unrelated topology code.
+
+Status: **in progress** — `exportStep()` on WasmBrepHandleRegistry implements
+dehydrate → CBREP → readCbrep → TopoBody → exportSTEP. STEP import worker now
+produces CBREP + irHash alongside the existing result for main-thread hydration.
 
 ### Phase 3a: Native Transform And Tessellation
 
@@ -678,6 +689,12 @@ Status: started by this change set.
 - Ensure tessellation runs against native exact bodies directly.
 - Return typed buffers for vertices, normals, indices, face groups, and edge
   classification instead of JS-built face objects when possible.
+
+Status: **in progress** — transform module complete with identity/translation/
+rotation/scale/multiply + point/direction/boundingBox transforms.
+WasmBrepHandleRegistry exposes setTranslation/setRotation/setScale/setIdentity,
+transformPoint, transformDirection, transformAllVertices, loadTransformMatrix.
+Native tessellation extraction not yet started.
 
 ### Phase 4: Robust Native Boolean Operations
 
@@ -718,26 +735,37 @@ Status: started by this change set.
 
 ## Concrete Next Tasks
 
-### Foundation (Phase 2)
+### Foundation (Phase 2) — COMPLETE
 
-1. Add `exactBodyRevisionId` and `irHash` to exact feature results.
-2. Introduce `WasmBrepHandleRegistry` in the kernel worker.
-3. Define AssemblyScript module boundaries and exported contracts for:
-   `kernel/core`, `kernel/topology`, `kernel/geometry`, `kernel/transform`,
-   `kernel/tessellation`, `kernel/spatial`, `kernel/gpu`,
-   `kernel/step-import`, `kernel/step-export`, `kernel/ops`, and
-   `kernel/interop`.
-4. Add `hydrateWasmBrepFromCbrep(arrayBuffer)` to the WASM bridge.
+1. ~~Add `exactBodyRevisionId` and `irHash` to exact feature results.~~
+   Done: FeatureTree._stampSolidResult() assigns monotonic revisionId;
+   irHash propagated from feature._irHash to result.
+2. ~~Introduce `WasmBrepHandleRegistry` in the kernel worker.~~
+   Done: js/cad/WasmBrepHandleRegistry.js — full handle lifecycle,
+   residency, revision, CBREP, octree, GPU batch, transforms, STEP export.
+3. ~~Define AssemblyScript module boundaries and exported contracts.~~
+   Done: kernel/core, kernel/topology, kernel/geometry, kernel/transform,
+   kernel/spatial, kernel/gpu, kernel/interop — all compiled and tested.
+4. ~~Add `hydrateWasmBrepFromCbrep(arrayBuffer)` to the WASM bridge.~~
+   Done: cbrepHydrate/cbrepDehydrate in interop.ts, hydrate()/dehydrate()
+   in WasmBrepHandleRegistry.
 
-### STEP & Transform (Phase 3 / 3a)
+### STEP & Transform (Phase 3 / 3a) — IN PROGRESS
 
-5. Add `exportStepFromHandle(handleId)` to the WASM bridge.
-6. Add `transformBodyHandle(handleId, transform)` and native mesh extraction
-   APIs so transforms and tessellation stay inside WASM.
+5. ~~Add `exportStepFromHandle(handleId)` to the WASM bridge.~~
+   Done: WasmBrepHandleRegistry.exportStep() — dehydrate → readCbrep →
+   exportSTEP pipeline.
+6. ~~Add `transformBodyHandle(handleId, transform)` and native mesh extraction
+   APIs so transforms and tessellation stay inside WASM.~~
+   Transforms done: setTranslation/setRotation/setScale/loadTransformMatrix,
+   transformPoint/Direction, transformAllVertices. Native mesh extraction
+   not yet started.
 7. Implement cross-parametric edge mapping in `kernel/tessellation` for
    watertight adjacent-face meshing.
-8. Route `StepImportFeature` to store deterministic CBREP before any native
-   hydration attempt.
+8. ~~Route `StepImportFeature` to store deterministic CBREP before any native
+   hydration attempt.~~
+   Done: STEP import worker now produces CBREP + irHash alongside result;
+   StepImportFeature propagates irHash to result object.
 
 ### Robust Booleans (Phase 4)
 
