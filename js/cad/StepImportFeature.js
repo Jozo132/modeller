@@ -10,6 +10,29 @@ import { Feature, claimFeatureId } from './Feature.js';
 import { importSTEP } from './StepImport.js';
 import { computeFeatureEdges } from './EdgeAnalysis.js';
 import { getFlag } from '../featureFlags.js';
+import { telemetry } from '../telemetry.js';
+
+const _now = typeof performance !== 'undefined' && performance.now
+  ? () => performance.now()
+  : () => Date.now();
+
+function _measureSync(timings, key, label, fn) {
+  const start = _now();
+  try {
+    return fn();
+  } finally {
+    timings[key] = telemetry.recordTimer(label, _now() - start, start);
+  }
+}
+
+async function _measureAsync(timings, key, label, fn) {
+  const start = _now();
+  try {
+    return await fn();
+  } finally {
+    timings[key] = telemetry.recordTimer(label, _now() - start, start);
+  }
+}
 
 /**
  * StepImportFeature represents a solid body imported from a STEP file.
@@ -35,6 +58,15 @@ export class StepImportFeature extends Feature {
 
     /** Cached parsed mesh (set after first execute) */
     this._cachedMesh = null;
+
+    /** Last execute timing snapshot */
+    this._lastExecuteTimings = null;
+
+    /** Last asynchronous IR cache timing snapshot */
+    this._lastIrCacheTimings = null;
+
+    /** Body instance currently represented by the last successful/pending IR write */
+    this._shadowWriteBody = null;
   }
 
   /**
@@ -51,10 +83,36 @@ export class StepImportFeature extends Feature {
       throw new Error('No STEP data provided');
     }
 
+    const executeStart = _now();
+    let cacheHit = true;
+
     // Re-use cached result unless segments changed
     if (!this._cachedMesh || this._cachedMesh.curveSegments !== this.curveSegments) {
+      cacheHit = false;
+      const buildTimings = {};
+      const buildStart = _now();
       const result = importSTEP(this.stepData, { curveSegments: this.curveSegments });
-      this._cachedMesh = { ...result, curveSegments: this.curveSegments };
+      const edgeResult = _measureSync(buildTimings, 'edgeAnalysisMs', 'step:feature:edge-analysis', () =>
+        computeFeatureEdges(result.faces),
+      );
+      const volume = _measureSync(buildTimings, 'volumeMs', 'step:feature:volume', () =>
+        this._estimateVolume({ faces: result.faces }),
+      );
+      const boundingBox = _measureSync(buildTimings, 'boundsMs', 'step:feature:bounds', () =>
+        this._computeBoundingBox({ faces: result.faces }),
+      );
+
+      this._cachedMesh = {
+        ...result,
+        curveSegments: this.curveSegments,
+        edgeResult,
+        volume,
+        boundingBox,
+        featureTimings: {
+          ...buildTimings,
+          coldStartMs: telemetry.recordTimer('step:feature:cold-build', _now() - buildStart, buildStart),
+        },
+      };
     }
 
     // Primary output: exact B-Rep topology
@@ -66,7 +124,7 @@ export class StepImportFeature extends Feature {
 
       // Shadow-write: canonicalize and cache the IR when flag is enabled.
       // Fire-and-forget — does not block the return path.
-      if (getFlag('CAD_USE_IR_CACHE')) {
+      if (getFlag('CAD_USE_IR_CACHE') && body !== this._shadowWriteBody) {
         this._shadowWriteIR(body);
       }
     }
@@ -75,9 +133,9 @@ export class StepImportFeature extends Feature {
     const geometry = {
       vertices: this._cachedMesh.vertices,
       faces: this._cachedMesh.faces,
-      edges: [],
-      paths: [],
-      visualEdges: [],
+      edges: this._cachedMesh.edgeResult?.edges || [],
+      paths: this._cachedMesh.edgeResult?.paths || [],
+      visualEdges: this._cachedMesh.edgeResult?.visualEdges || [],
     };
 
     // Tag mesh faces with this feature's id
@@ -85,22 +143,26 @@ export class StepImportFeature extends Feature {
       if (!f.shared) f.shared = { sourceFeatureId: this.id };
     }
 
-    // Compute feature edges and face groups for selection support
-    const edgeResult = computeFeatureEdges(geometry.faces);
-    geometry.edges = edgeResult.edges;
-    geometry.paths = edgeResult.paths;
-    geometry.visualEdges = edgeResult.visualEdges;
-
-    const volume = this._estimateVolume(geometry);
-    const boundingBox = this._computeBoundingBox(geometry);
+    const timings = {
+      cacheHit,
+      totalMs: telemetry.recordTimer('step:feature:execute', _now() - executeStart, executeStart),
+      coldStartMs: this._cachedMesh.featureTimings?.coldStartMs ?? 0,
+      edgeAnalysisMs: this._cachedMesh.featureTimings?.edgeAnalysisMs ?? 0,
+      volumeMs: this._cachedMesh.featureTimings?.volumeMs ?? 0,
+      boundsMs: this._cachedMesh.featureTimings?.boundsMs ?? 0,
+      import: this._cachedMesh.timings ? { ...this._cachedMesh.timings } : null,
+      irCache: this._lastIrCacheTimings ? { ...this._lastIrCacheTimings } : null,
+    };
+    this._lastExecuteTimings = timings;
 
     return {
       type: 'solid',
       geometry,
       solid: { geometry, body },
       body,
-      volume,
-      boundingBox,
+      volume: this._cachedMesh.volume,
+      boundingBox: this._cachedMesh.boundingBox,
+      timings,
     };
   }
 
@@ -116,13 +178,25 @@ export class StepImportFeature extends Feature {
    * @param {Object} body - TopoBody to serialize
    */
   _shadowWriteIR(body) {
+    if (!body || body === this._shadowWriteBody) return;
+    this._shadowWriteBody = body;
+    this._lastIrCacheTimings = null;
+
     (async () => {
+      const timings = {};
+      const totalStart = _now();
       const { canonicalize } = await import('../../packages/ir/canonicalize.js');
       const { writeCbrep } = await import('../../packages/ir/writer.js');
       const { hashCbrep } = await import('../../packages/ir/hash.js');
-      const canon = canonicalize(body);
-      const buf = writeCbrep(canon);
-      const hash = hashCbrep(buf);
+      const canon = _measureSync(timings, 'canonicalizeMs', 'step:import:ir:canonicalize', () =>
+        canonicalize(body),
+      );
+      const buf = _measureSync(timings, 'writeMs', 'step:import:ir:write', () =>
+        writeCbrep(canon),
+      );
+      const hash = _measureSync(timings, 'hashMs', 'step:import:ir:hash', () =>
+        hashCbrep(buf),
+      );
       this._irHash = hash;
       this._irBytes = buf;
 
@@ -130,15 +204,27 @@ export class StepImportFeature extends Feature {
       if (mode === 'fs') {
         const { NodeFsCacheStore } = await import('../../packages/cache/NodeFsCacheStore.js');
         const store = new NodeFsCacheStore('.cbrep-cache');
-        await store.put(hash, buf);
+        await _measureAsync(timings, 'storeMs', 'step:import:ir:store', async () => {
+          await store.put(hash, buf);
+        });
       } else if (mode === 'idb') {
         const { BrowserIdbCacheStore } = await import('../../packages/cache/BrowserIdbCacheStore.js');
         const store = new BrowserIdbCacheStore();
-        await store.put(hash, buf);
+        await _measureAsync(timings, 'storeMs', 'step:import:ir:store', async () => {
+          await store.put(hash, buf);
+        });
       }
       // 'memory' and 'none': IR bytes kept on this._irBytes only
+      this._lastIrCacheTimings = {
+        mode,
+        ...timings,
+        totalMs: telemetry.recordTimer('step:import:ir:total', _now() - totalStart, totalStart),
+      };
     })().catch(() => {
       // Shadow-write must never break the legacy path
+      if (this._shadowWriteBody === body) {
+        this._shadowWriteBody = null;
+      }
     });
   }
 

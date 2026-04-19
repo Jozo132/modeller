@@ -74,6 +74,7 @@ export {
 
   // STEP export & import
   exportSTEP,
+  exportSTEPDetailed,
   importSTEP,
   parseSTEPTopology,
 } from './cad/index.js';

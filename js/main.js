@@ -17,7 +17,7 @@ import { downloadSVG } from './svg/export.js';
 import { openDXFFile, pickDXFFile, addDXFToScene, dxfBounds, parseDXFGeometry } from './dxf/import.js';
 import { pickSVGFile, addSVGToScene, svgBounds, parseSVGGeometry } from './svg/import.js';
 import { importSTEP } from './cad/StepImport.js';
-import { exportSTEP } from './cad/StepExport.js';
+import { exportSTEPDetailed } from './cad/StepExport.js';
 import { wasmTessellation } from './cad/WasmTessellation.js';
 import { GeometryEvaluator } from './cad/GeometryEvaluator.js';
 import { downloadCMOD, openCMODFile, projectFromCMOD, setCmodViewport, setCmodPartManager, setCmodRenderer, setCmodWorkspaceModeGetter, setCmodSessionStateGetter, setCmodScenesGetter } from './cmod.js';
@@ -6083,6 +6083,37 @@ class App {
   // STEP Import / Export
   // ---------------------------------------------------------------------------
 
+  _getFeatureExecutionResult(feature) {
+    if (!feature) return null;
+    if (feature.result && !feature.error) return feature.result;
+    const part = this._partManager?.getPart();
+    return part?.featureTree?.results?.[feature.id] || null;
+  }
+
+  _formatStepImportTimingSuffix(featureResult) {
+    const timings = featureResult?.timings;
+    const totalMs = timings?.totalMs;
+    if (!Number.isFinite(totalMs) || totalMs <= 0) return '';
+
+    const parts = [];
+    if (Number.isFinite(timings?.import?.parseMs)) parts.push(`parse ${timings.import.parseMs.toFixed(1)} ms`);
+    if (Number.isFinite(timings?.import?.tessellateMs)) parts.push(`tess ${timings.import.tessellateMs.toFixed(1)} ms`);
+    if (Number.isFinite(timings?.edgeAnalysisMs)) parts.push(`edges ${timings.edgeAnalysisMs.toFixed(1)} ms`);
+
+    return ` in ${totalMs.toFixed(1)} ms${parts.length ? ` (${parts.join(', ')})` : ''}`;
+  }
+
+  _formatStepExportTimingSuffix(timings) {
+    const totalMs = timings?.totalMs;
+    if (!Number.isFinite(totalMs) || totalMs <= 0) return '';
+
+    const parts = [];
+    if (Number.isFinite(timings?.writeBodyMs)) parts.push(`write ${timings.writeBodyMs.toFixed(1)} ms`);
+    if (Number.isFinite(timings?.stringifyMs)) parts.push(`stringify ${timings.stringifyMs.toFixed(1)} ms`);
+
+    return ` in ${totalMs.toFixed(1)} ms${parts.length ? ` (${parts.join(', ')})` : ''}`;
+  }
+
   async _importSTEPFile() {
     const input = document.createElement('input');
     input.type = 'file';
@@ -6126,9 +6157,13 @@ class App {
       this._updateOperationButtons();
       this._scheduleRender();
       debouncedSave();
-      const featureResult = feature.execute({});
+      const featureResult = this._getFeatureExecutionResult(feature);
       const nFaces = featureResult?.geometry?.faces?.length || 0;
-      this.setStatus(`Imported ${file.name} — ${nFaces} faces (segments: ${curveSegments})`);
+      if (featureResult?.timings) info('STEP import timings', featureResult.timings);
+      this.setStatus(
+        `Imported ${file.name} — ${nFaces} faces (segments: ${curveSegments})` +
+        this._formatStepImportTimingSuffix(featureResult),
+      );
     } catch (err) {
       error('STEP import failed:', err);
       this.setStatus(`STEP import failed: ${err.message}`);
@@ -6153,7 +6188,9 @@ class App {
       return;
     }
     try {
-      const stepString = exportSTEP(body);
+      const { stepString, timings } = exportSTEPDetailed(body, {
+        filename: part.name || 'part',
+      });
       const blob = new Blob([stepString], { type: 'application/step' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -6161,7 +6198,8 @@ class App {
       a.download = (part.name || 'part') + '.step';
       a.click();
       URL.revokeObjectURL(url);
-      this.setStatus('STEP file exported');
+      if (timings) info('STEP export timings', timings);
+      this.setStatus(`STEP file exported${this._formatStepExportTimingSuffix(timings)}`);
     } catch (err) {
       error('STEP export failed:', err);
       this.setStatus(`STEP export failed: ${err.message}`);
@@ -9914,9 +9952,13 @@ class App {
       this._updateOperationButtons();
       this._scheduleRender();
       debouncedSave();
-      const featureResult = feature.execute({});
+      const featureResult = this._getFeatureExecutionResult(feature);
       const nFaces = featureResult?.geometry?.faces?.length || 0;
-      this.setStatus(`Imported ${filename} as new project — ${nFaces} faces (segments: ${curveSegments})`);
+      if (featureResult?.timings) info('STEP import timings', featureResult.timings);
+      this.setStatus(
+        `Imported ${filename} as new project — ${nFaces} faces (segments: ${curveSegments})` +
+        this._formatStepImportTimingSuffix(featureResult),
+      );
     } catch (err) {
       error('STEP import failed:', err);
       this.setStatus(`STEP import failed: ${err.message}`);
@@ -9954,9 +9996,13 @@ class App {
       this._updateOperationButtons();
       this._scheduleRender();
       debouncedSave();
-      const featureResult = feature.execute({});
+      const featureResult = this._getFeatureExecutionResult(feature);
       const nFaces = featureResult?.geometry?.faces?.length || 0;
-      this.setStatus(`Imported ${filename} as floating body — ${nFaces} faces. Select bodies and use boolean operations to combine.`);
+      if (featureResult?.timings) info('STEP import timings', featureResult.timings);
+      this.setStatus(
+        `Imported ${filename} as floating body — ${nFaces} faces. Select bodies and use boolean operations to combine.` +
+        this._formatStepImportTimingSuffix(featureResult),
+      );
     } catch (err) {
       error('STEP import failed:', err);
       this.setStatus(`STEP import failed: ${err.message}`);

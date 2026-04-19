@@ -12,18 +12,22 @@
 //   - face_bound, edge_loop
 
 import { SurfaceType } from './BRepTopology.js';
+import { telemetry } from '../telemetry.js';
 
-/**
- * Export a TopoBody to STEP format string.
- *
- * @param {import('./BRepTopology.js').TopoBody} body
- * @param {Object} [opts]
- * @param {string} [opts.filename='export'] - File description
- * @param {string} [opts.author='CAD Modeller'] - Author name
- * @param {string} [opts.schema='AUTOMOTIVE_DESIGN'] - STEP schema
- * @returns {string} STEP file contents
- */
-export function exportSTEP(body, opts = {}) {
+const _now = typeof performance !== 'undefined' && performance.now
+  ? () => performance.now()
+  : () => Date.now();
+
+function _measureStepExportPhase(timings, key, label, fn) {
+  const start = _now();
+  try {
+    return fn();
+  } finally {
+    timings[key] = telemetry.recordTimer(label, _now() - start, start);
+  }
+}
+
+function _assertStepExportable(body, opts) {
   // Block STEP export for fallback solids — they are discrete representations
   // and cannot be faithfully serialized as exact B-Rep STEP geometry.
   if (opts._isFallback || (body && body._isFallback)) {
@@ -36,6 +40,37 @@ export function exportSTEP(body, opts = {}) {
   if (body && body.resultGrade && body.resultGrade !== 'exact') {
     throw new Error(`STEP export is not supported for results with grade '${body.resultGrade}'. Only exact results may be exported as STEP.`);
   }
+}
+
+/**
+ * Export a TopoBody to STEP format string.
+ *
+ * @param {import('./BRepTopology.js').TopoBody} body
+ * @param {Object} [opts]
+ * @param {string} [opts.filename='export'] - File description
+ * @param {string} [opts.author='CAD Modeller'] - Author name
+ * @param {string} [opts.schema='AUTOMOTIVE_DESIGN'] - STEP schema
+ * @returns {string} STEP file contents
+ */
+export function exportSTEP(body, opts = {}) {
+  return exportSTEPDetailed(body, opts).stepString;
+}
+
+/**
+ * Export a TopoBody to STEP format string with timing metadata.
+ *
+ * @param {import('./BRepTopology.js').TopoBody} body
+ * @param {Object} [opts]
+ * @param {string} [opts.filename='export'] - File description
+ * @param {string} [opts.author='CAD Modeller'] - Author name
+ * @param {string} [opts.schema='AUTOMOTIVE_DESIGN'] - STEP schema
+ * @returns {{ stepString: string, timings: Object }}
+ */
+export function exportSTEPDetailed(body, opts = {}) {
+  _assertStepExportable(body, opts);
+
+  const timings = {};
+  const totalStart = _now();
   const filename = opts.filename ?? 'export';
   const author = opts.author ?? 'CAD Modeller';
   const schema = opts.schema ?? 'AUTOMOTIVE_DESIGN';
@@ -43,14 +78,29 @@ export function exportSTEP(body, opts = {}) {
   const writer = new StepWriter();
 
   // Write header
-  writer.writeHeader(filename, author, schema);
+  _measureStepExportPhase(timings, 'headerMs', 'step:export:header', () => {
+    writer.writeHeader(filename, author, schema);
+  });
 
   // Write body
   if (body && body.shells.length > 0) {
-    _writeBody(writer, body);
+    _measureStepExportPhase(timings, 'writeBodyMs', 'step:export:write-body', () => {
+      _writeBody(writer, body);
+    });
   }
 
-  return writer.toString();
+  const stepString = _measureStepExportPhase(timings, 'stringifyMs', 'step:export:stringify', () =>
+    writer.toString(),
+  );
+  timings.totalMs = telemetry.recordTimer('step:export:total', _now() - totalStart, totalStart);
+  timings.entityCount = writer.entityCount();
+  timings.outputBytes = stepString.length;
+  timings.shellCount = body ? body.shells.length : 0;
+  timings.faceCount = body ? body.faces().length : 0;
+  timings.edgeCount = body ? body.edges().length : 0;
+  timings.vertexCount = body ? body.vertices().length : 0;
+
+  return { stepString, timings };
 }
 
 /**
@@ -78,6 +128,10 @@ class StepWriter {
    */
   addEntity(id, entity) {
     this._entities.push(`#${id}=${entity};`);
+  }
+
+  entityCount() {
+    return this._entities.length;
   }
 
   /**

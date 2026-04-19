@@ -114,6 +114,7 @@ self.onmessage = function (e) {
         packedVertices,
         faces: result.faces,
         body: result.body,
+        timings: result.timings,
         duration,
         _dispatchId,
       },

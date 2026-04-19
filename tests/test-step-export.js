@@ -7,7 +7,7 @@
 // 4. Export of a complete box body
 
 import assert from 'assert';
-import { exportSTEP } from '../js/cad/StepExport.js';
+import { exportSTEP, exportSTEPDetailed } from '../js/cad/StepExport.js';
 import { importSTEP, parseSTEPTopology } from '../js/cad/StepImport.js';
 import { validateFull } from '../js/cad/BRepValidator.js';
 import {
@@ -238,6 +238,22 @@ test('exportSTEP: custom options', () => {
   const step = exportSTEP(body, { filename: 'test-part', author: 'Test Author' });
   assert.ok(step.includes('test-part.step'), 'Should use custom filename');
   assert.ok(step.includes('Test Author'), 'Should use custom author');
+});
+
+test('exportSTEPDetailed: reports phase timings and counts', () => {
+  resetTopoIds();
+  const body = buildBoxBody();
+  const result = exportSTEPDetailed(body, { filename: 'timed-export' });
+
+  assert.ok(result.stepString.includes('timed-export.step'), 'Detailed export should return the STEP string');
+  assert.ok(result.timings, 'Detailed export should report timings');
+  assert.ok(result.timings.headerMs >= 0, 'Should record header timing');
+  assert.ok(result.timings.writeBodyMs >= 0, 'Should record body serialization timing');
+  assert.ok(result.timings.stringifyMs >= 0, 'Should record stringify timing');
+  assert.ok(result.timings.totalMs >= 0, 'Should record total timing');
+  assert.strictEqual(result.timings.faceCount, 6, 'Should report face count');
+  assert.strictEqual(result.timings.shellCount, 1, 'Should report shell count');
+  assert.ok(result.timings.entityCount > 0, 'Should report STEP entity count');
 });
 
 test('exportSTEP: null body produces valid empty STEP', () => {

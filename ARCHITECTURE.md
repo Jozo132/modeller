@@ -9,6 +9,9 @@ mesh tessellation, STEP import/export, and offline rendering without a UI. The
 system follows a **topology-first** design: every solid is represented by an
 exact NURBS/B-Rep topology graph, and triangle meshes exist only for rendering.
 
+For the current WASM residency and STEP import/export performance roadmap, see
+`WASM_BREP_LIFETIME_PLAN.md`.
+
 ---
 
 ## Mandatory Design Rules

@@ -34,8 +34,21 @@ import {
   TopoShell,
   TopoBody,
 } from './BRepTopology.js';
+import { telemetry } from '../telemetry.js';
 
 const STEP_NUMBER_PATTERN = '[+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[Ee][+-]?\\d+)?';
+const _now = typeof performance !== 'undefined' && performance.now
+  ? () => performance.now()
+  : () => Date.now();
+
+function _measureStepPhase(timings, key, label, fn) {
+  const start = _now();
+  try {
+    return fn();
+  } finally {
+    timings[key] = telemetry.recordTimer(label, _now() - start, start);
+  }
+}
 
 /** Snap a coordinate to 0 if it's within floating-point noise of zero. */
 function _snapZero(v) { return Math.abs(v) < 1e-12 ? 0 : v; }
@@ -212,18 +225,33 @@ function _tessellateSTEPBody(body, opts = {}) {
  * @returns {{ body: TopoBody, vertices: {x,y,z}[], faces: {vertices:{x,y,z}[], normal:{x,y,z}}[] }}
  */
 export function importSTEP(stepString, opts = {}) {
-  const body = parseSTEPTopology(stepString);
-  const mesh = tessellateBodyRouted(body, {
-    tessellator: 'robust',
-    edgeSegments: opts.curveSegments ?? 64,
-    surfaceSegments: opts.surfaceSegments ?? 16,
-  });
+  const timings = {};
+  const totalStart = _now();
+
+  const body = _measureStepPhase(timings, 'parseMs', 'step:import:parse', () =>
+    parseSTEPTopology(stepString),
+  );
+  const mesh = _measureStepPhase(timings, 'tessellateMs', 'step:import:tessellate', () =>
+    tessellateBodyRouted(body, {
+      tessellator: 'robust',
+      edgeSegments: opts.curveSegments ?? 64,
+      surfaceSegments: opts.surfaceSegments ?? 16,
+    }),
+  );
 
   // Post-process: apply analytic per-vertex normals and surface projection
   // for faces that have surfaceInfo but no NurbsSurface (sphere, cylinder, etc.)
-  _applyAnalyticNormals(body, mesh);
+  _measureStepPhase(timings, 'analyticNormalsMs', 'step:import:analytic-normals', () => {
+    _applyAnalyticNormals(body, mesh);
+  });
 
-  return { body, vertices: mesh.vertices, faces: mesh.faces };
+  timings.totalMs = telemetry.recordTimer('step:import:total', _now() - totalStart, totalStart);
+  timings.shellCount = body.shells.length;
+  timings.faceCount = body.faces().length;
+  timings.meshVertexCount = mesh.vertices.length;
+  timings.meshFaceCount = mesh.faces.length;
+
+  return { body, vertices: mesh.vertices, faces: mesh.faces, timings };
 }
 
 /**

@@ -53,6 +53,17 @@ console.log('Timers:');
   assertEq(dur, -1, 'no matching start → -1');
 }
 
+{
+  telemetry.reset();
+  const dur = telemetry.recordTimer('recorded', 12.5, 100);
+  assertClose(dur, 12.5, 0.001, 'recordTimer returns recorded duration');
+  const s = telemetry.summary();
+  assertEq(s.timers.length, 1, 'one timer recorded via recordTimer()');
+  assertEq(s.timers[0].label, 'recorded', 'recorded timer label');
+  assertClose(s.timers[0].duration, 12.5, 0.001, 'recorded timer duration');
+  assertClose(s.timers[0].startTime, 100, 0.001, 'recorded timer start time');
+}
+
 // ── time() convenience ──────────────────────────────────────────────
 console.log('time():');
 {

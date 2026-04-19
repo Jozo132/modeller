@@ -50,6 +50,15 @@ test('importSTEP: parses reference STEP file without errors', () => {
   assert.ok(Array.isArray(mesh.faces), 'Should have faces array');
 });
 
+test('importSTEP: reports phase timings', () => {
+  const mesh = importSTEP(stepData);
+  assert.ok(mesh.timings, 'Should return timing metadata');
+  assert.ok(mesh.timings.parseMs >= 0, 'Should record parse timing');
+  assert.ok(mesh.timings.tessellateMs >= 0, 'Should record tessellation timing');
+  assert.ok(mesh.timings.analyticNormalsMs >= 0, 'Should record analytic normal timing');
+  assert.ok(mesh.timings.totalMs >= 0, 'Should record total timing');
+});
+
 test('importSTEP: produces non-empty geometry', () => {
   const mesh = importSTEP(stepData);
   assert.ok(mesh.faces.length > 0, `Should have faces (got ${mesh.faces.length})`);
@@ -486,6 +495,20 @@ test('StepImportFeature: execute produces solid result', () => {
   assert.ok(result.geometry.edges.length > 0, 'Should have computed edges');
   assert.ok(typeof result.volume === 'number', 'Should have volume');
   assert.ok(result.boundingBox, 'Should have bounding box');
+  assert.ok(result.timings, 'Should expose timing metadata');
+  assert.strictEqual(result.timings.cacheHit, false, 'First execute should be a cold import');
+});
+
+test('StepImportFeature: second execute reuses cached import result', () => {
+  resetFeatureIds();
+  const feature = new StepImportFeature('Test Import', stepData);
+  const first = feature.execute({ results: {}, tree: { getFeatureIndex: () => 0, features: [] } });
+  const second = feature.execute({ results: {}, tree: { getFeatureIndex: () => 0, features: [] } });
+
+  assert.strictEqual(first.timings.cacheHit, false, 'First execute should miss the cache');
+  assert.strictEqual(second.timings.cacheHit, true, 'Second execute should hit the cache');
+  assert.deepStrictEqual(second.boundingBox, first.boundingBox, 'Cached execute should preserve bounds');
+  assert.strictEqual(second.geometry.faces.length, first.geometry.faces.length, 'Cached execute should preserve geometry');
 });
 
 test('StepImportFeature: bounding box is valid', () => {

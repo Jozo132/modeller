@@ -87,6 +87,23 @@ class Telemetry {
   }
 
   /**
+   * Record a completed timer directly.
+   * Useful when the caller already measured the duration or when nested code
+   * wants to avoid conflicting with the pending-timer label map.
+   *
+   * @param {string} label
+   * @param {number} duration
+   * @param {number} [startTime=_now()-duration]
+   * @returns {number} recorded duration in ms
+   */
+  recordTimer(label, duration, startTime = _now() - duration) {
+    const safeDuration = Math.max(0, Number(duration) || 0);
+    const safeStart = Number.isFinite(startTime) ? startTime : _now() - safeDuration;
+    this._timers.push({ label, startTime: safeStart, duration: safeDuration });
+    return safeDuration;
+  }
+
+  /**
    * Convenience: run a synchronous function and time it.
    * @template T
    * @param {string} label

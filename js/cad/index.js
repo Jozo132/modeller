@@ -88,7 +88,7 @@ export {
 } from './Containment.js';
 export { stitchFaces, buildBody } from './ShellBuilder.js';
 export { exactBooleanOp, hasExactTopology } from './BooleanKernel.js';
-export { exportSTEP } from './StepExport.js';
+export { exportSTEP, exportSTEPDetailed } from './StepExport.js';
 export { importSTEP, parseSTEPTopology } from './StepImport.js';
 export { TessellationConfig } from './TessellationConfig.js';
 export { wasmTessellation } from './WasmTessellation.js';
