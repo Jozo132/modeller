@@ -25,6 +25,7 @@ import { NurbsCurve } from './NurbsCurve.js';
 import { NurbsSurface } from './NurbsSurface.js';
 import { tessellateBodyRouted } from './Tessellator2/index.js';
 import { tessellateBodyWasm, ensureWasmReady as _ensureWasmReady } from './StepImportWasm.js';
+import { _countBoundaryEdges, _hasInvertedNormals } from './Tessellation.js';
 
 // Re-export for callers that need to pre-load WASM before sync importSTEP
 export const ensureWasmReady = _ensureWasmReady;
@@ -248,9 +249,22 @@ export function importSTEP(stepString, opts = {}) {
       surfaceSegments: opts.surfaceSegments ?? 16,
     }),
   );
-  if (mesh) timings.tessellator = 'wasm';
 
-  // Fall back to JS Tessellator2 if WASM path unavailable or failed
+  // Quality gate: reject WASM mesh if it has boundary edges or inverted normals
+  if (mesh && mesh.faces.length > 0) {
+    const wasmBoundary = _countBoundaryEdges(mesh.faces);
+    const wasmInverted = _hasInvertedNormals(mesh.faces);
+    if (wasmBoundary === 0 && !wasmInverted) {
+      timings.tessellator = 'wasm';
+    } else {
+      // WASM mesh has quality issues — fall through to JS
+      mesh = null;
+    }
+  } else {
+    mesh = null;
+  }
+
+  // Fall back to JS Tessellator2 if WASM path unavailable or failed quality gate
   if (!mesh) {
     mesh = _measureStepPhase(timings, 'tessellateMs', 'step:import:tessellate', () =>
       tessellateBodyRouted(body, {

@@ -17,6 +17,8 @@ import { parseCMOD } from '../js/cmod.js';
 import { resetFeatureIds } from '../js/cad/Feature.js';
 import { resetTopoIds, buildTopoBody } from '../js/cad/BRepTopology.js';
 import { robustTessellateBody } from '../js/cad/Tessellator2/index.js';
+import { tessellateBody } from '../js/cad/Tessellation.js';
+import { ensureWasmReady } from '../js/cad/StepImportWasm.js';
 import { TessellationConfig } from '../js/cad/TessellationConfig.js';
 import {
   calculateMeshVolume, countInvertedFaces,
@@ -350,12 +352,15 @@ function getFinalGeometry(part) {
  */
 function retessellate(topoBody) {
   const config = new TessellationConfig();
-  return robustTessellateBody(topoBody, config);
+  return tessellateBody(topoBody, config);
 }
 
 // =====================================================================
 // Tests
 // =====================================================================
+
+// Pre-load WASM module so tessellateBody() can use the WASM path
+await ensureWasmReady().catch(() => {});
 
 console.log('=== Feature Pipeline — Simple Extrude ===\n');
 

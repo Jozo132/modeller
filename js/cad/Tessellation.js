@@ -9,7 +9,11 @@
 // backward compatibility but should not be used directly by new code.
 
 import { robustTessellateBody } from './Tessellator2/index.js';
-import { tessellateBodyWasm } from './StepImportWasm.js';
+import { tessellateBodyWasm, ensureWasmReady } from './StepImportWasm.js';
+
+// Fire-and-forget WASM init so that tessellateBodyWasm() works synchronously
+// by the time tessellateBody() is first called.  Safe to call multiple times.
+ensureWasmReady().catch(() => { /* WASM optional */ });
 
 function projectPolygon2D(verts, normal) {
   const an = {
@@ -133,11 +137,32 @@ export function tessellateBody(body, opts = {}) {
     // Quality gate: check for boundary edges. Grid-based centroid trimming
     // can produce jagged boundaries on some curved faces. If boundary edges
     // are detected, fall back to JS which uses CDT for clean watertight meshes.
-    if (!_hasBoundaryEdges(wasmResult.faces)) {
+    const wasmBoundary = _countBoundaryEdges(wasmResult.faces);
+    const wasmInverted = _hasInvertedNormals(wasmResult.faces);
+    if (wasmBoundary === 0 && !wasmInverted) {
       wasmResult._tessellator = 'wasm';
       return wasmResult;
     }
-    // WASM mesh has boundary edges — try JS for a cleaner mesh.
+    // WASM mesh has quality issues (boundary edges or inverted normals).
+    // Try JS and pick the better result.
+    const jsResult = robustTessellateBody(body, { ...opts, validate: true });
+    if (jsResult.faces.length > 0) {
+      const jsBoundary = _countBoundaryEdges(jsResult.faces);
+      const jsInverted = _hasInvertedNormals(jsResult.faces);
+      // Prefer the result with fewer quality issues.
+      // Priority: inverted normals (worse) > boundary edges.
+      const wasmScore = (wasmInverted ? 1000 : 0) + wasmBoundary;
+      const jsScore = (jsInverted ? 1000 : 0) + jsBoundary;
+      if (wasmScore <= jsScore) {
+        wasmResult._tessellator = 'wasm-with-issues';
+        return wasmResult;
+      }
+      jsResult._tessellator = 'js-quality-fallback';
+      return jsResult;
+    }
+    // JS produced nothing — use WASM despite quality issues.
+    wasmResult._tessellator = 'wasm-with-issues';
+    return wasmResult;
   }
 
   // @legacy fallback: JS Tessellator2 — used only when WASM module is not
@@ -148,9 +173,9 @@ export function tessellateBody(body, opts = {}) {
     return result;
   }
 
-  // If JS also fails but WASM had faces, use the WASM result despite boundary edges.
+  // If JS also fails but WASM had faces, use the WASM result despite quality issues.
   if (wasmResult && wasmResult.faces.length > 0) {
-    wasmResult._tessellator = 'wasm-with-boundary';
+    wasmResult._tessellator = 'wasm-with-issues';
     return wasmResult;
   }
 
@@ -161,12 +186,12 @@ export function tessellateBody(body, opts = {}) {
 }
 
 /**
- * Quick boundary-edge detection on a triangle mesh.
- * Returns true if any edge is shared by exactly 1 triangle (non-watertight).
+ * Count boundary edges in a triangle mesh.
+ * A boundary edge is shared by exactly 1 triangle (non-watertight seam).
  * @param {Array<{vertices: Array<{x,y,z}>}>} faces
- * @returns {boolean}
+ * @returns {number} count of boundary edges
  */
-function _hasBoundaryEdges(faces) {
+export function _countBoundaryEdges(faces) {
   const counts = new Map();
   const snap = (v) => `${(v.x * 1e6 | 0)},${(v.y * 1e6 | 0)},${(v.z * 1e6 | 0)}`;
   for (const f of faces) {
@@ -179,37 +204,35 @@ function _hasBoundaryEdges(faces) {
       counts.set(key, (counts.get(key) || 0) + 1);
     }
   }
+  let boundary = 0;
   for (const c of counts.values()) {
-    if (c === 1) return true;
+    if (c === 1) boundary++;
   }
-  return false;
+  return boundary;
 }
 
 /**
  * Quick check for inverted face normals in a tessellated mesh.
- * Returns true if more than 10% of faces have normals that disagree
- * with the winding order of their vertices (cross-product test).
+ * Returns true if any face has a normal that disagrees with the
+ * winding order of its vertices (cross-product test).
  *
  * @param {Array<{vertices: Array<{x,y,z}>, normal?: {x,y,z}}>} faces
  * @returns {boolean}
  */
-function _hasInvertedNormals(faces) {
+export function _hasInvertedNormals(faces) {
   if (faces.length === 0) return false;
-  let checked = 0;
-  let inverted = 0;
   for (const f of faces) {
     const v = f.vertices;
     const n = f.normal;
     if (!n || !v || v.length < 3) continue;
-    checked++;
     const ux = v[1].x - v[0].x, uy = v[1].y - v[0].y, uz = v[1].z - v[0].z;
     const wx = v[2].x - v[0].x, wy = v[2].y - v[0].y, wz = v[2].z - v[0].z;
     const cx = uy * wz - uz * wy;
     const cy = uz * wx - ux * wz;
     const cz = ux * wy - uy * wx;
-    if (cx * n.x + cy * n.y + cz * n.z < 0) inverted++;
+    if (cx * n.x + cy * n.y + cz * n.z < 0) return true;
   }
-  return checked > 0 && inverted / checked > 0.1;
+  return false;
 }
 
 /**
