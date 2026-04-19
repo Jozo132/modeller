@@ -1,7 +1,11 @@
 // js/cad/Containment.js — Authoritative point containment engine for exact B-Rep solids
 //
 // Provides a single API for point / fragment classification against solid bodies.
-// Two strategies behind one API:
+// Three strategies behind one API:
+//
+//   0. WASM path — native ray-cast against WASM kernel topology when the body
+//      has only supported surface types (plane, sphere). Loaded on demand,
+//      cached per body for repeated queries.
 //
 //   1. Fast path — parity ray-cast classification for clean solids with
 //      deterministic ray selection, AABB face filtering, and vertex/edge
@@ -16,6 +20,211 @@ import { DEFAULT_TOLERANCE } from './Tolerance.js';
 import { GeometryEvaluator } from './GeometryEvaluator.js';
 import { getFlag } from '../featureFlags.js';
 import { warnOnceForFallback } from './fallback/warnOnce.js';
+import { SurfaceType } from './BRepTopology.js';
+
+// ---------------------------------------------------------------------------
+// WASM native containment — lazy module + body cache
+// ---------------------------------------------------------------------------
+
+let _wasm = null;
+let _wasmMem = null;
+async function _ensureWasm() {
+  if (_wasm) return true;
+  try {
+    const mod = await import('../../build/release.js');
+    _wasm = mod;
+    _wasmMem = mod.memory;
+    return true;
+  } catch { return false; }
+}
+function _wasmReady() { return _wasm != null; }
+// Fire-and-forget preload at module init
+_ensureWasm().catch(() => {});
+
+/**
+ * Cache for the most recently loaded body in WASM kernel buffers.
+ * Avoids reloading the same body for multiple point queries (e.g. during
+ * boolean fragment classification which checks many points against one body).
+ * @type {{ bodyId: number|null, faceCount: number }}
+ */
+const _wasmBodyCache = { bodyId: null, faceCount: 0 };
+
+/**
+ * Surface types supported by WASM classifyPointVsShell.
+ * (plane: full ray-plane, sphere: full ray-sphere)
+ */
+const _WASM_SUPPORTED_TYPES = new Set([SurfaceType.PLANE, SurfaceType.SPHERE]);
+
+/**
+ * Check if a body can be classified entirely in WASM.
+ */
+function _wasmCanClassify(body) {
+  if (!_wasmReady()) return false;
+  if (!body || !body.shells || body.shells.length === 0) return false;
+  for (const shell of body.shells) {
+    for (const face of shell.faces) {
+      if (!_WASM_SUPPORTED_TYPES.has(face.surfaceType)) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Load a body into the WASM kernel topology/geometry buffers.
+ * Uses body._id as a cache key to avoid redundant loads.
+ * @returns {number} face count, or 0 on failure
+ */
+function _wasmLoadBody(body) {
+  const bodyId = body._id ?? body.id ?? null;
+  if (bodyId != null && bodyId === _wasmBodyCache.bodyId) {
+    return _wasmBodyCache.faceCount;
+  }
+
+  const w = _wasm;
+  if (!w) return 0;
+
+  w.bodyBegin();
+  w.geomPoolReset();
+
+  const allFaces = body.faces();
+  const vertexMap = new Map();
+
+  // Load vertices
+  for (const face of allFaces) {
+    for (const loop of [face.outerLoop, ...(face.innerLoops || [])]) {
+      if (!loop) continue;
+      for (const ce of loop.coedges || []) {
+        const edge = ce.edge;
+        if (!edge) continue;
+        if (edge.startVertex && !vertexMap.has(edge.startVertex)) {
+          const v = edge.startVertex.point || edge.startVertex;
+          vertexMap.set(edge.startVertex, w.vertexAdd(v.x, v.y, v.z));
+        }
+        if (edge.endVertex && !vertexMap.has(edge.endVertex)) {
+          const v = edge.endVertex.point || edge.endVertex;
+          vertexMap.set(edge.endVertex, w.vertexAdd(v.x, v.y, v.z));
+        }
+      }
+    }
+  }
+
+  // Load edges
+  const edgeMap = new Map();
+  for (const face of allFaces) {
+    for (const loop of [face.outerLoop, ...(face.innerLoops || [])]) {
+      if (!loop) continue;
+      for (const ce of loop.coedges || []) {
+        const edge = ce.edge;
+        if (!edge || edgeMap.has(edge)) continue;
+        const sv = vertexMap.get(edge.startVertex) ?? 0;
+        const ev = vertexMap.get(edge.endVertex) ?? 0;
+        edgeMap.set(edge, w.edgeAdd(sv, ev, w.GEOM_LINE, 0));
+      }
+    }
+  }
+
+  // Load faces with geometry
+  let wasmFaceId = 0;
+  for (const face of allFaces) {
+    const loops = [face.outerLoop, ...(face.innerLoops || [])].filter(Boolean);
+    if (loops.length === 0) continue;
+
+    // Store surface geometry
+    let geomType = w.GEOM_PLANE;
+    let geomOffset = 0;
+
+    if (face.surfaceType === SurfaceType.PLANE && face.surface) {
+      const s = face.surface;
+      const si = s.surfaceInfo || s._analyticParams;
+      if (si && si.origin && si.normal) {
+        geomOffset = w.planeStore(
+          si.origin.x, si.origin.y, si.origin.z,
+          si.normal.x, si.normal.y, si.normal.z,
+        );
+      } else if (face.outerLoop) {
+        // Derive plane from boundary vertices
+        const pts = face.outerLoop.points();
+        if (pts.length >= 3) {
+          const n = _polyNormal(pts);
+          geomOffset = w.planeStore(pts[0].x, pts[0].y, pts[0].z, n.x, n.y, n.z);
+        }
+      }
+      geomType = w.GEOM_PLANE;
+    } else if (face.surfaceType === SurfaceType.SPHERE && face.surface) {
+      const si = face.surface.surfaceInfo || face.surface._analyticParams;
+      if (si && si.center && si.radius != null) {
+        const ax = si.axis || { x: 0, y: 0, z: 1 };
+        const rd = si.refDir || { x: 1, y: 0, z: 0 };
+        geomOffset = w.sphereStore(
+          si.center.x, si.center.y, si.center.z,
+          ax.x, ax.y, ax.z,
+          rd.x, rd.y, rd.z,
+          si.radius,
+        );
+        geomType = w.GEOM_SPHERE;
+      }
+    }
+
+    const orient = face.sameSense !== false ? w.ORIENT_FORWARD : w.ORIENT_REVERSED;
+
+    // Build coedge loops
+    let firstLoopId = -1;
+    let numLoops = 0;
+    for (let li = 0; li < loops.length; li++) {
+      const loop = loops[li];
+      const coedges = loop.coedges || [];
+      if (coedges.length === 0) continue;
+
+      const isOuter = li === 0 ? 1 : 0;
+      const ceIds = [];
+      for (const ce of coedges) {
+        const eid = edgeMap.get(ce.edge) ?? 0;
+        const ceOrient = ce.sameSense ? w.ORIENT_FORWARD : w.ORIENT_REVERSED;
+        ceIds.push(w.coedgeAdd(eid, ceOrient, 0, wasmFaceId));
+      }
+      for (let i = 0; i < ceIds.length; i++) {
+        w.coedgeSetNext(ceIds[i], ceIds[(i + 1) % ceIds.length]);
+      }
+      const loopId = w.loopAdd(ceIds[0], wasmFaceId, isOuter);
+      if (firstLoopId < 0) firstLoopId = loopId;
+      numLoops++;
+    }
+
+    if (firstLoopId < 0) continue;
+    w.faceAdd(firstLoopId, 0, geomType, geomOffset, orient, numLoops);
+    wasmFaceId++;
+  }
+
+  if (wasmFaceId > 0) {
+    w.shellAdd(0, wasmFaceId, 1);
+    w.bodyEnd();
+  }
+
+  _wasmBodyCache.bodyId = bodyId;
+  _wasmBodyCache.faceCount = wasmFaceId;
+  return wasmFaceId;
+}
+
+/**
+ * Classify a point using WASM ray-cast containment.
+ * @returns {{ state: string, confidence: number, detail: string }|null}
+ *          null if WASM path is not applicable
+ */
+function _wasmClassifyPoint(body, p) {
+  if (!_wasmCanClassify(body)) return null;
+  const nFaces = _wasmLoadBody(body);
+  if (nFaces === 0) return null;
+
+  const cls = _wasm.classifyPointVsShell(p.x, p.y, p.z, 0, nFaces);
+  if (cls === _wasm.CLASSIFY_INSIDE) {
+    return { state: 'inside', confidence: 0.95, detail: 'wasm-ray-cast' };
+  }
+  if (cls === _wasm.CLASSIFY_OUTSIDE) {
+    return { state: 'outside', confidence: 0.95, detail: 'wasm-ray-cast' };
+  }
+  // UNKNOWN or ON_BOUNDARY — fall through to JS
+  return null;
+}
 
 // ---------------------------------------------------------------------------
 // Shadow-mode disagreement log (cleared only via explicit clearShadowDisagreements() call)
@@ -93,6 +302,10 @@ export function classifyPoint(body, p, opts = {}) {
   if (bnd.distance <= tol.classification) {
     return { state: 'on', confidence: 0.9, detail: 'on-boundary-within-tolerance' };
   }
+
+  // --- WASM fast path (plane + sphere bodies only) ---
+  const wasmResult = _wasmClassifyPoint(body, p);
+  if (wasmResult) return wasmResult;
 
   // --- Fast path: multi-ray parity vote ---
   const nearField = bnd.distance < tol.classification * NEAR_FIELD_FACTOR;

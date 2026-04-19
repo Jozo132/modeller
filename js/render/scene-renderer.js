@@ -6,6 +6,8 @@ import {
   computeOrbitCameraPosition,
   computeOrbitMvp,
 } from './part-render-core.js';
+import { LodManager } from './lod-manager.js';
+import { GpuTessPipeline } from './gpu-tess-pipeline.js';
 
 export class SceneRenderer {
   constructor(options) {
@@ -37,12 +39,34 @@ export class SceneRenderer {
     this._meshBoundaryEdgeVertexCount = 0;
     this._invisibleEdgesVisible = false;
     this._meshTriangleOverlayMode = 'off';
+
+    // LoD-driven re-tessellation
+    this._lodManager = new LodManager();
+    this._lodManager.onRetessellate = (segsU, segsV) => {
+      this._onLodChanged(segsU, segsV);
+    };
+    this._currentPart = null;
+
+    // WebGPU NURBS tessellation pipeline (optional, null if unavailable)
+    this._gpuTessPipeline = null;
+    this._gpuTessReady = false;
   }
 
   async init() {
     this.wasm.init(this.canvas.width, this.canvas.height);
     this._ready = true;
     this.setMode('3d');
+
+    // Attempt WebGPU tessellation pipeline (non-blocking, fallback-safe)
+    if (GpuTessPipeline.isAvailable()) {
+      try {
+        this._gpuTessPipeline = new GpuTessPipeline();
+        this._gpuTessReady = await this._gpuTessPipeline.init(null);
+      } catch {
+        this._gpuTessPipeline = null;
+        this._gpuTessReady = false;
+      }
+    }
   }
 
   setSize(width, height) {
@@ -117,6 +141,7 @@ export class SceneRenderer {
 
   renderPart(part) {
     this.clearPartGeometry();
+    this._currentPart = part;
     if (!part || !this._ready) return;
 
     if (this.wasm.setOriginPlanesVisible) {
@@ -186,6 +211,18 @@ export class SceneRenderer {
     if (len > 1e-8) {
       this.executor.setViewDir(dx / len, dy / len, dz / len);
     }
+    // Update LoD based on camera distance
+    this._lodManager.update(this._orbitRadius);
+  }
+
+  /**
+   * Called by LodManager when the LoD band changes.
+   * Re-tessellates the current part at the new density.
+   */
+  _onLodChanged(segsU, segsV) {
+    if (!this._currentPart) return;
+    // Re-render part with updated tessellation density
+    this.renderPart(this._currentPart);
   }
 
   _buildMeshFromGeometry(geometry) {
@@ -235,4 +272,13 @@ export class SceneRenderer {
       orthoBounds: null,
     });
   }
+
+  /** @returns {LodManager} */
+  get lodManager() { return this._lodManager; }
+
+  /** @returns {GpuTessPipeline|null} */
+  get gpuTessPipeline() { return this._gpuTessPipeline; }
+
+  /** @returns {boolean} */
+  get gpuTessReady() { return this._gpuTessReady; }
 }

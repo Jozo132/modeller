@@ -34,6 +34,10 @@ export class FeatureTree {
     // When present, solid results get a wasmHandleId allocated on production
     // and released on replacement/removal.
     this._handleRegistry = null;
+
+    // Optional residency manager for lazy CBREP restore and eviction.
+    // Set via setResidencyManager(). Works alongside _handleRegistry.
+    this._residencyManager = null;
   }
 
   // -----------------------------------------------------------------------
@@ -48,6 +52,14 @@ export class FeatureTree {
    */
   setHandleRegistry(registry) {
     this._handleRegistry = registry;
+  }
+
+  /**
+   * Attach a HandleResidencyManager for lazy CBREP restore and eviction.
+   * @param {import('./HandleResidencyManager.js').HandleResidencyManager|null} mgr
+   */
+  setResidencyManager(mgr) {
+    this._residencyManager = mgr;
   }
 
   /**
@@ -80,17 +92,31 @@ export class FeatureTree {
         reg.bumpRevision(handle);
       }
     }
+
+    // Store CBREP in residency manager for lazy restore
+    if (this._residencyManager && result.cbrepBuffer) {
+      this._residencyManager.storeCbrep(featureId, result.cbrepBuffer, result.irHash);
+    }
+    if (this._residencyManager) {
+      this._residencyManager.markAccessed(featureId);
+    }
   }
 
   /**
    * Release the WASM handle associated with an old result being replaced.
    * @param {Object} oldResult
    */
-  _releaseResultHandle(oldResult) {
-    if (!oldResult || !oldResult.wasmHandleId) return;
-    if (!this._handleRegistry || !this._handleRegistry.ready) return;
-    this._handleRegistry.release(oldResult.wasmHandleId);
-    oldResult.wasmHandleId = 0;
+  _releaseResultHandle(oldResult, featureId) {
+    if (!oldResult) return;
+    if (oldResult.wasmHandleId) {
+      if (this._handleRegistry && this._handleRegistry.ready) {
+        this._handleRegistry.release(oldResult.wasmHandleId);
+        oldResult.wasmHandleId = 0;
+      }
+    }
+    if (featureId && this._residencyManager) {
+      this._residencyManager.remove(featureId);
+    }
   }
 
   // -----------------------------------------------------------------------
@@ -153,7 +179,7 @@ export class FeatureTree {
     }
     
     this.featureMap.delete(featureId);
-    this._releaseResultHandle(this.results[featureId]);
+    this._releaseResultHandle(this.results[featureId], featureId);
     delete this.results[featureId];
     
     return true;
@@ -326,7 +352,7 @@ export class FeatureTree {
   executeAll() {
     // Release all existing handles before clearing results
     for (const fid of Object.keys(this.results)) {
-      this._releaseResultHandle(this.results[fid]);
+      this._releaseResultHandle(this.results[fid], fid);
     }
     this.results = {};
     
@@ -385,7 +411,7 @@ export class FeatureTree {
       const feature = this.features[i];
       
       if (feature.suppressed) {
-        this._releaseResultHandle(this.results[feature.id]);
+        this._releaseResultHandle(this.results[feature.id], feature.id);
         this.results[feature.id] = { suppressed: true };
         continue;
       }
@@ -395,7 +421,7 @@ export class FeatureTree {
         
         if (!feature.canExecute(context)) {
           feature.error = 'Dependencies not satisfied';
-          this._releaseResultHandle(this.results[feature.id]);
+          this._releaseResultHandle(this.results[feature.id], feature.id);
           this.results[feature.id] = { error: feature.error };
           continue;
         }
@@ -404,12 +430,12 @@ export class FeatureTree {
         const result = feature.execute(context);
         feature.result = result;
         feature.error = null;
-        this._releaseResultHandle(oldResult);
+        this._releaseResultHandle(oldResult, feature.id);
         this._stampSolidResult(feature.id, result);
         this.results[feature.id] = result;
       } catch (error) {
         feature.error = error.message;
-        this._releaseResultHandle(this.results[feature.id]);
+        this._releaseResultHandle(this.results[feature.id], feature.id);
         this.results[feature.id] = { error: error.message };
         console.error(`Error executing feature ${feature.name}:`, error);
       }
@@ -446,10 +472,11 @@ export class FeatureTree {
    * Clear all features from the tree.
    */
   clear() {
-    // Release all WASM handles
+    // Release all WASM handles and residency entries
     for (const fid of Object.keys(this.results)) {
-      this._releaseResultHandle(this.results[fid]);
+      this._releaseResultHandle(this.results[fid], fid);
     }
+    if (this._residencyManager) this._residencyManager.clear();
     this.features = [];
     this.featureMap.clear();
     this.results = {};

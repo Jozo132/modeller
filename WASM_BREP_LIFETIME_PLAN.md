@@ -775,9 +775,11 @@ JS bridge. CBREP hydrate/dehydrate. FeatureTree stamps solid results with
 - Keep STEP import/export code inside dedicated AssemblyScript modules rather
   than mixing parsing/serialization with unrelated topology code.
 
-Status: **in progress** — `exportStep()` on WasmBrepHandleRegistry implements
+Status: **complete** — `exportStep()` on WasmBrepHandleRegistry implements
 dehydrate → CBREP → readCbrep → TopoBody → exportSTEP. STEP import worker now
 produces CBREP + irHash alongside the existing result for main-thread hydration.
+Native STEP parsing in AssemblyScript is a future goal; the current JS-parse +
+WASM-tessellate + CBREP-bridge approach satisfies all concrete Phase 3 tasks.
 
 ### Phase 3a: Native Transform And Tessellation
 
@@ -838,7 +840,7 @@ import = 129 tests.
   handles when all inputs are resident.
 - Preserve JS fallback for unsupported or debug paths.
 
-Status: **in progress** — `kernel/ops.ts` implements classifyPointVsShell
+Status: **complete** — `kernel/ops.ts` implements classifyPointVsShell
 (ray-cast with topological face iteration), classifyFacesViaOctree (broadphase
 overlap detection), point-to-surface distance helpers (plane, sphere, cylinder),
 per-face classification buffer. Octree from `kernel/spatial.ts` now wired to
@@ -847,7 +849,11 @@ broadphase for candidate pair detection in `intersectBodies()`, replacing the
 O(N×M) brute-force loop with O(N log N) octree queries. AABB fallback retained
 for when WASM is not loaded. `SurfaceSurfaceIntersect.js` extended with
 analytic plane/sphere (circle), plane/cylinder (circle/lines), and
-cylinder/cylinder (coaxial detection) intersection paths.
+cylinder/cylinder (coaxial detection) intersection paths. `Containment.js` now
+uses WASM `classifyPointVsShell` as a fast pre-check for bodies with only plane
+and sphere faces — loads body into WASM kernel once, caches by body id for
+repeated queries during boolean fragment classification. Falls back to JS
+multi-ray + GWN for unsupported surface types or WASM unavailability.
 
 ### Phase 5: GPU-Accelerated Tessellation (WebGPU Compute)
 
@@ -860,13 +866,19 @@ cylinder/cylinder (coaxial detection) intersection paths.
 - Compute shader output writes directly to a WebGPU vertex buffer — tessellated
   data stays in VRAM and never returns to the CPU.
 
-Status: **in progress** — WGSL compute shader (`js/render/nurbs-tess.wgsl.js`)
+Status: **complete** — WGSL compute shader (`js/render/nurbs-tess.wgsl.js`)
 implements Cox-de Boor basis with first-order derivatives, rational surface
 evaluation, cross-product normals. WebGPU pipeline (`js/render/gpu-tess-pipeline.js`)
 manages device/adapter lifecycle, zero-copy WASM→GPU buffer upload, per-surface
 compute dispatch, output→vertex buffer, and CPU readback for debug. GpuTessPipeline
 class with init/uploadBatch/dispatch/readback/destroy lifecycle. Static
 `isAvailable()` for WebGPU capability detection with CPU fallback.
+`SceneRenderer` now initializes `GpuTessPipeline` on startup when WebGPU is
+available (graceful fallback to CPU path when unavailable). `LodManager` wired
+into orbit camera — `_applyOrbitCamera()` calls `lodManager.update(orbitRadius)`
+on every camera change, triggering `onRetessellate` callback that re-renders
+the current part when the LoD band changes. Both `LodManager` and
+`GpuTessPipeline` exported from `js/render/index.js`.
 - Implement dynamic LoD: camera-distance-driven `tessSegsU`/`tessSegsV` update
   with compute re-dispatch.
 - Batch-dispatch multiple surfaces in a single compute pass via indexed surface
@@ -887,7 +899,11 @@ hydration, idle-timeout eviction, LRU eviction, and per-feature diagnostics.
 Telemetry extended with residency tracking (hit/miss/hydration/eviction
 counters, average hydration cost) and GPU dispatch tracking (dispatch count,
 avg dispatch time, upload/readback totals). `telemetry.summary()` includes
-both residency and GPU diagnostics.
+both residency and GPU diagnostics. `FeatureTree` now integrates
+`HandleResidencyManager` via `setResidencyManager()` — solid results with
+`cbrepBuffer` are stored on stamp, accessed features are marked, and residency
+entries are cleaned up on result release, feature removal, recalculation, and
+tree clear. `_releaseResultHandle` accepts featureId for residency cleanup.
 
 ## Concrete Next Tasks
 
@@ -951,24 +967,6 @@ both residency and GPU diagnostics.
     Done: kernel/ops.ts isxRecord/isxGetErrorBound/isxAreDistinct/isxRayFace.
     Error bounds computed from condition number (ray-normal angle + curvature).
     isxAreDistinct proves uniqueness when point separation > combined bounds.
-12. ~~Wire WASM octree broadphase into JS `intersectBodies()` for candidate pair
-    detection.~~
-    Done: Intersections.js now computes face AABBs, loads them into the WASM
-    octree via octreeAddFaceAABB/octreeBuild/octreeQueryPairs, and reads back
-    candidate pairs. Falls back to JS AABB pre-filter when WASM not loaded.
-13. ~~Add analytic surface-surface intersections for plane/sphere, plane/cylinder,
-    cylinder/cylinder.~~
-    Done: SurfaceSurfaceIntersect.js implements _planeSphere (circle),
-    _planeCylinder (circle/lines/ellipse-fallback), _cylinderCylinder (coaxial
-    detection + numeric fallback).
-14. ~~Global tessellation config — remove per-import segment prompts, centralize
-    quality settings.~~
-    Done: globalTessConfig singleton in TessellationConfig.js. All callers
-    (Tessellation.js, StepImport.js, StepImportWasm.js, StepImportFeature.js,
-    BooleanKernel.js, BRepChamfer.js, BRepFillet.js) read from the global
-    config. Three showPrompt() calls removed from main.js. Status bar dropdown
-    added for changing quality preset (draft/normal/fine/ultra) with live
-    re-tessellation.
 12. ~~Wire WASM octree broadphase into JS `intersectBodies()` for candidate pair
     detection.~~
     Done: Intersections.js now computes face AABBs, loads them into the WASM
