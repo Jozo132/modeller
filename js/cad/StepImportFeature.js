@@ -91,8 +91,7 @@ export class StepImportFeature extends Feature {
       cacheHit = false;
       const buildTimings = {};
       const buildStart = _now();
-      const wasmRegistry = _context?.tree?._handleRegistry ?? null;
-      const result = importSTEP(this.stepData, { curveSegments: this.curveSegments, wasmRegistry });
+      const result = importSTEP(this.stepData, { curveSegments: this.curveSegments });
       const edgeResult = _measureSync(buildTimings, 'edgeAnalysisMs', 'step:feature:edge-analysis', () =>
         computeFeatureEdges(result.faces),
       );

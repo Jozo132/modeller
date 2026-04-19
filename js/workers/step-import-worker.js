@@ -14,7 +14,7 @@
 //   worker.postMessage({ stepData, curveSegments: 64, cacheMode: 'idb' });
 //   worker.onmessage = (e) => { /* e.data = { vertices, faces, body, ... } */ };
 
-import { importSTEP } from '../cad/StepImport.js';
+import { importSTEP, ensureWasmReady } from '../cad/StepImport.js';
 import { telemetry } from '../telemetry.js';
 import { getFlag } from '../featureFlags.js';
 import { warnOnceForFallback } from '../cad/fallback/warnOnce.js';
@@ -105,6 +105,9 @@ self.onmessage = async function (e) {
 
   try {
     telemetry.startTimer('import');
+
+    // Ensure WASM tessellator is loaded before parsing
+    await ensureWasmReady();
 
     // Run the full STEP import pipeline (parse + tessellate)
     const result = importSTEP(stepData, { curveSegments });

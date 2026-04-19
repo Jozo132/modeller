@@ -24,7 +24,10 @@
 import { NurbsCurve } from './NurbsCurve.js';
 import { NurbsSurface } from './NurbsSurface.js';
 import { tessellateBodyRouted } from './Tessellator2/index.js';
-import { tessellateBodyWasm } from './StepImportWasm.js';
+import { tessellateBodyWasm, ensureWasmReady as _ensureWasmReady } from './StepImportWasm.js';
+
+// Re-export for callers that need to pre-load WASM before sync importSTEP
+export const ensureWasmReady = _ensureWasmReady;
 import {
   SurfaceType,
   TopoVertex,
@@ -36,6 +39,10 @@ import {
   TopoBody,
 } from './BRepTopology.js';
 import { telemetry } from '../telemetry.js';
+
+// Pre-load WASM module as soon as this module is imported.
+// By the time the user triggers a STEP import, the module will be ready.
+_ensureWasmReady();
 
 const STEP_NUMBER_PATTERN = '[+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[Ee][+-]?\\d+)?';
 const _now = typeof performance !== 'undefined' && performance.now
@@ -235,15 +242,13 @@ export function importSTEP(stepString, opts = {}) {
 
   // Try WASM tessellation path first (10-50× faster than JS Tessellator2)
   let mesh = null;
-  if (opts.wasmRegistry) {
-    mesh = _measureStepPhase(timings, 'tessellateMs', 'step:import:tessellate:wasm', () =>
-      tessellateBodyWasm(body, opts.wasmRegistry, {
-        edgeSegments: opts.curveSegments ?? 64,
-        surfaceSegments: opts.surfaceSegments ?? 16,
-      }),
-    );
-    if (mesh) timings.tessellator = 'wasm';
-  }
+  mesh = _measureStepPhase(timings, 'tessellateMs', 'step:import:tessellate:wasm', () =>
+    tessellateBodyWasm(body, {
+      edgeSegments: opts.curveSegments ?? 64,
+      surfaceSegments: opts.surfaceSegments ?? 16,
+    }),
+  );
+  if (mesh) timings.tessellator = 'wasm';
 
   // Fall back to JS Tessellator2 if WASM path unavailable or failed
   if (!mesh) {
@@ -270,6 +275,20 @@ export function importSTEP(stepString, opts = {}) {
   timings.meshFaceCount = mesh.faces.length;
 
   return { body, vertices: mesh.vertices, faces: mesh.faces, timings };
+}
+
+/**
+ * Async version of importSTEP that ensures the WASM tessellator is loaded
+ * before running. Use this from async call sites (UI handlers, workers) for
+ * guaranteed WASM-accelerated tessellation.
+ *
+ * @param {string} stepString
+ * @param {Object} [opts]
+ * @returns {Promise<{ body: TopoBody, vertices: {x,y,z}[], faces: {vertices:{x,y,z}[], normal:{x,y,z}}[], timings: Object }>}
+ */
+export async function importSTEPAsync(stepString, opts = {}) {
+  await _ensureWasmReady();
+  return importSTEP(stepString, opts);
 }
 
 /**

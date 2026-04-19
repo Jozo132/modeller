@@ -7,30 +7,62 @@
 // The JS STEP parser (parseSTEPTopology) is kept — string parsing is fast.
 // Only the tessellation step is replaced with the WASM kernel path which
 // is 10-50× faster than the JS Tessellator2 for large models.
+//
+// Self-contained: lazy-loads the WASM module directly — no registry needed.
 
 import { SurfaceType } from './BRepTopology.js';
 
+// ── Lazy WASM module singleton ──────────────────────────────────────
+let _wasm = null;
+let _wasmMem = null;
+let _initPromise = null;
+
 /**
- * @typedef {import('./WasmBrepHandleRegistry.js').default} WasmBrepHandleRegistry
- * @typedef {import('./BRepTopology.js').TopoBody} TopoBody
+ * Ensure the WASM module is loaded. Safe to call multiple times.
+ * @returns {Promise<boolean>} true if WASM is available
  */
+async function _ensureWasm() {
+    if (_wasm) return true;
+    if (_initPromise) return _initPromise;
+    _initPromise = (async () => {
+        try {
+            const mod = await import('../../build/release.js');
+            _wasm = mod;
+            _wasmMem = mod.memory;
+            return true;
+        } catch {
+            return false;
+        }
+    })();
+    return _initPromise;
+}
+
+/**
+ * Synchronous check — only works after ensureWasmReady() resolved.
+ */
+function _wasmReady() { return _wasm != null; }
+
+/**
+ * Pre-load the WASM module. Call this early (e.g. at app startup) so that
+ * tessellateBodyWasm() can work synchronously when called later.
+ */
+export async function ensureWasmReady() { return _ensureWasm(); }
 
 /**
  * Load a JS TopoBody into WASM kernel topology+geometry buffers and
  * tessellate it using the native WASM tessellator.
  *
- * @param {TopoBody} body - Parsed B-Rep topology from parseSTEPTopology
- * @param {WasmBrepHandleRegistry} registry - WASM bridge (must be initialised)
+ * @param {import('./BRepTopology.js').TopoBody} body
  * @param {Object} [opts]
- * @param {number} [opts.edgeSegments=64] - Segments for curved edges (U direction)
- * @param {number} [opts.surfaceSegments=16] - Segments for surfaces (V direction)
+ * @param {number} [opts.edgeSegments=64]
+ * @param {number} [opts.surfaceSegments=16]
  * @returns {{ vertices: {x:number,y:number,z:number}[], faces: {vertices:{x:number,y:number,z:number}[], normal:{x:number,y:number,z:number}, faceGroup:number, isCurved:boolean, surfaceInfo:Object|null, shared:Object|null}[] } | null}
  */
-export function tessellateBodyWasm(body, registry, opts = {}) {
-    const w = registry.wasmExports;
+export function tessellateBodyWasm(body, opts = {}) {
+    const w = _wasm;
     if (!w) return null;
 
-    const wasmMem = registry.wasmMemory;
+    const wasmMem = _wasmMem;
 
     const edgeSegments = opts.edgeSegments ?? 64;
     const surfaceSegments = opts.surfaceSegments ?? 16;

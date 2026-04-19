@@ -16,7 +16,7 @@ import { downloadSTL } from './stl/export.js';
 import { downloadSVG } from './svg/export.js';
 import { openDXFFile, pickDXFFile, addDXFToScene, dxfBounds, parseDXFGeometry } from './dxf/import.js';
 import { pickSVGFile, addSVGToScene, svgBounds, parseSVGGeometry } from './svg/import.js';
-import { importSTEP } from './cad/StepImport.js';
+import { importSTEP, importSTEPAsync, ensureWasmReady } from './cad/StepImport.js';
 import { exportSTEPDetailed } from './cad/StepExport.js';
 import { wasmTessellation } from './cad/WasmTessellation.js';
 import { GeometryEvaluator } from './cad/GeometryEvaluator.js';
@@ -6146,6 +6146,8 @@ class App {
     }
 
     try {
+      this.setStatus(`Importing ${file.name} (loading WASM tessellator...)...`);
+      await ensureWasmReady();
       this.setStatus(`Importing ${file.name}...`);
       const feature = this._partManager.importSTEP(stepData, {
         name: file.name.replace(/\.(step|stp)$/i, ''),
@@ -9941,6 +9943,8 @@ class App {
     this._enterWorkspace('part');
 
     try {
+      this.setStatus(`Importing ${filename} (loading WASM tessellator...)...`);
+      await ensureWasmReady();
       this.setStatus(`Importing ${filename}...`);
       const feature = this._partManager.importSTEP(stepData, {
         name: filename.replace(/\.(step|stp)$/i, ''),
@@ -9985,6 +9989,8 @@ class App {
     }
 
     try {
+      this.setStatus(`Importing ${filename} as floating body (loading WASM tessellator...)...`);
+      await ensureWasmReady();
       this.setStatus(`Importing ${filename} as floating body...`);
       const feature = this._partManager.importSTEP(stepData, {
         name: filename.replace(/\.(step|stp)$/i, '') + ' (imported)',
