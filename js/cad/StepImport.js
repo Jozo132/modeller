@@ -25,6 +25,7 @@ import { NurbsCurve } from './NurbsCurve.js';
 import { NurbsSurface } from './NurbsSurface.js';
 import { tessellateBodyRouted } from './Tessellator2/index.js';
 import { tessellateBodyWasm, ensureWasmReady as _ensureWasmReady } from './StepImportWasm.js';
+import { globalTessConfig } from './TessellationConfig.js';
 
 // Re-export for callers that need to pre-load WASM before sync importSTEP
 export const ensureWasmReady = _ensureWasmReady;
@@ -244,8 +245,8 @@ export function importSTEP(stepString, opts = {}) {
   let mesh = null;
   mesh = _measureStepPhase(timings, 'tessellateMs', 'step:import:tessellate:wasm', () =>
     tessellateBodyWasm(body, {
-      edgeSegments: opts.curveSegments ?? 64,
-      surfaceSegments: opts.surfaceSegments ?? 16,
+      edgeSegments: opts.curveSegments ?? globalTessConfig.edgeSegments,
+      surfaceSegments: opts.surfaceSegments ?? globalTessConfig.surfaceSegments,
     }),
   );
   if (mesh && mesh.faces.length > 0) {
@@ -257,8 +258,8 @@ export function importSTEP(stepString, opts = {}) {
     mesh = _measureStepPhase(timings, 'tessellateMs', 'step:import:tessellate', () =>
       tessellateBodyRouted(body, {
         tessellator: 'robust',
-        edgeSegments: opts.curveSegments ?? 64,
-        surfaceSegments: opts.surfaceSegments ?? 16,
+        edgeSegments: opts.curveSegments ?? globalTessConfig.edgeSegments,
+        surfaceSegments: opts.surfaceSegments ?? globalTessConfig.surfaceSegments,
       }),
     );
     timings.tessellator = 'js-cold-start-fallback';

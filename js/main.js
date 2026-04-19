@@ -19,6 +19,7 @@ import { pickSVGFile, addSVGToScene, svgBounds, parseSVGGeometry } from './svg/i
 import { importSTEP, importSTEPAsync, ensureWasmReady } from './cad/StepImport.js';
 import { exportSTEPDetailed } from './cad/StepExport.js';
 import { wasmTessellation } from './cad/WasmTessellation.js';
+import { globalTessConfig } from './cad/TessellationConfig.js';
 import { GeometryEvaluator } from './cad/GeometryEvaluator.js';
 import { downloadCMOD, openCMODFile, projectFromCMOD, setCmodViewport, setCmodPartManager, setCmodRenderer, setCmodWorkspaceModeGetter, setCmodSessionStateGetter, setCmodScenesGetter } from './cmod.js';
 import { debug, info, warn, error } from './logger.js';
@@ -2143,6 +2144,38 @@ class App {
           this._recorder.fovChanged(deg);
         }
         this._scheduleRender();
+      });
+    }
+
+    // Tessellation quality dropdown — applies globally, re-tessellates on change
+    const tessSelect = document.getElementById('tess-quality-select');
+    if (tessSelect) {
+      // Sync initial UI state from global config
+      const currentPreset = globalTessConfig.getPreset();
+      if (currentPreset) tessSelect.value = currentPreset;
+
+      tessSelect.addEventListener('change', () => {
+        globalTessConfig.applyPreset(tessSelect.value);
+        info(`Tessellation quality set to: ${tessSelect.value} (curves=${globalTessConfig.curveSegments}, surfaces=${globalTessConfig.surfaceSegments})`);
+
+        // Re-execute all features with new tessellation resolution
+        if (this._partManager) {
+          const part = this._partManager.getActivePart();
+          if (part) {
+            // Update part's serialized config to match global
+            Object.assign(part.tessellationConfig, globalTessConfig);
+            // Invalidate cached meshes so features re-tessellate
+            part.featureTree.features.forEach(f => {
+              if (f._cachedMesh) f._cachedMesh = null;
+            });
+            part.featureTree.executeAll();
+            this._updateNodeTree();
+            this._update3DView();
+            this._scheduleRender();
+            debouncedSave();
+          }
+        }
+        this.setStatus(`Tessellation quality: ${tessSelect.value}`);
       });
     }
 
@@ -6131,15 +6164,6 @@ class App {
       return;
     }
 
-    // Ask for tessellation quality
-    const segStr = await showPrompt({
-      title: 'Import STEP',
-      message: `File: ${file.name} (${(file.size / 1024).toFixed(1)} KB)\n\nCurve tessellation segments:`,
-      defaultValue: '64',
-    });
-    if (segStr === null || segStr === undefined) return;
-    const curveSegments = Math.max(3, parseInt(segStr, 10) || 64);
-
     // Ensure Part Design workspace is active
     if (this._workspaceMode !== 'part') {
       this._enterWorkspace('part');
@@ -6151,7 +6175,6 @@ class App {
       this.setStatus(`Importing ${file.name}...`);
       const feature = this._partManager.importSTEP(stepData, {
         name: file.name.replace(/\.(step|stp)$/i, ''),
-        curveSegments,
       });
       takeSnapshot();
       this._updateNodeTree();
@@ -6163,7 +6186,7 @@ class App {
       const nFaces = featureResult?.geometry?.faces?.length || 0;
       if (featureResult?.timings) info('STEP import timings', featureResult.timings);
       this.setStatus(
-        `Imported ${file.name} — ${nFaces} faces (segments: ${curveSegments})` +
+        `Imported ${file.name} — ${nFaces} faces` +
         this._formatStepImportTimingSuffix(featureResult),
       );
     } catch (err) {
@@ -9927,15 +9950,6 @@ class App {
    * Import STEP into a new project (clears existing work).
    */
   async _stepImportNewProject(stepData, filename) {
-    // Ask tessellation quality
-    const segStr = await showPrompt({
-      title: 'Import STEP — New Project',
-      message: `File: ${filename}\n\nCurve tessellation segments:`,
-      defaultValue: '64',
-    });
-    if (segStr === null || segStr === undefined) return;
-    const curveSegments = Math.max(3, parseInt(segStr, 10) || 64);
-
     // Clear and start fresh
     if (this._workspaceMode === 'part') {
       this._partManager.createPart(filename.replace(/\.(step|stp)$/i, ''));
@@ -9948,7 +9962,6 @@ class App {
       this.setStatus(`Importing ${filename}...`);
       const feature = this._partManager.importSTEP(stepData, {
         name: filename.replace(/\.(step|stp)$/i, ''),
-        curveSegments,
       });
       takeSnapshot();
       this._updateNodeTree();
@@ -9960,7 +9973,7 @@ class App {
       const nFaces = featureResult?.geometry?.faces?.length || 0;
       if (featureResult?.timings) info('STEP import timings', featureResult.timings);
       this.setStatus(
-        `Imported ${filename} as new project — ${nFaces} faces (segments: ${curveSegments})` +
+        `Imported ${filename} as new project — ${nFaces} faces` +
         this._formatStepImportTimingSuffix(featureResult),
       );
     } catch (err) {
@@ -9974,15 +9987,6 @@ class App {
    * The imported body becomes a separate feature, enabling boolean operations.
    */
   async _stepImportToExisting(stepData, filename) {
-    // Ask tessellation quality
-    const segStr = await showPrompt({
-      title: 'Import STEP — Add to Current',
-      message: `File: ${filename}\nThe imported STEP geometry will be added as a floating solid body.\nYou can then use boolean operations to combine it with existing bodies.\n\nCurve tessellation segments:`,
-      defaultValue: '64',
-    });
-    if (segStr === null || segStr === undefined) return;
-    const curveSegments = Math.max(3, parseInt(segStr, 10) || 64);
-
     // Ensure Part workspace
     if (this._workspaceMode !== 'part') {
       this._enterWorkspace('part');
@@ -9994,7 +9998,6 @@ class App {
       this.setStatus(`Importing ${filename} as floating body...`);
       const feature = this._partManager.importSTEP(stepData, {
         name: filename.replace(/\.(step|stp)$/i, '') + ' (imported)',
-        curveSegments,
       });
       takeSnapshot();
       this._updateNodeTree();

@@ -40,6 +40,19 @@ export function surfaceSurfaceIntersect(surfA, typeA, surfB, typeB, tol = DEFAUL
       paramsB: r.paramsA,
     }));
   }
+  if (typeA === SurfaceType.PLANE && typeB === SurfaceType.SPHERE) {
+    return _planeSphere(surfA, surfB, tol);
+  }
+  if (typeA === SurfaceType.SPHERE && typeB === SurfaceType.PLANE) {
+    return _planeSphere(surfB, surfA, tol).map(r => ({
+      curve: r.curve,
+      paramsA: r.paramsB,
+      paramsB: r.paramsA,
+    }));
+  }
+  if (typeA === SurfaceType.CYLINDER && typeB === SurfaceType.CYLINDER) {
+    return _cylinderCylinder(surfA, surfB, tol);
+  }
 
   // Fallback: numeric marching for general surfaces
   return _numericMarch(surfA, surfB, tol);
@@ -148,15 +161,260 @@ function _computePlaneUV(planeSurface, point3D) {
 // Analytic: plane/cylinder intersection
 // -----------------------------------------------------------------------
 
+/**
+ * Plane/cylinder intersection.
+ * - Plane perpendicular to axis → circle
+ * - Plane parallel to axis → 0 or 2 lines
+ * - Plane oblique to axis → ellipse
+ *
+ * The cylinder surface is described by its origin, axis, and radius.
+ * We extract these from the NurbsSurface's surfaceInfo or control points.
+ */
 function _planeCylinder(plane, cylinder, tol) {
-  // The intersection of a plane and cylinder is typically:
-  // - an ellipse (when plane cuts at angle)
-  // - two lines (when plane contains cylinder axis)
-  // - empty (when plane is parallel to axis and outside cylinder)
+  // Extract plane geometry
+  const planeEval = GeometryEvaluator.evalSurface(plane, 0.5, 0.5);
+  const planeN = planeEval.n;
+  const planeP = planeEval.p;
 
-  // For now, use numeric marching as a reliable fallback
-  // that handles all cases correctly
+  // Extract cylinder geometry from the surface's analytic parameters
+  const cylInfo = _extractCylinderInfo(cylinder);
+  if (!cylInfo) return _numericMarch(plane, cylinder, tol);
+
+  const { origin: cylO, axis: cylA, radius: cylR } = cylInfo;
+
+  // cos(angle) between plane normal and cylinder axis
+  const cosTheta = planeN.x * cylA.x + planeN.y * cylA.y + planeN.z * cylA.z;
+  const sinTheta = Math.sqrt(1 - cosTheta * cosTheta);
+
+  // Signed distance from cylinder origin to plane
+  const d = (cylO.x - planeP.x) * planeN.x +
+            (cylO.y - planeP.y) * planeN.y +
+            (cylO.z - planeP.z) * planeN.z;
+
+  if (Math.abs(cosTheta) < tol.angularParallelism) {
+    // Plane is parallel (or nearly) to the cylinder axis → 0 or 2 lines
+    // Distance from axis to plane
+    // Project plane normal onto plane perpendicular to axis
+    const pNx = planeN.x - cosTheta * cylA.x;
+    const pNy = planeN.y - cosTheta * cylA.y;
+    const pNz = planeN.z - cosTheta * cylA.z;
+    const pNlen = Math.sqrt(pNx * pNx + pNy * pNy + pNz * pNz);
+    if (pNlen < 1e-15) return [];
+
+    const distToAxis = Math.abs(d) / pNlen;
+    if (distToAxis > cylR + tol.distance) return [];
+    if (Math.abs(distToAxis - cylR) < tol.distance) {
+      // Tangent: single line
+      const tangentPt = {
+        x: cylO.x - (d / pNlen) * (pNx / pNlen),
+        y: cylO.y - (d / pNlen) * (pNy / pNlen),
+        z: cylO.z - (d / pNlen) * (pNz / pNlen),
+      };
+      const extent = 1000;
+      const p0 = { x: tangentPt.x - cylA.x * extent, y: tangentPt.y - cylA.y * extent, z: tangentPt.z - cylA.z * extent };
+      const p1 = { x: tangentPt.x + cylA.x * extent, y: tangentPt.y + cylA.y * extent, z: tangentPt.z + cylA.z * extent };
+      return [{ curve: NurbsCurve.createLine(p0, p1), paramsA: [], paramsB: [] }];
+    }
+
+    // Two secant lines
+    const halfChord = Math.sqrt(cylR * cylR - distToAxis * distToAxis);
+    // Direction perpendicular to both axis and plane normal
+    const crossX = cylA.y * pNz / pNlen - cylA.z * pNy / pNlen;
+    const crossY = cylA.z * pNx / pNlen - cylA.x * pNz / pNlen;
+    const crossZ = cylA.x * pNy / pNlen - cylA.y * pNx / pNlen;
+    const basePt = {
+      x: cylO.x - (d / pNlen) * (pNx / pNlen),
+      y: cylO.y - (d / pNlen) * (pNy / pNlen),
+      z: cylO.z - (d / pNlen) * (pNz / pNlen),
+    };
+    const results = [];
+    for (const sign of [-1, 1]) {
+      const linePt = {
+        x: basePt.x + sign * halfChord * crossX,
+        y: basePt.y + sign * halfChord * crossY,
+        z: basePt.z + sign * halfChord * crossZ,
+      };
+      const extent = 1000;
+      const p0 = { x: linePt.x - cylA.x * extent, y: linePt.y - cylA.y * extent, z: linePt.z - cylA.z * extent };
+      const p1 = { x: linePt.x + cylA.x * extent, y: linePt.y + cylA.y * extent, z: linePt.z + cylA.z * extent };
+      results.push({ curve: NurbsCurve.createLine(p0, p1), paramsA: [], paramsB: [] });
+    }
+    return results;
+  }
+
+  if (sinTheta < tol.angularParallelism) {
+    // Plane is perpendicular to axis → circle
+    // Find the center: project cylinder origin onto the plane
+    const t = -d / (cosTheta || 1);
+    const center = {
+      x: cylO.x + t * cylA.x,
+      y: cylO.y + t * cylA.y,
+      z: cylO.z + t * cylA.z,
+    };
+    const curve = _createCircleCurve(center, planeN, cylR);
+    return [{ curve, paramsA: [], paramsB: [] }];
+  }
+
+  // General oblique case → ellipse
+  // Approximate with a NURBS curve through sampled points
+  // The intersection is an ellipse with semi-major a = r/sin(theta)
+  // and semi-minor b = r
   return _numericMarch(plane, cylinder, tol);
+}
+
+// -----------------------------------------------------------------------
+// Analytic: plane/sphere intersection
+// -----------------------------------------------------------------------
+
+/**
+ * Plane/sphere intersection → circle or empty.
+ */
+function _planeSphere(plane, sphere, tol) {
+  const planeEval = GeometryEvaluator.evalSurface(plane, 0.5, 0.5);
+  const planeN = planeEval.n;
+  const planeP = planeEval.p;
+
+  const sphInfo = _extractSphereInfo(sphere);
+  if (!sphInfo) return _numericMarch(plane, sphere, tol);
+
+  const { center: sphC, radius: sphR } = sphInfo;
+
+  // Signed distance from sphere center to plane
+  const dist = (sphC.x - planeP.x) * planeN.x +
+               (sphC.y - planeP.y) * planeN.y +
+               (sphC.z - planeP.z) * planeN.z;
+
+  if (Math.abs(dist) > sphR + tol.distance) return []; // no intersection
+
+  const circleR = Math.sqrt(Math.max(0, sphR * sphR - dist * dist));
+  if (circleR < tol.distance) return []; // tangent point, skip
+
+  // Circle center: project sphere center onto plane
+  const center = {
+    x: sphC.x - dist * planeN.x,
+    y: sphC.y - dist * planeN.y,
+    z: sphC.z - dist * planeN.z,
+  };
+
+  const curve = _createCircleCurve(center, planeN, circleR);
+  return [{ curve, paramsA: [], paramsB: [] }];
+}
+
+// -----------------------------------------------------------------------
+// Analytic: cylinder/cylinder intersection
+// -----------------------------------------------------------------------
+
+/**
+ * Cylinder/cylinder intersection.
+ * Concentric coaxial → 0 or 2 circles. Otherwise → numeric march.
+ */
+function _cylinderCylinder(cylA, cylB, tol) {
+  const infoA = _extractCylinderInfo(cylA);
+  const infoB = _extractCylinderInfo(cylB);
+  if (!infoA || !infoB) return _numericMarch(cylA, cylB, tol);
+
+  // Check if axes are parallel and coincident (same axis)
+  const dot = infoA.axis.x * infoB.axis.x +
+              infoA.axis.y * infoB.axis.y +
+              infoA.axis.z * infoB.axis.z;
+
+  if (Math.abs(Math.abs(dot) - 1) < tol.angularParallelism) {
+    // Parallel axes — check distance between axes
+    const dp = {
+      x: infoB.origin.x - infoA.origin.x,
+      y: infoB.origin.y - infoA.origin.y,
+      z: infoB.origin.z - infoA.origin.z,
+    };
+    const projLen = dp.x * infoA.axis.x + dp.y * infoA.axis.y + dp.z * infoA.axis.z;
+    const perpX = dp.x - projLen * infoA.axis.x;
+    const perpY = dp.y - projLen * infoA.axis.y;
+    const perpZ = dp.z - projLen * infoA.axis.z;
+    const axisDist = Math.sqrt(perpX * perpX + perpY * perpY + perpZ * perpZ);
+
+    if (axisDist < tol.distance && Math.abs(infoA.radius - infoB.radius) < tol.distance) {
+      // Coincident cylinders — no intersection curves (identical surfaces)
+      return [];
+    }
+    // Parallel but offset — at most 2 circles at specific heights, but
+    // that requires knowing the trim bounds. Fall to numeric march.
+  }
+
+  // General case: non-parallel or non-concentric → numeric march
+  return _numericMarch(cylA, cylB, tol);
+}
+
+// -----------------------------------------------------------------------
+// Helpers for extracting analytic geometry from NurbsSurface
+// -----------------------------------------------------------------------
+
+function _extractCylinderInfo(surface) {
+  // Try surfaceInfo first (set by STEP import for analytic surfaces)
+  if (surface._analyticParams && surface._analyticParams.type === 'cylinder') {
+    return surface._analyticParams;
+  }
+  // Try surfaceInfo on the surface object
+  if (surface.surfaceInfo && surface.surfaceInfo.type === 'cylinder') {
+    return surface.surfaceInfo;
+  }
+  // Fall back to evaluating the surface at parameter midpoints
+  // and inferring geometry from derivatives
+  try {
+    const cp = surface.controlPoints;
+    if (!cp || cp.length < 4) return null;
+    // For a cylindrical surface, evaluate at a grid and fit
+    // This is expensive — return null to trigger numeric march
+    return null;
+  } catch { return null; }
+}
+
+function _extractSphereInfo(surface) {
+  if (surface._analyticParams && surface._analyticParams.type === 'sphere') {
+    return surface._analyticParams;
+  }
+  if (surface.surfaceInfo && surface.surfaceInfo.type === 'sphere') {
+    return surface.surfaceInfo;
+  }
+  return null;
+}
+
+/**
+ * Create a degree-2 rational NURBS circle curve.
+ * Uses 9-point rational representation with weights.
+ */
+function _createCircleCurve(center, normal, radius) {
+  // Build a local frame on the plane
+  let uDir;
+  if (Math.abs(normal.y) < 0.9) {
+    uDir = { x: -normal.z, y: 0, z: normal.x };
+  } else {
+    uDir = { x: 0, y: normal.z, z: -normal.y };
+  }
+  const uLen = Math.sqrt(uDir.x * uDir.x + uDir.y * uDir.y + uDir.z * uDir.z);
+  uDir = { x: uDir.x / uLen, y: uDir.y / uLen, z: uDir.z / uLen };
+  const vDir = {
+    x: normal.y * uDir.z - normal.z * uDir.y,
+    y: normal.z * uDir.x - normal.x * uDir.z,
+    z: normal.x * uDir.y - normal.y * uDir.x,
+  };
+
+  // 9-point rational circle (degree 2)
+  const w = Math.SQRT1_2; // weight for corner control points
+  const cp = [];
+  const weights = [];
+  for (let i = 0; i < 9; i++) {
+    const angle = (i / 8) * Math.PI * 2;
+    const isCorner = (i % 2) === 1;
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    cp.push({
+      x: center.x + radius * (cos * uDir.x + sin * vDir.x),
+      y: center.y + radius * (cos * uDir.y + sin * vDir.y),
+      z: center.z + radius * (cos * uDir.z + sin * vDir.z),
+    });
+    weights.push(isCorner ? w : 1.0);
+  }
+
+  return new NurbsCurve(2, [0, 0, 0, 0.25, 0.25, 0.5, 0.5, 0.75, 0.75, 1, 1, 1], cp, weights);
 }
 
 // -----------------------------------------------------------------------

@@ -16,7 +16,7 @@ import { RevolveFeature } from './RevolveFeature.js';
 import { ChamferFeature } from './ChamferFeature.js';
 import { FilletFeature } from './FilletFeature.js';
 import { StepImportFeature } from './StepImportFeature.js';
-import { TessellationConfig } from './TessellationConfig.js';
+import { TessellationConfig, globalTessConfig } from './TessellationConfig.js';
 import { isLegacyEdgeKey, legacyEdgeKeyToStable } from './history/StableEntityKey.js';
 
 function parseFeatureIdNumber(featureId) {
@@ -496,7 +496,7 @@ export class Part {
     if (options.segments) {
       feature.setSegments(options.segments);
     } else {
-      feature.setSegments(this.tessellationConfig.curveSegments);
+      feature.setSegments(globalTessConfig.curveSegments);
     }
 
     // Auto-populate stable entity keys for new features
@@ -541,7 +541,6 @@ export class Part {
    * @param {string} stepData - Raw STEP file contents
    * @param {Object} [options]
    * @param {string} [options.name] - Feature name (auto-generated if omitted)
-   * @param {number} [options.curveSegments] - Tessellation quality (defaults to global config)
    * @returns {StepImportFeature} The created STEP import feature
    */
   importSTEP(stepData, options = {}) {
@@ -549,7 +548,7 @@ export class Part {
 
     const name = options.name || this._nextTypeName('step-import', 'STEP Import');
     const feature = new StepImportFeature(name, stepData, {
-      curveSegments: options.curveSegments ?? this.tessellationConfig.curveSegments,
+      curveSegments: globalTessConfig.curveSegments,
     });
 
     this.featureTree.addFeature(feature);
@@ -732,6 +731,8 @@ export class Part {
 
     // Restore global tessellation config (falls back to defaults for old files)
     part.tessellationConfig = TessellationConfig.deserialize(data.tessellationConfig);
+    // Sync the global singleton so all callers see the deserialized values
+    Object.assign(globalTessConfig, part.tessellationConfig);
 
     return part;
   }

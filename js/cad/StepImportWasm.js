@@ -11,6 +11,7 @@
 // Self-contained: lazy-loads the WASM module directly — no registry needed.
 
 import { SurfaceType } from './BRepTopology.js';
+import { globalTessConfig } from './TessellationConfig.js';
 
 // ── Lazy WASM module singleton ──────────────────────────────────────
 let _wasm = null;
@@ -64,8 +65,8 @@ export function tessellateBodyWasm(body, opts = {}) {
 
     const wasmMem = _wasmMem;
 
-    const edgeSegments = opts.edgeSegments ?? 64;
-    const surfaceSegments = opts.surfaceSegments ?? 16;
+    const edgeSegments = opts.edgeSegments ?? globalTessConfig.edgeSegments;
+    const surfaceSegments = opts.surfaceSegments ?? globalTessConfig.surfaceSegments;
 
     // ── 1. Reset WASM kernel state ──────────────────────────────────
     w.bodyBegin();

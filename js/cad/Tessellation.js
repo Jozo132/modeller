@@ -10,6 +10,7 @@
 
 import { robustTessellateBody } from './Tessellator2/index.js';
 import { tessellateBodyWasm, ensureWasmReady } from './StepImportWasm.js';
+import { globalTessConfig } from './TessellationConfig.js';
 
 // Fire-and-forget WASM init so that tessellateBodyWasm() works synchronously
 // by the time tessellateBody() is first called.  Safe to call multiple times.
@@ -115,11 +116,17 @@ function triangulatePolygonIndices(verts, normal) {
  * @param {Object} [opts]
  * @param {number} [opts.chordalDeviation=0.01] - Max chordal deviation for curved surfaces
  * @param {number} [opts.angularTolerance=15] - Max angle (degrees) between adjacent normals
- * @param {number} [opts.surfaceSegments=16] - Default segments for NURBS surface tessellation
- * @param {number} [opts.edgeSegments=64] - Default segments for NURBS edge tessellation
+ * @param {number} [opts.surfaceSegments] - Segments for NURBS surface tessellation (from globalTessConfig)
+ * @param {number} [opts.edgeSegments] - Segments for NURBS edge tessellation (from globalTessConfig)
  * @returns {{ vertices: Array<{x,y,z}>, faces: Array<{vertices: Array<{x,y,z}>, normal: {x,y,z}, shared: Object}>, edges: Array }}
  */
 export function tessellateBody(body, opts = {}) {
+  // Merge with global config defaults so callers never need to specify segments
+  opts = {
+    surfaceSegments: globalTessConfig.surfaceSegments,
+    edgeSegments: globalTessConfig.edgeSegments,
+    ...opts,
+  };
   // Early out: empty or null bodies produce empty meshes (e.g. intersect of
   // non-overlapping solids). No error — the caller handles the empty case.
   if (!body || !body.shells || body.shells.length === 0 ||

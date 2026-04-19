@@ -423,6 +423,15 @@
     <span id="status-autocoincidence">AUTO</span>
     <span id="status-ortho">ORTHO</span>
     <span class="status-spacer"></span>
+    <div class="tess-quality-group">
+      <label class="tess-quality-label" title="Tessellation Quality">TESS</label>
+      <select id="tess-quality-select" class="tess-quality-select" title="Tessellation quality preset — controls curve and surface resolution globally">
+        <option value="draft">Draft</option>
+        <option value="normal" selected>Normal</option>
+        <option value="fine">Fine</option>
+        <option value="ultra">Ultra</option>
+      </select>
+    </div>
     <div class="fov-group">
       <label class="fov-label" title="Field of View">FOV</label>
       <input id="fov-slider" type="range" class="fov-slider" min="0" max="116" value="41" step="1" title="Field of View: 0 = Orthographic, 5-120 = Perspective">

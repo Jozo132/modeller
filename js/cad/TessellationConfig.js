@@ -4,6 +4,11 @@
 // the entire CAD scene. All features inherit these settings instead of
 // maintaining per-feature segment counts.
 //
+// Usage:
+//   import { globalTessConfig } from './TessellationConfig.js';
+//   const segs = globalTessConfig.surfaceSegments; // always current
+//   globalTessConfig.applyPreset('fine');           // updates everywhere
+//
 // Tessellator modes:
 //   - 'legacy'  — Independent per-face tessellation (default, original behavior)
 //   - 'robust'  — Edge-first shared-boundary pipeline (Tessellator2)
@@ -100,4 +105,27 @@ export class TessellationConfig {
     if (!data) return new TessellationConfig();
     return new TessellationConfig(data);
   }
+}
+
+// ─── Module-level global singleton ──────────────────────────────────
+//
+// Every call site that needs tessellation parameters imports this once.
+// Part.tessellationConfig still exists for serialization into .cmod, but
+// at runtime the global config is the authoritative source of truth.
+
+/** @type {TessellationConfig} */
+export const globalTessConfig = new TessellationConfig();
+
+/**
+ * Return the tessellation options object expected by tessellateBody /
+ * tessellateBodyWasm / importSTEP.  Callers can spread or pass directly.
+ *
+ * @returns {{ edgeSegments: number, surfaceSegments: number, curveSegments: number }}
+ */
+export function getTessOptions() {
+  return {
+    edgeSegments: globalTessConfig.edgeSegments,
+    surfaceSegments: globalTessConfig.surfaceSegments,
+    curveSegments: globalTessConfig.curveSegments,
+  };
 }

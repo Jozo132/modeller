@@ -842,7 +842,12 @@ Status: **in progress** — `kernel/ops.ts` implements classifyPointVsShell
 (ray-cast with topological face iteration), classifyFacesViaOctree (broadphase
 overlap detection), point-to-surface distance helpers (plane, sphere, cylinder),
 per-face classification buffer. Octree from `kernel/spatial.ts` now wired to
-classification pipeline.
+classification pipeline. JS-side `Intersections.js` now uses WASM octree
+broadphase for candidate pair detection in `intersectBodies()`, replacing the
+O(N×M) brute-force loop with O(N log N) octree queries. AABB fallback retained
+for when WASM is not loaded. `SurfaceSurfaceIntersect.js` extended with
+analytic plane/sphere (circle), plane/cylinder (circle/lines), and
+cylinder/cylinder (coaxial detection) intersection paths.
 
 ### Phase 5: GPU-Accelerated Tessellation (WebGPU Compute)
 
@@ -946,6 +951,42 @@ both residency and GPU diagnostics.
     Done: kernel/ops.ts isxRecord/isxGetErrorBound/isxAreDistinct/isxRayFace.
     Error bounds computed from condition number (ray-normal angle + curvature).
     isxAreDistinct proves uniqueness when point separation > combined bounds.
+12. ~~Wire WASM octree broadphase into JS `intersectBodies()` for candidate pair
+    detection.~~
+    Done: Intersections.js now computes face AABBs, loads them into the WASM
+    octree via octreeAddFaceAABB/octreeBuild/octreeQueryPairs, and reads back
+    candidate pairs. Falls back to JS AABB pre-filter when WASM not loaded.
+13. ~~Add analytic surface-surface intersections for plane/sphere, plane/cylinder,
+    cylinder/cylinder.~~
+    Done: SurfaceSurfaceIntersect.js implements _planeSphere (circle),
+    _planeCylinder (circle/lines/ellipse-fallback), _cylinderCylinder (coaxial
+    detection + numeric fallback).
+14. ~~Global tessellation config — remove per-import segment prompts, centralize
+    quality settings.~~
+    Done: globalTessConfig singleton in TessellationConfig.js. All callers
+    (Tessellation.js, StepImport.js, StepImportWasm.js, StepImportFeature.js,
+    BooleanKernel.js, BRepChamfer.js, BRepFillet.js) read from the global
+    config. Three showPrompt() calls removed from main.js. Status bar dropdown
+    added for changing quality preset (draft/normal/fine/ultra) with live
+    re-tessellation.
+12. ~~Wire WASM octree broadphase into JS `intersectBodies()` for candidate pair
+    detection.~~
+    Done: Intersections.js now computes face AABBs, loads them into the WASM
+    octree via octreeAddFaceAABB/octreeBuild/octreeQueryPairs, and reads back
+    candidate pairs. Falls back to JS AABB pre-filter when WASM not loaded.
+13. ~~Add analytic surface-surface intersections for plane/sphere, plane/cylinder,
+    cylinder/cylinder.~~
+    Done: SurfaceSurfaceIntersect.js implements _planeSphere (circle),
+    _planeCylinder (circle/lines/ellipse-fallback), _cylinderCylinder (coaxial
+    detection + numeric fallback).
+14. ~~Global tessellation config — remove per-import segment prompts, centralize
+    quality settings.~~
+    Done: globalTessConfig singleton in TessellationConfig.js. All callers
+    (Tessellation.js, StepImport.js, StepImportWasm.js, StepImportFeature.js,
+    BooleanKernel.js, BRepChamfer.js, BRepFillet.js) read from the global
+    config. Three showPrompt() calls removed from main.js. Status bar dropdown
+    added for changing quality preset (draft/normal/fine/ultra) with live
+    re-tessellation.
 
 ### GPU Tessellation (Phase 5)
 

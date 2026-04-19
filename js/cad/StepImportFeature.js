@@ -11,6 +11,7 @@ import { importSTEP } from './StepImport.js';
 import { computeFeatureEdges } from './EdgeAnalysis.js';
 import { getFlag } from '../featureFlags.js';
 import { telemetry } from '../telemetry.js';
+import { globalTessConfig } from './TessellationConfig.js';
 
 const _now = typeof performance !== 'undefined' && performance.now
   ? () => performance.now()
@@ -86,12 +87,13 @@ export class StepImportFeature extends Feature {
     const executeStart = _now();
     let cacheHit = true;
 
-    // Re-use cached result unless segments changed
-    if (!this._cachedMesh || this._cachedMesh.curveSegments !== this.curveSegments) {
+    // Re-use cached result unless global tessellation config changed
+    const currentSegments = globalTessConfig.curveSegments;
+    if (!this._cachedMesh || this._cachedMesh.curveSegments !== currentSegments) {
       cacheHit = false;
       const buildTimings = {};
       const buildStart = _now();
-      const result = importSTEP(this.stepData, { curveSegments: this.curveSegments });
+      const result = importSTEP(this.stepData, { curveSegments: currentSegments });
       const edgeResult = _measureSync(buildTimings, 'edgeAnalysisMs', 'step:feature:edge-analysis', () =>
         computeFeatureEdges(result.faces),
       );
@@ -104,7 +106,7 @@ export class StepImportFeature extends Feature {
 
       this._cachedMesh = {
         ...result,
-        curveSegments: this.curveSegments,
+        curveSegments: currentSegments,
         edgeResult,
         volume,
         boundingBox,
