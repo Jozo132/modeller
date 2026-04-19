@@ -49,8 +49,8 @@ export function clearShadowTessDisagreements() {
  *
  * @param {import('../BRepTopology.js').TopoBody} body
  * @param {Object} [opts]
- * @param {number} [opts.surfaceSegments=8]
- * @param {number} [opts.edgeSegments=16]
+ * @param {number} [opts.surfaceSegments=16]
+ * @param {number} [opts.edgeSegments=64]
  * @param {number} [opts.curveSegments=16]
  * @param {number} [opts.chordalTolerance=0.01]
  * @param {boolean} [opts.validate=false]
@@ -64,8 +64,8 @@ export function clearShadowTessDisagreements() {
  * }}
  */
 export function robustTessellateBody(body, opts = {}) {
-  const surfSegs = opts.surfaceSegments ?? 8;
-  const edgeSegs = opts.edgeSegments ?? 16;
+  const surfSegs = opts.surfaceSegments ?? 16;
+  const edgeSegs = opts.edgeSegments ?? 64;
   const doValidate = opts.validate ?? false;
 
   if (!body || !body.shells) return { vertices: [], faces: [], edges: [] };

@@ -959,7 +959,7 @@ export class FaceTriangulator {
    * Triangulate an analytic curved face directly in its exact parameter space.
    * This is used for STEP analytic surfaces that do not carry a NurbsSurface.
    */
-  triangulateAnalyticSurface(face, boundaryPts3D, holePts3D = [], surfaceSegments = 8) {
+  triangulateAnalyticSurface(face, boundaryPts3D, holePts3D = [], surfaceSegments = 16) {
     const surface = _makeAnalyticSurface(face.surfaceInfo);
     if (!surface) {
       return this.triangulatePlanar(boundaryPts3D, holePts3D, null, true);

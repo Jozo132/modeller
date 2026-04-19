@@ -128,10 +128,10 @@ export class TopoEdge {
 
   /**
    * Tessellate this edge.
-   * @param {number} [segments=16]
+   * @param {number} [segments=64]
    * @returns {Array<{x,y,z}>}
    */
-  tessellate(segments = 16) {
+  tessellate(segments = 64) {
     if (this.curve) return this.curve.tessellate(segments);
     const s = this.startVertex.point, e = this.endVertex.point;
     const pts = [];

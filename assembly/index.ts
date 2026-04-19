@@ -436,6 +436,8 @@ export {
   nurbsSurfaceStore, nurbsCurveStore,
   planeStore, cylinderStore, sphereStore, coneStore, torusStore,
   geomPoolRead, getGeomPoolPtr, geomPoolUsed, geomPoolReset, geomPoolSetUsed,
+  geomStagingPtr, geomStagingCapacity,
+  nurbsSurfaceStoreFromStaging, nurbsCurveStoreFromStaging,
   // transform
   transformIdentity, transformTranslation, transformRotation, transformScale,
   transformMultiply, transformPoint, transformPointByOutMat,

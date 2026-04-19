@@ -61,10 +61,10 @@ export class BRepEdge {
   /**
    * Tessellate this edge into a polyline.
    * If a NURBS curve is defined, evaluates it. Otherwise returns a straight line.
-   * @param {number} [segments=16]
+   * @param {number} [segments=64]
    * @returns {Array<{x,y,z}>}
    */
-  tessellate(segments = 16) {
+  tessellate(segments = 64) {
     if (this.curve) {
       return this.curve.tessellate(segments);
     }

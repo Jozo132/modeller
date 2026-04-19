@@ -24,6 +24,7 @@
 import { NurbsCurve } from './NurbsCurve.js';
 import { NurbsSurface } from './NurbsSurface.js';
 import { tessellateBodyRouted } from './Tessellator2/index.js';
+import { tessellateBodyWasm } from './StepImportWasm.js';
 import {
   SurfaceType,
   TopoVertex,
@@ -231,19 +232,36 @@ export function importSTEP(stepString, opts = {}) {
   const body = _measureStepPhase(timings, 'parseMs', 'step:import:parse', () =>
     parseSTEPTopology(stepString),
   );
-  const mesh = _measureStepPhase(timings, 'tessellateMs', 'step:import:tessellate', () =>
-    tessellateBodyRouted(body, {
-      tessellator: 'robust',
-      edgeSegments: opts.curveSegments ?? 64,
-      surfaceSegments: opts.surfaceSegments ?? 16,
-    }),
-  );
 
-  // Post-process: apply analytic per-vertex normals and surface projection
-  // for faces that have surfaceInfo but no NurbsSurface (sphere, cylinder, etc.)
-  _measureStepPhase(timings, 'analyticNormalsMs', 'step:import:analytic-normals', () => {
-    _applyAnalyticNormals(body, mesh);
-  });
+  // Try WASM tessellation path first (10-50× faster than JS Tessellator2)
+  let mesh = null;
+  if (opts.wasmRegistry) {
+    mesh = _measureStepPhase(timings, 'tessellateMs', 'step:import:tessellate:wasm', () =>
+      tessellateBodyWasm(body, opts.wasmRegistry, {
+        edgeSegments: opts.curveSegments ?? 64,
+        surfaceSegments: opts.surfaceSegments ?? 16,
+      }),
+    );
+    if (mesh) timings.tessellator = 'wasm';
+  }
+
+  // Fall back to JS Tessellator2 if WASM path unavailable or failed
+  if (!mesh) {
+    mesh = _measureStepPhase(timings, 'tessellateMs', 'step:import:tessellate', () =>
+      tessellateBodyRouted(body, {
+        tessellator: 'robust',
+        edgeSegments: opts.curveSegments ?? 64,
+        surfaceSegments: opts.surfaceSegments ?? 16,
+      }),
+    );
+    timings.tessellator = 'js';
+
+    // Post-process: apply analytic per-vertex normals and surface projection
+    // for faces that have surfaceInfo but no NurbsSurface (sphere, cylinder, etc.)
+    _measureStepPhase(timings, 'analyticNormalsMs', 'step:import:analytic-normals', () => {
+      _applyAnalyticNormals(body, mesh);
+    });
+  }
 
   timings.totalMs = telemetry.recordTimer('step:import:total', _now() - totalStart, totalStart);
   timings.shellCount = body.shells.length;

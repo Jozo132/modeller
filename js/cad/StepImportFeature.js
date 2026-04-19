@@ -44,7 +44,7 @@ export class StepImportFeature extends Feature {
    * @param {string} name - Feature name
    * @param {string} stepData - Raw STEP file contents
    * @param {Object} [options]
-   * @param {number} [options.curveSegments=16] - Tessellation segments for curves
+   * @param {number} [options.curveSegments=64] - Tessellation segments for curves
    */
   constructor(name = 'STEP Import', stepData = '', options = {}) {
     super(name);
@@ -54,7 +54,7 @@ export class StepImportFeature extends Feature {
     this.stepData = stepData;
 
     /** Tessellation quality */
-    this.curveSegments = options.curveSegments ?? 16;
+    this.curveSegments = options.curveSegments ?? 64;
 
     /** Cached parsed mesh (set after first execute) */
     this._cachedMesh = null;
@@ -91,7 +91,8 @@ export class StepImportFeature extends Feature {
       cacheHit = false;
       const buildTimings = {};
       const buildStart = _now();
-      const result = importSTEP(this.stepData, { curveSegments: this.curveSegments });
+      const wasmRegistry = _context?.tree?._handleRegistry ?? null;
+      const result = importSTEP(this.stepData, { curveSegments: this.curveSegments, wasmRegistry });
       const edgeResult = _measureSync(buildTimings, 'edgeAnalysisMs', 'step:feature:edge-analysis', () =>
         computeFeatureEdges(result.faces),
       );
@@ -301,7 +302,7 @@ export class StepImportFeature extends Feature {
 
     // Restore STEP-specific properties
     feature.stepData = data.stepData || '';
-    feature.curveSegments = data.curveSegments ?? 16;
+    feature.curveSegments = data.curveSegments ?? 64;
 
     return feature;
   }

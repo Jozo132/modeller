@@ -110,8 +110,8 @@ function triangulatePolygonIndices(verts, normal) {
  * @param {Object} [opts]
  * @param {number} [opts.chordalDeviation=0.01] - Max chordal deviation for curved surfaces
  * @param {number} [opts.angularTolerance=15] - Max angle (degrees) between adjacent normals
- * @param {number} [opts.surfaceSegments=8] - Default segments for NURBS surface tessellation
- * @param {number} [opts.edgeSegments=16] - Default segments for NURBS edge tessellation
+ * @param {number} [opts.surfaceSegments=16] - Default segments for NURBS surface tessellation
+ * @param {number} [opts.edgeSegments=64] - Default segments for NURBS edge tessellation
  * @returns {{ vertices: Array<{x,y,z}>, faces: Array<{vertices: Array<{x,y,z}>, normal: {x,y,z}, shared: Object}>, edges: Array }}
  */
 export function tessellateBody(body, opts = {}) {
@@ -166,8 +166,8 @@ function _hasInvertedNormals(faces) {
  * @returns {{ vertices: Array, faces: Array, edges: Array }}
  */
 export function _legacyTessellateBody(body, opts = {}) {
-  const surfSegs = opts.surfaceSegments ?? 8;
-  const edgeSegs = opts.edgeSegments ?? 16;
+  const surfSegs = opts.surfaceSegments ?? 16;
+  const edgeSegs = opts.edgeSegments ?? 64;
 
   const vertices = [];
   const faces = [];

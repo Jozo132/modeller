@@ -38,7 +38,9 @@ export {
 export {
   nurbsSurfaceStore, nurbsCurveStore,
   planeStore, cylinderStore, sphereStore, coneStore, torusStore,
-  geomPoolRead, getGeomPoolPtr, geomPoolUsed, geomPoolReset, geomPoolSetUsed
+  geomPoolRead, getGeomPoolPtr, geomPoolUsed, geomPoolReset, geomPoolSetUsed,
+  geomStagingPtr, geomStagingCapacity,
+  nurbsSurfaceStoreFromStaging, nurbsCurveStoreFromStaging
 } from './geometry';
 
 // ---- transform: f64 rigid body transforms ----

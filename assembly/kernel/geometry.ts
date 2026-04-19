@@ -243,3 +243,80 @@ export function geomPoolReset(): void {
 export function geomPoolSetUsed(count: u32): void {
   if (count <= POOL_CAPACITY) poolUsed = count;
 }
+
+// ---------- staging buffer for JS → WASM NURBS data transfer ----------
+
+/** 64KB staging buffer for passing variable-length arrays from JS. */
+const STAGING_CAPACITY: u32 = 8192;
+const staging = new StaticArray<f64>(STAGING_CAPACITY);
+
+/** Get the byte pointer to the staging buffer (for JS to write into). */
+export function geomStagingPtr(): usize {
+  return changetype<usize>(staging);
+}
+
+/** Get the staging buffer capacity in f64 slots. */
+export function geomStagingCapacity(): u32 {
+  return STAGING_CAPACITY;
+}
+
+/**
+ * Store a NURBS surface from the staging buffer.
+ * JS must write into geomStagingPtr() before calling this:
+ *   [0..nKnotsU-1]       knotsU
+ *   [nKnotsU..nKnotsU+nKnotsV-1]  knotsV
+ *   [...+nCtrl*3]        control points (x,y,z triples)
+ *   [...+nCtrl]          weights
+ */
+export function nurbsSurfaceStoreFromStaging(
+  degreeU: u32, degreeV: u32,
+  numCtrlU: u32, numCtrlV: u32,
+  nKnotsU: u32, nKnotsV: u32
+): u32 {
+  const nCtrl = numCtrlU * numCtrlV;
+  const totalSlots: u32 = 6 + nKnotsU + nKnotsV + nCtrl * 3 + nCtrl;
+  const offset = poolReserve(totalSlots);
+  if (offset == 0xFFFFFFFF) return offset;
+
+  let p = offset;
+  unchecked(pool[p++] = <f64>degreeU);
+  unchecked(pool[p++] = <f64>degreeV);
+  unchecked(pool[p++] = <f64>numCtrlU);
+  unchecked(pool[p++] = <f64>numCtrlV);
+  unchecked(pool[p++] = <f64>nKnotsU);
+  unchecked(pool[p++] = <f64>nKnotsV);
+
+  const totalData = nKnotsU + nKnotsV + nCtrl * 3 + nCtrl;
+  for (let i: u32 = 0; i < totalData; i++) {
+    unchecked(pool[p++] = unchecked(staging[i]));
+  }
+
+  return offset;
+}
+
+/**
+ * Store a NURBS curve from the staging buffer.
+ * JS must write into geomStagingPtr() before calling this:
+ *   [0..nKnots-1]        knots
+ *   [nKnots..nKnots+numCtrl*3-1]  control points (x,y,z triples)
+ *   [...+numCtrl]         weights
+ */
+export function nurbsCurveStoreFromStaging(
+  degree: u32, numCtrl: u32, nKnots: u32
+): u32 {
+  const totalSlots: u32 = 3 + nKnots + numCtrl * 3 + numCtrl;
+  const offset = poolReserve(totalSlots);
+  if (offset == 0xFFFFFFFF) return offset;
+
+  let p = offset;
+  unchecked(pool[p++] = <f64>degree);
+  unchecked(pool[p++] = <f64>numCtrl);
+  unchecked(pool[p++] = <f64>nKnots);
+
+  const totalData = nKnots + numCtrl * 3 + numCtrl;
+  for (let i: u32 = 0; i < totalData; i++) {
+    unchecked(pool[p++] = unchecked(staging[i]));
+  }
+
+  return offset;
+}

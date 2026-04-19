@@ -20,16 +20,16 @@
 export class TessellationConfig {
   /**
    * @param {Object} [opts]
-   * @param {number} [opts.curveSegments=16]   - Arc/circle/ellipse/B-spline curve segments
-   * @param {number} [opts.surfaceSegments=8]  - NURBS surface U/V subdivisions
-   * @param {number} [opts.edgeSegments=16]    - Edge wireframe tessellation segments
+   * @param {number} [opts.curveSegments=64]   - Arc/circle/ellipse/B-spline curve segments
+   * @param {number} [opts.surfaceSegments=16]  - NURBS surface U/V subdivisions
+   * @param {number} [opts.edgeSegments=64]    - Edge wireframe tessellation segments
    * @param {boolean} [opts.adaptiveSubdivision=true] - Enable adaptive refinement
    * @param {'legacy'|'robust'} [opts.tessellator='legacy'] - Tessellation pipeline selection
    */
   constructor(opts = {}) {
-    this.curveSegments = opts.curveSegments ?? 16;
-    this.surfaceSegments = opts.surfaceSegments ?? 8;
-    this.edgeSegments = opts.edgeSegments ?? 16;
+    this.curveSegments = opts.curveSegments ?? 64;
+    this.surfaceSegments = opts.surfaceSegments ?? 16;
+    this.edgeSegments = opts.edgeSegments ?? 64;
     this.adaptiveSubdivision = opts.adaptiveSubdivision !== false;
     /** @type {'legacy'|'robust'} */
     this.tessellator = opts.tessellator ?? 'legacy';

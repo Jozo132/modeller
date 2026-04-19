@@ -1215,6 +1215,35 @@ export declare function geomPoolReset(): void;
  */
 export declare function geomPoolSetUsed(count: number): void;
 /**
+ * assembly/kernel/geometry/geomStagingPtr
+ * @returns `usize`
+ */
+export declare function geomStagingPtr(): number;
+/**
+ * assembly/kernel/geometry/geomStagingCapacity
+ * @returns `u32`
+ */
+export declare function geomStagingCapacity(): number;
+/**
+ * assembly/kernel/geometry/nurbsSurfaceStoreFromStaging
+ * @param degreeU `u32`
+ * @param degreeV `u32`
+ * @param numCtrlU `u32`
+ * @param numCtrlV `u32`
+ * @param nKnotsU `u32`
+ * @param nKnotsV `u32`
+ * @returns `u32`
+ */
+export declare function nurbsSurfaceStoreFromStaging(degreeU: number, degreeV: number, numCtrlU: number, numCtrlV: number, nKnotsU: number, nKnotsV: number): number;
+/**
+ * assembly/kernel/geometry/nurbsCurveStoreFromStaging
+ * @param degree `u32`
+ * @param numCtrl `u32`
+ * @param nKnots `u32`
+ * @returns `u32`
+ */
+export declare function nurbsCurveStoreFromStaging(degree: number, numCtrl: number, nKnots: number): number;
+/**
  * assembly/kernel/transform/transformIdentity
  */
 export declare function transformIdentity(): void;

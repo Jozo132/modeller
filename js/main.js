@@ -6135,10 +6135,10 @@ class App {
     const segStr = await showPrompt({
       title: 'Import STEP',
       message: `File: ${file.name} (${(file.size / 1024).toFixed(1)} KB)\n\nCurve tessellation segments:`,
-      defaultValue: '16',
+      defaultValue: '64',
     });
     if (segStr === null || segStr === undefined) return;
-    const curveSegments = Math.max(3, parseInt(segStr, 10) || 16);
+    const curveSegments = Math.max(3, parseInt(segStr, 10) || 64);
 
     // Ensure Part Design workspace is active
     if (this._workspaceMode !== 'part') {
@@ -9929,10 +9929,10 @@ class App {
     const segStr = await showPrompt({
       title: 'Import STEP — New Project',
       message: `File: ${filename}\n\nCurve tessellation segments:`,
-      defaultValue: '16',
+      defaultValue: '64',
     });
     if (segStr === null || segStr === undefined) return;
-    const curveSegments = Math.max(3, parseInt(segStr, 10) || 16);
+    const curveSegments = Math.max(3, parseInt(segStr, 10) || 64);
 
     // Clear and start fresh
     if (this._workspaceMode === 'part') {
@@ -9974,10 +9974,10 @@ class App {
     const segStr = await showPrompt({
       title: 'Import STEP — Add to Current',
       message: `File: ${filename}\nThe imported STEP geometry will be added as a floating solid body.\nYou can then use boolean operations to combine it with existing bodies.\n\nCurve tessellation segments:`,
-      defaultValue: '16',
+      defaultValue: '64',
     });
     if (segStr === null || segStr === undefined) return;
-    const curveSegments = Math.max(3, parseInt(segStr, 10) || 16);
+    const curveSegments = Math.max(3, parseInt(segStr, 10) || 64);
 
     // Ensure Part workspace
     if (this._workspaceMode !== 'part') {

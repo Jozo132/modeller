@@ -487,6 +487,22 @@ async function instantiate(module, imports = {}) {
       // assembly/kernel/geometry/geomPoolUsed() => u32
       return exports.geomPoolUsed() >>> 0;
     },
+    geomStagingPtr() {
+      // assembly/kernel/geometry/geomStagingPtr() => usize
+      return exports.geomStagingPtr() >>> 0;
+    },
+    geomStagingCapacity() {
+      // assembly/kernel/geometry/geomStagingCapacity() => u32
+      return exports.geomStagingCapacity() >>> 0;
+    },
+    nurbsSurfaceStoreFromStaging(degreeU, degreeV, numCtrlU, numCtrlV, nKnotsU, nKnotsV) {
+      // assembly/kernel/geometry/nurbsSurfaceStoreFromStaging(u32, u32, u32, u32, u32, u32) => u32
+      return exports.nurbsSurfaceStoreFromStaging(degreeU, degreeV, numCtrlU, numCtrlV, nKnotsU, nKnotsV) >>> 0;
+    },
+    nurbsCurveStoreFromStaging(degree, numCtrl, nKnots) {
+      // assembly/kernel/geometry/nurbsCurveStoreFromStaging(u32, u32, u32) => u32
+      return exports.nurbsCurveStoreFromStaging(degree, numCtrl, nKnots) >>> 0;
+    },
     transformMultiply(a, b) {
       // assembly/kernel/transform/transformMultiply(~lib/staticarray/StaticArray<f64>, ~lib/staticarray/StaticArray<f64>) => void
       a = __retain(__lowerStaticArray(__setF64, 6, 3, a, Float64Array) || __notnull());
@@ -937,6 +953,10 @@ export const {
   geomPoolUsed,
   geomPoolReset,
   geomPoolSetUsed,
+  geomStagingPtr,
+  geomStagingCapacity,
+  nurbsSurfaceStoreFromStaging,
+  nurbsCurveStoreFromStaging,
   transformIdentity,
   transformTranslation,
   transformRotation,

@@ -68,6 +68,12 @@ export class WasmBrepHandleRegistry {
     /** @returns {boolean} */
     get ready() { return this.#ready; }
 
+    /** @returns {any} The raw WASM module exports (null if not initialised) */
+    get wasmExports() { return _wasm; }
+
+    /** @returns {WebAssembly.Memory|null} The WASM memory instance */
+    get wasmMemory() { return _wasmMem; }
+
     // ────────────────────── handle lifecycle ──────────────────────
 
     /**
@@ -512,10 +518,10 @@ export class WasmBrepHandleRegistry {
      * Returns {vertices: Float64Array, normals: Float64Array, indices: Uint32Array, faceMap: Uint32Array}
      * or null on overflow.
      *
-     * @param {number} [segsU=16] — segments in U direction
+     * @param {number} [segsU=64] — segments in U direction
      * @param {number} [segsV=16] — segments in V direction
      */
-    tessellateBody(segsU = 16, segsV = 16) {
+    tessellateBody(segsU = 64, segsV = 16) {
         const nTris = _wasm.tessBuildAllFaces(segsU, segsV);
         if (nTris < 0) return null;
         if (nTris === 0) return { vertices: new Float64Array(0), normals: new Float64Array(0), indices: new Uint32Array(0), faceMap: new Uint32Array(0) };
@@ -539,11 +545,11 @@ export class WasmBrepHandleRegistry {
     /**
      * Tessellate a single face.
      * @param {number} faceId
-     * @param {number} [segsU=16]
+     * @param {number} [segsU=64]
      * @param {number} [segsV=16]
      * @returns {number} triangles added, or -1 on overflow
      */
-    tessellateFace(faceId, segsU = 16, segsV = 16) {
+    tessellateFace(faceId, segsU = 64, segsV = 16) {
         return _wasm.tessBuildFace(faceId, segsU, segsV);
     }
 

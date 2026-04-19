@@ -11,7 +11,7 @@
 //
 // Usage from main thread:
 //   const worker = new Worker(new URL('./workers/step-import-worker.js', import.meta.url), { type: 'module' });
-//   worker.postMessage({ stepData, curveSegments: 16, cacheMode: 'idb' });
+//   worker.postMessage({ stepData, curveSegments: 64, cacheMode: 'idb' });
 //   worker.onmessage = (e) => { /* e.data = { vertices, faces, body, ... } */ };
 
 import { importSTEP } from '../cad/StepImport.js';
@@ -101,7 +101,7 @@ async function produceCbrep(body, writeToIdb) {
 }
 
 self.onmessage = async function (e) {
-  const { stepData, curveSegments = 16, cacheMode, _dispatchId } = e.data;
+  const { stepData, curveSegments = 64, cacheMode, _dispatchId } = e.data;
 
   try {
     telemetry.startTimer('import');
