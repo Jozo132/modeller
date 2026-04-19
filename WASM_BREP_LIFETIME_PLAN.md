@@ -131,6 +131,90 @@ The benefit is not only visual (no cracks) but also correctness: watertight
 meshes are prerequisite for correct silhouette edge detection, section views,
 and mesh-based mass property fallback.
 
+### 2a. Boundary-Trimmed Parametric Tessellation
+
+B-Rep faces are bounded regions on parametric surfaces. Every face has an outer
+loop (and optionally inner loops for holes) defined by coedges referencing
+topological edges. The tessellator must generate geometry **only within the
+face boundary** — never for the full parametric domain.
+
+This is a prerequisite for correct rendering of any non-planar face: cylinders,
+cones, spheres, tori, and NURBS surfaces all require boundary-aware
+tessellation. Without it, a 90° cylinder arc renders as a full 360° tube, a
+sphere octant renders as a complete sphere, etc.
+
+The native kernel must implement the following pipeline entirely in WASM:
+
+1. **Multi-loop boundary collection**: Walk ALL face loops (outer + inner) via
+   `faceGetFirstLoop` + `faceGetLoopCount`, not just the outer loop. For each
+   coedge, collect the start vertex and optionally intermediate edge curve
+   samples. Inner loops define holes that must exclude grid triangles.
+
+2. **NURBS edge curve sampling**: For edges with `GEOM_NURBS_CURVE` geometry,
+   evaluate the curve at intermediate parameter values using
+   `nurbsCurveEvaluate()` from `assembly/nurbs.ts`. This is critical for arcs
+   spanning more than 180° where vertex-only sampling cannot distinguish the
+   short arc from the long arc, and for full-circle edges (seam edges) that have
+   a single vertex. The curve data is read from the geometry pool via
+   `edgeGetGeomOffset()`.
+
+3. **UV projection**: Project all boundary 3D points into the surface's
+   parametric (u, v) domain. Each surface type has its own projection:
+   - **Cylinder/Cone**: u = atan2(radial·binormal, radial·refDir), v = height
+     along axis. Requires the surface origin, axis, and reference direction.
+   - **Sphere**: u = longitude (atan2), v = latitude (asin). Requires center.
+   - **Torus**: u = major angle (atan2 in the equatorial plane),
+     v = minor angle (atan2 of height vs ring distance). Requires center, axis,
+     refDir, and major radius.
+   - **NURBS**: point inversion (closest parameter search). For NURBS surfaces,
+     the trim curves are often already defined in parameter space in the STEP
+     file's `PCURVE` entities.
+
+4. **Angle-wraparound handling**: Parametric angles wrap around at ±π. Use the
+   circular mean of all boundary U samples to determine a center direction, then
+   shift all U values relative to that center so the boundary polygon does not
+   straddle the ±π discontinuity. This avoids degenerate UV bounding boxes.
+
+5. **Full-revolution detection**: When the circular mean magnitude is low
+   (vertices spread uniformly around the circle) or the raw angular range
+   exceeds ~250° (1.4π), the face covers nearly the full revolution. In this
+   case, expand to a full 2π range and disable polygon trimming — the grid
+   should fill the entire surface without culling.
+
+6. **UV bounding box computation**: After wraparound handling, compute the tight
+   [uMin, uMax] × [vMin, vMax] bounding box of the boundary polygon. The
+   parametric grid samples only this sub-domain, not the full surface range.
+
+7. **Point-in-polygon trimming**: For each grid cell (quad split into two
+   triangles), test the triangle centroid against the boundary polygon using a
+   ray-casting even-odd rule. Triangles whose centroid falls outside the
+   boundary are culled. The even-odd rule naturally handles multiple loops
+   (outer boundary = inside, inner hole = outside).
+
+8. **Degenerate boundary handling**: Some STEP topologies encode closed surfaces
+   (full sphere, full torus) with degenerate 1-vertex or 2-vertex loops. When
+   any loop has fewer than 3 boundary points, polygon trimming is disabled and
+   the UV domain expands to the surface's natural full range.
+
+**Why this must be in WASM, not JS:**
+
+- The UV projection loop evaluates `atan2` / `asin` per boundary point per face
+  — hundreds of transcendentals per body. WASM f64 math is 3-5× faster.
+- NURBS edge curve sampling calls `nurbsCurveEvaluate()` which is already a WASM
+  function — calling it from WASM avoids per-call JS↔WASM boundary overhead.
+- The point-in-polygon test runs per grid cell (segsU × segsV × 2 tests per
+  face). For a 32×32 grid that is 2048 PIP tests per face. Keeping this in WASM
+  avoids marshalling UV arrays to JS and back.
+- The entire pipeline (boundary collection → UV projection → grid generation →
+  PIP trimming → vertex/normal emission) operates on kernel-owned topology and
+  geometry data. Crossing to JS for any step would require copying or exposing
+  internal buffers.
+
+**JS fallback is not acceptable** for production tessellation. A JS-side
+tessellator may exist only when explicitly tagged `@legacy` or `@test-baseline`
+for regression comparison against the native path. All production rendering must
+use the WASM tessellation pipeline.
+
 ### 3. GPU-Accelerated B-Rep Evaluation (WebGPU Compute)
 
 CPU-based NURBS evaluation (currently in `assembly/nurbs.ts`) is the
@@ -352,9 +436,15 @@ Recommended modules:
   - assembly-space placement transforms
   - transformed bounding boxes and exact coordinate updates
 - `kernel/tessellation`
-  - edge sampling
-  - face triangulation
-  - mesh extraction buffers
+  - boundary UV projection (cylinder/cone/sphere/torus parameter mapping)
+  - multi-loop boundary polygon collection with NURBS edge curve sampling
+  - angle-wraparound handling and full-revolution detection
+  - point-in-polygon trimming in UV space (ray-casting even-odd rule)
+  - boundary-trimmed parametric grid generation for all analytic surface types
+  - cross-parametric edge sampling for watertight seams
+  - NURBS surface delegation to `assembly/nurbs.ts`
+  - planar face fan triangulation from boundary vertices
+  - combined output buffers: vertices, normals, indices, face map
   - normals / edge classification generation
 - `kernel/step-import`
   - STEP parsing
@@ -470,6 +560,15 @@ residency work begins, making future native gains easier to measure honestly.
     comparisons for inside/outside decisions.
 12. Adjacent-face tessellation must use cross-parametric edge mapping to produce
     watertight meshes by construction, not post-hoc stitching.
+13. Boundary-trimmed parametric tessellation (UV projection, polygon culling,
+    edge curve sampling) must run entirely in WASM. No JS fallback for
+    production tessellation. JS-side tessellation code may only exist when
+    explicitly tagged `@legacy` or `@test-baseline` for regression comparison
+    against the native path.
+14. NURBS edge curve evaluation for boundary sampling must call
+    `nurbsCurveEvaluate()` directly from WASM — never marshal curve data to JS
+    for evaluation and back. The per-call JS↔WASM boundary cost is unacceptable
+    at the scale of hundreds of edges per body.
 
 ## Proposed Lifetime Model
 
@@ -686,18 +785,46 @@ produces CBREP + irHash alongside the existing result for main-thread hydration.
 - Move display-mesh extraction entirely into `kernel/tessellation`.
 - Implement **bidirectional cross-parametric edge mapping** so adjacent faces
   produce matching sample points on shared edges (watertight by construction).
+- Implement **boundary-trimmed parametric tessellation** so analytic faces
+  (cylinder, cone, sphere, torus) compute their UV domain from the face
+  boundary instead of using full parametric ranges. This requires:
+  - Multi-loop boundary collection (outer + inner loops)
+  - NURBS edge curve sampling via `nurbsCurveEvaluate()` for arcs and circles
+  - UV projection per surface type (revolution angle/height, lon/lat, etc.)
+  - Circular-mean angle-wraparound handling
+  - Full-revolution detection for degenerate/closed boundaries
+  - Point-in-polygon centroid trimming (ray-casting even-odd rule)
 - Ensure tessellation runs against native exact bodies directly.
 - Return typed buffers for vertices, normals, indices, face groups, and edge
   classification instead of JS-built face objects when possible.
+- **No JS fallback in production**: the WASM tessellation pipeline is the only
+  production code path. JS-side tessellation exists only when explicitly tagged
+  `@legacy` or `@test-baseline` for regression comparison.
 
 Status: **complete** — transform module with identity/translation/
 rotation/scale/multiply + point/direction/boundingBox transforms.
 WasmBrepHandleRegistry exposes setTranslation/setRotation/setScale/setIdentity,
 transformPoint, transformDirection, transformAllVertices, loadTransformMatrix.
 Native tessellation module (`kernel/tessellation.ts`) tessellates all face types
-(plane, cylinder, cone, sphere, torus, NURBS) with cross-parametric edge caching
-for watertight seams. JS bridge provides tessellateBody/tessellateFace/tessReset.
-30 tests passing.
+(plane, cylinder, cone, sphere, torus, NURBS) with:
+- Cross-parametric edge caching for watertight seams (edge id keyed sample cache,
+  adjacent faces reuse same boundary points).
+- Boundary-trimmed parametric grids: `_collectBoundaryUV()` walks all face loops,
+  samples NURBS edge curves at 4 intermediate points via `nurbsCurveEvaluate()`,
+  projects to UV via `_projectPoint()` (revolution/sphere/torus modes).
+- Circular-mean wraparound: `_uvUcenter` computed from cos/sin sums, U values
+  shifted to avoid ±π discontinuity.
+- Full-revolution detection: circular mean magnitude < 0.1 or angular range
+  > 1.4π → expand to full 2π, disable polygon trimming.
+- Degenerate boundary handling: loops with < 3 points → trimming disabled,
+  UV domain expanded to surface natural range.
+- Point-in-polygon trimming: `_pointInsideBoundary()` tests triangle centroids
+  against all boundary loops using ray-casting even-odd rule.
+- Fixed NURBS tessellation: `nurbsSurfaceTessellate()` now receives correct
+  `numCtrlU` / `numCtrlV` parameters (was incorrectly passing `numCtrlU + degU`).
+JS bridge provides tessellateBody/tessellateFace/tessReset.
+All 4 test suites passing: 29 topology + 30 tess-ops + 37 phase456 + 33 STEP
+import = 129 tests.
 
 ### Phase 4: Robust Native Boolean Operations
 
@@ -789,6 +916,16 @@ both residency and GPU diagnostics.
    Done: kernel/tessellation.ts caches edge samples keyed by edge id;
    adjacent faces reuse same boundary points. tessBuildAllFaces produces
    combined vertex/normal/index/faceMap buffers for all face types.
+7a. ~~Implement boundary-trimmed parametric tessellation — UV projection,
+    NURBS edge curve sampling, point-in-polygon culling — entirely in WASM.~~
+    Done: _collectBoundaryUV() walks all face loops (outer + inner), samples
+    NURBS edge curves at intermediate points via nurbsCurveEvaluate(),
+    projects to UV per surface type (_projectPoint revolution/sphere/torus
+    modes), handles angle wraparound via circular mean, detects full
+    revolutions (mag < 0.1 or range > 1.4π), and _pointInsideBoundary()
+    culls grid triangles via ray-casting even-odd rule. Fixed NURBS
+    nurbsSurfaceTessellate parameter bug (was passing numCtrlU + degU
+    instead of numCtrlU). 129 tests passing across 4 suites.
 8. ~~Route `StepImportFeature` to store deterministic CBREP before any native
    hydration attempt.~~
    Done: STEP import worker now produces CBREP + irHash alongside result;
@@ -876,6 +1013,18 @@ run fastest:
   eliminates crack artifacts, gap-healing passes, and tolerance-based stitching
 - correct silhouette edges, section views, and mesh-based mass properties as a
   downstream consequence of watertight tessellation
+- boundary-trimmed parametric grids: cylinder/cone/sphere/torus faces render
+  only the bounded patch, not the full surface — eliminates spike artifacts,
+  overlapping geometry, and full-revolution rendering errors that occurred when
+  the tessellator used hardcoded full parametric ranges
+- NURBS edge curve sampling resolves arc ambiguity: arcs > 180° and full-circle
+  seam edges are correctly represented in the boundary polygon, preventing the
+  tessellator from choosing the wrong arc direction
+- multi-loop support: inner loops (holes) correctly exclude geometry via
+  even-odd polygon test, enabling correct tessellation of faces with cutouts
+- full-revolution detection: closed surfaces (full spheres, full tori, seamless
+  cylinders) automatically expand to full parametric range when the boundary is
+  degenerate, preventing zero-area meshes
 
 That is the path to materially faster CAD operations while preserving the
 current topology-first architecture, with the exact kernel progressively moved

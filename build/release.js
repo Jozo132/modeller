@@ -43,9 +43,9 @@ async function instantiate(module, imports = {}) {
     },
     nurbsCurveEvaluate(degree, nCtrl, ctrlPts, knots, weights, t) {
       // assembly/nurbs/nurbsCurveEvaluate(i32, i32, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, f64) => void
-      ctrlPts = __retain(__lowerTypedArray(Float64Array, 33, 3, ctrlPts) || __notnull());
-      knots = __retain(__lowerTypedArray(Float64Array, 33, 3, knots) || __notnull());
-      weights = __lowerTypedArray(Float64Array, 33, 3, weights) || __notnull();
+      ctrlPts = __retain(__lowerTypedArray(Float64Array, 32, 3, ctrlPts) || __notnull());
+      knots = __retain(__lowerTypedArray(Float64Array, 32, 3, knots) || __notnull());
+      weights = __lowerTypedArray(Float64Array, 32, 3, weights) || __notnull();
       try {
         exports.nurbsCurveEvaluate(degree, nCtrl, ctrlPts, knots, weights, t);
       } finally {
@@ -55,9 +55,9 @@ async function instantiate(module, imports = {}) {
     },
     nurbsCurveTessellate(degree, nCtrl, ctrlPts, knots, weights, segments) {
       // assembly/nurbs/nurbsCurveTessellate(i32, i32, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, i32) => i32
-      ctrlPts = __retain(__lowerTypedArray(Float64Array, 33, 3, ctrlPts) || __notnull());
-      knots = __retain(__lowerTypedArray(Float64Array, 33, 3, knots) || __notnull());
-      weights = __lowerTypedArray(Float64Array, 33, 3, weights) || __notnull();
+      ctrlPts = __retain(__lowerTypedArray(Float64Array, 32, 3, ctrlPts) || __notnull());
+      knots = __retain(__lowerTypedArray(Float64Array, 32, 3, knots) || __notnull());
+      weights = __lowerTypedArray(Float64Array, 32, 3, weights) || __notnull();
       try {
         return exports.nurbsCurveTessellate(degree, nCtrl, ctrlPts, knots, weights, segments);
       } finally {
@@ -67,10 +67,10 @@ async function instantiate(module, imports = {}) {
     },
     nurbsSurfaceEvaluate(degU, degV, nRowsU, nColsV, ctrlPts, knotsU, knotsV, weights, u, v) {
       // assembly/nurbs/nurbsSurfaceEvaluate(i32, i32, i32, i32, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, f64, f64) => void
-      ctrlPts = __retain(__lowerTypedArray(Float64Array, 33, 3, ctrlPts) || __notnull());
-      knotsU = __retain(__lowerTypedArray(Float64Array, 33, 3, knotsU) || __notnull());
-      knotsV = __retain(__lowerTypedArray(Float64Array, 33, 3, knotsV) || __notnull());
-      weights = __lowerTypedArray(Float64Array, 33, 3, weights) || __notnull();
+      ctrlPts = __retain(__lowerTypedArray(Float64Array, 32, 3, ctrlPts) || __notnull());
+      knotsU = __retain(__lowerTypedArray(Float64Array, 32, 3, knotsU) || __notnull());
+      knotsV = __retain(__lowerTypedArray(Float64Array, 32, 3, knotsV) || __notnull());
+      weights = __lowerTypedArray(Float64Array, 32, 3, weights) || __notnull();
       try {
         exports.nurbsSurfaceEvaluate(degU, degV, nRowsU, nColsV, ctrlPts, knotsU, knotsV, weights, u, v);
       } finally {
@@ -81,10 +81,10 @@ async function instantiate(module, imports = {}) {
     },
     nurbsSurfaceNormal(degU, degV, nRowsU, nColsV, ctrlPts, knotsU, knotsV, weights, u, v) {
       // assembly/nurbs/nurbsSurfaceNormal(i32, i32, i32, i32, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, f64, f64) => void
-      ctrlPts = __retain(__lowerTypedArray(Float64Array, 33, 3, ctrlPts) || __notnull());
-      knotsU = __retain(__lowerTypedArray(Float64Array, 33, 3, knotsU) || __notnull());
-      knotsV = __retain(__lowerTypedArray(Float64Array, 33, 3, knotsV) || __notnull());
-      weights = __lowerTypedArray(Float64Array, 33, 3, weights) || __notnull();
+      ctrlPts = __retain(__lowerTypedArray(Float64Array, 32, 3, ctrlPts) || __notnull());
+      knotsU = __retain(__lowerTypedArray(Float64Array, 32, 3, knotsU) || __notnull());
+      knotsV = __retain(__lowerTypedArray(Float64Array, 32, 3, knotsV) || __notnull());
+      weights = __lowerTypedArray(Float64Array, 32, 3, weights) || __notnull();
       try {
         exports.nurbsSurfaceNormal(degU, degV, nRowsU, nColsV, ctrlPts, knotsU, knotsV, weights, u, v);
       } finally {
@@ -95,10 +95,10 @@ async function instantiate(module, imports = {}) {
     },
     nurbsSurfaceTessellate(degU, degV, nRowsU, nColsV, ctrlPts, knotsU, knotsV, weights, segsU, segsV) {
       // assembly/nurbs/nurbsSurfaceTessellate(i32, i32, i32, i32, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, i32, i32) => i32
-      ctrlPts = __retain(__lowerTypedArray(Float64Array, 33, 3, ctrlPts) || __notnull());
-      knotsU = __retain(__lowerTypedArray(Float64Array, 33, 3, knotsU) || __notnull());
-      knotsV = __retain(__lowerTypedArray(Float64Array, 33, 3, knotsV) || __notnull());
-      weights = __lowerTypedArray(Float64Array, 33, 3, weights) || __notnull();
+      ctrlPts = __retain(__lowerTypedArray(Float64Array, 32, 3, ctrlPts) || __notnull());
+      knotsU = __retain(__lowerTypedArray(Float64Array, 32, 3, knotsU) || __notnull());
+      knotsV = __retain(__lowerTypedArray(Float64Array, 32, 3, knotsV) || __notnull());
+      weights = __lowerTypedArray(Float64Array, 32, 3, weights) || __notnull();
       try {
         return exports.nurbsSurfaceTessellate(degU, degV, nRowsU, nColsV, ctrlPts, knotsU, knotsV, weights, segsU, segsV);
       } finally {
@@ -117,9 +117,9 @@ async function instantiate(module, imports = {}) {
     },
     nurbsCurveDerivEval(degree, nCtrl, ctrlPts, knots, weights, t) {
       // assembly/nurbs/nurbsCurveDerivEval(i32, i32, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, f64) => void
-      ctrlPts = __retain(__lowerTypedArray(Float64Array, 33, 3, ctrlPts) || __notnull());
-      knots = __retain(__lowerTypedArray(Float64Array, 33, 3, knots) || __notnull());
-      weights = __lowerTypedArray(Float64Array, 33, 3, weights) || __notnull();
+      ctrlPts = __retain(__lowerTypedArray(Float64Array, 32, 3, ctrlPts) || __notnull());
+      knots = __retain(__lowerTypedArray(Float64Array, 32, 3, knots) || __notnull());
+      weights = __lowerTypedArray(Float64Array, 32, 3, weights) || __notnull();
       try {
         exports.nurbsCurveDerivEval(degree, nCtrl, ctrlPts, knots, weights, t);
       } finally {
@@ -129,10 +129,10 @@ async function instantiate(module, imports = {}) {
     },
     nurbsCurveBatchDerivEval(degree, nCtrl, ctrlPts, knots, weights, params, count) {
       // assembly/nurbs/nurbsCurveBatchDerivEval(i32, i32, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, i32) => i32
-      ctrlPts = __retain(__lowerTypedArray(Float64Array, 33, 3, ctrlPts) || __notnull());
-      knots = __retain(__lowerTypedArray(Float64Array, 33, 3, knots) || __notnull());
-      weights = __retain(__lowerTypedArray(Float64Array, 33, 3, weights) || __notnull());
-      params = __lowerTypedArray(Float64Array, 33, 3, params) || __notnull();
+      ctrlPts = __retain(__lowerTypedArray(Float64Array, 32, 3, ctrlPts) || __notnull());
+      knots = __retain(__lowerTypedArray(Float64Array, 32, 3, knots) || __notnull());
+      weights = __retain(__lowerTypedArray(Float64Array, 32, 3, weights) || __notnull());
+      params = __lowerTypedArray(Float64Array, 32, 3, params) || __notnull();
       try {
         return exports.nurbsCurveBatchDerivEval(degree, nCtrl, ctrlPts, knots, weights, params, count);
       } finally {
@@ -143,10 +143,10 @@ async function instantiate(module, imports = {}) {
     },
     nurbsSurfaceDerivEval(degU, degV, nRowsU, nColsV, ctrlPts, knotsU, knotsV, weights, u, v) {
       // assembly/nurbs/nurbsSurfaceDerivEval(i32, i32, i32, i32, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, f64, f64) => void
-      ctrlPts = __retain(__lowerTypedArray(Float64Array, 33, 3, ctrlPts) || __notnull());
-      knotsU = __retain(__lowerTypedArray(Float64Array, 33, 3, knotsU) || __notnull());
-      knotsV = __retain(__lowerTypedArray(Float64Array, 33, 3, knotsV) || __notnull());
-      weights = __lowerTypedArray(Float64Array, 33, 3, weights) || __notnull();
+      ctrlPts = __retain(__lowerTypedArray(Float64Array, 32, 3, ctrlPts) || __notnull());
+      knotsU = __retain(__lowerTypedArray(Float64Array, 32, 3, knotsU) || __notnull());
+      knotsV = __retain(__lowerTypedArray(Float64Array, 32, 3, knotsV) || __notnull());
+      weights = __lowerTypedArray(Float64Array, 32, 3, weights) || __notnull();
       try {
         exports.nurbsSurfaceDerivEval(degU, degV, nRowsU, nColsV, ctrlPts, knotsU, knotsV, weights, u, v);
       } finally {
@@ -157,11 +157,11 @@ async function instantiate(module, imports = {}) {
     },
     nurbsSurfaceBatchDerivEval(degU, degV, nRowsU, nColsV, ctrlPts, knotsU, knotsV, weights, params, count) {
       // assembly/nurbs/nurbsSurfaceBatchDerivEval(i32, i32, i32, i32, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, i32) => i32
-      ctrlPts = __retain(__lowerTypedArray(Float64Array, 33, 3, ctrlPts) || __notnull());
-      knotsU = __retain(__lowerTypedArray(Float64Array, 33, 3, knotsU) || __notnull());
-      knotsV = __retain(__lowerTypedArray(Float64Array, 33, 3, knotsV) || __notnull());
-      weights = __retain(__lowerTypedArray(Float64Array, 33, 3, weights) || __notnull());
-      params = __lowerTypedArray(Float64Array, 33, 3, params) || __notnull();
+      ctrlPts = __retain(__lowerTypedArray(Float64Array, 32, 3, ctrlPts) || __notnull());
+      knotsU = __retain(__lowerTypedArray(Float64Array, 32, 3, knotsU) || __notnull());
+      knotsV = __retain(__lowerTypedArray(Float64Array, 32, 3, knotsV) || __notnull());
+      weights = __retain(__lowerTypedArray(Float64Array, 32, 3, weights) || __notnull());
+      params = __lowerTypedArray(Float64Array, 32, 3, params) || __notnull();
       try {
         return exports.nurbsSurfaceBatchDerivEval(degU, degV, nRowsU, nColsV, ctrlPts, knotsU, knotsV, weights, params, count);
       } finally {
@@ -173,7 +173,7 @@ async function instantiate(module, imports = {}) {
     },
     earClipTriangulate(coords, nVerts, outTris) {
       // assembly/tessellation/earClipTriangulate(~lib/typedarray/Float64Array, i32, ~lib/typedarray/Uint32Array) => i32
-      coords = __retain(__lowerTypedArray(Float64Array, 33, 3, coords) || __notnull());
+      coords = __retain(__lowerTypedArray(Float64Array, 32, 3, coords) || __notnull());
       outTris = __lowerTypedArray(Uint32Array, 34, 2, outTris) || __notnull();
       try {
         return exports.earClipTriangulate(coords, nVerts, outTris);
@@ -183,8 +183,8 @@ async function instantiate(module, imports = {}) {
     },
     computeTriangleNormal(verts, i0, i1, i2, outNormal) {
       // assembly/tessellation/computeTriangleNormal(~lib/typedarray/Float64Array, i32, i32, i32, ~lib/typedarray/Float64Array) => void
-      verts = __retain(__lowerTypedArray(Float64Array, 33, 3, verts) || __notnull());
-      outNormal = __lowerTypedArray(Float64Array, 33, 3, outNormal) || __notnull();
+      verts = __retain(__lowerTypedArray(Float64Array, 32, 3, verts) || __notnull());
+      outNormal = __lowerTypedArray(Float64Array, 32, 3, outNormal) || __notnull();
       try {
         exports.computeTriangleNormal(verts, i0, i1, i2, outNormal);
       } finally {
@@ -193,8 +193,8 @@ async function instantiate(module, imports = {}) {
     },
     computeBoundingBox(verts, nVerts, outBox) {
       // assembly/tessellation/computeBoundingBox(~lib/typedarray/Float64Array, i32, ~lib/typedarray/Float64Array) => void
-      verts = __retain(__lowerTypedArray(Float64Array, 33, 3, verts) || __notnull());
-      outBox = __lowerTypedArray(Float64Array, 33, 3, outBox) || __notnull();
+      verts = __retain(__lowerTypedArray(Float64Array, 32, 3, verts) || __notnull());
+      outBox = __lowerTypedArray(Float64Array, 32, 3, outBox) || __notnull();
       try {
         exports.computeBoundingBox(verts, nVerts, outBox);
       } finally {
@@ -203,7 +203,7 @@ async function instantiate(module, imports = {}) {
     },
     computeMeshVolume(verts, faces, nTris) {
       // assembly/tessellation/computeMeshVolume(~lib/typedarray/Float64Array, ~lib/typedarray/Uint32Array, i32) => f64
-      verts = __retain(__lowerTypedArray(Float64Array, 33, 3, verts) || __notnull());
+      verts = __retain(__lowerTypedArray(Float64Array, 32, 3, verts) || __notnull());
       faces = __lowerTypedArray(Uint32Array, 34, 2, faces) || __notnull();
       try {
         return exports.computeMeshVolume(verts, faces, nTris);
