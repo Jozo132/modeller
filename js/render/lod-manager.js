@@ -83,13 +83,20 @@ export class LodManager {
         // Apply hysteresis: if we're near a band boundary, don't switch
         // unless we've moved past the hysteresis margin
         if (this.#currentBand >= 0) {
-            const currentBand = this.#bands[this.#currentBand];
-            const threshold = currentBand.maxDistance;
-            if (threshold !== Infinity) {
-                const margin = threshold * this.#hysteresis;
-                // Only switch if clearly past the boundary
-                if (bandIdx > this.#currentBand && distance < threshold + margin) return false;
-                if (bandIdx < this.#currentBand && distance > threshold - margin) return false;
+            if (bandIdx > this.#currentBand) {
+                // Zooming out: need to pass current band's upper boundary + margin
+                const threshold = this.#bands[this.#currentBand].maxDistance;
+                if (threshold !== Infinity) {
+                    const margin = threshold * this.#hysteresis;
+                    if (distance < threshold + margin) return false;
+                }
+            } else if (bandIdx < this.#currentBand) {
+                // Zooming in: need to drop below the target band's upper boundary - margin
+                const threshold = this.#bands[bandIdx].maxDistance;
+                if (threshold !== Infinity) {
+                    const margin = threshold * this.#hysteresis;
+                    if (distance > threshold - margin) return false;
+                }
             }
         }
 

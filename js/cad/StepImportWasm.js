@@ -109,8 +109,9 @@ export function tessellateBodyWasm(body, opts = {}) {
                 const edge = ce.edge;
                 if (!edge || edgeMap.has(edge)) continue;
 
-                const sv = vertexMap.get(edge.startVertex) ?? 0;
-                const ev = vertexMap.get(edge.endVertex) ?? 0;
+                const sv = vertexMap.get(edge.startVertex);
+                const ev = vertexMap.get(edge.endVertex);
+                if (sv === undefined || ev === undefined) continue; // skip incomplete edges
 
                 // Store edge curve geometry if available
                 let geomType = w.GEOM_LINE;
@@ -172,7 +173,8 @@ export function tessellateBodyWasm(body, opts = {}) {
             const ceIds = [];
 
             for (const ce of coedges) {
-                const eid = edgeMap.get(ce.edge) ?? 0;
+                const eid = edgeMap.get(ce.edge);
+                if (eid === undefined) continue; // skip edges not in map
                 const ceOrient = ce.sameSense ? w.ORIENT_FORWARD : w.ORIENT_REVERSED;
                 const ceId = w.coedgeAdd(eid, ceOrient, 0, wasmFaceId);
                 ceIds.push(ceId);

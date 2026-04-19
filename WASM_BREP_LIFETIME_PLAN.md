@@ -840,7 +840,7 @@ import = 129 tests.
   handles when all inputs are resident.
 - Preserve JS fallback for unsupported or debug paths.
 
-Status: **complete** — `kernel/ops.ts` implements classifyPointVsShell
+Status: **in progress** — `kernel/ops.ts` implements classifyPointVsShell
 (ray-cast with topological face iteration), classifyFacesViaOctree (broadphase
 overlap detection), point-to-surface distance helpers (plane, sphere, cylinder),
 per-face classification buffer. Octree from `kernel/spatial.ts` now wired to
@@ -849,11 +849,19 @@ broadphase for candidate pair detection in `intersectBodies()`, replacing the
 O(N×M) brute-force loop with O(N log N) octree queries. AABB fallback retained
 for when WASM is not loaded. `SurfaceSurfaceIntersect.js` extended with
 analytic plane/sphere (circle), plane/cylinder (circle/lines), and
-cylinder/cylinder (coaxial detection) intersection paths. `Containment.js` now
-uses WASM `classifyPointVsShell` as a fast pre-check for bodies with only plane
-and sphere faces — loads body into WASM kernel once, caches by body id for
-repeated queries during boolean fragment classification. Falls back to JS
-multi-ray + GWN for unsupported surface types or WASM unavailability.
+cylinder/cylinder (coaxial detection) intersection paths.
+
+**KNOWN ISSUE**: `classifyPointVsShell` intersects rays against *infinite*
+(untrimmed) surfaces — it counts crossings with the full infinite plane or
+full sphere, not the trimmed face boundary. This gives WRONG results for
+non-convex solids (e.g. L-shaped extrusions) where the ray crosses the
+plane extension outside the face polygon. The WASM containment path is
+**disabled** (`_WASM_CONTAINMENT_ENABLED = false` in Containment.js) until
+the kernel implements trimmed-face boundary checking. All point classification
+uses the proven JS multi-ray + GWN paths. The body loading infrastructure
+in Containment.js is retained and corrected (planeStore 9-arg calls, proper
+loopId tracking, revision-based cache invalidation, multi-shell rejection)
+for re-enablement when the kernel supports trimmed containment.
 
 ### Phase 5: GPU-Accelerated Tessellation (WebGPU Compute)
 
@@ -866,19 +874,29 @@ multi-ray + GWN for unsupported surface types or WASM unavailability.
 - Compute shader output writes directly to a WebGPU vertex buffer — tessellated
   data stays in VRAM and never returns to the CPU.
 
-Status: **complete** — WGSL compute shader (`js/render/nurbs-tess.wgsl.js`)
+Status: **in progress** — WGSL compute shader (`js/render/nurbs-tess.wgsl.js`)
 implements Cox-de Boor basis with first-order derivatives, rational surface
 evaluation, cross-product normals. WebGPU pipeline (`js/render/gpu-tess-pipeline.js`)
 manages device/adapter lifecycle, zero-copy WASM→GPU buffer upload, per-surface
 compute dispatch, output→vertex buffer, and CPU readback for debug. GpuTessPipeline
 class with init/uploadBatch/dispatch/readback/destroy lifecycle. Static
 `isAvailable()` for WebGPU capability detection with CPU fallback.
-`SceneRenderer` now initializes `GpuTessPipeline` on startup when WebGPU is
-available (graceful fallback to CPU path when unavailable). `LodManager` wired
-into orbit camera — `_applyOrbitCamera()` calls `lodManager.update(orbitRadius)`
-on every camera change, triggering `onRetessellate` callback that re-renders
-the current part when the LoD band changes. Both `LodManager` and
-`GpuTessPipeline` exported from `js/render/index.js`.
+`SceneRenderer` creates `GpuTessPipeline` on startup when WebGPU is detected;
+actual initialization deferred to `initGpuTessPipeline(registry)` which
+requires a `WasmBrepHandleRegistry` instance. `LodManager` wired into orbit
+camera — `_applyOrbitCamera()` calls `lodManager.update(orbitRadius)` on every
+camera change, triggering `onRetessellate` which updates `globalTessConfig`
+(surfaceSegments, edgeSegments, curveSegments) and re-renders the current part.
+
+**FIXED**: GPU pipeline buffer upload now correctly extracts `.view` from the
+registry's `{ptr, length, view}` return objects. Method name corrected from
+`getGpuCtrlPointBuffer` to `getGpuCtrlBuffer`. `tessellateBody` now returns
+`.slice()` copies of WASM memory instead of dangling views.
+
+**REMAINING**: GpuTessPipeline is not yet initialized in production (no call
+site creates a WasmBrepHandleRegistry and passes it to
+`SceneRenderer.initGpuTessPipeline()`). HandleResidencyManager is not
+instantiated in production code.
 - Implement dynamic LoD: camera-distance-driven `tessSegsU`/`tessSegsV` update
   with compute re-dispatch.
 - Batch-dispatch multiple surfaces in a single compute pass via indexed surface
@@ -894,7 +912,7 @@ the current part when the LoD band changes. Both `LodManager` and
 - Add eviction rules for inactive parts/results.
 - Add diagnostics for residency hit rate and hydration cost.
 
-Status: **complete** — `HandleResidencyManager` class manages lazy CBREP
+Status: **in progress** — `HandleResidencyManager` class manages lazy CBREP
 hydration, idle-timeout eviction, LRU eviction, and per-feature diagnostics.
 Telemetry extended with residency tracking (hit/miss/hydration/eviction
 counters, average hydration cost) and GPU dispatch tracking (dispatch count,
@@ -904,6 +922,19 @@ both residency and GPU diagnostics. `FeatureTree` now integrates
 `cbrepBuffer` are stored on stamp, accessed features are marked, and residency
 entries are cleaned up on result release, feature removal, recalculation, and
 tree clear. `_releaseResultHandle` accepts featureId for residency cleanup.
+
+**KNOWN ISSUES**:
+1. `HandleResidencyManager` is never instantiated in production code — only
+   in test-phase456.js. `FeatureTree.setResidencyManager()` exists but no
+   application code calls it.
+2. The `hydrate(cbrep)` method restores topology into GLOBAL kernel buffers
+   (a single shared WASM linear memory). Loading body A then body B
+   overwrites A's data, making A's handle reference stale topology.
+   Per-handle isolation requires either multiple WASM instances, a
+   body-indexing scheme in the kernel, or save/restore snapshots.
+3. `setFeatureId(handle, revisionCounter)` stores a numeric revision
+   rather than the string featureId — this is correct given the u32 WASM
+   constraint but the naming can be confusing.
 
 ## Concrete Next Tasks
 

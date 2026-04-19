@@ -535,10 +535,10 @@ export class WasmBrepHandleRegistry {
         const fmapPtr = _wasm.getTessOutFaceMapPtr() >>> 0;
 
         return {
-            vertices: new Float64Array(buf, vertsPtr, nVerts * 3),
-            normals: new Float64Array(buf, normsPtr, nVerts * 3),
-            indices: new Uint32Array(buf, idxPtr, nTris * 3),
-            faceMap: new Uint32Array(buf, fmapPtr, nTris),
+            vertices: new Float64Array(buf, vertsPtr, nVerts * 3).slice(),
+            normals: new Float64Array(buf, normsPtr, nVerts * 3).slice(),
+            indices: new Uint32Array(buf, idxPtr, nTris * 3).slice(),
+            faceMap: new Uint32Array(buf, fmapPtr, nTris).slice(),
         };
     }
 

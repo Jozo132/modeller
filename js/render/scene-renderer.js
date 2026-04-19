@@ -8,6 +8,7 @@ import {
 } from './part-render-core.js';
 import { LodManager } from './lod-manager.js';
 import { GpuTessPipeline } from './gpu-tess-pipeline.js';
+import { globalTessConfig } from '../cad/TessellationConfig.js';
 
 export class SceneRenderer {
   constructor(options) {
@@ -57,15 +58,36 @@ export class SceneRenderer {
     this._ready = true;
     this.setMode('3d');
 
-    // Attempt WebGPU tessellation pipeline (non-blocking, fallback-safe)
+    // Attempt WebGPU tessellation pipeline (non-blocking, fallback-safe).
+    // The pipeline requires a WasmBrepHandleRegistry to upload data.
+    // We create the pipeline here for capability detection; the registry
+    // is attached later via initGpuTessPipeline(registry) when available.
     if (GpuTessPipeline.isAvailable()) {
       try {
         this._gpuTessPipeline = new GpuTessPipeline();
-        this._gpuTessReady = await this._gpuTessPipeline.init(null);
+        // Don't init yet — needs registry. Just mark as detected.
+        this._gpuTessReady = false;
       } catch {
         this._gpuTessPipeline = null;
         this._gpuTessReady = false;
       }
+    }
+  }
+
+  /**
+   * Initialize the GPU tessellation pipeline with a handle registry.
+   * Call after both init() and the registry are available.
+   * @param {import('../cad/WasmBrepHandleRegistry.js').WasmBrepHandleRegistry} registry
+   * @returns {Promise<boolean>}
+   */
+  async initGpuTessPipeline(registry) {
+    if (!this._gpuTessPipeline || !registry) return false;
+    try {
+      this._gpuTessReady = await this._gpuTessPipeline.init(registry);
+      return this._gpuTessReady;
+    } catch {
+      this._gpuTessReady = false;
+      return false;
     }
   }
 
@@ -217,10 +239,14 @@ export class SceneRenderer {
 
   /**
    * Called by LodManager when the LoD band changes.
-   * Re-tessellates the current part at the new density.
+   * Updates globalTessConfig and re-tessellates the current part.
    */
   _onLodChanged(segsU, segsV) {
     if (!this._currentPart) return;
+    // Update the global tessellation config so the next tessellation uses new density
+    globalTessConfig.surfaceSegments = segsV;
+    globalTessConfig.edgeSegments = segsU;
+    globalTessConfig.curveSegments = segsU;
     // Re-render part with updated tessellation density
     this.renderPart(this._currentPart);
   }

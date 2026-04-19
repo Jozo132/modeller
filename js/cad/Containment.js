@@ -23,8 +23,23 @@ import { warnOnceForFallback } from './fallback/warnOnce.js';
 import { SurfaceType } from './BRepTopology.js';
 
 // ---------------------------------------------------------------------------
-// WASM native containment — lazy module + body cache
+// WASM native containment — DISABLED pending trimmed-face ray-cast in kernel
 // ---------------------------------------------------------------------------
+// The WASM classifyPointVsShell in kernel/ops.ts intersects rays against
+// *infinite* planes and *full* spheres without checking whether the hit
+// point lies within the face boundary polygon. This gives wrong results for
+// any non-convex solid (e.g. an L-shaped extrusion: the ray can cross an
+// infinite plane extension that doesn't correspond to any real face area).
+//
+// Until the kernel implements trimmed-face containment (checking hit points
+// against coedge boundaries), the WASM path must not be used. All point
+// classification goes through the JS multi-ray + GWN paths which correctly
+// fan-triangulate face boundaries and do Möller-Trumbore intersection.
+//
+// The loading infrastructure (_wasmLoadBody, _wasmClassifyPoint) is retained
+// but gated behind _WASM_CONTAINMENT_ENABLED = false so it is never called.
+
+const _WASM_CONTAINMENT_ENABLED = false;
 
 let _wasm = null;
 let _wasmMem = null;
@@ -37,9 +52,7 @@ async function _ensureWasm() {
     return true;
   } catch { return false; }
 }
-function _wasmReady() { return _wasm != null; }
-// Fire-and-forget preload at module init
-_ensureWasm().catch(() => {});
+function _wasmReady() { return _WASM_CONTAINMENT_ENABLED && _wasm != null; }
 
 /**
  * Cache for the most recently loaded body in WASM kernel buffers.
@@ -47,7 +60,7 @@ _ensureWasm().catch(() => {});
  * boolean fragment classification which checks many points against one body).
  * @type {{ bodyId: number|null, faceCount: number }}
  */
-const _wasmBodyCache = { bodyId: null, faceCount: 0 };
+const _wasmBodyCache = { bodyId: null, bodyRev: null, faceCount: 0 };
 
 /**
  * Surface types supported by WASM classifyPointVsShell.
@@ -61,6 +74,8 @@ const _WASM_SUPPORTED_TYPES = new Set([SurfaceType.PLANE, SurfaceType.SPHERE]);
 function _wasmCanClassify(body) {
   if (!_wasmReady()) return false;
   if (!body || !body.shells || body.shells.length === 0) return false;
+  // Multi-shell bodies (voids) cannot be flattened into a single WASM shell
+  if (body.shells.length > 1) return false;
   for (const shell of body.shells) {
     for (const face of shell.faces) {
       if (!_WASM_SUPPORTED_TYPES.has(face.surfaceType)) return false;
@@ -76,7 +91,9 @@ function _wasmCanClassify(body) {
  */
 function _wasmLoadBody(body) {
   const bodyId = body._id ?? body.id ?? null;
-  if (bodyId != null && bodyId === _wasmBodyCache.bodyId) {
+  const bodyRev = body.exactBodyRevisionId ?? null;
+  if (bodyId != null && bodyId === _wasmBodyCache.bodyId &&
+      bodyRev != null && bodyRev === _wasmBodyCache.bodyRev) {
     return _wasmBodyCache.faceCount;
   }
 
@@ -116,8 +133,9 @@ function _wasmLoadBody(body) {
       for (const ce of loop.coedges || []) {
         const edge = ce.edge;
         if (!edge || edgeMap.has(edge)) continue;
-        const sv = vertexMap.get(edge.startVertex) ?? 0;
-        const ev = vertexMap.get(edge.endVertex) ?? 0;
+        const sv = vertexMap.get(edge.startVertex);
+        const ev = vertexMap.get(edge.endVertex);
+        if (sv === undefined || ev === undefined) continue; // skip incomplete edges
         edgeMap.set(edge, w.edgeAdd(sv, ev, w.GEOM_LINE, 0));
       }
     }
@@ -137,16 +155,19 @@ function _wasmLoadBody(body) {
       const s = face.surface;
       const si = s.surfaceInfo || s._analyticParams;
       if (si && si.origin && si.normal) {
+        const rd = si.refDir || _computeRefDir(si.normal);
         geomOffset = w.planeStore(
           si.origin.x, si.origin.y, si.origin.z,
           si.normal.x, si.normal.y, si.normal.z,
+          rd.x, rd.y, rd.z,
         );
       } else if (face.outerLoop) {
         // Derive plane from boundary vertices
         const pts = face.outerLoop.points();
         if (pts.length >= 3) {
           const n = _polyNormal(pts);
-          geomOffset = w.planeStore(pts[0].x, pts[0].y, pts[0].z, n.x, n.y, n.z);
+          const rd = _computeRefDir(n);
+          geomOffset = w.planeStore(pts[0].x, pts[0].y, pts[0].z, n.x, n.y, n.z, rd.x, rd.y, rd.z);
         }
       }
       geomType = w.GEOM_PLANE;
@@ -177,10 +198,12 @@ function _wasmLoadBody(body) {
 
       const isOuter = li === 0 ? 1 : 0;
       const ceIds = [];
+      const predictedLoopId = w.coedgeGetCount ? w.loopGetCount() : 0;
       for (const ce of coedges) {
-        const eid = edgeMap.get(ce.edge) ?? 0;
+        const eid = edgeMap.get(ce.edge);
+        if (eid === undefined) continue; // skip missing edges
         const ceOrient = ce.sameSense ? w.ORIENT_FORWARD : w.ORIENT_REVERSED;
-        ceIds.push(w.coedgeAdd(eid, ceOrient, 0, wasmFaceId));
+        ceIds.push(w.coedgeAdd(eid, ceOrient, 0, predictedLoopId + numLoops));
       }
       for (let i = 0; i < ceIds.length; i++) {
         w.coedgeSetNext(ceIds[i], ceIds[(i + 1) % ceIds.length]);
@@ -201,8 +224,29 @@ function _wasmLoadBody(body) {
   }
 
   _wasmBodyCache.bodyId = bodyId;
+  _wasmBodyCache.bodyRev = bodyRev;
   _wasmBodyCache.faceCount = wasmFaceId;
   return wasmFaceId;
+}
+
+/**
+ * Compute a reference direction perpendicular to a given normal.
+ * Used to fill the refDir parameter for planeStore/sphereStore.
+ */
+function _computeRefDir(n) {
+  // Pick the axis least-aligned with n for a stable cross product
+  const ax = Math.abs(n.x), ay = Math.abs(n.y), az = Math.abs(n.z);
+  let up;
+  if (ax <= ay && ax <= az) up = { x: 1, y: 0, z: 0 };
+  else if (ay <= az) up = { x: 0, y: 1, z: 0 };
+  else up = { x: 0, y: 0, z: 1 };
+  // cross(n, up)
+  const rx = n.y * up.z - n.z * up.y;
+  const ry = n.z * up.x - n.x * up.z;
+  const rz = n.x * up.y - n.y * up.x;
+  const len = Math.sqrt(rx * rx + ry * ry + rz * rz);
+  if (len < 1e-14) return { x: 1, y: 0, z: 0 };
+  return { x: rx / len, y: ry / len, z: rz / len };
 }
 
 /**

@@ -152,22 +152,22 @@ export class GpuTessPipeline {
         const device = this.#device;
         const reg = this.#registry;
 
-        // Headers
-        const headerView = reg.getGpuHeaderBuffer();
-        if (headerView && headerView.byteLength > 0) {
-            device.queue.writeBuffer(this.#headerBuf, 0, headerView);
+        // Headers — getGpuHeaderBuffer returns {ptr, length, view}
+        const headerObj = reg.getGpuHeaderBuffer();
+        if (headerObj && headerObj.view && headerObj.view.byteLength > 0) {
+            device.queue.writeBuffer(this.#headerBuf, 0, headerObj.view);
         }
 
-        // Control points
-        const ctrlView = reg.getGpuCtrlPointBuffer();
-        if (ctrlView && ctrlView.byteLength > 0) {
-            device.queue.writeBuffer(this.#ctrlBuf, 0, ctrlView);
+        // Control points — method is getGpuCtrlBuffer (not getGpuCtrlPointBuffer)
+        const ctrlObj = reg.getGpuCtrlBuffer();
+        if (ctrlObj && ctrlObj.view && ctrlObj.view.byteLength > 0) {
+            device.queue.writeBuffer(this.#ctrlBuf, 0, ctrlObj.view);
         }
 
         // Knots
-        const knotView = reg.getGpuKnotBuffer();
-        if (knotView && knotView.byteLength > 0) {
-            device.queue.writeBuffer(this.#knotBuf, 0, knotView);
+        const knotObj = reg.getGpuKnotBuffer();
+        if (knotObj && knotObj.view && knotObj.view.byteLength > 0) {
+            device.queue.writeBuffer(this.#knotBuf, 0, knotObj.view);
         }
     }
 
@@ -194,9 +194,10 @@ export class GpuTessPipeline {
 
         for (let s = 0; s < surfaceCount; s++) {
             // Read the header to get tessSegsU/V for workgroup count
-            const headerView = this.#registry.getGpuHeaderBuffer();
-            const segsU = headerView[s * 12 + 7]; // tessSegsU
-            const segsV = headerView[s * 12 + 8]; // tessSegsV
+            const headerObj = this.#registry.getGpuHeaderBuffer();
+            const headerArr = headerObj.view;
+            const segsU = headerArr[s * 12 + 7]; // tessSegsU
+            const segsV = headerArr[s * 12 + 8]; // tessSegsV
             const totalVerts = (segsU + 1) * (segsV + 1);
 
             // Update params
