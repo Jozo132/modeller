@@ -461,6 +461,8 @@ export {
   getFaceClassification, setFaceClassification,
   pointToPlaneDistance, pointToSphereDistance, pointToCylinderDistance,
   getFaceClassificationPtr,
+  isxReset, isxRecord, isxGetErrorBound, isxGetCount,
+  isxGetMaxErrorBound, isxAreDistinct, isxRayFace,
   // interop: CBREP serialization
   cbrepDehydrate, cbrepHydrate,
   getCbrepOutPtr, getCbrepOutLen,

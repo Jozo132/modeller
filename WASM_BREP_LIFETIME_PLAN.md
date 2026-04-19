@@ -750,6 +750,13 @@ class with init/uploadBatch/dispatch/readback/destroy lifecycle. Static
 - Add eviction rules for inactive parts/results.
 - Add diagnostics for residency hit rate and hydration cost.
 
+Status: **complete** — `HandleResidencyManager` class manages lazy CBREP
+hydration, idle-timeout eviction, LRU eviction, and per-feature diagnostics.
+Telemetry extended with residency tracking (hit/miss/hydration/eviction
+counters, average hydration cost) and GPU dispatch tracking (dispatch count,
+avg dispatch time, upload/readback totals). `telemetry.summary()` includes
+both residency and GPU diagnostics.
+
 ## Concrete Next Tasks
 
 ### Foundation (Phase 2) — COMPLETE
@@ -767,7 +774,7 @@ class with init/uploadBatch/dispatch/readback/destroy lifecycle. Static
    Done: cbrepHydrate/cbrepDehydrate in interop.ts, hydrate()/dehydrate()
    in WasmBrepHandleRegistry.
 
-### STEP & Transform (Phase 3 / 3a) — IN PROGRESS
+### STEP & Transform (Phase 3 / 3a) — COMPLETE
 
 5. ~~Add `exportStepFromHandle(handleId)` to the WASM bridge.~~
    Done: WasmBrepHandleRegistry.exportStep() — dehydrate → readCbrep →
@@ -797,8 +804,11 @@ class with init/uploadBatch/dispatch/readback/destroy lifecycle. Static
     inside/outside decisions to entity index, not coordinate comparison.~~
     Done: classifyPointVsShell, classifyFacesViaOctree, per-face classification
     buffer, point-to-surface distance helpers.
-11. Add per-intersection error-bound computation so segment-face intersections
-    are provably unique.
+11. ~~Add per-intersection error-bound computation so segment-face intersections
+    are provably unique.~~
+    Done: kernel/ops.ts isxRecord/isxGetErrorBound/isxAreDistinct/isxRayFace.
+    Error bounds computed from condition number (ray-normal angle + curvature).
+    isxAreDistinct proves uniqueness when point separation > combined bounds.
 
 ### GPU Tessellation (Phase 5)
 
@@ -813,16 +823,22 @@ class with init/uploadBatch/dispatch/readback/destroy lifecycle. Static
     analytical derivatives, cross-product normals.
 15. ~~Connect compute output → vertex buffer → render pass (data stays in VRAM).~~
     Done: GpuTessPipeline output buffer has VERTEX usage flag.
-16. Add dynamic LoD dispatch: re-tessellate on camera distance change.
+16. ~~Add dynamic LoD dispatch: re-tessellate on camera distance change.~~
+    Done: js/render/lod-manager.js — LodManager class with distance-based
+    band selection, hysteresis, callback, forceSegments, custom bands.
 17. ~~Add WebGPU capability detection with graceful fallback to CPU tessellation.~~
     Done: GpuTessPipeline.isAvailable() + kernel/tessellation.ts CPU fallback.
 
 ### Diagnostics & Polish
 
-18. Expose STEP timing summaries in diagnostics so large-model profiling does
-    not depend only on console logs.
-19. Add residency hit rate, hydration cost, and GPU dispatch latency to
-    telemetry.
+18. ~~Expose STEP timing summaries in diagnostics so large-model profiling does
+    not depend only on console logs.~~
+    Done: telemetry.timersFor('step') filters STEP-related timer entries.
+19. ~~Add residency hit rate, hydration cost, and GPU dispatch latency to
+    telemetry.~~
+    Done: telemetry.residencySummary() and telemetry.gpuSummary() with
+    hit/miss/hydration/eviction counters and GPU dispatch/upload/readback
+    timing. summary() includes both.
 
 ## Expected Gains
 

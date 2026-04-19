@@ -655,6 +655,78 @@ export class WasmBrepHandleRegistry {
     pointToCylinderDistance(px, py, pz, geomOffset) {
         return _wasm.pointToCylinderDistance(px, py, pz, geomOffset);
     }
+
+    // ────────────────────── intersection error bounds ──────────────────────
+
+    /** Reset the intersection tracker for a new boolean pass. */
+    isxReset() {
+        _wasm.isxReset();
+    }
+
+    /**
+     * Record a segment-face intersection with error bound.
+     * @param {number} faceA
+     * @param {number} faceB
+     * @param {number} px - hit point X
+     * @param {number} py - hit point Y
+     * @param {number} pz - hit point Z
+     * @param {number} nx - surface normal X
+     * @param {number} ny - surface normal Y
+     * @param {number} nz - surface normal Z
+     * @param {number} rdx - ray direction X
+     * @param {number} rdy - ray direction Y
+     * @param {number} rdz - ray direction Z
+     * @param {number} curvature - local surface curvature (1/R), 0 for planar
+     * @returns {number} intersection index, or -1 if full
+     */
+    isxRecord(faceA, faceB, px, py, pz, nx, ny, nz, rdx, rdy, rdz, curvature) {
+        return _wasm.isxRecord(faceA, faceB, px, py, pz, nx, ny, nz, rdx, rdy, rdz, curvature);
+    }
+
+    /**
+     * Get the error bound for a specific intersection.
+     * @param {number} i - intersection index
+     * @returns {number} error bound in model units
+     */
+    isxGetErrorBound(i) {
+        return _wasm.isxGetErrorBound(i);
+    }
+
+    /** @returns {number} total recorded intersections */
+    isxGetCount() {
+        return _wasm.isxGetCount() >>> 0;
+    }
+
+    /** @returns {number} maximum error bound across all intersections */
+    isxGetMaxErrorBound() {
+        return _wasm.isxGetMaxErrorBound();
+    }
+
+    /**
+     * Check if two intersections are provably distinct.
+     * @param {number} a
+     * @param {number} b
+     * @returns {boolean}
+     */
+    isxAreDistinct(a, b) {
+        return _wasm.isxAreDistinct(a, b) !== 0;
+    }
+
+    /**
+     * Ray-face intersection with automatic error bound recording.
+     * @param {number} faceId
+     * @param {number} partnerFaceId
+     * @param {number} ox - ray origin X
+     * @param {number} oy - ray origin Y
+     * @param {number} oz - ray origin Z
+     * @param {number} dx - ray direction X
+     * @param {number} dy - ray direction Y
+     * @param {number} dz - ray direction Z
+     * @returns {number} parametric t of hit (>0), or -1 on miss
+     */
+    isxRayFace(faceId, partnerFaceId, ox, oy, oz, dx, dy, dz) {
+        return _wasm.isxRayFace(faceId, partnerFaceId, ox, oy, oz, dx, dy, dz);
+    }
 }
 
 export default WasmBrepHandleRegistry;

@@ -78,7 +78,9 @@ export {
   classifyPointVsShell, classifyFacesViaOctree,
   getFaceClassification, setFaceClassification,
   pointToPlaneDistance, pointToSphereDistance, pointToCylinderDistance,
-  getFaceClassificationPtr
+  getFaceClassificationPtr,
+  isxReset, isxRecord, isxGetErrorBound, isxGetCount,
+  isxGetMaxErrorBound, isxAreDistinct, isxRayFace
 } from './ops';
 
 // ---- interop: CBREP serialization ----

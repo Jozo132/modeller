@@ -204,6 +204,8 @@ class Telemetry {
       cacheHitRate: total > 0 ? this._cacheHits / total : NaN,
       longTasks: this._longTasks.slice(),
       interactions: this._interactions.slice(),
+      residency: this.residencySummary(),
+      gpu: this.gpuSummary(),
     });
   }
 
@@ -224,6 +226,101 @@ class Telemetry {
     this._cacheMisses = 0;
     this._longTasks.length = 0;
     this._interactions.length = 0;
+    this._residency = { hydrations: 0, evictions: 0, hits: 0, misses: 0, totalHydrationMs: 0 };
+    this._gpu = { dispatches: 0, totalDispatchMs: 0, totalUploadMs: 0, totalReadbackMs: 0 };
+  }
+
+  // ── Residency tracking ───────────────────────────────────────────
+
+  /** @type {{ hydrations: number, evictions: number, hits: number, misses: number, totalHydrationMs: number }} */
+  _residency = { hydrations: 0, evictions: 0, hits: 0, misses: 0, totalHydrationMs: 0 };
+
+  /** Record a residency cache hit (handle already hydrated). */
+  recordResidencyHit() {
+    this._residency.hits++;
+  }
+
+  /** Record a residency cache miss (needed hydration). */
+  recordResidencyMiss() {
+    this._residency.misses++;
+  }
+
+  /**
+   * Record a hydration event.
+   * @param {number} durationMs — time to hydrate from CBREP
+   */
+  recordHydration(durationMs) {
+    this._residency.hydrations++;
+    this._residency.totalHydrationMs += durationMs;
+  }
+
+  /**
+   * Record an eviction event.
+   * @param {number} [count=1] — number of handles evicted
+   */
+  recordEviction(count = 1) {
+    this._residency.evictions += count;
+  }
+
+  // ── GPU dispatch tracking ────────────────────────────────────────
+
+  /** @type {{ dispatches: number, totalDispatchMs: number, totalUploadMs: number, totalReadbackMs: number }} */
+  _gpu = { dispatches: 0, totalDispatchMs: 0, totalUploadMs: 0, totalReadbackMs: 0 };
+
+  /**
+   * Record a GPU compute dispatch.
+   * @param {number} dispatchMs — time from encode to onSubmittedWorkDone
+   */
+  recordGpuDispatch(dispatchMs) {
+    this._gpu.dispatches++;
+    this._gpu.totalDispatchMs += dispatchMs;
+  }
+
+  /**
+   * Record a GPU upload (WASM → GPU).
+   * @param {number} uploadMs
+   */
+  recordGpuUpload(uploadMs) {
+    this._gpu.totalUploadMs += uploadMs;
+  }
+
+  /**
+   * Record a GPU readback (GPU → CPU).
+   * @param {number} readbackMs
+   */
+  recordGpuReadback(readbackMs) {
+    this._gpu.totalReadbackMs += readbackMs;
+  }
+
+  /**
+   * Return residency diagnostics summary.
+   * @returns {{ hydrations: number, evictions: number, hits: number, misses: number, hitRate: number, avgHydrationMs: number }}
+   */
+  residencySummary() {
+    const r = this._residency;
+    const total = r.hits + r.misses;
+    return {
+      hydrations: r.hydrations,
+      evictions: r.evictions,
+      hits: r.hits,
+      misses: r.misses,
+      hitRate: total > 0 ? r.hits / total : 0,
+      avgHydrationMs: r.hydrations > 0 ? r.totalHydrationMs / r.hydrations : 0,
+    };
+  }
+
+  /**
+   * Return GPU dispatch diagnostics summary.
+   * @returns {{ dispatches: number, avgDispatchMs: number, totalUploadMs: number, totalReadbackMs: number }}
+   */
+  gpuSummary() {
+    const g = this._gpu;
+    return {
+      dispatches: g.dispatches,
+      avgDispatchMs: g.dispatches > 0 ? g.totalDispatchMs / g.dispatches : 0,
+      totalUploadMs: g.totalUploadMs,
+      totalReadbackMs: g.totalReadbackMs,
+    };
   }
 }
 

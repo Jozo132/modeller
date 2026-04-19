@@ -1545,6 +1545,63 @@ export declare function pointToCylinderDistance(px: number, py: number, pz: numb
  */
 export declare function getFaceClassificationPtr(): number;
 /**
+ * assembly/kernel/ops/isxReset
+ */
+export declare function isxReset(): void;
+/**
+ * assembly/kernel/ops/isxRecord
+ * @param faceA `u32`
+ * @param faceB `u32`
+ * @param px `f64`
+ * @param py `f64`
+ * @param pz `f64`
+ * @param nx `f64`
+ * @param ny `f64`
+ * @param nz `f64`
+ * @param rdx `f64`
+ * @param rdy `f64`
+ * @param rdz `f64`
+ * @param curvature `f64`
+ * @returns `i32`
+ */
+export declare function isxRecord(faceA: number, faceB: number, px: number, py: number, pz: number, nx: number, ny: number, nz: number, rdx: number, rdy: number, rdz: number, curvature: number): number;
+/**
+ * assembly/kernel/ops/isxGetErrorBound
+ * @param i `u32`
+ * @returns `f64`
+ */
+export declare function isxGetErrorBound(i: number): number;
+/**
+ * assembly/kernel/ops/isxGetCount
+ * @returns `u32`
+ */
+export declare function isxGetCount(): number;
+/**
+ * assembly/kernel/ops/isxGetMaxErrorBound
+ * @returns `f64`
+ */
+export declare function isxGetMaxErrorBound(): number;
+/**
+ * assembly/kernel/ops/isxAreDistinct
+ * @param a `u32`
+ * @param b `u32`
+ * @returns `bool`
+ */
+export declare function isxAreDistinct(a: number, b: number): boolean;
+/**
+ * assembly/kernel/ops/isxRayFace
+ * @param faceId `u32`
+ * @param partnerFaceId `u32`
+ * @param ox `f64`
+ * @param oy `f64`
+ * @param oz `f64`
+ * @param dx `f64`
+ * @param dy `f64`
+ * @param dz `f64`
+ * @returns `f64`
+ */
+export declare function isxRayFace(faceId: number, partnerFaceId: number, ox: number, oy: number, oz: number, dx: number, dy: number, dz: number): number;
+/**
  * assembly/kernel/interop/cbrepDehydrate
  * @returns `u32`
  */

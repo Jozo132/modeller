@@ -634,6 +634,14 @@ async function instantiate(module, imports = {}) {
       // assembly/kernel/ops/getFaceClassificationPtr() => usize
       return exports.getFaceClassificationPtr() >>> 0;
     },
+    isxGetCount() {
+      // assembly/kernel/ops/isxGetCount() => u32
+      return exports.isxGetCount() >>> 0;
+    },
+    isxAreDistinct(a, b) {
+      // assembly/kernel/ops/isxAreDistinct(u32, u32) => bool
+      return exports.isxAreDistinct(a, b) != 0;
+    },
     cbrepDehydrate() {
       // assembly/kernel/interop/cbrepDehydrate() => u32
       return exports.cbrepDehydrate() >>> 0;
@@ -982,6 +990,13 @@ export const {
   pointToSphereDistance,
   pointToCylinderDistance,
   getFaceClassificationPtr,
+  isxReset,
+  isxRecord,
+  isxGetErrorBound,
+  isxGetCount,
+  isxGetMaxErrorBound,
+  isxAreDistinct,
+  isxRayFace,
   cbrepDehydrate,
   cbrepHydrate,
   getCbrepOutPtr,
