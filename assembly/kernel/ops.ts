@@ -240,7 +240,8 @@ function _isxRaySphere(
   const cx = geomPoolRead(gOff);
   const cy = geomPoolRead(gOff + 1);
   const cz = geomPoolRead(gOff + 2);
-  const r = geomPoolRead(gOff + 3);
+  // Sphere layout: center(3) + axis(3) + refDir(3) + radius(1)
+  const r = geomPoolRead(gOff + 9);
 
   const ex = ox - cx;
   const ey = oy - cy;
@@ -378,11 +379,11 @@ export function classifyPointVsShell(
         if (t > 0) crossings++;
       }
     } else if (geomType == GEOM_SPHERE) {
-      // Sphere: center(3), radius(1)
+      // Sphere: center(3) + axis(3) + refDir(3) + radius(1)
       const cx = geomPoolRead(gOff);
       const cy = geomPoolRead(gOff + 1);
       const cz = geomPoolRead(gOff + 2);
-      const r = geomPoolRead(gOff + 3);
+      const r = geomPoolRead(gOff + 9);
 
       // Ray origin relative to sphere center
       const dx = px - cx;
@@ -506,7 +507,8 @@ export function pointToSphereDistance(
   const cx = geomPoolRead(gOff);
   const cy = geomPoolRead(gOff + 1);
   const cz = geomPoolRead(gOff + 2);
-  const r = geomPoolRead(gOff + 3);
+  // Sphere layout: center(3) + axis(3) + refDir(3) + radius(1)
+  const r = geomPoolRead(gOff + 9);
   const dx = px - cx;
   const dy = py - cy;
   const dz = pz - cz;

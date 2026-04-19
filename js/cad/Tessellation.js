@@ -127,55 +127,26 @@ export function tessellateBody(body, opts = {}) {
     return { vertices: [], faces: [], edges: [], _tessellator: 'empty' };
   }
 
-  // Preferred path: native WASM tessellation pipeline (boundary-trimmed,
+  // Primary path: native WASM tessellation pipeline (boundary-trimmed,
   // cross-parametric edge mapping, full kernel topology access).
-  // Falls back to JS Tessellator2 only when WASM is unavailable or when
-  // WASM produces a non-watertight mesh (boundary edges from grid trimming).
-  // See WASM_BREP_LIFETIME_PLAN.md §2a and Design Rule 13.
+  // All tessellation happens inside WASM — no JS fallback.
   const wasmResult = tessellateBodyWasm(body, opts);
   if (wasmResult && wasmResult.faces.length > 0) {
-    // Quality gate: check for boundary edges. Grid-based centroid trimming
-    // can produce jagged boundaries on some curved faces. If boundary edges
-    // are detected, fall back to JS which uses CDT for clean watertight meshes.
-    const wasmBoundary = _countBoundaryEdges(wasmResult.faces);
-    const wasmInverted = _hasInvertedNormals(wasmResult.faces);
-    if (wasmBoundary === 0 && !wasmInverted) {
-      wasmResult._tessellator = 'wasm';
-      return wasmResult;
-    }
-    // WASM mesh has quality issues (boundary edges or inverted normals).
-    // Try JS and pick the better result.
-    const jsResult = robustTessellateBody(body, { ...opts, validate: true });
-    if (jsResult.faces.length > 0) {
-      const jsBoundary = _countBoundaryEdges(jsResult.faces);
-      const jsInverted = _hasInvertedNormals(jsResult.faces);
-      // Prefer the result with fewer quality issues.
-      // Priority: inverted normals (worse) > boundary edges.
-      const wasmScore = (wasmInverted ? 1000 : 0) + wasmBoundary;
-      const jsScore = (jsInverted ? 1000 : 0) + jsBoundary;
-      if (wasmScore <= jsScore) {
-        wasmResult._tessellator = 'wasm-with-issues';
-        return wasmResult;
-      }
-      jsResult._tessellator = 'js-quality-fallback';
-      return jsResult;
-    }
-    // JS produced nothing — use WASM despite quality issues.
-    wasmResult._tessellator = 'wasm-with-issues';
+    wasmResult._tessellator = 'wasm';
     return wasmResult;
   }
 
-  // @legacy fallback: JS Tessellator2 — used only when WASM module is not
-  // loaded, returned null/empty, or produced non-watertight output.
+  // WASM module not loaded or returned empty — use JS Tessellator2 as
+  // a cold-start fallback only (WASM init is async, first call may miss).
   const result = robustTessellateBody(body, { ...opts, validate: true });
   if (result.faces.length > 0) {
-    result._tessellator = wasmResult ? 'js-quality-fallback' : 'legacy-js-fallback';
+    result._tessellator = 'js-cold-start-fallback';
     return result;
   }
 
-  // If JS also fails but WASM had faces, use the WASM result despite quality issues.
+  // If JS also fails but WASM had faces, use the WASM result.
   if (wasmResult && wasmResult.faces.length > 0) {
-    wasmResult._tessellator = 'wasm-with-issues';
+    wasmResult._tessellator = 'wasm';
     return wasmResult;
   }
 

@@ -218,11 +218,11 @@ test('cylinderStore uses expected slot count', () => {
     assert.strictEqual(wasm.geomPoolRead(9), 5.0);
 });
 
-test('sphereStore uses 4 slots', () => {
+test('sphereStore uses 10 slots', () => {
     wasm.geomPoolReset();
-    const offset = wasm.sphereStore(1, 2, 3, 7.5);
-    assert.strictEqual(wasm.geomPoolUsed(), 4);
-    assert.strictEqual(wasm.geomPoolRead(3), 7.5);
+    const offset = wasm.sphereStore(1, 2, 3, 0, 0, 1, 1, 0, 0, 7.5);
+    assert.strictEqual(wasm.geomPoolUsed(), 10);
+    assert.strictEqual(wasm.geomPoolRead(9), 7.5);
 });
 
 test('geomPoolReset clears usage', () => {

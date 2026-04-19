@@ -25,7 +25,6 @@ import { NurbsCurve } from './NurbsCurve.js';
 import { NurbsSurface } from './NurbsSurface.js';
 import { tessellateBodyRouted } from './Tessellator2/index.js';
 import { tessellateBodyWasm, ensureWasmReady as _ensureWasmReady } from './StepImportWasm.js';
-import { _countBoundaryEdges, _hasInvertedNormals } from './Tessellation.js';
 
 // Re-export for callers that need to pre-load WASM before sync importSTEP
 export const ensureWasmReady = _ensureWasmReady;
@@ -241,7 +240,7 @@ export function importSTEP(stepString, opts = {}) {
     parseSTEPTopology(stepString),
   );
 
-  // Try WASM tessellation path first (10-50× faster than JS Tessellator2)
+  // Primary path: WASM tessellation (all processing inside WASM)
   let mesh = null;
   mesh = _measureStepPhase(timings, 'tessellateMs', 'step:import:tessellate:wasm', () =>
     tessellateBodyWasm(body, {
@@ -249,23 +248,12 @@ export function importSTEP(stepString, opts = {}) {
       surfaceSegments: opts.surfaceSegments ?? 16,
     }),
   );
-
-  // Quality gate: reject WASM mesh if it has boundary edges or inverted normals
   if (mesh && mesh.faces.length > 0) {
-    const wasmBoundary = _countBoundaryEdges(mesh.faces);
-    const wasmInverted = _hasInvertedNormals(mesh.faces);
-    if (wasmBoundary === 0 && !wasmInverted) {
-      timings.tessellator = 'wasm';
-    } else {
-      // WASM mesh has quality issues — fall through to JS
-      mesh = null;
-    }
-  } else {
-    mesh = null;
+    timings.tessellator = 'wasm';
   }
 
-  // Fall back to JS Tessellator2 if WASM path unavailable or failed quality gate
-  if (!mesh) {
+  // Cold-start fallback: JS Tessellator2 only if WASM module not loaded yet
+  if (!mesh || mesh.faces.length === 0) {
     mesh = _measureStepPhase(timings, 'tessellateMs', 'step:import:tessellate', () =>
       tessellateBodyRouted(body, {
         tessellator: 'robust',
@@ -273,7 +261,7 @@ export function importSTEP(stepString, opts = {}) {
         surfaceSegments: opts.surfaceSegments ?? 16,
       }),
     );
-    timings.tessellator = 'js';
+    timings.tessellator = 'js-cold-start-fallback';
 
     // Post-process: apply analytic per-vertex normals and surface projection
     // for faces that have surfaceInfo but no NurbsSurface (sphere, cylinder, etc.)

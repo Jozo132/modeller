@@ -166,7 +166,7 @@ test('isx', 'isxRayFace hits sphere', () => {
     wasm.bodyBegin();
     wasm.geomPoolReset();
     wasm.vertexAdd(0, 0, 0);
-    const gOff = wasm.sphereStore(0, 0, 0, 1.0);
+    const gOff = wasm.sphereStore(0, 0, 0, 0, 0, 1, 1, 0, 0, 1.0);
     const edges = [wasm.edgeAdd(0, 0, wasm.GEOM_LINE, 0)];
     const ce = wasm.coedgeAdd(edges[0], wasm.ORIENT_FORWARD, 0, 0);
     wasm.coedgeSetNext(ce, ce);

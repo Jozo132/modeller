@@ -1153,10 +1153,16 @@ export declare function cylinderStore(ox: number, oy: number, oz: number, ax: nu
  * @param cx `f64`
  * @param cy `f64`
  * @param cz `f64`
+ * @param ax `f64`
+ * @param ay `f64`
+ * @param az `f64`
+ * @param rx `f64`
+ * @param ry `f64`
+ * @param rz `f64`
  * @param radius `f64`
  * @returns `u32`
  */
-export declare function sphereStore(cx: number, cy: number, cz: number, radius: number): number;
+export declare function sphereStore(cx: number, cy: number, cz: number, ax: number, ay: number, az: number, rx: number, ry: number, rz: number, radius: number): number;
 /**
  * assembly/kernel/geometry/coneStore
  * @param ox `f64`

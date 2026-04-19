@@ -317,7 +317,14 @@ function _storeGeometry(w, wasmMem, face) {
 
     if (st === SurfaceType.SPHERE && si) {
         const o = si.origin || { x: 0, y: 0, z: 0 };
-        const offset = w.sphereStore(o.x, o.y, o.z, si.radius || 1);
+        const a = si.axis || { x: 0, y: 0, z: 1 };
+        const x = si.xDir || _perpendicular(a);
+        const offset = w.sphereStore(
+            o.x, o.y, o.z,
+            a.x, a.y, a.z,
+            x.x, x.y, x.z,
+            si.radius || 1,
+        );
         return { type: w.GEOM_SPHERE, offset };
     }
 

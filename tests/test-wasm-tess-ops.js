@@ -104,7 +104,7 @@ function buildSphere(cx, cy, cz, radius) {
     wasm.bodyBegin();
     wasm.geomPoolReset();
 
-    const geomOff = wasm.sphereStore(cx, cy, cz, radius);
+    const geomOff = wasm.sphereStore(cx, cy, cz, 0, 0, 1, 1, 0, 0, radius);
 
     // Sphere has no boundary edges (closed surface) — create a degenerate
     // single-vertex loop just for the topology system
@@ -383,21 +383,21 @@ test('pointToPlaneDistance — reversed normal', () => {
 
 test('pointToSphereDistance — outside', () => {
     wasm.geomPoolReset();
-    const off = wasm.sphereStore(0, 0, 0, 1);
+    const off = wasm.sphereStore(0, 0, 0, 0, 0, 1, 1, 0, 0, 1);
     const d = wasm.pointToSphereDistance(3, 0, 0, off);
     approx(d, 2.0);
 });
 
 test('pointToSphereDistance — on surface', () => {
     wasm.geomPoolReset();
-    const off = wasm.sphereStore(0, 0, 0, 1);
+    const off = wasm.sphereStore(0, 0, 0, 0, 0, 1, 1, 0, 0, 1);
     const d = wasm.pointToSphereDistance(1, 0, 0, off);
     approx(d, 0.0);
 });
 
 test('pointToSphereDistance — inside', () => {
     wasm.geomPoolReset();
-    const off = wasm.sphereStore(0, 0, 0, 5);
+    const off = wasm.sphereStore(0, 0, 0, 0, 0, 1, 1, 0, 0, 5);
     const d = wasm.pointToSphereDistance(1, 0, 0, off);
     approx(d, -4.0);
 });

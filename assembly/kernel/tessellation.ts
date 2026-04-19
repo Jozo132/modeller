@@ -330,10 +330,17 @@ function _projectPoint(px: f64, py: f64, pz: f64): void {
     );
     _projV = h;
   } else if (_projMode == 1) {
-    // Sphere: u=longitude, v=latitude
-    _projU = Math.atan2(dy, dx);
+    // Sphere: u=longitude around axis, v=latitude from equatorial plane
+    const h = dx * _proj_ax + dy * _proj_ay + dz * _proj_az;
+    const radX = dx - h * _proj_ax;
+    const radY = dy - h * _proj_ay;
+    const radZ = dz - h * _proj_az;
+    _projU = Math.atan2(
+      radX * _proj_bx + radY * _proj_by + radZ * _proj_bz,
+      radX * _proj_rx + radY * _proj_ry + radZ * _proj_rz
+    );
     const r = Math.sqrt(dx * dx + dy * dy + dz * dz);
-    const sinLat = r > 1e-15 ? dz / r : 0.0;
+    const sinLat = r > 1e-15 ? h / r : 0.0;
     _projV = Math.asin(sinLat < -1.0 ? -1.0 : sinLat > 1.0 ? 1.0 : sinLat);
   } else {
     // Torus: u=major angle, v=minor angle
@@ -566,15 +573,19 @@ function _evalSurface(
     _surfNY = (ry * cosU + by * sinU) * cosSA - ay * sinSA;
     _surfNZ = (rz * cosU + bz * sinU) * cosSA - az * sinSA;
   } else if (surfType == 3) {
-    // Sphere: u=longitude, v=latitude
+    // Sphere: u=longitude around axis, v=latitude from equatorial plane
     const cosV = Math.cos(v);
     const sinV = Math.sin(v);
-    _surfX = ox + radius * cosV * cosU;
-    _surfY = oy + radius * cosV * sinU;
-    _surfZ = oz + radius * sinV;
-    _surfNX = cosV * cosU;
-    _surfNY = cosV * sinU;
-    _surfNZ = sinV;
+    // Position on sphere using local frame: refDir (rx), binormal (bx), axis (ax)
+    const dirX = rx * cosU + bx * sinU;
+    const dirY = ry * cosU + by * sinU;
+    const dirZ = rz * cosU + bz * sinU;
+    _surfX = ox + radius * (dirX * cosV + ax * sinV);
+    _surfY = oy + radius * (dirY * cosV + ay * sinV);
+    _surfZ = oz + radius * (dirZ * cosV + az * sinV);
+    _surfNX = dirX * cosV + ax * sinV;
+    _surfNY = dirY * cosV + ay * sinV;
+    _surfNZ = dirZ * cosV + az * sinV;
   } else {
     // Torus: u=major angle, v=minor angle
     const cosV = Math.cos(v);
@@ -741,14 +752,29 @@ function _tessSphereFace(faceId: u32, segsU: i32, segsV: i32): i32 {
   const gOff = faceGetGeomOffset(faceId);
   const reversed = faceGetOrient(faceId) == ORIENT_REVERSED;
 
+  // Read sphere params: center(3) + axis(3) + refDir(3) + radius(1)
   const cx = geomPoolRead(gOff);
   const cy = geomPoolRead(gOff + 1);
   const cz = geomPoolRead(gOff + 2);
-  const radius = geomPoolRead(gOff + 3);
+  const ax = geomPoolRead(gOff + 3);
+  const ay = geomPoolRead(gOff + 4);
+  const az = geomPoolRead(gOff + 5);
+  const rx = geomPoolRead(gOff + 6);
+  const ry = geomPoolRead(gOff + 7);
+  const rz = geomPoolRead(gOff + 8);
+  const radius = geomPoolRead(gOff + 9);
 
-  // Setup UV projection: sphere (u=longitude, v=latitude)
+  // Compute binormal = axis × refDir
+  const bx = ay * rz - az * ry;
+  const by = az * rx - ax * rz;
+  const bz = ax * ry - ay * rx;
+
+  // Setup UV projection: sphere as revolution surface (u=longitude, v=latitude)
   _projMode = 1;
   _proj_ox = cx; _proj_oy = cy; _proj_oz = cz;
+  _proj_ax = ax; _proj_ay = ay; _proj_az = az;
+  _proj_rx = rx; _proj_ry = ry; _proj_rz = rz;
+  _proj_bx = bx; _proj_by = by; _proj_bz = bz;
 
   _collectBoundaryUV(faceId);
 
@@ -763,7 +789,7 @@ function _tessSphereFace(faceId: u32, segsU: i32, segsV: i32): i32 {
   if (_uvVmax - _uvVmin < 1e-10 || _uvUmax - _uvUmin < 1e-10) return 0;
 
   return _tessTrimmedParametricGrid(faceId, reversed, segsU, segsV,
-    3, cx, cy, cz, 0, 0, 0, 0, 0, 0, 0, 0, 0, radius, 0.0, 0.0, 0.0);
+    3, cx, cy, cz, ax, ay, az, rx, ry, rz, bx, by, bz, radius, 0.0, 0.0, 0.0);
 }
 
 // ─── Torus face tessellation ─────────────────────────────────────────
@@ -965,18 +991,18 @@ function _tessTrimmedParametricGrid(
 
       if (inside1) {
         if (reversed) {
-          if (_emitTri(i00, i11, i10, faceId) < 0) return -1;
-        } else {
           if (_emitTri(i00, i10, i11, faceId) < 0) return -1;
+        } else {
+          if (_emitTri(i00, i11, i10, faceId) < 0) return -1;
         }
         triCount++;
       }
 
       if (inside2) {
         if (reversed) {
-          if (_emitTri(i00, i01, i11, faceId) < 0) return -1;
-        } else {
           if (_emitTri(i00, i11, i01, faceId) < 0) return -1;
+        } else {
+          if (_emitTri(i00, i01, i11, faceId) < 0) return -1;
         }
         triCount++;
       }

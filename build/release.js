@@ -467,9 +467,9 @@ async function instantiate(module, imports = {}) {
       // assembly/kernel/geometry/cylinderStore(f64, f64, f64, f64, f64, f64, f64, f64, f64, f64) => u32
       return exports.cylinderStore(ox, oy, oz, ax, ay, az, rx, ry, rz, radius) >>> 0;
     },
-    sphereStore(cx, cy, cz, radius) {
-      // assembly/kernel/geometry/sphereStore(f64, f64, f64, f64) => u32
-      return exports.sphereStore(cx, cy, cz, radius) >>> 0;
+    sphereStore(cx, cy, cz, ax, ay, az, rx, ry, rz, radius) {
+      // assembly/kernel/geometry/sphereStore(f64, f64, f64, f64, f64, f64, f64, f64, f64, f64) => u32
+      return exports.sphereStore(cx, cy, cz, ax, ay, az, rx, ry, rz, radius) >>> 0;
     },
     coneStore(ox, oy, oz, ax, ay, az, rx, ry, rz, radius, semiAngle) {
       // assembly/kernel/geometry/coneStore(f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64) => u32
