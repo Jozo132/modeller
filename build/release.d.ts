@@ -1395,6 +1395,156 @@ export declare function getGpuKnotBufLen(): number;
  */
 export declare function getGpuSurfaceCount(): number;
 /**
+ * assembly/kernel/tessellation/tessBuildAllFaces
+ * @param segsU `i32`
+ * @param segsV `i32`
+ * @returns `i32`
+ */
+export declare function tessBuildAllFaces(segsU: number, segsV: number): number;
+/**
+ * assembly/kernel/tessellation/tessBuildFace
+ * @param faceId `u32`
+ * @param segsU `i32`
+ * @param segsV `i32`
+ * @returns `i32`
+ */
+export declare function tessBuildFace(faceId: number, segsU: number, segsV: number): number;
+/**
+ * assembly/kernel/tessellation/tessReset
+ */
+export declare function tessReset(): void;
+/**
+ * assembly/kernel/tessellation/getTessOutVertsPtr
+ * @returns `usize`
+ */
+export declare function getTessOutVertsPtr(): number;
+/**
+ * assembly/kernel/tessellation/getTessOutNormalsPtr
+ * @returns `usize`
+ */
+export declare function getTessOutNormalsPtr(): number;
+/**
+ * assembly/kernel/tessellation/getTessOutIndicesPtr
+ * @returns `usize`
+ */
+export declare function getTessOutIndicesPtr(): number;
+/**
+ * assembly/kernel/tessellation/getTessOutFaceMapPtr
+ * @returns `usize`
+ */
+export declare function getTessOutFaceMapPtr(): number;
+/**
+ * assembly/kernel/tessellation/getTessOutVertCount
+ * @returns `u32`
+ */
+export declare function getTessOutVertCount(): number;
+/**
+ * assembly/kernel/tessellation/getTessOutTriCount
+ * @returns `u32`
+ */
+export declare function getTessOutTriCount(): number;
+/**
+ * assembly/kernel/tessellation/getEdgeSamplePtsPtr
+ * @returns `usize`
+ */
+export declare function getEdgeSamplePtsPtr(): number;
+/**
+ * assembly/kernel/tessellation/getEdgeSampleCount
+ * @param edgeId `u32`
+ * @returns `u32`
+ */
+export declare function getEdgeSampleCount(edgeId: number): number;
+/**
+ * assembly/kernel/tessellation/getEdgeSampleStart
+ * @param edgeId `u32`
+ * @returns `u32`
+ */
+export declare function getEdgeSampleStart(edgeId: number): number;
+/** assembly/kernel/ops/CLASSIFY_OUTSIDE */
+export declare const CLASSIFY_OUTSIDE: {
+  /** @type `u8` */
+  get value(): number
+};
+/** assembly/kernel/ops/CLASSIFY_INSIDE */
+export declare const CLASSIFY_INSIDE: {
+  /** @type `u8` */
+  get value(): number
+};
+/** assembly/kernel/ops/CLASSIFY_ON_BOUNDARY */
+export declare const CLASSIFY_ON_BOUNDARY: {
+  /** @type `u8` */
+  get value(): number
+};
+/** assembly/kernel/ops/CLASSIFY_UNKNOWN */
+export declare const CLASSIFY_UNKNOWN: {
+  /** @type `u8` */
+  get value(): number
+};
+/**
+ * assembly/kernel/ops/classifyPointVsShell
+ * @param px `f64`
+ * @param py `f64`
+ * @param pz `f64`
+ * @param faceStart `u32`
+ * @param faceEnd `u32`
+ * @returns `u8`
+ */
+export declare function classifyPointVsShell(px: number, py: number, pz: number, faceStart: number, faceEnd: number): number;
+/**
+ * assembly/kernel/ops/classifyFacesViaOctree
+ * @param faceStartA `u32`
+ * @param faceEndA `u32`
+ * @param faceStartB `u32`
+ * @param faceEndB `u32`
+ * @returns `u32`
+ */
+export declare function classifyFacesViaOctree(faceStartA: number, faceEndA: number, faceStartB: number, faceEndB: number): number;
+/**
+ * assembly/kernel/ops/getFaceClassification
+ * @param faceId `u32`
+ * @returns `u8`
+ */
+export declare function getFaceClassification(faceId: number): number;
+/**
+ * assembly/kernel/ops/setFaceClassification
+ * @param faceId `u32`
+ * @param cls `u8`
+ */
+export declare function setFaceClassification(faceId: number, cls: number): void;
+/**
+ * assembly/kernel/ops/pointToPlaneDistance
+ * @param px `f64`
+ * @param py `f64`
+ * @param pz `f64`
+ * @param gOff `u32`
+ * @param reversed `bool`
+ * @returns `f64`
+ */
+export declare function pointToPlaneDistance(px: number, py: number, pz: number, gOff: number, reversed: boolean): number;
+/**
+ * assembly/kernel/ops/pointToSphereDistance
+ * @param px `f64`
+ * @param py `f64`
+ * @param pz `f64`
+ * @param gOff `u32`
+ * @returns `f64`
+ */
+export declare function pointToSphereDistance(px: number, py: number, pz: number, gOff: number): number;
+/**
+ * assembly/kernel/ops/pointToCylinderDistance
+ * @param px `f64`
+ * @param py `f64`
+ * @param pz `f64`
+ * @param gOff `u32`
+ * @returns `f64`
+ */
+export declare function pointToCylinderDistance(px: number, py: number, pz: number, gOff: number): number;
+/**
+ * assembly/kernel/ops/getFaceClassificationPtr
+ * @returns `usize`
+ */
+export declare function getFaceClassificationPtr(): number;
+/**
  * assembly/kernel/interop/cbrepDehydrate
  * @returns `u32`
  */

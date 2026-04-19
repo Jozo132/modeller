@@ -504,6 +504,157 @@ export class WasmBrepHandleRegistry {
         const body = readCbrep(cbrep.buffer);
         return exportSTEP(body, options);
     }
+
+    // ────────────────────── tessellation ──────────────────────
+
+    /**
+     * Tessellate all faces in the current body stored in topology+geometry.
+     * Returns {vertices: Float64Array, normals: Float64Array, indices: Uint32Array, faceMap: Uint32Array}
+     * or null on overflow.
+     *
+     * @param {number} [segsU=16] — segments in U direction
+     * @param {number} [segsV=16] — segments in V direction
+     */
+    tessellateBody(segsU = 16, segsV = 16) {
+        const nTris = _wasm.tessBuildAllFaces(segsU, segsV);
+        if (nTris < 0) return null;
+        if (nTris === 0) return { vertices: new Float64Array(0), normals: new Float64Array(0), indices: new Uint32Array(0), faceMap: new Uint32Array(0) };
+
+        const nVerts = _wasm.getTessOutVertCount() >>> 0;
+        const buf = _wasmMem.buffer;
+
+        const vertsPtr = _wasm.getTessOutVertsPtr() >>> 0;
+        const normsPtr = _wasm.getTessOutNormalsPtr() >>> 0;
+        const idxPtr = _wasm.getTessOutIndicesPtr() >>> 0;
+        const fmapPtr = _wasm.getTessOutFaceMapPtr() >>> 0;
+
+        return {
+            vertices: new Float64Array(buf, vertsPtr, nVerts * 3),
+            normals: new Float64Array(buf, normsPtr, nVerts * 3),
+            indices: new Uint32Array(buf, idxPtr, nTris * 3),
+            faceMap: new Uint32Array(buf, fmapPtr, nTris),
+        };
+    }
+
+    /**
+     * Tessellate a single face.
+     * @param {number} faceId
+     * @param {number} [segsU=16]
+     * @param {number} [segsV=16]
+     * @returns {number} triangles added, or -1 on overflow
+     */
+    tessellateFace(faceId, segsU = 16, segsV = 16) {
+        return _wasm.tessBuildFace(faceId, segsU, segsV);
+    }
+
+    /** Reset tessellation output buffers. */
+    tessReset() {
+        _wasm.tessReset();
+    }
+
+    /**
+     * Get edge sample points for cross-parametric mapping.
+     * @param {number} edgeId
+     * @returns {Float64Array|null} — sample points [x,y,z,...] or null if not cached
+     */
+    getEdgeSamples(edgeId) {
+        const count = _wasm.getEdgeSampleCount(edgeId) >>> 0;
+        if (count === 0) return null;
+        const start = _wasm.getEdgeSampleStart(edgeId) >>> 0;
+        const ptr = _wasm.getEdgeSamplePtsPtr() >>> 0;
+        return new Float64Array(_wasmMem.buffer, ptr + start * 3 * 8, count * 3);
+    }
+
+    // ────────────────────── boolean classification ──────────────────────
+
+    /** Classification result constants */
+    static CLASSIFY = Object.freeze({
+        OUTSIDE: 0,
+        INSIDE: 1,
+        ON_BOUNDARY: 2,
+        UNKNOWN: 3,
+    });
+
+    /**
+     * Classify a point against a shell (face range).
+     * @param {number} px
+     * @param {number} py
+     * @param {number} pz
+     * @param {number} faceStart — first face index of the shell
+     * @param {number} faceEnd — one-past-last face index
+     * @returns {number} — CLASSIFY_OUTSIDE/INSIDE/ON_BOUNDARY/UNKNOWN
+     */
+    classifyPoint(px, py, pz, faceStart, faceEnd) {
+        return _wasm.classifyPointVsShell(px, py, pz, faceStart, faceEnd);
+    }
+
+    /**
+     * Use octree-accelerated broadphase to classify face overlaps
+     * between two bodies' face ranges.
+     * @param {number} faceStartA
+     * @param {number} faceEndA
+     * @param {number} faceStartB
+     * @param {number} faceEndB
+     * @returns {number} — number of classified faces
+     */
+    classifyFaces(faceStartA, faceEndA, faceStartB, faceEndB) {
+        return _wasm.classifyFacesViaOctree(faceStartA, faceEndA, faceStartB, faceEndB) >>> 0;
+    }
+
+    /**
+     * Get the classification of a specific face.
+     * @param {number} faceId
+     * @returns {number}
+     */
+    getFaceClassification(faceId) {
+        return _wasm.getFaceClassification(faceId);
+    }
+
+    /**
+     * Set the classification of a specific face from JS.
+     * @param {number} faceId
+     * @param {number} cls
+     */
+    setFaceClassification(faceId, cls) {
+        _wasm.setFaceClassification(faceId, cls);
+    }
+
+    /**
+     * Signed distance from point to plane surface.
+     * @param {number} px
+     * @param {number} py
+     * @param {number} pz
+     * @param {number} geomOffset
+     * @param {boolean} reversed
+     * @returns {number}
+     */
+    pointToPlaneDistance(px, py, pz, geomOffset, reversed = false) {
+        return _wasm.pointToPlaneDistance(px, py, pz, geomOffset, reversed);
+    }
+
+    /**
+     * Distance from point to sphere surface.
+     * @param {number} px
+     * @param {number} py
+     * @param {number} pz
+     * @param {number} geomOffset
+     * @returns {number}
+     */
+    pointToSphereDistance(px, py, pz, geomOffset) {
+        return _wasm.pointToSphereDistance(px, py, pz, geomOffset);
+    }
+
+    /**
+     * Distance from point to cylinder surface.
+     * @param {number} px
+     * @param {number} py
+     * @param {number} pz
+     * @param {number} geomOffset
+     * @returns {number}
+     */
+    pointToCylinderDistance(px, py, pz, geomOffset) {
+        return _wasm.pointToCylinderDistance(px, py, pz, geomOffset);
+    }
 }
 
 export default WasmBrepHandleRegistry;

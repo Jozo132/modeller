@@ -585,6 +585,55 @@ async function instantiate(module, imports = {}) {
       // assembly/kernel/gpu/getGpuSurfaceCount() => u32
       return exports.getGpuSurfaceCount() >>> 0;
     },
+    getTessOutVertsPtr() {
+      // assembly/kernel/tessellation/getTessOutVertsPtr() => usize
+      return exports.getTessOutVertsPtr() >>> 0;
+    },
+    getTessOutNormalsPtr() {
+      // assembly/kernel/tessellation/getTessOutNormalsPtr() => usize
+      return exports.getTessOutNormalsPtr() >>> 0;
+    },
+    getTessOutIndicesPtr() {
+      // assembly/kernel/tessellation/getTessOutIndicesPtr() => usize
+      return exports.getTessOutIndicesPtr() >>> 0;
+    },
+    getTessOutFaceMapPtr() {
+      // assembly/kernel/tessellation/getTessOutFaceMapPtr() => usize
+      return exports.getTessOutFaceMapPtr() >>> 0;
+    },
+    getTessOutVertCount() {
+      // assembly/kernel/tessellation/getTessOutVertCount() => u32
+      return exports.getTessOutVertCount() >>> 0;
+    },
+    getTessOutTriCount() {
+      // assembly/kernel/tessellation/getTessOutTriCount() => u32
+      return exports.getTessOutTriCount() >>> 0;
+    },
+    getEdgeSamplePtsPtr() {
+      // assembly/kernel/tessellation/getEdgeSamplePtsPtr() => usize
+      return exports.getEdgeSamplePtsPtr() >>> 0;
+    },
+    getEdgeSampleCount(edgeId) {
+      // assembly/kernel/tessellation/getEdgeSampleCount(u32) => u32
+      return exports.getEdgeSampleCount(edgeId) >>> 0;
+    },
+    getEdgeSampleStart(edgeId) {
+      // assembly/kernel/tessellation/getEdgeSampleStart(u32) => u32
+      return exports.getEdgeSampleStart(edgeId) >>> 0;
+    },
+    classifyFacesViaOctree(faceStartA, faceEndA, faceStartB, faceEndB) {
+      // assembly/kernel/ops/classifyFacesViaOctree(u32, u32, u32, u32) => u32
+      return exports.classifyFacesViaOctree(faceStartA, faceEndA, faceStartB, faceEndB) >>> 0;
+    },
+    pointToPlaneDistance(px, py, pz, gOff, reversed) {
+      // assembly/kernel/ops/pointToPlaneDistance(f64, f64, f64, u32, bool) => f64
+      reversed = reversed ? 1 : 0;
+      return exports.pointToPlaneDistance(px, py, pz, gOff, reversed);
+    },
+    getFaceClassificationPtr() {
+      // assembly/kernel/ops/getFaceClassificationPtr() => usize
+      return exports.getFaceClassificationPtr() >>> 0;
+    },
     cbrepDehydrate() {
       // assembly/kernel/interop/cbrepDehydrate() => u32
       return exports.cbrepDehydrate() >>> 0;
@@ -909,6 +958,30 @@ export const {
   getGpuKnotBufPtr,
   getGpuKnotBufLen,
   getGpuSurfaceCount,
+  tessBuildAllFaces,
+  tessBuildFace,
+  tessReset,
+  getTessOutVertsPtr,
+  getTessOutNormalsPtr,
+  getTessOutIndicesPtr,
+  getTessOutFaceMapPtr,
+  getTessOutVertCount,
+  getTessOutTriCount,
+  getEdgeSamplePtsPtr,
+  getEdgeSampleCount,
+  getEdgeSampleStart,
+  CLASSIFY_OUTSIDE,
+  CLASSIFY_INSIDE,
+  CLASSIFY_ON_BOUNDARY,
+  CLASSIFY_UNKNOWN,
+  classifyPointVsShell,
+  classifyFacesViaOctree,
+  getFaceClassification,
+  setFaceClassification,
+  pointToPlaneDistance,
+  pointToSphereDistance,
+  pointToCylinderDistance,
+  getFaceClassificationPtr,
   cbrepDehydrate,
   cbrepHydrate,
   getCbrepOutPtr,

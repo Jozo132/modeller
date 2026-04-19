@@ -450,6 +450,17 @@ export {
   getGpuCtrlBufPtr, getGpuCtrlBufLen,
   getGpuKnotBufPtr, getGpuKnotBufLen,
   getGpuSurfaceCount,
+  // tessellation: native face-level mesh extraction
+  tessBuildAllFaces, tessBuildFace, tessReset,
+  getTessOutVertsPtr, getTessOutNormalsPtr, getTessOutIndicesPtr, getTessOutFaceMapPtr,
+  getTessOutVertCount, getTessOutTriCount,
+  getEdgeSamplePtsPtr, getEdgeSampleCount, getEdgeSampleStart,
+  // ops: topology-driven boolean classification
+  CLASSIFY_OUTSIDE, CLASSIFY_INSIDE, CLASSIFY_ON_BOUNDARY, CLASSIFY_UNKNOWN,
+  classifyPointVsShell, classifyFacesViaOctree,
+  getFaceClassification, setFaceClassification,
+  pointToPlaneDistance, pointToSphereDistance, pointToCylinderDistance,
+  getFaceClassificationPtr,
   // interop: CBREP serialization
   cbrepDehydrate, cbrepHydrate,
   getCbrepOutPtr, getCbrepOutLen,

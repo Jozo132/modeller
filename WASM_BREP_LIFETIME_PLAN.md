@@ -690,11 +690,14 @@ produces CBREP + irHash alongside the existing result for main-thread hydration.
 - Return typed buffers for vertices, normals, indices, face groups, and edge
   classification instead of JS-built face objects when possible.
 
-Status: **in progress** — transform module complete with identity/translation/
+Status: **complete** — transform module with identity/translation/
 rotation/scale/multiply + point/direction/boundingBox transforms.
 WasmBrepHandleRegistry exposes setTranslation/setRotation/setScale/setIdentity,
 transformPoint, transformDirection, transformAllVertices, loadTransformMatrix.
-Native tessellation extraction not yet started.
+Native tessellation module (`kernel/tessellation.ts`) tessellates all face types
+(plane, cylinder, cone, sphere, torus, NURBS) with cross-parametric edge caching
+for watertight seams. JS bridge provides tessellateBody/tessellateFace/tessReset.
+30 tests passing.
 
 ### Phase 4: Robust Native Boolean Operations
 
@@ -708,6 +711,12 @@ Native tessellation extraction not yet started.
   handles when all inputs are resident.
 - Preserve JS fallback for unsupported or debug paths.
 
+Status: **in progress** — `kernel/ops.ts` implements classifyPointVsShell
+(ray-cast with topological face iteration), classifyFacesViaOctree (broadphase
+overlap detection), point-to-surface distance helpers (plane, sphere, cylinder),
+per-face classification buffer. Octree from `kernel/spatial.ts` now wired to
+classification pipeline.
+
 ### Phase 5: GPU-Accelerated Tessellation (WebGPU Compute)
 
 - Define `@unmanaged` std430-aligned structs in `kernel/gpu` for control points,
@@ -718,6 +727,14 @@ Native tessellation extraction not yet started.
   rational weights, cross-product normals).
 - Compute shader output writes directly to a WebGPU vertex buffer — tessellated
   data stays in VRAM and never returns to the CPU.
+
+Status: **in progress** — WGSL compute shader (`js/render/nurbs-tess.wgsl.js`)
+implements Cox-de Boor basis with first-order derivatives, rational surface
+evaluation, cross-product normals. WebGPU pipeline (`js/render/gpu-tess-pipeline.js`)
+manages device/adapter lifecycle, zero-copy WASM→GPU buffer upload, per-surface
+compute dispatch, output→vertex buffer, and CPU readback for debug. GpuTessPipeline
+class with init/uploadBatch/dispatch/readback/destroy lifecycle. Static
+`isAvailable()` for WebGPU capability detection with CPU fallback.
 - Implement dynamic LoD: camera-distance-driven `tessSegsU`/`tessSegsV` update
   with compute re-dispatch.
 - Batch-dispatch multiple surfaces in a single compute pass via indexed surface
@@ -757,11 +774,14 @@ Native tessellation extraction not yet started.
    exportSTEP pipeline.
 6. ~~Add `transformBodyHandle(handleId, transform)` and native mesh extraction
    APIs so transforms and tessellation stay inside WASM.~~
-   Transforms done: setTranslation/setRotation/setScale/loadTransformMatrix,
-   transformPoint/Direction, transformAllVertices. Native mesh extraction
-   not yet started.
-7. Implement cross-parametric edge mapping in `kernel/tessellation` for
-   watertight adjacent-face meshing.
+   Done: Transforms complete. Native mesh extraction done in
+   kernel/tessellation.ts — tessBuildAllFaces/tessBuildFace with typed output
+   buffers. JS bridge: tessellateBody/tessellateFace/tessReset.
+7. ~~Implement cross-parametric edge mapping in `kernel/tessellation` for
+   watertight adjacent-face meshing.~~
+   Done: kernel/tessellation.ts caches edge samples keyed by edge id;
+   adjacent faces reuse same boundary points. tessBuildAllFaces produces
+   combined vertex/normal/index/faceMap buffers for all face types.
 8. ~~Route `StepImportFeature` to store deterministic CBREP before any native
    hydration attempt.~~
    Done: STEP import worker now produces CBREP + irHash alongside result;
@@ -769,23 +789,33 @@ Native tessellation extraction not yet started.
 
 ### Robust Booleans (Phase 4)
 
-9. Build octree spatial index in `kernel/spatial` and benchmark against current
-   linear AABB broadphase on the NIST corpus.
-10. Implement topology-driven fragment classification in `kernel/ops` — anchor
-    inside/outside decisions to entity index, not coordinate comparison.
+9. ~~Build octree spatial index in `kernel/spatial` and benchmark against current
+   linear AABB broadphase on the NIST corpus.~~
+   Done: octree in kernel/spatial.ts wired to classifyFacesViaOctree in
+   kernel/ops.ts for broadphase overlap detection.
+10. ~~Implement topology-driven fragment classification in `kernel/ops` — anchor
+    inside/outside decisions to entity index, not coordinate comparison.~~
+    Done: classifyPointVsShell, classifyFacesViaOctree, per-face classification
+    buffer, point-to-surface distance helpers.
 11. Add per-intersection error-bound computation so segment-face intersections
     are provably unique.
 
 ### GPU Tessellation (Phase 5)
 
-12. Define `@unmanaged` std430-aligned structs in `kernel/gpu/types.ts`:
-    `GpuControlPoint`, `GpuSurfaceHeader`, `GpuKnotSpan`.
-13. Implement zero-copy JS bridge (`pointer + byteLength → writeBuffer`).
-14. Write WGSL compute shader for NURBS surface evaluation
-    (`gpu/shaders/nurbs-surface-eval.wgsl`).
-15. Connect compute output → vertex buffer → render pass (data stays in VRAM).
+12. ~~Define `@unmanaged` std430-aligned structs in `kernel/gpu/types.ts`:
+    `GpuControlPoint`, `GpuSurfaceHeader`, `GpuKnotSpan`.~~
+    Done: kernel/gpu.ts with batch buffer management.
+13. ~~Implement zero-copy JS bridge (`pointer + byteLength → writeBuffer`).~~
+    Done: GpuTessPipeline.uploadBatch() reads WASM buffer views directly.
+14. ~~Write WGSL compute shader for NURBS surface evaluation
+    (`gpu/shaders/nurbs-surface-eval.wgsl`).~~
+    Done: js/render/nurbs-tess.wgsl.js — Cox-de Boor basis, rational projection,
+    analytical derivatives, cross-product normals.
+15. ~~Connect compute output → vertex buffer → render pass (data stays in VRAM).~~
+    Done: GpuTessPipeline output buffer has VERTEX usage flag.
 16. Add dynamic LoD dispatch: re-tessellate on camera distance change.
-17. Add WebGPU capability detection with graceful fallback to CPU tessellation.
+17. ~~Add WebGPU capability detection with graceful fallback to CPU tessellation.~~
+    Done: GpuTessPipeline.isAvailable() + kernel/tessellation.ts CPU fallback.
 
 ### Diagnostics & Polish
 

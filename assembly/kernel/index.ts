@@ -64,6 +64,23 @@ export {
   getGpuSurfaceCount
 } from './gpu';
 
+// ---- tessellation: native face-level mesh extraction ----
+export {
+  tessBuildAllFaces, tessBuildFace, tessReset,
+  getTessOutVertsPtr, getTessOutNormalsPtr, getTessOutIndicesPtr, getTessOutFaceMapPtr,
+  getTessOutVertCount, getTessOutTriCount,
+  getEdgeSamplePtsPtr, getEdgeSampleCount, getEdgeSampleStart
+} from './tessellation';
+
+// ---- ops: topology-driven boolean classification ----
+export {
+  CLASSIFY_OUTSIDE, CLASSIFY_INSIDE, CLASSIFY_ON_BOUNDARY, CLASSIFY_UNKNOWN,
+  classifyPointVsShell, classifyFacesViaOctree,
+  getFaceClassification, setFaceClassification,
+  pointToPlaneDistance, pointToSphereDistance, pointToCylinderDistance,
+  getFaceClassificationPtr
+} from './ops';
+
 // ---- interop: CBREP serialization ----
 export {
   cbrepDehydrate, cbrepHydrate,
