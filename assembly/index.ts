@@ -404,3 +404,53 @@ export {
   earClipTriangulate,
   computeTriangleNormal, computeBoundingBox, computeMeshVolume,
 };
+
+// ─── Re-export WASM B-Rep kernel API ──────────────────────────────────
+export {
+  // core: handle registry
+  HANDLE_NONE,
+  RESIDENCY_UNMATERIALIZED, RESIDENCY_HYDRATING, RESIDENCY_RESIDENT, RESIDENCY_STALE, RESIDENCY_DISPOSED,
+  handleAlloc, handleRelease, handleAddRef,
+  handleIsValid, handleGetResidency, handleSetResidency,
+  handleGetRevision, handleBumpRevision,
+  handleSetFeatureId, handleGetFeatureId,
+  handleSetIrHash, handleGetIrHash,
+  handleGetRefCount, handleLiveCount, handleGlobalRevision,
+  handleReleaseAll,
+  // topology: B-Rep entities
+  MAX_VERTICES, MAX_EDGES, MAX_COEDGES, MAX_LOOPS, MAX_FACES, MAX_SHELLS,
+  GEOM_NONE, GEOM_PLANE, GEOM_CYLINDER, GEOM_CONE, GEOM_SPHERE, GEOM_TORUS,
+  GEOM_NURBS_SURFACE, GEOM_LINE, GEOM_CIRCLE, GEOM_ELLIPSE, GEOM_NURBS_CURVE,
+  ORIENT_FORWARD, ORIENT_REVERSED,
+  vertexAdd, vertexGetX, vertexGetY, vertexGetZ, vertexGetCount,
+  edgeAdd, edgeGetStartVertex, edgeGetEndVertex, edgeGetGeomType, edgeGetGeomOffset, edgeGetCount,
+  coedgeAdd, coedgeGetEdge, coedgeGetOrient, coedgeGetNext, coedgeGetLoop, coedgeSetNext, coedgeGetCount,
+  loopAdd, loopGetFirstCoedge, loopGetFace, loopIsOuterLoop, loopGetCount,
+  faceAdd, faceGetFirstLoop, faceGetShell, faceGetGeomType, faceGetGeomOffset, faceGetOrient, faceGetLoopCount, faceGetCount,
+  shellAdd, shellGetFirstFace, shellGetFaceCount, shellIsClosed_, shellGetCount,
+  bodyBegin, bodyEnd, bodyGetShellCount, bodyGetFirstShell,
+  getVertexCoordsPtr, getVertexCoordsLen,
+  getEdgeStartVertexPtr, getEdgeEndVertexPtr,
+  topoGetSummary,
+  // geometry: NURBS + analytic
+  nurbsSurfaceStore, nurbsCurveStore,
+  planeStore, cylinderStore, sphereStore, coneStore, torusStore,
+  geomPoolRead, getGeomPoolPtr, geomPoolUsed, geomPoolReset, geomPoolSetUsed,
+  // transform
+  transformIdentity, transformTranslation, transformRotation, transformScale,
+  transformMultiply, transformPoint, transformPointByOutMat,
+  transformDirection, transformDirectionByOutMat, transformBoundingBox,
+  getTransformOutMatPtr, getTransformOutPtPtr, getTransformOutBoxPtr,
+  // spatial: octree
+  octreeReset, octreeAddFaceAABB, octreeBuild,
+  octreeQueryPairs, getOctreePairsPtr, octreeGetPairCount, octreeGetNodeCount,
+  // gpu: std430 buffer batching
+  gpuBatchReset, gpuBatchAddSurface,
+  getGpuHeaderBufPtr, getGpuHeaderBufLen,
+  getGpuCtrlBufPtr, getGpuCtrlBufLen,
+  getGpuKnotBufPtr, getGpuKnotBufLen,
+  getGpuSurfaceCount,
+  // interop: CBREP serialization
+  cbrepDehydrate, cbrepHydrate,
+  getCbrepOutPtr, getCbrepOutLen,
+} from './kernel/index';

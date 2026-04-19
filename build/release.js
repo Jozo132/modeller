@@ -43,9 +43,9 @@ async function instantiate(module, imports = {}) {
     },
     nurbsCurveEvaluate(degree, nCtrl, ctrlPts, knots, weights, t) {
       // assembly/nurbs/nurbsCurveEvaluate(i32, i32, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, f64) => void
-      ctrlPts = __retain(__lowerTypedArray(Float64Array, 32, 3, ctrlPts) || __notnull());
-      knots = __retain(__lowerTypedArray(Float64Array, 32, 3, knots) || __notnull());
-      weights = __lowerTypedArray(Float64Array, 32, 3, weights) || __notnull();
+      ctrlPts = __retain(__lowerTypedArray(Float64Array, 33, 3, ctrlPts) || __notnull());
+      knots = __retain(__lowerTypedArray(Float64Array, 33, 3, knots) || __notnull());
+      weights = __lowerTypedArray(Float64Array, 33, 3, weights) || __notnull();
       try {
         exports.nurbsCurveEvaluate(degree, nCtrl, ctrlPts, knots, weights, t);
       } finally {
@@ -55,9 +55,9 @@ async function instantiate(module, imports = {}) {
     },
     nurbsCurveTessellate(degree, nCtrl, ctrlPts, knots, weights, segments) {
       // assembly/nurbs/nurbsCurveTessellate(i32, i32, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, i32) => i32
-      ctrlPts = __retain(__lowerTypedArray(Float64Array, 32, 3, ctrlPts) || __notnull());
-      knots = __retain(__lowerTypedArray(Float64Array, 32, 3, knots) || __notnull());
-      weights = __lowerTypedArray(Float64Array, 32, 3, weights) || __notnull();
+      ctrlPts = __retain(__lowerTypedArray(Float64Array, 33, 3, ctrlPts) || __notnull());
+      knots = __retain(__lowerTypedArray(Float64Array, 33, 3, knots) || __notnull());
+      weights = __lowerTypedArray(Float64Array, 33, 3, weights) || __notnull();
       try {
         return exports.nurbsCurveTessellate(degree, nCtrl, ctrlPts, knots, weights, segments);
       } finally {
@@ -67,10 +67,10 @@ async function instantiate(module, imports = {}) {
     },
     nurbsSurfaceEvaluate(degU, degV, nRowsU, nColsV, ctrlPts, knotsU, knotsV, weights, u, v) {
       // assembly/nurbs/nurbsSurfaceEvaluate(i32, i32, i32, i32, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, f64, f64) => void
-      ctrlPts = __retain(__lowerTypedArray(Float64Array, 32, 3, ctrlPts) || __notnull());
-      knotsU = __retain(__lowerTypedArray(Float64Array, 32, 3, knotsU) || __notnull());
-      knotsV = __retain(__lowerTypedArray(Float64Array, 32, 3, knotsV) || __notnull());
-      weights = __lowerTypedArray(Float64Array, 32, 3, weights) || __notnull();
+      ctrlPts = __retain(__lowerTypedArray(Float64Array, 33, 3, ctrlPts) || __notnull());
+      knotsU = __retain(__lowerTypedArray(Float64Array, 33, 3, knotsU) || __notnull());
+      knotsV = __retain(__lowerTypedArray(Float64Array, 33, 3, knotsV) || __notnull());
+      weights = __lowerTypedArray(Float64Array, 33, 3, weights) || __notnull();
       try {
         exports.nurbsSurfaceEvaluate(degU, degV, nRowsU, nColsV, ctrlPts, knotsU, knotsV, weights, u, v);
       } finally {
@@ -81,10 +81,10 @@ async function instantiate(module, imports = {}) {
     },
     nurbsSurfaceNormal(degU, degV, nRowsU, nColsV, ctrlPts, knotsU, knotsV, weights, u, v) {
       // assembly/nurbs/nurbsSurfaceNormal(i32, i32, i32, i32, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, f64, f64) => void
-      ctrlPts = __retain(__lowerTypedArray(Float64Array, 32, 3, ctrlPts) || __notnull());
-      knotsU = __retain(__lowerTypedArray(Float64Array, 32, 3, knotsU) || __notnull());
-      knotsV = __retain(__lowerTypedArray(Float64Array, 32, 3, knotsV) || __notnull());
-      weights = __lowerTypedArray(Float64Array, 32, 3, weights) || __notnull();
+      ctrlPts = __retain(__lowerTypedArray(Float64Array, 33, 3, ctrlPts) || __notnull());
+      knotsU = __retain(__lowerTypedArray(Float64Array, 33, 3, knotsU) || __notnull());
+      knotsV = __retain(__lowerTypedArray(Float64Array, 33, 3, knotsV) || __notnull());
+      weights = __lowerTypedArray(Float64Array, 33, 3, weights) || __notnull();
       try {
         exports.nurbsSurfaceNormal(degU, degV, nRowsU, nColsV, ctrlPts, knotsU, knotsV, weights, u, v);
       } finally {
@@ -95,10 +95,10 @@ async function instantiate(module, imports = {}) {
     },
     nurbsSurfaceTessellate(degU, degV, nRowsU, nColsV, ctrlPts, knotsU, knotsV, weights, segsU, segsV) {
       // assembly/nurbs/nurbsSurfaceTessellate(i32, i32, i32, i32, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, i32, i32) => i32
-      ctrlPts = __retain(__lowerTypedArray(Float64Array, 32, 3, ctrlPts) || __notnull());
-      knotsU = __retain(__lowerTypedArray(Float64Array, 32, 3, knotsU) || __notnull());
-      knotsV = __retain(__lowerTypedArray(Float64Array, 32, 3, knotsV) || __notnull());
-      weights = __lowerTypedArray(Float64Array, 32, 3, weights) || __notnull();
+      ctrlPts = __retain(__lowerTypedArray(Float64Array, 33, 3, ctrlPts) || __notnull());
+      knotsU = __retain(__lowerTypedArray(Float64Array, 33, 3, knotsU) || __notnull());
+      knotsV = __retain(__lowerTypedArray(Float64Array, 33, 3, knotsV) || __notnull());
+      weights = __lowerTypedArray(Float64Array, 33, 3, weights) || __notnull();
       try {
         return exports.nurbsSurfaceTessellate(degU, degV, nRowsU, nColsV, ctrlPts, knotsU, knotsV, weights, segsU, segsV);
       } finally {
@@ -117,9 +117,9 @@ async function instantiate(module, imports = {}) {
     },
     nurbsCurveDerivEval(degree, nCtrl, ctrlPts, knots, weights, t) {
       // assembly/nurbs/nurbsCurveDerivEval(i32, i32, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, f64) => void
-      ctrlPts = __retain(__lowerTypedArray(Float64Array, 32, 3, ctrlPts) || __notnull());
-      knots = __retain(__lowerTypedArray(Float64Array, 32, 3, knots) || __notnull());
-      weights = __lowerTypedArray(Float64Array, 32, 3, weights) || __notnull();
+      ctrlPts = __retain(__lowerTypedArray(Float64Array, 33, 3, ctrlPts) || __notnull());
+      knots = __retain(__lowerTypedArray(Float64Array, 33, 3, knots) || __notnull());
+      weights = __lowerTypedArray(Float64Array, 33, 3, weights) || __notnull();
       try {
         exports.nurbsCurveDerivEval(degree, nCtrl, ctrlPts, knots, weights, t);
       } finally {
@@ -129,10 +129,10 @@ async function instantiate(module, imports = {}) {
     },
     nurbsCurveBatchDerivEval(degree, nCtrl, ctrlPts, knots, weights, params, count) {
       // assembly/nurbs/nurbsCurveBatchDerivEval(i32, i32, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, i32) => i32
-      ctrlPts = __retain(__lowerTypedArray(Float64Array, 32, 3, ctrlPts) || __notnull());
-      knots = __retain(__lowerTypedArray(Float64Array, 32, 3, knots) || __notnull());
-      weights = __retain(__lowerTypedArray(Float64Array, 32, 3, weights) || __notnull());
-      params = __lowerTypedArray(Float64Array, 32, 3, params) || __notnull();
+      ctrlPts = __retain(__lowerTypedArray(Float64Array, 33, 3, ctrlPts) || __notnull());
+      knots = __retain(__lowerTypedArray(Float64Array, 33, 3, knots) || __notnull());
+      weights = __retain(__lowerTypedArray(Float64Array, 33, 3, weights) || __notnull());
+      params = __lowerTypedArray(Float64Array, 33, 3, params) || __notnull();
       try {
         return exports.nurbsCurveBatchDerivEval(degree, nCtrl, ctrlPts, knots, weights, params, count);
       } finally {
@@ -143,10 +143,10 @@ async function instantiate(module, imports = {}) {
     },
     nurbsSurfaceDerivEval(degU, degV, nRowsU, nColsV, ctrlPts, knotsU, knotsV, weights, u, v) {
       // assembly/nurbs/nurbsSurfaceDerivEval(i32, i32, i32, i32, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, f64, f64) => void
-      ctrlPts = __retain(__lowerTypedArray(Float64Array, 32, 3, ctrlPts) || __notnull());
-      knotsU = __retain(__lowerTypedArray(Float64Array, 32, 3, knotsU) || __notnull());
-      knotsV = __retain(__lowerTypedArray(Float64Array, 32, 3, knotsV) || __notnull());
-      weights = __lowerTypedArray(Float64Array, 32, 3, weights) || __notnull();
+      ctrlPts = __retain(__lowerTypedArray(Float64Array, 33, 3, ctrlPts) || __notnull());
+      knotsU = __retain(__lowerTypedArray(Float64Array, 33, 3, knotsU) || __notnull());
+      knotsV = __retain(__lowerTypedArray(Float64Array, 33, 3, knotsV) || __notnull());
+      weights = __lowerTypedArray(Float64Array, 33, 3, weights) || __notnull();
       try {
         exports.nurbsSurfaceDerivEval(degU, degV, nRowsU, nColsV, ctrlPts, knotsU, knotsV, weights, u, v);
       } finally {
@@ -157,11 +157,11 @@ async function instantiate(module, imports = {}) {
     },
     nurbsSurfaceBatchDerivEval(degU, degV, nRowsU, nColsV, ctrlPts, knotsU, knotsV, weights, params, count) {
       // assembly/nurbs/nurbsSurfaceBatchDerivEval(i32, i32, i32, i32, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, ~lib/typedarray/Float64Array, i32) => i32
-      ctrlPts = __retain(__lowerTypedArray(Float64Array, 32, 3, ctrlPts) || __notnull());
-      knotsU = __retain(__lowerTypedArray(Float64Array, 32, 3, knotsU) || __notnull());
-      knotsV = __retain(__lowerTypedArray(Float64Array, 32, 3, knotsV) || __notnull());
-      weights = __retain(__lowerTypedArray(Float64Array, 32, 3, weights) || __notnull());
-      params = __lowerTypedArray(Float64Array, 32, 3, params) || __notnull();
+      ctrlPts = __retain(__lowerTypedArray(Float64Array, 33, 3, ctrlPts) || __notnull());
+      knotsU = __retain(__lowerTypedArray(Float64Array, 33, 3, knotsU) || __notnull());
+      knotsV = __retain(__lowerTypedArray(Float64Array, 33, 3, knotsV) || __notnull());
+      weights = __retain(__lowerTypedArray(Float64Array, 33, 3, weights) || __notnull());
+      params = __lowerTypedArray(Float64Array, 33, 3, params) || __notnull();
       try {
         return exports.nurbsSurfaceBatchDerivEval(degU, degV, nRowsU, nColsV, ctrlPts, knotsU, knotsV, weights, params, count);
       } finally {
@@ -173,8 +173,8 @@ async function instantiate(module, imports = {}) {
     },
     earClipTriangulate(coords, nVerts, outTris) {
       // assembly/tessellation/earClipTriangulate(~lib/typedarray/Float64Array, i32, ~lib/typedarray/Uint32Array) => i32
-      coords = __retain(__lowerTypedArray(Float64Array, 32, 3, coords) || __notnull());
-      outTris = __lowerTypedArray(Uint32Array, 33, 2, outTris) || __notnull();
+      coords = __retain(__lowerTypedArray(Float64Array, 33, 3, coords) || __notnull());
+      outTris = __lowerTypedArray(Uint32Array, 34, 2, outTris) || __notnull();
       try {
         return exports.earClipTriangulate(coords, nVerts, outTris);
       } finally {
@@ -183,8 +183,8 @@ async function instantiate(module, imports = {}) {
     },
     computeTriangleNormal(verts, i0, i1, i2, outNormal) {
       // assembly/tessellation/computeTriangleNormal(~lib/typedarray/Float64Array, i32, i32, i32, ~lib/typedarray/Float64Array) => void
-      verts = __retain(__lowerTypedArray(Float64Array, 32, 3, verts) || __notnull());
-      outNormal = __lowerTypedArray(Float64Array, 32, 3, outNormal) || __notnull();
+      verts = __retain(__lowerTypedArray(Float64Array, 33, 3, verts) || __notnull());
+      outNormal = __lowerTypedArray(Float64Array, 33, 3, outNormal) || __notnull();
       try {
         exports.computeTriangleNormal(verts, i0, i1, i2, outNormal);
       } finally {
@@ -193,8 +193,8 @@ async function instantiate(module, imports = {}) {
     },
     computeBoundingBox(verts, nVerts, outBox) {
       // assembly/tessellation/computeBoundingBox(~lib/typedarray/Float64Array, i32, ~lib/typedarray/Float64Array) => void
-      verts = __retain(__lowerTypedArray(Float64Array, 32, 3, verts) || __notnull());
-      outBox = __lowerTypedArray(Float64Array, 32, 3, outBox) || __notnull();
+      verts = __retain(__lowerTypedArray(Float64Array, 33, 3, verts) || __notnull());
+      outBox = __lowerTypedArray(Float64Array, 33, 3, outBox) || __notnull();
       try {
         exports.computeBoundingBox(verts, nVerts, outBox);
       } finally {
@@ -203,13 +203,404 @@ async function instantiate(module, imports = {}) {
     },
     computeMeshVolume(verts, faces, nTris) {
       // assembly/tessellation/computeMeshVolume(~lib/typedarray/Float64Array, ~lib/typedarray/Uint32Array, i32) => f64
-      verts = __retain(__lowerTypedArray(Float64Array, 32, 3, verts) || __notnull());
-      faces = __lowerTypedArray(Uint32Array, 33, 2, faces) || __notnull();
+      verts = __retain(__lowerTypedArray(Float64Array, 33, 3, verts) || __notnull());
+      faces = __lowerTypedArray(Uint32Array, 34, 2, faces) || __notnull();
       try {
         return exports.computeMeshVolume(verts, faces, nTris);
       } finally {
         __release(verts);
       }
+    },
+    HANDLE_NONE: {
+      // assembly/kernel/core/HANDLE_NONE: u32
+      valueOf() { return this.value; },
+      get value() {
+        return exports.HANDLE_NONE.value >>> 0;
+      }
+    },
+    handleAlloc() {
+      // assembly/kernel/core/handleAlloc() => u32
+      return exports.handleAlloc() >>> 0;
+    },
+    handleIsValid(id) {
+      // assembly/kernel/core/handleIsValid(u32) => bool
+      return exports.handleIsValid(id) != 0;
+    },
+    handleGetRevision(id) {
+      // assembly/kernel/core/handleGetRevision(u32) => u32
+      return exports.handleGetRevision(id) >>> 0;
+    },
+    handleBumpRevision(id) {
+      // assembly/kernel/core/handleBumpRevision(u32) => u32
+      return exports.handleBumpRevision(id) >>> 0;
+    },
+    handleGetFeatureId(id) {
+      // assembly/kernel/core/handleGetFeatureId(u32) => u32
+      return exports.handleGetFeatureId(id) >>> 0;
+    },
+    handleGetIrHash(id) {
+      // assembly/kernel/core/handleGetIrHash(u32) => u32
+      return exports.handleGetIrHash(id) >>> 0;
+    },
+    handleGetRefCount(id) {
+      // assembly/kernel/core/handleGetRefCount(u32) => u32
+      return exports.handleGetRefCount(id) >>> 0;
+    },
+    handleLiveCount() {
+      // assembly/kernel/core/handleLiveCount() => u32
+      return exports.handleLiveCount() >>> 0;
+    },
+    handleGlobalRevision() {
+      // assembly/kernel/core/handleGlobalRevision() => u32
+      return exports.handleGlobalRevision() >>> 0;
+    },
+    MAX_VERTICES: {
+      // assembly/kernel/topology/MAX_VERTICES: u32
+      valueOf() { return this.value; },
+      get value() {
+        return exports.MAX_VERTICES.value >>> 0;
+      }
+    },
+    MAX_EDGES: {
+      // assembly/kernel/topology/MAX_EDGES: u32
+      valueOf() { return this.value; },
+      get value() {
+        return exports.MAX_EDGES.value >>> 0;
+      }
+    },
+    MAX_COEDGES: {
+      // assembly/kernel/topology/MAX_COEDGES: u32
+      valueOf() { return this.value; },
+      get value() {
+        return exports.MAX_COEDGES.value >>> 0;
+      }
+    },
+    MAX_LOOPS: {
+      // assembly/kernel/topology/MAX_LOOPS: u32
+      valueOf() { return this.value; },
+      get value() {
+        return exports.MAX_LOOPS.value >>> 0;
+      }
+    },
+    MAX_FACES: {
+      // assembly/kernel/topology/MAX_FACES: u32
+      valueOf() { return this.value; },
+      get value() {
+        return exports.MAX_FACES.value >>> 0;
+      }
+    },
+    MAX_SHELLS: {
+      // assembly/kernel/topology/MAX_SHELLS: u32
+      valueOf() { return this.value; },
+      get value() {
+        return exports.MAX_SHELLS.value >>> 0;
+      }
+    },
+    vertexAdd(x, y, z) {
+      // assembly/kernel/topology/vertexAdd(f64, f64, f64) => u32
+      return exports.vertexAdd(x, y, z) >>> 0;
+    },
+    vertexGetCount() {
+      // assembly/kernel/topology/vertexGetCount() => u32
+      return exports.vertexGetCount() >>> 0;
+    },
+    edgeAdd(startV, endV, geomType, geomOffset) {
+      // assembly/kernel/topology/edgeAdd(u32, u32, u8, u32) => u32
+      return exports.edgeAdd(startV, endV, geomType, geomOffset) >>> 0;
+    },
+    edgeGetStartVertex(id) {
+      // assembly/kernel/topology/edgeGetStartVertex(u32) => u32
+      return exports.edgeGetStartVertex(id) >>> 0;
+    },
+    edgeGetEndVertex(id) {
+      // assembly/kernel/topology/edgeGetEndVertex(u32) => u32
+      return exports.edgeGetEndVertex(id) >>> 0;
+    },
+    edgeGetGeomOffset(id) {
+      // assembly/kernel/topology/edgeGetGeomOffset(u32) => u32
+      return exports.edgeGetGeomOffset(id) >>> 0;
+    },
+    edgeGetCount() {
+      // assembly/kernel/topology/edgeGetCount() => u32
+      return exports.edgeGetCount() >>> 0;
+    },
+    coedgeAdd(edgeId, orient, nextCoedge, loopId) {
+      // assembly/kernel/topology/coedgeAdd(u32, u8, u32, u32) => u32
+      return exports.coedgeAdd(edgeId, orient, nextCoedge, loopId) >>> 0;
+    },
+    coedgeGetEdge(id) {
+      // assembly/kernel/topology/coedgeGetEdge(u32) => u32
+      return exports.coedgeGetEdge(id) >>> 0;
+    },
+    coedgeGetNext(id) {
+      // assembly/kernel/topology/coedgeGetNext(u32) => u32
+      return exports.coedgeGetNext(id) >>> 0;
+    },
+    coedgeGetLoop(id) {
+      // assembly/kernel/topology/coedgeGetLoop(u32) => u32
+      return exports.coedgeGetLoop(id) >>> 0;
+    },
+    coedgeGetCount() {
+      // assembly/kernel/topology/coedgeGetCount() => u32
+      return exports.coedgeGetCount() >>> 0;
+    },
+    loopAdd(firstCoedge, faceId, isOuter) {
+      // assembly/kernel/topology/loopAdd(u32, u32, u8) => u32
+      return exports.loopAdd(firstCoedge, faceId, isOuter) >>> 0;
+    },
+    loopGetFirstCoedge(id) {
+      // assembly/kernel/topology/loopGetFirstCoedge(u32) => u32
+      return exports.loopGetFirstCoedge(id) >>> 0;
+    },
+    loopGetFace(id) {
+      // assembly/kernel/topology/loopGetFace(u32) => u32
+      return exports.loopGetFace(id) >>> 0;
+    },
+    loopGetCount() {
+      // assembly/kernel/topology/loopGetCount() => u32
+      return exports.loopGetCount() >>> 0;
+    },
+    faceAdd(firstLoop, shellId, geomType, geomOffset, orient, numLoops) {
+      // assembly/kernel/topology/faceAdd(u32, u32, u8, u32, u8, u32) => u32
+      return exports.faceAdd(firstLoop, shellId, geomType, geomOffset, orient, numLoops) >>> 0;
+    },
+    faceGetFirstLoop(id) {
+      // assembly/kernel/topology/faceGetFirstLoop(u32) => u32
+      return exports.faceGetFirstLoop(id) >>> 0;
+    },
+    faceGetShell(id) {
+      // assembly/kernel/topology/faceGetShell(u32) => u32
+      return exports.faceGetShell(id) >>> 0;
+    },
+    faceGetGeomOffset(id) {
+      // assembly/kernel/topology/faceGetGeomOffset(u32) => u32
+      return exports.faceGetGeomOffset(id) >>> 0;
+    },
+    faceGetLoopCount(id) {
+      // assembly/kernel/topology/faceGetLoopCount(u32) => u32
+      return exports.faceGetLoopCount(id) >>> 0;
+    },
+    faceGetCount() {
+      // assembly/kernel/topology/faceGetCount() => u32
+      return exports.faceGetCount() >>> 0;
+    },
+    shellAdd(firstFace, numFaces, isClosed) {
+      // assembly/kernel/topology/shellAdd(u32, u32, u8) => u32
+      return exports.shellAdd(firstFace, numFaces, isClosed) >>> 0;
+    },
+    shellGetFirstFace(id) {
+      // assembly/kernel/topology/shellGetFirstFace(u32) => u32
+      return exports.shellGetFirstFace(id) >>> 0;
+    },
+    shellGetFaceCount(id) {
+      // assembly/kernel/topology/shellGetFaceCount(u32) => u32
+      return exports.shellGetFaceCount(id) >>> 0;
+    },
+    shellGetCount() {
+      // assembly/kernel/topology/shellGetCount() => u32
+      return exports.shellGetCount() >>> 0;
+    },
+    bodyEnd() {
+      // assembly/kernel/topology/bodyEnd() => u32
+      return exports.bodyEnd() >>> 0;
+    },
+    bodyGetShellCount() {
+      // assembly/kernel/topology/bodyGetShellCount() => u32
+      return exports.bodyGetShellCount() >>> 0;
+    },
+    bodyGetFirstShell() {
+      // assembly/kernel/topology/bodyGetFirstShell() => u32
+      return exports.bodyGetFirstShell() >>> 0;
+    },
+    getVertexCoordsPtr() {
+      // assembly/kernel/topology/getVertexCoordsPtr() => usize
+      return exports.getVertexCoordsPtr() >>> 0;
+    },
+    getVertexCoordsLen() {
+      // assembly/kernel/topology/getVertexCoordsLen() => u32
+      return exports.getVertexCoordsLen() >>> 0;
+    },
+    getEdgeStartVertexPtr() {
+      // assembly/kernel/topology/getEdgeStartVertexPtr() => usize
+      return exports.getEdgeStartVertexPtr() >>> 0;
+    },
+    getEdgeEndVertexPtr() {
+      // assembly/kernel/topology/getEdgeEndVertexPtr() => usize
+      return exports.getEdgeEndVertexPtr() >>> 0;
+    },
+    topoGetSummary(outBuf) {
+      // assembly/kernel/topology/topoGetSummary(~lib/staticarray/StaticArray<u32>) => void
+      outBuf = __lowerStaticArray(__setU32, 7, 2, outBuf, Uint32Array) || __notnull();
+      exports.topoGetSummary(outBuf);
+    },
+    nurbsSurfaceStore(degreeU, degreeV, numCtrlU, numCtrlV, knotsU, knotsV, ctrlPts, weights) {
+      // assembly/kernel/geometry/nurbsSurfaceStore(u32, u32, u32, u32, ~lib/staticarray/StaticArray<f64>, ~lib/staticarray/StaticArray<f64>, ~lib/staticarray/StaticArray<f64>, ~lib/staticarray/StaticArray<f64>) => u32
+      knotsU = __retain(__lowerStaticArray(__setF64, 6, 3, knotsU, Float64Array) || __notnull());
+      knotsV = __retain(__lowerStaticArray(__setF64, 6, 3, knotsV, Float64Array) || __notnull());
+      ctrlPts = __retain(__lowerStaticArray(__setF64, 6, 3, ctrlPts, Float64Array) || __notnull());
+      weights = __lowerStaticArray(__setF64, 6, 3, weights, Float64Array) || __notnull();
+      try {
+        return exports.nurbsSurfaceStore(degreeU, degreeV, numCtrlU, numCtrlV, knotsU, knotsV, ctrlPts, weights) >>> 0;
+      } finally {
+        __release(knotsU);
+        __release(knotsV);
+        __release(ctrlPts);
+      }
+    },
+    nurbsCurveStore(degree, numCtrl, knots, ctrlPts, weights) {
+      // assembly/kernel/geometry/nurbsCurveStore(u32, u32, ~lib/staticarray/StaticArray<f64>, ~lib/staticarray/StaticArray<f64>, ~lib/staticarray/StaticArray<f64>) => u32
+      knots = __retain(__lowerStaticArray(__setF64, 6, 3, knots, Float64Array) || __notnull());
+      ctrlPts = __retain(__lowerStaticArray(__setF64, 6, 3, ctrlPts, Float64Array) || __notnull());
+      weights = __lowerStaticArray(__setF64, 6, 3, weights, Float64Array) || __notnull();
+      try {
+        return exports.nurbsCurveStore(degree, numCtrl, knots, ctrlPts, weights) >>> 0;
+      } finally {
+        __release(knots);
+        __release(ctrlPts);
+      }
+    },
+    planeStore(ox, oy, oz, nx, ny, nz, rx, ry, rz) {
+      // assembly/kernel/geometry/planeStore(f64, f64, f64, f64, f64, f64, f64, f64, f64) => u32
+      return exports.planeStore(ox, oy, oz, nx, ny, nz, rx, ry, rz) >>> 0;
+    },
+    cylinderStore(ox, oy, oz, ax, ay, az, rx, ry, rz, radius) {
+      // assembly/kernel/geometry/cylinderStore(f64, f64, f64, f64, f64, f64, f64, f64, f64, f64) => u32
+      return exports.cylinderStore(ox, oy, oz, ax, ay, az, rx, ry, rz, radius) >>> 0;
+    },
+    sphereStore(cx, cy, cz, radius) {
+      // assembly/kernel/geometry/sphereStore(f64, f64, f64, f64) => u32
+      return exports.sphereStore(cx, cy, cz, radius) >>> 0;
+    },
+    coneStore(ox, oy, oz, ax, ay, az, rx, ry, rz, radius, semiAngle) {
+      // assembly/kernel/geometry/coneStore(f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64) => u32
+      return exports.coneStore(ox, oy, oz, ax, ay, az, rx, ry, rz, radius, semiAngle) >>> 0;
+    },
+    torusStore(cx, cy, cz, ax, ay, az, rx, ry, rz, majorRadius, minorRadius) {
+      // assembly/kernel/geometry/torusStore(f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64) => u32
+      return exports.torusStore(cx, cy, cz, ax, ay, az, rx, ry, rz, majorRadius, minorRadius) >>> 0;
+    },
+    getGeomPoolPtr() {
+      // assembly/kernel/geometry/getGeomPoolPtr() => usize
+      return exports.getGeomPoolPtr() >>> 0;
+    },
+    geomPoolUsed() {
+      // assembly/kernel/geometry/geomPoolUsed() => u32
+      return exports.geomPoolUsed() >>> 0;
+    },
+    transformMultiply(a, b) {
+      // assembly/kernel/transform/transformMultiply(~lib/staticarray/StaticArray<f64>, ~lib/staticarray/StaticArray<f64>) => void
+      a = __retain(__lowerStaticArray(__setF64, 6, 3, a, Float64Array) || __notnull());
+      b = __lowerStaticArray(__setF64, 6, 3, b, Float64Array) || __notnull();
+      try {
+        exports.transformMultiply(a, b);
+      } finally {
+        __release(a);
+      }
+    },
+    transformPoint(mat, px, py, pz) {
+      // assembly/kernel/transform/transformPoint(~lib/staticarray/StaticArray<f64>, f64, f64, f64) => void
+      mat = __lowerStaticArray(__setF64, 6, 3, mat, Float64Array) || __notnull();
+      exports.transformPoint(mat, px, py, pz);
+    },
+    transformDirection(mat, dx, dy, dz) {
+      // assembly/kernel/transform/transformDirection(~lib/staticarray/StaticArray<f64>, f64, f64, f64) => void
+      mat = __lowerStaticArray(__setF64, 6, 3, mat, Float64Array) || __notnull();
+      exports.transformDirection(mat, dx, dy, dz);
+    },
+    transformBoundingBox(mat, verts, nVerts) {
+      // assembly/kernel/transform/transformBoundingBox(~lib/staticarray/StaticArray<f64>, ~lib/staticarray/StaticArray<f64>, u32) => void
+      mat = __retain(__lowerStaticArray(__setF64, 6, 3, mat, Float64Array) || __notnull());
+      verts = __lowerStaticArray(__setF64, 6, 3, verts, Float64Array) || __notnull();
+      try {
+        exports.transformBoundingBox(mat, verts, nVerts);
+      } finally {
+        __release(mat);
+      }
+    },
+    getTransformOutMatPtr() {
+      // assembly/kernel/transform/getTransformOutMatPtr() => usize
+      return exports.getTransformOutMatPtr() >>> 0;
+    },
+    getTransformOutPtPtr() {
+      // assembly/kernel/transform/getTransformOutPtPtr() => usize
+      return exports.getTransformOutPtPtr() >>> 0;
+    },
+    getTransformOutBoxPtr() {
+      // assembly/kernel/transform/getTransformOutBoxPtr() => usize
+      return exports.getTransformOutBoxPtr() >>> 0;
+    },
+    octreeQueryPairs(aFaceStart, aFaceEnd, bFaceStart, bFaceEnd) {
+      // assembly/kernel/spatial/octreeQueryPairs(u32, u32, u32, u32) => u32
+      return exports.octreeQueryPairs(aFaceStart, aFaceEnd, bFaceStart, bFaceEnd) >>> 0;
+    },
+    getOctreePairsPtr() {
+      // assembly/kernel/spatial/getOctreePairsPtr() => usize
+      return exports.getOctreePairsPtr() >>> 0;
+    },
+    octreeGetPairCount() {
+      // assembly/kernel/spatial/octreeGetPairCount() => u32
+      return exports.octreeGetPairCount() >>> 0;
+    },
+    octreeGetNodeCount() {
+      // assembly/kernel/spatial/octreeGetNodeCount() => u32
+      return exports.octreeGetNodeCount() >>> 0;
+    },
+    gpuBatchAddSurface(degreeU, degreeV, numCtrlU, numCtrlV, knotsU, knotsV, ctrlPts, tessSegsU, tessSegsV) {
+      // assembly/kernel/gpu/gpuBatchAddSurface(u32, u32, u32, u32, ~lib/staticarray/StaticArray<f32>, ~lib/staticarray/StaticArray<f32>, ~lib/staticarray/StaticArray<f32>, u32, u32) => u32
+      knotsU = __retain(__lowerStaticArray(__setF32, 5, 2, knotsU, Float32Array) || __notnull());
+      knotsV = __retain(__lowerStaticArray(__setF32, 5, 2, knotsV, Float32Array) || __notnull());
+      ctrlPts = __lowerStaticArray(__setF32, 5, 2, ctrlPts, Float32Array) || __notnull();
+      try {
+        return exports.gpuBatchAddSurface(degreeU, degreeV, numCtrlU, numCtrlV, knotsU, knotsV, ctrlPts, tessSegsU, tessSegsV) >>> 0;
+      } finally {
+        __release(knotsU);
+        __release(knotsV);
+      }
+    },
+    getGpuHeaderBufPtr() {
+      // assembly/kernel/gpu/getGpuHeaderBufPtr() => usize
+      return exports.getGpuHeaderBufPtr() >>> 0;
+    },
+    getGpuHeaderBufLen() {
+      // assembly/kernel/gpu/getGpuHeaderBufLen() => u32
+      return exports.getGpuHeaderBufLen() >>> 0;
+    },
+    getGpuCtrlBufPtr() {
+      // assembly/kernel/gpu/getGpuCtrlBufPtr() => usize
+      return exports.getGpuCtrlBufPtr() >>> 0;
+    },
+    getGpuCtrlBufLen() {
+      // assembly/kernel/gpu/getGpuCtrlBufLen() => u32
+      return exports.getGpuCtrlBufLen() >>> 0;
+    },
+    getGpuKnotBufPtr() {
+      // assembly/kernel/gpu/getGpuKnotBufPtr() => usize
+      return exports.getGpuKnotBufPtr() >>> 0;
+    },
+    getGpuKnotBufLen() {
+      // assembly/kernel/gpu/getGpuKnotBufLen() => u32
+      return exports.getGpuKnotBufLen() >>> 0;
+    },
+    getGpuSurfaceCount() {
+      // assembly/kernel/gpu/getGpuSurfaceCount() => u32
+      return exports.getGpuSurfaceCount() >>> 0;
+    },
+    cbrepDehydrate() {
+      // assembly/kernel/interop/cbrepDehydrate() => u32
+      return exports.cbrepDehydrate() >>> 0;
+    },
+    cbrepHydrate(input, inputLen) {
+      // assembly/kernel/interop/cbrepHydrate(~lib/staticarray/StaticArray<u8>, u32) => u32
+      input = __lowerStaticArray(__setU8, 31, 0, input, Uint8Array) || __notnull();
+      return exports.cbrepHydrate(input, inputLen) >>> 0;
+    },
+    getCbrepOutPtr() {
+      // assembly/kernel/interop/getCbrepOutPtr() => usize
+      return exports.getCbrepOutPtr() >>> 0;
+    },
+    getCbrepOutLen() {
+      // assembly/kernel/interop/getCbrepOutLen() => u32
+      return exports.getCbrepOutLen() >>> 0;
     },
   }, exports);
   function __liftString(pointer) {
@@ -236,6 +627,19 @@ async function instantiate(module, imports = {}) {
     exports.__unpin(buffer);
     return header;
   }
+  function __lowerStaticArray(lowerElement, id, align, values, typedConstructor) {
+    if (values == null) return 0;
+    const
+      length = values.length,
+      buffer = exports.__pin(exports.__new(length << align, id)) >>> 0;
+    if (typedConstructor) {
+      new typedConstructor(memory.buffer, buffer, length).set(values);
+    } else {
+      for (let i = 0; i < length; i++) lowerElement(buffer + (i << align >>> 0), values[i]);
+    }
+    exports.__unpin(buffer);
+    return buffer;
+  }
   const refcounts = new Map();
   function __retain(pointer) {
     if (pointer) {
@@ -257,12 +661,36 @@ async function instantiate(module, imports = {}) {
     throw TypeError("value must not be null");
   }
   let __dataview = new DataView(memory.buffer);
+  function __setU8(pointer, value) {
+    try {
+      __dataview.setUint8(pointer, value, true);
+    } catch {
+      __dataview = new DataView(memory.buffer);
+      __dataview.setUint8(pointer, value, true);
+    }
+  }
   function __setU32(pointer, value) {
     try {
       __dataview.setUint32(pointer, value, true);
     } catch {
       __dataview = new DataView(memory.buffer);
       __dataview.setUint32(pointer, value, true);
+    }
+  }
+  function __setF32(pointer, value) {
+    try {
+      __dataview.setFloat32(pointer, value, true);
+    } catch {
+      __dataview = new DataView(memory.buffer);
+      __dataview.setFloat32(pointer, value, true);
+    }
+  }
+  function __setF64(pointer, value) {
+    try {
+      __dataview.setFloat64(pointer, value, true);
+    } catch {
+      __dataview = new DataView(memory.buffer);
+      __dataview.setFloat64(pointer, value, true);
     }
   }
   return adaptedExports;
@@ -354,6 +782,137 @@ export const {
   computeTriangleNormal,
   computeBoundingBox,
   computeMeshVolume,
+  HANDLE_NONE,
+  RESIDENCY_UNMATERIALIZED,
+  RESIDENCY_HYDRATING,
+  RESIDENCY_RESIDENT,
+  RESIDENCY_STALE,
+  RESIDENCY_DISPOSED,
+  handleAlloc,
+  handleRelease,
+  handleAddRef,
+  handleIsValid,
+  handleGetResidency,
+  handleSetResidency,
+  handleGetRevision,
+  handleBumpRevision,
+  handleSetFeatureId,
+  handleGetFeatureId,
+  handleSetIrHash,
+  handleGetIrHash,
+  handleGetRefCount,
+  handleLiveCount,
+  handleGlobalRevision,
+  handleReleaseAll,
+  MAX_VERTICES,
+  MAX_EDGES,
+  MAX_COEDGES,
+  MAX_LOOPS,
+  MAX_FACES,
+  MAX_SHELLS,
+  GEOM_NONE,
+  GEOM_PLANE,
+  GEOM_CYLINDER,
+  GEOM_CONE,
+  GEOM_SPHERE,
+  GEOM_TORUS,
+  GEOM_NURBS_SURFACE,
+  GEOM_LINE,
+  GEOM_CIRCLE,
+  GEOM_ELLIPSE,
+  GEOM_NURBS_CURVE,
+  ORIENT_FORWARD,
+  ORIENT_REVERSED,
+  vertexAdd,
+  vertexGetX,
+  vertexGetY,
+  vertexGetZ,
+  vertexGetCount,
+  edgeAdd,
+  edgeGetStartVertex,
+  edgeGetEndVertex,
+  edgeGetGeomType,
+  edgeGetGeomOffset,
+  edgeGetCount,
+  coedgeAdd,
+  coedgeGetEdge,
+  coedgeGetOrient,
+  coedgeGetNext,
+  coedgeGetLoop,
+  coedgeSetNext,
+  coedgeGetCount,
+  loopAdd,
+  loopGetFirstCoedge,
+  loopGetFace,
+  loopIsOuterLoop,
+  loopGetCount,
+  faceAdd,
+  faceGetFirstLoop,
+  faceGetShell,
+  faceGetGeomType,
+  faceGetGeomOffset,
+  faceGetOrient,
+  faceGetLoopCount,
+  faceGetCount,
+  shellAdd,
+  shellGetFirstFace,
+  shellGetFaceCount,
+  shellIsClosed_,
+  shellGetCount,
+  bodyBegin,
+  bodyEnd,
+  bodyGetShellCount,
+  bodyGetFirstShell,
+  getVertexCoordsPtr,
+  getVertexCoordsLen,
+  getEdgeStartVertexPtr,
+  getEdgeEndVertexPtr,
+  topoGetSummary,
+  nurbsSurfaceStore,
+  nurbsCurveStore,
+  planeStore,
+  cylinderStore,
+  sphereStore,
+  coneStore,
+  torusStore,
+  geomPoolRead,
+  getGeomPoolPtr,
+  geomPoolUsed,
+  geomPoolReset,
+  geomPoolSetUsed,
+  transformIdentity,
+  transformTranslation,
+  transformRotation,
+  transformScale,
+  transformMultiply,
+  transformPoint,
+  transformPointByOutMat,
+  transformDirection,
+  transformDirectionByOutMat,
+  transformBoundingBox,
+  getTransformOutMatPtr,
+  getTransformOutPtPtr,
+  getTransformOutBoxPtr,
+  octreeReset,
+  octreeAddFaceAABB,
+  octreeBuild,
+  octreeQueryPairs,
+  getOctreePairsPtr,
+  octreeGetPairCount,
+  octreeGetNodeCount,
+  gpuBatchReset,
+  gpuBatchAddSurface,
+  getGpuHeaderBufPtr,
+  getGpuHeaderBufLen,
+  getGpuCtrlBufPtr,
+  getGpuCtrlBufLen,
+  getGpuKnotBufPtr,
+  getGpuKnotBufLen,
+  getGpuSurfaceCount,
+  cbrepDehydrate,
+  cbrepHydrate,
+  getCbrepOutPtr,
+  getCbrepOutLen,
 } = await (async url => instantiate(
   await (async () => {
     const isNodeOrBun = typeof process != "undefined" && process.versions != null && (process.versions.node != null || process.versions.bun != null);
