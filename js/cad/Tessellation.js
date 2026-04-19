@@ -9,6 +9,7 @@
 // backward compatibility but should not be used directly by new code.
 
 import { robustTessellateBody } from './Tessellator2/index.js';
+import { tessellateBodyWasm } from './StepImportWasm.js';
 
 function projectPolygon2D(verts, normal) {
   const an = {
@@ -115,18 +116,73 @@ function triangulatePolygonIndices(verts, normal) {
  * @returns {{ vertices: Array<{x,y,z}>, faces: Array<{vertices: Array<{x,y,z}>, normal: {x,y,z}, shared: Object}>, edges: Array }}
  */
 export function tessellateBody(body, opts = {}) {
-  // BRep-only pipeline: always use the robust Tessellator2 pipeline.
-  // Legacy ear-clipping fallback has been removed.
+  // Early out: empty or null bodies produce empty meshes (e.g. intersect of
+  // non-overlapping solids). No error — the caller handles the empty case.
+  if (!body || !body.shells || body.shells.length === 0 ||
+      body.faces().length === 0) {
+    return { vertices: [], faces: [], edges: [], _tessellator: 'empty' };
+  }
+
+  // Preferred path: native WASM tessellation pipeline (boundary-trimmed,
+  // cross-parametric edge mapping, full kernel topology access).
+  // Falls back to JS Tessellator2 only when WASM is unavailable or when
+  // WASM produces a non-watertight mesh (boundary edges from grid trimming).
+  // See WASM_BREP_LIFETIME_PLAN.md §2a and Design Rule 13.
+  const wasmResult = tessellateBodyWasm(body, opts);
+  if (wasmResult && wasmResult.faces.length > 0) {
+    // Quality gate: check for boundary edges. Grid-based centroid trimming
+    // can produce jagged boundaries on some curved faces. If boundary edges
+    // are detected, fall back to JS which uses CDT for clean watertight meshes.
+    if (!_hasBoundaryEdges(wasmResult.faces)) {
+      wasmResult._tessellator = 'wasm';
+      return wasmResult;
+    }
+    // WASM mesh has boundary edges — try JS for a cleaner mesh.
+  }
+
+  // @legacy fallback: JS Tessellator2 — used only when WASM module is not
+  // loaded, returned null/empty, or produced non-watertight output.
   const result = robustTessellateBody(body, { ...opts, validate: true });
   if (result.faces.length > 0) {
-    result._tessellator = 'robust';
+    result._tessellator = wasmResult ? 'js-quality-fallback' : 'legacy-js-fallback';
     return result;
   }
+
+  // If JS also fails but WASM had faces, use the WASM result despite boundary edges.
+  if (wasmResult && wasmResult.faces.length > 0) {
+    wasmResult._tessellator = 'wasm-with-boundary';
+    return wasmResult;
+  }
+
   throw new Error(
-    '[BRep-only] tessellateBody: robust tessellator produced an empty mesh. ' +
-    'Legacy ear-clipping fallback is no longer available. ' +
-    'Fix the TopoBody input or the Tessellator2 pipeline.'
+    '[BRep-only] tessellateBody: both WASM and JS tessellators produced empty meshes. ' +
+    'Fix the TopoBody input or the tessellation pipeline.'
   );
+}
+
+/**
+ * Quick boundary-edge detection on a triangle mesh.
+ * Returns true if any edge is shared by exactly 1 triangle (non-watertight).
+ * @param {Array<{vertices: Array<{x,y,z}>}>} faces
+ * @returns {boolean}
+ */
+function _hasBoundaryEdges(faces) {
+  const counts = new Map();
+  const snap = (v) => `${(v.x * 1e6 | 0)},${(v.y * 1e6 | 0)},${(v.z * 1e6 | 0)}`;
+  for (const f of faces) {
+    const verts = f.vertices;
+    if (!verts || verts.length < 3) continue;
+    for (let i = 0; i < verts.length; i++) {
+      const ka = snap(verts[i]);
+      const kb = snap(verts[(i + 1) % verts.length]);
+      const key = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+  }
+  for (const c of counts.values()) {
+    if (c === 1) return true;
+  }
+  return false;
 }
 
 /**

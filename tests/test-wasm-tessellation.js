@@ -52,11 +52,11 @@ console.log('\n=== TessellationConfig ===');
 
 {
   const config = new TessellationConfig();
-  assert(config.curveSegments === 16, 'Default curveSegments = 16');
-  assert(config.surfaceSegments === 8, 'Default surfaceSegments = 8');
-  assert(config.edgeSegments === 16, 'Default edgeSegments = 16');
+  assert(config.curveSegments === 64, 'Default curveSegments = 64');
+  assert(config.surfaceSegments === 16, 'Default surfaceSegments = 16');
+  assert(config.edgeSegments === 64, 'Default edgeSegments = 64');
   assert(config.adaptiveSubdivision === true, 'Default adaptiveSubdivision = true');
-  assert(config.getPreset() === 'normal', 'Default preset is "normal"');
+  assert(config.getPreset() === 'custom', 'Default preset is "custom"');
 }
 
 {
@@ -100,12 +100,12 @@ console.log('\n=== TessellationConfig ===');
 
 {
   const config = TessellationConfig.deserialize(null);
-  assert(config.curveSegments === 16, 'Deserialize null → defaults');
+  assert(config.curveSegments === 64, 'Deserialize null → defaults');
 }
 
 {
   const config = TessellationConfig.deserialize(undefined);
-  assert(config.curveSegments === 16, 'Deserialize undefined → defaults');
+  assert(config.curveSegments === 64, 'Deserialize undefined → defaults');
 }
 
 // ─── Part + TessellationConfig Integration ───────────────────────────
@@ -115,7 +115,7 @@ console.log('\n=== Part + TessellationConfig ===');
 {
   const part = new Part('TestPart');
   assert(part.tessellationConfig instanceof TessellationConfig, 'Part has tessellationConfig');
-  assert(part.tessellationConfig.curveSegments === 16, 'Part default curveSegments = 16');
+  assert(part.tessellationConfig.curveSegments === 64, 'Part default curveSegments = 64');
 }
 
 {
@@ -138,8 +138,8 @@ console.log('\n=== Part + TessellationConfig ===');
     featureTree: { features: [] },
   };
   const restored = Part.deserialize(oldData);
-  assert(restored.tessellationConfig.curveSegments === 16, 'Old data without config → defaults');
-  assert(restored.tessellationConfig.getPreset() === 'normal', 'Old data → normal preset');
+  assert(restored.tessellationConfig.curveSegments === 64, 'Old data without config → defaults');
+  assert(restored.tessellationConfig.getPreset() === 'custom', 'Old data → custom preset');
 }
 
 // ─── WASM Tessellation Tests ─────────────────────────────────────────

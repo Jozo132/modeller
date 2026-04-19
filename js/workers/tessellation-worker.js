@@ -12,7 +12,12 @@
 //   Error:    { type: 'error', message, stack, _dispatchId }
 
 import { tessellateBody, tessellateForSTL } from '../cad/Tessellation.js';
+import { ensureWasmReady } from '../cad/StepImportWasm.js';
 import { telemetry } from '../telemetry.js';
+
+// Eagerly init WASM module so tessellateBody() can use the native path.
+// Fire-and-forget — if WASM isn't available, the JS fallback is used.
+ensureWasmReady();
 
 /**
  * Pack a mesh result (vertices + faces with per-face normals) into
