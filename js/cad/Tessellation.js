@@ -134,6 +134,14 @@ export function tessellateBody(body, opts = {}) {
     return { vertices: [], faces: [], edges: [], _tessellator: 'empty' };
   }
 
+  if (opts.incrementalCache) {
+    const incrementalResult = robustTessellateBody(body, { ...opts, validate: true });
+    if (incrementalResult.faces.length > 0) {
+      incrementalResult._tessellator = 'js-incremental';
+      return incrementalResult;
+    }
+  }
+
   // Primary path: native WASM tessellation pipeline (boundary-trimmed,
   // cross-parametric edge mapping, full kernel topology access).
   // All tessellation happens inside WASM — no JS fallback.

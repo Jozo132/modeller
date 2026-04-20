@@ -54,6 +54,10 @@ function projectToJSON() {
     const part = _partManager.getPart();
     if (part) {
       json.part = part.serialize();
+      if (json.part._finalCbrepPayload) {
+        json.finalCbrepPayload = json.part._finalCbrepPayload;
+        json.finalCbrepHash = json.part._finalCbrepHash || null;
+      }
     }
   }
 
@@ -129,6 +133,8 @@ function projectFromJSON(data) {
     scenes: Array.isArray(data.scenes) ? data.scenes : [],
     workspaceMode: data.workspaceMode || null,
     sessionState: data.sessionState || null,
+    finalCbrepPayload: data.finalCbrepPayload || null,
+    finalCbrepHash: data.finalCbrepHash || null,
   };
 }
 

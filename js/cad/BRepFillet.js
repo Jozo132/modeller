@@ -1131,6 +1131,7 @@ function _buildOriginalFaceDesc(topoFace, vertexReplacements = null) {
       edgeCurves,
       sameSense: topoFace.sameSense,
       shared: topoFace.shared ? { ...topoFace.shared } : null,
+      stableHash: topoFace.stableHash || null,
     };
   }
 
@@ -1153,6 +1154,7 @@ function _buildOriginalFaceDesc(topoFace, vertexReplacements = null) {
     edgeCurves,
     sameSense: topoFace.sameSense,
     shared: topoFace.shared ? { ...topoFace.shared } : null,
+    stableHash: topoFace.stableHash || null,
   };
 }
 
@@ -2123,6 +2125,7 @@ function _buildExactFilletTopoBody(faces, edgeDataList, origTopoBody = null) {
             edgeCurves,
             sameSense: origFace.sameSense,
             shared: origFace.shared ? { ...origFace.shared } : null,
+            stableHash: origFace.stableHash || null,
           });
           continue;
         }
@@ -2672,7 +2675,12 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
   // Step 7: Tessellate
   let mesh;
   try {
-    mesh = tessellateBody(newTopoBody, { validate: false });
+    mesh = tessellateBody(newTopoBody, {
+      validate: false,
+      incrementalCache: geometry && geometry._incrementalTessellationCache
+        ? geometry._incrementalTessellationCache
+        : null,
+    });
   } catch (error) {
     _debugBRepFillet('tessellate-failed', error?.message || String(error));
     return null;
@@ -2696,7 +2704,21 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
     recomputeFaceNormals(mesh.faces);
   }
 
-  const edgeResult = computeFeatureEdges(mesh.faces);
+  const canReuseEdgeAnalysis = !!(
+    geometry &&
+    geometry.edges &&
+    geometry.paths &&
+    geometry.visualEdges &&
+    mesh.incrementalTessellation &&
+    mesh.incrementalTessellation.dirtyFaceKeys.length === 0
+  );
+  const edgeResult = canReuseEdgeAnalysis
+    ? {
+        edges: geometry.edges,
+        paths: geometry.paths,
+        visualEdges: geometry.visualEdges,
+      }
+    : computeFeatureEdges(mesh.faces);
 
   // Build a lightweight BRep view from the TopoBody so downstream code
   // (tests, export) can inspect exact surface data.
@@ -2733,6 +2755,8 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
     visualEdges: edgeResult.visualEdges,
     topoBody: newTopoBody,
     brep,
+    incrementalTessellation: mesh.incrementalTessellation || null,
+    _incrementalTessellationCache: mesh._incrementalTessellationCache || null,
   };
 }
 // Exports

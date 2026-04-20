@@ -83,6 +83,7 @@ export class MeshStitcher {
       const faceType = fm.faceType;
       const isFillet = !!fm.isFillet;
       const isCorner = !!fm.isCorner;
+      const tessellationFaceKey = fm.tessellationFaceKey || null;
       for (const face of fm.faces) {
         const dedupedVerts = face.vertices.map(v => dedup(v));
         const geometricNormal = triangleNormal(dedupedVerts);
@@ -102,6 +103,9 @@ export class MeshStitcher {
         if (topoFaceId !== undefined) {
           out.topoFaceId = topoFaceId;
           out.faceGroup = topoFaceId;
+        }
+        if (tessellationFaceKey) {
+          out.tessellationFaceKey = tessellationFaceKey;
         }
         if (fusedGroupId) {
           out.fusedGroupId = fusedGroupId;

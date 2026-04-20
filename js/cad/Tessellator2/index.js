@@ -19,6 +19,12 @@ import { recommendEdgeSegments, detectCriticalRegions } from './Refinement.js';
 import { validateMesh, detectBoundaryEdges, detectSelfIntersections, checkWatertight } from '../MeshValidator.js';
 import { GeometryEvaluator } from '../GeometryEvaluator.js';
 import { getFlag } from '../../featureFlags.js';
+import {
+  buildEdgeTessellationKey,
+  buildFaceTessellationKey,
+  materializeFaceMesh,
+  shouldReuseIncrementalCache,
+} from './IncrementalTessellation.js';
 
 // ── Shadow tessellation disagreement log ────────────────────────────
 /** @type {Array<Object>} */
@@ -67,8 +73,21 @@ export function robustTessellateBody(body, opts = {}) {
   const surfSegs = opts.surfaceSegments ?? 16;
   const edgeSegs = opts.edgeSegments ?? 64;
   const doValidate = opts.validate ?? false;
+  const configKey = `${surfSegs}|${edgeSegs}`;
 
   if (!body || !body.shells) return { vertices: [], faces: [], edges: [] };
+
+  const previousCache = shouldReuseIncrementalCache(opts.incrementalCache, configKey)
+    ? opts.incrementalCache
+    : null;
+  const previousFaceMeshesByKey = previousCache ? previousCache.faceMeshesByKey : null;
+  const previousFaceKeys = new Set(previousCache?.faceKeys || []);
+  const previousEdgeKeys = new Set(previousCache?.edgeKeys || []);
+  const nextFaceMeshesByKey = new Map();
+  const currentFaceKeys = new Set();
+  const currentEdgeKeys = new Set();
+  const dirtyFaceKeys = [];
+  const reusedFaceKeys = [];
 
   const edgeSampler = new EdgeSampler();
   const triangulator = new FaceTriangulator();
@@ -81,31 +100,39 @@ export function robustTessellateBody(body, opts = {}) {
     // Stage 1: Sample all edges in this shell once
     for (const edge of shell.edges()) {
       edgeSampler.sampleEdge(edge, edgeSegs);
+      currentEdgeKeys.add(buildEdgeTessellationKey(edge));
     }
 
     // Stage 2: Triangulate each face using shared edge samples
     for (const face of shell.faces) {
-      let faceMesh;
+      const faceKey = buildFaceTessellationKey(face);
+      currentFaceKeys.add(faceKey);
 
-      try {
-        faceMesh = _triangulateFace(face, edgeSampler, triangulator, surfSegs, edgeSegs);
-      } catch (err) {
-        // If robust triangulation fails for a face, produce empty mesh
-        console.error(`[robust-tessellate] face triangulation failed (type=${face.surfaceType}, sameSense=${face.sameSense}):`, err.message, err.stack);
-        faceMesh = { vertices: [], faces: [], _error: err.message };
+      let rawFaceMesh = previousFaceMeshesByKey ? previousFaceMeshesByKey.get(faceKey) : null;
+      if (rawFaceMesh && rawFaceMesh._error) {
+        rawFaceMesh = null;
       }
 
-      faceMesh.shared = face.shared || null;
-      faceMesh.isFillet = !!(face.shared && face.shared.isFillet);
-      faceMesh.isCorner = !!(face.shared && face.shared.isCorner);
-      // Tag with B-Rep face index and surface type so assignCoplanarFaceGroups
-      // can properly group all triangles from the same topological face and
-      // mark curved surfaces for smooth-normal interpolation.
-      faceMesh.topoFaceId = face.id;
-      faceMesh.fusedGroupId = face.fusedGroupId || null;
-      faceMesh.faceType = face.surfaceType === 'plane' ? 'planar'
-        : face.surfaceType ? `curved-${face.surfaceType}` : 'unknown';
-      faceMeshes.push(faceMesh);
+      if (!rawFaceMesh) {
+        try {
+          rawFaceMesh = _triangulateFace(face, edgeSampler, triangulator, surfSegs, edgeSegs);
+        } catch (err) {
+          // If robust triangulation fails for a face, produce empty mesh
+          console.error(`[robust-tessellate] face triangulation failed (type=${face.surfaceType}, sameSense=${face.sameSense}):`, err.message, err.stack);
+          rawFaceMesh = { vertices: [], faces: [], _error: err.message };
+        }
+        dirtyFaceKeys.push(faceKey);
+      } else {
+        reusedFaceKeys.push(faceKey);
+      }
+
+      nextFaceMeshesByKey.set(faceKey, {
+        vertices: rawFaceMesh.vertices || [],
+        faces: rawFaceMesh.faces || [],
+        _error: rawFaceMesh._error || null,
+      });
+
+      faceMeshes.push(materializeFaceMesh(rawFaceMesh, face, faceKey));
     }
 
     // Tessellate edges for wireframe display
@@ -124,6 +151,26 @@ export function robustTessellateBody(body, opts = {}) {
   // Stage 3: Stitch face meshes into a single body mesh
   const result = stitcher.stitch(faceMeshes);
   result.edges = edgeResults;
+
+  const removedFaceKeys = [...previousFaceKeys].filter((key) => !currentFaceKeys.has(key)).sort();
+  const removedEdgeKeys = [...previousEdgeKeys].filter((key) => !currentEdgeKeys.has(key)).sort();
+  const dirtyEdgeKeys = [...currentEdgeKeys].filter((key) => !previousEdgeKeys.has(key)).sort();
+  const reusedEdgeKeys = [...currentEdgeKeys].filter((key) => previousEdgeKeys.has(key)).sort();
+
+  result.incrementalTessellation = {
+    dirtyFaceKeys: [...dirtyFaceKeys].sort(),
+    reusedFaceKeys: [...reusedFaceKeys].sort(),
+    removedFaceKeys,
+    dirtyEdgeKeys,
+    reusedEdgeKeys,
+    removedEdgeKeys,
+  };
+  result._incrementalTessellationCache = {
+    configKey,
+    faceKeys: [...currentFaceKeys],
+    edgeKeys: [...currentEdgeKeys],
+    faceMeshesByKey: nextFaceMeshesByKey,
+  };
 
   // Log edge cache stats
   const es = edgeSampler.stats;

@@ -69,6 +69,7 @@ export class FilletFeature extends Feature {
       boundingBox: calculateBoundingBox(geometry),
       brep: geometry.brep || null,
       _exactTopology: this._resultExact,
+      incrementalTessellation: geometry.incrementalTessellation || null,
     };
   }
 

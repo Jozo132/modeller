@@ -77,6 +77,7 @@ export class ChamferFeature extends Feature {
       boundingBox: calculateBoundingBox(geometry),
       brep: geometry.brep || null,
       _exactTopology: this._resultExact,
+      incrementalTessellation: geometry.incrementalTessellation || null,
     };
   }
 

@@ -173,6 +173,7 @@ function _buildPlanarFaceDesc(face, edgeDataList = null) {
       : face.vertices.map((vertex, index) =>
         NurbsCurve.createLine(vertex, face.vertices[(index + 1) % face.vertices.length])),
     shared: face.shared ? { ...face.shared } : null,
+    stableHash: face.topoFaceStableHash || face.stableHash || null,
   };
 }
 
@@ -1155,6 +1156,7 @@ function _extractFeatureFacesFromTopoBody(geometry) {
         surfaceType: topoFace.surfaceType,
         faceGroup: topoFace.id,
         topoFaceId: topoFace.id,
+        topoFaceStableHash: topoFace.stableHash || null,
       };
       // Extract cylinder metadata from shared for fillet-fillet intersection detection
       if (topoFace.shared && topoFace.shared._exactAxisStart) {
@@ -1499,6 +1501,7 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
         innerLoops: face.innerLoops.map((loop) => _extractLoopDesc(loop)),
         sameSense: face.sameSense,
         shared: face.shared ? { ...face.shared } : null,
+        stableHash: face.stableHash || face.topoFaceStableHash || null,
       });
     }
   }
@@ -1625,7 +1628,12 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
 
   let mesh;
   try {
-    mesh = tessellateBody(newTopoBody, { validate: true });
+    mesh = tessellateBody(newTopoBody, {
+      validate: true,
+      incrementalCache: geometry && geometry._incrementalTessellationCache
+        ? geometry._incrementalTessellationCache
+        : null,
+    });
   } catch (error) {
     _debugBRepChamfer('tessellate-failed', error?.message || String(error));
     return null;
@@ -1692,7 +1700,21 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
     }
   }
 
-  const edgeResult = computeFeatureEdges(mesh.faces);
+  const canReuseEdgeAnalysis = !!(
+    geometry &&
+    geometry.edges &&
+    geometry.paths &&
+    geometry.visualEdges &&
+    mesh.incrementalTessellation &&
+    mesh.incrementalTessellation.dirtyFaceKeys.length === 0
+  );
+  const edgeResult = canReuseEdgeAnalysis
+    ? {
+        edges: geometry.edges,
+        paths: geometry.paths,
+        visualEdges: geometry.visualEdges,
+      }
+    : computeFeatureEdges(mesh.faces);
 
   return {
     vertices: mesh.vertices || [],
@@ -1701,6 +1723,8 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
     paths: edgeResult.paths,
     visualEdges: edgeResult.visualEdges,
     topoBody: newTopoBody,
+    incrementalTessellation: mesh.incrementalTessellation || null,
+    _incrementalTessellationCache: mesh._incrementalTessellationCache || null,
   };
 }
 
