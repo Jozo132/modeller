@@ -417,6 +417,11 @@ export {
   handleSetIrHash, handleGetIrHash,
   handleGetRefCount, handleLiveCount, handleGlobalRevision,
   handleReleaseAll,
+  handleSetBodyStart, handleSetBodyEnd,
+  handleGetFaceStart, handleGetFaceEnd,
+  handleGetVertexStart, handleGetVertexEnd,
+  handleGetShellStart, handleGetShellEnd,
+  handleGetGeomStart, handleGetGeomEnd,
   // topology: B-Rep entities
   MAX_VERTICES, MAX_EDGES, MAX_COEDGES, MAX_LOOPS, MAX_FACES, MAX_SHELLS,
   GEOM_NONE, GEOM_PLANE, GEOM_CYLINDER, GEOM_CONE, GEOM_SPHERE, GEOM_TORUS,
@@ -428,7 +433,8 @@ export {
   loopAdd, loopGetFirstCoedge, loopGetFace, loopIsOuterLoop, loopGetCount,
   faceAdd, faceGetFirstLoop, faceGetShell, faceGetGeomType, faceGetGeomOffset, faceGetOrient, faceGetLoopCount, faceGetCount,
   shellAdd, shellGetFirstFace, shellGetFaceCount, shellIsClosed_, shellGetCount,
-  bodyBegin, bodyEnd, bodyGetShellCount, bodyGetFirstShell,
+  bodyBegin, bodyEnd, bodyBeginForHandle, bodyEndForHandle, topologyResetAll,
+  bodyGetShellCount, bodyGetFirstShell,
   getVertexCoordsPtr, getVertexCoordsLen,
   getEdgeStartVertexPtr, getEdgeEndVertexPtr,
   topoGetSummary,
@@ -466,6 +472,6 @@ export {
   isxReset, isxRecord, isxGetErrorBound, isxGetCount,
   isxGetMaxErrorBound, isxAreDistinct, isxRayFace,
   // interop: CBREP serialization
-  cbrepDehydrate, cbrepHydrate,
+  cbrepDehydrate, cbrepHydrate, cbrepHydrateForHandle,
   getCbrepOutPtr, getCbrepOutLen,
 } from './kernel/index';

@@ -49,6 +49,27 @@ const featureId = new StaticArray<u32>(MAX_HANDLES + 1);
 /** IR hash for deterministic CBREP (0 = not computed). */
 const irHash = new StaticArray<u32>(MAX_HANDLES + 1);
 
+// ---------- per-handle body range tracking ----------
+//
+// Each handle owns a contiguous range of topology entities in the shared
+// arrays (append-only allocation). bodyBeginForHandle/bodyEndForHandle
+// record start/end offsets so multiple bodies can coexist.
+
+const handleVertexStart = new StaticArray<u32>(MAX_HANDLES + 1);
+const handleVertexEnd   = new StaticArray<u32>(MAX_HANDLES + 1);
+const handleEdgeStart   = new StaticArray<u32>(MAX_HANDLES + 1);
+const handleEdgeEnd     = new StaticArray<u32>(MAX_HANDLES + 1);
+const handleCoedgeStart = new StaticArray<u32>(MAX_HANDLES + 1);
+const handleCoedgeEnd   = new StaticArray<u32>(MAX_HANDLES + 1);
+const handleLoopStart   = new StaticArray<u32>(MAX_HANDLES + 1);
+const handleLoopEnd     = new StaticArray<u32>(MAX_HANDLES + 1);
+const handleFaceStart   = new StaticArray<u32>(MAX_HANDLES + 1);
+const handleFaceEnd     = new StaticArray<u32>(MAX_HANDLES + 1);
+const handleShellStart  = new StaticArray<u32>(MAX_HANDLES + 1);
+const handleShellEnd    = new StaticArray<u32>(MAX_HANDLES + 1);
+const handleGeomStart   = new StaticArray<u32>(MAX_HANDLES + 1);
+const handleGeomEnd     = new StaticArray<u32>(MAX_HANDLES + 1);
+
 // ---------- registry state ----------
 
 /** Next handle id to try for allocation (simple bump allocator). */
@@ -195,7 +216,93 @@ export function handleReleaseAll(): void {
     unchecked(refCount[i] = 0);
     unchecked(featureId[i] = 0);
     unchecked(irHash[i] = 0);
+    unchecked(handleVertexStart[i] = 0);
+    unchecked(handleVertexEnd[i] = 0);
+    unchecked(handleEdgeStart[i] = 0);
+    unchecked(handleEdgeEnd[i] = 0);
+    unchecked(handleCoedgeStart[i] = 0);
+    unchecked(handleCoedgeEnd[i] = 0);
+    unchecked(handleLoopStart[i] = 0);
+    unchecked(handleLoopEnd[i] = 0);
+    unchecked(handleFaceStart[i] = 0);
+    unchecked(handleFaceEnd[i] = 0);
+    unchecked(handleShellStart[i] = 0);
+    unchecked(handleShellEnd[i] = 0);
+    unchecked(handleGeomStart[i] = 0);
+    unchecked(handleGeomEnd[i] = 0);
   }
   liveCount = 0;
   nextHandleId = 1;
+}
+
+// ---------- per-handle body range API ----------
+
+/**
+ * Record the start offsets for a handle's body data.
+ * Called by bodyBeginForHandle() in topology.
+ */
+export function handleSetBodyStart(id: u32,
+  vStart: u32, eStart: u32, ceStart: u32, lStart: u32,
+  fStart: u32, sStart: u32, gStart: u32
+): void {
+  if (id == HANDLE_NONE || id > MAX_HANDLES) return;
+  unchecked(handleVertexStart[id] = vStart);
+  unchecked(handleEdgeStart[id] = eStart);
+  unchecked(handleCoedgeStart[id] = ceStart);
+  unchecked(handleLoopStart[id] = lStart);
+  unchecked(handleFaceStart[id] = fStart);
+  unchecked(handleShellStart[id] = sStart);
+  unchecked(handleGeomStart[id] = gStart);
+}
+
+/**
+ * Record the end offsets for a handle's body data.
+ * Called by bodyEndForHandle() in topology.
+ */
+export function handleSetBodyEnd(id: u32,
+  vEnd: u32, eEnd: u32, ceEnd: u32, lEnd: u32,
+  fEnd: u32, sEnd: u32, gEnd: u32
+): void {
+  if (id == HANDLE_NONE || id > MAX_HANDLES) return;
+  unchecked(handleVertexEnd[id] = vEnd);
+  unchecked(handleEdgeEnd[id] = eEnd);
+  unchecked(handleCoedgeEnd[id] = ceEnd);
+  unchecked(handleLoopEnd[id] = lEnd);
+  unchecked(handleFaceEnd[id] = fEnd);
+  unchecked(handleShellEnd[id] = sEnd);
+  unchecked(handleGeomEnd[id] = gEnd);
+}
+
+/** Get the face range for a handle (for classifyPointVsShell etc). */
+export function handleGetFaceStart(id: u32): u32 {
+  if (id == HANDLE_NONE || id > MAX_HANDLES) return 0;
+  return unchecked(handleFaceStart[id]);
+}
+export function handleGetFaceEnd(id: u32): u32 {
+  if (id == HANDLE_NONE || id > MAX_HANDLES) return 0;
+  return unchecked(handleFaceEnd[id]);
+}
+export function handleGetVertexStart(id: u32): u32 {
+  if (id == HANDLE_NONE || id > MAX_HANDLES) return 0;
+  return unchecked(handleVertexStart[id]);
+}
+export function handleGetVertexEnd(id: u32): u32 {
+  if (id == HANDLE_NONE || id > MAX_HANDLES) return 0;
+  return unchecked(handleVertexEnd[id]);
+}
+export function handleGetShellStart(id: u32): u32 {
+  if (id == HANDLE_NONE || id > MAX_HANDLES) return 0;
+  return unchecked(handleShellStart[id]);
+}
+export function handleGetShellEnd(id: u32): u32 {
+  if (id == HANDLE_NONE || id > MAX_HANDLES) return 0;
+  return unchecked(handleShellEnd[id]);
+}
+export function handleGetGeomStart(id: u32): u32 {
+  if (id == HANDLE_NONE || id > MAX_HANDLES) return 0;
+  return unchecked(handleGeomStart[id]);
+}
+export function handleGetGeomEnd(id: u32): u32 {
+  if (id == HANDLE_NONE || id > MAX_HANDLES) return 0;
+  return unchecked(handleGeomEnd[id]);
 }

@@ -254,6 +254,38 @@ async function instantiate(module, imports = {}) {
       // assembly/kernel/core/handleGlobalRevision() => u32
       return exports.handleGlobalRevision() >>> 0;
     },
+    handleGetFaceStart(id) {
+      // assembly/kernel/core/handleGetFaceStart(u32) => u32
+      return exports.handleGetFaceStart(id) >>> 0;
+    },
+    handleGetFaceEnd(id) {
+      // assembly/kernel/core/handleGetFaceEnd(u32) => u32
+      return exports.handleGetFaceEnd(id) >>> 0;
+    },
+    handleGetVertexStart(id) {
+      // assembly/kernel/core/handleGetVertexStart(u32) => u32
+      return exports.handleGetVertexStart(id) >>> 0;
+    },
+    handleGetVertexEnd(id) {
+      // assembly/kernel/core/handleGetVertexEnd(u32) => u32
+      return exports.handleGetVertexEnd(id) >>> 0;
+    },
+    handleGetShellStart(id) {
+      // assembly/kernel/core/handleGetShellStart(u32) => u32
+      return exports.handleGetShellStart(id) >>> 0;
+    },
+    handleGetShellEnd(id) {
+      // assembly/kernel/core/handleGetShellEnd(u32) => u32
+      return exports.handleGetShellEnd(id) >>> 0;
+    },
+    handleGetGeomStart(id) {
+      // assembly/kernel/core/handleGetGeomStart(u32) => u32
+      return exports.handleGetGeomStart(id) >>> 0;
+    },
+    handleGetGeomEnd(id) {
+      // assembly/kernel/core/handleGetGeomEnd(u32) => u32
+      return exports.handleGetGeomEnd(id) >>> 0;
+    },
     MAX_VERTICES: {
       // assembly/kernel/topology/MAX_VERTICES: u32
       valueOf() { return this.value; },
@@ -403,6 +435,10 @@ async function instantiate(module, imports = {}) {
     bodyEnd() {
       // assembly/kernel/topology/bodyEnd() => u32
       return exports.bodyEnd() >>> 0;
+    },
+    bodyEndForHandle() {
+      // assembly/kernel/topology/bodyEndForHandle() => u32
+      return exports.bodyEndForHandle() >>> 0;
     },
     bodyGetShellCount() {
       // assembly/kernel/topology/bodyGetShellCount() => u32
@@ -667,6 +703,11 @@ async function instantiate(module, imports = {}) {
       input = __lowerStaticArray(__setU8, 31, 0, input, Uint8Array) || __notnull();
       return exports.cbrepHydrate(input, inputLen) >>> 0;
     },
+    cbrepHydrateForHandle(handleId, input, inputLen) {
+      // assembly/kernel/interop/cbrepHydrateForHandle(u32, ~lib/staticarray/StaticArray<u8>, u32) => u32
+      input = __lowerStaticArray(__setU8, 31, 0, input, Uint8Array) || __notnull();
+      return exports.cbrepHydrateForHandle(handleId, input, inputLen) >>> 0;
+    },
     getCbrepOutPtr() {
       // assembly/kernel/interop/getCbrepOutPtr() => usize
       return exports.getCbrepOutPtr() >>> 0;
@@ -877,6 +918,16 @@ export const {
   handleLiveCount,
   handleGlobalRevision,
   handleReleaseAll,
+  handleSetBodyStart,
+  handleSetBodyEnd,
+  handleGetFaceStart,
+  handleGetFaceEnd,
+  handleGetVertexStart,
+  handleGetVertexEnd,
+  handleGetShellStart,
+  handleGetShellEnd,
+  handleGetGeomStart,
+  handleGetGeomEnd,
   MAX_VERTICES,
   MAX_EDGES,
   MAX_COEDGES,
@@ -934,6 +985,9 @@ export const {
   shellGetCount,
   bodyBegin,
   bodyEnd,
+  bodyBeginForHandle,
+  bodyEndForHandle,
+  topologyResetAll,
   bodyGetShellCount,
   bodyGetFirstShell,
   getVertexCoordsPtr,
@@ -1019,6 +1073,7 @@ export const {
   isxRayFace,
   cbrepDehydrate,
   cbrepHydrate,
+  cbrepHydrateForHandle,
   getCbrepOutPtr,
   getCbrepOutLen,
 } = await (async url => instantiate(

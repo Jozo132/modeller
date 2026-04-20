@@ -13,7 +13,12 @@ export {
   handleSetFeatureId, handleGetFeatureId,
   handleSetIrHash, handleGetIrHash,
   handleGetRefCount, handleLiveCount, handleGlobalRevision,
-  handleReleaseAll
+  handleReleaseAll,
+  handleSetBodyStart, handleSetBodyEnd,
+  handleGetFaceStart, handleGetFaceEnd,
+  handleGetVertexStart, handleGetVertexEnd,
+  handleGetShellStart, handleGetShellEnd,
+  handleGetGeomStart, handleGetGeomEnd,
 } from './core';
 
 // ---- topology: B-Rep entities ----
@@ -28,7 +33,8 @@ export {
   loopAdd, loopGetFirstCoedge, loopGetFace, loopIsOuterLoop, loopGetCount,
   faceAdd, faceGetFirstLoop, faceGetShell, faceGetGeomType, faceGetGeomOffset, faceGetOrient, faceGetLoopCount, faceGetCount,
   shellAdd, shellGetFirstFace, shellGetFaceCount, shellIsClosed_, shellGetCount,
-  bodyBegin, bodyEnd, bodyGetShellCount, bodyGetFirstShell,
+  bodyBegin, bodyEnd, bodyBeginForHandle, bodyEndForHandle, topologyResetAll,
+  bodyGetShellCount, bodyGetFirstShell,
   getVertexCoordsPtr, getVertexCoordsLen,
   getEdgeStartVertexPtr, getEdgeEndVertexPtr,
   topoGetSummary
@@ -87,6 +93,6 @@ export {
 
 // ---- interop: CBREP serialization ----
 export {
-  cbrepDehydrate, cbrepHydrate,
+  cbrepDehydrate, cbrepHydrate, cbrepHydrateForHandle,
   getCbrepOutPtr, getCbrepOutLen
 } from './interop';

@@ -21,6 +21,8 @@ import { exportSTEPDetailed } from './cad/StepExport.js';
 import { wasmTessellation } from './cad/WasmTessellation.js';
 import { globalTessConfig } from './cad/TessellationConfig.js';
 import { GeometryEvaluator } from './cad/GeometryEvaluator.js';
+import { WasmBrepHandleRegistry } from './cad/WasmBrepHandleRegistry.js';
+import { HandleResidencyManager } from './cad/HandleResidencyManager.js';
 import { downloadCMOD, openCMODFile, projectFromCMOD, setCmodViewport, setCmodPartManager, setCmodRenderer, setCmodWorkspaceModeGetter, setCmodSessionStateGetter, setCmodScenesGetter } from './cmod.js';
 import { debug, info, warn, error } from './logger.js';
 import { loadProject, debouncedSave, clearSavedProject, setViewport, setPartManagerForPersist, setRendererForPersist, setWorkspaceModeGetter, setSessionStateGetter, setScenesGetter } from './persist.js';
@@ -117,9 +119,11 @@ class App {
         && !this._filletMode;
     };
     if (this._renderer3d._loadPromise) {
-      this._renderer3d._loadPromise.then(() => {
+      this._renderer3d._loadPromise.then(async () => {
         this._update3DView();
         this._scheduleRender();
+        // Wire up WASM handle registry + residency manager after WASM is loaded
+        await this._initWasmHandleSubsystem();
       });
     }
 
@@ -2898,6 +2902,40 @@ class App {
   }
 
   // --- Resize ---
+  /**
+   * Initialize the WASM handle registry and residency manager after WASM is ready.
+   * Wires them into the active PartManager's FeatureTree.
+   * Also initializes the GPU tessellation pipeline if WebGPU is available.
+   */
+  async _initWasmHandleSubsystem() {
+    try {
+      const registry = new WasmBrepHandleRegistry();
+      await registry.init();
+      this._wasmHandleRegistry = registry;
+
+      const residencyMgr = new HandleResidencyManager(registry);
+      this._wasmResidencyMgr = residencyMgr;
+
+      // Wire into all existing PartManagers/FeatureTrees
+      if (this._partManager) {
+        const part = this._partManager.getActivePart?.();
+        if (part?.featureTree) {
+          part.featureTree.setHandleRegistry(registry);
+          part.featureTree.setResidencyManager(residencyMgr);
+        }
+      }
+
+      // Initialize GPU tessellation pipeline if SceneRenderer is available
+      if (this._renderer3d?.initGpuTessPipeline) {
+        await this._renderer3d.initGpuTessPipeline(registry);
+      }
+
+      info('[WASM] Handle registry + residency manager initialized');
+    } catch (e) {
+      warn('[WASM] Handle subsystem init failed (non-fatal):', e);
+    }
+  }
+
   _bindResizeEvent() {
     const onResize = () => {
       this.viewport.resize();

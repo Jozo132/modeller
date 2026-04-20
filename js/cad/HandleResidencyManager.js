@@ -27,7 +27,7 @@ export class HandleResidencyManager {
     /** @type {import('./WasmBrepHandleRegistry').WasmBrepHandleRegistry} */
     #registry;
 
-    /** @type {Map<number, ResidencyEntry>} featureId → entry */
+    /** @type {Map<string, ResidencyEntry>} featureId → entry */
     #entries = new Map();
 
     /** @type {number} max entries before eviction kicks in */
@@ -55,7 +55,7 @@ export class HandleResidencyManager {
      * Store a CBREP payload for lazy hydration. Does NOT hydrate immediately.
      * If an entry already exists for this featureId, the old handle is released.
      *
-     * @param {number} featureId
+     * @param {string} featureId
      * @param {Uint8Array} cbrep
      * @param {number} [irHash=0]
      */
@@ -97,9 +97,10 @@ export class HandleResidencyManager {
 
     /**
      * Ensure the WASM handle for a feature is resident (hydrated).
-     * If not yet hydrated, performs hydration from stored CBREP.
+     * If not yet hydrated, performs hydration from stored CBREP using
+     * append-only mode (hydrateForHandle) so other handles are not evicted.
      *
-     * @param {number} featureId
+     * @param {string} featureId
      * @returns {number} WASM handle, or 0 if no CBREP stored or hydration failed
      */
     ensureResident(featureId) {
@@ -116,11 +117,11 @@ export class HandleResidencyManager {
             return entry.handle;
         }
 
-        // Hydrate from CBREP
+        // Hydrate from CBREP in append-only handle-scoped mode
         const handle = this.#registry.alloc();
         if (!handle) return 0;
 
-        const ok = this.#registry.hydrate(entry.cbrep);
+        const ok = this.#registry.hydrateForHandle(handle, entry.cbrep);
         if (!ok) {
             this.#registry.release(handle);
             return 0;

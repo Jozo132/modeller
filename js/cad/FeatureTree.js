@@ -38,6 +38,10 @@ export class FeatureTree {
     // Optional residency manager for lazy CBREP restore and eviction.
     // Set via setResidencyManager(). Works alongside _handleRegistry.
     this._residencyManager = null;
+
+    // Map from wasmHandleId (number) → featureId (string) for reverse lookup.
+    // Needed because WASM setFeatureId takes u32 (revision counter), not a string.
+    this._handleToFeatureId = new Map();
   }
 
   // -----------------------------------------------------------------------
@@ -90,6 +94,8 @@ export class FeatureTree {
         reg.setResidency(handle, reg.UNMATERIALIZED);
         reg.setFeatureId(handle, this._revisionCounter);
         reg.bumpRevision(handle);
+        // Maintain JS-side reverse lookup: handle → featureId (string)
+        this._handleToFeatureId.set(handle, featureId);
       }
     }
 
@@ -111,6 +117,7 @@ export class FeatureTree {
     if (oldResult.wasmHandleId) {
       if (this._handleRegistry && this._handleRegistry.ready) {
         this._handleRegistry.release(oldResult.wasmHandleId);
+        this._handleToFeatureId.delete(oldResult.wasmHandleId);
         oldResult.wasmHandleId = 0;
       }
     }

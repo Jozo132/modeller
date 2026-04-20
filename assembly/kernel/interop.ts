@@ -31,7 +31,7 @@ import {
   loopAdd, loopGetFirstCoedge, loopGetFace, loopIsOuterLoop, loopGetCount,
   faceAdd, faceGetFirstLoop, faceGetShell, faceGetGeomType, faceGetGeomOffset, faceGetOrient, faceGetLoopCount, faceGetCount,
   shellAdd, shellGetFirstFace, shellGetFaceCount, shellIsClosed_, shellGetCount,
-  bodyBegin
+  bodyBegin, bodyBeginForHandle, bodyEndForHandle
 } from './topology';
 
 import { geomPoolRead, geomPoolUsed, geomPoolReset, geomPoolSetUsed as _geomPoolSetUsed } from './geometry';
@@ -321,6 +321,123 @@ export function cbrepHydrate(input: StaticArray<u8>, inputLen: u32): u32 {
     geomPoolDirectWrite(i, val);
   }
   geomPoolSetUsed(nGeom);
+
+  return 1;
+}
+
+/**
+ * Hydrate a CBREP into the topology workspace in append-only mode,
+ * bound to a specific handle. Entity indices in the CBREP are rebased
+ * relative to the current topology counts so they don't collide with
+ * previously loaded bodies.
+ *
+ * Returns 1 on success, 0 on failure.
+ */
+export function cbrepHydrateForHandle(handleId: u32, input: StaticArray<u8>, inputLen: u32): u32 {
+  if (inputLen < HEADER_SIZE) return 0;
+
+  let p: u32 = 0;
+  const magic = readU32(input, p); p += 4;
+  if (magic != CBREP_MAGIC) return 0;
+  const version = readU32(input, p); p += 4;
+  if (version != CBREP_VERSION) return 0;
+
+  const nVerts = readU32(input, p); p += 4;
+  const nEdges = readU32(input, p); p += 4;
+  const nCoedges = readU32(input, p); p += 4;
+  const nLoops = readU32(input, p); p += 4;
+  const nFaces = readU32(input, p); p += 4;
+  const nShells = readU32(input, p); p += 4;
+  const nGeom = readU32(input, p); p += 4;
+
+  const expectedLen = HEADER_SIZE
+    + nVerts * 24 + nEdges * 16 + nCoedges * 16
+    + nLoops * 12 + nFaces * 24 + nShells * 12 + nGeom * 8;
+  if (inputLen < expectedLen) return 0;
+
+  // Record start offsets and enter append mode for this handle
+  bodyBeginForHandle(handleId);
+
+  // Rebase offsets: new entity IDs = old ID + current count before adding
+  const vertBase = vertexGetCount() - 0; // vertexGetCount is already the start offset
+  // Actually — vertexAdd returns sequential IDs starting from vertexCount.
+  // The CBREP references are 0-based within the body. We need to add the
+  // base offset to all cross-references (edges→vertices, coedges→edges, etc).
+
+  // Since vertexAdd/edgeAdd/etc are append-only and return the new ID,
+  // and CBREP entity refs are 0-based within the body, we need to rebase
+  // the references by adding the base offsets.
+
+  const vBase = vertexGetCount();
+  const eBase = edgeGetCount();
+  const ceBase = coedgeGetCount();
+  const lBase = loopGetCount();
+  const fBase = faceGetCount();
+  const sBase = shellGetCount();
+  const gBase = geomPoolUsed();
+
+  // Vertices (no cross-references)
+  for (let i: u32 = 0; i < nVerts; i++) {
+    const x = readF64(input, p); p += 8;
+    const y = readF64(input, p); p += 8;
+    const z = readF64(input, p); p += 8;
+    vertexAdd(x, y, z);
+  }
+
+  // Edges: rebase vertex references
+  for (let i: u32 = 0; i < nEdges; i++) {
+    const startV = readU32(input, p) + vBase; p += 4;
+    const endV = readU32(input, p) + vBase; p += 4;
+    const geomType = readU8(input, p); p += 4;
+    const geomOffset = readU32(input, p) + gBase; p += 4;
+    edgeAdd(startV, endV, geomType, geomOffset);
+  }
+
+  // CoEdges: rebase edge and loop references
+  for (let i: u32 = 0; i < nCoedges; i++) {
+    const edgeId = readU32(input, p) + eBase; p += 4;
+    const orient = readU8(input, p); p += 4;
+    const nextCoedge = readU32(input, p) + ceBase; p += 4;
+    const loopId = readU32(input, p) + lBase; p += 4;
+    coedgeAdd(edgeId, orient, nextCoedge, loopId);
+  }
+
+  // Loops: rebase coedge and face references
+  for (let i: u32 = 0; i < nLoops; i++) {
+    const firstCoedge = readU32(input, p) + ceBase; p += 4;
+    const face = readU32(input, p) + fBase; p += 4;
+    const isOuter = readU8(input, p); p += 4;
+    loopAdd(firstCoedge, face, isOuter);
+  }
+
+  // Faces: rebase loop, shell, and geom references
+  for (let i: u32 = 0; i < nFaces; i++) {
+    const firstLoop = readU32(input, p) + lBase; p += 4;
+    const shell = readU32(input, p) + sBase; p += 4;
+    const geomType = readU8(input, p); p += 4;
+    const geomOffset = readU32(input, p) + gBase; p += 4;
+    const orient = readU8(input, p); p += 4;
+    const loopCnt = readU32(input, p); p += 4;
+    faceAdd(firstLoop, shell, geomType, geomOffset, orient, loopCnt);
+  }
+
+  // Shells: rebase face references
+  for (let i: u32 = 0; i < nShells; i++) {
+    const firstFace = readU32(input, p) + fBase; p += 4;
+    const faceCnt = readU32(input, p); p += 4;
+    const isClosed = readU8(input, p); p += 4;
+    shellAdd(firstFace, faceCnt, isClosed);
+  }
+
+  // Geometry pool: append values after existing pool data
+  for (let i: u32 = 0; i < nGeom; i++) {
+    const val = readF64(input, p); p += 8;
+    geomPoolDirectWrite(gBase + i, val);
+  }
+  geomPoolSetUsed(gBase + nGeom);
+
+  // Finalize handle body ranges
+  bodyEndForHandle();
 
   return 1;
 }

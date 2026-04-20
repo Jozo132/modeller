@@ -277,14 +277,67 @@ export class WasmBrepHandleRegistry {
 
     /**
      * Hydrate topology+geometry from a CBREP Uint8Array.
+     * This uses legacy single-body mode (resets all topology before hydrating).
+     * Use hydrateForHandle() when multiple bodies need to coexist.
      * @param {Uint8Array} cbrep
      * @returns {boolean} true on success
      */
     hydrate(cbrep) {
-        // We need to write the input bytes into WASM memory.
-        // Use a StaticArray<u8> via the glue layer.
         const ok = _wasm.cbrepHydrate(cbrep, cbrep.byteLength);
         return ok === 1;
+    }
+
+    /**
+     * Hydrate a CBREP into the topology workspace bound to a specific handle.
+     * Uses append-only mode — the new body is appended after any existing topology.
+     * The handle's body range (faceStart..faceEnd, vertexStart..vertexEnd, etc.) is
+     * recorded so the handle can precisely identify its topology later.
+     *
+     * This allows multiple handles to have resident body data simultaneously.
+     *
+     * @param {number} handle — WASM handle id (must be allocated)
+     * @param {Uint8Array} cbrep
+     * @returns {boolean} true on success
+     */
+    hydrateForHandle(handle, cbrep) {
+        if (!handle || !cbrep) return false;
+        const ok = _wasm.cbrepHydrateForHandle(handle, cbrep, cbrep.byteLength);
+        return ok === 1;
+    }
+
+    /**
+     * Get the face range [start, end) for a handle's body.
+     * Use with classifyPointVsShell / classifyFacesViaOctree.
+     * @param {number} handle
+     * @returns {{ faceStart: number, faceEnd: number }}
+     */
+    getBodyFaceRange(handle) {
+        return {
+            faceStart: _wasm.handleGetFaceStart(handle),
+            faceEnd: _wasm.handleGetFaceEnd(handle),
+        };
+    }
+
+    /**
+     * Get the vertex range for a handle's body.
+     * @param {number} handle
+     * @returns {{ vertexStart: number, vertexEnd: number }}
+     */
+    getBodyVertexRange(handle) {
+        return {
+            vertexStart: _wasm.handleGetVertexStart(handle),
+            vertexEnd: _wasm.handleGetVertexEnd(handle),
+        };
+    }
+
+    /**
+     * Reset all topology to zero (clears all resident bodies).
+     * Use before a full project reload.
+     */
+    resetTopology() {
+        _wasm.topologyResetAll();
+        _wasm.geomPoolReset();
+        _wasm.handleReleaseAll();
     }
 
     // ────────────────────── octree broadphase ──────────────────────

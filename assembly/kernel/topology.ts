@@ -197,8 +197,11 @@ export function shellGetCount(): u32 { return shellCount; }
 let bodyShellCount: u32 = 0;
 let bodyFirstShell: u32 = 0;
 
+/** Handle id for the body currently being built (0 = legacy single-body mode). */
+let activeHandleId: u32 = 0;
+
 export function bodyBegin(): void {
-  // Reset all counters for a fresh body
+  // Reset all counters for a fresh body (legacy single-body mode)
   vertexCount = 0;
   edgeCount = 0;
   coedgeCount = 0;
@@ -207,16 +210,74 @@ export function bodyBegin(): void {
   shellCount = 0;
   bodyShellCount = 0;
   bodyFirstShell = 0;
+  activeHandleId = 0;
+}
+
+import {
+  handleSetBodyStart, handleSetBodyEnd,
+  handleGetFaceStart as _hgfs, handleGetFaceEnd as _hgfe,
+} from './core';
+import { geomPoolUsed as _geomPoolUsed2 } from './geometry';
+
+/**
+ * Begin building a body for a specific handle (append-only mode).
+ * Records current entity counts as the handle's start offsets.
+ * Does NOT reset counters — entities are appended after existing data.
+ */
+export function bodyBeginForHandle(handleId: u32): void {
+  activeHandleId = handleId;
+  bodyShellCount = 0;
+  bodyFirstShell = shellCount;
+  handleSetBodyStart(handleId,
+    vertexCount, edgeCount, coedgeCount, loopCount,
+    faceCount, shellCount, _geomPoolUsed2()
+  );
+}
+
+/**
+ * End body definition for the active handle. Records end offsets.
+ * @returns shell count for this body
+ */
+export function bodyEndForHandle(): u32 {
+  const shells = shellCount - bodyFirstShell;
+  bodyShellCount = shells;
+  if (activeHandleId != 0) {
+    handleSetBodyEnd(activeHandleId,
+      vertexCount, edgeCount, coedgeCount, loopCount,
+      faceCount, shellCount, _geomPoolUsed2()
+    );
+  }
+  activeHandleId = 0;
+  return shells;
 }
 
 export function bodyEnd(): u32 {
   // Returns the total shell count for this body
+  if (activeHandleId != 0) {
+    return bodyEndForHandle();
+  }
   bodyShellCount = shellCount;
   return shellCount;
 }
 
 export function bodyGetShellCount(): u32 { return bodyShellCount; }
 export function bodyGetFirstShell(): u32 { return bodyFirstShell; }
+
+/**
+ * Reset all topology (for full clear / project load).
+ * Distinct from bodyBegin which only resets for single-body mode.
+ */
+export function topologyResetAll(): void {
+  vertexCount = 0;
+  edgeCount = 0;
+  coedgeCount = 0;
+  loopCount = 0;
+  faceCount = 0;
+  shellCount = 0;
+  bodyShellCount = 0;
+  bodyFirstShell = 0;
+  activeHandleId = 0;
+}
 
 // ---------- bulk data access (for interop / JS bridge) ----------
 

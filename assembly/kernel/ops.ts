@@ -402,9 +402,54 @@ export function classifyPointVsShell(
         if (t1 > 0) crossings++;
         if (t2 > 0) crossings++;
       }
+    } else if (geomType == GEOM_CYLINDER) {
+      // Cylinder: origin(3) + axis(3) + refDir(3) + radius(1)
+      // Layout: gOff+0..2 = origin, gOff+3..5 = axis (unit), gOff+9 = radius
+      const ox = geomPoolRead(gOff);
+      const oy = geomPoolRead(gOff + 1);
+      const oz = geomPoolRead(gOff + 2);
+      const ax = geomPoolRead(gOff + 3);
+      const ay = geomPoolRead(gOff + 4);
+      const az = geomPoolRead(gOff + 5);
+      const radius = geomPoolRead(gOff + 9);
+
+      // Translate ray origin relative to cylinder origin
+      const dx = px - ox;
+      const dy = py - oy;
+      const dz = pz - oz;
+
+      // Ray direction d = (1,0,0)
+      // Project out the axis component for the perpendicular quadratic
+      // (d - (d·a)a) and (p - (p·a)a) in the plane perpendicular to axis
+      const dDotA = ax; // d=(1,0,0) => d·a = ax
+      const pDotA = dx * ax + dy * ay + dz * az;
+
+      // Perpendicular components
+      const rpx = dx - pDotA * ax; // ray origin perp component
+      const rpy = dy - pDotA * ay;
+      const rpz = dz - pDotA * az;
+      const rdx = 1.0 - dDotA * ax; // ray direction perp component
+      const rdy = -dDotA * ay;
+      const rdz = -dDotA * az;
+
+      // Quadratic: |rp + t*rd|² = radius²
+      const A = rdx * rdx + rdy * rdy + rdz * rdz;
+      if (A < 1e-24) continue; // ray is parallel to cylinder axis — no crossing
+      const B = 2.0 * (rpx * rdx + rpy * rdy + rpz * rdz);
+      const C = rpx * rpx + rpy * rpy + rpz * rpz - radius * radius;
+      const disc = B * B - 4.0 * A * C;
+      if (disc > 0) {
+        const sqrtDisc = Math.sqrt(disc);
+        const t1 = (-B - sqrtDisc) / (2.0 * A);
+        const t2 = (-B + sqrtDisc) / (2.0 * A);
+        if (t1 > 0) crossings++;
+        if (t2 > 0) crossings++;
+      }
+    } else {
+      // Cone, torus, NURBS: cannot reliably ray-cast analytically here.
+      // Return CLASSIFY_UNKNOWN so the JS side can handle it.
+      return CLASSIFY_UNKNOWN;
     }
-    // Cylinder, cone, torus containment are more complex — for now
-    // we flag them as unknown and let JS fall back to its ray-cast
   }
 
   return (crossings & 1) ? CLASSIFY_INSIDE : CLASSIFY_OUTSIDE;

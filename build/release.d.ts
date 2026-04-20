@@ -730,6 +730,78 @@ export declare function handleGlobalRevision(): number;
  * assembly/kernel/core/handleReleaseAll
  */
 export declare function handleReleaseAll(): void;
+/**
+ * assembly/kernel/core/handleSetBodyStart
+ * @param id `u32`
+ * @param vStart `u32`
+ * @param eStart `u32`
+ * @param ceStart `u32`
+ * @param lStart `u32`
+ * @param fStart `u32`
+ * @param sStart `u32`
+ * @param gStart `u32`
+ */
+export declare function handleSetBodyStart(id: number, vStart: number, eStart: number, ceStart: number, lStart: number, fStart: number, sStart: number, gStart: number): void;
+/**
+ * assembly/kernel/core/handleSetBodyEnd
+ * @param id `u32`
+ * @param vEnd `u32`
+ * @param eEnd `u32`
+ * @param ceEnd `u32`
+ * @param lEnd `u32`
+ * @param fEnd `u32`
+ * @param sEnd `u32`
+ * @param gEnd `u32`
+ */
+export declare function handleSetBodyEnd(id: number, vEnd: number, eEnd: number, ceEnd: number, lEnd: number, fEnd: number, sEnd: number, gEnd: number): void;
+/**
+ * assembly/kernel/core/handleGetFaceStart
+ * @param id `u32`
+ * @returns `u32`
+ */
+export declare function handleGetFaceStart(id: number): number;
+/**
+ * assembly/kernel/core/handleGetFaceEnd
+ * @param id `u32`
+ * @returns `u32`
+ */
+export declare function handleGetFaceEnd(id: number): number;
+/**
+ * assembly/kernel/core/handleGetVertexStart
+ * @param id `u32`
+ * @returns `u32`
+ */
+export declare function handleGetVertexStart(id: number): number;
+/**
+ * assembly/kernel/core/handleGetVertexEnd
+ * @param id `u32`
+ * @returns `u32`
+ */
+export declare function handleGetVertexEnd(id: number): number;
+/**
+ * assembly/kernel/core/handleGetShellStart
+ * @param id `u32`
+ * @returns `u32`
+ */
+export declare function handleGetShellStart(id: number): number;
+/**
+ * assembly/kernel/core/handleGetShellEnd
+ * @param id `u32`
+ * @returns `u32`
+ */
+export declare function handleGetShellEnd(id: number): number;
+/**
+ * assembly/kernel/core/handleGetGeomStart
+ * @param id `u32`
+ * @returns `u32`
+ */
+export declare function handleGetGeomStart(id: number): number;
+/**
+ * assembly/kernel/core/handleGetGeomEnd
+ * @param id `u32`
+ * @returns `u32`
+ */
+export declare function handleGetGeomEnd(id: number): number;
 /** assembly/kernel/topology/MAX_VERTICES */
 export declare const MAX_VERTICES: {
   /** @type `u32` */
@@ -1061,6 +1133,20 @@ export declare function bodyBegin(): void;
  * @returns `u32`
  */
 export declare function bodyEnd(): number;
+/**
+ * assembly/kernel/topology/bodyBeginForHandle
+ * @param handleId `u32`
+ */
+export declare function bodyBeginForHandle(handleId: number): void;
+/**
+ * assembly/kernel/topology/bodyEndForHandle
+ * @returns `u32`
+ */
+export declare function bodyEndForHandle(): number;
+/**
+ * assembly/kernel/topology/topologyResetAll
+ */
+export declare function topologyResetAll(): void;
 /**
  * assembly/kernel/topology/bodyGetShellCount
  * @returns `u32`
@@ -1648,6 +1734,14 @@ export declare function cbrepDehydrate(): number;
  * @returns `u32`
  */
 export declare function cbrepHydrate(input: ArrayLike<number>, inputLen: number): number;
+/**
+ * assembly/kernel/interop/cbrepHydrateForHandle
+ * @param handleId `u32`
+ * @param input `~lib/staticarray/StaticArray<u8>`
+ * @param inputLen `u32`
+ * @returns `u32`
+ */
+export declare function cbrepHydrateForHandle(handleId: number, input: ArrayLike<number>, inputLen: number): number;
 /**
  * assembly/kernel/interop/getCbrepOutPtr
  * @returns `usize`

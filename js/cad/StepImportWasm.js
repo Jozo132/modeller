@@ -163,6 +163,8 @@ export function tessellateBodyWasm(body, opts = {}) {
         // Build coedge loops
         let firstLoopId = -1;
         let numLoops = 0;
+        // Predict loop IDs before any loops for this face are created
+        const loopCountBase = w.loopGetCount ? w.loopGetCount() : 0;
 
         for (let li = 0; li < loops.length; li++) {
             const loop = loops[li];
@@ -171,12 +173,13 @@ export function tessellateBodyWasm(body, opts = {}) {
 
             const isOuter = li === 0 ? 1 : 0;
             const ceIds = [];
+            const predictedLoopId = loopCountBase + li;
 
             for (const ce of coedges) {
                 const eid = edgeMap.get(ce.edge);
                 if (eid === undefined) continue; // skip edges not in map
                 const ceOrient = ce.sameSense ? w.ORIENT_FORWARD : w.ORIENT_REVERSED;
-                const ceId = w.coedgeAdd(eid, ceOrient, 0, wasmFaceId);
+                const ceId = w.coedgeAdd(eid, ceOrient, predictedLoopId, wasmFaceId);
                 ceIds.push(ceId);
             }
 
@@ -370,17 +373,17 @@ function _storeGeometry(w, wasmMem, face) {
             const stagingPtr = w.geomStagingPtr() >>> 0;
             const stagingView = new Float64Array(wasmMem.buffer, stagingPtr,
                 nKnotsU + nKnotsV + nCtrl * 3 + nCtrl);
-            let si = 0;
-            for (let i = 0; i < nKnotsU; i++) stagingView[si++] = s.knotsU[i];
-            for (let i = 0; i < nKnotsV; i++) stagingView[si++] = s.knotsV[i];
+            let sIdx = 0;
+            for (let i = 0; i < nKnotsU; i++) stagingView[sIdx++] = s.knotsU[i];
+            for (let i = 0; i < nKnotsV; i++) stagingView[sIdx++] = s.knotsV[i];
             for (let i = 0; i < nCtrl; i++) {
                 const cp = s.controlPoints[i];
-                stagingView[si++] = cp.x;
-                stagingView[si++] = cp.y;
-                stagingView[si++] = cp.z;
+                stagingView[sIdx++] = cp.x;
+                stagingView[sIdx++] = cp.y;
+                stagingView[sIdx++] = cp.z;
             }
             for (let i = 0; i < nCtrl; i++) {
-                stagingView[si++] = s.weights ? s.weights[i] : 1.0;
+                stagingView[sIdx++] = s.weights ? s.weights[i] : 1.0;
             }
             const offset = w.nurbsSurfaceStoreFromStaging(
                 s.degreeU, s.degreeV, numU, numV, nKnotsU, nKnotsV,
