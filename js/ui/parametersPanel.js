@@ -150,6 +150,11 @@ export class ParametersPanel {
       if (this.onParameterChange) this.onParameterChange(feature.id, 'segments', parsed);
     });
     this.contentElement.appendChild(segmentsDiv);
+
+    const axisInfo = document.createElement('div');
+    axisInfo.className = 'parameter-info';
+    axisInfo.innerHTML = `<p><strong>Axis:</strong> ${describeRevolveAxis(feature)}</p>`;
+    this.contentElement.appendChild(axisInfo);
   }
 
   /**
@@ -239,4 +244,14 @@ export class ParametersPanel {
   clear() {
     this.showFeature(null);
   }
+}
+
+function describeRevolveAxis(feature) {
+  if (feature.axisSource === 'construction' && feature.axisSegmentId != null) {
+    return `Construction line #${feature.axisSegmentId}`;
+  }
+  if (feature.axisSource === 'manual') {
+    return 'Manual axis';
+  }
+  return 'Default axis';
 }

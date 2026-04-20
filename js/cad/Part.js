@@ -491,7 +491,7 @@ export class Part {
    * Revolve a sketch around an axis.
    * @param {string|SketchFeature} sketchOrId - Sketch feature or ID to revolve
    * @param {number} angle - The revolution angle in radians
-   * @param {Object} options - Additional options (operation, axis)
+    * @param {Object} options - Additional options (operation, axis, axisSegmentId)
    * @returns {RevolveFeature} The created revolve feature
    */
   revolve(sketchOrId, angle, options = {}) {
@@ -514,7 +514,20 @@ export class Part {
     } else {
       revolveFeature.operation = options.operation;
     }
-    if (options.axis) revolveFeature.setAxis(options.axis.origin, options.axis.direction);
+
+    if (options.axisSegmentId != null) {
+      const axisResolution = sketchFeature.resolveRevolveAxis(options.axisSegmentId);
+      revolveFeature.setAxisSegmentId(axisResolution.axisSegmentId);
+      revolveFeature.setAxis(axisResolution.axis.origin, axisResolution.axis.direction, 'construction');
+    } else if (options.axis) {
+      revolveFeature.setAxis(options.axis.origin, options.axis.direction, 'manual');
+    } else {
+      const axisResolution = sketchFeature.resolveRevolveAxis();
+      if (axisResolution.axis && axisResolution.axisSegmentId != null) {
+        revolveFeature.setAxisSegmentId(axisResolution.axisSegmentId);
+        revolveFeature.setAxis(axisResolution.axis.origin, axisResolution.axis.direction, 'construction');
+      }
+    }
     
     // Link the sketch as a child of the revolve feature and hide it
     revolveFeature.addChild(sketchId);

@@ -1,9 +1,13 @@
-// js/persist.js — LocalStorage persistence for project state
+// js/persist.js — Browser persistence for project state
 import { state } from './state.js';
 import { Scene } from './cad/index.js';
 import { info, warn, error } from './logger.js';
 
 const STORAGE_KEY = 'cad-modeller-project';
+const PROJECT_SCHEMA_VERSION = 4;
+const FINAL_CBREP_CONTAINER_VERSION = 1;
+const FINAL_CBREP_CONTAINER_KIND = 'final-cbrep-snapshot';
+const FINAL_CBREP_IDB_KEY = `${STORAGE_KEY}:final-cbrep`;
 const SAVE_DEBOUNCE_MS = 500;
 
 let _saveTimer = null;
@@ -13,6 +17,7 @@ let _renderer3d = null;
 let _getWorkspaceMode = null;
 let _getSessionState = null;
 let _getScenes = null;
+let _cbrepStoreFactory = null;
 
 /** Register the viewport instance for persistence. */
 export function setViewport(vp) { _viewport = vp; }
@@ -32,12 +37,155 @@ export function setSessionStateGetter(fn) { _getSessionState = fn; }
 /** Register a callback that returns named camera scenes. */
 export function setScenesGetter(fn) { _getScenes = fn; }
 
+/** Register a factory for the external CBREP payload store. */
+export function setCbrepPersistStoreFactory(factory) { _cbrepStoreFactory = factory; }
+
+async function _getCbrepStore() {
+  if (_cbrepStoreFactory) {
+    return _cbrepStoreFactory();
+  }
+  const { BrowserIdbCacheStore } = await import('./cache/index.js');
+  return new BrowserIdbCacheStore();
+}
+
+function _utf8Encode(text) {
+  if (typeof TextEncoder !== 'undefined') {
+    return new TextEncoder().encode(text);
+  }
+  if (typeof Buffer !== 'undefined') {
+    return Uint8Array.from(Buffer.from(text, 'utf8'));
+  }
+  throw new Error('No UTF-8 encoder available');
+}
+
+function _utf8Decode(buffer) {
+  const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+  if (typeof TextDecoder !== 'undefined') {
+    return new TextDecoder().decode(bytes);
+  }
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.from(bytes).toString('utf8');
+  }
+  throw new Error('No UTF-8 decoder available');
+}
+
+function _toArrayBuffer(bytes) {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+}
+
+function _makeFinalCbrepManifest(storage, hash = null) {
+  return {
+    version: FINAL_CBREP_CONTAINER_VERSION,
+    kind: FINAL_CBREP_CONTAINER_KIND,
+    storage,
+    key: storage === 'idb' ? FINAL_CBREP_IDB_KEY : null,
+    encoding: 'base64',
+    compression: 'none',
+    hash: hash || null,
+  };
+}
+
+async function _persistFinalCbrepPayload(payload, hash) {
+  if (!payload) {
+    return { payload: null, manifest: null };
+  }
+
+  if (_cbrepStoreFactory || typeof indexedDB !== 'undefined') {
+    try {
+      const store = await _getCbrepStore();
+      const container = {
+        version: FINAL_CBREP_CONTAINER_VERSION,
+        kind: FINAL_CBREP_CONTAINER_KIND,
+        encoding: 'base64',
+        compression: 'none',
+        hash: hash || null,
+        payload,
+        savedAt: Date.now(),
+      };
+      await store.put(FINAL_CBREP_IDB_KEY, _toArrayBuffer(_utf8Encode(JSON.stringify(container))));
+      return {
+        payload: null,
+        manifest: _makeFinalCbrepManifest('idb', hash),
+      };
+    } catch (err) {
+      warn('Failed to persist final CBREP to IndexedDB; falling back to localStorage', err?.message || String(err));
+    }
+  }
+
+  return {
+    payload,
+    manifest: _makeFinalCbrepManifest('inline', hash),
+  };
+}
+
+async function _loadFinalCbrepState(data) {
+  const inlinePayload = data.finalCbrepPayload || data.part?._finalCbrepPayload || null;
+  const manifest = data.finalCbrepContainer || (inlinePayload ? _makeFinalCbrepManifest('inline', data.finalCbrepHash || data.part?._finalCbrepHash || null) : null);
+  const hash = data.finalCbrepHash || manifest?.hash || data.part?._finalCbrepHash || null;
+
+  if (inlinePayload) {
+    return { payload: inlinePayload, hash, manifest };
+  }
+
+  if (!manifest || manifest.storage !== 'idb') {
+    return { payload: null, hash, manifest };
+  }
+
+  try {
+    const store = await _getCbrepStore();
+    const raw = await store.get(manifest.key || FINAL_CBREP_IDB_KEY);
+    if (!raw) {
+      return { payload: null, hash, manifest };
+    }
+
+    const container = JSON.parse(_utf8Decode(raw));
+    if (container.version !== FINAL_CBREP_CONTAINER_VERSION || container.kind !== FINAL_CBREP_CONTAINER_KIND) {
+      warn('Ignoring unsupported final CBREP container version from IndexedDB', `${container.kind || 'unknown'}@${container.version ?? 'unknown'}`);
+      return { payload: null, hash, manifest };
+    }
+    if (manifest.hash && container.hash && manifest.hash !== container.hash) {
+      warn('Ignoring mismatched final CBREP payload from IndexedDB', `${manifest.hash} !== ${container.hash}`);
+      return { payload: null, hash, manifest };
+    }
+
+    return {
+      payload: container.payload || null,
+      hash: container.hash || hash,
+      manifest,
+    };
+  } catch (err) {
+    warn('Failed to restore final CBREP from IndexedDB', err?.message || String(err));
+    return { payload: null, hash, manifest };
+  }
+}
+
+async function _deletePersistedFinalCbrep(manifest) {
+  if (!manifest || manifest.storage !== 'idb') {
+    return;
+  }
+  try {
+    const store = await _getCbrepStore();
+    await store.delete(manifest.key || FINAL_CBREP_IDB_KEY);
+  } catch {
+    // Best-effort cleanup only.
+  }
+}
+
+function _readStoredProjectRecord() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Serialize the full project (scene, layers, settings, part, orbit) to a plain object.
  */
 function projectToJSON() {
   const json = {
-    version: 3,
+    version: PROJECT_SCHEMA_VERSION,
     scene: state.scene.serialize(),
     layers: state.layers.map(l => ({ ...l })),
     activeLayer: state.activeLayer,
@@ -54,10 +202,6 @@ function projectToJSON() {
     const part = _partManager.getPart();
     if (part) {
       json.part = part.serialize();
-      if (json.part._finalCbrepPayload) {
-        json.finalCbrepPayload = json.part._finalCbrepPayload;
-        json.finalCbrepHash = json.part._finalCbrepHash || null;
-      }
     }
   }
 
@@ -87,7 +231,7 @@ function projectToJSON() {
 /**
  * Restore project state from a plain object.
  */
-function projectFromJSON(data) {
+async function projectFromJSON(data) {
   if (!data || data.version == null) return { ok: false, hasViewport: false };
 
   // Backward compatible: v2 projects lack part/orbit/workspaceMode fields,
@@ -125,6 +269,8 @@ function projectFromJSON(data) {
   state._undoStack = [];
   state._redoStack = [];
 
+  const finalCbrep = await _loadFinalCbrepState(data);
+
   return {
     ok: true,
     hasViewport,
@@ -133,17 +279,45 @@ function projectFromJSON(data) {
     scenes: Array.isArray(data.scenes) ? data.scenes : [],
     workspaceMode: data.workspaceMode || null,
     sessionState: data.sessionState || null,
-    finalCbrepPayload: data.finalCbrepPayload || null,
-    finalCbrepHash: data.finalCbrepHash || null,
+    finalCbrepPayload: finalCbrep.payload,
+    finalCbrepHash: finalCbrep.hash,
+    finalCbrepContainer: finalCbrep.manifest,
   };
 }
 
 /**
  * Save current project to localStorage.
  */
-export function saveProject() {
+export async function saveProject() {
   try {
+    const previous = _readStoredProjectRecord();
+    const previousManifest = previous?.finalCbrepContainer || null;
     const json = projectToJSON();
+    const payload = json.part?._finalCbrepPayload || null;
+    const hash = json.part?._finalCbrepHash || null;
+
+    if (json.part && json.part._finalCbrepPayload) {
+      delete json.part._finalCbrepPayload;
+    }
+
+    delete json.finalCbrepPayload;
+    delete json.finalCbrepHash;
+    delete json.finalCbrepContainer;
+
+    if (payload) {
+      const persisted = await _persistFinalCbrepPayload(payload, hash);
+      json.finalCbrepHash = persisted.manifest?.hash || hash || null;
+      json.finalCbrepContainer = persisted.manifest;
+      if (persisted.payload) {
+        json.finalCbrepPayload = persisted.payload;
+      }
+      if (previousManifest?.storage === 'idb' && persisted.manifest?.storage !== 'idb') {
+        await _deletePersistedFinalCbrep(previousManifest);
+      }
+    } else if (previousManifest) {
+      await _deletePersistedFinalCbrep(previousManifest);
+    }
+
     localStorage.setItem(STORAGE_KEY, JSON.stringify(json));
   } catch (err) {
     warn('Failed to save project to localStorage', err.message);
@@ -157,21 +331,21 @@ export function debouncedSave() {
   if (_saveTimer) clearTimeout(_saveTimer);
   _saveTimer = setTimeout(() => {
     _saveTimer = null;
-    saveProject();
+    void saveProject();
   }, SAVE_DEBOUNCE_MS);
 }
 
 /**
  * Load project from localStorage. Returns true if a project was restored.
  */
-export function loadProject() {
+export async function loadProject() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return false;
     const data = JSON.parse(raw);
-    const result = projectFromJSON(data);
+    const result = await projectFromJSON(data);
     if (result.ok) {
-      info('Project restored from localStorage', { entities: state.entities.length, layers: state.layers.length, hasViewport: result.hasViewport });
+      info('Project restored from browser storage', { entities: state.entities.length, layers: state.layers.length, hasViewport: result.hasViewport });
     }
     return result;
   } catch (err) {
@@ -184,6 +358,10 @@ export function loadProject() {
  * Clear saved project from localStorage.
  */
 export function clearSavedProject() {
+  const previous = _readStoredProjectRecord();
   localStorage.removeItem(STORAGE_KEY);
-  info('Saved project cleared from localStorage');
+  if (previous?.finalCbrepContainer) {
+    void _deletePersistedFinalCbrep(previous.finalCbrepContainer);
+  }
+  info('Saved project cleared from browser storage');
 }

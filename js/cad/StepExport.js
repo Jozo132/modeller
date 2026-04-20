@@ -464,6 +464,25 @@ function _writeBSplineSurface(writer, face) {
   const vMults = knotMultV.multiplicities.join(',');
   const vKnots = knotMultV.knots.map(k => _real(k)).join(',');
 
+  if (_hasNonUnitWeights(s.weights)) {
+    const weightRows = [];
+    for (let i = 0; i < s.numRowsU; i++) {
+      const row = [];
+      for (let j = 0; j < s.numColsV; j++) {
+        row.push(_real(s.weights[i * s.numColsV + j]));
+      }
+      weightRows.push(`(${row.join(',')})`);
+    }
+
+    writer.addEntity(
+      surfId,
+      `(B_SPLINE_SURFACE(${s.degreeU},${s.degreeV},(${cpGrid}),.UNSPECIFIED.,.F.,.F.,.F.) ` +
+      `B_SPLINE_SURFACE_WITH_KNOTS((${uMults}),(${vMults}),(${uKnots}),(${vKnots}),.UNSPECIFIED.) ` +
+      `RATIONAL_B_SPLINE_SURFACE((${weightRows.join(',')})) SURFACE())`,
+    );
+    return surfId;
+  }
+
   writer.addEntity(surfId,
     `B_SPLINE_SURFACE_WITH_KNOTS('',${s.degreeU},${s.degreeV},` +
     `(${cpGrid}),.UNSPECIFIED.,.F.,.F.,.F.,` +
@@ -512,6 +531,17 @@ function _writeBSplineCurve(writer, curve) {
   const knots = knotMult.knots.map(k => _real(k)).join(',');
 
   const curveId = writer.newId();
+  if (_hasNonUnitWeights(curve.weights)) {
+    const weights = curve.weights.map(weight => _real(weight)).join(',');
+    writer.addEntity(
+      curveId,
+      `(BOUNDED_CURVE() B_SPLINE_CURVE(${curve.degree},(${cpRefs}),.UNSPECIFIED.,.F.,.F.) ` +
+      `B_SPLINE_CURVE_WITH_KNOTS((${mults}),(${knots}),.UNSPECIFIED.) ` +
+      `RATIONAL_B_SPLINE_CURVE((${weights})) CURVE())`,
+    );
+    return curveId;
+  }
+
   writer.addEntity(curveId,
     `B_SPLINE_CURVE_WITH_KNOTS('',${curve.degree},(${cpRefs}),` +
     `.UNSPECIFIED.,.F.,.F.,(${mults}),(${knots}),.UNSPECIFIED.)`);
@@ -608,6 +638,11 @@ function _computeKnotMultiplicities(knots) {
   }
 
   return { knots: uniqueKnots, multiplicities };
+}
+
+function _hasNonUnitWeights(weights) {
+  if (!Array.isArray(weights) || weights.length === 0) return false;
+  return weights.some(weight => Math.abs((Number(weight) || 1) - 1) > 1e-12);
 }
 
 /**

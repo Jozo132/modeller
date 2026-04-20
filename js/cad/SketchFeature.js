@@ -55,6 +55,7 @@ export class SketchFeature extends Feature {
     
     // Handle circles as closed profiles (a circle is inherently a closed loop)
     for (const circle of this.sketch.circles) {
+      if (circle.construction || circle.visible === false) continue;
       const numPoints = 32;
       const points = [];
       for (let i = 0; i < numPoints; i++) {
@@ -136,10 +137,10 @@ export class SketchFeature extends Feature {
     // Each edge has p1 and p2 endpoints for tracing.
     // Exclude self-closing curves (already handled above).
     const traceableEdges = [
-      ...this.sketch.segments,
-      ...this.sketch.arcs.map(arc => _arcAsEdge(arc)),
-      ...this.sketch.splines.filter(spl => !visited.has(spl.id)),
-      ...this.sketch.beziers.filter(bez => !visited.has(bez.id)),
+      ...this.sketch.segments.filter(seg => !seg.construction && seg.visible !== false),
+      ...this.sketch.arcs.filter(arc => !arc.construction && arc.visible !== false).map(arc => _arcAsEdge(arc)),
+      ...this.sketch.splines.filter(spl => !spl.construction && spl.visible !== false && !visited.has(spl.id)),
+      ...this.sketch.beziers.filter(bez => !bez.construction && bez.visible !== false && !visited.has(bez.id)),
     ];
 
     // Build spatial adjacency map for fast lookups and angle-based junction handling
@@ -159,6 +160,14 @@ export class SketchFeature extends Feature {
     _classifyProfileNesting(profiles);
 
     return profiles;
+  }
+
+  getRevolveAxisCandidates() {
+    return getSketchRevolveAxisCandidates(this.sketch);
+  }
+
+  resolveRevolveAxis(axisSegmentId = null) {
+    return resolveSketchRevolveAxis(this.sketch, axisSegmentId);
   }
 
   /**
@@ -312,9 +321,79 @@ export class SketchFeature extends Feature {
   }
 }
 
+export function getSketchRevolveAxisCandidates(sketch) {
+  if (!sketch || !Array.isArray(sketch.segments)) {
+    return [];
+  }
+
+  const candidates = [];
+  for (const segment of sketch.segments) {
+    if (!segment || !segment.construction || segment.visible === false) continue;
+
+    const dx = segment.x2 - segment.x1;
+    const dy = segment.y2 - segment.y1;
+    if (Math.hypot(dx, dy) < SKETCH_AXIS_EPS) continue;
+
+    candidates.push({
+      segmentId: segment.id,
+      segment,
+      origin: { x: segment.x1, y: segment.y1 },
+      direction: { x: dx, y: dy },
+      constructionType: segment.constructionType || 'finite',
+    });
+  }
+
+  return candidates;
+}
+
+export function resolveSketchRevolveAxis(sketch, axisSegmentId = null) {
+  const candidates = getSketchRevolveAxisCandidates(sketch);
+
+  if (axisSegmentId != null) {
+    const matched = candidates.find(candidate => candidate.segmentId === axisSegmentId);
+    if (!matched) {
+      throw new Error('Selected revolve axis construction line is missing from the sketch');
+    }
+    return {
+      candidates,
+      candidateCount: candidates.length,
+      axisSegmentId: matched.segmentId,
+      axis: {
+        origin: { ...matched.origin },
+        direction: { ...matched.direction },
+      },
+      ambiguous: false,
+    };
+  }
+
+  if (candidates.length === 1) {
+    const matched = candidates[0];
+    return {
+      candidates,
+      candidateCount: 1,
+      axisSegmentId: matched.segmentId,
+      axis: {
+        origin: { ...matched.origin },
+        direction: { ...matched.direction },
+      },
+      ambiguous: false,
+    };
+  }
+
+  return {
+    candidates,
+    candidateCount: candidates.length,
+    axisSegmentId: null,
+    axis: null,
+    ambiguous: candidates.length > 1,
+  };
+}
+
 // -----------------------------------------------------------------------
 // Profile tracing helpers
 // -----------------------------------------------------------------------
+
+const SKETCH_AXIS_EPS = 1e-8;
 
 /**
  * Classify an array of closed profiles by nesting depth using even-odd rule.

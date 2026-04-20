@@ -124,11 +124,12 @@ export class PartManager {
    * Revolve the active sketch feature
    * @param {string} sketchFeatureId - ID of sketch feature to revolve
    * @param {number} angle - Revolution angle in radians
+   * @param {object} [options] - Revolve options (operation, axis, axisSegmentId)
    */
-  revolve(sketchFeatureId, angle = Math.PI * 2) {
+  revolve(sketchFeatureId, angle = Math.PI * 2, options = {}) {
     if (!this.part) return null;
 
-    const feature = this.part.revolve(sketchFeatureId, angle);
+    const feature = this.part.revolve(sketchFeatureId, angle, options);
     this.activeFeature = feature;
     this.notifyListeners();
     return feature;

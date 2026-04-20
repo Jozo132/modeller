@@ -49,12 +49,16 @@ function test(name, fn) {
 // Helpers
 // -----------------------------------------------------------------------
 
-function makeRectSketch(w = 10, h = 10) {
+function makeRectSketch(a = 10, b = 10, c = null, d = null) {
+  const x1 = c == null ? 0 : a;
+  const y1 = c == null ? 0 : b;
+  const x2 = c == null ? a : c;
+  const y2 = c == null ? b : d;
   const s = new Sketch();
-  s.addSegment(0, 0, w, 0);
-  s.addSegment(w, 0, w, h);
-  s.addSegment(w, h, 0, h);
-  s.addSegment(0, h, 0, 0);
+  s.addSegment(x1, y1, x2, y1);
+  s.addSegment(x2, y1, x2, y2);
+  s.addSegment(x2, y2, x1, y2);
+  s.addSegment(x1, y2, x1, y1);
   return s;
 }
 
@@ -80,6 +84,16 @@ function makeBoxPart(w = 10, h = 10, d = 10) {
   const sketch = makeRectSketch(w, h);
   const sf = part.addSketch(sketch, defaultPlane);
   part.extrude(sf.id, d);
+  return part;
+}
+
+function makeRevolvePart(angle = Math.PI * 2) {
+  resetFeatureIds();
+  resetTopoIds();
+  const part = new Part('TestRevolve');
+  const sketch = makeRectSketch(5, -5, 10, 5);
+  const sf = part.addSketch(sketch, defaultPlane);
+  part.revolve(sf.id, angle);
   return part;
 }
 
@@ -410,6 +424,55 @@ test('deriveEdgeAndVertexHashes handles body with no face hashes', () => {
   assert.strictEqual(edge.stableHash, null);
   assert.strictEqual(v1.stableHash, null);
   assert.strictEqual(v2.stableHash, null);
+});
+
+// -----------------------------------------------------------------------
+// 7) Revolve exact-body stable hashes
+// -----------------------------------------------------------------------
+
+group('7) Revolve exact-body stable hashes');
+
+test('full revolve assigns face, edge, and vertex stable hashes', () => {
+  const part = makeRevolvePart();
+  const body = getTopoBody(part);
+
+  assert.ok(body, 'TopoBody should exist');
+  assert.ok(body.faces().length > 0, 'Revolve should produce faces');
+  for (const face of body.faces()) {
+    assert.ok(face.stableHash, `Face ${face.id} should have stableHash`);
+  }
+  for (const edge of body.edges()) {
+    assert.ok(edge.stableHash, `Edge ${edge.id} should have stableHash`);
+  }
+  for (const vertex of body.vertices()) {
+    assert.ok(vertex.stableHash, `Vertex ${vertex.id} should have stableHash`);
+  }
+});
+
+test('partial revolve assigns stable hashes to side and cap faces', () => {
+  const part = makeRevolvePart(Math.PI);
+  const body = getTopoBody(part);
+  const hashes = body.faces().map((face) => face.stableHash);
+
+  const revolveFaces = hashes.filter((hash) => hash.includes('_Face_Revolve_'));
+  const capStartFaces = hashes.filter((hash) => hash.includes('_Face_CapStart_'));
+  const capEndFaces = hashes.filter((hash) => hash.includes('_Face_CapEnd_'));
+
+  assert.ok(revolveFaces.length > 0, 'Partial revolve should keep revolution face hashes');
+  assert.strictEqual(capStartFaces.length, 1, 'Partial revolve should have one start cap hash');
+  assert.strictEqual(capEndFaces.length, 1, 'Partial revolve should have one end cap hash');
+});
+
+test('revolve face hashes are deterministic across independent builds', () => {
+  const part1 = makeRevolvePart();
+  const part2 = makeRevolvePart();
+  const hashes1 = new Set(getTopoBody(part1).faces().map((face) => face.stableHash));
+  const hashes2 = new Set(getTopoBody(part2).faces().map((face) => face.stableHash));
+
+  assert.strictEqual(hashes1.size, hashes2.size);
+  for (const hash of hashes1) {
+    assert.ok(hashes2.has(hash), `Revolve hash "${hash}" missing from second build`);
+  }
 });
 
 // -----------------------------------------------------------------------

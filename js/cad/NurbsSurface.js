@@ -518,6 +518,94 @@ export class NurbsSurface {
   }
 
   /**
+   * Create an exact NURBS surface of revolution by rotating a cross-section
+   * NURBS curve around an axis.
+   *
+   * The result is the tensor-product of the source curve and a rational arc
+   * in the rotation direction. This supports arcs, circles, splines, and
+   * beziers without falling back to tessellated ruled quads.
+   *
+   * @param {NurbsCurve} crossSection
+   * @param {{x:number,y:number,z:number}} axisOrigin
+   * @param {{x:number,y:number,z:number}} axis
+   * @param {{x:number,y:number,z:number}} xAxis
+   * @param {{x:number,y:number,z:number}} yAxis
+   * @param {number} [startAngle=0]
+   * @param {number} [sweepAngle=2*Math.PI]
+   * @returns {NurbsSurface}
+   */
+  static createRevolvedSurface(crossSection, axisOrigin, axis, xAxis, yAxis, startAngle = 0, sweepAngle = 2 * Math.PI) {
+    const dot = (a, b) => a.x * b.x + a.y * b.y + a.z * b.z;
+    const scale = (v, s) => ({ x: v.x * s, y: v.y * s, z: v.z * s });
+    const add = (a, b) => ({ x: a.x + b.x, y: a.y + b.y, z: a.z + b.z });
+    const sub = (a, b) => ({ x: a.x - b.x, y: a.y - b.y, z: a.z - b.z });
+    const normalize = (v, fallback) => {
+      const len = Math.sqrt(dot(v, v));
+      if (len < 1e-14) return fallback;
+      return scale(v, 1 / len);
+    };
+    const cross = (a, b) => ({
+      x: a.y * b.z - a.z * b.y,
+      y: a.z * b.x - a.x * b.z,
+      z: a.x * b.y - a.y * b.x,
+    });
+
+    const axisDir = normalize(axis, { x: 0, y: 0, z: 1 });
+    const xDir = normalize(xAxis, { x: 1, y: 0, z: 0 });
+    const ySeed = yAxis || cross(axisDir, xDir);
+    const yDir = normalize(ySeed, cross(axisDir, xDir));
+    const arcCurve = NurbsCurve.createArc({ x: 0, y: 0, z: 0 }, 1, xDir, yDir, startAngle, sweepAngle);
+
+    const numRows = crossSection.controlPoints.length;
+    const numCols = arcCurve.controlPoints.length;
+    const controlPoints = [];
+    const weights = [];
+    const arcCoords = arcCurve.controlPoints.map((point) => ({
+      x: dot(point, xDir),
+      y: dot(point, yDir),
+    }));
+
+    for (let row = 0; row < numRows; row++) {
+      const cp = crossSection.controlPoints[row];
+      const curveWeight = crossSection.weights[row];
+      const rel = sub(cp, axisOrigin);
+      const height = dot(rel, axisDir);
+      const radialX = dot(rel, xDir);
+      const radialY = dot(rel, yDir);
+      const center = add(axisOrigin, scale(axisDir, height));
+
+      for (let col = 0; col < numCols; col++) {
+        const arcCoord = arcCoords[col];
+        controlPoints.push(add(
+          center,
+          add(
+            scale(xDir, radialX * arcCoord.x - radialY * arcCoord.y),
+            scale(yDir, radialX * arcCoord.y + radialY * arcCoord.x),
+          ),
+        ));
+        weights.push(curveWeight * arcCurve.weights[col]);
+      }
+    }
+
+    const surface = new NurbsSurface(
+      crossSection.degree,
+      arcCurve.degree,
+      numRows,
+      numCols,
+      controlPoints,
+      crossSection.knots,
+      arcCurve.knots,
+      weights,
+    );
+
+    if (Math.abs(Math.abs(sweepAngle) - Math.PI * 2) < 1e-10) {
+      surface._periodicHint = true;
+    }
+
+    return surface;
+  }
+
+  /**
    * Create a NURBS surface representing a fillet rolling-ball blend.
    *
    * The surface is defined by two rail curves (the trim lines on each face)

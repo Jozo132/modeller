@@ -8,6 +8,7 @@ import {
   clearSavedProject,
   loadProject,
   saveProject,
+  setCbrepPersistStoreFactory,
   setPartManagerForPersist,
 } from '../js/persist.js';
 import { formatTimingSuffix, startTiming } from './test-timing.js';
@@ -15,10 +16,10 @@ import { formatTimingSuffix, startTiming } from './test-timing.js';
 let passed = 0;
 let failed = 0;
 
-function test(name, fn) {
+async function test(name, fn) {
   const startedAt = startTiming();
   try {
-    fn();
+    await fn();
     console.log(`  ✓ ${name}${formatTimingSuffix(startedAt)}`);
     passed++;
   } catch (error) {
@@ -40,7 +41,7 @@ function makeBoxPart() {
   return part;
 }
 
-function withMockLocalStorage(fn) {
+async function withMockLocalStorage(fn) {
   const original = globalThis.localStorage;
   const storage = new Map();
   globalThis.localStorage = {
@@ -56,7 +57,7 @@ function withMockLocalStorage(fn) {
   };
 
   try {
-    fn();
+    return await fn(storage);
   } finally {
     if (original === undefined) {
       delete globalThis.localStorage;
@@ -68,7 +69,7 @@ function withMockLocalStorage(fn) {
 
 console.log('\n=== Incremental Tessellation ===\n');
 
-test('robust tessellation reuses cached face meshes for identical bodies', () => {
+await test('robust tessellation reuses cached face meshes for identical bodies', async () => {
   const part = makeBoxPart();
   const finalResult = part.getFinalGeometry();
   const body = finalResult.geometry.topoBody;
@@ -91,7 +92,7 @@ test('robust tessellation reuses cached face meshes for identical bodies', () =>
     'reused tessellation should keep the same triangle count');
 });
 
-test('BRep chamfer reports mixed dirty and reused topology after a local edit', () => {
+await test('BRep chamfer reports mixed dirty and reused topology after a local edit', async () => {
   const part = makeBoxPart();
   const finalResult = part.getFinalGeometry();
   const geometry = finalResult.geometry;
@@ -117,8 +118,8 @@ test('BRep chamfer reports mixed dirty and reused topology after a local edit', 
 
 console.log('\n=== Browser Persistence Cache Snapshot ===\n');
 
-test('localStorage persistence carries the top-level exact-body snapshot', () => {
-  withMockLocalStorage(() => {
+await test('browser persistence falls back to inline exact snapshot without external storage', async () => {
+  await withMockLocalStorage(async () => {
     setPartManagerForPersist({
       getPart() {
         return {
@@ -136,14 +137,66 @@ test('localStorage persistence carries the top-level exact-body snapshot', () =>
     });
 
     try {
-      saveProject();
-      const loaded = loadProject();
+      setCbrepPersistStoreFactory(null);
+      await saveProject();
+      const loaded = await loadProject();
 
       assert.ok(loaded && loaded.ok, 'expected loadProject to restore the saved payload');
       assert.strictEqual(loaded.finalCbrepPayload, 'AQID');
       assert.strictEqual(loaded.finalCbrepHash, 'deadbeefcafebabe');
     } finally {
       clearSavedProject();
+      setCbrepPersistStoreFactory(null);
+      setPartManagerForPersist(null);
+    }
+  });
+});
+
+await test('browser persistence stores final exact snapshot behind an external manifest when available', async () => {
+  await withMockLocalStorage(async () => {
+    const externalStore = new Map();
+    setCbrepPersistStoreFactory(() => ({
+      async get(key) {
+        return externalStore.has(key) ? externalStore.get(key) : null;
+      },
+      async put(key, value) {
+        externalStore.set(key, value);
+      },
+      async delete(key) {
+        externalStore.delete(key);
+        return true;
+      },
+    }));
+    setPartManagerForPersist({
+      getPart() {
+        return {
+          serialize() {
+            return {
+              type: 'Part',
+              name: 'Persisted',
+              featureTree: { features: [] },
+              _finalCbrepPayload: 'AQID',
+              _finalCbrepHash: 'deadbeefcafebabe',
+            };
+          },
+        };
+      },
+    });
+
+    try {
+      await saveProject();
+      const raw = JSON.parse(localStorage.getItem('cad-modeller-project'));
+      const loaded = await loadProject();
+
+      assert.ok(raw.finalCbrepContainer, 'expected a final CBREP manifest in localStorage');
+      assert.strictEqual(raw.finalCbrepContainer.storage, 'idb');
+      assert.ok(!raw.finalCbrepPayload, 'expected heavy final CBREP payload to stay out of localStorage');
+      assert.ok(!raw.part._finalCbrepPayload, 'expected part JSON to omit the duplicated heavy payload');
+      assert.strictEqual(loaded.finalCbrepPayload, 'AQID');
+      assert.strictEqual(loaded.finalCbrepHash, 'deadbeefcafebabe');
+    } finally {
+      clearSavedProject();
+      setCbrepPersistStoreFactory(null);
       setPartManagerForPersist(null);
     }
   });

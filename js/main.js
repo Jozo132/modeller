@@ -246,54 +246,63 @@ class App {
 
     this._setStartupLoading(true, 'Loading renderer and project state...', 20);
 
-    const loaded = loadProject();
-    if (loaded && loaded.ok) {
-      this._setStartupLoading(true, 'Restoring saved project...', 45);
-      this._rebuildLayersPanel();
-      this._rebuildLeftPanel();
-      if (!loaded.hasViewport && state.entities.length > 0) {
-        this.viewport.fitEntities(state.entities);
-      }
+    Promise.resolve(loadProject())
+      .then((loaded) => {
+        if (loaded && loaded.ok) {
+          this._setStartupLoading(true, 'Restoring saved project...', 45);
+          this._rebuildLayersPanel();
+          this._rebuildLeftPanel();
+          if (!loaded.hasViewport && state.entities.length > 0) {
+            this.viewport.fitEntities(state.entities);
+          }
 
-      // Restore Part state if saved
-      if (loaded.part && loaded.workspaceMode === 'part') {
-        this._partManager.deserialize(loaded.part, {
-          finalCbrepPayload: loaded.finalCbrepPayload,
-          finalCbrepHash: loaded.finalCbrepHash,
-        });
-        this._enterWorkspace('part');
-        if (loaded.sessionState) {
-          this._restoreSessionState(loaded.sessionState, loaded.orbit);
+          // Restore Part state if saved
+          if (loaded.part && loaded.workspaceMode === 'part') {
+            this._partManager.deserialize(loaded.part, {
+              finalCbrepPayload: loaded.finalCbrepPayload,
+              finalCbrepHash: loaded.finalCbrepHash,
+            });
+            this._enterWorkspace('part');
+            if (loaded.sessionState) {
+              this._restoreSessionState(loaded.sessionState, loaded.orbit);
+            }
+            // Restore orbit camera (skip if sketch mode — normal view was set by restore)
+            if (loaded.orbit && this._renderer3d && !this._sketchingOnPlane) {
+              this._renderer3d.setOrbitState(loaded.orbit);
+            }
+            // Restore named scenes
+            if (loaded.scenes) this._scenes = loaded.scenes;
+            this._setStartupLoading(true, 'Preparing part workspace...', 72);
+            const readyPromise = this._renderer3d && this._renderer3d._loadPromise
+              ? this._renderer3d._loadPromise
+              : Promise.resolve();
+            readyPromise.then(() => {
+              this._update3DView();
+              this._updateNodeTree();
+              this._scheduleRender();
+              this._setStartupLoading(true, 'Workspace restored.', 100);
+              requestAnimationFrame(() => this._setStartupLoading(false));
+              info('App initialization completed (restored Part workspace)');
+            });
+            return;
+          }
         }
-        // Restore orbit camera (skip if sketch mode — normal view was set by restore)
-        if (loaded.orbit && this._renderer3d && !this._sketchingOnPlane) {
-          this._renderer3d.setOrbitState(loaded.orbit);
-        }
-        // Restore named scenes
-        if (loaded.scenes) this._scenes = loaded.scenes;
-        this._setStartupLoading(true, 'Preparing part workspace...', 72);
-        const readyPromise = this._renderer3d && this._renderer3d._loadPromise
-          ? this._renderer3d._loadPromise
-          : Promise.resolve();
-        readyPromise.then(() => {
-          this._update3DView();
-          this._updateNodeTree();
-          this._scheduleRender();
-          this._setStartupLoading(true, 'Workspace restored.', 100);
-          requestAnimationFrame(() => this._setStartupLoading(false));
-          info('App initialization completed (restored Part workspace)');
-        });
-        return;
-      }
-    }
 
-    // Show quick-start page on startup
-    this._setStartupLoading(false);
-    this._showQuickStart();
+        // Show quick-start page on startup
+        this._setStartupLoading(false);
+        this._showQuickStart();
 
-    // Initial render
-    this._scheduleRender();
-    info('App initialization completed');
+        // Initial render
+        this._scheduleRender();
+        info('App initialization completed');
+      })
+      .catch((restoreError) => {
+        error('Failed to restore saved project during startup', restoreError);
+        this._setStartupLoading(false);
+        this._showQuickStart();
+        this._scheduleRender();
+        info('App initialization completed');
+      });
   }
 
   // --- Rendering ---
@@ -2809,15 +2818,18 @@ class App {
   }
 
   _executeRevolve(angleDeg) {
-    if (!this._lastSketchFeatureId) return;
     const radians = (angleDeg * Math.PI) / 180;
-    const feature = this._partManager.revolve(this._lastSketchFeatureId, radians);
+    const feature = this._createRevolveFeature(radians);
+    if (!feature) return;
     this._deselectAll();
     if (this._featurePanel) this._featurePanel.update();
     this._updateNodeTree();
     this._update3DView();
     this._updateOperationButtons();
     this._scheduleRender();
+    if (feature.error) {
+      this.setStatus(`Revolve failed: ${feature.error}`);
+    }
   }
 
   /**
@@ -2863,6 +2875,16 @@ class App {
     this._update3DView();
     this._updateOperationButtons();
     this._scheduleRender();
+  }
+
+  _describeRevolveAxis(feature) {
+    if (feature.axisSource === 'construction' && feature.axisSegmentId != null) {
+      return `Construction line #${feature.axisSegmentId}`;
+    }
+    if (feature.axisSource === 'manual') {
+      return 'Manual axis';
+    }
+    return 'Default axis';
   }
 
   /** Start sketch on face using an explicit plane definition (for command replay). */
@@ -3196,6 +3218,10 @@ class App {
         this._partManager.modifyFeature(feature.id, (f) => { f.segments = parsed; });
         if (this._parametersPanel && this._parametersPanel.onParameterChange) this._parametersPanel.onParameterChange(feature.id, 'segments', parsed);
       }));
+      const axisRow = document.createElement('div');
+      axisRow.className = 'parameter-row';
+      axisRow.innerHTML = `<label class="parameter-label">Axis</label><span class="parameter-value">${this._describeRevolveAxis(feature)}</span>`;
+      container.appendChild(axisRow);
     } else if (feature.type === 'sketch') {
       const info = document.createElement('div');
       info.className = 'parameter-info';
@@ -5253,17 +5279,95 @@ class App {
     info(`Created extrude feature: ${feature.id}`);
   }
 
-  _revolveSketch(angle) {
+  _getRevolveSketchFeature() {
     if (!this._lastSketchFeatureId) {
-      this.setStatus('Add a sketch to the part first');
-      return;
+      return null;
     }
 
-    const feature = this._partManager.revolve(this._lastSketchFeatureId, angle);
+    const part = this._partManager.getPart();
+    if (!part) {
+      return null;
+    }
+
+    const sketchFeature = part.getFeature(this._lastSketchFeatureId);
+    return sketchFeature && sketchFeature.type === 'sketch' ? sketchFeature : null;
+  }
+
+  _getSelectedRevolveAxisCandidates(sketchFeature) {
+    if (!sketchFeature || !this._sketchingOnPlane || this._editingSketchFeatureId !== sketchFeature.id) {
+      return [];
+    }
+
+    const selectedIds = new Set(
+      state.selectedEntities
+        .filter(entity => entity && entity.type === 'segment' && entity.construction)
+        .map(entity => entity.id)
+    );
+
+    if (selectedIds.size === 0) {
+      return [];
+    }
+
+    return sketchFeature.getRevolveAxisCandidates().filter(candidate => selectedIds.has(candidate.segmentId));
+  }
+
+  _resolveRevolveOptions(sketchFeature) {
+    const candidates = sketchFeature.getRevolveAxisCandidates();
+    const selectedCandidates = this._getSelectedRevolveAxisCandidates(sketchFeature);
+
+    if (selectedCandidates.length > 1) {
+      return { error: 'Select exactly one construction line to use as the revolve axis.' };
+    }
+
+    if (selectedCandidates.length === 1) {
+      return { axisSegmentId: selectedCandidates[0].segmentId };
+    }
+
+    if (candidates.length === 1) {
+      return { axisSegmentId: candidates[0].segmentId };
+    }
+
+    if (candidates.length > 1) {
+      if (this._sketchingOnPlane && this._editingSketchFeatureId === sketchFeature.id) {
+        return { error: 'Select one construction line in the sketch to use as the revolve axis, then revolve again.' };
+      }
+      return { error: 'This sketch has multiple construction lines. Edit the sketch and select one construction line to use as the revolve axis.' };
+    }
+
+    return {};
+  }
+
+  _createRevolveFeature(angle) {
+    const sketchFeature = this._getRevolveSketchFeature();
+    if (!sketchFeature) {
+      this.setStatus('Add a sketch to the part first');
+      return null;
+    }
+
+    const revolveOptions = this._resolveRevolveOptions(sketchFeature);
+    if (revolveOptions.error) {
+      this.setStatus(revolveOptions.error);
+      return null;
+    }
+
+    return this._partManager.revolve(sketchFeature.id, angle, revolveOptions);
+  }
+
+  _revolveSketch(angle) {
+    const feature = this._createRevolveFeature(angle);
+    if (!feature) {
+      return;
+    }
     
     this._featurePanel.update();
     this._updateNodeTree();
     this._update3DView();
+
+    if (feature.error) {
+      this.setStatus(`Revolve failed: ${feature.error}`);
+      warn('Revolve feature failed', feature.error);
+      return;
+    }
     
     const degrees = (angle * 180 / Math.PI).toFixed(1);
     this.setStatus(`Revolved sketch: ${degrees}°`);
