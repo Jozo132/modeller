@@ -17,6 +17,7 @@ import { ChamferFeature } from './ChamferFeature.js';
 import { FilletFeature } from './FilletFeature.js';
 import { StepImportFeature } from './StepImportFeature.js';
 import { TessellationConfig, globalTessConfig } from './TessellationConfig.js';
+import { arrayBufferToBase64, base64ToArrayBuffer } from './CbrepEncoding.js';
 import { isLegacyEdgeKey, legacyEdgeKeyToStable } from './history/StableEntityKey.js';
 
 function parseFeatureIdNumber(featureId) {
@@ -97,6 +98,40 @@ function normalizeFeatureTreeData(featureTreeData) {
   };
 }
 
+function findFinalSolidFeature(featureTree) {
+  if (!featureTree || !Array.isArray(featureTree.features)) return null;
+
+  for (let index = featureTree.features.length - 1; index >= 0; index--) {
+    const feature = featureTree.features[index];
+    const result = feature && featureTree.results ? featureTree.results[feature.id] : null;
+    if (!feature || feature.suppressed || !result || result.type !== 'solid') continue;
+    return feature;
+  }
+
+  return null;
+}
+
+function restoreFinalCbrepPayload(part, payload, irHash) {
+  if (!part?.featureTree || !payload) return false;
+
+  let cbrepBuffer;
+  try {
+    cbrepBuffer = base64ToArrayBuffer(payload);
+  } catch {
+    return false;
+  }
+
+  const finalFeature = findFinalSolidFeature(part.featureTree);
+  if (!finalFeature) return false;
+
+  if (irHash && typeof finalFeature._applyIrCachePayload === 'function') {
+    finalFeature._applyIrCachePayload(irHash, cbrepBuffer);
+    return true;
+  }
+
+  return part.featureTree.attachCbrep(finalFeature.id, cbrepBuffer, irHash || null);
+}
+
 /**
  * Part represents a 3D solid part built from 2D sketches and 3D operations.
  * Uses a parametric feature tree where modifying a feature recalculates all dependent features.
@@ -138,6 +173,17 @@ export class Part {
 
     // Global tessellation quality config — all features inherit from this
     this.tessellationConfig = new TessellationConfig();
+  }
+
+  /**
+   * Attach the WASM handle/residency subsystem to this part's feature tree.
+   * @param {import('./WasmBrepHandleRegistry.js').WasmBrepHandleRegistry|null} handleRegistry
+   * @param {import('./HandleResidencyManager.js').HandleResidencyManager|null} residencyManager
+   */
+  setWasmHandleSubsystem(handleRegistry, residencyManager = null) {
+    if (!this.featureTree) return;
+    this.featureTree.setHandleRegistry(handleRegistry ?? null);
+    this.featureTree.setResidencyManager(residencyManager ?? null);
   }
   
   // -----------------------------------------------------------------------
@@ -653,7 +699,7 @@ export class Part {
   // -----------------------------------------------------------------------
 
   serialize() {
-    return {
+    const serialized = {
       type: 'Part',
       name: this.name,
       description: this.description,
@@ -668,9 +714,19 @@ export class Part {
       centerOfMass: this.centerOfMass,
       tessellationConfig: this.tessellationConfig.serialize(),
     };
+
+    const finalResult = this.featureTree?.getFinalResult?.();
+    if (finalResult?.type === 'solid' && finalResult.cbrepBuffer) {
+      serialized._finalCbrepPayload = arrayBufferToBase64(finalResult.cbrepBuffer);
+      if (finalResult.irHash) {
+        serialized._finalCbrepHash = finalResult.irHash;
+      }
+    }
+
+    return serialized;
   }
 
-  static deserialize(data) {
+  static deserialize(data, options = {}) {
     const part = new Part();
     if (!data) return part;
 
@@ -705,6 +761,9 @@ export class Part {
             console.warn(`Unknown feature type: ${featureData.type}`);
             return null;
         }
+      }, {
+        handleRegistry: options.handleRegistry ?? null,
+        residencyManager: options.residencyManager ?? null,
       });
     }
     
@@ -733,6 +792,12 @@ export class Part {
     part.tessellationConfig = TessellationConfig.deserialize(data.tessellationConfig);
     // Sync the global singleton so all callers see the deserialized values
     Object.assign(globalTessConfig, part.tessellationConfig);
+
+    part.setWasmHandleSubsystem(options.handleRegistry ?? null, options.residencyManager ?? null);
+
+    const finalCbrepPayload = options.finalCbrepPayload ?? data._finalCbrepPayload ?? null;
+    const finalCbrepHash = options.finalCbrepHash ?? data._finalCbrepHash ?? null;
+    restoreFinalCbrepPayload(part, finalCbrepPayload, finalCbrepHash);
 
     return part;
   }

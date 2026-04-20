@@ -234,7 +234,7 @@ function _validateCMOD(data) {
  * Restore project state from a .cmod object.
  * Returns structured result so the caller can finish restoring 3D state.
  * @param {Object} data - Parsed .cmod JSON.
- * @returns {{ ok: boolean, error?: string, hasViewport: boolean, part?: Object, orbit?: Object, workspaceMode?: string, sessionState?: Object, metadata?: Object }}
+ * @returns {{ ok: boolean, error?: string, hasViewport: boolean, part?: Object, orbit?: Object, workspaceMode?: string, sessionState?: Object, metadata?: Object, finalCbrepPayload?: string|null, finalCbrepHash?: string|null }}
  */
 export function projectFromCMOD(data) {
   const check = _validateCMOD(data);
@@ -282,6 +282,8 @@ export function projectFromCMOD(data) {
     workspaceMode: data.workspaceMode || null,
     sessionState: data.sessionState || null,
     metadata: data.metadata || null,
+    finalCbrepPayload: data._cbrepPayload || null,
+    finalCbrepHash: data._cbrepHash || null,
   };
 }
 

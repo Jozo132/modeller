@@ -649,18 +649,66 @@ console.log('\n=== STEP Import — Serialization Tests ===\n');
 test('StepImportFeature: serialize round-trip preserves data', () => {
   resetFeatureIds();
   const feature = new StepImportFeature('Test Import', stepData, { curveSegments: 24 });
+  feature._applyIrCachePayload('deadbeefcafebabe', new Uint8Array([1, 2, 3, 4]).buffer);
   const serialized = feature.serialize();
 
   assert.strictEqual(serialized.type, 'step-import');
   assert.strictEqual(serialized.stepData, stepData);
   assert.strictEqual(serialized.curveSegments, 24);
   assert.strictEqual(serialized.name, 'Test Import');
+  assert.strictEqual(serialized.irHash, 'deadbeefcafebabe');
+  assert.ok(serialized.cbrepPayload, 'Serialized feature should include cached CBREP payload');
 
   const restored = StepImportFeature.deserialize(serialized);
   assert.strictEqual(restored.type, 'step-import');
   assert.strictEqual(restored.stepData, stepData);
   assert.strictEqual(restored.curveSegments, 24);
   assert.strictEqual(restored.name, 'Test Import');
+  assert.strictEqual(restored._irHash, 'deadbeefcafebabe');
+  assert.deepStrictEqual(Array.from(new Uint8Array(restored._irBytes)), [1, 2, 3, 4]);
+});
+
+test('StepImportFeature: restored cached IR skips the first shadow write', () => {
+  resetFeatureIds();
+  const feature = new StepImportFeature('Test Import', stepData, { curveSegments: 24 });
+  const originalShadowWrite = feature._shadowWriteIR;
+
+  feature._applyIrCachePayload('deadbeefcafebabe', new Uint8Array([5, 6, 7]).buffer);
+
+  let shadowWriteCalls = 0;
+  feature._shadowWriteIR = () => {
+    shadowWriteCalls++;
+  };
+
+  try {
+    setFlag('CAD_USE_IR_CACHE', true);
+    const result = feature.execute({ tree: { attachCbrep() { return true; } } });
+    assert.strictEqual(shadowWriteCalls, 0, 'Restored cached IR should suppress the first shadow write');
+    assert.strictEqual(feature._shadowWriteBody, result.body, 'Restored cache should bind to the first executed body');
+  } finally {
+    feature._shadowWriteIR = originalShadowWrite;
+    setFlag('CAD_USE_IR_CACHE', false);
+  }
+});
+
+test('Part: deserialize restores cached final CBREP payload', () => {
+  resetFeatureIds();
+  const part = new Part('Test Part');
+  const feature = part.importSTEP(stepData);
+  feature._applyIrCachePayload('deadbeefcafebabe', new Uint8Array([9, 8, 7, 6]).buffer);
+
+  const serialized = part.serialize();
+  assert.ok(serialized._finalCbrepPayload, 'Serialized part should carry the final cached CBREP payload');
+
+  resetFeatureIds();
+  const restored = Part.deserialize(serialized);
+  const restoredFeature = restored.getFeatures()[0];
+  const geom = restored.getFinalGeometry();
+
+  assert.strictEqual(restoredFeature._irHash, 'deadbeefcafebabe');
+  assert.deepStrictEqual(Array.from(new Uint8Array(restoredFeature._irBytes)), [9, 8, 7, 6]);
+  assert.strictEqual(geom.irHash, 'deadbeefcafebabe');
+  assert.deepStrictEqual(Array.from(new Uint8Array(geom.cbrepBuffer)), [9, 8, 7, 6]);
 });
 
 test('Part: deserialize restores step-import features', () => {

@@ -7,7 +7,7 @@ import assert from 'assert';
 import fs from 'fs';
 import { Part } from '../js/cad/Part.js';
 import { Sketch } from '../js/cad/Sketch.js';
-import { buildCMOD, parseCMOD } from '../js/cmod.js';
+import { buildCMOD, parseCMOD, projectFromCMOD } from '../js/cmod.js';
 import {
   calculateMeshVolume, calculateBoundingBox, calculateSurfaceArea,
   detectDisconnectedBodies, calculateWallThickness, countInvertedFaces, computeFeatureEdges,
@@ -363,6 +363,17 @@ console.log('--- Test 2: JSON round-trip ---');
     assert.strictEqual(parsed.data.metadata.featureCount, 2);
     assertApprox(parsed.data.metadata.volume, 24000, 1, 'volume');
     assert.strictEqual(parsed.data.metadata.invertedFaceCount, 0);
+  });
+
+  test('projectFromCMOD exposes embedded final CBREP payload', () => {
+    parsed.data._cbrepPayload = 'AQID';
+    parsed.data._cbrepHash = 'deadbeefcafebabe';
+
+    const restored = projectFromCMOD(parsed.data);
+
+    assert.strictEqual(restored.ok, true);
+    assert.strictEqual(restored.finalCbrepPayload, 'AQID');
+    assert.strictEqual(restored.finalCbrepHash, 'deadbeefcafebabe');
   });
 }
 

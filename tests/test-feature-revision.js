@@ -360,7 +360,10 @@ console.log('\n=== Part lifecycle wiring ===');
 
   try {
     pm.setWasmHandleSubsystem(reg, residency);
-    pm.deserialize({ featureTree: { features: [] } });
+    pm.deserialize({ featureTree: { features: [] } }, {
+      finalCbrepPayload: 'AQID',
+      finalCbrepHash: 'deadbeefcafebabe',
+    });
   } finally {
     Part.deserialize = originalDeserialize;
   }
@@ -369,6 +372,10 @@ console.log('\n=== Part lifecycle wiring ===');
     'PartManager.deserialize passes handle registry into Part.deserialize');
   assert(seenOptions && seenOptions.residencyManager === residency,
     'PartManager.deserialize passes residency manager into Part.deserialize');
+  assert(seenOptions && seenOptions.finalCbrepPayload === 'AQID',
+    'PartManager.deserialize passes cached CBREP payload into Part.deserialize');
+  assert(seenOptions && seenOptions.finalCbrepHash === 'deadbeefcafebabe',
+    'PartManager.deserialize passes cached CBREP hash into Part.deserialize');
   assert(wiredHandle === reg, 'deserialized part is rewired with handle registry');
   assert(wiredResidency === residency, 'deserialized part is rewired with residency manager');
   assert(reg.resetCalls === 1, 'deserialize resets shared topology before loading restored part');

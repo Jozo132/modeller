@@ -257,7 +257,10 @@ class App {
 
       // Restore Part state if saved
       if (loaded.part && loaded.workspaceMode === 'part') {
-        this._partManager.deserialize(loaded.part);
+        this._partManager.deserialize(loaded.part, {
+          finalCbrepPayload: loaded.finalCbrepPayload,
+          finalCbrepHash: loaded.finalCbrepHash,
+        });
         this._enterWorkspace('part');
         if (loaded.sessionState) {
           this._restoreSessionState(loaded.sessionState, loaded.orbit);
@@ -2916,13 +2919,10 @@ class App {
       const residencyMgr = new HandleResidencyManager(registry);
       this._wasmResidencyMgr = residencyMgr;
 
-      // Wire into all existing PartManagers/FeatureTrees
+      // Make the handle subsystem part of the PartManager lifecycle so it
+      // survives new part creation, deserialize, and history restore.
       if (this._partManager) {
-        const part = this._partManager.getActivePart?.();
-        if (part?.featureTree) {
-          part.featureTree.setHandleRegistry(registry);
-          part.featureTree.setResidencyManager(residencyMgr);
-        }
+        this._partManager.setWasmHandleSubsystem(registry, residencyMgr);
       }
 
       // Initialize GPU tessellation pipeline if SceneRenderer is available
@@ -5772,7 +5772,10 @@ class App {
 
     // Restore part
     if (result.part) {
-      this._partManager.deserialize(result.part);
+      this._partManager.deserialize(result.part, {
+        finalCbrepPayload: result.finalCbrepPayload,
+        finalCbrepHash: result.finalCbrepHash,
+      });
       if (!this._workspaceMode || this._workspaceMode !== 'part') {
         this._enterWorkspace('part');
       }
@@ -5837,7 +5840,10 @@ class App {
       if (!result.ok) { this.setStatus(result.error || 'Failed to load example'); return; }
 
       if (result.part) {
-        this._partManager.deserialize(result.part);
+        this._partManager.deserialize(result.part, {
+          finalCbrepPayload: result.finalCbrepPayload,
+          finalCbrepHash: result.finalCbrepHash,
+        });
         if (this._workspaceMode !== 'part') this._enterWorkspace('part');
         if (result.sessionState) this._restoreSessionState(result.sessionState, result.orbit);
       }
@@ -10080,7 +10086,10 @@ class App {
 
       // Apply the loaded project (mirror _openCMODProject flow)
       if (result.part) {
-        this._partManager.deserialize(result.part);
+        this._partManager.deserialize(result.part, {
+          finalCbrepPayload: result.finalCbrepPayload,
+          finalCbrepHash: result.finalCbrepHash,
+        });
         if (!this._workspaceMode || this._workspaceMode !== 'part') {
           this._enterWorkspace('part');
         }

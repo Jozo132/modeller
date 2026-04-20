@@ -12,6 +12,7 @@ import { computeFeatureEdges } from './EdgeAnalysis.js';
 import { getFlag } from '../featureFlags.js';
 import { telemetry } from '../telemetry.js';
 import { globalTessConfig } from './TessellationConfig.js';
+import { arrayBufferToBase64, base64ToArrayBuffer } from './CbrepEncoding.js';
 
 const _now = typeof performance !== 'undefined' && performance.now
   ? () => performance.now()
@@ -68,6 +69,9 @@ export class StepImportFeature extends Feature {
 
     /** Body instance currently represented by the last successful/pending IR write */
     this._shadowWriteBody = null;
+
+    /** Most recent execution tree, used to attach late CBREP payloads */
+    this._lastExecutionTree = null;
   }
 
   /**
@@ -83,6 +87,8 @@ export class StepImportFeature extends Feature {
     if (!this.stepData) {
       throw new Error('No STEP data provided');
     }
+
+    this._lastExecutionTree = _context?.tree || null;
 
     const executeStart = _now();
     let cacheHit = true;
@@ -122,6 +128,10 @@ export class StepImportFeature extends Feature {
     if (body) {
       for (const face of body.faces()) {
         face.shared = { sourceFeatureId: this.id };
+      }
+
+      if (this._irBytes && this._irHash && !this._shadowWriteBody) {
+        this._shadowWriteBody = body;
       }
 
       // Shadow-write: canonicalize and cache the IR when flag is enabled.
@@ -165,8 +175,23 @@ export class StepImportFeature extends Feature {
       volume: this._cachedMesh.volume,
       boundingBox: this._cachedMesh.boundingBox,
       irHash: this._irHash || null,
+      cbrepBuffer: this._irBytes || null,
       timings,
     };
+  }
+
+  _applyIrCachePayload(hash, buf) {
+    this._irHash = hash;
+    this._irBytes = buf;
+
+    if (this.result && this.result.type === 'solid') {
+      this.result.irHash = hash;
+      this.result.cbrepBuffer = buf;
+    }
+
+    if (this._lastExecutionTree && typeof this._lastExecutionTree.attachCbrep === 'function') {
+      this._lastExecutionTree.attachCbrep(this.id, buf, hash);
+    }
   }
 
   /**
@@ -200,13 +225,7 @@ export class StepImportFeature extends Feature {
       const hash = _measureSync(timings, 'hashMs', 'step:import:ir:hash', () =>
         hashCbrep(buf),
       );
-      this._irHash = hash;
-      this._irBytes = buf;
-
-      // Propagate irHash to the cached result if one exists
-      if (this.result && this.result.type === 'solid') {
-        this.result.irHash = hash;
-      }
+      this._applyIrCachePayload(hash, buf);
 
       const mode = getFlag('CAD_IR_CACHE_MODE');
       if (mode === 'fs') {
@@ -286,11 +305,18 @@ export class StepImportFeature extends Feature {
   // -------------------------------------------------------------------
 
   serialize() {
-    return {
+    const serialized = {
       ...super.serialize(),
       stepData: this.stepData,
       curveSegments: this.curveSegments,
+      irHash: this._irHash || null,
     };
+
+    if (this._irBytes) {
+      serialized.cbrepPayload = arrayBufferToBase64(this._irBytes);
+    }
+
+    return serialized;
   }
 
   static deserialize(data) {
@@ -304,6 +330,14 @@ export class StepImportFeature extends Feature {
     // Restore STEP-specific properties
     feature.stepData = data.stepData || '';
     feature.curveSegments = data.curveSegments ?? 64;
+    feature._irHash = data.irHash || null;
+    if (data.cbrepPayload) {
+      try {
+        feature._irBytes = base64ToArrayBuffer(data.cbrepPayload);
+      } catch {
+        feature._irBytes = null;
+      }
+    }
 
     return feature;
   }

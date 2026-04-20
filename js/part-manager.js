@@ -12,6 +12,8 @@ export class PartManager {
     this.part = null;
     this.activeFeature = null;
     this.listeners = [];
+    this._handleRegistry = null;
+    this._residencyManager = null;
   }
 
   /**
@@ -19,7 +21,9 @@ export class PartManager {
    * @param {string} name - Part name
    */
   createPart(name = 'Part1') {
+    this._resetWasmSubsystemState();
     this.part = new Part(name);
+    this._wirePart(this.part);
     this.activeFeature = null;
     this.notifyListeners();
     return this.part;
@@ -30,6 +34,41 @@ export class PartManager {
    */
   getPart() {
     return this.part;
+  }
+
+  /**
+   * Backward-compatible alias for callers that expect an active part getter.
+   */
+  getActivePart() {
+    return this.part;
+  }
+
+  /**
+   * Configure the WASM handle/residency subsystem for current and future parts.
+   * If a part already exists, it is rewired and rebuilt once so current
+   * feature results receive handle metadata under the new subsystem.
+   *
+   * @param {import('./cad/WasmBrepHandleRegistry.js').WasmBrepHandleRegistry|null} handleRegistry
+   * @param {import('./cad/HandleResidencyManager.js').HandleResidencyManager|null} residencyManager
+   */
+  setWasmHandleSubsystem(handleRegistry, residencyManager = null) {
+    this._handleRegistry = handleRegistry || null;
+    this._residencyManager = residencyManager || null;
+
+    if (!this.part) return;
+
+    const hasSubsystem = !!(this._handleRegistry || this._residencyManager);
+    if (hasSubsystem) {
+      this._resetWasmSubsystemState();
+    }
+
+    this._wirePart(this.part);
+
+    if (hasSubsystem && this.part.featureTree?.features?.length) {
+      this.part.featureTree.executeAll();
+    }
+
+    this.notifyListeners();
   }
 
   /**
@@ -246,12 +285,34 @@ export class PartManager {
   /**
    * Deserialize a part from JSON
    * @param {Object} data - Serialized part data
+   * @param {Object} [options] - Restore options for cached exact data
    */
-  deserialize(data) {
+  deserialize(data, options = {}) {
     if (!data) return;
 
-    this.part = Part.deserialize(data);
+    this._resetWasmSubsystemState();
+    this.part = Part.deserialize(data, {
+      handleRegistry: this._handleRegistry,
+      residencyManager: this._residencyManager,
+      finalCbrepPayload: options.finalCbrepPayload ?? null,
+      finalCbrepHash: options.finalCbrepHash ?? null,
+    });
+    this._wirePart(this.part);
     this.activeFeature = null;
     this.notifyListeners();
+  }
+
+  _wirePart(part) {
+    if (!part || typeof part.setWasmHandleSubsystem !== 'function') return;
+    part.setWasmHandleSubsystem(this._handleRegistry, this._residencyManager);
+  }
+
+  _resetWasmSubsystemState() {
+    if (this._residencyManager && typeof this._residencyManager.clear === 'function') {
+      this._residencyManager.clear();
+    }
+    if (this._handleRegistry && typeof this._handleRegistry.resetTopology === 'function') {
+      this._handleRegistry.resetTopology();
+    }
   }
 }

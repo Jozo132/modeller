@@ -67,6 +67,34 @@ export class FeatureTree {
   }
 
   /**
+   * Attach a CBREP payload to an existing solid result after asynchronous IR
+   * production completes, and mirror it into residency for lazy restore.
+   * @param {string} featureId
+   * @param {ArrayBuffer|Uint8Array} cbrepBuffer
+   * @param {string|number|null} [irHash=null]
+   * @returns {boolean}
+   */
+  attachCbrep(featureId, cbrepBuffer, irHash = null) {
+    const feature = this.featureMap.get(featureId);
+    const result = this.results[featureId];
+    if (!feature || !result || result.type !== 'solid' || !cbrepBuffer) {
+      return false;
+    }
+
+    result.cbrepBuffer = cbrepBuffer;
+    if (irHash != null) {
+      result.irHash = irHash;
+    }
+
+    if (this._residencyManager) {
+      this._residencyManager.storeCbrep(featureId, cbrepBuffer, result.irHash ?? 0);
+      this._residencyManager.markAccessed(featureId);
+    }
+
+    return true;
+  }
+
+  /**
    * Stamp a solid result with revision metadata and (optionally) allocate a
    * WASM handle. Called internally after each successful feature execution.
    * @param {string} featureId
@@ -538,8 +566,16 @@ export class FeatureTree {
    * Deserialize a feature tree from JSON.
    * Note: Features must be deserialized by their specific subclasses.
    */
-  static deserialize(data, featureFactory) {
+  static deserialize(data, featureFactory, options = {}) {
     const tree = new FeatureTree();
+
+    if (Object.prototype.hasOwnProperty.call(options, 'handleRegistry')) {
+      tree.setHandleRegistry(options.handleRegistry ?? null);
+    }
+    if (Object.prototype.hasOwnProperty.call(options, 'residencyManager')) {
+      tree.setResidencyManager(options.residencyManager ?? null);
+    }
+
     if (!data || !data.features) return tree;
     
     // Deserialize features in order
