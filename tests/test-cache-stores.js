@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 
 import { CacheStore } from '../packages/cache/CacheStore.js';
 import { NodeFsCacheStore } from '../packages/cache/NodeFsCacheStore.js';
+import { formatTimingSuffix, startTiming } from './test-timing.js';
 
 // ── Test harness ──
 
@@ -21,14 +22,15 @@ let failed = 0;
 const failures = [];
 
 function test(name, fn) {
+  const startedAt = startTiming();
   return Promise.resolve()
     .then(fn)
     .then(() => {
-      console.log(`  ✓ ${name}`);
+      console.log(`  ✓ ${name}${formatTimingSuffix(startedAt)}`);
       passed++;
     })
     .catch(err => {
-      console.log(`  ✗ ${name}`);
+      console.log(`  ✗ ${name}${formatTimingSuffix(startedAt)}`);
       console.log(`    ${err.message}`);
       failed++;
       failures.push({ name, error: err.message });

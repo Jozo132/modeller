@@ -15,17 +15,20 @@ import { StepImportFeature } from '../js/cad/StepImportFeature.js';
 import { Part } from '../js/cad/Part.js';
 import { PartManager } from '../js/part-manager.js';
 import { resetFeatureIds } from '../js/cad/Feature.js';
+import { setFlag, resetFlags } from '../js/featureFlags.js';
+import { formatTimingSuffix, startTiming } from './test-timing.js';
 
 let passed = 0;
 let failed = 0;
 
 function test(name, fn) {
+  const startedAt = startTiming();
   try {
     fn();
-    console.log(`  ✓ ${name}`);
+    console.log(`  ✓ ${name}${formatTimingSuffix(startedAt)}`);
     passed++;
   } catch (err) {
-    console.log(`  ✗ ${name}`);
+    console.log(`  ✗ ${name}${formatTimingSuffix(startedAt)}`);
     console.log(`    ${err.message}`);
     if (err.stack) {
       const stackLines = err.stack.split('\n').slice(1, 4);
@@ -42,6 +45,14 @@ const stepData = readFileSync(stepFilePath, 'utf-8');
 // Ensure WASM tessellator is loaded before running tests (critical for performance)
 const wasmAvailable = await ensureWasmReady();
 console.log(`WASM tessellator: ${wasmAvailable ? 'loaded' : 'unavailable (JS fallback)'}\n`);
+
+// These tests validate STEP parsing and feature behavior, not async IR cache
+// shadow writes. Leaving the cache enabled spawns background CBREP jobs for
+// every feature execute, which can overwhelm the editor during this suite.
+setFlag('CAD_USE_IR_CACHE', false);
+process.on('exit', () => {
+  resetFlags();
+});
 
 // ============================================================
 console.log('=== STEP Import — Parsing Tests ===\n');
@@ -529,6 +540,44 @@ test('StepImportFeature: second execute reuses cached import result', () => {
   assert.strictEqual(second.timings.cacheHit, true, 'Second execute should hit the cache');
   assert.deepStrictEqual(second.boundingBox, first.boundingBox, 'Cached execute should preserve bounds');
   assert.strictEqual(second.geometry.faces.length, first.geometry.faces.length, 'Cached execute should preserve geometry');
+});
+
+test('StepImportFeature: execute exposes cached CBREP payload when available', () => {
+  resetFeatureIds();
+  const feature = new StepImportFeature('Test Import', stepData);
+  const cbrepBuffer = new Uint8Array([9, 8, 7, 6]).buffer;
+  feature._applyIrCachePayload('deadbeefcafebabe', cbrepBuffer);
+
+  const result = feature.execute({ results: {}, tree: { getFeatureIndex: () => 0, features: [] } });
+
+  assert.ok(result.cbrepBuffer instanceof ArrayBuffer, 'Execute should expose the cached CBREP payload');
+  assert.deepStrictEqual(Array.from(new Uint8Array(result.cbrepBuffer)), [9, 8, 7, 6],
+    'Execute should surface the cached CBREP bytes unchanged');
+  assert.strictEqual(result.irHash, 'deadbeefcafebabe', 'Execute should preserve the cached irHash');
+});
+
+test('StepImportFeature: IR payload completion updates live result and tree residency hook', () => {
+  resetFeatureIds();
+  const feature = new StepImportFeature('Test Import', stepData);
+  const payload = new Uint8Array([1, 3, 3, 7]).buffer;
+  const treeCalls = [];
+
+  feature.result = { type: 'solid' };
+  feature._lastExecutionTree = {
+    attachCbrep(featureId, cbrepBuffer, irHash) {
+      treeCalls.push({ featureId, cbrepBuffer, irHash });
+      return true;
+    },
+  };
+
+  feature._applyIrCachePayload('0123456789abcdef', payload);
+
+  assert.strictEqual(feature.result.irHash, '0123456789abcdef', 'Live result gets irHash when IR payload completes');
+  assert.strictEqual(feature.result.cbrepBuffer, payload, 'Live result gets CBREP payload when IR payload completes');
+  assert.strictEqual(treeCalls.length, 1, 'IR payload completion is forwarded into the feature tree');
+  assert.strictEqual(treeCalls[0].featureId, feature.id, 'Tree update uses the feature id');
+  assert.strictEqual(treeCalls[0].cbrepBuffer, payload, 'Tree update receives the CBREP payload');
+  assert.strictEqual(treeCalls[0].irHash, '0123456789abcdef', 'Tree update receives the irHash');
 });
 
 test('StepImportFeature: bounding box is valid', () => {

@@ -16,6 +16,7 @@ import { Part } from '../js/cad/Part.js';
 import { Sketch } from '../js/cad/Sketch.js';
 import { parseCMOD } from '../js/cmod.js';
 import { calculateMeshVolume, calculateBoundingBox, calculateSurfaceArea, detectDisconnectedBodies, calculateWallThickness, countInvertedFaces } from '../js/cad/CSG.js';
+import { formatTimingSuffix, startTiming } from './test-timing.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SAMPLES_DIR = join(__dirname, 'samples');
@@ -24,12 +25,13 @@ let passed = 0;
 let failed = 0;
 
 function test(name, fn) {
+  const startedAt = startTiming();
   try {
     fn();
-    console.log(`  ✓ ${name}`);
+    console.log(`  ✓ ${name}${formatTimingSuffix(startedAt)}`);
     passed++;
   } catch (err) {
-    console.log(`  ✗ ${name}`);
+    console.log(`  ✗ ${name}${formatTimingSuffix(startedAt)}`);
     console.log(`    ${err.message}`);
     failed++;
   }

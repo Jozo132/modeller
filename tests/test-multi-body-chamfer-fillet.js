@@ -4,6 +4,7 @@ import assert from 'assert';
 import { Part } from '../js/cad/Part.js';
 import { Sketch } from '../js/cad/Sketch.js';
 import { calculateMeshVolume, calculateBoundingBox, makeEdgeKey } from '../js/cad/CSG.js';
+import { formatTimingSuffix, startTiming } from './test-timing.js';
 
 function makeRectSketch(x1, y1, x2, y2) {
   const s = new Sketch();
@@ -59,12 +60,13 @@ let passed = 0;
 let failed = 0;
 
 function test(name, fn) {
+  const startedAt = startTiming();
   try {
     fn();
-    console.log(`  ✓ ${name}`);
+    console.log(`  ✓ ${name}${formatTimingSuffix(startedAt)}`);
     passed++;
   } catch (err) {
-    console.log(`  ✗ ${name}`);
+    console.log(`  ✗ ${name}${formatTimingSuffix(startedAt)}`);
     console.log(`    ${err.message}`);
     failed++;
   }

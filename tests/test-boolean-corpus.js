@@ -20,6 +20,7 @@ import {
 } from '../js/cad/BRepTopology.js';
 import { DEFAULT_TOLERANCE } from '../js/cad/Tolerance.js';
 import { ResultGrade } from '../js/cad/fallback/FallbackDiagnostics.js';
+import { formatTimingSuffix, startTiming } from './test-timing.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STEP_DIR = path.join(__dirname, 'step');
@@ -29,12 +30,13 @@ let failed = 0;
 const corpusResults = [];
 
 function test(name, fn) {
+  const startedAt = startTiming();
   try {
     fn();
-    console.log(`  ✓ ${name}`);
+    console.log(`  ✓ ${name}${formatTimingSuffix(startedAt)}`);
     passed++;
   } catch (err) {
-    console.log(`  ✗ ${name}`);
+    console.log(`  ✗ ${name}${formatTimingSuffix(startedAt)}`);
     console.log(`    ${err.message}`);
     failed++;
   }

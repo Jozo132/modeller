@@ -27,6 +27,7 @@ import {
 import { NurbsCurve } from '../js/cad/NurbsCurve.js';
 import { NurbsSurface } from '../js/cad/NurbsSurface.js';
 import { parseSTEPTopology } from '../js/cad/StepImport.js';
+import { formatTimingSuffix, startTiming } from './test-timing.js';
 
 // Register topology deps
 const topoDeps = {
@@ -42,12 +43,13 @@ let failed = 0;
 const failures = [];
 
 function test(name, fn) {
+  const startedAt = startTiming();
   try {
     fn();
-    console.log(`  ✓ ${name}`);
+    console.log(`  ✓ ${name}${formatTimingSuffix(startedAt)}`);
     passed++;
   } catch (err) {
-    console.log(`  ✗ ${name}`);
+    console.log(`  ✗ ${name}${formatTimingSuffix(startedAt)}`);
     console.log(`    ${err.message}`);
     failed++;
     failures.push({ name, error: err.message });

@@ -18,17 +18,19 @@ import { BooleanResult, ContainmentResult } from '../js/cad/diagnostics.js';
 import { setFlag, resetFlags } from '../js/featureFlags.js';
 import { existsSync, readFileSync, rmSync, mkdirSync } from 'fs';
 import { join } from 'path';
+import { formatTimingSuffix, startTiming } from './test-timing.js';
 
 let passed = 0;
 let failed = 0;
 
 function test(name, fn) {
+  const startedAt = startTiming();
   try {
     fn();
-    console.log(`  ✓ ${name}`);
+    console.log(`  ✓ ${name}${formatTimingSuffix(startedAt)}`);
     passed++;
   } catch (err) {
-    console.log(`  ✗ ${name}`);
+    console.log(`  ✗ ${name}${formatTimingSuffix(startedAt)}`);
     console.log(`    ${err.message}`);
     failed++;
   }

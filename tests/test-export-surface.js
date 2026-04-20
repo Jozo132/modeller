@@ -6,6 +6,7 @@
 
 import assert from 'assert';
 import { readFileSync } from 'fs';
+import { formatTimingSuffix, startTiming } from './test-timing.js';
 
 const pkgPath = new URL('../package.json', import.meta.url);
 const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
@@ -15,25 +16,27 @@ let passed = 0;
 let failed = 0;
 
 function test(label, fn) {
+  const startedAt = startTiming();
   try {
     fn();
     passed++;
-    console.log(`  ✓ ${label}`);
+    console.log(`  ✓ ${label}${formatTimingSuffix(startedAt)}`);
   } catch (err) {
     failed++;
-    console.log(`  ✗ ${label}`);
+    console.log(`  ✗ ${label}${formatTimingSuffix(startedAt)}`);
     console.log(`    ${err.message}`);
   }
 }
 
 async function asyncTest(label, fn) {
+  const startedAt = startTiming();
   try {
     await fn();
     passed++;
-    console.log(`  ✓ ${label}`);
+    console.log(`  ✓ ${label}${formatTimingSuffix(startedAt)}`);
   } catch (err) {
     failed++;
-    console.log(`  ✗ ${label}`);
+    console.log(`  ✗ ${label}${formatTimingSuffix(startedAt)}`);
     console.log(`    ${err.message}`);
   }
 }

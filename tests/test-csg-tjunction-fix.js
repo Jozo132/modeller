@@ -7,6 +7,7 @@ import assert from 'assert';
 import { Part } from '../js/cad/Part.js';
 import { Sketch } from '../js/cad/Sketch.js';
 import { makeEdgeKey, calculateMeshVolume } from '../js/cad/CSG.js';
+import { formatTimingSuffix, startTiming } from './test-timing.js';
 
 const PREC = 5;
 const fmt = (n) => (Math.abs(n) < 5e-6 ? 0 : n).toFixed(PREC);
@@ -34,8 +35,9 @@ function checkManifold(geometry) {
 
 let passed = 0, failed = 0;
 function test(name, fn) {
-  try { fn(); console.log(`  ✓ ${name}`); passed++; }
-  catch (err) { console.log(`  ✗ ${name}\n    ${err.message}\n`); failed++; }
+  const startedAt = startTiming();
+  try { fn(); console.log(`  ✓ ${name}${formatTimingSuffix(startedAt)}`); passed++; }
+  catch (err) { console.log(`  ✗ ${name}${formatTimingSuffix(startedAt)}\n    ${err.message}\n`); failed++; }
 }
 
 console.log('=== CSG T-junction Repair Tests ===\n');

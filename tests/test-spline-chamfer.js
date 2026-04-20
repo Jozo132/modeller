@@ -17,11 +17,13 @@ import { resetFeatureIds } from '../js/cad/Feature.js';
 import { resetTopoIds } from '../js/cad/BRepTopology.js';
 import { applyBRepChamfer } from '../js/cad/BRepChamfer.js';
 import { edgeKeyFromVerts } from '../js/cad/toolkit/Vec3Utils.js';
+import { formatTimingSuffix, startTiming } from './test-timing.js';
 
 let passed = 0, failed = 0;
 function test(name, fn) {
-  try { fn(); console.log(`  ✓ ${name}`); passed++; }
-  catch (e) { console.error(`  ✗ ${name}`); console.error(`    ${e.message}`); failed++; }
+  const startedAt = startTiming();
+  try { fn(); console.log(`  ✓ ${name}${formatTimingSuffix(startedAt)}`); passed++; }
+  catch (e) { console.error(`  ✗ ${name}${formatTimingSuffix(startedAt)}`); console.error(`    ${e.message}`); failed++; }
 }
 
 function buildPart(sketchSetup) {

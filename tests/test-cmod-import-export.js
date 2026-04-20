@@ -12,17 +12,19 @@ import {
   calculateMeshVolume, calculateBoundingBox, calculateSurfaceArea,
   detectDisconnectedBodies, calculateWallThickness, countInvertedFaces, computeFeatureEdges,
 } from '../js/cad/CSG.js';
+import { formatTimingSuffix, startTiming } from './test-timing.js';
 
 let passed = 0;
 let failed = 0;
 
 function test(name, fn) {
+  const startedAt = startTiming();
   try {
     fn();
-    console.log(`  ✓ ${name}`);
+    console.log(`  ✓ ${name}${formatTimingSuffix(startedAt)}`);
     passed++;
   } catch (err) {
-    console.log(`  ✗ ${name}`);
+    console.log(`  ✗ ${name}${formatTimingSuffix(startedAt)}`);
     console.log(`    ${err.message}`);
     failed++;
   }

@@ -13,18 +13,20 @@ import assert from 'assert';
 import {
   getFlag, setFlag, resetFlags, allFlags, flagDefinitions,
 } from '../js/featureFlags.js';
+import { formatTimingSuffix, startTiming } from './test-timing.js';
 
 let passed = 0;
 let failed = 0;
 
 function test(label, fn) {
+  const startedAt = startTiming();
   try {
     fn();
     passed++;
-    console.log(`  ✓ ${label}`);
+    console.log(`  ✓ ${label}${formatTimingSuffix(startedAt)}`);
   } catch (err) {
     failed++;
-    console.log(`  ✗ ${label}`);
+    console.log(`  ✗ ${label}${formatTimingSuffix(startedAt)}`);
     console.log(`    ${err.message}`);
   }
 }

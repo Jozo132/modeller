@@ -17,6 +17,7 @@ import {
   resetTopoIds, deriveEdgeAndVertexHashes,
   TopoBody, TopoShell, TopoFace, TopoLoop, TopoCoEdge, TopoEdge, TopoVertex,
 } from '../js/cad/BRepTopology.js';
+import { formatTimingSuffix, startTiming } from './test-timing.js';
 
 // -----------------------------------------------------------------------
 // Test framework
@@ -32,13 +33,14 @@ function group(name) {
 }
 
 function test(name, fn) {
+  const startedAt = startTiming();
   try {
     fn();
     _passed++;
-    console.log(`  ✓ ${name}`);
+    console.log(`  ✓ ${name}${formatTimingSuffix(startedAt)}`);
   } catch (err) {
     _failed++;
-    console.log(`  ✗ ${name}`);
+    console.log(`  ✗ ${name}${formatTimingSuffix(startedAt)}`);
     console.log(`    ${err.message}`);
   }
 }

@@ -5,6 +5,7 @@
 // - Telemetry extensions (telemetry.js)
 
 import assert from 'node:assert/strict';
+import { formatTimingSuffix, startTiming } from './test-timing.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
@@ -12,12 +13,13 @@ let passed = 0, failed = 0;
 const failures = [];
 
 function test(section, name, fn) {
+    const startedAt = startTiming();
     try {
         fn();
-        console.log(`  \u2713 ${name}`);
+        console.log(`  \u2713 ${name}${formatTimingSuffix(startedAt)}`);
         passed++;
     } catch (e) {
-        console.log(`  \u2717 ${name}: ${e.message}`);
+        console.log(`  \u2717 ${name}: ${e.message}${formatTimingSuffix(startedAt)}`);
         failures.push(`[${section}] ${name}: ${e.message}`);
         failed++;
     }

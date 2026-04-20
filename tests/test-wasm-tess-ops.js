@@ -5,6 +5,7 @@
 // built from the topology + geometry APIs.
 
 import assert from 'assert';
+import { formatTimingSuffix, startTiming } from './test-timing.js';
 
 const wasm = await import('../build/release.js');
 
@@ -12,12 +13,13 @@ let passed = 0;
 let failed = 0;
 
 function test(name, fn) {
+    const startedAt = startTiming();
     try {
         fn();
-        console.log(`  ✓ ${name}`);
+        console.log(`  ✓ ${name}${formatTimingSuffix(startedAt)}`);
         passed++;
     } catch (err) {
-        console.log(`  ✗ ${name}`);
+        console.log(`  ✗ ${name}${formatTimingSuffix(startedAt)}`);
         console.log(`    ${err.message}`);
         if (err.stack) console.log(`    ${err.stack.split('\n').slice(1, 3).join('\n    ')}`);
         failed++;

@@ -27,6 +27,7 @@ import { applyBRepFillet } from '../js/cad/BRepFillet.js';
 import { resetFeatureIds } from '../js/cad/Feature.js';
 import { resetTopoIds } from '../js/cad/BRepTopology.js';
 import { edgeKeyFromVerts } from '../js/cad/toolkit/Vec3Utils.js';
+import { formatTimingSuffix, startTiming } from './test-timing.js';
 
 // ---------------------------------------------------------------------------
 // Test runner
@@ -38,17 +39,18 @@ let knownFail = 0;
 const failures = [];
 
 function test(name, fn, { known = false } = {}) {
+  const startedAt = startTiming();
   try {
     fn();
-    console.log(`  ✓ ${name}`);
+    console.log(`  ✓ ${name}${formatTimingSuffix(startedAt)}`);
     passed++;
   } catch (err) {
     if (known) {
-      console.log(`  ⚠ ${name} [KNOWN EDGE CASE]`);
+      console.log(`  ⚠ ${name} [KNOWN EDGE CASE]${formatTimingSuffix(startedAt)}`);
       console.log(`    ${err.message}`);
       knownFail++;
     } else {
-      console.log(`  ✗ ${name}`);
+      console.log(`  ✗ ${name}${formatTimingSuffix(startedAt)}`);
       console.log(`    ${err.message}`);
       failed++;
       failures.push({ name, message: err.message });

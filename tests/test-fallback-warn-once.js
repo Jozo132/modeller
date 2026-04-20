@@ -44,6 +44,7 @@ import {
   SurfaceType, buildTopoBody, resetTopoIds,
 } from '../js/cad/BRepTopology.js';
 import { DEFAULT_TOLERANCE } from '../js/cad/Tolerance.js';
+import { formatTimingSuffix, startTiming } from './test-timing.js';
 
 let passed = 0;
 let failed = 0;
@@ -51,12 +52,13 @@ let failed = 0;
 function test(name, fn) {
   _resetWarnOnce();
   resetFlags();
+  const startedAt = startTiming();
   try {
     fn();
-    console.log(`  \u2713 ${name}`);
+    console.log(`  \u2713 ${name}${formatTimingSuffix(startedAt)}`);
     passed++;
   } catch (err) {
-    console.log(`  \u2717 ${name}`);
+    console.log(`  \u2717 ${name}${formatTimingSuffix(startedAt)}`);
     console.log(`    ${err.message}`);
     failed++;
   }

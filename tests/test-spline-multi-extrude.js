@@ -10,6 +10,7 @@ import { MultiSketchExtrudeFeature } from '../js/cad/MultiSketchExtrudeFeature.j
 import { resetPrimitiveIds } from '../js/cad/Primitive.js';
 import { resetConstraintIds, clearVariables } from '../js/cad/Constraint.js';
 import { resetFeatureIds } from '../js/cad/Feature.js';
+import { formatTimingSuffix, startTiming } from './test-timing.js';
 
 let passed = 0;
 let failed = 0;
@@ -19,12 +20,13 @@ function test(name, fn) {
   resetConstraintIds(1);
   clearVariables();
   resetFeatureIds(1);
+  const startedAt = startTiming();
   try {
     fn();
-    console.log(`  ✓ ${name}`);
+    console.log(`  ✓ ${name}${formatTimingSuffix(startedAt)}`);
     passed++;
   } catch (err) {
-    console.log(`  ✗ ${name}`);
+    console.log(`  ✗ ${name}${formatTimingSuffix(startedAt)}`);
     console.log(`    ${err.message}`);
     failed++;
   }

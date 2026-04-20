@@ -27,6 +27,7 @@ import {
 import {
   FeatureEditSession, EditSessionState,
 } from '../js/ui/featureEditSession.js';
+import { formatTimingSuffix, startTiming } from './test-timing.js';
 
 // -----------------------------------------------------------------------
 // Minimal DOM stub — enough for JSDOM-free headless testing
@@ -74,13 +75,14 @@ function group(name) {
 }
 
 function test(name, fn) {
+  const startedAt = startTiming();
   try {
     fn();
     _passed++;
-    console.log(`  ✓ ${name}`);
+    console.log(`  ✓ ${name}${formatTimingSuffix(startedAt)}`);
   } catch (err) {
     _failed++;
-    console.log(`  ✗ ${name}`);
+    console.log(`  ✗ ${name}${formatTimingSuffix(startedAt)}`);
     console.log(`    ${err.message}`);
   }
 }

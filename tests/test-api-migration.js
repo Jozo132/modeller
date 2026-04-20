@@ -61,6 +61,7 @@ import {
 } from '../js/cad/index.js';
 
 import { telemetry, Telemetry } from '../js/telemetry.js';
+import { formatTimingSuffix, startTiming } from './test-timing.js';
 
 // ── Test harness ────────────────────────────────────────────────────
 
@@ -68,25 +69,27 @@ let passed = 0;
 let failed = 0;
 
 function test(label, fn) {
+  const startedAt = startTiming();
   try {
     fn();
     passed++;
-    console.log(`  ✓ ${label}`);
+    console.log(`  ✓ ${label}${formatTimingSuffix(startedAt)}`);
   } catch (err) {
     failed++;
-    console.log(`  ✗ ${label}`);
+    console.log(`  ✗ ${label}${formatTimingSuffix(startedAt)}`);
     console.log(`    ${err.message}`);
   }
 }
 
 async function asyncTest(label, fn) {
+  const startedAt = startTiming();
   try {
     await fn();
     passed++;
-    console.log(`  ✓ ${label}`);
+    console.log(`  ✓ ${label}${formatTimingSuffix(startedAt)}`);
   } catch (err) {
     failed++;
-    console.log(`  ✗ ${label}`);
+    console.log(`  ✗ ${label}${formatTimingSuffix(startedAt)}`);
     console.log(`    ${err.message}`);
   }
 }
