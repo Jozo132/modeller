@@ -281,12 +281,19 @@ function _isPlanarBody(body) {
   return body.faces().every(face =>
     face &&
     face.surfaceType === SurfaceType.PLANE &&
-    face.surface &&
     face.outerLoop
   );
 }
 
 function _exactPlanarBoolean(bodyA, bodyB, operation, tol) {
+  const diagnostics = {
+    intersectionValidation: { isValid: true, diagnostics: [] },
+    fragmentValidationA: { isValid: true, diagnostics: [] },
+    fragmentValidationB: { isValid: true, diagnostics: [] },
+    healingA: { healed: false, actionCount: 0, actions: [] },
+    healingB: { healed: false, actionCount: 0, actions: [] },
+  };
+
   const polysA = _splitPolygonsByBody(_bodyToPolygons(bodyA), bodyB, tol);
   const polysB = _splitPolygonsByBody(_bodyToPolygons(bodyB), bodyA, tol);
 
@@ -311,8 +318,29 @@ function _exactPlanarBoolean(bodyA, bodyB, operation, tol) {
   const resultBody = buildBody(faces, tol);
   mergeCoplanarFaces(resultBody, tol);
   removeCollinearEdgeVertices(resultBody, tol);
+
+  const bodyValidation = validateFinalBody(resultBody, tol);
+  diagnostics.finalBodyValidation = bodyValidation.toJSON();
+
+  const invariantValidation = validateBooleanResult(resultBody, {
+    operation,
+    tolerance: tol,
+    expectClosed: true,
+  });
+  diagnostics.invariantValidation = invariantValidation.toJSON();
+
+  if (getFlag('CAD_STRICT_INVARIANTS') && !invariantValidation.isValid) {
+    _writeDiagnosticArtifact(operation, diagnostics);
+    const err = new Error(
+      `Boolean invariant violation (strict mode): ${invariantValidation.diagnostics.length} issue(s) detected`
+    );
+    err.diagnostics = diagnostics;
+    throw err;
+  }
+
   const mesh = tessellateBody(resultBody);
-  return { body: resultBody, mesh };
+  diagnostics.hashes = _computeBodyHashes(bodyA, bodyB, resultBody);
+  return { body: resultBody, mesh, diagnostics };
 }
 
 /**

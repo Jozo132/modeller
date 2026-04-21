@@ -46,14 +46,16 @@ function test(name, fn, { known = false } = {}) {
     passed++;
   } catch (err) {
     if (known) {
-      console.log(`  ⚠ ${name} [KNOWN EDGE CASE]${formatTimingSuffix(startedAt)}`);
+      console.log(`  ✗ ${name} [KNOWN DEFECT]${formatTimingSuffix(startedAt)}`);
       console.log(`    ${err.message}`);
       knownFail++;
+      failed++;
+      failures.push({ name, message: err.message, known: true });
     } else {
       console.log(`  ✗ ${name}${formatTimingSuffix(startedAt)}`);
       console.log(`    ${err.message}`);
       failed++;
-      failures.push({ name, message: err.message });
+      failures.push({ name, message: err.message, known: false });
     }
   }
 }
@@ -1639,18 +1641,18 @@ test('U-shape: fillet bottom → chamfer top → fillet top (re-fillet after cha
 // ===========================================================================
 
 console.log('\n=== Summary ===\n');
-console.log(`Total: ${passed + failed + knownFail} tests — ${passed} passed, ${failed} failed, ${knownFail} known edge cases`);
+console.log(`Total: ${passed + failed} tests — ${passed} passed, ${failed} failed (${knownFail} known defects)`);
 
 if (failures.length > 0) {
-  console.log('\nUnexpected Failures:');
+  console.log('\nFailures:');
   for (const f of failures) {
-    console.log(`  ✗ ${f.name}`);
+    console.log(`  ✗ ${f.name}${f.known ? ' [KNOWN DEFECT]' : ''}`);
     console.log(`    ${f.message}`);
   }
 }
 
 if (knownFail > 0) {
-  console.log(`\n${knownFail} known BSPLINE edge cases tracked for future kernel improvements.`);
+  console.log(`\n${knownFail} known NURBS fillet/chamfer defects are now counted as real failures.`);
 }
 
 if (failed > 0) process.exit(1);

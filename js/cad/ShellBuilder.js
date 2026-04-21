@@ -65,28 +65,45 @@ function _sewVertices(fragments, tol) {
   // Build spatial hash for fast lookup
   const merged = new Map();
   const cellSize = tol.sewing * 10;
-  const hashKey = (p) => {
-    const ix = Math.round(p.x / cellSize);
-    const iy = Math.round(p.y / cellSize);
-    const iz = Math.round(p.z / cellSize);
+  const hashCoords = (p) => ({
+    ix: Math.round(p.x / cellSize),
+    iy: Math.round(p.y / cellSize),
+    iz: Math.round(p.z / cellSize),
+  });
+  const hashKey = ({ ix, iy, iz }) => {
     return `${ix},${iy},${iz}`;
   };
 
   const buckets = new Map();
+  const vertexOrder = new Map();
+  allVerts.forEach((v, index) => {
+    vertexOrder.set(v.id, index);
+  });
   for (const v of allVerts) {
-    const key = hashKey(v.point);
+    const key = hashKey(hashCoords(v.point));
     if (!buckets.has(key)) buckets.set(key, []);
     buckets.get(key).push(v);
   }
 
   // Merge vertices within tolerance
-  for (const bucket of buckets.values()) {
-    for (let i = 0; i < bucket.length; i++) {
-      if (merged.has(bucket[i].id)) continue;
-      for (let j = i + 1; j < bucket.length; j++) {
-        if (merged.has(bucket[j].id)) continue;
-        if (tol.pointsCoincident(bucket[i].point, bucket[j].point)) {
-          merged.set(bucket[j].id, bucket[i]);
+  for (const vertex of allVerts) {
+    if (merged.has(vertex.id)) continue;
+    const { ix, iy, iz } = hashCoords(vertex.point);
+    const currentOrder = vertexOrder.get(vertex.id) ?? 0;
+
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dz = -1; dz <= 1; dz++) {
+          const bucket = buckets.get(hashKey({ ix: ix + dx, iy: iy + dy, iz: iz + dz }));
+          if (!bucket) continue;
+
+          for (const candidate of bucket) {
+            const candidateOrder = vertexOrder.get(candidate.id) ?? 0;
+            if (candidate === vertex || candidateOrder <= currentOrder || merged.has(candidate.id)) continue;
+            if (tol.distance(vertex.point, candidate.point) <= tol.sewing) {
+              merged.set(candidate.id, vertex);
+            }
+          }
         }
       }
     }
