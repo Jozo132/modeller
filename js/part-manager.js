@@ -65,7 +65,17 @@ export class PartManager {
     this._wirePart(this.part);
 
     if (hasSubsystem && this.part.featureTree?.features?.length) {
-      this.part.featureTree.executeAll();
+      // H3/H4: Prefer hydrating cached CBREP payloads into fresh handles over
+      // a full replay. Only fall back to executeAll() if at least one solid
+      // result lacks a cached CBREP we can hydrate.
+      const tree = this.part.featureTree;
+      let restoredFromCache = false;
+      if (typeof tree.hydrateExistingResultsFromCbrep === 'function') {
+        restoredFromCache = tree.hydrateExistingResultsFromCbrep();
+      }
+      if (!restoredFromCache) {
+        tree.executeAll();
+      }
     }
 
     this.notifyListeners();

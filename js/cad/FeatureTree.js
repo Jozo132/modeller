@@ -125,6 +125,86 @@ export class FeatureTree {
   }
 
   /**
+   * H3/H4: For every existing solid result that already carries a CBREP
+   * payload, allocate a handle in the currently-attached registry and hydrate
+   * it. Returns true when every solid result was restored from cache; false
+   * if at least one solid result lacked a CBREP (in which case the caller
+   * must fall back to replay).
+   *
+   * This lets `setWasmHandleSubsystem` avoid calling `executeAll()` when the
+   * feature tree was just deserialized with cached CBREPs.
+   *
+   * @returns {boolean} true if the entire tree is now handle-resident.
+   */
+  hydrateExistingResultsFromCbrep() {
+    const reg = this._handleRegistry;
+    if (!reg || !reg.ready) return false;
+    if (typeof reg.hydrateForHandle !== 'function' || typeof reg.alloc !== 'function') {
+      return false;
+    }
+
+    let allResident = true;
+    for (const feature of this.features) {
+      const result = this.results[feature.id];
+      if (!result || result.type !== 'solid') continue;
+
+      const cbrep = result.cbrepBuffer;
+      if (!cbrep) {
+        allResident = false;
+        continue;
+      }
+
+      // Release any stale handle that may still be stamped on the result
+      // from a previous registry before we allocate a fresh one here.
+      if (result.wasmHandleId && typeof reg.release === 'function') {
+        reg.release(result.wasmHandleId);
+        this._handleToFeatureId.delete(result.wasmHandleId);
+        result.wasmHandleId = 0;
+      }
+
+      const handle = reg.alloc();
+      if (!handle) {
+        allResident = false;
+        continue;
+      }
+
+      this._revisionCounter++;
+      result.exactBodyRevisionId = this._revisionCounter;
+      result.wasmHandleId = handle;
+      if (typeof reg.setFeatureId === 'function') {
+        reg.setFeatureId(handle, this._revisionCounter);
+      }
+      this._handleToFeatureId.set(handle, feature.id);
+
+      const bytes = cbrep instanceof Uint8Array ? cbrep : new Uint8Array(cbrep);
+      if (typeof reg.setResidency === 'function' && reg.HYDRATING !== undefined) {
+        reg.setResidency(handle, reg.HYDRATING);
+      }
+      const ok = reg.hydrateForHandle(handle, bytes);
+      if (ok) {
+        if (typeof reg.setResidency === 'function' && reg.RESIDENT !== undefined) {
+          reg.setResidency(handle, reg.RESIDENT);
+        }
+        if (typeof reg.bumpRevision === 'function') {
+          reg.bumpRevision(handle);
+        }
+        result.wasmHandleResident = true;
+        if (this._residencyManager) {
+          this._residencyManager.storeCbrep(feature.id, cbrep, result.irHash ?? 0);
+          this._residencyManager.markAccessed(feature.id);
+        }
+      } else {
+        if (typeof reg.setResidency === 'function' && reg.STALE !== undefined) {
+          reg.setResidency(handle, reg.STALE);
+        }
+        result.wasmHandleResident = false;
+        allResident = false;
+      }
+    }
+    return allResident;
+  }
+
+  /**
    * Stamp a solid result with revision metadata and (optionally) allocate a
    * WASM handle. Called internally after each successful feature execution.
    * @param {string} featureId

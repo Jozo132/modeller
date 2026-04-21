@@ -406,6 +406,109 @@ console.log('\n=== Part lifecycle wiring ===');
 }
 
 {
+  // H3/H4: late subsystem attach must hydrate cached CBREPs instead of
+  // forcing a full feature replay when every solid result already has a
+  // cached payload.
+  const pm = new PartManager();
+  const reg = new MockHandleRegistry();
+  const residency = new MockResidencyManager();
+  let executeAllCalls = 0;
+  let hydrateReturn = true;
+
+  pm.part = {
+    featureTree: {
+      features: [{ id: 'feature_1' }],
+      executeAll() { executeAllCalls++; },
+      hydrateExistingResultsFromCbrep() { return hydrateReturn; },
+    },
+    setWasmHandleSubsystem() { /* noop for this test */ },
+  };
+
+  pm.setWasmHandleSubsystem(reg, residency);
+
+  assert(executeAllCalls === 0,
+    'late subsystem attach skips executeAll when cached CBREPs cover the tree');
+  assert(reg.resetCalls === 1,
+    'late subsystem attach still resets shared topology before cached hydrate');
+}
+
+{
+  // H3/H4: if any solid result lacks a cached CBREP the manager must still
+  // fall back to the full replay path.
+  const pm = new PartManager();
+  const reg = new MockHandleRegistry();
+  const residency = new MockResidencyManager();
+  let executeAllCalls = 0;
+
+  pm.part = {
+    featureTree: {
+      features: [{ id: 'feature_1' }, { id: 'feature_2' }],
+      executeAll() { executeAllCalls++; },
+      hydrateExistingResultsFromCbrep() { return false; },
+    },
+    setWasmHandleSubsystem() { /* noop for this test */ },
+  };
+
+  pm.setWasmHandleSubsystem(reg, residency);
+
+  assert(executeAllCalls === 1,
+    'late subsystem attach replays when cached CBREPs do not cover the tree');
+}
+
+{
+  // H3/H4: FeatureTree.hydrateExistingResultsFromCbrep allocates handles for
+  // every pre-existing solid result with a cached CBREP and reports success.
+  const tree = new FeatureTree();
+  const feature = new StubSolidWithHash('imported', 'cafebabe');
+  tree.addFeature(feature); // no registry yet — no handle allocated
+  tree.results[feature.id].cbrepBuffer = new Uint8Array([1, 2, 3, 4, 5]).buffer;
+
+  const reg = new MockHandleRegistry();
+  const residencyMgr = new MockResidencyManager();
+  tree.setHandleRegistry(reg);
+  tree.setResidencyManager(residencyMgr);
+
+  const ok = tree.hydrateExistingResultsFromCbrep();
+  assert(ok === true,
+    'hydrateExistingResultsFromCbrep reports full restore when every solid is cached');
+
+  const handle = tree.results[feature.id].wasmHandleId;
+  assert(typeof handle === 'number' && handle > 0,
+    'each cached solid result gets a freshly-allocated handle');
+  assert(reg.getResidency(handle) === reg.RESIDENT,
+    'handle is RESIDENT after cached hydrate');
+  assert(reg.hydrateCalls.length === 1 && reg.hydrateCalls[0].handle === handle,
+    'cached hydrate was driven through registry.hydrateForHandle');
+  assert(tree.results[feature.id].wasmHandleResident === true,
+    'solid result records the cached-hydrate outcome');
+  assert(residencyMgr.storeCalls.length === 1 &&
+    residencyMgr.storeCalls[0].featureId === feature.id,
+    'cached hydrate mirrors the payload into the residency manager');
+}
+
+{
+  // H3/H4: when at least one solid result has no cached CBREP, the method
+  // must report false so the caller falls back to executeAll.
+  const tree = new FeatureTree();
+  const featureA = new StubSolidWithHash('a', 'aaa');
+  const featureB = new StubSolidWithHash('b', 'bbb');
+  tree.addFeature(featureA);
+  tree.addFeature(featureB);
+  tree.results[featureA.id].cbrepBuffer = new Uint8Array([1, 2]).buffer;
+  // featureB intentionally has no cbrepBuffer
+
+  const reg = new MockHandleRegistry();
+  tree.setHandleRegistry(reg);
+
+  const ok = tree.hydrateExistingResultsFromCbrep();
+  assert(ok === false,
+    'hydrateExistingResultsFromCbrep reports partial restore when a solid lacks a CBREP');
+  assert(typeof tree.results[featureA.id].wasmHandleId === 'number' &&
+    tree.results[featureA.id].wasmHandleId > 0,
+    'partial restore still hydrates the solids that do have cached CBREPs');
+}
+
+{
   const pm = new PartManager();
   const reg = new MockHandleRegistry();
   const residency = new MockResidencyManager();
