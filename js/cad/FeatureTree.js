@@ -91,6 +91,36 @@ export class FeatureTree {
       this._residencyManager.markAccessed(featureId);
     }
 
+    // H1: Hydrate the CBREP into the live WASM handle so the exact body is
+    // actually resident in the kernel instead of staying UNMATERIALIZED.
+    // Without this, attachCbrep stores bytes but the handle never becomes
+    // queryable — residency is plumbed but never pays off.
+    const reg = this._handleRegistry;
+    const handleId = result.wasmHandleId;
+    if (reg && reg.ready && handleId && typeof reg.hydrateForHandle === 'function') {
+      const bytes = cbrepBuffer instanceof Uint8Array
+        ? cbrepBuffer
+        : new Uint8Array(cbrepBuffer);
+      if (bytes.byteLength > 0) {
+        if (typeof reg.setResidency === 'function' && reg.HYDRATING !== undefined) {
+          reg.setResidency(handleId, reg.HYDRATING);
+        }
+        const ok = reg.hydrateForHandle(handleId, bytes);
+        if (ok) {
+          if (typeof reg.setResidency === 'function' && reg.RESIDENT !== undefined) {
+            reg.setResidency(handleId, reg.RESIDENT);
+          }
+          if (typeof reg.bumpRevision === 'function') {
+            reg.bumpRevision(handleId);
+          }
+          result.wasmHandleResident = true;
+        } else if (typeof reg.setResidency === 'function' && reg.STALE !== undefined) {
+          reg.setResidency(handleId, reg.STALE);
+          result.wasmHandleResident = false;
+        }
+      }
+    }
+
     return true;
   }
 

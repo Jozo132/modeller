@@ -64,6 +64,10 @@ class MockHandleRegistry {
   constructor() {
     this.ready = true;
     this.UNMATERIALIZED = 0;
+    this.HYDRATING = 1;
+    this.RESIDENT = 2;
+    this.STALE = 3;
+    this.DISPOSED = 4;
     this._nextHandle = 1;
     this._handles = new Map();
     this._residencies = new Map();
@@ -71,6 +75,8 @@ class MockHandleRegistry {
     this._revisions = new Map();
     this._released = [];
     this.resetCalls = 0;
+    this.hydrateCalls = [];
+    this._hydrateResult = true;
   }
   alloc() {
     const h = this._nextHandle++;
@@ -88,7 +94,12 @@ class MockHandleRegistry {
   getResidency(h) { return this._residencies.get(h) ?? -1; }
   setFeatureId(h, fid) { this._featureIds.set(h, fid); }
   bumpRevision(h) { this._revisions.set(h, (this._revisions.get(h) || 0) + 1); }
+  getRevision(h) { return this._revisions.get(h) || 0; }
   resetTopology() { this.resetCalls++; }
+  hydrateForHandle(h, cbrep) {
+    this.hydrateCalls.push({ handle: h, byteLength: cbrep?.byteLength ?? 0 });
+    return this._hydrateResult;
+  }
 }
 
 class MockResidencyManager {
@@ -291,6 +302,62 @@ console.log('\n=== async CBREP attachment ===');
     'attachCbrep stores residency payload under the feature id');
   assert(residency.markCalls.includes(feature.id),
     'attachCbrep marks the feature as recently accessed');
+}
+
+{
+  // H1: attachCbrep must hydrate into the WASM handle so the exact body
+  // becomes resident in the kernel rather than just being stashed in JS.
+  const tree = new FeatureTree();
+  const reg = new MockHandleRegistry();
+  const residency = new MockResidencyManager();
+  tree.setHandleRegistry(reg);
+  tree.setResidencyManager(residency);
+
+  const feature = new StubSolidWithHash('import', 'abcdef0123456789');
+  tree.addFeature(feature);
+  const handle = tree.results[feature.id].wasmHandleId;
+  assert(typeof handle === 'number' && handle > 0,
+    'solid feature gets a wasm handle before CBREP attachment');
+  assert(reg.getResidency(handle) === reg.UNMATERIALIZED,
+    'fresh handle starts UNMATERIALIZED before CBREP hydration');
+  const preAttachRev = reg.getRevision(handle);
+
+  const cbrepBuffer = new Uint8Array([9, 8, 7, 6, 5]).buffer;
+  const attached = tree.attachCbrep(feature.id, cbrepBuffer, 'deadbeef');
+  assert(attached === true, 'attachCbrep succeeds when handle registry is attached');
+
+  assert(reg.hydrateCalls.length === 1,
+    'attachCbrep invokes registry.hydrateForHandle exactly once');
+  assert(reg.hydrateCalls[0].handle === handle,
+    'hydrateForHandle is called on the live handle for the feature');
+  assert(reg.hydrateCalls[0].byteLength === cbrepBuffer.byteLength,
+    'hydrateForHandle receives the full CBREP byte length');
+  assert(reg.getResidency(handle) === reg.RESIDENT,
+    'handle transitions to RESIDENT after successful hydrate');
+  assert(reg.getRevision(handle) > preAttachRev,
+    'handle revision bumps on hydrate');
+  assert(tree.results[feature.id].wasmHandleResident === true,
+    'result records that the WASM handle is now resident');
+}
+
+{
+  // H1: hydrate failure must leave the handle marked STALE, not RESIDENT.
+  const tree = new FeatureTree();
+  const reg = new MockHandleRegistry();
+  reg._hydrateResult = false;
+  tree.setHandleRegistry(reg);
+
+  const feature = new StubSolidWithHash('import', 'abcdef0123456789');
+  tree.addFeature(feature);
+  const handle = tree.results[feature.id].wasmHandleId;
+
+  const cbrepBuffer = new Uint8Array([1, 2, 3]).buffer;
+  tree.attachCbrep(feature.id, cbrepBuffer, 'abcdef');
+
+  assert(reg.getResidency(handle) === reg.STALE,
+    'failed hydrate leaves handle STALE');
+  assert(tree.results[feature.id].wasmHandleResident === false,
+    'result records that the WASM handle failed to hydrate');
 }
 
 console.log('\n=== Part lifecycle wiring ===');
