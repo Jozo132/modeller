@@ -415,36 +415,34 @@ console.log('\n=== Mesh Quality — STEP Corpus Validation ===\n');
 // ============================================================
 
 {
-  // Test on the reference STEP file
-  try {
-    const stepFilePath = fileURLToPath(new URL('./step/Unnamed-Body.step', import.meta.url));
-    const stepData = readFileSync(stepFilePath, 'utf-8');
-    const mesh = importSTEP(stepData);
+  // M5: the reference STEP file is a required corpus asset. A missing file
+  // or a parse failure must surface as a real test failure, not be swallowed
+  // by a catch-all that logs "skipped" and lets the suite go green.
+  const stepFilePath = fileURLToPath(new URL('./step/Unnamed-Body.step', import.meta.url));
+  const stepData = readFileSync(stepFilePath, 'utf-8');
+  const mesh = importSTEP(stepData);
 
-    assert(mesh.faces.length > 0, `STEP import produces faces (${mesh.faces.length})`);
-    assert(mesh.vertices.length > 0, `STEP import produces vertices (${mesh.vertices.length})`);
+  assert(mesh.faces.length > 0, `STEP import produces faces (${mesh.faces.length})`);
+  assert(mesh.vertices.length > 0, `STEP import produces vertices (${mesh.vertices.length})`);
 
-    // Self-intersection check only on manageable meshes (O(n²) cost)
-    // Note: STEP meshes with curved surfaces commonly have same-face
-    // self-intersections from flat-triangle approximation. Log as info
-    // rather than failing — this is a known tessellation limitation.
-    if (mesh.faces.length <= 50000) {
-      const si = detectSelfIntersections(mesh.faces, { sameTopoFaceOnly: true });
-      if (si.count > 0) {
-        console.log(`  ⚠ STEP mesh: ${si.count} same-face self-intersections (known tessellation artifact)`);
-      } else {
-        assert(true, 'STEP mesh: no self-intersections');
-      }
+  // Self-intersection check only on manageable meshes (O(n²) cost)
+  // Note: STEP meshes with curved surfaces commonly have same-face
+  // self-intersections from flat-triangle approximation. Log as info
+  // rather than failing — this is a known tessellation limitation.
+  if (mesh.faces.length <= 50000) {
+    const si = detectSelfIntersections(mesh.faces, { sameTopoFaceOnly: true });
+    if (si.count > 0) {
+      console.log(`  ⚠ STEP mesh: ${si.count} same-face self-intersections (known tessellation artifact)`);
     } else {
-      console.log(`  ⚠ STEP self-intersection check skipped (${mesh.faces.length} faces — too large for O(n²) check)`);
+      assert(true, 'STEP mesh: no self-intersections');
     }
-
-    // Degenerate face check (O(n), always fast)
-    const df = detectDegenerateFaces(mesh.faces);
-    assert(df.count === 0, `STEP mesh: no degenerate faces (got ${df.count})`);
-  } catch (err) {
-    console.log(`  ⚠ STEP corpus test skipped: ${err.message}`);
+  } else {
+    console.log(`  ⚠ STEP self-intersection check skipped (${mesh.faces.length} faces — too large for O(n²) check)`);
   }
+
+  // Degenerate face check (O(n), always fast)
+  const df = detectDegenerateFaces(mesh.faces);
+  assert(df.count === 0, `STEP mesh: no degenerate faces (got ${df.count})`);
 }
 
 // ============================================================
