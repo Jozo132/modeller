@@ -61,6 +61,18 @@ function parseCliArgs(argv) {
   let samplePattern = '';
   let writeScorecardPath = '';
   let allowFailures = false;
+  let regressionGate = false;
+  // Tolerance expressed in percentage points (the scorecard is rendered to 0.1% precision,
+  // so anything larger than 0.1pp is a genuine drop and not a formatting artifact).
+  let regressionTolerance = 0.3;
+
+  const parseTolerance = (raw) => {
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      throw new Error(`Invalid --regression-gate tolerance: ${raw}`);
+    }
+    return parsed;
+  };
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -90,10 +102,25 @@ function parseCliArgs(argv) {
       allowFailures = true;
       continue;
     }
+    if (arg === '--regression-gate') {
+      regressionGate = true;
+      const next = argv[i + 1];
+      if (next && !next.startsWith('--')) {
+        regressionTolerance = parseTolerance(next);
+        i++;
+      }
+      continue;
+    }
+    if (arg.startsWith('--regression-gate=')) {
+      regressionGate = true;
+      regressionTolerance = parseTolerance(arg.slice('--regression-gate='.length));
+      continue;
+    }
     if (arg === '--help' || arg === '-h') {
       console.log(
         'Usage: node tests/test-step-import-nist.js ' +
-        '[--sample <substring>] [--write-scorecard [path]] [--allow-failures]',
+        '[--sample <substring>] [--write-scorecard [path]] [--allow-failures] ' +
+        '[--regression-gate [tolerance-pp]]',
       );
       process.exit(0);
     }
@@ -104,6 +131,8 @@ function parseCliArgs(argv) {
     samplePattern: samplePattern.trim().toLowerCase(),
     writeScorecardPath: writeScorecardPath ? path.resolve(process.cwd(), writeScorecardPath) : '',
     allowFailures,
+    regressionGate,
+    regressionTolerance,
   };
 }
 
@@ -1618,13 +1647,166 @@ function printReport(report) {
   }
 }
 
+// --- Regression gate -----------------------------------------------------
+// Parses the committed NIST scorecard markdown (tests/step-import-nist-scorecard.md)
+// into a per-sample, per-column baseline. Used by --regression-gate to fail the
+// suite if any metric drops by more than a tolerance (percentage points).
+
+const GATE_COLUMN_TITLES = {
+  Planes: 'planes',
+  Cylinders: 'cylinders',
+  Cones: 'cones',
+  Spheres: 'spheres',
+  Tori: 'tori',
+  BSplines: 'bsplines',
+  Faces: 'faces',
+  Geometry: 'geometry',
+  HolesExact: 'holesExact',
+  InnerLoops: 'innerLoops',
+  Vertices: 'vertices',
+  Circles: 'circles',
+  OVERALL: 'overall',
+};
+
+function parseScorecardBaseline(markdown) {
+  const lines = markdown.split(/\r?\n/);
+  // Locate the rendered ASCII table inside the fenced ```text block.
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trim() === '```text') {
+      start = i + 1;
+      break;
+    }
+  }
+  if (start < 0) throw new Error('Scorecard baseline: could not locate ```text table block');
+
+  const tableLines = [];
+  for (let i = start; i < lines.length; i++) {
+    if (lines[i].trim() === '```') break;
+    tableLines.push(lines[i]);
+  }
+  // Expect at least: border, header, border, data rows..., border
+  if (tableLines.length < 5) throw new Error('Scorecard baseline: table too short');
+
+  const header = tableLines[1];
+  const cells = header.split('|').map((cell) => cell.trim()).filter((cell) => cell.length > 0);
+  const columnKeys = cells.map((title) => GATE_COLUMN_TITLES[title] ?? null);
+  if (columnKeys[0] !== null && cells[0] !== 'File') {
+    throw new Error('Scorecard baseline: first column must be File');
+  }
+
+  const rows = {};
+  for (let i = 3; i < tableLines.length - 1; i++) {
+    const line = tableLines[i];
+    if (!line.startsWith('|')) continue;
+    const parts = line.split('|').map((cell) => cell.trim());
+    // parts[0] and parts[last] are empty (outer pipes)
+    const dataCells = parts.slice(1, parts.length - 1);
+    if (dataCells.length !== cells.length) continue;
+    const fileLabel = dataCells[0];
+    if (!fileLabel || fileLabel === 'AVERAGE') continue;
+    const scores = {};
+    for (let c = 1; c < cells.length; c++) {
+      const key = columnKeys[c];
+      if (!key) continue;
+      const raw = dataCells[c];
+      if (raw === 'n/a' || raw === '') {
+        scores[key] = null;
+      } else {
+        const m = /^([\d.]+)%$/.exec(raw);
+        if (!m) continue;
+        scores[key] = Number(m[1]) / 100;
+      }
+    }
+    rows[fileLabel] = scores;
+  }
+
+  if (!Object.keys(rows).length) throw new Error('Scorecard baseline: no data rows parsed');
+  return rows;
+}
+
+function enforceRegressionGate(reports, baseline, tolerancePp) {
+  const toleranceFrac = tolerancePp / 100;
+  const regressions = [];
+  const missingFromBaseline = [];
+  const baselineLabels = new Set(Object.keys(baseline));
+
+  for (const report of reports) {
+    const label = modelLabel(report.file);
+    const baselineScores = baseline[label];
+    if (!baselineScores) {
+      missingFromBaseline.push(label);
+      continue;
+    }
+    baselineLabels.delete(label);
+    for (const [key, baselineValue] of Object.entries(baselineScores)) {
+      if (baselineValue == null) continue;
+      const currentValue = report.scores[key];
+      if (currentValue == null) {
+        regressions.push({
+          label,
+          metric: key,
+          baseline: baselineValue,
+          current: null,
+          delta: -baselineValue,
+        });
+        continue;
+      }
+      const delta = currentValue - baselineValue;
+      if (delta < -toleranceFrac) {
+        regressions.push({ label, metric: key, baseline: baselineValue, current: currentValue, delta });
+      }
+    }
+  }
+
+  const orphanBaseline = Array.from(baselineLabels);
+
+  console.log('\n=== Regression Gate ===');
+  console.log(`Tolerance: ${tolerancePp.toFixed(2)} percentage points per metric.`);
+  if (missingFromBaseline.length) {
+    console.log(`Samples missing from baseline (ignored): ${missingFromBaseline.join(', ')}`);
+  }
+  if (orphanBaseline.length) {
+    console.log(`Baseline samples not present in current run: ${orphanBaseline.join(', ')}`);
+  }
+
+  if (!regressions.length) {
+    console.log('Gate: PASS — no metric regressed beyond tolerance.');
+    return true;
+  }
+
+  console.log(`Gate: FAIL — ${regressions.length} metric regression(s):`);
+  for (const r of regressions) {
+    const before = formatPercent(r.baseline);
+    const after = r.current == null ? 'n/a' : formatPercent(r.current);
+    const deltaPp = (r.delta * 100).toFixed(2);
+    console.log(`  - ${r.label} / ${r.metric}: ${before} -> ${after} (Δ ${deltaPp} pp)`);
+  }
+  console.log(
+    'If this regression is intentional, regenerate the baseline with ' +
+    '`npm run test:nist-step:scorecard` and commit the updated markdown.',
+  );
+  return false;
+}
+
 async function main() {
-  const { samplePattern, writeScorecardPath, allowFailures } = parseCliArgs(process.argv.slice(2));
+  const {
+    samplePattern,
+    writeScorecardPath,
+    allowFailures,
+    regressionGate,
+    regressionTolerance,
+  } = parseCliArgs(process.argv.slice(2));
 
   let manifest;
   try {
     manifest = JSON.parse(await fs.readFile(MANIFEST_PATH, 'utf8'));
   } catch {
+    if (regressionGate) {
+      console.error('NIST regression gate: sample manifest not found. Run `npm run download` first.');
+      process.exitCode = 1;
+      return;
+    }
     console.log('NIST sample manifest not found. Run `npm run download` first.');
     return;
   }
@@ -1693,6 +1875,20 @@ async function main() {
     });
     await fs.writeFile(writeScorecardPath, markdown, 'utf8');
     console.log(`Scorecard written to ${path.relative(process.cwd(), writeScorecardPath) || writeScorecardPath}`);
+  }
+
+  if (regressionGate) {
+    let baseline;
+    try {
+      const mdRaw = await fs.readFile(DEFAULT_SCORECARD_PATH, 'utf8');
+      baseline = parseScorecardBaseline(mdRaw);
+    } catch (err) {
+      console.error(`NIST regression gate: failed to load baseline — ${err.message}`);
+      process.exitCode = 1;
+      return;
+    }
+    const passed = enforceRegressionGate(reports, baseline, regressionTolerance);
+    if (!passed) process.exitCode = 1;
   }
 
   if (failCount > 0 && !allowFailures) process.exitCode = 1;

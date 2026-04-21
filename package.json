@@ -55,6 +55,7 @@
     "test:telemetry": "node tests/test-telemetry.js",
     "test:assembly": "node tests/test-assembly-design.js",
     "test:nist-step": "node tests/test-step-import-nist.js",
+    "test:nist-step:gate": "node tests/test-step-import-nist.js --regression-gate --allow-failures",
     "test:nist-step:scorecard": "node tests/test-step-import-nist.js --write-scorecard tests/step-import-nist-scorecard.md --allow-failures",
     "test:nist-step:roundtrip": "node tests/test-step-roundtrip-nist.js",
     "test:e2e": "npx playwright test",
