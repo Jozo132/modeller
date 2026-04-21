@@ -6,6 +6,7 @@
 // - Feature reordering
 
 import { Feature } from './Feature.js';
+import { arrayBufferToBase64, base64ToArrayBuffer } from './CbrepEncoding.js';
 
 /**
  * FeatureTree manages the ordered list of parametric features.
@@ -667,9 +668,44 @@ export class FeatureTree {
    * Serialize the feature tree to JSON.
    */
   serialize() {
-    return {
+    const checkpoints = this._serializeCheckpoints();
+    const data = {
       features: this.features.map(f => f.serialize()),
     };
+    if (checkpoints) {
+      data.checkpoints = checkpoints;
+    }
+    return data;
+  }
+
+  /**
+   * H5: Collect per-feature CBREP checkpoints for every solid result that
+   * already carries a payload. This lets a later deserialize restore the
+   * cached exact bodies into freshly allocated WASM handles without
+   * re-running feature execution.
+   * @returns {Object|null} { [featureId]: { payload, hash } } or null when empty
+   */
+  _serializeCheckpoints() {
+    const out = {};
+    let count = 0;
+    for (const feature of this.features) {
+      const result = this.results[feature.id];
+      if (!result || result.type !== 'solid') continue;
+      const cbrep = result.cbrepBuffer;
+      if (!cbrep) continue;
+      let payload;
+      try {
+        payload = arrayBufferToBase64(cbrep);
+      } catch {
+        continue;
+      }
+      if (!payload) continue;
+      const entry = { payload };
+      if (result.irHash) entry.hash = result.irHash;
+      out[feature.id] = entry;
+      count++;
+    }
+    return count > 0 ? out : null;
   }
 
   /**
@@ -687,7 +723,7 @@ export class FeatureTree {
     }
 
     if (!data || !data.features) return tree;
-    
+
     // Deserialize features in order
     for (const featureData of data.features) {
       const feature = featureFactory(featureData);
@@ -696,10 +732,45 @@ export class FeatureTree {
         tree.featureMap.set(feature.id, feature);
       }
     }
-    
+
     // Execute all features to rebuild results
     tree.executeAll();
-    
+
+    // H5: After replay, attach any serialized per-feature CBREP checkpoints so
+    // their payloads are available for the fast-restore path (H3/H4) and so
+    // residency is populated for every solid result. When a checkpoint's hash
+    // does not match the freshly produced irHash the checkpoint is skipped —
+    // the replay result is authoritative.
+    tree._applySerializedCheckpoints(data.checkpoints);
+
     return tree;
+  }
+
+  /**
+   * H5: Attach serialized CBREP checkpoints onto their matching live results.
+   * Safe to call with null/undefined (no-op).
+   * @param {Object|null|undefined} checkpoints
+   */
+  _applySerializedCheckpoints(checkpoints) {
+    if (!checkpoints || typeof checkpoints !== 'object') return;
+    for (const feature of this.features) {
+      const entry = checkpoints[feature.id];
+      if (!entry || !entry.payload) continue;
+      const result = this.results[feature.id];
+      if (!result || result.type !== 'solid') continue;
+      // If the live replay produced an irHash and the checkpoint hash does
+      // not match, the replay result is authoritative and we drop the stale
+      // checkpoint.
+      if (result.irHash && entry.hash && result.irHash !== entry.hash) continue;
+
+      let buffer;
+      try {
+        buffer = base64ToArrayBuffer(entry.payload);
+      } catch {
+        continue;
+      }
+      if (!buffer) continue;
+      this.attachCbrep(feature.id, buffer, entry.hash ?? result.irHash ?? null);
+    }
   }
 }

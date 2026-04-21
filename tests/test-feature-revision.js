@@ -508,6 +508,89 @@ console.log('\n=== Part lifecycle wiring ===');
     'partial restore still hydrates the solids that do have cached CBREPs');
 }
 
+console.log('\n=== H5: per-feature CBREP checkpoints ===');
+
+{
+  // serialize emits a checkpoint for every solid result with a cached CBREP.
+  const tree = new FeatureTree();
+  const featureA = new StubSolidWithHash('a', 'hash-a');
+  const featureB = new StubSolid('b'); // no irHash
+  const featureC = new StubSolid('c'); // no CBREP — should be absent from checkpoints
+  tree.addFeature(featureA);
+  tree.addFeature(featureB);
+  tree.addFeature(featureC);
+  tree.results[featureA.id].cbrepBuffer = new Uint8Array([10, 20, 30]).buffer;
+  tree.results[featureB.id].cbrepBuffer = new Uint8Array([40, 50]).buffer;
+
+  const serialized = tree.serialize();
+  assert(serialized.checkpoints && typeof serialized.checkpoints === 'object',
+    'serialize includes a checkpoints map when any solid has a cached CBREP');
+  assert(serialized.checkpoints[featureA.id] && typeof serialized.checkpoints[featureA.id].payload === 'string',
+    'feature with cbrepBuffer produces a base64 payload checkpoint');
+  assert(serialized.checkpoints[featureA.id].hash === 'hash-a',
+    'irHash is preserved in the checkpoint when the result carries one');
+  assert(serialized.checkpoints[featureB.id] && serialized.checkpoints[featureB.id].payload,
+    'feature without irHash still produces a payload checkpoint');
+  assert(serialized.checkpoints[featureB.id].hash === undefined,
+    'checkpoint omits hash when the result has none');
+  assert(serialized.checkpoints[featureC.id] === undefined,
+    'feature without cbrepBuffer is not present in the checkpoints map');
+}
+
+{
+  // serialize omits the checkpoints key entirely when there is nothing to persist.
+  const tree = new FeatureTree();
+  tree.addFeature(new StubSolid('fresh'));
+  const serialized = tree.serialize();
+  assert(!('checkpoints' in serialized),
+    'serialize omits checkpoints when no solid result carries a cached CBREP');
+}
+
+{
+  // deserialize restores checkpoints onto live results via attachCbrep.
+  const original = new FeatureTree();
+  const featureA = new StubSolidWithHash('a', 'hash-a');
+  original.addFeature(featureA);
+  original.results[featureA.id].cbrepBuffer = new Uint8Array([7, 8, 9]).buffer;
+  const serialized = original.serialize();
+
+  const reg = new MockHandleRegistry();
+  const residency = new MockResidencyManager();
+  const restored = FeatureTree.deserialize(serialized, (data) => {
+    // Factory reproduces the stubs by id so the restore path can match.
+    const stub = new StubSolidWithHash(data.name || 'a', 'hash-a');
+    stub.id = data.id || stub.id;
+    return stub;
+  }, { handleRegistry: reg, residencyManager: residency });
+
+  const restoredFeature = restored.features[0];
+  const restoredResult = restored.results[restoredFeature.id];
+  assert(restoredResult && restoredResult.cbrepBuffer,
+    'deserialize reattaches the CBREP payload onto the restored solid result');
+  assert(restoredResult.cbrepBuffer.byteLength === 3,
+    'reattached CBREP payload has the original byte length');
+  assert(residency.storeCalls.some(c => c.featureId === restoredFeature.id),
+    'checkpoint restore mirrors the payload into the residency manager');
+  // attachCbrep also hydrates the live handle, so the result should be resident.
+  assert(restoredResult.wasmHandleResident === true,
+    'checkpoint restore hydrates the live WASM handle');
+}
+
+{
+  // stale checkpoints (hash mismatch against a freshly replayed result) are dropped.
+  const tree = new FeatureTree();
+  const featureA = new StubSolidWithHash('a', 'fresh-hash');
+  tree.addFeature(featureA);
+  // Simulate serialized data with a stale hash and mismatched payload.
+  const staleCheckpoint = {
+    [featureA.id]: { payload: 'AAECAw==' /* [0,1,2,3] */, hash: 'stale-hash' },
+  };
+  tree._applySerializedCheckpoints(staleCheckpoint);
+  const result = tree.results[featureA.id];
+  assert(!result.cbrepBuffer,
+    'stale checkpoint (hash mismatch) is dropped rather than overwriting the live result');
+}
+
 {
   const pm = new PartManager();
   const reg = new MockHandleRegistry();
