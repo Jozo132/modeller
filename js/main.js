@@ -2952,6 +2952,18 @@ class App {
         await this._renderer3d.initGpuTessPipeline(registry);
       }
 
+      // H9: preload the WASM octree broadphase used by Intersections.js.
+      // Without this, `intersectBodies` always fell through to the O(N×M) JS
+      // AABB broadphase because nothing ever awaited `_ensureWasm()`. This
+      // fire-and-forget await ensures the first boolean benefits from the
+      // octree path as soon as WASM is ready.
+      try {
+        const { preloadIntersectionsWasm } = await import('./cad/Intersections.js');
+        await preloadIntersectionsWasm();
+      } catch (e) {
+        warn('[WASM] Intersections WASM preload failed (non-fatal):', e);
+      }
+
       info('[WASM] Handle registry + residency manager initialized');
     } catch (e) {
       warn('[WASM] Handle subsystem init failed (non-fatal):', e);

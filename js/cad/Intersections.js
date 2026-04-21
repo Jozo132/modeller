@@ -15,17 +15,45 @@ import { GeometryEvaluator } from './GeometryEvaluator.js';
 // Lazy WASM module reference (same singleton as StepImportWasm.js)
 let _wasm = null;
 let _wasmMem = null;
+// H9: a single in-flight load promise. Intersections.js used to define
+// `_ensureWasm()` but never await it anywhere, so `_wasmReady()` was
+// always false and the octree broadphase below was pure dead code — every
+// boolean fell through to the O(N×M) JS `_aabbBroadphase`. Keeping the
+// load lazy means consumers in hot paths stay synchronous; the first
+// `intersectBodies` call starts the load fire-and-forget so subsequent
+// calls benefit from the WASM octree, and callers that can afford to
+// await (main.js bootstrap, tests) can explicitly `preloadIntersectionsWasm()`.
+let _wasmLoadPromise = null;
 async function _ensureWasm() {
   if (_wasm) return true;
-  try {
-    const mod = await import('../../build/release.js');
-    _wasm = mod;
-    _wasmMem = mod.memory;
-    return true;
-  } catch { return false; }
+  if (!_wasmLoadPromise) {
+    _wasmLoadPromise = (async () => {
+      try {
+        const mod = await import('../../build/release.js');
+        _wasm = mod;
+        _wasmMem = mod.memory;
+        return true;
+      } catch {
+        _wasm = null;
+        return false;
+      }
+    })();
+  }
+  return _wasmLoadPromise;
 }
 // Synchronous check only
 function _wasmReady() { return _wasm != null; }
+
+/**
+ * Preload the WASM kernel so subsequent `intersectBodies` calls can use the
+ * O(N log N) octree broadphase instead of the O(N×M) JS fallback. Safe to
+ * call more than once; subsequent calls share the same in-flight promise.
+ *
+ * @returns {Promise<boolean>} true if WASM is available after the call.
+ */
+export async function preloadIntersectionsWasm() {
+  return _ensureWasm();
+}
 
 /**
  * Compute an axis-aligned bounding box for a TopoFace from its boundary
@@ -139,6 +167,9 @@ export function intersectBodies(bodyA, bodyB, tol = DEFAULT_TOLERANCE) {
   if (_wasmReady() && facesA.length + facesB.length > 8) {
     candidatePairs = _wasmOctreeBroadphase(facesA, facesB, aabbsA, aabbsB);
   } else {
+    // H9: kick off a fire-and-forget load so the next call can use the
+    // octree broadphase. `_ensureWasm` de-dupes concurrent loads.
+    if (!_wasm) _ensureWasm();
     candidatePairs = _aabbBroadphase(facesA, facesB, aabbsA, aabbsB);
   }
 
