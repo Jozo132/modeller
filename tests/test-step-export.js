@@ -210,6 +210,51 @@ test('exportSTEP: B-spline surface export', () => {
   assert.ok(step.includes('B_SPLINE_SURFACE_WITH_KNOTS'), 'Should contain B-spline surface');
 });
 
+test('exportSTEP: rational revolved surfaces and arcs export rational B-splines', () => {
+  resetTopoIds();
+  const axisOrigin = { x: 0, y: 0, z: 0 };
+  const axis = { x: 0, y: 0, z: 1 };
+  const xDir = { x: 1, y: 0, z: 0 };
+  const yDir = { x: 0, y: 1, z: 0 };
+  const crossSection = NurbsCurve.createLine(
+    { x: 6, y: 0, z: -1 },
+    { x: 6, y: 0, z: 1 },
+  );
+  const surface = NurbsSurface.createRevolvedSurface(
+    crossSection,
+    axisOrigin,
+    axis,
+    xDir,
+    yDir,
+    0,
+    Math.PI / 2,
+  );
+
+  const body = buildTopoBody([
+    {
+      surfaceType: SurfaceType.BSPLINE,
+      vertices: [
+        { x: 6, y: 0, z: -1 },
+        { x: 6, y: 0, z: 1 },
+        { x: 0, y: 6, z: 1 },
+        { x: 0, y: 6, z: -1 },
+      ],
+      surface,
+      edgeCurves: [
+        NurbsCurve.createLine({ x: 6, y: 0, z: -1 }, { x: 6, y: 0, z: 1 }),
+        NurbsCurve.createArc({ x: 0, y: 0, z: 1 }, 6, xDir, yDir, 0, Math.PI / 2),
+        NurbsCurve.createLine({ x: 0, y: 6, z: 1 }, { x: 0, y: 6, z: -1 }),
+        NurbsCurve.createArc({ x: 0, y: 0, z: -1 }, 6, xDir, yDir, Math.PI / 2, -Math.PI / 2),
+      ],
+      shared: null,
+    },
+  ]);
+
+  const step = exportSTEP(body);
+  assert.ok(step.includes('RATIONAL_B_SPLINE_SURFACE'), 'Rational revolved surfaces should export rational surface weights');
+  assert.ok(step.includes('RATIONAL_B_SPLINE_CURVE'), 'Arc edge curves should export rational curve weights');
+});
+
 test('exportSTEP: edge curves produce LINE entities', () => {
   resetTopoIds();
   const body = buildTopoBody([
