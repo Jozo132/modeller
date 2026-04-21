@@ -720,13 +720,9 @@ test('puzzle-extrude-cc2.cmod (double chamfer with cone) produces valid re-tesse
   assert.ok(downTop < 20, `Should have <20 downward top faces, got ${downTop}`);
 });
 
-test('puzzle-extrude-cc3.cmod produces valid mesh if present', () => {
+test('puzzle-extrude-cc3.cmod produces valid mesh', () => {
   const part = loadCMOD('puzzle-extrude-cc3.cmod');
-  if (!part) {
-    console.log('    (skipped: file not present)');
-    passed++;
-    return;
-  }
+  assert.ok(part, 'Required corpus tests/samples/puzzle-extrude-cc3.cmod must exist');
   const geom = getFinalGeometry(part);
   assert.ok(geom, 'Should have geometry');
   validateGeometry(geom, 'puzzle-extrude-cc3', { allowBoundaryEdges: true, maxInvertedFaces: 10 });
@@ -798,11 +794,7 @@ console.log('\n=== Feature Pipeline — Extrude + Cut + Chamfer ===\n');
 
 test('extrude-on-extrude-dual-with-cut-and-chamfer.cmod produces valid mesh', () => {
   const part = loadCMOD('extrude-on-extrude-dual-with-cut-and-chamfer.cmod');
-  if (!part) {
-    console.log('    (skipped: file not present)');
-    passed++;
-    return;
-  }
+  assert.ok(part, 'Required corpus tests/samples/extrude-on-extrude-dual-with-cut-and-chamfer.cmod must exist');
   const geom = getFinalGeometry(part);
   assert.ok(geom, 'Should have geometry');
   validateGeometry(geom, 'extrude-cut-chamfer');
@@ -810,11 +802,7 @@ test('extrude-on-extrude-dual-with-cut-and-chamfer.cmod produces valid mesh', ()
 
 test('extrude-on-extrude-dual-with-cut-and-chamfer-fillet.cmod produces valid mesh', () => {
   const part = loadCMOD('extrude-on-extrude-dual-with-cut-and-chamfer-fillet.cmod');
-  if (!part) {
-    console.log('    (skipped: file not present)');
-    passed++;
-    return;
-  }
+  assert.ok(part, 'Required corpus tests/samples/extrude-on-extrude-dual-with-cut-and-chamfer-fillet.cmod must exist');
   const geom = getFinalGeometry(part);
   assert.ok(geom, 'Should have geometry');
   // This complex model may have boundary edges from curved surface tessellation;
@@ -1097,11 +1085,7 @@ test('simple-extrude-cut.cmod produces valid mesh with no internal faces', () =>
 
 test('extrude-on-extrude-dual-with-cut-and-radius.cmod (fillet after cut) produces valid mesh', () => {
   const part = loadCMOD('extrude-on-extrude-dual-with-cut-and-radius.cmod');
-  if (!part) {
-    console.log('    (skipped: file not present)');
-    passed++;
-    return;
-  }
+  assert.ok(part, 'Required corpus tests/samples/extrude-on-extrude-dual-with-cut-and-radius.cmod must exist');
   const geom = getFinalGeometry(part);
   assert.ok(geom, 'Should have geometry');
   // Known: fillet after extrude-cut may produce boundary edges.
