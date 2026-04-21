@@ -406,9 +406,8 @@ if (wasmLoaded) {
   }
 
 } else {
-  console.log('  ⚠ WASM module not available — skipping WASM-specific tests');
-  // Still count skipped tests as passed (WASM is optional)
-  passed += 15;
+  console.log('  ✗ WASM module not available — WASM-specific tessellation coverage is required');
+  failed++;
 }
 
 // ─── Results ─────────────────────────────────────────────────────────

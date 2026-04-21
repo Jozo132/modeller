@@ -60,9 +60,9 @@ test('CAD_USE_ROBUST_TESSELLATOR defaults to true', () => {
   assert.strictEqual(getFlag('CAD_USE_ROBUST_TESSELLATOR'), true);
 });
 
-test('CAD_ALLOW_DISCRETE_FALLBACK defaults to true', () => {
+test('CAD_ALLOW_DISCRETE_FALLBACK defaults to false', () => {
   resetFlags();
-  assert.strictEqual(getFlag('CAD_ALLOW_DISCRETE_FALLBACK'), true);
+  assert.strictEqual(getFlag('CAD_ALLOW_DISCRETE_FALLBACK'), false);
 });
 
 test('CAD_STRICT_INVARIANTS defaults to false', () => {

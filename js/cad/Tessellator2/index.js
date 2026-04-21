@@ -1908,12 +1908,12 @@ function _collectLoopPoints(loop, edgeSampler, edgeSegs) {
 /**
  * Config-routed tessellation entry point.
  *
- * Routes to either the legacy or robust tessellator based on the
- * `tessellator` field in the config/opts.
+ * Routes B-Rep bodies through the robust tessellator only.
+ * Legacy ear-clipping fallback has been removed from this router.
  *
  * @param {import('../BRepTopology.js').TopoBody} body
  * @param {Object} [opts]
- * @param {string} [opts.tessellator='legacy'] - 'legacy' or 'robust'
+ * @param {string} [opts.tessellator] - Ignored for B-Rep bodies; robust only
  * @param {number} [opts.surfaceSegments=8]
  * @param {number} [opts.edgeSegments=16]
  * @param {number} [opts.curveSegments=16]

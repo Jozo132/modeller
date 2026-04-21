@@ -2,8 +2,8 @@
 //
 // All CAD-kernel feature flags live here. Flags that correspond to the
 // new integrated kernel stack default to ON so the robust pipeline is
-// used by default.  Safety/diagnostics-only flags (strict invariants,
-// diagnostics directory) still default to OFF.
+// used by default. Safety/diagnostics-only flags default to OFF, and
+// failure-masking escape hatches stay opt-in.
 //
 // Flags can be set via:
 //   1. Environment variables  (Node.js: process.env.CAD_*)
@@ -62,8 +62,8 @@ const FLAG_DEFS = [
   {
     name: 'CAD_ALLOW_DISCRETE_FALLBACK',
     type: 'boolean',
-    defaultValue: true,
-    description: 'Allow discrete mesh fallback when exact boolean path fails.',
+    defaultValue: false,
+    description: 'Allow discrete mesh fallback when exact boolean path fails (opt-in only).',
   },
   {
     name: 'CAD_STRICT_INVARIANTS',

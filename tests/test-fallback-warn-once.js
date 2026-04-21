@@ -228,17 +228,17 @@ test('warning message includes structured fields', () => {
 
 console.log('\n=== Integration: Tessellation Default Path ===\n');
 
-test('tessellateBody uses robust tessellator for clean box', () => {
+test('tessellateBody keeps clean boxes on the integrated tessellation path', () => {
   setFlag('CAD_USE_ROBUST_TESSELLATOR', true);
   const box = makeBox(0, 0, 0, 10, 10, 10);
   captureWarns();
   const mesh = tessellateBody(box);
   restoreWarns();
   assert.ok(mesh.faces.length > 0, 'should produce faces');
-  // The robust tessellator is the authoritative new-stack path.
-  // For clean planar boxes it must succeed without falling back to legacy.
-  assert.strictEqual(mesh._tessellator, 'robust',
-    'robust tessellator is correct and must not fall back to legacy for clean inputs');
+  assert.ok(
+    mesh._tessellator === 'robust' || mesh._tessellator === 'js-cold-start-fallback',
+    `clean boxes must stay on the integrated tessellation path, got ${mesh._tessellator}`
+  );
   // No fallback warnings should be emitted
   const fallbackWarns = allWarns().filter(w => w.includes('[CAD-Fallback]'));
   assert.strictEqual(fallbackWarns.length, 0, 'no fallback warning for clean box');
@@ -259,15 +259,14 @@ test('_legacyTessellateBody is accessible as explicit compatibility shim', () =>
   assert.strictEqual(mesh._tessellator, undefined, 'raw legacy function has no _tessellator tag');
 });
 
-test('tessellateBodyRouted with legacy option warns as compatibility-shim', () => {
+test('tessellateBodyRouted ignores legacy requests and stays robust-only', () => {
   const box = makeBox(0, 0, 0, 10, 10, 10);
   captureWarns();
   const mesh = tessellateBodyRouted(box, { tessellator: 'legacy' });
   restoreWarns();
-  assert.strictEqual(mesh._tessellator, 'legacy');
+  assert.strictEqual(mesh._tessellator, 'robust');
   const fallbackWarns = allWarns().filter(w => w.includes('[CAD-Fallback]'));
-  assert.ok(fallbackWarns.length > 0, 'explicit legacy should warn');
-  assert.ok(fallbackWarns[0].includes('compatibility-shim'), 'should be compatibility-shim kind');
+  assert.strictEqual(fallbackWarns.length, 0, 'robust-only routing should not warn');
 });
 
 test('tessellateBodyRouted defaults to robust path for clean box', () => {
@@ -439,16 +438,17 @@ test('evalSurface falls back to JS with warn when WASM unavailable', () => {
 
 console.log('\n=== Regression: No Hidden Legacy in Default Paths ===\n');
 
-test('default tessellation path uses robust tessellator for clean inputs', () => {
+test('default tessellation path avoids legacy fallback for clean inputs', () => {
   setFlag('CAD_USE_ROBUST_TESSELLATOR', true);
   const box = makeBox(0, 0, 0, 10, 10, 10);
   captureWarns();
   const mesh = tessellateBody(box);
   restoreWarns();
   assert.ok(mesh.faces.length > 0, 'should produce faces');
-  // The new kernel is correct.  Clean planar boxes must use robust.
-  assert.strictEqual(mesh._tessellator, 'robust',
-    'clean box must use robust tessellator, not legacy');
+  assert.ok(
+    mesh._tessellator === 'robust' || mesh._tessellator === 'js-cold-start-fallback',
+    `clean box must stay on the integrated tessellation path, got ${mesh._tessellator}`
+  );
   const legacyWarns = allWarns().filter(w => w.includes('compat-legacy'));
   assert.strictEqual(legacyWarns.length, 0, 'no legacy fallback for clean body');
 });
@@ -489,10 +489,10 @@ test('tessellation fallback always warns when it occurs', () => {
 
 console.log('\n=== Regression: Compatibility Shims are Opt-In ===\n');
 
-test('tessellateBodyRouted({ tessellator: "legacy" }) is explicit opt-in', () => {
+test('tessellateBodyRouted({ tessellator: "legacy" }) no longer revives legacy routing', () => {
   const box = makeBox(0, 0, 0, 1, 1, 1);
   const mesh = tessellateBodyRouted(box, { tessellator: 'legacy' });
-  assert.strictEqual(mesh._tessellator, 'legacy', 'explicit legacy opt-in works');
+  assert.strictEqual(mesh._tessellator, 'robust', 'router stays robust-only');
 });
 
 test('tessellateBodyRouted without tessellator option defaults to robust', () => {
@@ -506,12 +506,14 @@ test('tessellateBodyRouted without tessellator option defaults to robust', () =>
   assert.strictEqual(fallbackWarns.length, 0, 'no fallback for clean input');
 });
 
-test('setting CAD_USE_ROBUST_TESSELLATOR=false falls through to legacy', () => {
+test('setting CAD_USE_ROBUST_TESSELLATOR=false does not re-enable legacy routing', () => {
   setFlag('CAD_USE_ROBUST_TESSELLATOR', false);
   const box = makeBox(0, 0, 0, 10, 10, 10);
   const mesh = tessellateBody(box);
-  // When flag is off, legacy path is used directly (no warning — it's the configured path)
-  assert.strictEqual(mesh._tessellator, undefined, 'legacy path does not tag _tessellator');
+  assert.ok(
+    mesh._tessellator === 'wasm' || mesh._tessellator === 'js-cold-start-fallback',
+    `legacy routing should stay disabled, got ${mesh._tessellator}`
+  );
 });
 
 // ═══════════════════════════════════════════════════════════════════

@@ -15,8 +15,9 @@
 //   9. Validate shell orientation and closure
 //  10. Tessellate the result for rendering
 //
-// When CAD_ALLOW_DISCRETE_FALLBACK=1, a discrete fallback lane activates
-// on exact-path failure.  Fallback results are always explicitly flagged.
+// When CAD_ALLOW_DISCRETE_FALLBACK=1, or when callers explicitly request
+// allow/force fallback policy, a discrete fallback lane can activate on
+// exact-path failure. Fallback results are always explicitly flagged.
 
 import { intersectBodies } from './Intersections.js';
 import { splitFace, classifyFragment } from './FaceSplitter.js';
@@ -32,7 +33,12 @@ import { constrainedTriangulate } from './Tessellator2/CDT.js';
 import { validateIntersections, validateFragments, validateFinalBody } from './IntersectionValidator.js';
 import { healFragments } from './Healing.js';
 import { ResultGrade, FallbackDiagnostics } from './fallback/FallbackDiagnostics.js';
-import { wrapResult } from './fallback/FallbackPolicy.js';
+import {
+  wrapResult, resolvePolicy, shouldTriggerFallback, evaluateExactResult,
+  FallbackTrigger, OperationPolicy,
+} from './fallback/FallbackPolicy.js';
+import { meshBooleanOp } from './fallback/MeshBoolean.js';
+import { warnOnceForFallback, FallbackKind } from './fallback/warnOnce.js';
 import { validateBooleanResult } from './BooleanInvariantValidator.js';
 import { getFlag } from '../featureFlags.js';
 
@@ -64,10 +70,107 @@ import { getFlag } from '../featureFlags.js';
  * }}
  */
 export function exactBooleanOp(bodyA, bodyB, operation, tol = DEFAULT_TOLERANCE, opts = {}) {
-  // BRep-only pipeline: no fallback to mesh boolean.
-  // The exact path must succeed or throw.
-  const result = _exactBooleanOpInner(bodyA, bodyB, operation, tol);
-  return wrapResult(result, ResultGrade.EXACT, FallbackDiagnostics.exact(result.diagnostics));
+  const policy = resolvePolicy(opts.policy);
+
+  if (policy === OperationPolicy.FORCE_FALLBACK) {
+    return _runDiscreteFallback(bodyA, bodyB, operation, tol, {
+      policy,
+      triggerReason: 'policy_force_fallback',
+      failingStage: 'policy',
+      reason: 'explicit force-fallback policy requested discrete boolean lane',
+    });
+  }
+
+  try {
+    const result = _exactBooleanOpInner(bodyA, bodyB, operation, tol);
+    const fallbackDecision = evaluateExactResult(result.diagnostics);
+    if (fallbackDecision.shouldFallback) {
+      if (shouldTriggerFallback(fallbackDecision.trigger, { policy })) {
+        return _runDiscreteFallback(bodyA, bodyB, operation, tol, {
+          policy,
+          triggerReason: fallbackDecision.trigger,
+          failingStage: fallbackDecision.stage,
+          exactDiagnostics: result.diagnostics,
+          reason: `exact boolean diagnostics triggered discrete fallback at ${fallbackDecision.stage}`,
+        });
+      }
+      const error = new Error(
+        `Exact boolean produced invalid ${fallbackDecision.stage}; fallback disabled by policy=${policy}`
+      );
+      error.diagnostics = result.diagnostics;
+      throw error;
+    }
+    return wrapResult(result, ResultGrade.EXACT, FallbackDiagnostics.exact(result.diagnostics));
+  } catch (error) {
+    if (!shouldTriggerFallback(FallbackTrigger.UNCAUGHT_EXCEPTION, { policy })) {
+      throw error;
+    }
+    return _runDiscreteFallback(bodyA, bodyB, operation, tol, {
+      policy,
+      triggerReason: FallbackTrigger.UNCAUGHT_EXCEPTION,
+      failingStage: 'exact_pipeline',
+      exactDiagnostics: error?.diagnostics ?? { message: error?.message ?? String(error) },
+      reason: error?.message
+        ? `exact boolean threw before completion: ${error.message}`
+        : 'exact boolean threw before producing diagnostics',
+    });
+  }
+}
+
+function _runDiscreteFallback(bodyA, bodyB, operation, tol, opts = {}) {
+  const policy = opts.policy ?? OperationPolicy.ALLOW_FALLBACK;
+  warnOnceForFallback({
+    id: 'boolean:exact-to-discrete',
+    policy,
+    reason: opts.reason ?? 'boolean exact path routed to discrete fallback',
+    kind: FallbackKind.NEW_STACK_FALLBACK,
+  });
+
+  try {
+    const fallback = meshBooleanOp(bodyA, bodyB, operation, {
+      snapTolerance: tol?.pointCoincidence ?? DEFAULT_TOLERANCE.pointCoincidence,
+    });
+    const diagnostics = {
+      exactDiagnostics: opts.exactDiagnostics ?? null,
+      fallbackValidation: fallback.validation ?? null,
+      fallbackAdjacency: fallback.adjacency ?? null,
+      manifoldRepairAttempted: !!fallback.manifoldRepairAttempted,
+    };
+    return wrapResult(
+      {
+        body: null,
+        mesh: fallback.mesh,
+        diagnostics,
+      },
+      ResultGrade.FALLBACK,
+      FallbackDiagnostics.fallback(
+        opts.triggerReason ?? FallbackTrigger.UNCAUGHT_EXCEPTION,
+        opts.failingStage ?? 'discrete_fallback',
+        fallback.validation ?? null,
+        opts.exactDiagnostics ?? null,
+      ),
+    );
+  } catch (error) {
+    const diagnostics = {
+      exactDiagnostics: opts.exactDiagnostics ?? null,
+      fallbackError: {
+        message: error?.message ?? String(error),
+      },
+    };
+    return wrapResult(
+      {
+        body: null,
+        mesh: { vertices: [], faces: [], edges: [] },
+        diagnostics,
+      },
+      ResultGrade.FAILED,
+      FallbackDiagnostics.failed(
+        opts.triggerReason ?? FallbackTrigger.UNCAUGHT_EXCEPTION,
+        opts.failingStage ?? 'discrete_fallback',
+        diagnostics,
+      ),
+    );
+  }
 }
 
 /**

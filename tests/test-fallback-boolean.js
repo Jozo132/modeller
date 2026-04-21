@@ -209,10 +209,10 @@ test('FallbackTrigger contains expected reasons', () => {
   assert.ok(FallbackTrigger.UNCAUGHT_EXCEPTION);
 });
 
-test('isFallbackEnabled reflects feature flag default (now true)', () => {
-  // isFallbackEnabled() now uses the centralized feature flag module.
-  // The default is ON, so without any env override it should be true.
-  assert.strictEqual(isFallbackEnabled(), true);
+test('isFallbackEnabled reflects fail-closed feature flag default', () => {
+  // Discrete fallback is now opt-in, so the default must stay false unless
+  // explicitly enabled via env or setFlag().
+  assert.strictEqual(isFallbackEnabled(), false);
 });
 
 test('shouldTriggerFallback respects env and allowlist', () => {

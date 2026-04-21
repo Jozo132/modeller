@@ -121,14 +121,14 @@ function makeBox(x, y, z, w, h, d) {
 console.log('=== API Migration: Feature Flag Defaults ===\n');
 // ====================================================================
 
-test('all kernel-stack flags default to ON', () => {
+test('kernel-stack defaults stay enabled except discrete fallback', () => {
   resetFlags();
   assert.strictEqual(getFlag('CAD_USE_IR_CACHE'), true);
   assert.strictEqual(getFlag('CAD_IR_CACHE_MODE'), 'memory');
   assert.strictEqual(getFlag('CAD_USE_WASM_EVAL'), true);
   assert.strictEqual(getFlag('CAD_USE_GWN_CONTAINMENT'), true);
   assert.strictEqual(getFlag('CAD_USE_ROBUST_TESSELLATOR'), true);
-  assert.strictEqual(getFlag('CAD_ALLOW_DISCRETE_FALLBACK'), true);
+  assert.strictEqual(getFlag('CAD_ALLOW_DISCRETE_FALLBACK'), false);
 });
 
 test('safety flags still default to OFF', () => {
@@ -156,8 +156,8 @@ test('tessellateBody uses robust tessellator by default for clean models', () =>
   const mesh = tessellateBody(box);
   assert.ok(mesh.faces.length > 0, 'Should produce faces');
   assert.ok(
-    mesh._tessellator === 'robust' || mesh._tessellator === 'legacy-fallback',
-    `Tessellator should be robust or legacy-fallback, got: ${mesh._tessellator}`
+    mesh._tessellator === 'robust' || mesh._tessellator === 'js-cold-start-fallback',
+    `Tessellator should stay on the integrated path, got: ${mesh._tessellator}`
   );
 });
 
@@ -202,12 +202,12 @@ test('tessellateBodyRouted defaults to robust mode', () => {
   );
 });
 
-test('tessellateBodyRouted can be forced to legacy', () => {
+test('tessellateBodyRouted ignores legacy requests and stays robust-only', () => {
   resetFlags();
   resetTopoIds();
   const box = makeBox(0, 0, 0, 10, 10, 10);
   const mesh = tessellateBodyRouted(box, { tessellator: 'legacy' });
-  assert.strictEqual(mesh._tessellator, 'legacy');
+  assert.strictEqual(mesh._tessellator, 'robust');
 });
 
 // ====================================================================
@@ -283,14 +283,14 @@ test('exactBooleanOp overlapping produces result with grade', () => {
   assert.ok(result.diagnostics, 'Should include diagnostics');
 });
 
-test('isFallbackEnabled reflects feature flag default', () => {
+test('isFallbackEnabled reflects fail-closed default', () => {
   resetFlags();
-  assert.strictEqual(isFallbackEnabled(), true, 'Fallback should be enabled by default');
+  assert.strictEqual(isFallbackEnabled(), false, 'Fallback should be disabled by default');
 });
 
-test('resolvePolicy defaults to allow-fallback when enabled', () => {
+test('resolvePolicy defaults to exact-only when fallback is not enabled', () => {
   resetFlags();
-  assert.strictEqual(resolvePolicy(), OperationPolicy.ALLOW_FALLBACK);
+  assert.strictEqual(resolvePolicy(), OperationPolicy.EXACT_ONLY);
 });
 
 test('resolvePolicy respects explicit exact-only override', () => {
@@ -497,15 +497,15 @@ test('default tessellateBody does NOT use legacy path for clean box', () => {
   const mesh = tessellateBody(box);
   // For a clean box, robust tessellator should succeed
   assert.ok(
-    mesh._tessellator === 'robust' || mesh._tessellator === 'legacy-fallback',
-    `Expected robust or legacy-fallback, got: ${mesh._tessellator}`
+    mesh._tessellator === 'robust' || mesh._tessellator === 'js-cold-start-fallback',
+    `Expected integrated-path tessellation, got: ${mesh._tessellator}`
   );
 });
 
-test('default boolean policy is allow-fallback not exact-only', () => {
+test('default boolean policy is exact-only unless explicitly enabled', () => {
   resetFlags();
   const policy = resolvePolicy();
-  assert.strictEqual(policy, 'allow-fallback', 'Default policy should be allow-fallback');
+  assert.strictEqual(policy, 'exact-only', 'Default policy should fail closed');
 });
 
 test('default containment runs both paths (GWN shadow mode)', () => {
@@ -572,7 +572,6 @@ await asyncTest('package export "modeller/cad" resolves', async () => {
   // New APIs
   assert.ok(typeof mod.robustTessellateBody === 'function', 'robustTessellateBody');
   assert.ok(typeof mod.tessellateBodyRouted === 'function', 'tessellateBodyRouted');
-  assert.ok(typeof mod._legacyTessellateBody === 'function', '_legacyTessellateBody');
   assert.ok(typeof mod.isFallbackEnabled === 'function', 'isFallbackEnabled');
   assert.ok(typeof mod.resolvePolicy === 'function', 'resolvePolicy');
   assert.ok(mod.ResultGrade, 'ResultGrade');
