@@ -990,11 +990,14 @@ function findConcaveEdge(topo, height) {
  * These edges connect two faces that form a >180° dihedral angle (reflex).
  */
 function findInnerCornerEdge(topo, height, innerX, innerY) {
+  const seen = new Set();
   let bestEdge = null;
   let bestDist = Infinity;
   for (const face of topo.faces()) {
     for (const coedge of face.outerLoop.coedges) {
       const e = coedge.edge;
+      if (seen.has(e.id)) continue;
+      seen.add(e.id);
       const s = e.startVertex.point, end = e.endVertex.point;
       if (Math.abs(s.z - height) > 0.1 || Math.abs(end.z - height) > 0.1) continue;
       // Check proximity to expected inner corner
@@ -1102,7 +1105,7 @@ console.log('\n--- Concave Corner Operations ---\n');
 for (const op of ['chamfer', 'fillet']) {
   for (const [edgeDesc, findFn, isConcave, knownEdge] of [
     ['inner vertical edge', (topo) => findVerticalEdgeAt(topo, 10, 10), true, false],
-    ['inner top-step edge', (topo) => findInnerCornerEdge(topo, 8, 20, 10), true, true],
+    ['inner top-step edge', (topo) => findInnerCornerEdge(topo, 8, 10, 15), true, true],
     ['top edge near concavity', (topo) => EdgeSelectors.topHorizontal(topo, 8), false, false],
   ]) {
     test(`L-shape ${op} on ${edgeDesc}`, () => {

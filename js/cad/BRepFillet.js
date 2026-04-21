@@ -2414,12 +2414,21 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
           newVerts.push({ ...trimPts[0] });
           modified = true;
         } else if (trimPts.length === 2) {
-          // Two trim points: order by proximity to incoming edge direction.
-          const dirPrev = _vec3Normalize(_vec3Sub(vPrev, v));
-          const d0prev = _vec3Dot(_vec3Normalize(_vec3Sub(trimPts[0], v)), dirPrev);
-          const d1prev = _vec3Dot(_vec3Normalize(_vec3Sub(trimPts[1], v)), dirPrev);
+          // Order the split trim points so the rebuilt boundary keeps the
+          // original adjacent edges on the correct sides of the split.
+          // The first inserted point should stay on the prev->vertex edge,
+          // and the second should stay on the vertex->next edge.
+          const dirPrevEdge = _vec3Normalize(_vec3Sub(v, vPrev));
+          const dirNextEdge = _vec3Normalize(_vec3Sub(vNext, v));
+          const scoreOrder = (first, second) => {
+            const firstDir = _vec3Normalize(_vec3Sub(first, vPrev));
+            const secondDir = _vec3Normalize(_vec3Sub(vNext, second));
+            return _vec3Dot(firstDir, dirPrevEdge) + _vec3Dot(secondDir, dirNextEdge);
+          };
 
-          if (d0prev > d1prev) {
+          const score01 = scoreOrder(trimPts[0], trimPts[1]);
+          const score10 = scoreOrder(trimPts[1], trimPts[0]);
+          if (score01 >= score10) {
             newVerts.push({ ...trimPts[0] }, { ...trimPts[1] });
           } else {
             newVerts.push({ ...trimPts[1] }, { ...trimPts[0] });
