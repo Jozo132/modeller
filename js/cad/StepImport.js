@@ -360,6 +360,19 @@ export function importSTEP(stepString, opts = {}) {
       timings.tessellator = 'wasm-native';
       timings.skippedFaceCount = native.skippedFaceCount;
 
+      // Fast-mesh-only mode: skip JS TopoBody construction entirely.
+      // Used by tests and bulk-importers that only need a display mesh.
+      // Downstream consumers that need `body.faces()/edges()/shells` must
+      // NOT pass skipBody.
+      if (opts.skipBody === true) {
+        timings.totalMs = telemetry.recordTimer('step:import:total', _now() - totalStart, totalStart);
+        timings.shellCount = 0;
+        timings.faceCount = native.faceCount;
+        timings.meshVertexCount = native.vertices.length;
+        timings.meshFaceCount = native.faces.length;
+        return { body: null, vertices: native.vertices, faces: native.faces, timings };
+      }
+
       // We still build a JS TopoBody because downstream code (bounds,
       // edge analysis, hit-testing) queries it.  The native pipeline is
       // what produces the mesh that's actually rendered.
