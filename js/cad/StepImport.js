@@ -35,13 +35,14 @@ import {
 // Re-export for callers that need to pre-load WASM before sync importSTEP
 export const ensureWasmReady = _ensureWasmReady;
 
-// Native STEP→topology→mesh pipeline (Stage F).  Opt-in via env var.
-// Toggle with STEP_BUILD_WASM=1 to enable; default OFF because the native
-// path does not yet populate downstream TopoBody graph consumers.
+// Native STEP→topology→mesh pipeline (Stage F).  Default ON — override
+// with STEP_BUILD_WASM=0 to force the legacy JS-only path (the native
+// pipeline is a strict mesh-producer superset; downstream TopoBody
+// consumers still see the JS topology produced by parseSTEPTopology).
 _ensureStepTopologyReady().catch(() => {});
 function _nativePipelineEnabled() {
   const env = (typeof process !== 'undefined' && process.env && process.env.STEP_BUILD_WASM);
-  return env === '1' || env === 'true' || env === 'yes';
+  return env !== '0' && env !== 'false';
 }
 
 // Test-only exports — parity harness for the WASM parser migration.
