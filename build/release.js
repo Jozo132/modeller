@@ -776,6 +776,14 @@ async function instantiate(module, imports = {}) {
       // assembly/kernel/step_parser/stepParseGetErrorTokenIdx() => u32
       return exports.stepParseGetErrorTokenIdx() >>> 0;
     },
+    stepBuildGetSkippedFaceCount() {
+      // assembly/kernel/step_topology/stepBuildGetSkippedFaceCount() => u32
+      return exports.stepBuildGetSkippedFaceCount() >>> 0;
+    },
+    stepBuildGetLastErrorStepId() {
+      // assembly/kernel/step_topology/stepBuildGetLastErrorStepId() => u32
+      return exports.stepBuildGetLastErrorStepId() >>> 0;
+    },
   }, exports);
   function __liftString(pointer) {
     if (!pointer) return null;
@@ -1189,6 +1197,19 @@ export const {
   stepParseGetArgCount,
   stepParseGetErrorCode,
   stepParseGetErrorTokenIdx,
+  STEP_BUILD_OK,
+  STEP_BUILD_ERR_NO_SHELL,
+  STEP_BUILD_ERR_STEP_ID_OVERFLOW,
+  STEP_BUILD_ERR_MISSING_ENTITY,
+  STEP_BUILD_ERR_UNSUPPORTED_SURFACE,
+  STEP_BUILD_ERR_UNSUPPORTED_CURVE,
+  STEP_BUILD_ERR_BAD_ARGS,
+  STEP_BUILD_ERR_TOPOLOGY_OVERFLOW,
+  stepBuildInit,
+  stepBuildRun,
+  stepBuildGetSkippedFaceCount,
+  stepBuildGetLastError,
+  stepBuildGetLastErrorStepId,
 } = await (async url => instantiate(
   await (async () => {
     const isNodeOrBun = typeof process != "undefined" && process.versions != null && (process.versions.node != null || process.versions.bun != null);

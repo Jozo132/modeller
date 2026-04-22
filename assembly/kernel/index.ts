@@ -121,3 +121,12 @@ export {
   stepParseGetArgBufPtr, stepParseGetArgStride, stepParseGetArgCount,
   stepParseGetErrorCode, stepParseGetErrorTokenIdx
 } from './step_parser';
+
+// ---- step_topology: native STEP→WASM topology builder (Phase 1) ----
+export {
+  STEP_BUILD_OK, STEP_BUILD_ERR_NO_SHELL, STEP_BUILD_ERR_STEP_ID_OVERFLOW,
+  STEP_BUILD_ERR_MISSING_ENTITY, STEP_BUILD_ERR_UNSUPPORTED_SURFACE,
+  STEP_BUILD_ERR_UNSUPPORTED_CURVE, STEP_BUILD_ERR_BAD_ARGS, STEP_BUILD_ERR_TOPOLOGY_OVERFLOW,
+  stepBuildInit, stepBuildRun,
+  stepBuildGetSkippedFaceCount, stepBuildGetLastError, stepBuildGetLastErrorStepId
+} from './step_topology';

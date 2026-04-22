@@ -493,4 +493,10 @@ export {
   stepParseGetEntityBufPtr, stepParseGetEntityStride, stepParseGetEntityCount,
   stepParseGetArgBufPtr, stepParseGetArgStride, stepParseGetArgCount,
   stepParseGetErrorCode, stepParseGetErrorTokenIdx,
+  // step_topology: native STEP→WASM topology builder (Phase 1)
+  STEP_BUILD_OK, STEP_BUILD_ERR_NO_SHELL, STEP_BUILD_ERR_STEP_ID_OVERFLOW,
+  STEP_BUILD_ERR_MISSING_ENTITY, STEP_BUILD_ERR_UNSUPPORTED_SURFACE,
+  STEP_BUILD_ERR_UNSUPPORTED_CURVE, STEP_BUILD_ERR_BAD_ARGS, STEP_BUILD_ERR_TOPOLOGY_OVERFLOW,
+  stepBuildInit, stepBuildRun,
+  stepBuildGetSkippedFaceCount, stepBuildGetLastError, stepBuildGetLastErrorStepId,
 } from './kernel/index';

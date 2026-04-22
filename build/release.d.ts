@@ -2016,3 +2016,67 @@ export declare function stepParseGetErrorCode(): number;
  * @returns `u32`
  */
 export declare function stepParseGetErrorTokenIdx(): number;
+/** assembly/kernel/step_topology/STEP_BUILD_OK */
+export declare const STEP_BUILD_OK: {
+  /** @type `i32` */
+  get value(): number
+};
+/** assembly/kernel/step_topology/STEP_BUILD_ERR_NO_SHELL */
+export declare const STEP_BUILD_ERR_NO_SHELL: {
+  /** @type `i32` */
+  get value(): number
+};
+/** assembly/kernel/step_topology/STEP_BUILD_ERR_STEP_ID_OVERFLOW */
+export declare const STEP_BUILD_ERR_STEP_ID_OVERFLOW: {
+  /** @type `i32` */
+  get value(): number
+};
+/** assembly/kernel/step_topology/STEP_BUILD_ERR_MISSING_ENTITY */
+export declare const STEP_BUILD_ERR_MISSING_ENTITY: {
+  /** @type `i32` */
+  get value(): number
+};
+/** assembly/kernel/step_topology/STEP_BUILD_ERR_UNSUPPORTED_SURFACE */
+export declare const STEP_BUILD_ERR_UNSUPPORTED_SURFACE: {
+  /** @type `i32` */
+  get value(): number
+};
+/** assembly/kernel/step_topology/STEP_BUILD_ERR_UNSUPPORTED_CURVE */
+export declare const STEP_BUILD_ERR_UNSUPPORTED_CURVE: {
+  /** @type `i32` */
+  get value(): number
+};
+/** assembly/kernel/step_topology/STEP_BUILD_ERR_BAD_ARGS */
+export declare const STEP_BUILD_ERR_BAD_ARGS: {
+  /** @type `i32` */
+  get value(): number
+};
+/** assembly/kernel/step_topology/STEP_BUILD_ERR_TOPOLOGY_OVERFLOW */
+export declare const STEP_BUILD_ERR_TOPOLOGY_OVERFLOW: {
+  /** @type `i32` */
+  get value(): number
+};
+/**
+ * assembly/kernel/step_topology/stepBuildInit
+ */
+export declare function stepBuildInit(): void;
+/**
+ * assembly/kernel/step_topology/stepBuildRun
+ * @returns `i32`
+ */
+export declare function stepBuildRun(): number;
+/**
+ * assembly/kernel/step_topology/stepBuildGetSkippedFaceCount
+ * @returns `u32`
+ */
+export declare function stepBuildGetSkippedFaceCount(): number;
+/**
+ * assembly/kernel/step_topology/stepBuildGetLastError
+ * @returns `i32`
+ */
+export declare function stepBuildGetLastError(): number;
+/**
+ * assembly/kernel/step_topology/stepBuildGetLastErrorStepId
+ * @returns `u32`
+ */
+export declare function stepBuildGetLastErrorStepId(): number;
