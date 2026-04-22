@@ -777,6 +777,7 @@ export class Part {
       }, {
         handleRegistry: options.handleRegistry ?? null,
         residencyManager: options.residencyManager ?? null,
+        fastRestoreDeps: options.fastRestoreDeps ?? null,
       });
     }
     

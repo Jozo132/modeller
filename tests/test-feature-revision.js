@@ -636,6 +636,151 @@ console.log('\n=== H5: per-feature CBREP checkpoints ===');
   assert(residency.clearCalls === 1, 'deserialize clears residency before loading restored part');
 }
 
+// ── C1: tryFastRestoreFromCheckpoints ────────────────────────────────────
+
+console.log('\n=== C1: fast-restore from serialized CBREP checkpoints ===');
+
+{
+  // Happy path: every solid feature has a checkpoint → execute() is NOT called.
+  const tree = new FeatureTree();
+  let executeCalls = 0;
+  class TracingSolid extends Feature {
+    constructor(name) { super(name); this.type = 'stub-solid'; }
+    execute(_ctx) { executeCalls++; return { type: 'solid', geometry: {}, solid: {}, volume: 1, boundingBox: {} }; }
+  }
+  const fa = new TracingSolid('a');
+  const fb = new TracingSolid('b');
+  tree.features.push(fa, fb);
+  tree.featureMap.set(fa.id, fa);
+  tree.featureMap.set(fb.id, fb);
+
+  const fakeMesh = () => ({ vertices: [{ x: 0, y: 0, z: 0 }], faces: [{ vertices: [], normal: { x: 0, y: 0, z: 1 } }], edges: [] });
+  let readCalls = 0;
+  let tessCalls = 0;
+  const deps = {
+    readCbrep: () => { readCalls++; return { shells: [{}] }; },
+    tessellateBody: () => { tessCalls++; return fakeMesh(); },
+    computeFeatureEdges: () => ({ edges: [], paths: [], visualEdges: [] }),
+    calculateMeshVolume: () => 42,
+    calculateBoundingBox: () => ({ min: { x: 0, y: 0, z: 0 }, max: { x: 1, y: 1, z: 1 } }),
+  };
+  // Payloads are base64 of anything — readCbrep is stubbed above.
+  const checkpoints = {
+    [fa.id]: { payload: 'AQID', hash: 'h-a' },
+    [fb.id]: { payload: 'AQID', hash: 'h-b' },
+  };
+  const ok = tree.tryFastRestoreFromCheckpoints(checkpoints, deps);
+  assert(ok === true, 'fast-restore returns true when every solid has a checkpoint');
+  assert(executeCalls === 0, 'fast-restore does NOT call feature.execute() for solid features');
+  assert(readCalls === 2, 'fast-restore calls readCbrep once per solid feature');
+  assert(tessCalls === 2, 'fast-restore calls tessellateBody once per solid feature');
+  const ra = tree.results[fa.id];
+  assert(ra && ra.type === 'solid', 'restored result has type=solid');
+  assert(ra._restoredFromCheckpoint === true, 'result is marked as restored from checkpoint');
+  assert(ra.volume === 42, 'result carries calculated volume');
+  assert(ra.geometry && Array.isArray(ra.geometry.faces), 'result.geometry has faces');
+  assert(ra.cbrepBuffer instanceof ArrayBuffer, 'result.cbrepBuffer preserved for downstream hydration');
+}
+
+{
+  // Missing checkpoint: solid feature without coverage → returns false, no mutation.
+  const tree = new FeatureTree();
+  const fa = new StubSolid('a');
+  const fb = new StubSolid('b');
+  tree.features.push(fa, fb);
+  tree.featureMap.set(fa.id, fa);
+  tree.featureMap.set(fb.id, fb);
+  const priorResults = tree.results; // {}
+  const checkpoints = { [fa.id]: { payload: 'AQID' } }; // fb missing
+  const deps = {
+    readCbrep: () => { throw new Error('should not be called'); },
+    tessellateBody: () => ({}),
+    computeFeatureEdges: () => ({}),
+    calculateMeshVolume: () => 0,
+    calculateBoundingBox: () => ({}),
+  };
+  const ok = tree.tryFastRestoreFromCheckpoints(checkpoints, deps);
+  assert(ok === false, 'fast-restore returns false when a solid feature has no checkpoint');
+  assert(tree.results === priorResults, 'fast-restore does not mutate results on coverage miss');
+}
+
+{
+  // Sketch features still execute during fast-restore so downstream context works.
+  const tree = new FeatureTree();
+  let sketchExecuted = 0;
+  class TracingSketch extends Feature {
+    constructor(name) { super(name); this.type = 'sketch'; }
+    execute(_ctx) { sketchExecuted++; return { type: 'sketch', sketch: {}, profiles: [] }; }
+  }
+  const sk = new TracingSketch('sk');
+  const fa = new StubSolid('a');
+  tree.features.push(sk, fa);
+  tree.featureMap.set(sk.id, sk);
+  tree.featureMap.set(fa.id, fa);
+  const deps = {
+    readCbrep: () => ({}),
+    tessellateBody: () => ({ vertices: [], faces: [{ vertices: [], normal: { x: 0, y: 0, z: 1 } }] }),
+    computeFeatureEdges: () => ({ edges: [], paths: [], visualEdges: [] }),
+    calculateMeshVolume: () => 0,
+    calculateBoundingBox: () => ({}),
+  };
+  const ok = tree.tryFastRestoreFromCheckpoints(
+    { [fa.id]: { payload: 'AQID' } }, deps);
+  assert(ok === true, 'fast-restore succeeds when only solids need checkpoints');
+  assert(sketchExecuted === 1, 'sketch feature.execute() is called during fast-restore');
+  assert(tree.results[sk.id].type === 'sketch', 'sketch result stored');
+  assert(tree.results[fa.id].type === 'solid', 'solid result restored from checkpoint');
+}
+
+{
+  // End-to-end via FeatureTree.deserialize + options.fastRestoreDeps.
+  class FT_Solid extends Feature {
+    constructor(name) { super(name); this.type = 'stub-solid'; }
+    serialize() { return { id: this.id, name: this.name, type: this.type }; }
+  }
+  let executeCalls = 0;
+  // Monkey-patch execute on the class so we can count replay attempts.
+  FT_Solid.prototype.execute = function () { executeCalls++; return { type: 'solid', geometry: {}, solid: {}, volume: 0, boundingBox: {} }; };
+
+  const data = {
+    features: [{ id: 'f1', name: 'f1', type: 'stub-solid' }],
+    checkpoints: { f1: { payload: 'AQID', hash: 'h1' } },
+  };
+  const deps = {
+    readCbrep: () => ({}),
+    tessellateBody: () => ({ vertices: [], faces: [{ vertices: [], normal: { x: 0, y: 0, z: 1 } }] }),
+    computeFeatureEdges: () => ({ edges: [], paths: [], visualEdges: [] }),
+    calculateMeshVolume: () => 7,
+    calculateBoundingBox: () => ({}),
+  };
+  const tree = FeatureTree.deserialize(data,
+    (d) => { const f = new FT_Solid(d.name); f.id = d.id; return f; },
+    { fastRestoreDeps: deps });
+  assert(executeCalls === 0, 'deserialize with fastRestoreDeps does NOT call executeAll()');
+  assert(tree.results.f1 && tree.results.f1._restoredFromCheckpoint,
+    'deserialize fast path produces a restored result');
+  assert(tree.results.f1.volume === 7, 'restored result carries volume from fast-restore deps');
+}
+
+{
+  // Deserialize without deps → legacy executeAll path still runs.
+  class FT_Solid2 extends Feature {
+    constructor(name) { super(name); this.type = 'stub-solid'; }
+  }
+  let executeCalls = 0;
+  FT_Solid2.prototype.execute = function () { executeCalls++; return { type: 'solid', geometry: {}, solid: {}, volume: 3, boundingBox: {} }; };
+
+  const data = {
+    features: [{ id: 'f1', name: 'f1', type: 'stub-solid' }],
+    checkpoints: { f1: { payload: 'AQID', hash: 'h1' } },
+  };
+  const tree = FeatureTree.deserialize(data,
+    (d) => { const f = new FT_Solid2(d.name); f.id = d.id; return f; });
+  assert(executeCalls === 1, 'deserialize WITHOUT fastRestoreDeps still runs executeAll');
+  assert(tree.results.f1 && !tree.results.f1._restoredFromCheckpoint,
+    'legacy path produces executed result, not fast-restored');
+}
+
 // ── Summary ──────────────────────────────────────────────────────────────
 
 console.log(`\n=== Results ===\n\n${passed} passed, ${failed} failed`);

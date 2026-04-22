@@ -3,6 +3,21 @@
 import { Part } from './cad/Part.js';
 import { Sketch } from './cad/Sketch.js';
 import { Scene } from './cad/Scene.js';
+import { tessellateBody } from './cad/Tessellation.js';
+import { computeFeatureEdges } from './cad/EdgeAnalysis.js';
+import { calculateMeshVolume, calculateBoundingBox } from './cad/toolkit/MeshAnalysis.js';
+import { readCbrep } from '../packages/ir/reader.js';
+
+// C1: dependency bundle for FeatureTree.tryFastRestoreFromCheckpoints. Built
+// once at module load so .cmod loads can skip the full executeAll replay when
+// every solid feature has a cached CBREP checkpoint.
+const FAST_RESTORE_DEPS = {
+  readCbrep,
+  tessellateBody,
+  computeFeatureEdges,
+  calculateMeshVolume,
+  calculateBoundingBox,
+};
 
 /**
  * PartManager - Handles 3D part creation and feature management
@@ -307,6 +322,7 @@ export class PartManager {
       residencyManager: this._residencyManager,
       finalCbrepPayload: options.finalCbrepPayload ?? null,
       finalCbrepHash: options.finalCbrepHash ?? null,
+      fastRestoreDeps: FAST_RESTORE_DEPS,
     });
     this._wirePart(this.part);
     this.activeFeature = null;

@@ -206,6 +206,132 @@ export class FeatureTree {
   }
 
   /**
+   * C1: Fast-restore solid results directly from serialized CBREP checkpoints
+   * without running `executeAll()`. Sketch features still execute (cheap —
+   * just constraint-solving) so downstream code that reads
+   * `context.results[sketchId].sketch` still works.
+   *
+   * Returns true when every non-sketch feature was restored from a
+   * hash-matching checkpoint and the tree is fully populated. Returns false
+   * (without mutating `this.results`) when any solid feature lacks a
+   * checkpoint, so the caller can fall back to `executeAll()`.
+   *
+   * Deps must be injected (synchronous I/O) — callers in the browser/UI
+   * supply them via static imports; tests supply mocks.
+   *
+   * @param {Object|null|undefined} checkpoints - serialized { [id]: { payload, hash? } }
+   * @param {{ readCbrep: Function, tessellateBody: Function, computeFeatureEdges: Function, calculateMeshVolume: Function, calculateBoundingBox: Function }} deps
+   * @returns {boolean}
+   */
+  tryFastRestoreFromCheckpoints(checkpoints, deps) {
+    if (!checkpoints || typeof checkpoints !== 'object') return false;
+    if (!deps || typeof deps.readCbrep !== 'function' ||
+        typeof deps.tessellateBody !== 'function' ||
+        typeof deps.computeFeatureEdges !== 'function' ||
+        typeof deps.calculateMeshVolume !== 'function' ||
+        typeof deps.calculateBoundingBox !== 'function') {
+      return false;
+    }
+
+    // Coverage pre-check — do NOT mutate state until we know every required
+    // checkpoint is present and decodes. Sketch features and suppressed
+    // features don't need checkpoints.
+    for (const feature of this.features) {
+      if (feature.suppressed) continue;
+      if (feature.type === 'sketch') continue;
+      const entry = checkpoints[feature.id];
+      if (!entry || !entry.payload) return false;
+    }
+
+    // Build results in order. Sketch features run their execute(); solid
+    // features are rebuilt from CBREP. Any failure aborts and returns false
+    // after restoring the pre-call state.
+    const savedResults = this.results;
+    this.results = {};
+
+    const buffersByFeatureId = {};
+
+    try {
+      for (const feature of this.features) {
+        if (feature.suppressed) {
+          this.results[feature.id] = { suppressed: true };
+          continue;
+        }
+
+        if (feature.type === 'sketch') {
+          const context = { results: this.results, tree: this };
+          if (!feature.canExecute(context)) {
+            feature.error = 'Dependencies not satisfied';
+            this.results[feature.id] = { error: feature.error };
+            continue;
+          }
+          const sketchResult = feature.execute(context);
+          feature.result = sketchResult;
+          feature.error = null;
+          this.results[feature.id] = sketchResult;
+          continue;
+        }
+
+        // Solid feature — restore from CBREP.
+        const entry = checkpoints[feature.id];
+        let buffer;
+        try {
+          buffer = base64ToArrayBuffer(entry.payload);
+        } catch {
+          throw new Error(`bad payload for ${feature.id}`);
+        }
+        if (!buffer) throw new Error(`empty payload for ${feature.id}`);
+
+        const topoBody = deps.readCbrep(buffer);
+        const mesh = deps.tessellateBody(topoBody, { validate: false });
+        if (!mesh || !mesh.faces || mesh.faces.length === 0) {
+          throw new Error(`empty mesh from CBREP for ${feature.id}`);
+        }
+
+        const edgeInfo = deps.computeFeatureEdges(mesh.faces);
+        if (edgeInfo) {
+          mesh.edges = edgeInfo.edges ?? mesh.edges ?? [];
+          mesh.paths = edgeInfo.paths ?? mesh.paths ?? [];
+          mesh.visualEdges = edgeInfo.visualEdges ?? mesh.visualEdges ?? [];
+        }
+
+        const result = {
+          type: 'solid',
+          geometry: mesh,
+          solid: { geometry: mesh, topoBody },
+          volume: deps.calculateMeshVolume(mesh),
+          boundingBox: deps.calculateBoundingBox(mesh),
+          cbrepBuffer: buffer,
+          irHash: entry.hash ?? null,
+          _restoredFromCheckpoint: true,
+        };
+        feature.result = result;
+        feature.error = null;
+        if (feature._irHash == null && entry.hash != null) {
+          feature._irHash = entry.hash;
+        }
+        this._stampSolidResult(feature.id, result);
+        this.results[feature.id] = result;
+        buffersByFeatureId[feature.id] = buffer;
+      }
+    } catch (err) {
+      // Restore prior state and let caller fall back to executeAll().
+      // Release any handles allocated during the aborted fast-restore first.
+      for (const fid of Object.keys(this.results)) {
+        this._releaseResultHandle(this.results[fid], fid);
+      }
+      this.results = savedResults;
+      console.warn(`[FeatureTree] fast-restore aborted: ${err && err.message}`);
+      return false;
+    }
+
+    // Fast-restore succeeded — drive any attached WASM handle registry to
+    // RESIDENT using the same hydration path as setWasmHandleSubsystem.
+    this.hydrateExistingResultsFromCbrep();
+    return true;
+  }
+
+  /**
    * Stamp a solid result with revision metadata and (optionally) allocate a
    * WASM handle. Called internally after each successful feature execution.
    * @param {string} featureId
@@ -731,6 +857,15 @@ export class FeatureTree {
         tree.features.push(feature);
         tree.featureMap.set(feature.id, feature);
       }
+    }
+
+    // C1: try cache-fast-restore before replay. Only runs when the caller
+    // provides the required deps (static imports from the UI/loader layer)
+    // AND every solid feature has a checkpoint. On any failure this is a
+    // silent no-op and we fall through to the legacy replay path below.
+    if (options.fastRestoreDeps && data.checkpoints &&
+        tree.tryFastRestoreFromCheckpoints(data.checkpoints, options.fastRestoreDeps)) {
+      return tree;
     }
 
     // Execute all features to rebuild results
