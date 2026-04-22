@@ -34,12 +34,15 @@ import {
   faceAdd,
   shellAdd,
   GEOM_NONE, GEOM_PLANE, GEOM_CYLINDER, GEOM_CONE, GEOM_SPHERE, GEOM_TORUS,
-  GEOM_LINE,
+  GEOM_NURBS_SURFACE, GEOM_NURBS_CURVE,
+  GEOM_LINE, GEOM_CIRCLE, GEOM_ELLIPSE,
   ORIENT_FORWARD, ORIENT_REVERSED,
 } from './topology';
 import {
   geomPoolReset,
   planeStore, cylinderStore, sphereStore, coneStore, torusStore,
+  nurbsSurfaceStoreFromStaging, nurbsCurveStoreFromStaging,
+  geomStagingPtr, geomStagingCapacity,
 } from './geometry';
 import {
   stepLexGetStringPoolPtr,
@@ -77,6 +80,10 @@ const edgeCache = new StaticArray<u32>(MAX_STEP_ID + 1);
 // a few thousand coedges; use a conservatively sized static buffer).
 const MAX_COEDGES_PER_LOOP: u32 = 8192;
 const coedgeScratch = new StaticArray<u32>(MAX_COEDGES_PER_LOOP);
+// Phase 2: parallel (edgeId, orient) scratch so reverseBound can flip
+// orientation flags without touching already-emitted coedges.
+const edgeIdScratch = new StaticArray<u32>(MAX_COEDGES_PER_LOOP);
+const orientScratch = new StaticArray<u8>(MAX_COEDGES_PER_LOOP);
 
 // Diagnostic: number of ADVANCED_FACE entities that fell back (skipped)
 // because they used an unsupported surface/curve type.  Observed by JS
@@ -298,6 +305,13 @@ const H_CIRCLE: u32 = fnv1aStr("CIRCLE");
 const H_ELLIPSE: u32 = fnv1aStr("ELLIPSE");
 const H_SURFACE_CURVE: u32 = fnv1aStr("SURFACE_CURVE");
 const H_SEAM_CURVE: u32 = fnv1aStr("SEAM_CURVE");
+// Phase 2: B-spline hashes (both simple and complex-entity sub-entity forms).
+const H_B_SPLINE_SURFACE: u32 = fnv1aStr("B_SPLINE_SURFACE");
+const H_B_SPLINE_SURFACE_WITH_KNOTS: u32 = fnv1aStr("B_SPLINE_SURFACE_WITH_KNOTS");
+const H_RATIONAL_B_SPLINE_SURFACE: u32 = fnv1aStr("RATIONAL_B_SPLINE_SURFACE");
+const H_B_SPLINE_CURVE: u32 = fnv1aStr("B_SPLINE_CURVE");
+const H_B_SPLINE_CURVE_WITH_KNOTS: u32 = fnv1aStr("B_SPLINE_CURVE_WITH_KNOTS");
+const H_RATIONAL_B_SPLINE_CURVE: u32 = fnv1aStr("RATIONAL_B_SPLINE_CURVE");
 
 // ─── Cartesian point / direction extraction ─────────────────────────
 //
@@ -427,8 +441,268 @@ function readAxis2Placement3D(entIdx: u32): bool {
 let outGeomType: u8 = GEOM_NONE;
 let outGeomOffset: u32 = 0;
 
+// ─── Phase 2: complex-entity sub-entity walker ──────────────────────
+//
+// Complex entity root LIST contains `nSub` children, each of which is
+// itself a LIST of length 2: [STRING(keyword), LIST(args)].  Find the
+// sub-entity whose keyword hashes to `targetHash` and return the argIdx
+// of its inner args LIST (or ID_NONE if absent).
+function complexSubArgs(complexRootIdx: u32, targetHash: u32): u32 {
+  if (argKind(complexRootIdx) != ARG_LIST) return ID_NONE;
+  const nSubs = argListCount(complexRootIdx);
+  let cursor: u32 = complexRootIdx + 1;
+  for (let i: u32 = 0; i < nSubs; i++) {
+    if (argKind(cursor) != ARG_LIST) return ID_NONE;
+    if (argListCount(cursor) < 2) { cursor = argSkip(cursor); continue; }
+    const kwArg: u32 = cursor + 1;
+    if (argKind(kwArg) == ARG_STRING) {
+      const off = argA0(kwArg);
+      const len = argA1(kwArg);
+      const h = fnv1aBytes(stepLexGetStringPoolPtr() + <usize>off, len);
+      if (h == targetHash) {
+        // next arg after the STRING is the inner args LIST.
+        return argSkip(kwArg);
+      }
+    }
+    cursor = argSkip(cursor);
+  }
+  return ID_NONE;
+}
+
+@inline function stagingWriteF64(i: u32, v: f64): void {
+  store<f64>(geomStagingPtr() + <usize>i * 8, v);
+}
+
+// ─── Phase 2: B-spline surface builder ──────────────────────────────
+//
+// Handles both simple (`#N = B_SPLINE_SURFACE_WITH_KNOTS(...)`) and
+// complex (`#N = ( BOUNDED_SURFACE() B_SPLINE_SURFACE(...)
+// B_SPLINE_SURFACE_WITH_KNOTS(...) RATIONAL_B_SPLINE_SURFACE(...) ... )`)
+// forms.  Writes the knot/control-point/weight arrays into the geometry
+// staging buffer in the canonical layout and stores via
+// `nurbsSurfaceStoreFromStaging`.
+function buildBSplineSurface(surfEntIdx: u32): bool {
+  const isComplex = entIsComplex(surfEntIdx);
+
+  // Shared state
+  let degreeU: u32 = 0, degreeV: u32 = 0;
+  let ctrl2D: u32 = ID_NONE;
+  let uMultsArg: u32 = ID_NONE, vMultsArg: u32 = ID_NONE;
+  let uKnotsArg: u32 = ID_NONE, vKnotsArg: u32 = ID_NONE;
+  let weights2D: u32 = ID_NONE;
+
+  if (isComplex) {
+    const complexRoot = entArgRoot(surfEntIdx);
+    const baseArgs = complexSubArgs(complexRoot, H_B_SPLINE_SURFACE);
+    const knotArgs = complexSubArgs(complexRoot, H_B_SPLINE_SURFACE_WITH_KNOTS);
+    const rationalArgs = complexSubArgs(complexRoot, H_RATIONAL_B_SPLINE_SURFACE);
+    if (baseArgs == ID_NONE || knotArgs == ID_NONE) return false;
+    if (argKind(baseArgs) != ARG_LIST || argListCount(baseArgs) < 3) return false;
+    degreeU = <u32>argAsF64(argListChild(baseArgs, 0));
+    degreeV = <u32>argAsF64(argListChild(baseArgs, 1));
+    ctrl2D = argListChild(baseArgs, 2);
+    if (argKind(knotArgs) != ARG_LIST || argListCount(knotArgs) < 4) return false;
+    uMultsArg = argListChild(knotArgs, 0);
+    vMultsArg = argListChild(knotArgs, 1);
+    uKnotsArg = argListChild(knotArgs, 2);
+    vKnotsArg = argListChild(knotArgs, 3);
+    if (rationalArgs != ID_NONE &&
+        argKind(rationalArgs) == ARG_LIST &&
+        argListCount(rationalArgs) >= 1) {
+      weights2D = argListChild(rationalArgs, 0);
+    }
+  } else {
+    const h = entityTypeHash(surfEntIdx);
+    if (h != H_B_SPLINE_SURFACE_WITH_KNOTS) return false;
+    const root = entArgRoot(surfEntIdx);
+    if (argKind(root) != ARG_LIST) return false;
+    const n = argListCount(root);
+    if (n < 12) return false;
+    // args[0] = name, [1] degreeU, [2] degreeV, [3] ctrl2D, [4..7] flags,
+    // [8] uMults, [9] vMults, [10] uKnots, [11] vKnots, [12] knotSpec.
+    degreeU = <u32>argAsF64(argListChild(root, 1));
+    degreeV = <u32>argAsF64(argListChild(root, 2));
+    ctrl2D = argListChild(root, 3);
+    uMultsArg = argListChild(root, 8);
+    vMultsArg = argListChild(root, 9);
+    uKnotsArg = argListChild(root, 10);
+    vKnotsArg = argListChild(root, 11);
+  }
+
+  if (argKind(ctrl2D) != ARG_LIST) return false;
+  const numU = argListCount(ctrl2D);
+  if (numU == 0) return false;
+  const firstRow = argListChild(ctrl2D, 0);
+  if (argKind(firstRow) != ARG_LIST) return false;
+  const numV = argListCount(firstRow);
+  if (numV == 0) return false;
+  const nCtrl: u32 = numU * numV;
+
+  if (argKind(uMultsArg) != ARG_LIST || argKind(vMultsArg) != ARG_LIST) return false;
+  if (argKind(uKnotsArg) != ARG_LIST || argKind(vKnotsArg) != ARG_LIST) return false;
+  const numUBreaks = argListCount(uMultsArg);
+  const numVBreaks = argListCount(vMultsArg);
+  if (argListCount(uKnotsArg) != numUBreaks) return false;
+  if (argListCount(vKnotsArg) != numVBreaks) return false;
+
+  // Expanded knot counts = Σ multiplicities.
+  let nKnotsU: u32 = 0;
+  for (let i: u32 = 0; i < numUBreaks; i++) {
+    nKnotsU += <u32>argAsF64(argListChild(uMultsArg, i));
+  }
+  let nKnotsV: u32 = 0;
+  for (let i: u32 = 0; i < numVBreaks; i++) {
+    nKnotsV += <u32>argAsF64(argListChild(vMultsArg, i));
+  }
+  if (nKnotsU != numU + degreeU + 1) return false;
+  if (nKnotsV != numV + degreeV + 1) return false;
+
+  const totalSlots: u32 = nKnotsU + nKnotsV + nCtrl * 3 + nCtrl;
+  if (totalSlots > geomStagingCapacity()) return false;
+
+  // Write into staging buffer in the canonical order:
+  //   [U knots (expanded), V knots (expanded), ctrl xyz row-major, weights row-major]
+  let s: u32 = 0;
+  for (let i: u32 = 0; i < numUBreaks; i++) {
+    const m = <u32>argAsF64(argListChild(uMultsArg, i));
+    const k = argAsF64(argListChild(uKnotsArg, i));
+    for (let j: u32 = 0; j < m; j++) { stagingWriteF64(s, k); s++; }
+  }
+  for (let i: u32 = 0; i < numVBreaks; i++) {
+    const m = <u32>argAsF64(argListChild(vMultsArg, i));
+    const k = argAsF64(argListChild(vKnotsArg, i));
+    for (let j: u32 = 0; j < m; j++) { stagingWriteF64(s, k); s++; }
+  }
+  for (let i: u32 = 0; i < numU; i++) {
+    const row = argListChild(ctrl2D, i);
+    if (argKind(row) != ARG_LIST || argListCount(row) != numV) return false;
+    for (let j: u32 = 0; j < numV; j++) {
+      if (!readCartesianPointRef(argListChild(row, j))) return false;
+      stagingWriteF64(s, pOutX); s++;
+      stagingWriteF64(s, pOutY); s++;
+      stagingWriteF64(s, pOutZ); s++;
+    }
+  }
+  if (weights2D != ID_NONE &&
+      argKind(weights2D) == ARG_LIST &&
+      argListCount(weights2D) == numU) {
+    for (let i: u32 = 0; i < numU; i++) {
+      const row = argListChild(weights2D, i);
+      if (argKind(row) != ARG_LIST || argListCount(row) != numV) return false;
+      for (let j: u32 = 0; j < numV; j++) {
+        stagingWriteF64(s, argAsF64(argListChild(row, j)));
+        s++;
+      }
+    }
+  } else {
+    for (let i: u32 = 0; i < nCtrl; i++) { stagingWriteF64(s, 1.0); s++; }
+  }
+
+  const off = nurbsSurfaceStoreFromStaging(degreeU, degreeV, numU, numV, nKnotsU, nKnotsV);
+  if (off == 0xFFFFFFFF) return false;
+  outGeomOffset = off;
+  outGeomType = GEOM_NURBS_SURFACE;
+  return true;
+}
+
+// ─── Phase 2: B-spline curve builder (for edge geometry) ────────────
+//
+// Used to populate GEOM_NURBS_CURVE on edges whose underlying 3D curve
+// is a B-spline.  Writes `outGeomType`/`outGeomOffset` module globals.
+function buildBSplineCurve(curveEntIdx: u32): bool {
+  const isComplex = entIsComplex(curveEntIdx);
+
+  let degree: u32 = 0;
+  let ctrlList: u32 = ID_NONE;
+  let multsArg: u32 = ID_NONE;
+  let knotsArg: u32 = ID_NONE;
+  let weightsArg: u32 = ID_NONE;
+
+  if (isComplex) {
+    const complexRoot = entArgRoot(curveEntIdx);
+    const baseArgs = complexSubArgs(complexRoot, H_B_SPLINE_CURVE);
+    const knotArgs = complexSubArgs(complexRoot, H_B_SPLINE_CURVE_WITH_KNOTS);
+    const rationalArgs = complexSubArgs(complexRoot, H_RATIONAL_B_SPLINE_CURVE);
+    if (baseArgs == ID_NONE || knotArgs == ID_NONE) return false;
+    if (argKind(baseArgs) != ARG_LIST || argListCount(baseArgs) < 2) return false;
+    degree = <u32>argAsF64(argListChild(baseArgs, 0));
+    ctrlList = argListChild(baseArgs, 1);
+    if (argKind(knotArgs) != ARG_LIST || argListCount(knotArgs) < 3) return false;
+    multsArg = argListChild(knotArgs, 0);
+    knotsArg = argListChild(knotArgs, 1);
+    if (rationalArgs != ID_NONE &&
+        argKind(rationalArgs) == ARG_LIST &&
+        argListCount(rationalArgs) >= 1) {
+      weightsArg = argListChild(rationalArgs, 0);
+    }
+  } else {
+    const h = entityTypeHash(curveEntIdx);
+    if (h != H_B_SPLINE_CURVE_WITH_KNOTS) return false;
+    const root = entArgRoot(curveEntIdx);
+    if (argKind(root) != ARG_LIST) return false;
+    const n = argListCount(root);
+    if (n < 9) return false;
+    // args[0] name, [1] degree, [2] ctrl pts, [3..5] flags, [6] mults, [7] knots, [8] knotSpec
+    degree = <u32>argAsF64(argListChild(root, 1));
+    ctrlList = argListChild(root, 2);
+    multsArg = argListChild(root, 6);
+    knotsArg = argListChild(root, 7);
+  }
+
+  if (argKind(ctrlList) != ARG_LIST) return false;
+  const numCtrl = argListCount(ctrlList);
+  if (numCtrl == 0) return false;
+  if (argKind(multsArg) != ARG_LIST || argKind(knotsArg) != ARG_LIST) return false;
+  const numBreaks = argListCount(multsArg);
+  if (argListCount(knotsArg) != numBreaks) return false;
+
+  let nKnots: u32 = 0;
+  for (let i: u32 = 0; i < numBreaks; i++) {
+    nKnots += <u32>argAsF64(argListChild(multsArg, i));
+  }
+  if (nKnots != numCtrl + degree + 1) return false;
+
+  const totalSlots: u32 = nKnots + numCtrl * 3 + numCtrl;
+  if (totalSlots > geomStagingCapacity()) return false;
+
+  let s: u32 = 0;
+  for (let i: u32 = 0; i < numBreaks; i++) {
+    const m = <u32>argAsF64(argListChild(multsArg, i));
+    const k = argAsF64(argListChild(knotsArg, i));
+    for (let j: u32 = 0; j < m; j++) { stagingWriteF64(s, k); s++; }
+  }
+  for (let i: u32 = 0; i < numCtrl; i++) {
+    if (!readCartesianPointRef(argListChild(ctrlList, i))) return false;
+    stagingWriteF64(s, pOutX); s++;
+    stagingWriteF64(s, pOutY); s++;
+    stagingWriteF64(s, pOutZ); s++;
+  }
+  if (weightsArg != ID_NONE &&
+      argKind(weightsArg) == ARG_LIST &&
+      argListCount(weightsArg) == numCtrl) {
+    for (let i: u32 = 0; i < numCtrl; i++) {
+      stagingWriteF64(s, argAsF64(argListChild(weightsArg, i)));
+      s++;
+    }
+  } else {
+    for (let i: u32 = 0; i < numCtrl; i++) { stagingWriteF64(s, 1.0); s++; }
+  }
+
+  const off = nurbsCurveStoreFromStaging(degree, numCtrl, nKnots);
+  if (off == 0xFFFFFFFF) return false;
+  outGeomOffset = off;
+  outGeomType = GEOM_NURBS_CURVE;
+  return true;
+}
+
 function buildSurface(surfEntIdx: u32): bool {
   if (surfEntIdx == ID_NONE) return false;
+
+  // Complex entity wrapper (BOUNDED_SURFACE, RATIONAL_B_SPLINE_SURFACE, …).
+  if (entIsComplex(surfEntIdx)) {
+    return buildBSplineSurface(surfEntIdx);
+  }
+
   const h = entityTypeHash(surfEntIdx);
   const root = entArgRoot(surfEntIdx);
   if (argKind(root) != ARG_LIST) return false;
@@ -477,7 +751,9 @@ function buildSurface(surfEntIdx: u32): bool {
     outGeomType = GEOM_TORUS;
     return true;
   }
-  // B_SPLINE_SURFACE_WITH_KNOTS / RATIONAL_B_SPLINE_SURFACE → Phase 2
+  if (h == H_B_SPLINE_SURFACE_WITH_KNOTS) {
+    return buildBSplineSurface(surfEntIdx);
+  }
   return false;
 }
 
@@ -526,35 +802,39 @@ function getOrCreateEdgeByRef(edgeCurveRefArg: u32): u32 {
   const endVid = getOrCreateVertexByRef(argListChild(root, 2));
   if (startVid == ID_NONE || endVid == ID_NONE) return ID_NONE;
 
-  // Inspect underlying curve type.  For Phase 1 we only need a geom tag
-  // (tessellation samples along vertices/surface).
+  // Inspect the underlying curve and tag geomType.  SURFACE_CURVE /
+  // SEAM_CURVE wrap a 3D curve in args[1]; unwrap once.
   const curveRefArg = argListChild(root, 3);
-  const curveIdx = argRefToEntityIdx(curveRefArg);
+  let curveIdx = argRefToEntityIdx(curveRefArg);
   let geomType: u8 = GEOM_LINE;
+  let geomOffset: u32 = 0;
   if (curveIdx != ID_NONE) {
-    const h = entityTypeHash(curveIdx);
+    let h = entityTypeHash(curveIdx);
     if (h == H_SURFACE_CURVE || h == H_SEAM_CURVE) {
-      // args[1] of SURFACE_CURVE/SEAM_CURVE is the underlying 3D curve
       const curveRoot = entArgRoot(curveIdx);
       if (argKind(curveRoot) == ARG_LIST && argListCount(curveRoot) >= 2) {
         const inner = argRefToEntityIdx(argListChild(curveRoot, 1));
-        if (inner != ID_NONE) {
-          const h2 = entityTypeHash(inner);
-          if (h2 == H_LINE) geomType = GEOM_LINE;
-          // fall through for others
-        }
+        if (inner != ID_NONE) { curveIdx = inner; h = entityTypeHash(curveIdx); }
       }
-    } else if (h == H_LINE) {
-      geomType = GEOM_LINE;
     }
-    // CIRCLE / ELLIPSE / B_SPLINE_* → we still tag as GEOM_LINE for
-    // Phase 1; the kernel tessellator samples curved geometry from the
-    // face's analytic surface, so edge geometry is advisory.  Phase 2
-    // will emit proper GEOM_CIRCLE / GEOM_NURBS_CURVE with populated
-    // geometry pool entries.
+    if (h == H_LINE) {
+      geomType = GEOM_LINE;
+    } else if (h == H_CIRCLE) {
+      geomType = GEOM_CIRCLE;
+    } else if (h == H_ELLIPSE) {
+      geomType = GEOM_ELLIPSE;
+    } else if (h == H_B_SPLINE_CURVE_WITH_KNOTS || entIsComplex(curveIdx)) {
+      // Phase 2: attempt to realise GEOM_NURBS_CURVE.  If it fails we
+      // silently fall back to GEOM_LINE — the tessellator re-samples
+      // edges from face surfaces anyway so this is advisory.
+      if (buildBSplineCurve(curveIdx)) {
+        geomType = outGeomType;
+        geomOffset = outGeomOffset;
+      }
+    }
   }
 
-  const eid = edgeAdd(startVid, endVid, geomType, 0);
+  const eid = edgeAdd(startVid, endVid, geomType, geomOffset);
   if (eid == 0xFFFFFFFF) return ID_NONE;
   unchecked(edgeCache[sid] = eid);
   return eid;
@@ -578,6 +858,7 @@ function buildLoop(edgeLoopIdx: u32, reverseBound: bool, predictedLoopId: u32, w
   if (n > MAX_COEDGES_PER_LOOP) return ID_NONE;
 
   let nCe: u32 = 0;
+  // Phase 1: gather (edgeId, orient) pairs without emitting coedges yet.
   for (let k: u32 = 0; k < n; k++) {
     const oeRefArg = argListChild(oeListIdx, k);
     if (argKind(oeRefArg) != ARG_REF) continue;
@@ -594,32 +875,44 @@ function buildLoop(edgeLoopIdx: u32, reverseBound: bool, predictedLoopId: u32, w
     const eid = getOrCreateEdgeByRef(edgeCurveRef);
     if (eid == ID_NONE) return ID_NONE;  // unsupported edge → abort loop
     const orient: u8 = oeSense ? ORIENT_FORWARD : ORIENT_REVERSED;
-    const ceId = coedgeAdd(eid, orient, predictedLoopId, wasmFaceId);
-    if (ceId == 0xFFFFFFFF) return ID_NONE;
-    unchecked(coedgeScratch[nCe] = ceId);
+    unchecked(edgeIdScratch[nCe] = eid);
+    unchecked(orientScratch[nCe] = orient);
     nCe++;
   }
   if (nCe == 0) return ID_NONE;
 
-  // Reverse if FACE_BOUND orientation flag is .F.
+  // Phase 2: if the enclosing FACE_BOUND was flagged .F., reverse the
+  // coedge order *and* flip each orientation flag (which is semantically
+  // what BRep consumers expect — the JS pipeline does the same thing).
   if (reverseBound) {
-    // Reverse order of coedges and flip each one's orientation.
     let lo: u32 = 0, hi: u32 = nCe - 1;
     while (lo < hi) {
-      const a = unchecked(coedgeScratch[lo]);
-      const b = unchecked(coedgeScratch[hi]);
-      unchecked(coedgeScratch[lo] = b);
-      unchecked(coedgeScratch[hi] = a);
+      const ea = unchecked(edgeIdScratch[lo]);
+      const eb = unchecked(edgeIdScratch[hi]);
+      unchecked(edgeIdScratch[lo] = eb);
+      unchecked(edgeIdScratch[hi] = ea);
+      const oa = unchecked(orientScratch[lo]);
+      const ob = unchecked(orientScratch[hi]);
+      unchecked(orientScratch[lo] = ob == ORIENT_FORWARD ? ORIENT_REVERSED : ORIENT_FORWARD);
+      unchecked(orientScratch[hi] = oa == ORIENT_FORWARD ? ORIENT_REVERSED : ORIENT_FORWARD);
       lo++; hi--;
     }
-    // Flip orientation flags — we wrote them directly via coedgeAdd,
-    // so patch the stored orients via coedgeAdd side effect.  Since we
-    // can't easily mutate stored orients here, re-allocate: but that's
-    // expensive.  Instead, rely on the fact that the kernel tessellator
-    // primarily uses next-pointers + orient to walk — flipping is a
-    // known-limited Phase 1 shortcut that matches the JS behaviour for
-    // the common ".T." case.  When reverseBound is true, leave orient
-    // alone (Phase 2 TODO).
+    if (lo == hi) {
+      const o = unchecked(orientScratch[lo]);
+      unchecked(orientScratch[lo] = o == ORIENT_FORWARD ? ORIENT_REVERSED : ORIENT_FORWARD);
+    }
+  }
+
+  // Phase 3: emit coedges in final order.
+  for (let i: u32 = 0; i < nCe; i++) {
+    const ceId = coedgeAdd(
+      unchecked(edgeIdScratch[i]),
+      unchecked(orientScratch[i]),
+      predictedLoopId,
+      wasmFaceId,
+    );
+    if (ceId == 0xFFFFFFFF) return ID_NONE;
+    unchecked(coedgeScratch[i] = ceId);
   }
 
   // Link coedges into a cycle: next[i] = scratch[(i+1) % nCe]

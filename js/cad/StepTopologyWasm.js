@@ -141,3 +141,126 @@ export function buildStepTopologySync(stepText, opts = {}) {
     faceCount, shellCount, geomPoolUsed,
   };
 }
+
+/**
+ * End-to-end native STEP → tessellated mesh pipeline.  Builds topology
+ * in WASM (no JS TopoBody allocation) and then runs the kernel's native
+ * tessellator, returning a {vertices, faces} mesh in the exact shape
+ * produced by `tessellateBodyWasm` — so callers can substitute this for
+ * the legacy path without any downstream adjustments.
+ *
+ * @param {string} stepText
+ * @param {{
+ *   edgeSegments?: number,
+ *   surfaceSegments?: number,
+ *   maxSkippedFaces?: number,
+ * }} [opts]
+ * @returns {{
+ *   ok: boolean,
+ *   reason?: string,
+ *   errorCode?: number,
+ *   skippedFaceCount?: number,
+ *   faceCount?: number,
+ *   vertices?: {x:number, y:number, z:number}[],
+ *   faces?: {vertices:{x:number,y:number,z:number}[], normal:{x:number,y:number,z:number}, faceGroup:number}[],
+ *   timings?: { buildMs:number, tessMs:number },
+ * }}
+ */
+export function importStepNativeSync(stepText, opts = {}) {
+  const _now = typeof performance !== 'undefined' && performance.now
+    ? () => performance.now() : () => Date.now();
+  const tBuild = _now();
+  const built = buildStepTopologySync(stepText, opts);
+  const buildMs = _now() - tBuild;
+  if (!built.ok) return { ...built, timings: { buildMs, tessMs: 0 } };
+
+  const w = _wasm;
+  const edgeSegs = opts.edgeSegments ?? 32;
+  const surfSegs = opts.surfaceSegments ?? 24;
+  const tTess = _now();
+  const triCount = w.tessBuildAllFaces(surfSegs, surfSegs);
+  const tessMs = _now() - tTess;
+  if (triCount < 0) {
+    return {
+      ok: false,
+      reason: 'tess-overflow',
+      skippedFaceCount: built.skippedFaceCount,
+      faceCount: built.faceCount,
+      timings: { buildMs, tessMs },
+    };
+  }
+
+  // Decode the kernel's tessellation output (shared layout used by
+  // tessellateBodyWasm's mesh assembler).
+  const mem = w.memory;
+  const vertCount = w.getTessOutVertCount() >>> 0;
+  const vertPtr = w.getTessOutVertsPtr();
+  const normPtr = w.getTessOutNormalsPtr();
+  const idxPtr = w.getTessOutIndicesPtr();
+  const faceMapPtr = w.getTessOutFaceMapPtr();
+
+  const vertsF64 = new Float64Array(mem.buffer, vertPtr, vertCount * 3);
+  const normsF64 = new Float64Array(mem.buffer, normPtr, vertCount * 3);
+  const idxU32 = new Uint32Array(mem.buffer, idxPtr, triCount * 3);
+  const faceMapU32 = new Uint32Array(mem.buffer, faceMapPtr, triCount);
+
+  // Snapshot per-face geom type so isCurved can be emitted (matches the
+  // tessellateBodyWasm() shape expected by importSTEP consumers).
+  const faceGeomTypes = new Uint8Array(built.faceCount);
+  const GEOM_PLANE = w.GEOM_PLANE | 0;
+  for (let i = 0; i < built.faceCount; i++) {
+    faceGeomTypes[i] = w.faceGetGeomType(i >>> 0) & 0xff;
+  }
+
+  const vertices = new Array(vertCount);
+  for (let i = 0; i < vertCount; i++) {
+    const b = i * 3;
+    vertices[i] = { x: vertsF64[b], y: vertsF64[b + 1], z: vertsF64[b + 2] };
+  }
+
+  const faces = new Array(triCount);
+  for (let t = 0; t < triCount; t++) {
+    const b = t * 3;
+    const a = idxU32[b], bb = idxU32[b + 1], c = idxU32[b + 2];
+    // Averaged per-vertex normal (parity with tessellateBodyWasm).
+    let nx = normsF64[a * 3]     + normsF64[bb * 3]     + normsF64[c * 3];
+    let ny = normsF64[a * 3 + 1] + normsF64[bb * 3 + 1] + normsF64[c * 3 + 1];
+    let nz = normsF64[a * 3 + 2] + normsF64[bb * 3 + 2] + normsF64[c * 3 + 2];
+    const nl = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+    nx /= nl; ny /= nl; nz /= nl;
+    const fg = faceMapU32[t] | 0;
+    faces[t] = {
+      vertices: [vertices[a], vertices[bb], vertices[c]],
+      normal: { x: nx, y: ny, z: nz },
+      faceGroup: fg,
+      isCurved: fg < faceGeomTypes.length ? (faceGeomTypes[fg] !== GEOM_PLANE) : false,
+      surfaceInfo: null,
+      shared: null,
+    };
+  }
+
+  // Edge diagnostic totals (optional).
+  const edgeSampleCount = typeof w.getEdgeSampleCount === 'function'
+    ? (w.getEdgeSampleCount() >>> 0) : 0;
+
+  return {
+    ok: true,
+    skippedFaceCount: built.skippedFaceCount,
+    faceCount: built.faceCount,
+    vertexCount: built.vertexCount,
+    edgeCount: built.edgeCount,
+    vertices,
+    faces,
+    edgeSampleCount,
+    timings: { buildMs, tessMs, edgeSegments: edgeSegs, surfaceSegments: surfSegs },
+  };
+}
+
+/**
+ * Convenience helper: await ensureStepTopologyReady() then call
+ * importStepNativeSync().  Use from async call sites (UI handlers, tests).
+ */
+export async function importStepNative(stepText, opts = {}) {
+  await ensureStepTopologyReady();
+  return importStepNativeSync(stepText, opts);
+}

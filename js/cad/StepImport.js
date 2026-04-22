@@ -26,9 +26,23 @@ import { NurbsSurface } from './NurbsSurface.js';
 import { tessellateBodyRouted } from './Tessellator2/index.js';
 import { tessellateBodyWasm, ensureWasmReady as _ensureWasmReady } from './StepImportWasm.js';
 import { globalTessConfig } from './TessellationConfig.js';
+import {
+  ensureStepTopologyReady as _ensureStepTopologyReady,
+  stepTopologyReadySync as _stepTopologyReadySync,
+  importStepNativeSync as _importStepNativeSync,
+} from './StepTopologyWasm.js';
 
 // Re-export for callers that need to pre-load WASM before sync importSTEP
 export const ensureWasmReady = _ensureWasmReady;
+
+// Native STEP→topology→mesh pipeline (Stage F).  Opt-in via env var.
+// Toggle with STEP_BUILD_WASM=1 to enable; default OFF because the native
+// path does not yet populate downstream TopoBody graph consumers.
+_ensureStepTopologyReady().catch(() => {});
+function _nativePipelineEnabled() {
+  const env = (typeof process !== 'undefined' && process.env && process.env.STEP_BUILD_WASM);
+  return env === '1' || env === 'true' || env === 'yes';
+}
 
 // Test-only exports — parity harness for the WASM parser migration.
 // Safe to import from tests; regular callers should not rely on these.
@@ -329,6 +343,41 @@ export function importSTEP(stepString, opts = {}) {
   const timings = {};
   const totalStart = _now();
 
+  // Stage F fast path: native STEP→WASM topology + tessellation.  Zero
+  // JS TopoBody allocation on the hot path; the legacy path still runs
+  // afterwards so downstream TopoBody consumers (feature-edge analysis,
+  // bounds, etc.) keep working unchanged.  Opt-in via STEP_BUILD_WASM=1.
+  if (_nativePipelineEnabled() && _stepTopologyReadySync()) {
+    const t0 = _now();
+    const native = _importStepNativeSync(stepString, {
+      edgeSegments: opts.curveSegments ?? globalTessConfig.edgeSegments,
+      surfaceSegments: opts.surfaceSegments ?? globalTessConfig.surfaceSegments,
+    });
+    if (native && native.ok && native.vertices.length > 0 && native.faces.length > 0) {
+      timings.nativeBuildMs = native.timings.buildMs;
+      timings.nativeTessMs = native.timings.tessMs;
+      timings.tessellateMs = native.timings.tessMs;
+      timings.tessellator = 'wasm-native';
+      timings.skippedFaceCount = native.skippedFaceCount;
+
+      // We still build a JS TopoBody because downstream code (bounds,
+      // edge analysis, hit-testing) queries it.  The native pipeline is
+      // what produces the mesh that's actually rendered.
+      const body = _measureStepPhase(timings, 'parseMs', 'step:import:parse', () =>
+        parseSTEPTopology(stepString),
+      );
+      timings.totalMs = telemetry.recordTimer('step:import:total', _now() - totalStart, totalStart);
+      timings.shellCount = body.shells.length;
+      timings.faceCount = body.faces().length;
+      timings.meshVertexCount = native.vertices.length;
+      timings.meshFaceCount = native.faces.length;
+      return { body, vertices: native.vertices, faces: native.faces, timings };
+    }
+    // Fallthrough to legacy path on any failure (including partial
+    // coverage when native build skipped too many faces).
+    timings.nativeFallbackReason = native ? (native.reason || 'unknown') : 'unavailable';
+  }
+
   const body = _measureStepPhase(timings, 'parseMs', 'step:import:parse', () =>
     parseSTEPTopology(stepString),
   );
@@ -383,6 +432,9 @@ export function importSTEP(stepString, opts = {}) {
  */
 export async function importSTEPAsync(stepString, opts = {}) {
   await _ensureWasmReady();
+  if (_nativePipelineEnabled()) {
+    try { await _ensureStepTopologyReady(); } catch (_err) { /* non-fatal */ }
+  }
   return importSTEP(stepString, opts);
 }
 

@@ -8,6 +8,7 @@ import { fileURLToPath } from 'url';
 import {
   ensureStepTopologyReady,
   buildStepTopologySync,
+  importStepNativeSync,
 } from '../js/cad/StepTopologyWasm.js';
 import { parseSTEPTopology } from '../js/cad/StepImport.js';
 import { formatTimingSuffix, startTiming } from './test-timing.js';
@@ -119,6 +120,52 @@ test('Unnamed-Body.step — native build attempts (b-splines expected to skip)',
   if (res.skippedFaceCount === 0 && res.faceCount === 0) {
     throw new Error('expected at least some faces built or skipped');
   }
+});
+
+await test('Unnamed-Body.step — Phase 2 B-spline surfaces all build & tessellate', async () => {
+  const src = readFileSync(unnamedStep, 'utf-8');
+  const res = buildStepTopologySync(src);
+  if (!res.ok) throw new Error(`native build failed: ${JSON.stringify(res)}`);
+  if (res.skippedFaceCount !== 0) {
+    throw new Error(`expected 0 skipped faces in Phase 2, got ${res.skippedFaceCount}`);
+  }
+  const mod = await import('../build/release.js');
+  const rc = mod.tessBuildAllFaces(24, 24);
+  if (rc < 0) throw new Error(`tessBuildAllFaces overflow rc=${rc}`);
+  const verts = mod.getTessOutVertCount() >>> 0;
+  const tris = mod.getTessOutTriCount() >>> 0;
+  console.log(`    faces=${res.faceCount} verts=${verts} tris=${tris}`);
+  if (tris < 100) throw new Error(`tri count too low for a ${res.faceCount}-face body: ${tris}`);
+});
+
+test('importStepNativeSync — end-to-end mesh assembly works', () => {
+  const src = readFileSync(boxStep, 'utf-8');
+  const out = importStepNativeSync(src, { surfaceSegments: 24 });
+  if (!out.ok) throw new Error(`importStepNativeSync failed: ${JSON.stringify(out)}`);
+  console.log(`    build=${out.timings.buildMs.toFixed(1)}ms tess=${out.timings.tessMs.toFixed(1)}ms` +
+    ` verts=${out.vertices.length} tris=${out.faces.length}`);
+  if (out.vertices.length === 0) throw new Error('no vertices');
+  if (out.faces.length === 0) throw new Error('no triangles');
+  // Mesh shape sanity: first triangle should have 3 points w/ finite coords.
+  const f0 = out.faces[0];
+  if (!f0.vertices || f0.vertices.length !== 3) throw new Error('tri has !=3 verts');
+  for (const v of f0.vertices) {
+    if (!Number.isFinite(v.x) || !Number.isFinite(v.y) || !Number.isFinite(v.z)) {
+      throw new Error('non-finite vertex coord');
+    }
+  }
+  if (!Number.isFinite(f0.normal.x)) throw new Error('non-finite normal');
+});
+
+test('importStepNativeSync — B-spline body produces dense mesh', () => {
+  const src = readFileSync(unnamedStep, 'utf-8');
+  const out = importStepNativeSync(src, { surfaceSegments: 24 });
+  if (!out.ok) throw new Error(`importStepNativeSync failed: ${JSON.stringify(out)}`);
+  console.log(`    faces=${out.faceCount} build=${out.timings.buildMs.toFixed(1)}ms` +
+    ` tess=${out.timings.tessMs.toFixed(1)}ms` +
+    ` verts=${out.vertices.length} tris=${out.faces.length} skipped=${out.skippedFaceCount}`);
+  if (out.skippedFaceCount > 0) throw new Error(`expected 0 skipped faces, got ${out.skippedFaceCount}`);
+  if (out.faces.length < 1000) throw new Error(`tri count too low: ${out.faces.length}`);
 });
 
 // ─────────────────────────── Tessellation sanity ───────────────────
