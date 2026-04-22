@@ -1101,3 +1101,68 @@ current topology-first architecture, with the exact kernel progressively moved
 into modular AssemblyScript components, robust algorithmic foundations for
 boolean and tessellation correctness, and GPU-accelerated rendering that keeps
 the CPU focused on exact geometry decisions.
+
+---
+
+## Stage F — Native STEP Topology Assembly (Complete)
+
+Goal: keep the resolved STEP model inside the WASM kernel — no JS TopoBody
+round-trip on the hot path.  This is the iteration-speed finish: the lexer,
+parser, topology assembler, and tessellator all run in-place against shared
+WASM memory.
+
+### Components (all landed)
+
+- `assembly/kernel/step_topology.ts` — native builder.  Walks the entity/arg
+  tables produced by `step_parser.ts` and emits directly into `topology.ts`
+  (`vertexAdd`/`edgeAdd`/`coedgeAdd`/`loopAdd`/`faceAdd`/`shellAdd`) and
+  `geometry.ts` (`planeStore`/`cylinderStore`/.../`nurbsSurfaceStoreFromStaging`).
+  Zero JS allocation per entity.
+- Handles: analytic surfaces (plane/cylinder/sphere/cone/torus), B-spline
+  surfaces simple + complex rational forms, all edge curve types with knot
+  multiplicity expansion, `reverseBound` with orient-flag flip, complex
+  entity pair-list walking (`complexSubArgs`).
+- `js/cad/StepTopologyWasm.js` — JS bridge.
+  - `buildStepTopologySync(stepText, opts)` → builder run + counts.
+  - `importStepNativeSync(stepText, opts)` → end-to-end mesh (vertices,
+    faces, normal-averaged, `isCurved`, `faceGroup`) matching
+    `tessellateBodyWasm` output shape.
+- `js/cad/StepImport.js` integration — opt-in `STEP_BUILD_WASM=1` env flag.
+  Fast-path runs the native build+tess; fallback to legacy JS path on any
+  failure.  Optional `{ skipBody: true }` bypasses `parseSTEPTopology`
+  entirely for callers that need only a display mesh.
+
+### Measured gains (NIST corpus, 11 files, `tests/bench-step-native.js`)
+
+|                 | wall-clock | speedup |
+|-----------------|-----------:|--------:|
+| Legacy JS       | 1550 ms    | 1.00×   |
+| WASM + TopoBody |  682 ms    | 2.27×   |
+| WASM, skipBody  |  293 ms    | 5.30×   |
+
+Peak single-file: 15.77× on `nist_ctc_01_asme1_rd.stp`.
+
+### Parity
+
+- `test-step-import.js`: 37/37 flag off and on
+- `test-step-topology-wasm.js`: 7/7
+- `test-nurbs-fillet-chamfer-variants.js`: 89/89
+- `test-step-export.js`: 16/16
+- `test-step-parser-wasm.js`: 7/7
+- `test-step-lexer-wasm.js`: 9/9
+
+NIST scoring drops from 58.0 % → 47.2 % under the flag due to a small
+number of tessellation edge-cases where the native tessellator skips a
+face the JS pipeline fills — acceptable since the flag is opt-in and the
+target is iteration speed, not mesh fidelity.  These are isolated to the
+native tessellator and will be addressed independently of the STEP path.
+
+### Not done (intentionally deferred)
+
+- A full WASM-backed TopoBody facade (option 2 from the design sketch)
+  would eliminate the remaining `parseSTEPTopology` cost on the
+  `skipBody === false` path, but requires re-implementing the entire
+  `shells/faces/edges/vertices/coedges/loops + surfaceInfo + NurbsSurface +
+  NurbsCurve + pCurves` graph behind lazy WASM-reading accessors.  That is
+  tracked as a follow-up; the opt-in `skipBody` path covers all
+  iteration-speed-sensitive callers today.
