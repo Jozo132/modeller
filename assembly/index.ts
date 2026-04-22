@@ -474,4 +474,15 @@ export {
   // interop: CBREP serialization
   cbrepDehydrate, cbrepHydrate, cbrepHydrateForHandle,
   getCbrepOutPtr, getCbrepOutLen,
+  // step_lexer: native ISO 10303-21 tokenizer
+  TOKEN_EOF, TOKEN_HASH_ID, TOKEN_HASH_REF, TOKEN_KEYWORD, TOKEN_NUMBER,
+  TOKEN_STRING, TOKEN_ENUM, TOKEN_DOLLAR, TOKEN_STAR,
+  TOKEN_LPAREN, TOKEN_RPAREN, TOKEN_COMMA, TOKEN_EQUALS, TOKEN_SEMICOLON,
+  STEP_LEX_OK, STEP_LEX_ERR_BAD_CHAR, STEP_LEX_ERR_UNTERMINATED_STRING,
+  STEP_LEX_ERR_INPUT_TOO_LARGE, STEP_LEX_ERR_TOKEN_OVERFLOW, STEP_LEX_ERR_STRPOOL_OVERFLOW,
+  stepLexReset, stepLexRun,
+  stepLexGetInputPtr, stepLexGetInputCapacity,
+  stepLexGetTokenBufPtr, stepLexGetTokenCount, stepLexGetTokenStride,
+  stepLexGetStringPoolPtr, stepLexGetStringPoolLen,
+  stepLexGetErrorOffset, stepLexGetErrorCode,
 } from './kernel/index';

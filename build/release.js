@@ -716,6 +716,38 @@ async function instantiate(module, imports = {}) {
       // assembly/kernel/interop/getCbrepOutLen() => u32
       return exports.getCbrepOutLen() >>> 0;
     },
+    stepLexGetInputPtr() {
+      // assembly/kernel/step_lexer/stepLexGetInputPtr() => usize
+      return exports.stepLexGetInputPtr() >>> 0;
+    },
+    stepLexGetInputCapacity() {
+      // assembly/kernel/step_lexer/stepLexGetInputCapacity() => u32
+      return exports.stepLexGetInputCapacity() >>> 0;
+    },
+    stepLexGetTokenBufPtr() {
+      // assembly/kernel/step_lexer/stepLexGetTokenBufPtr() => usize
+      return exports.stepLexGetTokenBufPtr() >>> 0;
+    },
+    stepLexGetTokenCount() {
+      // assembly/kernel/step_lexer/stepLexGetTokenCount() => u32
+      return exports.stepLexGetTokenCount() >>> 0;
+    },
+    stepLexGetTokenStride() {
+      // assembly/kernel/step_lexer/stepLexGetTokenStride() => u32
+      return exports.stepLexGetTokenStride() >>> 0;
+    },
+    stepLexGetStringPoolPtr() {
+      // assembly/kernel/step_lexer/stepLexGetStringPoolPtr() => usize
+      return exports.stepLexGetStringPoolPtr() >>> 0;
+    },
+    stepLexGetStringPoolLen() {
+      // assembly/kernel/step_lexer/stepLexGetStringPoolLen() => u32
+      return exports.stepLexGetStringPoolLen() >>> 0;
+    },
+    stepLexGetErrorOffset() {
+      // assembly/kernel/step_lexer/stepLexGetErrorOffset() => u32
+      return exports.stepLexGetErrorOffset() >>> 0;
+    },
   }, exports);
   function __liftString(pointer) {
     if (!pointer) return null;
@@ -1076,6 +1108,37 @@ export const {
   cbrepHydrateForHandle,
   getCbrepOutPtr,
   getCbrepOutLen,
+  TOKEN_EOF,
+  TOKEN_HASH_ID,
+  TOKEN_HASH_REF,
+  TOKEN_KEYWORD,
+  TOKEN_NUMBER,
+  TOKEN_STRING,
+  TOKEN_ENUM,
+  TOKEN_DOLLAR,
+  TOKEN_STAR,
+  TOKEN_LPAREN,
+  TOKEN_RPAREN,
+  TOKEN_COMMA,
+  TOKEN_EQUALS,
+  TOKEN_SEMICOLON,
+  STEP_LEX_OK,
+  STEP_LEX_ERR_BAD_CHAR,
+  STEP_LEX_ERR_UNTERMINATED_STRING,
+  STEP_LEX_ERR_INPUT_TOO_LARGE,
+  STEP_LEX_ERR_TOKEN_OVERFLOW,
+  STEP_LEX_ERR_STRPOOL_OVERFLOW,
+  stepLexReset,
+  stepLexRun,
+  stepLexGetInputPtr,
+  stepLexGetInputCapacity,
+  stepLexGetTokenBufPtr,
+  stepLexGetTokenCount,
+  stepLexGetTokenStride,
+  stepLexGetStringPoolPtr,
+  stepLexGetStringPoolLen,
+  stepLexGetErrorOffset,
+  stepLexGetErrorCode,
 } = await (async url => instantiate(
   await (async () => {
     const isNodeOrBun = typeof process != "undefined" && process.versions != null && (process.versions.node != null || process.versions.bun != null);

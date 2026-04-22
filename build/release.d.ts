@@ -1752,3 +1752,158 @@ export declare function getCbrepOutPtr(): number;
  * @returns `u32`
  */
 export declare function getCbrepOutLen(): number;
+/** assembly/kernel/step_lexer/TOKEN_EOF */
+export declare const TOKEN_EOF: {
+  /** @type `u8` */
+  get value(): number
+};
+/** assembly/kernel/step_lexer/TOKEN_HASH_ID */
+export declare const TOKEN_HASH_ID: {
+  /** @type `u8` */
+  get value(): number
+};
+/** assembly/kernel/step_lexer/TOKEN_HASH_REF */
+export declare const TOKEN_HASH_REF: {
+  /** @type `u8` */
+  get value(): number
+};
+/** assembly/kernel/step_lexer/TOKEN_KEYWORD */
+export declare const TOKEN_KEYWORD: {
+  /** @type `u8` */
+  get value(): number
+};
+/** assembly/kernel/step_lexer/TOKEN_NUMBER */
+export declare const TOKEN_NUMBER: {
+  /** @type `u8` */
+  get value(): number
+};
+/** assembly/kernel/step_lexer/TOKEN_STRING */
+export declare const TOKEN_STRING: {
+  /** @type `u8` */
+  get value(): number
+};
+/** assembly/kernel/step_lexer/TOKEN_ENUM */
+export declare const TOKEN_ENUM: {
+  /** @type `u8` */
+  get value(): number
+};
+/** assembly/kernel/step_lexer/TOKEN_DOLLAR */
+export declare const TOKEN_DOLLAR: {
+  /** @type `u8` */
+  get value(): number
+};
+/** assembly/kernel/step_lexer/TOKEN_STAR */
+export declare const TOKEN_STAR: {
+  /** @type `u8` */
+  get value(): number
+};
+/** assembly/kernel/step_lexer/TOKEN_LPAREN */
+export declare const TOKEN_LPAREN: {
+  /** @type `u8` */
+  get value(): number
+};
+/** assembly/kernel/step_lexer/TOKEN_RPAREN */
+export declare const TOKEN_RPAREN: {
+  /** @type `u8` */
+  get value(): number
+};
+/** assembly/kernel/step_lexer/TOKEN_COMMA */
+export declare const TOKEN_COMMA: {
+  /** @type `u8` */
+  get value(): number
+};
+/** assembly/kernel/step_lexer/TOKEN_EQUALS */
+export declare const TOKEN_EQUALS: {
+  /** @type `u8` */
+  get value(): number
+};
+/** assembly/kernel/step_lexer/TOKEN_SEMICOLON */
+export declare const TOKEN_SEMICOLON: {
+  /** @type `u8` */
+  get value(): number
+};
+/** assembly/kernel/step_lexer/STEP_LEX_OK */
+export declare const STEP_LEX_OK: {
+  /** @type `i32` */
+  get value(): number
+};
+/** assembly/kernel/step_lexer/STEP_LEX_ERR_BAD_CHAR */
+export declare const STEP_LEX_ERR_BAD_CHAR: {
+  /** @type `i32` */
+  get value(): number
+};
+/** assembly/kernel/step_lexer/STEP_LEX_ERR_UNTERMINATED_STRING */
+export declare const STEP_LEX_ERR_UNTERMINATED_STRING: {
+  /** @type `i32` */
+  get value(): number
+};
+/** assembly/kernel/step_lexer/STEP_LEX_ERR_INPUT_TOO_LARGE */
+export declare const STEP_LEX_ERR_INPUT_TOO_LARGE: {
+  /** @type `i32` */
+  get value(): number
+};
+/** assembly/kernel/step_lexer/STEP_LEX_ERR_TOKEN_OVERFLOW */
+export declare const STEP_LEX_ERR_TOKEN_OVERFLOW: {
+  /** @type `i32` */
+  get value(): number
+};
+/** assembly/kernel/step_lexer/STEP_LEX_ERR_STRPOOL_OVERFLOW */
+export declare const STEP_LEX_ERR_STRPOOL_OVERFLOW: {
+  /** @type `i32` */
+  get value(): number
+};
+/**
+ * assembly/kernel/step_lexer/stepLexReset
+ */
+export declare function stepLexReset(): void;
+/**
+ * assembly/kernel/step_lexer/stepLexRun
+ * @param inputLen `u32`
+ * @returns `i32`
+ */
+export declare function stepLexRun(inputLen: number): number;
+/**
+ * assembly/kernel/step_lexer/stepLexGetInputPtr
+ * @returns `usize`
+ */
+export declare function stepLexGetInputPtr(): number;
+/**
+ * assembly/kernel/step_lexer/stepLexGetInputCapacity
+ * @returns `u32`
+ */
+export declare function stepLexGetInputCapacity(): number;
+/**
+ * assembly/kernel/step_lexer/stepLexGetTokenBufPtr
+ * @returns `usize`
+ */
+export declare function stepLexGetTokenBufPtr(): number;
+/**
+ * assembly/kernel/step_lexer/stepLexGetTokenCount
+ * @returns `u32`
+ */
+export declare function stepLexGetTokenCount(): number;
+/**
+ * assembly/kernel/step_lexer/stepLexGetTokenStride
+ * @returns `u32`
+ */
+export declare function stepLexGetTokenStride(): number;
+/**
+ * assembly/kernel/step_lexer/stepLexGetStringPoolPtr
+ * @returns `usize`
+ */
+export declare function stepLexGetStringPoolPtr(): number;
+/**
+ * assembly/kernel/step_lexer/stepLexGetStringPoolLen
+ * @returns `u32`
+ */
+export declare function stepLexGetStringPoolLen(): number;
+/**
+ * assembly/kernel/step_lexer/stepLexGetErrorOffset
+ * @returns `u32`
+ */
+export declare function stepLexGetErrorOffset(): number;
+/**
+ * assembly/kernel/step_lexer/stepLexGetErrorCode
+ * @returns `i32`
+ */
+export declare function stepLexGetErrorCode(): number;
