@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 /**
  * tests/test-nurbs-fillet-chamfer-variants.js
  *

@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-worker-dispatcher.js — Tests for WorkerDispatcher + collectTransferables
 //
 // These tests run in Node.js and exercise the Transferable-collection

@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-boolean-nurbs.js — Tests for NURBS boolean support
 //
 // Validates:

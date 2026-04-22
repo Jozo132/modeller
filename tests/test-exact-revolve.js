@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-exact-revolve.js — Tests for exact B-Rep revolve output
 //
 // Validates that RevolveFeature produces exact TopoBody alongside mesh.

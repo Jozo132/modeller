@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-evaluator-parity.js — JS vs WASM evaluator parity tests
 //
 // Forces both JS and WASM backends and compares results within tolerance.

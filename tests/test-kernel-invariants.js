@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-kernel-invariants.js — Corpus-based invariant checks on tests/step/*.step
 //
 // Validates:
@@ -43,19 +44,19 @@ function test(name, fn) {
 console.log('=== Kernel Invariants — STEP Corpus ===\n');
 // ============================================================
 
-// Discover STEP files
-let stepFiles = [];
+// Discover STEP files. The corpus is a committed test asset; a missing
+// directory or empty corpus must fail the suite instead of silently
+// running zero tests and going green.
+let stepFiles;
 try {
   stepFiles = fs.readdirSync(STEP_DIR).filter(f => f.endsWith('.step'));
-} catch {
-  console.log('  ⚠ No tests/step/ directory found — skipping corpus tests');
+} catch (err) {
+  throw new Error(`STEP corpus directory ${STEP_DIR} is required but could not be read: ${err.message}`);
 }
-
 if (stepFiles.length === 0) {
-  console.log('  ⚠ No .step files found in tests/step/ — skipping corpus tests');
-} else {
-  console.log(`  Found ${stepFiles.length} STEP file(s) in corpus\n`);
+  throw new Error(`STEP corpus directory ${STEP_DIR} is present but contains no .step files`);
 }
+console.log(`  Found ${stepFiles.length} STEP file(s) in corpus\n`);
 
 for (const filename of stepFiles) {
   const filepath = path.join(STEP_DIR, filename);

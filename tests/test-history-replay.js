@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-history-replay.js — Tests for history tree topology-first layer
 //
 // Covers:

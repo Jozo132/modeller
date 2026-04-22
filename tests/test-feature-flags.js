@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-feature-flags.js — Tests for the centralized feature-flag module
 //
 // Verifies:

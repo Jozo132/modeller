@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-wasm-tess-ops.js — Tests for native tessellation + boolean ops modules
 //
 // Tests kernel/tessellation.ts (face tessellation, edge cache) and

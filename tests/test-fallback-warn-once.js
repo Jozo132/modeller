@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-fallback-warn-once.js — Regression tests for warn-once fallback logging
 //
 // Validates:

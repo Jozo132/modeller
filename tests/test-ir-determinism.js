@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-ir-determinism.js — CBREP v0 determinism and roundtrip tests
 //
 // Tests:

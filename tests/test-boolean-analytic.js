@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-boolean-analytic.js — Tests for the exact boolean kernel on analytic surfaces
 //
 // Validates:

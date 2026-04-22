@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-face-selection.js -- Tests for face selection, plane derivation,
 // sketch wireframe building, and face-based sketch/extrude workflows
 

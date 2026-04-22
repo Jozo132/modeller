@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-touch-gestures.js — Tests for mobile touch gesture interaction
 // Validates: touch state management, gesture detection, orbit/pan/zoom logic
 

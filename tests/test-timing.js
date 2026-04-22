@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 const now = typeof performance !== 'undefined' && performance.now
   ? () => performance.now()
   : () => Date.now();

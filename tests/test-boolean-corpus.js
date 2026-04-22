@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-boolean-corpus.js — Deterministic corpus-based boolean regression driver
 //
 // Validates:
@@ -175,18 +176,21 @@ test('fallback routing: result always has explicit grade', () => {
 
 console.log('\n--- STEP corpus boolean regression ---\n');
 
-let stepFiles = [];
+// The tests/step/ directory holds committed corpus assets. If it vanishes
+// or is empty in a CI checkout, the whole "STEP corpus boolean regression"
+// section silently ran zero tests and the suite still went green. That
+// made it impossible to tell a passing CI run from a corpus-loss
+// accident. Fail closed instead.
+let stepFiles;
 try {
   stepFiles = fs.readdirSync(STEP_DIR).filter(f => f.endsWith('.step'));
-} catch {
-  console.log('  ⚠ No tests/step/ directory found — skipping corpus tests');
+} catch (err) {
+  throw new Error(`STEP corpus directory ${STEP_DIR} is required but could not be read: ${err.message}`);
 }
-
 if (stepFiles.length === 0) {
-  console.log('  ⚠ No .step files found in tests/step/ — skipping STEP corpus tests');
-} else {
-  console.log(`  Found ${stepFiles.length} STEP file(s) in corpus\n`);
+  throw new Error(`STEP corpus directory ${STEP_DIR} is present but contains no .step files`);
 }
+console.log(`  Found ${stepFiles.length} STEP file(s) in corpus\n`);
 
 for (const filename of stepFiles) {
   const filepath = path.join(STEP_DIR, filename);

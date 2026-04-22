@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 import assert from 'assert';
 import { Part } from '../js/cad/Part.js';
 import { Sketch } from '../js/cad/Sketch.js';

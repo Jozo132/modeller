@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-cdt.js — Unit tests for Constrained Delaunay Triangulation
 import { constrainedTriangulate } from '../js/cad/Tessellator2/CDT.js';
 

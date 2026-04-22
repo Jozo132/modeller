@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-step-export.js — Tests for STEP file export
 //
 // Validates:

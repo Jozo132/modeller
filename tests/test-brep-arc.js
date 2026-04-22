@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-brep-arc.js — Verify BRep edge sharing between caps and cylindrical sides
 import { Part } from '../js/cad/Part.js';
 import { Sketch } from '../js/cad/Sketch.js';

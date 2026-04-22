@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-interaction-recorder.js — Tests for the InteractionRecorder
 // Validates: command generation, camera consolidation, playback
 

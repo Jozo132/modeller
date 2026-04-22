@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-exact-extrude.js — Tests for exact B-Rep extrude output
 //
 // Validates that ExtrudeFeature produces exact TopoBody alongside mesh.

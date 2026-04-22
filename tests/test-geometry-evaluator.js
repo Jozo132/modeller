@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-geometry-evaluator.js — Evaluator regression and parity tests
 //
 // Covers:

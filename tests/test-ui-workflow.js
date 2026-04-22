@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-ui-workflow.js -- Integration test for the full 3D modeling workflow
 // Tests: draw a box --> extrude into a cube --> add a circle on top --> extrude cut through it
 

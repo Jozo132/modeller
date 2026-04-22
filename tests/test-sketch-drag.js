@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-sketch-drag.js — Tests for sketch vertex drag correctness
 // Validates: union degenerate cleanup, snap candidate freshness, neighbor preservation
 

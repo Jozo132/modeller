@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-assembly-design.js — Assembly Design MVP test suite
 //
 // Covers:

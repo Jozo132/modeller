@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-intersection-validator.js — Tests for IntersectionValidator and Healing
 //
 // Validates:

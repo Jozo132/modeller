@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-toolkit.js — Unit tests for js/cad/toolkit/ modules
 // Covers: Vec3Utils, GeometryUtils, MeshRepair, MeshAnalysis, PlanarMath,
 //         EdgePathUtils, TopologyUtils, CoplanarUtils

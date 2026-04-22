@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-feature-revision.js — Tests for exactBodyRevisionId + irHash in feature results
 //
 // Validates that FeatureTree stamps solid results with:

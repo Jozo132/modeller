@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-cache-stores.js — Cache store read/write tests
 //
 // Tests:

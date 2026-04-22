@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-multi-body-chamfer-fillet.js — Validation tests for multi-body extrude, chamfer, and fillet
 
 import assert from 'assert';

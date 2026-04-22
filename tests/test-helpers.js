@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-helpers.js — Shared test utilities for the CAD modeller test suite
 //
 // Consolidates commonly duplicated helpers (test runner, assertions, sketch factories,

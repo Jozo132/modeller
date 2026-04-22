@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 /**
  * Tests for chamfering edges on extruded spline/bezier profiles.
  *

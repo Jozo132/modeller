@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-export-surface.js — Verify public export paths resolve correctly
 //
 // This test dynamically imports each package.json export path and checks

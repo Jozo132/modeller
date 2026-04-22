@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-mirror-pattern.js — Unit tests for Mirror, LinearPattern, RadialPattern constraints
 import { Scene } from '../js/cad/Scene.js';
 import { Mirror, LinearPattern, RadialPattern, Midpoint } from '../js/cad/Constraint.js';

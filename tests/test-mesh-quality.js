@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-mesh-quality.js — Mesh quality tests for the robust tessellator
 //
 // Validates:

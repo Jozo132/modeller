@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-brep-topology.js — Tests for the exact B-Rep topology graph
 //
 // Validates:

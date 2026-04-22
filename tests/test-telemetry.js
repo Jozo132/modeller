@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-telemetry.js — Tests for the Telemetry module
 
 import { Telemetry, telemetry } from '../js/telemetry.js';

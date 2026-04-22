@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-intersections-wasm-preload.js
 //
 // H9 regression: `Intersections.js` used to define `_ensureWasm()` but

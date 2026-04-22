@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-containment.js — Deterministic containment engine tests
 //
 // Validates:

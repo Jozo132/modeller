@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 /**
  * Tests for CSG T-junction repair and chamfer/fillet sort key fixes.
  * Validates that CSG boolean results produce manifold meshes and that

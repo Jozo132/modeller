@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-wasm-brep-kernel.js — Foundation tests for the WASM B-Rep kernel
 //
 // Tests handle lifecycle, topology construction, transform correctness,

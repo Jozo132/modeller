@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-stable-hash.js — Tests for creation-history-based stable hashes
 //
 // Validates:

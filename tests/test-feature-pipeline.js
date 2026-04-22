@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-feature-pipeline.js — End-to-end feature pipeline tests
 //
 // Validates progressive complexity of feature operations: extrude, chamfer,
@@ -603,15 +604,16 @@ test('Box chamfer-then-fillet on different edges produces valid mesh', () => {
     Math.abs(e.start.z - 10) < 1e-5 && Math.abs(e.end.z - 10) < 1e-5 &&
     Math.abs(e.start.y - 10) < 1e-5 && Math.abs(e.end.y - 10) < 1e-5
   );
-  if (edges2.length > 0) {
-    const fillet = part.fillet(edges2.map((e) => edgeKey(e.start, e.end)), 1);
-    const g2 = fillet.result?.geometry || fillet.result;
-    validateGeometry(g2, 'cf-fillet', { allowBoundaryEdges: true });
-  } else {
-    // If no back edge found after chamfer, just pass
-    console.log('    (skipped: no back edge found after chamfer)');
-    passed++; // count as pass since the chamfer itself validated
-  }
+  // The chamfer above only touched the front top edge (y=0); the back top
+  // edge (y=10, z=10) must still exist on a 20×10×10 box. Previously the
+  // test logged "(skipped: no back edge found)" and counted itself as a
+  // pass — that silently hid any regression where the chamfer collapsed
+  // or mis-identified the back edge. Fail closed instead.
+  assert.ok(edges2.length > 0,
+    'back top edge must survive a chamfer on the front top edge');
+  const fillet = part.fillet(edges2.map((e) => edgeKey(e.start, e.end)), 1);
+  const g2 = fillet.result?.geometry || fillet.result;
+  validateGeometry(g2, 'cf-fillet', { allowBoundaryEdges: true });
 });
 
 console.log('\n=== Feature Pipeline — CMOD Sample Files ===\n');

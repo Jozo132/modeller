@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-cmod-import-export.js — Tests for .cmod project file import/export
 //
 // Verifies the round-trip: build a Part → export to .cmod → validate format →

@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-api-migration.js — API migration regression tests
 //
 // Verifies that all active API surfaces use the new integrated CAD kernel

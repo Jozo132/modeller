@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-boolean-hardening.js — Tests for hardened boolean preconditions
 //
 // Validates:

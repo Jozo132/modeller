@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-nurbs.js — Tests for NURBS curve, surface, and B-Rep integration
 //
 // Validates:

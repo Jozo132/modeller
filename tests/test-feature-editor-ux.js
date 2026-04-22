@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-feature-editor-ux.js — Tests for the feature editor UX layer
 //
 // Covers:

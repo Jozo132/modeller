@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-coplanar-merge.js -- Test that coplanar faces are grouped after CSG union
 // Verifies that when two boxes are unioned and share a coplanar face,
 // the result groups coplanar faces so they can be selected as one.

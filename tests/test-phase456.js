@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-phase456.js — Tests for Phase 4/5/6 features:
 // - Per-intersection error bounds (ops.ts)
 // - Dynamic LoD dispatch (lod-manager.js)

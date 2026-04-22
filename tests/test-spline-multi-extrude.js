@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-spline-multi-extrude.js — Tests for SplinePrimitive and MultiSketchExtrudeFeature
 import assert from 'assert';
 import { PPoint } from '../js/cad/Point.js';

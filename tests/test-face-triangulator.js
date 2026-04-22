@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-face-triangulator.js — Verifiable tests for FaceTriangulator
 //
 // Tests the actual tessellation pipeline with mock cylinder surfaces.

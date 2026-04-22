@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-wasm-tessellation.js — Tests for WASM NURBS tessellation toolkit
 //
 // Validates that the WASM NURBS evaluation and tessellation produce results

@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-fallback-boolean.js — Deterministic tests for the discrete fallback lane
 //
 // Validates:

@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-geometry-persistence.js -- Test that solid geometry persists when adding new sketches
 // Verifies fix for: "When the sketch was added, the part that was made up to that point completely
 // disappears and only the sketch is left visible" and "Extruding that new sketch will leave only

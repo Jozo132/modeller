@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-multi-sketch-planes.js — Tests for multi-sketch, plane visibility,
 // sketch-feature linking, and active sketch management
 

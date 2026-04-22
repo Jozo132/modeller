@@ -1,3 +1,4 @@
+import './_watchdog.mjs';
 // tests/test-workflow-recordings.js — Replay workflow recordings and verify part statistics
 //
 // Loads JSON recording files from tests/samples/ and replays the commands
@@ -289,12 +290,13 @@ class HeadlessReplay {
 
 console.log('\n=== Workflow Recording Tests ===\n');
 
+// tests/samples/ is a committed asset; a missing directory must fail the
+// suite rather than silently produce zero workflow tests and a green run.
 let sampleFiles;
 try {
   sampleFiles = readdirSync(SAMPLES_DIR).filter(f => f.endsWith('.json'));
 } catch (e) {
-  console.log('  No samples directory found — skipping workflow tests');
-  sampleFiles = [];
+  throw new Error(`samples directory ${SAMPLES_DIR} is required but could not be read: ${e.message}`);
 }
 
 for (const file of sampleFiles) {
@@ -455,12 +457,12 @@ for (const file of sampleFiles) {
 
 console.log('\n--- .cmod Project File Tests ---\n');
 
+// Same rationale as above: the .cmod sample corpus is a committed asset.
 let cmodFiles;
 try {
   cmodFiles = readdirSync(SAMPLES_DIR).filter(f => f.endsWith('.cmod'));
 } catch (e) {
-  console.log('  No samples directory found — skipping .cmod tests');
-  cmodFiles = [];
+  throw new Error(`samples directory ${SAMPLES_DIR} is required but could not be read: ${e.message}`);
 }
 
 for (const file of cmodFiles) {
