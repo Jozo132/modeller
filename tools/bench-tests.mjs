@@ -4,18 +4,20 @@
 // as TIMEOUT. Exits non-zero if any test failed or timed out.
 //
 // Usage:
-//   node tools/bench-tests.mjs                       # default 20 s timeout
+//   node tools/bench-tests.mjs                       # default 32 s bench timeout, writes tests/timings.json
 //   node tools/bench-tests.mjs --timeout=10000       # 10 s timeout
 //   node tools/bench-tests.mjs --filter=boolean      # only tests matching 'boolean'
 //   node tools/bench-tests.mjs --exclude=nist,step   # skip anything matching
 //   node tools/bench-tests.mjs --slowest=10          # sort output by duration
 
 import { spawn } from 'node:child_process';
-import { readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 const ROOT = resolve(process.cwd());
 const TESTS_DIR = join(ROOT, 'tests');
+const TIMINGS_PATH = join(TESTS_DIR, 'timings.json');
+const TIMING_UPDATE_THRESHOLD = 0.20;
 
 function parseArgs(argv) {
   // Default file-level deadline is 32 s; the per-file self-installed
@@ -36,6 +38,54 @@ function listTests() {
   return readdirSync(TESTS_DIR)
     .filter((f) => /^test-.*\.js$/.test(f))
     .sort();
+}
+
+function loadTimings() {
+  if (!existsSync(TIMINGS_PATH)) return { timings: {}, raw: '' };
+  const raw = readFileSync(TIMINGS_PATH, 'utf8');
+  const trimmed = raw.trim();
+  if (!trimmed) return { timings: {}, raw };
+  const parsed = JSON.parse(trimmed);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { timings: {}, raw };
+  const timings = {};
+  for (const [file, seconds] of Object.entries(parsed)) {
+    if (typeof seconds === 'number' && Number.isFinite(seconds) && seconds >= 0) {
+      timings[file] = seconds;
+    }
+  }
+  return { timings, raw };
+}
+
+function secondsFromMs(ms) {
+  return Number((ms / 1000).toFixed(3));
+}
+
+function shouldUpdateTiming(previousSeconds, nextSeconds) {
+  if (typeof previousSeconds !== 'number' || !Number.isFinite(previousSeconds) || previousSeconds <= 0) {
+    return true;
+  }
+  const diffRatio = Math.abs(nextSeconds - previousSeconds) / previousSeconds;
+  return diffRatio > TIMING_UPDATE_THRESHOLD;
+}
+
+function writeTimings(existingTimings, previousRaw, results) {
+  const timings = { ...existingTimings };
+  let updatedCount = 0;
+  for (const result of results) {
+    const nextSeconds = secondsFromMs(result.ms);
+    if (shouldUpdateTiming(timings[result.file], nextSeconds)) {
+      timings[result.file] = nextSeconds;
+      updatedCount++;
+    }
+  }
+
+  const sortedTimings = Object.fromEntries(
+    Object.entries(timings).sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+  );
+  const nextRaw = JSON.stringify(sortedTimings, null, 4) + '\n';
+  const wroteFile = previousRaw !== nextRaw;
+  if (wroteFile) writeFileSync(TIMINGS_PATH, nextRaw);
+  return { sortedTimings, updatedCount, wroteFile };
 }
 
 function runOne(file, timeoutMs) {
@@ -72,6 +122,7 @@ function runOne(file, timeoutMs) {
 
 async function main() {
   const opts = parseArgs(process.argv);
+  const { timings: existingTimings, raw: previousTimingsRaw } = loadTimings();
   let files = listTests();
   if (opts.filter) files = files.filter((f) => f.includes(opts.filter));
   for (const excl of opts.exclude) files = files.filter((f) => !f.includes(excl));
@@ -110,6 +161,12 @@ async function main() {
       if (r.stderrTail) console.log('[stderr tail]\n' + r.stderrTail);
     }
   }
+
+  const { updatedCount, wroteFile } = writeTimings(existingTimings, previousTimingsRaw, results);
+  console.log(
+    `timings: ${wroteFile ? 'wrote' : 'kept'} ${TIMINGS_PATH} ` +
+    `(${updatedCount} entr${updatedCount === 1 ? 'y' : 'ies'} updated)`
+  );
   process.exit(failed.length ? 1 : 0);
 }
 
