@@ -77,17 +77,23 @@ process.stderr.write = wrapWrite(origStderrWrite);
 const here = dirname(fileURLToPath(import.meta.url));
 const killerScript = join(here, '_watchdog-killer.mjs');
 
-// Spawn the external killer as a detached, unref'd child. A tiny grace
-// beyond DEFAULT_MS gives the in-process offender report a chance to
-// land when the parent loop is async-yielding; for pure sync loops the
-// killer terminates the parent regardless.
-const KILL_GRACE_MS = 750;
+// Spawn the external killer as a detached child whose stderr is
+// inherited from the parent. Inheriting stderr lets the killer write
+// a "KILLING pid N after Ts" banner to the same stream the parent is
+// using, so even a pure-sync-loop hang (where the in-process offender
+// report below can never fire) still leaves a visible trace.
+//
+// The grace window before the external kill is generous (2000 ms) so
+// that *any* async-yielding test has plenty of time for the detailed
+// in-process report to land before we TerminateProcess the parent.
+const KILL_GRACE_MS = 2000;
 let killer;
 try {
-  killer = spawn(process.execPath, [killerScript, String(process.pid), String(DEFAULT_MS + KILL_GRACE_MS)], {
-    stdio: 'ignore',
-    detached: true,
-  });
+  killer = spawn(
+    process.execPath,
+    [killerScript, String(process.pid), String(DEFAULT_MS + KILL_GRACE_MS), String(DEFAULT_MS)],
+    { stdio: ['ignore', 'ignore', 'inherit'], detached: true },
+  );
   if (killer.unref) killer.unref();
 } catch { killer = null; }
 
@@ -99,22 +105,51 @@ process.on('exit', () => {
 
 const suiteStart = Date.now();
 const watchdogTimer = setTimeout(() => {
-  const secs = ((Date.now() - suiteStart) / 1000).toFixed(2);
-  const banner = `\n\n!!! TEST FILE TIMEOUT after ${secs}s (limit ${DEFAULT_MS} ms)\n`;
-  origStderrWrite(banner);
-  origStderrWrite('Each test file MUST complete within the watchdog budget; this one did not.\n');
-  origStderrWrite('Slowest spans between successive stdout/stderr lines:\n');
-  const top = spans
+  const nowMs = Date.now();
+  const secs = ((nowMs - suiteStart) / 1000).toFixed(2);
+  // The span currently in-flight hasn't been pushed yet: its label is
+  // `lastLabel` and its elapsed is `nowMs - lastMark`. This is the most
+  // important line of the report — it is almost always the test that
+  // was stuck at the moment the watchdog fired.
+  const inFlightMs = nowMs - lastMark;
+  origStderrWrite(`\n\n!!! TEST FILE TIMEOUT after ${secs}s (limit ${DEFAULT_MS} ms)\n`);
+  origStderrWrite('Each test file MUST complete within the watchdog budget; this one did not.\n\n');
+
+  origStderrWrite(`IN-FLIGHT when killed: ${inFlightMs} ms elapsed since the last output line.\n`);
+  origStderrWrite(`  last output: ${lastLabel}\n`);
+  if (lineBuf && lineBuf.length > 0) {
+    origStderrWrite(`  partial line being built: ${lineBuf.slice(0, MAX_LABEL)}\n`);
+  }
+  origStderrWrite(`  completed output lines so far: ${spans.length}\n\n`);
+
+  // Chronological tail: the last few completed spans before the
+  // in-flight one. Invaluable for "which test did we just pass and
+  // which one got stuck" diagnosis.
+  const TAIL = 20;
+  const tail = spans.slice(-TAIL);
+  if (tail.length) {
+    origStderrWrite(`Last ${tail.length} completed output spans (chronological):\n`);
+    for (const s of tail) {
+      origStderrWrite(`  ${String(s.ms).padStart(7)} ms  ${s.label}\n`);
+    }
+    origStderrWrite('\n');
+  }
+
+  // Absolute slowest completed spans across the whole run. These are
+  // the individual tests (or sub-blocks) that ate the budget.
+  const topN = spans
     .filter((s) => s.label && s.label.trim().length > 0)
     .sort((a, b) => b.ms - a.ms)
     .slice(0, KEEP_TOP);
-  for (const s of top) {
-    origStderrWrite(`  ${String(s.ms).padStart(7)} ms  after: ${s.label}\n`);
+  if (topN.length) {
+    origStderrWrite(`Slowest ${topN.length} completed spans (worst offenders):\n`);
+    for (const s of topN) {
+      origStderrWrite(`  ${String(s.ms).padStart(7)} ms  ${s.label}\n`);
+    }
+    origStderrWrite('\n');
   }
-  if (lineBuf && lineBuf.length > 0) {
-    origStderrWrite(`  [stalled after partial line]: ${lineBuf.slice(0, MAX_LABEL)}\n`);
-  }
-  origStderrWrite('\nFix the slowest tests listed above (or split the file) and re-run.\n\n');
+
+  origStderrWrite('Fix the in-flight test and the slowest offenders (or split the file) and re-run.\n\n');
   process.exit(124);
 }, DEFAULT_MS);
 if (typeof watchdogTimer.unref === 'function') watchdogTimer.unref();
