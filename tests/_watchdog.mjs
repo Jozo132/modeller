@@ -26,6 +26,7 @@
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { persistTimingResults, timingFileKey } from './_timings.mjs';
 
 const DEFAULT_MS = Number(process.env.TEST_WATCHDOG_MS || 30000);
 const MAX_LABEL = 160;
@@ -104,6 +105,22 @@ process.on('exit', () => {
 });
 
 const suiteStart = Date.now();
+let persistedOwnTiming = false;
+
+function persistOwnTiming() {
+  if (persistedOwnTiming) return;
+  const entryFile = timingFileKey(process.argv[1]);
+  if (!entryFile || !/^test-.*\.js$/.test(entryFile)) return;
+  persistedOwnTiming = true;
+  try {
+    persistTimingResults([{ file: entryFile, ms: Date.now() - suiteStart }]);
+  } catch {
+    // Never let timing persistence interfere with the test process exit path.
+  }
+}
+
+process.on('exit', persistOwnTiming);
+
 const watchdogTimer = setTimeout(() => {
   const nowMs = Date.now();
   const secs = ((nowMs - suiteStart) / 1000).toFixed(2);

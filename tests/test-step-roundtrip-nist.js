@@ -1,5 +1,5 @@
-import './_watchdog.mjs';
 #!/usr/bin/env node
+import './_watchdog.mjs';
 /**
  * tests/test-step-roundtrip-nist.js
  *
