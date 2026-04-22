@@ -128,6 +128,10 @@ function _restoreSnapshot(snapshot) {
   if (snapshot && snapshot.scene) {
     state.scene = Scene.deserialize(snapshot.scene);
     if (_partManager && snapshot.part) {
+      // C2: Part snapshots carry per-feature CBREP checkpoints (H5) and
+      // PartManager.deserialize wires FAST_RESTORE_DEPS, so this restore
+      // runs the C1 fast path and skips full feature replay when every
+      // solid feature has a matching cached CBREP.
       _partManager.deserialize(snapshot.part);
     }
   } else {
