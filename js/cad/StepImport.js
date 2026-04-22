@@ -29,6 +29,101 @@ import { globalTessConfig } from './TessellationConfig.js';
 
 // Re-export for callers that need to pre-load WASM before sync importSTEP
 export const ensureWasmReady = _ensureWasmReady;
+
+// Test-only exports — parity harness for the WASM parser migration.
+// Safe to import from tests; regular callers should not rely on these.
+export function _resolveEntitiesForTest(stepString) {
+  return _resolveEntities(_parseEntities(stepString));
+}
+
+// WASM parser integration ---------------------------------------------
+// The native parser (assembly/kernel/step_parser.ts + StepParserWasm.js)
+// produces the same Map<id,{id,type,args}> shape as _resolveEntities
+// for simple entities.  Complex entities arrive as pre-split
+// [[keyword, argsArray], ...] pairs and are merged here using the same
+// priority rules as _parseComplexEntity.
+//
+// Toggle with env var STEP_PARSE_WASM=0 (default is on when available).
+import {
+  parseStepEntitiesSync as _wasmParseStepEntitiesSync,
+  stepParserReadySync as _wasmStepParserReadySync,
+  ensureStepParserReady as _wasmEnsureStepParserReady,
+} from './StepParserWasm.js';
+
+// Kick off WASM load so it's ready by the time the user imports a file.
+_wasmEnsureStepParserReady().catch(() => {});
+
+function _wasmEnabled() {
+  const env = (typeof process !== 'undefined' && process.env && process.env.STEP_PARSE_WASM);
+  return env !== '0' && env !== 'false';
+}
+
+function _parseAndResolve(stepString) {
+  if (_wasmEnabled() && _wasmStepParserReadySync()) {
+    try {
+      const m = _wasmParseStepEntitiesSync(stepString);
+      // Merge complex entities in-place.
+      for (const [id, ent] of m) {
+        if (ent.type === '__COMPLEX_WASM__') {
+          const merged = _mergeComplexEntityFromWasm(ent.args);
+          ent.type = merged.type;
+          ent.args = merged.args;
+        }
+      }
+      return m;
+    } catch (_err) {
+      // Silent fallback — JS path produces the same result.
+    }
+  }
+  return _resolveEntities(_parseEntities(stepString));
+}
+
+/**
+ * Merge a complex entity's sub-entity pairs (as produced by the WASM
+ * parser) into a single {type, args} record using the same priority
+ * rules as _parseComplexEntity(body).
+ *
+ * @param {Array<[string, Array]>} pairs  — [ [keyword, argsArray], ... ]
+ * @returns {{type:string, args:Array}}
+ */
+function _mergeComplexEntityFromWasm(pairs) {
+  const map = new Map();
+  for (const pair of pairs) {
+    if (!Array.isArray(pair) || pair.length < 2) continue;
+    map.set(String(pair[0]).toUpperCase(), pair[1] || []);
+  }
+
+  // Curves: RATIONAL_B_SPLINE_CURVE > B_SPLINE_CURVE_WITH_KNOTS > B_SPLINE_CURVE
+  if (map.has('B_SPLINE_CURVE_WITH_KNOTS') || map.has('B_SPLINE_CURVE')) {
+    const baseArgs = map.get('B_SPLINE_CURVE') || [];
+    const knotArgs = map.get('B_SPLINE_CURVE_WITH_KNOTS') || [];
+    const rationalArgs = map.get('RATIONAL_B_SPLINE_CURVE') || [];
+    const args = baseArgs.concat(knotArgs).concat(rationalArgs);
+    return {
+      type: rationalArgs.length ? 'RATIONAL_B_SPLINE_CURVE' : 'B_SPLINE_CURVE_WITH_KNOTS',
+      args,
+    };
+  }
+
+  // Surfaces
+  if (map.has('B_SPLINE_SURFACE_WITH_KNOTS') || map.has('B_SPLINE_SURFACE')) {
+    const baseArgs = map.get('B_SPLINE_SURFACE') || [];
+    const knotArgs = map.get('B_SPLINE_SURFACE_WITH_KNOTS') || [];
+    const rationalArgs = map.get('RATIONAL_B_SPLINE_SURFACE') || [];
+    const args = baseArgs.concat(knotArgs).concat(rationalArgs);
+    return {
+      type: rationalArgs.length ? 'RATIONAL_B_SPLINE_SURFACE' : 'B_SPLINE_SURFACE_WITH_KNOTS',
+      args,
+    };
+  }
+
+  if (map.has('GEOMETRIC_REPRESENTATION_CONTEXT')) {
+    return { type: 'GEOMETRIC_REPRESENTATION_CONTEXT', args: map.get('GEOMETRIC_REPRESENTATION_CONTEXT') || [] };
+  }
+
+  // Fallback — keep the full pair list so later code can inspect it.
+  return { type: '__COMPLEX__', args: pairs };
+}
 import {
   SurfaceType,
   TopoVertex,
@@ -79,14 +174,11 @@ export function parseSTEPTopology(stepString) {
   const unitScales = _detectStepUnitScales(stepString);
 
   // ------------------------------------------------------------------
-  // 1. Parse all entities from the DATA section
+  // 1–2. Parse + resolve.  Prefer the native WASM parser when the module
+  // is ready and the feature flag allows it; fall back to the JS parser
+  // on any error so existing corpora remain bit-for-bit identical.
   // ------------------------------------------------------------------
-  const entities = _parseEntities(stepString);
-
-  // ------------------------------------------------------------------
-  // 2. Resolve entity references into an object graph
-  // ------------------------------------------------------------------
-  const resolved = _resolveEntities(entities);
+  const resolved = _parseAndResolve(stepString);
 
   // ------------------------------------------------------------------
   // 3. Find MANIFOLD_SOLID_BREP (or CLOSED_SHELL directly)

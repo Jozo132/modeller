@@ -1907,3 +1907,112 @@ export declare function stepLexGetErrorOffset(): number;
  * @returns `i32`
  */
 export declare function stepLexGetErrorCode(): number;
+/** assembly/kernel/step_parser/ARG_NULL */
+export declare const ARG_NULL: {
+  /** @type `u8` */
+  get value(): number
+};
+/** assembly/kernel/step_parser/ARG_REF */
+export declare const ARG_REF: {
+  /** @type `u8` */
+  get value(): number
+};
+/** assembly/kernel/step_parser/ARG_NUMBER */
+export declare const ARG_NUMBER: {
+  /** @type `u8` */
+  get value(): number
+};
+/** assembly/kernel/step_parser/ARG_STRING */
+export declare const ARG_STRING: {
+  /** @type `u8` */
+  get value(): number
+};
+/** assembly/kernel/step_parser/ARG_ENUM */
+export declare const ARG_ENUM: {
+  /** @type `u8` */
+  get value(): number
+};
+/** assembly/kernel/step_parser/ARG_LIST */
+export declare const ARG_LIST: {
+  /** @type `u8` */
+  get value(): number
+};
+/** assembly/kernel/step_parser/STEP_PARSE_OK */
+export declare const STEP_PARSE_OK: {
+  /** @type `i32` */
+  get value(): number
+};
+/** assembly/kernel/step_parser/STEP_PARSE_ERR_UNEXPECTED_TOKEN */
+export declare const STEP_PARSE_ERR_UNEXPECTED_TOKEN: {
+  /** @type `i32` */
+  get value(): number
+};
+/** assembly/kernel/step_parser/STEP_PARSE_ERR_ENTITY_OVERFLOW */
+export declare const STEP_PARSE_ERR_ENTITY_OVERFLOW: {
+  /** @type `i32` */
+  get value(): number
+};
+/** assembly/kernel/step_parser/STEP_PARSE_ERR_ARG_OVERFLOW */
+export declare const STEP_PARSE_ERR_ARG_OVERFLOW: {
+  /** @type `i32` */
+  get value(): number
+};
+/** assembly/kernel/step_parser/STEP_PARSE_ERR_MISSING_DATA_SECTION */
+export declare const STEP_PARSE_ERR_MISSING_DATA_SECTION: {
+  /** @type `i32` */
+  get value(): number
+};
+/** assembly/kernel/step_parser/STEP_PARSE_ERR_BAD_COMPLEX_ENTITY */
+export declare const STEP_PARSE_ERR_BAD_COMPLEX_ENTITY: {
+  /** @type `i32` */
+  get value(): number
+};
+/**
+ * assembly/kernel/step_parser/stepParseReset
+ */
+export declare function stepParseReset(): void;
+/**
+ * assembly/kernel/step_parser/stepParseRun
+ * @returns `i32`
+ */
+export declare function stepParseRun(): number;
+/**
+ * assembly/kernel/step_parser/stepParseGetEntityBufPtr
+ * @returns `usize`
+ */
+export declare function stepParseGetEntityBufPtr(): number;
+/**
+ * assembly/kernel/step_parser/stepParseGetEntityStride
+ * @returns `u32`
+ */
+export declare function stepParseGetEntityStride(): number;
+/**
+ * assembly/kernel/step_parser/stepParseGetEntityCount
+ * @returns `u32`
+ */
+export declare function stepParseGetEntityCount(): number;
+/**
+ * assembly/kernel/step_parser/stepParseGetArgBufPtr
+ * @returns `usize`
+ */
+export declare function stepParseGetArgBufPtr(): number;
+/**
+ * assembly/kernel/step_parser/stepParseGetArgStride
+ * @returns `u32`
+ */
+export declare function stepParseGetArgStride(): number;
+/**
+ * assembly/kernel/step_parser/stepParseGetArgCount
+ * @returns `u32`
+ */
+export declare function stepParseGetArgCount(): number;
+/**
+ * assembly/kernel/step_parser/stepParseGetErrorCode
+ * @returns `i32`
+ */
+export declare function stepParseGetErrorCode(): number;
+/**
+ * assembly/kernel/step_parser/stepParseGetErrorTokenIdx
+ * @returns `u32`
+ */
+export declare function stepParseGetErrorTokenIdx(): number;

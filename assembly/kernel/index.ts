@@ -110,3 +110,14 @@ export {
   stepLexGetStringPoolPtr, stepLexGetStringPoolLen,
   stepLexGetErrorOffset, stepLexGetErrorCode
 } from './step_lexer';
+
+// ---- step_parser: native STEP entity parser (consumes step_lexer tokens) ----
+export {
+  ARG_NULL, ARG_REF, ARG_NUMBER, ARG_STRING, ARG_ENUM, ARG_LIST,
+  STEP_PARSE_OK, STEP_PARSE_ERR_UNEXPECTED_TOKEN, STEP_PARSE_ERR_ENTITY_OVERFLOW,
+  STEP_PARSE_ERR_ARG_OVERFLOW, STEP_PARSE_ERR_MISSING_DATA_SECTION, STEP_PARSE_ERR_BAD_COMPLEX_ENTITY,
+  stepParseReset, stepParseRun,
+  stepParseGetEntityBufPtr, stepParseGetEntityStride, stepParseGetEntityCount,
+  stepParseGetArgBufPtr, stepParseGetArgStride, stepParseGetArgCount,
+  stepParseGetErrorCode, stepParseGetErrorTokenIdx
+} from './step_parser';

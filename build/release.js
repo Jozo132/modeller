@@ -748,6 +748,34 @@ async function instantiate(module, imports = {}) {
       // assembly/kernel/step_lexer/stepLexGetErrorOffset() => u32
       return exports.stepLexGetErrorOffset() >>> 0;
     },
+    stepParseGetEntityBufPtr() {
+      // assembly/kernel/step_parser/stepParseGetEntityBufPtr() => usize
+      return exports.stepParseGetEntityBufPtr() >>> 0;
+    },
+    stepParseGetEntityStride() {
+      // assembly/kernel/step_parser/stepParseGetEntityStride() => u32
+      return exports.stepParseGetEntityStride() >>> 0;
+    },
+    stepParseGetEntityCount() {
+      // assembly/kernel/step_parser/stepParseGetEntityCount() => u32
+      return exports.stepParseGetEntityCount() >>> 0;
+    },
+    stepParseGetArgBufPtr() {
+      // assembly/kernel/step_parser/stepParseGetArgBufPtr() => usize
+      return exports.stepParseGetArgBufPtr() >>> 0;
+    },
+    stepParseGetArgStride() {
+      // assembly/kernel/step_parser/stepParseGetArgStride() => u32
+      return exports.stepParseGetArgStride() >>> 0;
+    },
+    stepParseGetArgCount() {
+      // assembly/kernel/step_parser/stepParseGetArgCount() => u32
+      return exports.stepParseGetArgCount() >>> 0;
+    },
+    stepParseGetErrorTokenIdx() {
+      // assembly/kernel/step_parser/stepParseGetErrorTokenIdx() => u32
+      return exports.stepParseGetErrorTokenIdx() >>> 0;
+    },
   }, exports);
   function __liftString(pointer) {
     if (!pointer) return null;
@@ -1139,6 +1167,28 @@ export const {
   stepLexGetStringPoolLen,
   stepLexGetErrorOffset,
   stepLexGetErrorCode,
+  ARG_NULL,
+  ARG_REF,
+  ARG_NUMBER,
+  ARG_STRING,
+  ARG_ENUM,
+  ARG_LIST,
+  STEP_PARSE_OK,
+  STEP_PARSE_ERR_UNEXPECTED_TOKEN,
+  STEP_PARSE_ERR_ENTITY_OVERFLOW,
+  STEP_PARSE_ERR_ARG_OVERFLOW,
+  STEP_PARSE_ERR_MISSING_DATA_SECTION,
+  STEP_PARSE_ERR_BAD_COMPLEX_ENTITY,
+  stepParseReset,
+  stepParseRun,
+  stepParseGetEntityBufPtr,
+  stepParseGetEntityStride,
+  stepParseGetEntityCount,
+  stepParseGetArgBufPtr,
+  stepParseGetArgStride,
+  stepParseGetArgCount,
+  stepParseGetErrorCode,
+  stepParseGetErrorTokenIdx,
 } = await (async url => instantiate(
   await (async () => {
     const isNodeOrBun = typeof process != "undefined" && process.versions != null && (process.versions.node != null || process.versions.bun != null);
