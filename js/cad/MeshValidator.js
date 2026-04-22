@@ -23,20 +23,112 @@ export function detectSelfIntersections(faces, opts = {}) {
   const sameGroupOnly = opts.sameGroupOnly || false;
   const sameTopoFaceOnly = opts.sameTopoFaceOnly || false;
 
+  // Build a uniform spatial grid over triangle AABBs so we only pair-test
+  // triangles whose bounding boxes overlap. Without this, a 10 k-triangle
+  // fillet mesh would do ~5 × 10⁷ pairwise tests (the dominant cost on
+  // multi-edge fillet/chamfer); with the grid it drops to near-linear.
+  // For tiny meshes the grid overhead isn't worth it.
+  if (n < 256) {
+    for (let i = 0; i < n; i++) {
+      const fa = faces[i];
+      if (fa.vertices.length !== 3) continue;
+      for (let j = i + 1; j < n; j++) {
+        const fb = faces[j];
+        if (fb.vertices.length !== 3) continue;
+        if (sameGroupOnly && fa.faceGroup !== fb.faceGroup) continue;
+        if (sameTopoFaceOnly && fa.topoFaceId !== undefined && fb.topoFaceId !== undefined && fa.topoFaceId !== fb.topoFaceId) continue;
+        if (_sharesVertexOrEdge(fa.vertices, fb.vertices)) continue;
+        if (_trianglesIntersect(fa.vertices, fb.vertices)) pairs.push([i, j]);
+      }
+    }
+    return { count: pairs.length, pairs };
+  }
+
+  // Precompute per-triangle AABBs and a global bounding box.
+  const aabbs = new Array(n);
+  let gxmin = Infinity, gymin = Infinity, gzmin = Infinity;
+  let gxmax = -Infinity, gymax = -Infinity, gzmax = -Infinity;
+  let triCount = 0;
   for (let i = 0; i < n; i++) {
+    const f = faces[i];
+    if (f.vertices.length !== 3) { aabbs[i] = null; continue; }
+    const [a, b, c] = f.vertices;
+    const xmin = Math.min(a.x, b.x, c.x), xmax = Math.max(a.x, b.x, c.x);
+    const ymin = Math.min(a.y, b.y, c.y), ymax = Math.max(a.y, b.y, c.y);
+    const zmin = Math.min(a.z, b.z, c.z), zmax = Math.max(a.z, b.z, c.z);
+    aabbs[i] = [xmin, ymin, zmin, xmax, ymax, zmax];
+    if (xmin < gxmin) gxmin = xmin; if (ymin < gymin) gymin = ymin; if (zmin < gzmin) gzmin = zmin;
+    if (xmax > gxmax) gxmax = xmax; if (ymax > gymax) gymax = ymax; if (zmax > gzmax) gzmax = zmax;
+    triCount++;
+  }
+  if (triCount === 0) return { count: 0, pairs: [] };
+
+  // Choose grid resolution so each cell holds ~1 triangle on average. Use
+  // the cube root of the triangle count per axis.
+  const res = Math.max(1, Math.ceil(Math.cbrt(triCount)));
+  const sx = (gxmax - gxmin) / res || 1;
+  const sy = (gymax - gymin) / res || 1;
+  const sz = (gzmax - gzmin) / res || 1;
+
+  function cellKey(ix, iy, iz) { return ix * 131071 + iy * 257 + iz; }
+
+  /** @type {Map<number, number[]>} */
+  const grid = new Map();
+  const triCells = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const aa = aabbs[i];
+    if (!aa) { triCells[i] = null; continue; }
+    const ix0 = Math.max(0, Math.min(res - 1, Math.floor((aa[0] - gxmin) / sx)));
+    const iy0 = Math.max(0, Math.min(res - 1, Math.floor((aa[1] - gymin) / sy)));
+    const iz0 = Math.max(0, Math.min(res - 1, Math.floor((aa[2] - gzmin) / sz)));
+    const ix1 = Math.max(0, Math.min(res - 1, Math.floor((aa[3] - gxmin) / sx)));
+    const iy1 = Math.max(0, Math.min(res - 1, Math.floor((aa[4] - gymin) / sy)));
+    const iz1 = Math.max(0, Math.min(res - 1, Math.floor((aa[5] - gzmin) / sz)));
+    const cells = [];
+    for (let ix = ix0; ix <= ix1; ix++) {
+      for (let iy = iy0; iy <= iy1; iy++) {
+        for (let iz = iz0; iz <= iz1; iz++) {
+          const k = cellKey(ix, iy, iz);
+          cells.push(k);
+          let bucket = grid.get(k);
+          if (!bucket) { bucket = []; grid.set(k, bucket); }
+          bucket.push(i);
+        }
+      }
+    }
+    triCells[i] = cells;
+  }
+
+  // Dedupe: triangles spanning multiple cells would produce duplicate
+  // (i, j) pairs. Using a Set<number> showed up as ~43% of profile time
+  // (FindOrderedHashSetEntry + SetPrototypeAdd) on 26k-triangle meshes.
+  // Replace with a per-iteration mark array: for the outer triangle `i`,
+  // `lastPair[j] === i` means we've already handled this pair.
+  const lastPair = new Int32Array(n).fill(-1);
+  for (let i = 0; i < n; i++) {
+    const cells = triCells[i];
+    if (!cells) continue;
     const fa = faces[i];
-    if (fa.vertices.length !== 3) continue;
-    for (let j = i + 1; j < n; j++) {
-      const fb = faces[j];
-      if (fb.vertices.length !== 3) continue;
-      if (sameGroupOnly && fa.faceGroup !== fb.faceGroup) continue;
-      if (sameTopoFaceOnly && fa.topoFaceId !== undefined && fb.topoFaceId !== undefined && fa.topoFaceId !== fb.topoFaceId) continue;
-
-      // Skip triangles that share an edge or vertex (neighbours)
-      if (_sharesVertexOrEdge(fa.vertices, fb.vertices)) continue;
-
-      if (_trianglesIntersect(fa.vertices, fb.vertices)) {
-        pairs.push([i, j]);
+    const aai = aabbs[i];
+    for (let c = 0; c < cells.length; c++) {
+      const bucket = grid.get(cells[c]);
+      if (!bucket) continue;
+      for (let b = 0; b < bucket.length; b++) {
+        const j = bucket[b];
+        if (j <= i) continue;
+        if (lastPair[j] === i) continue;
+        lastPair[j] = i;
+        const fb = faces[j];
+        if (fb.vertices.length !== 3) continue;
+        if (sameGroupOnly && fa.faceGroup !== fb.faceGroup) continue;
+        if (sameTopoFaceOnly && fa.topoFaceId !== undefined && fb.topoFaceId !== undefined && fa.topoFaceId !== fb.topoFaceId) continue;
+        // AABB reject
+        const aaj = aabbs[j];
+        if (aai[3] < aaj[0] || aaj[3] < aai[0]) continue;
+        if (aai[4] < aaj[1] || aaj[4] < aai[1]) continue;
+        if (aai[5] < aaj[2] || aaj[5] < aai[2]) continue;
+        if (_sharesVertexOrEdge(fa.vertices, fb.vertices)) continue;
+        if (_trianglesIntersect(fa.vertices, fb.vertices)) pairs.push([i, j]);
       }
     }
   }

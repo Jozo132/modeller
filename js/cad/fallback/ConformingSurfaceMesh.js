@@ -22,8 +22,11 @@ export function buildConformingMesh(body, opts = {}) {
   const snapTol = opts.snapTolerance ?? 1e-8;
   const PREC = _precisionForTolerance(snapTol);
 
-  // Tessellate the body through the existing robust pipeline
-  const rawMesh = tessellateBody(body);
+  // Tessellate the body through the existing robust pipeline. Validation
+  // is O(n\u00b2) on triangle count and would dominate runtime on large NURBS
+  // bodies; the mesh here is an intermediate for boolean fragment checks,
+  // not a rendered artifact, so skip it.
+  const rawMesh = tessellateBody(body, { validate: false });
   if (!rawMesh || !rawMesh.faces || rawMesh.faces.length === 0) {
     return { vertices: [], faces: [], vertexIndex: new Map(), bodyId: null };
   }

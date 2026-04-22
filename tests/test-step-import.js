@@ -512,14 +512,14 @@ console.log('\n=== STEP Import — Feature Tests ===\n');
 
 test('StepImportFeature: has correct type', () => {
   resetFeatureIds();
-  const feature = new StepImportFeature('Test Import', stepData);
+  const feature = new StepImportFeature('Test Import', boxFilletData);
   assert.strictEqual(feature.type, 'step-import');
   assert.strictEqual(feature.name, 'Test Import');
 });
 
 test('StepImportFeature: execute produces solid result', () => {
   resetFeatureIds();
-  const feature = new StepImportFeature('Test Import', stepData);
+  const feature = new StepImportFeature('Test Import', boxFilletData);
   const result = feature.execute({ results: {}, tree: { getFeatureIndex: () => 0, features: [] } });
   assert.strictEqual(result.type, 'solid');
   assert.ok(result.geometry, 'Should have geometry');
@@ -533,7 +533,7 @@ test('StepImportFeature: execute produces solid result', () => {
 
 test('StepImportFeature: second execute reuses cached import result', () => {
   resetFeatureIds();
-  const feature = new StepImportFeature('Test Import', stepData);
+  const feature = new StepImportFeature('Test Import', boxFilletData);
   const first = feature.execute({ results: {}, tree: { getFeatureIndex: () => 0, features: [] } });
   const second = feature.execute({ results: {}, tree: { getFeatureIndex: () => 0, features: [] } });
 
@@ -545,7 +545,7 @@ test('StepImportFeature: second execute reuses cached import result', () => {
 
 test('StepImportFeature: execute exposes cached CBREP payload when available', () => {
   resetFeatureIds();
-  const feature = new StepImportFeature('Test Import', stepData);
+  const feature = new StepImportFeature('Test Import', boxFilletData);
   const cbrepBuffer = new Uint8Array([9, 8, 7, 6]).buffer;
   feature._applyIrCachePayload('deadbeefcafebabe', cbrepBuffer);
 
@@ -559,7 +559,7 @@ test('StepImportFeature: execute exposes cached CBREP payload when available', (
 
 test('StepImportFeature: IR payload completion updates live result and tree residency hook', () => {
   resetFeatureIds();
-  const feature = new StepImportFeature('Test Import', stepData);
+  const feature = new StepImportFeature('Test Import', boxFilletData);
   const payload = new Uint8Array([1, 3, 3, 7]).buffer;
   const treeCalls = [];
 
@@ -583,7 +583,7 @@ test('StepImportFeature: IR payload completion updates live result and tree resi
 
 test('StepImportFeature: bounding box is valid', () => {
   resetFeatureIds();
-  const feature = new StepImportFeature('Test Import', stepData);
+  const feature = new StepImportFeature('Test Import', boxFilletData);
   const result = feature.execute({ results: {}, tree: { getFeatureIndex: () => 0, features: [] } });
   const bb = result.boundingBox;
   assert.ok(bb.min.x < bb.max.x, 'Bounding box should have non-zero X extent');
@@ -593,7 +593,7 @@ test('StepImportFeature: bounding box is valid', () => {
 
 test('StepImportFeature: faces are tagged with sourceFeatureId', () => {
   resetFeatureIds();
-  const feature = new StepImportFeature('Test Import', stepData);
+  const feature = new StepImportFeature('Test Import', boxFilletData);
   const result = feature.execute({ results: {}, tree: { getFeatureIndex: () => 0, features: [] } });
   for (const face of result.geometry.faces.slice(0, 10)) {
     assert.ok(face.shared, 'Face should have shared metadata');
@@ -609,7 +609,7 @@ console.log('\n=== STEP Import — Part Integration Tests ===\n');
 test('Part.importSTEP: adds feature to tree', () => {
   resetFeatureIds();
   const part = new Part('Test Part');
-  const feature = part.importSTEP(stepData);
+  const feature = part.importSTEP(boxFilletData);
   assert.ok(feature, 'Should return a feature');
   assert.strictEqual(feature.type, 'step-import');
   assert.ok(part.getFeatures().length === 1, 'Feature tree should have 1 feature');
@@ -618,7 +618,7 @@ test('Part.importSTEP: adds feature to tree', () => {
 test('Part.importSTEP: produces final geometry', () => {
   resetFeatureIds();
   const part = new Part('Test Part');
-  part.importSTEP(stepData);
+  part.importSTEP(boxFilletData);
   const geom = part.getFinalGeometry();
   assert.ok(geom, 'Should have final geometry');
   assert.strictEqual(geom.type, 'solid');
@@ -628,16 +628,16 @@ test('Part.importSTEP: produces final geometry', () => {
 test('Part.importSTEP: auto-names feature', () => {
   resetFeatureIds();
   const part = new Part('Test Part');
-  const f1 = part.importSTEP(stepData);
+  const f1 = part.importSTEP(boxFilletData);
   assert.strictEqual(f1.name, 'STEP Import 1');
-  const f2 = part.importSTEP(stepData, { name: 'Custom Name' });
+  const f2 = part.importSTEP(boxFilletData, { name: 'Custom Name' });
   assert.strictEqual(f2.name, 'Custom Name');
 });
 
 test('PartManager.importSTEP: creates part if needed', () => {
   resetFeatureIds();
   const pm = new PartManager();
-  const feature = pm.importSTEP(stepData);
+  const feature = pm.importSTEP(boxFilletData);
   assert.ok(pm.getPart(), 'Should have created a part');
   assert.ok(feature, 'Should return a feature');
   assert.strictEqual(feature.type, 'step-import');
@@ -649,12 +649,12 @@ console.log('\n=== STEP Import — Serialization Tests ===\n');
 
 test('StepImportFeature: serialize round-trip preserves data', () => {
   resetFeatureIds();
-  const feature = new StepImportFeature('Test Import', stepData, { curveSegments: 24 });
+  const feature = new StepImportFeature('Test Import', boxFilletData, { curveSegments: 24 });
   feature._applyIrCachePayload('deadbeefcafebabe', new Uint8Array([1, 2, 3, 4]).buffer);
   const serialized = feature.serialize();
 
   assert.strictEqual(serialized.type, 'step-import');
-  assert.strictEqual(serialized.stepData, stepData);
+  assert.strictEqual(serialized.stepData, boxFilletData);
   assert.strictEqual(serialized.curveSegments, 24);
   assert.strictEqual(serialized.name, 'Test Import');
   assert.strictEqual(serialized.irHash, 'deadbeefcafebabe');
@@ -662,7 +662,7 @@ test('StepImportFeature: serialize round-trip preserves data', () => {
 
   const restored = StepImportFeature.deserialize(serialized);
   assert.strictEqual(restored.type, 'step-import');
-  assert.strictEqual(restored.stepData, stepData);
+  assert.strictEqual(restored.stepData, boxFilletData);
   assert.strictEqual(restored.curveSegments, 24);
   assert.strictEqual(restored.name, 'Test Import');
   assert.strictEqual(restored._irHash, 'deadbeefcafebabe');
@@ -671,7 +671,7 @@ test('StepImportFeature: serialize round-trip preserves data', () => {
 
 test('StepImportFeature: restored cached IR skips the first shadow write', () => {
   resetFeatureIds();
-  const feature = new StepImportFeature('Test Import', stepData, { curveSegments: 24 });
+  const feature = new StepImportFeature('Test Import', boxFilletData, { curveSegments: 24 });
   const originalShadowWrite = feature._shadowWriteIR;
 
   feature._applyIrCachePayload('deadbeefcafebabe', new Uint8Array([5, 6, 7]).buffer);
@@ -695,7 +695,7 @@ test('StepImportFeature: restored cached IR skips the first shadow write', () =>
 test('Part: deserialize restores cached final CBREP payload', () => {
   resetFeatureIds();
   const part = new Part('Test Part');
-  const feature = part.importSTEP(stepData);
+  const feature = part.importSTEP(boxFilletData);
   feature._applyIrCachePayload('deadbeefcafebabe', new Uint8Array([9, 8, 7, 6]).buffer);
 
   const serialized = part.serialize();
@@ -715,7 +715,7 @@ test('Part: deserialize restores cached final CBREP payload', () => {
 test('Part: deserialize restores step-import features', () => {
   resetFeatureIds();
   const part = new Part('Test Part');
-  part.importSTEP(stepData);
+  part.importSTEP(boxFilletData);
 
   const serialized = part.serialize();
   resetFeatureIds();

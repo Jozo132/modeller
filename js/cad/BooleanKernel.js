@@ -266,8 +266,12 @@ function _exactBooleanOpInner(bodyA, bodyB, operation, tol) {
     throw err;
   }
 
-  // Step 10: Tessellate for rendering
-  const mesh = tessellateBody(resultBody);
+  // Step 10: Tessellate for rendering. Mesh validation (O(n²)
+  // self-intersection test) is skipped here because the boolean pipeline
+  // already ran face/body/invariant validators on the exact B-rep above;
+  // repeating it on the triangulation would dominate runtime for large
+  // bodies without catching anything those structural checks missed.
+  const mesh = tessellateBody(resultBody, { validate: false });
 
   // Step 11: Compute content hashes for auditability
   const hashes = _computeBodyHashes(bodyA, bodyB, resultBody);
@@ -338,7 +342,7 @@ function _exactPlanarBoolean(bodyA, bodyB, operation, tol) {
     throw err;
   }
 
-  const mesh = tessellateBody(resultBody);
+  const mesh = tessellateBody(resultBody, { validate: false });
   diagnostics.hashes = _computeBodyHashes(bodyA, bodyB, resultBody);
   return { body: resultBody, mesh, diagnostics };
 }

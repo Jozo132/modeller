@@ -134,8 +134,15 @@ export function tessellateBody(body, opts = {}) {
     return { vertices: [], faces: [], edges: [], _tessellator: 'empty' };
   }
 
+  // Validation honours caller intent: kernel paths (fillet/chamfer,
+  // boolean) pass `validate: false` because they tessellate thousands of
+  // times per operation and the O(n²) self-intersection check in
+  // MeshValidator would dominate runtime. Default is true so callers that
+  // just want "a mesh" still get a sanity check.
+  const validate = opts.validate !== false;
+
   if (opts.incrementalCache) {
-    const incrementalResult = robustTessellateBody(body, { ...opts, validate: true });
+    const incrementalResult = robustTessellateBody(body, { ...opts, validate });
     if (incrementalResult.faces.length > 0) {
       incrementalResult._tessellator = 'js-incremental';
       return incrementalResult;
@@ -153,7 +160,7 @@ export function tessellateBody(body, opts = {}) {
 
   // WASM module not loaded or returned empty — use JS Tessellator2 as
   // a cold-start fallback only (WASM init is async, first call may miss).
-  const result = robustTessellateBody(body, { ...opts, validate: true });
+  const result = robustTessellateBody(body, { ...opts, validate });
   if (result.faces.length > 0) {
     result._tessellator = 'js-cold-start-fallback';
     return result;

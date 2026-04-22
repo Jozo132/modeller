@@ -11,5 +11,6 @@ tests/reports/
 playwright-report/
 test-results/
 *.png
+tmp-prof/*.cpuprofile
 NUL
 nul

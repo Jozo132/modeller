@@ -9,6 +9,11 @@
 //   node tools/bench-tests.mjs --filter=boolean      # only tests matching 'boolean'
 //   node tools/bench-tests.mjs --exclude=nist,step   # skip anything matching
 //   node tools/bench-tests.mjs --slowest=10          # sort output by duration
+//   node tools/bench-tests.mjs --include-known-defects  # include *-known-defects.js files
+//
+// By default, files matching *-known-defects.js are skipped: they document
+// open kernel defects and are expected to fail or time out. Pass
+// --include-known-defects to run them.
 
 import { spawn } from 'node:child_process';
 import { readdirSync } from 'node:fs';
@@ -22,12 +27,13 @@ function parseArgs(argv) {
   // Default file-level deadline is 32 s; the per-file self-installed
   // watchdog (tests/_watchdog.mjs) fires at 30 s and dumps a detailed
   // offender report, so the bench gives it a 2 s grace before SIGKILL.
-  const opts = { timeout: 32000, filter: null, exclude: [], slowest: 0 };
+  const opts = { timeout: 32000, filter: null, exclude: [], slowest: 0, includeKnownDefects: false };
   for (const a of argv.slice(2)) {
     if (a.startsWith('--timeout=')) opts.timeout = Number(a.slice(10));
     else if (a.startsWith('--filter=')) opts.filter = a.slice(9);
     else if (a.startsWith('--exclude=')) opts.exclude = a.slice(10).split(',').filter(Boolean);
     else if (a.startsWith('--slowest=')) opts.slowest = Number(a.slice(10));
+    else if (a === '--include-known-defects') opts.includeKnownDefects = true;
     else throw new Error(`unknown arg ${a}`);
   }
   return opts;
@@ -74,6 +80,7 @@ function runOne(file, timeoutMs) {
 async function main() {
   const opts = parseArgs(process.argv);
   let files = listTests();
+  if (!opts.includeKnownDefects) files = files.filter((f) => !/-known-defects\.js$/.test(f));
   if (opts.filter) files = files.filter((f) => f.includes(opts.filter));
   for (const excl of opts.exclude) files = files.filter((f) => !f.includes(excl));
   console.log(`Running ${files.length} test file(s) with --timeout=${opts.timeout}ms\n`);

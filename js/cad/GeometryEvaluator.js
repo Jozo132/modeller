@@ -78,25 +78,51 @@ function _findSpan(t, degree, numCtrl, knots) {
   return mid;
 }
 
+// ─── Scratch buffers for _basisDerivsInto ───────────────────────────
+// Module-scope typed-array scratch pools, grown on demand. These are
+// single-threaded scratch space used inside a single _basisDerivsInto
+// invocation; callers must consume the output before the next call.
+// (Both _jsEvalCurve and _jsEvalSurface do.)
+
+const _BD_MAX_DEG = 16; // generous; STEP typically has degree ≤ 3
+let _bdNdu   = new Float64Array((_BD_MAX_DEG + 1) * (_BD_MAX_DEG + 1));
+let _bdLeft  = new Float64Array(_BD_MAX_DEG + 1);
+let _bdRight = new Float64Array(_BD_MAX_DEG + 1);
+let _bdA0    = new Float64Array(_BD_MAX_DEG + 1);
+let _bdA1    = new Float64Array(_BD_MAX_DEG + 1);
+
+function _ensureBdScratch(P1) {
+  if (_bdNdu.length < P1 * P1) _bdNdu = new Float64Array(P1 * P1);
+  if (_bdLeft.length  < P1) _bdLeft  = new Float64Array(P1);
+  if (_bdRight.length < P1) _bdRight = new Float64Array(P1);
+  if (_bdA0.length    < P1) _bdA0    = new Float64Array(P1);
+  if (_bdA1.length    < P1) _bdA1    = new Float64Array(P1);
+}
+
 /**
  * Compute B-spline basis functions and their derivatives up to order nDerivs.
  * Implements Piegl & Tiller Algorithm A2.3.
  *
+ * Writes the (nDerivs+1) × (degree+1) derivative table into `out` in row-major
+ * order: out[k * P1 + j] = d^k/du^k N_{span-degree+j, degree}(u). Zero
+ * allocations on the hot path — scratch space comes from module-level
+ * Float64Array pools. The tables overwrite on each call, so callers must
+ * consume the result before issuing another basis-derivative call.
+ *
  * @param {number} span - Knot span index
  * @param {number} u - Parameter value
  * @param {number} degree - Polynomial degree
- * @param {number[]} knots - Knot vector
+ * @param {ArrayLike<number>} knots - Knot vector
  * @param {number} nDerivs - Maximum derivative order (typically 2)
- * @returns {number[][]} ders[k][j] = d^k/du^k N_{span-degree+j, degree}(u)
+ * @param {Float64Array} out - Output buffer, length ≥ (nDerivs+1)*(degree+1)
  */
-function _basisDerivs(span, u, degree, knots, nDerivs) {
+function _basisDerivsInto(span, u, degree, knots, nDerivs, out) {
   const p = degree;
   const P1 = p + 1;
-
-  // ndu table: ndu[j][r] stored as flat array
-  const ndu = new Array(P1 * P1);
-  const left = new Array(P1);
-  const right = new Array(P1);
+  _ensureBdScratch(P1);
+  const ndu = _bdNdu;
+  const left = _bdLeft;
+  const right = _bdRight;
 
   ndu[0] = 1.0;
 
@@ -110,7 +136,7 @@ function _basisDerivs(span, u, degree, knots, nDerivs) {
       ndu[j * P1 + r] = denom;
 
       let temp;
-      if (Math.abs(denom) < WEIGHT_ZERO_TOL) {
+      if (denom < WEIGHT_ZERO_TOL && denom > -WEIGHT_ZERO_TOL) {
         temp = 0.0;
       } else {
         temp = ndu[r * P1 + (j - 1)] / denom;
@@ -122,37 +148,40 @@ function _basisDerivs(span, u, degree, knots, nDerivs) {
     ndu[j * P1 + j] = saved;
   }
 
-  // Initialize output: ders[k] = Array(P1)
-  const ders = [];
-  for (let k = 0; k <= nDerivs; k++) {
-    ders.push(new Array(P1).fill(0));
-  }
+  // Zero the output table.
+  const outLen = (nDerivs + 1) * P1;
+  for (let i = 0; i < outLen; i++) out[i] = 0;
 
   // 0th derivative = basis function values
   for (let j = 0; j <= p; j++) {
-    ders[0][j] = ndu[j * P1 + p];
+    out[j] = ndu[j * P1 + p];
   }
 
-  // Compute higher derivatives
-  const a = [new Array(P1).fill(0), new Array(P1).fill(0)];
+  // Compute higher derivatives (Piegl & Tiller A2.3).
+  // Ping-pong between _bdA0 and _bdA1 as the two "a[s1]" / "a[s2]" rows.
+  const a0 = _bdA0;
+  const a1 = _bdA1;
 
   for (let r = 0; r <= p; r++) {
-    let s1 = 0, s2 = 1;
-    a[0][0] = 1.0;
+    let useA1 = true; // which of (a0, a1) is "s2"
+    a0[0] = 1.0;
 
     for (let k = 1; k <= nDerivs; k++) {
+      const s1 = useA1 ? a0 : a1;
+      const s2 = useA1 ? a1 : a0;
+
       let d = 0.0;
       const rk = r - k;
       const pk = p - k;
 
       if (r >= k) {
         const denom = ndu[(pk + 1) * P1 + rk];
-        if (Math.abs(denom) < WEIGHT_ZERO_TOL) {
-          a[s2][0] = 0.0;
+        if (denom < WEIGHT_ZERO_TOL && denom > -WEIGHT_ZERO_TOL) {
+          s2[0] = 0.0;
         } else {
-          a[s2][0] = a[s1][0] / denom;
+          s2[0] = s1[0] / denom;
         }
-        d = a[s2][0] * ndu[rk * P1 + pk];
+        d = s2[0] * ndu[rk * P1 + pk];
       }
 
       const j1 = rk >= -1 ? 1 : -rk;
@@ -160,42 +189,50 @@ function _basisDerivs(span, u, degree, knots, nDerivs) {
 
       for (let j = j1; j <= j2; j++) {
         const denom = ndu[(pk + 1) * P1 + (rk + j)];
-        if (Math.abs(denom) < WEIGHT_ZERO_TOL) {
-          a[s2][j] = 0.0;
+        if (denom < WEIGHT_ZERO_TOL && denom > -WEIGHT_ZERO_TOL) {
+          s2[j] = 0.0;
         } else {
-          a[s2][j] = (a[s1][j] - a[s1][j - 1]) / denom;
+          s2[j] = (s1[j] - s1[j - 1]) / denom;
         }
-        d += a[s2][j] * ndu[(rk + j) * P1 + pk];
+        d += s2[j] * ndu[(rk + j) * P1 + pk];
       }
 
       if (r <= pk) {
         const denom = ndu[(pk + 1) * P1 + r];
-        if (Math.abs(denom) < WEIGHT_ZERO_TOL) {
-          a[s2][k] = 0.0;
+        if (denom < WEIGHT_ZERO_TOL && denom > -WEIGHT_ZERO_TOL) {
+          s2[k] = 0.0;
         } else {
-          a[s2][k] = -a[s1][k - 1] / denom;
+          s2[k] = -s1[k - 1] / denom;
         }
-        d += a[s2][k] * ndu[r * P1 + pk];
+        d += s2[k] * ndu[r * P1 + pk];
       }
 
-      ders[k][r] = d;
-      const tmp = s1; s1 = s2; s2 = tmp;
+      out[k * P1 + r] = d;
+      useA1 = !useA1;
     }
   }
 
   // Multiply by correct factors: p! / (p-k)!
   let fac = p;
   for (let k = 1; k <= nDerivs; k++) {
+    const base = k * P1;
     for (let j = 0; j <= p; j++) {
-      ders[k][j] *= fac;
+      out[base + j] *= fac;
     }
     fac *= (p - k);
   }
-
-  return ders;
 }
 
 // ─── Pure JS evaluators ─────────────────────────────────────────────
+// Pre-allocated derivative tables for the curve and surface evaluators.
+// Size = (nDerivs+1) * (maxDegree+1); grown on demand.
+let _curveDers = new Float64Array(3 * (_BD_MAX_DEG + 1));
+let _surfDersU = new Float64Array(3 * (_BD_MAX_DEG + 1));
+let _surfDersV = new Float64Array(3 * (_BD_MAX_DEG + 1));
+function _ensureDerBuf(buf, P1, nDerivs) {
+  const need = (nDerivs + 1) * P1;
+  return buf.length >= need ? buf : new Float64Array(need);
+}
 
 /**
  * Evaluate a NURBS curve with derivatives (pure JS).
@@ -215,7 +252,10 @@ function _jsEvalCurve(curve, t) {
   t = Math.max(uMin, Math.min(uMax, t));
 
   const span = _findSpan(t, degree, controlPoints.length, knots);
-  const ders = _basisDerivs(span, t, degree, knots, 2);
+  const P1 = degree + 1;
+  _curveDers = _ensureDerBuf(_curveDers, P1, 2);
+  _basisDerivsInto(span, t, degree, knots, 2, _curveDers);
+  const ders = _curveDers;
 
   // Accumulate weighted control point sums
   let Ax = 0, Ay = 0, Az = 0, w0 = 0;
@@ -227,13 +267,13 @@ function _jsEvalCurve(curve, t) {
     const cp = controlPoints[idx];
     const w = weights[idx];
 
-    const N0 = ders[0][i] * w;
+    const N0 = ders[i] * w;
     Ax += N0 * cp.x; Ay += N0 * cp.y; Az += N0 * cp.z; w0 += N0;
 
-    const N1 = ders[1][i] * w;
+    const N1 = ders[P1 + i] * w;
     A1x += N1 * cp.x; A1y += N1 * cp.y; A1z += N1 * cp.z; w1 += N1;
 
-    const N2 = ders[2][i] * w;
+    const N2 = ders[2 * P1 + i] * w;
     A2x += N2 * cp.x; A2y += N2 * cp.y; A2z += N2 * cp.z; w2 += N2;
   }
 
@@ -289,10 +329,16 @@ function _jsEvalSurface(surface, u, v) {
   v = Math.max(vMin, Math.min(vMax, v));
 
   const spanU = _findSpan(u, degreeU, numRowsU, knotsU);
-  const dersU = _basisDerivs(spanU, u, degreeU, knotsU, 2);
+  const PU1 = degreeU + 1;
+  _surfDersU = _ensureDerBuf(_surfDersU, PU1, 2);
+  _basisDerivsInto(spanU, u, degreeU, knotsU, 2, _surfDersU);
+  const dersU = _surfDersU;
 
   const spanV = _findSpan(v, degreeV, numColsV, knotsV);
-  const dersV = _basisDerivs(spanV, v, degreeV, knotsV, 2);
+  const PV1 = degreeV + 1;
+  _surfDersV = _ensureDerBuf(_surfDersV, PV1, 2);
+  _basisDerivsInto(spanV, v, degreeV, knotsV, 2, _surfDersV);
+  const dersV = _surfDersV;
 
   // Accumulate tensor product sums
   let A00x = 0, A00y = 0, A00z = 0, w00 = 0;
@@ -304,9 +350,9 @@ function _jsEvalSurface(surface, u, v) {
 
   for (let i = 0; i <= degreeU; i++) {
     const rowIdx = spanU - degreeU + i;
-    const Nu0 = dersU[0][i];
-    const Nu1 = dersU[1][i];
-    const Nu2 = dersU[2][i];
+    const Nu0 = dersU[i];
+    const Nu1 = dersU[PU1 + i];
+    const Nu2 = dersU[2 * PU1 + i];
 
     for (let j = 0; j <= degreeV; j++) {
       const colIdx = spanV - degreeV + j;
@@ -315,9 +361,9 @@ function _jsEvalSurface(surface, u, v) {
       const w = weights[cpIdx];
       const px = cp.x, py = cp.y, pz = cp.z;
 
-      const Nv0 = dersV[0][j];
-      const Nv1 = dersV[1][j];
-      const Nv2 = dersV[2][j];
+      const Nv0 = dersV[j];
+      const Nv1 = dersV[PV1 + j];
+      const Nv2 = dersV[2 * PV1 + j];
 
       const b00 = Nu0 * Nv0 * w;
       A00x += b00 * px; A00y += b00 * py; A00z += b00 * pz; w00 += b00;

@@ -61,17 +61,28 @@ console.log(`  Found ${stepFiles.length} STEP file(s) in corpus\n`);
 for (const filename of stepFiles) {
   const filepath = path.join(STEP_DIR, filename);
 
+  // Cache the imported body across this file's four tests. STEP parsing +
+  // NURBS geometry reconstruction on the larger corpus samples costs
+  // several seconds each; re-parsing once per test quadrupled runtime
+  // (and had no test-isolation benefit since `resetTopoIds()` is only
+  // meaningful for topology created *after* the import).
+  let cachedStep = null;
+  const loadStep = () => {
+    if (cachedStep) return cachedStep;
+    const stepData = fs.readFileSync(filepath, 'utf-8');
+    cachedStep = importSTEP(stepData);
+    return cachedStep;
+  };
+
   test(`${filename}: imports without crash`, () => {
     resetTopoIds();
-    const stepData = fs.readFileSync(filepath, 'utf-8');
-    const result = importSTEP(stepData);
+    const result = loadStep();
     assert.ok(result, `importSTEP returned falsy for ${filename}`);
   });
 
   test(`${filename}: imported body passes basic validation`, () => {
     resetTopoIds();
-    const stepData = fs.readFileSync(filepath, 'utf-8');
-    const result = importSTEP(stepData);
+    const result = loadStep();
     if (!result) return; // already caught above
 
     // The result may be a body, mesh, or compound — extract what we can
@@ -91,8 +102,7 @@ for (const filename of stepFiles) {
 
   test(`${filename}: faces can be healed without crash`, () => {
     resetTopoIds();
-    const stepData = fs.readFileSync(filepath, 'utf-8');
-    const result = importSTEP(stepData);
+    const result = loadStep();
     if (!result) return;
 
     const body = result.body || result;
@@ -114,8 +124,7 @@ for (const filename of stepFiles) {
 
   test(`${filename}: fragment validation runs without crash`, () => {
     resetTopoIds();
-    const stepData = fs.readFileSync(filepath, 'utf-8');
-    const result = importSTEP(stepData);
+    const result = loadStep();
     if (!result) return;
 
     const body = result.body || result;

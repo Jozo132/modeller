@@ -321,7 +321,8 @@ function _desiredFaceNormal(face) {
 }
 
 function _approximateShellVolume(shell) {
-  const mesh = tessellateBody(new TopoBody([shell]));
+  // Volume sign only — skip O(n\u00b2) mesh validation.
+  const mesh = tessellateBody(new TopoBody([shell]), { validate: false });
   let volume = 0;
   for (const face of mesh.faces || []) {
     const verts = face.vertices || [];
