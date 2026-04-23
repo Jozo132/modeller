@@ -31,7 +31,6 @@
     "test-step-parser-wasm.js": 0.951,
     "test-geometry-evaluator.js": 0.941,
     "test-wasm-tessellation.js": 0.904,
-    "test-boolean-hardening.js": 0.897,
     "test-coplanar-merge.js": 0.896,
     "test-helpers.js": 0.852,
     "test-face-selection.js": 0.844,
@@ -42,6 +41,7 @@
     "test-step-lexer-wasm.js": 0.702,
     "test-intersections-wasm-preload.js": 0.657,
     "test-phase456.js": 0.656,
+    "test-boolean-hardening.js": 0.618,
     "test-wasm-brep-kernel.js": 0.607,
     "test-feature-editor-ux.js": 0.604,
     "test-ir-determinism.js": 0.485,
@@ -64,5 +64,5 @@
     "test-worker-dispatcher.js": 0.177,
     "test-mirror-pattern.js": 0.176,
     "test-touch-gestures.js": 0.163,
-    "test-containment.js": 0.06
+    "test-containment.js": 0.077
 }

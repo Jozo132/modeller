@@ -65,11 +65,17 @@ const _wasmBodyCache = { bodyId: null, bodyRev: null, faceCount: 0, tessellated:
 
 /**
  * Surface types supported by WASM containment — currently limited by the
- * `_wasmLoadBody` serializer (PLANE and SPHERE). Triangle-based classifier
- * itself is surface-agnostic; extend this set once the loader stores
- * cylinder/cone/torus/NURBS geometry.
+ * `_wasmLoadBody` serializer (PLANE, SPHERE, CYLINDER, CONE, TORUS).
+ * Triangle-based classifier itself is surface-agnostic; extend this set
+ * once the loader stores NURBS geometry.
  */
-const _WASM_SUPPORTED_TYPES = new Set([SurfaceType.PLANE, SurfaceType.SPHERE]);
+const _WASM_SUPPORTED_TYPES = new Set([
+  SurfaceType.PLANE,
+  SurfaceType.SPHERE,
+  SurfaceType.CYLINDER,
+  SurfaceType.CONE,
+  SurfaceType.TORUS,
+]);
 
 /**
  * Check if a body can be classified entirely in WASM.
@@ -161,7 +167,7 @@ function _wasmLoadBody(body) {
       const s = face.surface;
       const si = s.surfaceInfo || s._analyticParams;
       if (si && si.origin && si.normal) {
-        const rd = si.refDir || _computeRefDir(si.normal);
+        const rd = si.refDir || si.xDir || _computeRefDir(si.normal);
         geomOffset = w.planeStore(
           si.origin.x, si.origin.y, si.origin.z,
           si.normal.x, si.normal.y, si.normal.z,
@@ -179,16 +185,58 @@ function _wasmLoadBody(body) {
       geomType = w.GEOM_PLANE;
     } else if (face.surfaceType === SurfaceType.SPHERE && face.surface) {
       const si = face.surface.surfaceInfo || face.surface._analyticParams;
-      if (si && si.center && si.radius != null) {
+      // surfaceInfo shape varies across producers: StepImportWasm + RevolveFeature
+      // emit {origin,axis,xDir,radius}; earlier code used {center,axis,refDir,radius}.
+      const ctr = si && (si.origin || si.center);
+      if (si && ctr && si.radius != null) {
         const ax = si.axis || { x: 0, y: 0, z: 1 };
-        const rd = si.refDir || { x: 1, y: 0, z: 0 };
+        const rd = si.xDir || si.refDir || _computeRefDir(ax);
         geomOffset = w.sphereStore(
-          si.center.x, si.center.y, si.center.z,
+          ctr.x, ctr.y, ctr.z,
           ax.x, ax.y, ax.z,
           rd.x, rd.y, rd.z,
           si.radius,
         );
         geomType = w.GEOM_SPHERE;
+      }
+    } else if (face.surfaceType === SurfaceType.CYLINDER && face.surface) {
+      const si = face.surface.surfaceInfo || face.surface._analyticParams;
+      if (si && si.origin && si.axis && si.radius != null) {
+        const rd = si.xDir || si.refDir || _computeRefDir(si.axis);
+        geomOffset = w.cylinderStore(
+          si.origin.x, si.origin.y, si.origin.z,
+          si.axis.x, si.axis.y, si.axis.z,
+          rd.x, rd.y, rd.z,
+          si.radius,
+        );
+        geomType = w.GEOM_CYLINDER;
+      }
+    } else if (face.surfaceType === SurfaceType.CONE && face.surface) {
+      const si = face.surface.surfaceInfo || face.surface._analyticParams;
+      if (si && si.origin && si.axis && si.radius != null && si.semiAngle != null) {
+        const rd = si.xDir || si.refDir || _computeRefDir(si.axis);
+        geomOffset = w.coneStore(
+          si.origin.x, si.origin.y, si.origin.z,
+          si.axis.x, si.axis.y, si.axis.z,
+          rd.x, rd.y, rd.z,
+          si.radius, si.semiAngle,
+        );
+        geomType = w.GEOM_CONE;
+      }
+    } else if (face.surfaceType === SurfaceType.TORUS && face.surface) {
+      const si = face.surface.surfaceInfo || face.surface._analyticParams;
+      // Support both {majorR,minorR} (StepImportWasm) and {majorRadius,minorRadius}
+      const majorR = si && (si.majorR ?? si.majorRadius);
+      const minorR = si && (si.minorR ?? si.minorRadius);
+      if (si && si.origin && si.axis && majorR != null && minorR != null) {
+        const rd = si.xDir || si.refDir || _computeRefDir(si.axis);
+        geomOffset = w.torusStore(
+          si.origin.x, si.origin.y, si.origin.z,
+          si.axis.x, si.axis.y, si.axis.z,
+          rd.x, rd.y, rd.z,
+          majorR, minorR,
+        );
+        geomType = w.GEOM_TORUS;
       }
     }
 
