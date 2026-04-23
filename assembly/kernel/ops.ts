@@ -19,6 +19,7 @@ import {
 
 import { geomPoolRead } from './geometry';
 import { octreeGetPairCount, getOctreePairsPtr } from './spatial';
+import { tessTriVertComp, getTessOutTriCount } from './tessellation';
 
 // ─── Classification result constants ─────────────────────────────────
 
@@ -450,6 +451,106 @@ export function classifyPointVsShell(
       // Return CLASSIFY_UNKNOWN so the JS side can handle it.
       return CLASSIFY_UNKNOWN;
     }
+  }
+
+  return (crossings & 1) ? CLASSIFY_INSIDE : CLASSIFY_OUTSIDE;
+}
+
+// ─── Trimmed-face containment via tessellated triangle buffer ────────
+
+/**
+ * Test whether a point (px,py,pz) is inside a closed solid by counting
+ * ray-triangle crossings against the tessellated triangle buffer that is
+ * already populated by `tessBuildAllFaces`.
+ *
+ * This is the trimmed-face variant of classifyPointVsShell — the tessellator
+ * already respects face boundaries (cylinders cut at loop edges, planes
+ * clipped to their polygon, NURBS surfaces trimmed by coedges), so the
+ * triangles form a true closed manifold for the bounded solid. Ray-casting
+ * against triangles therefore produces correct inside/outside for any body
+ * the tessellator can handle, including non-convex solids where the analytic
+ * classifyPointVsShell fails on extended infinite surfaces.
+ *
+ * Ray direction: +X (1,0,0). A tiny perturbation in Y/Z is used internally
+ * to reduce the chance of hitting triangle edges exactly. Degenerate hits
+ * are counted once via half-open interval on one vertex.
+ *
+ * Uses Möller-Trumbore with hard float tolerance. The tessellation's own
+ * tolerance dominates near boundaries; callers needing 1e-9 accuracy must
+ * fall back to the GWN path.
+ *
+ * Pre-condition: `tessBuildAllFaces` must have been called so tessOutIndices
+ * and tessOutVerts contain the triangle soup for the target body.
+ *
+ * @returns CLASSIFY_INSIDE / CLASSIFY_OUTSIDE
+ */
+export function classifyPointVsTriangles(px: f64, py: f64, pz: f64): u8 {
+  const nTris: u32 = getTessOutTriCount();
+  if (nTris == 0) return CLASSIFY_UNKNOWN;
+
+  // Ray direction (1, ey, ez) with small epsilon to avoid axis-aligned ties.
+  // Using an irrational-ish perturbation is standard practice for robust ray
+  // parity tests — it prevents the ray from grazing along a triangle edge.
+  const ey: f64 = 7.7192e-7;
+  const ez: f64 = 1.3471e-7;
+  const dx: f64 = 1.0;
+  const dy: f64 = ey;
+  const dz: f64 = ez;
+
+  let crossings: i32 = 0;
+
+  for (let t: u32 = 0; t < nTris; t++) {
+    // Fetch triangle vertices.
+    const ax = tessTriVertComp(t, 0, 0);
+    const ay = tessTriVertComp(t, 0, 1);
+    const az = tessTriVertComp(t, 0, 2);
+    const bx = tessTriVertComp(t, 1, 0);
+    const by = tessTriVertComp(t, 1, 1);
+    const bz = tessTriVertComp(t, 1, 2);
+    const cx = tessTriVertComp(t, 2, 0);
+    const cy = tessTriVertComp(t, 2, 1);
+    const cz = tessTriVertComp(t, 2, 2);
+
+    // Edge vectors
+    const e1x = bx - ax;
+    const e1y = by - ay;
+    const e1z = bz - az;
+    const e2x = cx - ax;
+    const e2y = cy - ay;
+    const e2z = cz - az;
+
+    // h = d × e2
+    const hx = dy * e2z - dz * e2y;
+    const hy = dz * e2x - dx * e2z;
+    const hz = dx * e2y - dy * e2x;
+
+    // a = e1 · h
+    const a = e1x * hx + e1y * hy + e1z * hz;
+    if (Math.abs(a) < 1e-20) continue; // ray parallel to triangle plane
+
+    const invA = 1.0 / a;
+
+    // s = origin - vertex0
+    const sx = px - ax;
+    const sy = py - ay;
+    const sz = pz - az;
+
+    // u = (s · h) / a, with half-open [0, 1) on the upper bound
+    const u = (sx * hx + sy * hy + sz * hz) * invA;
+    if (u < 0.0 || u >= 1.0) continue;
+
+    // q = s × e1
+    const qx = sy * e1z - sz * e1y;
+    const qy = sz * e1x - sx * e1z;
+    const qz = sx * e1y - sy * e1x;
+
+    // v = (d · q) / a
+    const v = (dx * qx + dy * qy + dz * qz) * invA;
+    if (v < 0.0 || u + v >= 1.0) continue;
+
+    // t-parameter: only count hits in front of the ray origin
+    const tParam = (e2x * qx + e2y * qy + e2z * qz) * invA;
+    if (tParam > 0.0) crossings++;
   }
 
   return (crossings & 1) ? CLASSIFY_INSIDE : CLASSIFY_OUTSIDE;

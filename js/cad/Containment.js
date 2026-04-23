@@ -23,23 +23,24 @@ import { warnOnceForFallback } from './fallback/warnOnce.js';
 import { SurfaceType } from './BRepTopology.js';
 
 // ---------------------------------------------------------------------------
-// WASM native containment — DISABLED pending trimmed-face ray-cast in kernel
+// WASM native containment — trimmed-face via tessellation-based ray-cast
 // ---------------------------------------------------------------------------
-// The WASM classifyPointVsShell in kernel/ops.ts intersects rays against
-// *infinite* planes and *full* spheres without checking whether the hit
-// point lies within the face boundary polygon. This gives wrong results for
-// any non-convex solid (e.g. an L-shaped extrusion: the ray can cross an
-// infinite plane extension that doesn't correspond to any real face area).
+// The kernel's `classifyPointVsTriangles` counts ray-triangle crossings
+// against the triangle buffer populated by `tessBuildAllFaces`. Because
+// the tessellator already respects face boundaries (cylinders clipped at
+// loop edges, planes cut to their polygon, NURBS surfaces trimmed by
+// coedges), the resulting triangle soup is a true closed manifold of the
+// bounded solid. Ray-casting against triangles therefore produces correct
+// inside/outside for non-convex solids — unlike the older analytic
+// `classifyPointVsShell` which treated every face as an infinite surface.
 //
-// Until the kernel implements trimmed-face containment (checking hit points
-// against coedge boundaries), the WASM path must not be used. All point
-// classification goes through the JS multi-ray + GWN paths which correctly
-// fan-triangulate face boundaries and do Möller-Trumbore intersection.
-//
-// The loading infrastructure (_wasmLoadBody, _wasmClassifyPoint) is retained
-// but gated behind _WASM_CONTAINMENT_ENABLED = false so it is never called.
+// Gated surface types mirror what `_wasmLoadBody` currently serializes
+// (PLANE + SPHERE). Extending to cylinder/cone/torus/NURBS requires
+// adding the corresponding geomStore calls in the loader below; once
+// present the WASM path will handle those bodies too without needing any
+// change to `classifyPointVsTriangles`.
 
-const _WASM_CONTAINMENT_ENABLED = false;
+const _WASM_CONTAINMENT_ENABLED = true;
 
 let _wasm = null;
 let _wasmMem = null;
@@ -60,11 +61,13 @@ function _wasmReady() { return _WASM_CONTAINMENT_ENABLED && _wasm != null; }
  * boolean fragment classification which checks many points against one body).
  * @type {{ bodyId: number|null, faceCount: number }}
  */
-const _wasmBodyCache = { bodyId: null, bodyRev: null, faceCount: 0 };
+const _wasmBodyCache = { bodyId: null, bodyRev: null, faceCount: 0, tessellated: false };
 
 /**
- * Surface types supported by WASM classifyPointVsShell.
- * (plane: full ray-plane, sphere: full ray-sphere)
+ * Surface types supported by WASM containment — currently limited by the
+ * `_wasmLoadBody` serializer (PLANE and SPHERE). Triangle-based classifier
+ * itself is surface-agnostic; extend this set once the loader stores
+ * cylinder/cone/torus/NURBS geometry.
  */
 const _WASM_SUPPORTED_TYPES = new Set([SurfaceType.PLANE, SurfaceType.SPHERE]);
 
@@ -99,6 +102,9 @@ function _wasmLoadBody(body) {
 
   const w = _wasm;
   if (!w) return 0;
+
+  // New body: invalidate tessellation cache as well
+  _wasmBodyCache.tessellated = false;
 
   w.bodyBegin();
   w.geomPoolReset();
@@ -250,7 +256,8 @@ function _computeRefDir(n) {
 }
 
 /**
- * Classify a point using WASM ray-cast containment.
+ * Classify a point using WASM ray-cast containment against the tessellated
+ * triangle buffer (trimmed-face correct for non-convex solids).
  * @returns {{ state: string, confidence: number, detail: string }|null}
  *          null if WASM path is not applicable
  */
@@ -259,12 +266,25 @@ function _wasmClassifyPoint(body, p) {
   const nFaces = _wasmLoadBody(body);
   if (nFaces === 0) return null;
 
-  const cls = _wasm.classifyPointVsShell(p.x, p.y, p.z, 0, nFaces);
+  // Populate the tessellation triangle buffer once per body revision.
+  // Segment counts (segsU=24, segsV=16) are tuned for broadphase-quality
+  // containment — finer for spheres (curvature), coarser budget overall.
+  if (!_wasmBodyCache.tessellated) {
+    _wasm.tessReset();
+    const nTris = _wasm.tessBuildAllFaces(24, 16);
+    if (nTris <= 0) {
+      // Tessellation failed — cannot use triangle-based classifier.
+      return null;
+    }
+    _wasmBodyCache.tessellated = true;
+  }
+
+  const cls = _wasm.classifyPointVsTriangles(p.x, p.y, p.z);
   if (cls === _wasm.CLASSIFY_INSIDE) {
-    return { state: 'inside', confidence: 0.95, detail: 'wasm-ray-cast' };
+    return { state: 'inside', confidence: 0.95, detail: 'wasm-tri-ray' };
   }
   if (cls === _wasm.CLASSIFY_OUTSIDE) {
-    return { state: 'outside', confidence: 0.95, detail: 'wasm-ray-cast' };
+    return { state: 'outside', confidence: 0.95, detail: 'wasm-tri-ray' };
   }
   // UNKNOWN or ON_BOUNDARY — fall through to JS
   return null;

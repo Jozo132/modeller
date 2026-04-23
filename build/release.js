@@ -1125,6 +1125,7 @@ export const {
   CLASSIFY_ON_BOUNDARY,
   CLASSIFY_UNKNOWN,
   classifyPointVsShell,
+  classifyPointVsTriangles,
   classifyFacesViaOctree,
   getFaceClassification,
   setFaceClassification,

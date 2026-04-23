@@ -83,7 +83,7 @@ export {
 // ---- ops: topology-driven boolean classification ----
 export {
   CLASSIFY_OUTSIDE, CLASSIFY_INSIDE, CLASSIFY_ON_BOUNDARY, CLASSIFY_UNKNOWN,
-  classifyPointVsShell, classifyFacesViaOctree,
+  classifyPointVsShell, classifyPointVsTriangles, classifyFacesViaOctree,
   getFaceClassification, setFaceClassification,
   pointToPlaneDistance, pointToSphereDistance, pointToCylinderDistance,
   getFaceClassificationPtr,

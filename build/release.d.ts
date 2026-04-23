@@ -1612,6 +1612,14 @@ export declare const CLASSIFY_UNKNOWN: {
  */
 export declare function classifyPointVsShell(px: number, py: number, pz: number, faceStart: number, faceEnd: number): number;
 /**
+ * assembly/kernel/ops/classifyPointVsTriangles
+ * @param px `f64`
+ * @param py `f64`
+ * @param pz `f64`
+ * @returns `u8`
+ */
+export declare function classifyPointVsTriangles(px: number, py: number, pz: number): number;
+/**
  * assembly/kernel/ops/classifyFacesViaOctree
  * @param faceStartA `u32`
  * @param faceEndA `u32`

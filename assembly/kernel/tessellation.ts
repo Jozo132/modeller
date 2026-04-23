@@ -217,6 +217,15 @@ export function getTessOutFaceMapPtr(): usize { return changetype<usize>(tessOut
 export function getTessOutVertCount(): u32 { return outVertCount; }
 export function getTessOutTriCount(): u32 { return outTriCount; }
 
+// ─── Typed accessors for intra-kernel consumers (e.g. ops.classifyPointVsTriangles) ──
+
+/** Read a triangle vertex position (triIndex 0..triCount-1, corner 0..2, comp 0=x 1=y 2=z). */
+@inline
+export function tessTriVertComp(triIdx: u32, corner: u32, comp: u32): f64 {
+  const vIdx = unchecked(tessOutIndices[triIdx * 3 + corner]);
+  return unchecked(tessOutVerts[vIdx * 3 + comp]);
+}
+
 // Edge cache accessors
 export function getEdgeSamplePtsPtr(): usize { return changetype<usize>(edgeSamplePts); }
 export function getEdgeSampleCount(edgeId: u32): u32 {
