@@ -248,6 +248,18 @@ export class FeatureTree {
     for (const feature of this.features) {
       if (feature.suppressed) continue;
       if (feature.type === 'sketch') continue;
+      // Per-feature opt-out: some features (e.g. STEP import) produce
+      // geometry through a specialized pipeline whose JS-side CBREP
+      // roundtrip is known-lossy — the tessellator picks a different face-
+      // triangulation strategy when fed the restored TopoBody, producing
+      // visually corrupt output (loops no longer close in UV, surfaceInfo
+      // loses analytic-surface axes, etc.). Those features expose
+      // `canFastRestoreFromCbrep() === false` and force a full replay so
+      // their execute() path rebuilds the mesh authoritatively.
+      if (typeof feature.canFastRestoreFromCbrep === 'function' &&
+          feature.canFastRestoreFromCbrep() === false) {
+        return false;
+      }
       const entry = checkpoints[feature.id];
       if (!entry || !entry.payload) return false;
     }
