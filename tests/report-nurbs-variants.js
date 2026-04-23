@@ -28,7 +28,7 @@ import { createCanvas, loadImage } from '@napi-rs/canvas';
 
 import { Part } from '../js/cad/Part.js';
 import { Sketch } from '../js/cad/Sketch.js';
-import { calculateMeshVolume } from '../js/cad/CSG.js';
+import { calculateMeshVolume } from '../js/cad/toolkit/MeshAnalysis.js';
 import { applyBRepChamfer } from '../js/cad/BRepChamfer.js';
 import { applyBRepFillet } from '../js/cad/BRepFillet.js';
 import { resetFeatureIds } from '../js/cad/Feature.js';

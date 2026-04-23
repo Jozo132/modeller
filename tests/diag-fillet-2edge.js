@@ -1,7 +1,7 @@
 // Diagnostic script for 2-edge fillet corner (box-fillet-2-p)
 import { Part } from '../js/cad/Part.js';
 import { Sketch } from '../js/cad/Sketch.js';
-import { makeEdgeKey } from '../js/cad/CSG.js';
+import { makeEdgeKey } from '../js/cad/EdgeAnalysis.js';
 
 function makeRectSketch(x1, y1, x2, y2) {
   const s = new Sketch();

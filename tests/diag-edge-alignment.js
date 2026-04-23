@@ -8,7 +8,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { importSTEP } from '../js/cad/StepImport.js';
-import { computeFeatureEdges } from '../js/cad/CSG.js';
+import { computeFeatureEdges } from '../js/cad/EdgeAnalysis.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

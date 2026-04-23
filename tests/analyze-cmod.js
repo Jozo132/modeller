@@ -18,8 +18,8 @@ import {
   detectDisconnectedBodies,
   calculateWallThickness,
   countInvertedFaces,
-  makeEdgeKey,
-} from '../js/cad/CSG.js';
+} from '../js/cad/toolkit/MeshAnalysis.js';
+import { makeEdgeKey } from '../js/cad/EdgeAnalysis.js';
 
 // ---------------------------------------------------------------------------
 // Helpers

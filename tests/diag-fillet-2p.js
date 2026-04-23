@@ -1,5 +1,5 @@
 // Diagnostic: Replays box-fillet-2-p.cmod and inspects fillet geometry at the shared corner
-import { applyFillet } from '../js/cad/CSG.js';
+import { applyBRepFillet as applyFillet } from '../js/cad/BRepFillet.js';
 
 const v = (x, y, z) => ({ x, y, z });
 // 10x10x10 box faces (standard orientation)

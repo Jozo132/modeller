@@ -14,7 +14,8 @@ import { NurbsSurface } from '../js/cad/NurbsSurface.js';
 import { BRep, BRepVertex, BRepEdge, BRepFace, tessellateNurbsFaces } from '../js/cad/BRep.js';
 import { Part } from '../js/cad/Part.js';
 import { Sketch } from '../js/cad/Sketch.js';
-import { calculateMeshVolume, makeEdgeKey } from '../js/cad/CSG.js';
+import { calculateMeshVolume } from '../js/cad/toolkit/MeshAnalysis.js';
+import { makeEdgeKey } from '../js/cad/EdgeAnalysis.js';
 import { formatTimingSuffix, startTiming } from './test-timing.js';
 
 let passed = 0;

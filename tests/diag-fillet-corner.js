@@ -1,7 +1,8 @@
 // Diagnostic script for 3-edge fillet corner
 import { Part } from '../js/cad/Part.js';
 import { Sketch } from '../js/cad/Sketch.js';
-import { calculateMeshVolume, makeEdgeKey, computeFeatureEdges } from '../js/cad/CSG.js';
+import { calculateMeshVolume } from '../js/cad/toolkit/MeshAnalysis.js';
+import { makeEdgeKey, computeFeatureEdges } from '../js/cad/EdgeAnalysis.js';
 
 function makeRectSketch(x1, y1, x2, y2) {
   const s = new Sketch();

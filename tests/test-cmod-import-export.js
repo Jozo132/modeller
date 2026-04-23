@@ -11,8 +11,9 @@ import { Sketch } from '../js/cad/Sketch.js';
 import { buildCMOD, parseCMOD, projectFromCMOD } from '../js/cmod.js';
 import {
   calculateMeshVolume, calculateBoundingBox, calculateSurfaceArea,
-  detectDisconnectedBodies, calculateWallThickness, countInvertedFaces, computeFeatureEdges,
-} from '../js/cad/CSG.js';
+  detectDisconnectedBodies, calculateWallThickness, countInvertedFaces,
+} from '../js/cad/toolkit/MeshAnalysis.js';
+import { computeFeatureEdges } from '../js/cad/EdgeAnalysis.js';
 import { formatTimingSuffix, startTiming } from './test-timing.js';
 
 let passed = 0;

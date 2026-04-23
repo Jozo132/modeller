@@ -4,7 +4,8 @@ import './_watchdog.mjs';
 import assert from 'assert';
 import { Part } from '../js/cad/Part.js';
 import { Sketch } from '../js/cad/Sketch.js';
-import { calculateMeshVolume, calculateBoundingBox, makeEdgeKey } from '../js/cad/CSG.js';
+import { calculateMeshVolume, calculateBoundingBox } from '../js/cad/toolkit/MeshAnalysis.js';
+import { makeEdgeKey } from '../js/cad/EdgeAnalysis.js';
 import { formatTimingSuffix, startTiming } from './test-timing.js';
 
 function makeRectSketch(x1, y1, x2, y2) {
@@ -427,7 +428,7 @@ test('Cylinder extrude + fillet on round top edge: volume reduced, manifold', ()
 
 // --- Multi-edge polyline chamfer/fillet tests ---
 
-import { expandPathEdgeKeys } from '../js/cad/CSG.js';
+import { expandPathEdgeKeys } from '../js/cad/EdgeAnalysis.js';
 
 console.log('\n=== Multi-segment Polyline Chamfer/Fillet Tests ===\n');
 

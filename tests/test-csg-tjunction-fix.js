@@ -7,7 +7,8 @@ import './_watchdog.mjs';
 import assert from 'assert';
 import { Part } from '../js/cad/Part.js';
 import { Sketch } from '../js/cad/Sketch.js';
-import { makeEdgeKey, calculateMeshVolume } from '../js/cad/CSG.js';
+import { makeEdgeKey } from '../js/cad/EdgeAnalysis.js';
+import { calculateMeshVolume } from '../js/cad/toolkit/MeshAnalysis.js';
 import { formatTimingSuffix, startTiming } from './test-timing.js';
 
 const PREC = 5;

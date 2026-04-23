@@ -16,7 +16,7 @@ import { fileURLToPath } from 'url';
 import { Part } from '../js/cad/Part.js';
 import { Sketch } from '../js/cad/Sketch.js';
 import { parseCMOD } from '../js/cmod.js';
-import { calculateMeshVolume, calculateBoundingBox, calculateSurfaceArea, detectDisconnectedBodies, calculateWallThickness, countInvertedFaces } from '../js/cad/CSG.js';
+import { calculateMeshVolume, calculateBoundingBox, calculateSurfaceArea, detectDisconnectedBodies, calculateWallThickness, countInvertedFaces } from '../js/cad/toolkit/MeshAnalysis.js';
 import { formatTimingSuffix, startTiming } from './test-timing.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));

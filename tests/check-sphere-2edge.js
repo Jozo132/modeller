@@ -1,6 +1,6 @@
 import { Part } from '../js/cad/Part.js';
 import { Sketch } from '../js/cad/Sketch.js';
-import { makeEdgeKey } from '../js/cad/CSG.js';
+import { makeEdgeKey } from '../js/cad/EdgeAnalysis.js';
 
 const s = new Sketch();
 s.addSegment(0, 0, 10, 0);

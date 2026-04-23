@@ -2,7 +2,7 @@ import './_watchdog.mjs';
 import assert from 'assert';
 import { Part } from '../js/cad/Part.js';
 import { Sketch } from '../js/cad/Sketch.js';
-import { applyBRepChamfer } from '../js/cad/CSG.js';
+import { applyBRepChamfer } from '../js/cad/BRepChamfer.js';
 import { resetFeatureIds } from '../js/cad/Feature.js';
 import { resetTopoIds } from '../js/cad/BRepTopology.js';
 import { tessellateBody } from '../js/cad/Tessellation.js';
