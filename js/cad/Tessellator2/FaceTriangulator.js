@@ -1349,6 +1349,44 @@ export class FaceTriangulator {
     }
 
     meshFaces = splitSkippedBoundaryMeshEdges(meshFaces, [outer3D, ...holeLoops3D]);
+
+    // Periodic-seam dedup.  For full-revolution cylinder/torus faces the UV
+    // domain keeps two copies of each seam vertex (u ≈ uMin and u ≈ uMax,
+    // differing by the period).  Both copies map to the SAME 3D point via
+    // `_orig3D`, so after triangulation the per-face mesh contains:
+    //   (a) triangles that become degenerate when the two seam UV vertices
+    //       collapse to the same 3D position;
+    //   (b) pairs of triangles that are geometrically identical in 3D but
+    //       distinct in UV (one on each side of the seam).
+    // Both cases drive non-manifold edge counts.  Fold them here by keying
+    // vertices on quantized 3D position, then drop degenerate and duplicate
+    // triangles.  Applied only to periodic analytic surfaces — the code path
+    // that produces the duplicate seam columns.
+    if (periodicSurface && meshFaces.length > 0) {
+      const PREC = 1e-9;
+      const q = (c) => Math.round(c / PREC);
+      const posKey = (v) => `${q(v.x)},${q(v.y)},${q(v.z)}`;
+      const canonMap = new Map();
+      const canonKey = (v) => {
+        const k = posKey(v);
+        if (!canonMap.has(k)) canonMap.set(k, k);
+        return k;
+      };
+      const seenTri = new Set();
+      const dedupedFaces = [];
+      for (const mf of meshFaces) {
+        const k0 = canonKey(mf.vertices[0]);
+        const k1 = canonKey(mf.vertices[1]);
+        const k2 = canonKey(mf.vertices[2]);
+        if (k0 === k1 || k1 === k2 || k2 === k0) continue; // degenerate
+        const triKey = [k0, k1, k2].sort().join('|');
+        if (seenTri.has(triKey)) continue; // duplicate in 3D
+        seenTri.add(triKey);
+        dedupedFaces.push(mf);
+      }
+      meshFaces = dedupedFaces;
+    }
+
     const stitchedBoundaryVertices = [];
     for (const faceMesh of meshFaces) {
       stitchedBoundaryVertices.push(...faceMesh.vertices.map((vertex) => ({ ...vertex })));
