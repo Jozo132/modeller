@@ -14,6 +14,9 @@ import {
   getMaxTessSegs, getMaxCurveSegs,
   nurbsCurveDerivEval, nurbsCurveBatchDerivEval,
   nurbsSurfaceDerivEval, nurbsSurfaceBatchDerivEval,
+  ssxSetSurfaceA, ssxSetSurfaceB,
+  ssxRefinePair, getSsxRefineOutPtr,
+  ssxFindSeeds, getSsxSeedsOutPtr, getSsxMaxSeeds,
 } from "./nurbs";
 import {
   earClipTriangulate,
@@ -398,6 +401,13 @@ export {
   getMaxTessSegs, getMaxCurveSegs,
   nurbsCurveDerivEval, nurbsCurveBatchDerivEval,
   nurbsSurfaceDerivEval, nurbsSurfaceBatchDerivEval,
+};
+
+// ─── Re-export surface-surface Newton refiner / seed finder ───────────
+export {
+  ssxSetSurfaceA, ssxSetSurfaceB,
+  ssxRefinePair, getSsxRefineOutPtr,
+  ssxFindSeeds, getSsxSeedsOutPtr, getSsxMaxSeeds,
 };
 
 export {

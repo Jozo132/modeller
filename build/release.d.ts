@@ -580,6 +580,65 @@ export declare function nurbsSurfaceDerivEval(degU: number, degV: number, nRowsU
  */
 export declare function nurbsSurfaceBatchDerivEval(degU: number, degV: number, nRowsU: number, nColsV: number, ctrlPts: Float64Array, knotsU: Float64Array, knotsV: Float64Array, weights: Float64Array, params: Float64Array, count: number): number;
 /**
+ * assembly/nurbs/ssxSetSurfaceA
+ * @param degU `i32`
+ * @param degV `i32`
+ * @param nRowsU `i32`
+ * @param nColsV `i32`
+ * @param knotsU `~lib/typedarray/Float64Array`
+ * @param knotsV `~lib/typedarray/Float64Array`
+ * @param ctrlPts `~lib/typedarray/Float64Array`
+ * @param weights `~lib/typedarray/Float64Array`
+ */
+export declare function ssxSetSurfaceA(degU: number, degV: number, nRowsU: number, nColsV: number, knotsU: Float64Array, knotsV: Float64Array, ctrlPts: Float64Array, weights: Float64Array): void;
+/**
+ * assembly/nurbs/ssxSetSurfaceB
+ * @param degU `i32`
+ * @param degV `i32`
+ * @param nRowsU `i32`
+ * @param nColsV `i32`
+ * @param knotsU `~lib/typedarray/Float64Array`
+ * @param knotsV `~lib/typedarray/Float64Array`
+ * @param ctrlPts `~lib/typedarray/Float64Array`
+ * @param weights `~lib/typedarray/Float64Array`
+ */
+export declare function ssxSetSurfaceB(degU: number, degV: number, nRowsU: number, nColsV: number, knotsU: Float64Array, knotsV: Float64Array, ctrlPts: Float64Array, weights: Float64Array): void;
+/**
+ * assembly/nurbs/ssxRefinePair
+ * @param uA0 `f64`
+ * @param vA0 `f64`
+ * @param uB0 `f64`
+ * @param vB0 `f64`
+ * @param maxIter `i32`
+ * @param eps `f64`
+ * @returns `u32`
+ */
+export declare function ssxRefinePair(uA0: number, vA0: number, uB0: number, vB0: number, maxIter: number, eps: number): number;
+/**
+ * assembly/nurbs/getSsxRefineOutPtr
+ * @returns `usize`
+ */
+export declare function getSsxRefineOutPtr(): number;
+/**
+ * assembly/nurbs/ssxFindSeeds
+ * @param samplesA `i32`
+ * @param samplesB `i32`
+ * @param threshold `f64`
+ * @param maxSeeds `i32`
+ * @returns `i32`
+ */
+export declare function ssxFindSeeds(samplesA: number, samplesB: number, threshold: number, maxSeeds: number): number;
+/**
+ * assembly/nurbs/getSsxSeedsOutPtr
+ * @returns `usize`
+ */
+export declare function getSsxSeedsOutPtr(): number;
+/**
+ * assembly/nurbs/getSsxMaxSeeds
+ * @returns `i32`
+ */
+export declare function getSsxMaxSeeds(): number;
+/**
  * assembly/tessellation/earClipTriangulate
  * @param coords `~lib/typedarray/Float64Array`
  * @param nVerts `i32`

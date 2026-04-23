@@ -948,3 +948,330 @@ export function nurbsSurfaceTessellate(
 
   return segsU * segsV * 2;
 }
+
+// ─── Surface/Surface Intersection: Newton refiner & seed finder ──────
+//
+// Generic NURBS-NURBS intersection support used by the JS marcher in
+// SurfaceSurfaceIntersect.js. JS loads two surfaces into slots A and B
+// via ssxSetSurfaceA/B, then repeatedly calls ssxRefinePair (the hot
+// inner loop of the marcher) and ssxFindSeeds (grid search for seeds
+// where surfaces are close) without re-transferring surface data across
+// the JS↔WASM boundary. The outer marching/tracing logic stays in JS;
+// the hot arithmetic runs here.
+
+// --- Surface slot A ---
+let ssxSADegU: i32 = 0;
+let ssxSADegV: i32 = 0;
+let ssxSANRowsU: i32 = 0;
+let ssxSANColsV: i32 = 0;
+let ssxSAKnotsU: Float64Array | null = null;
+let ssxSAKnotsV: Float64Array | null = null;
+let ssxSACtrlPts: Float64Array | null = null;
+let ssxSAWeights: Float64Array | null = null;
+
+// --- Surface slot B ---
+let ssxSBDegU: i32 = 0;
+let ssxSBDegV: i32 = 0;
+let ssxSBNRowsU: i32 = 0;
+let ssxSBNColsV: i32 = 0;
+let ssxSBKnotsU: Float64Array | null = null;
+let ssxSBKnotsV: Float64Array | null = null;
+let ssxSBCtrlPts: Float64Array | null = null;
+let ssxSBWeights: Float64Array | null = null;
+
+/** Output buffer for ssxRefinePair: [uA, vA, uB, vB, residualDist]. */
+const ssxRefineOut: StaticArray<f64> = new StaticArray<f64>(5);
+
+/**
+ * Output buffer for ssxFindSeeds: up to MAX_SSX_SEEDS entries of
+ * [uA, vA, uB, vB, dist] = 5 f64. The actual seed count is returned.
+ */
+const MAX_SSX_SEEDS: i32 = 256;
+const ssxSeedsOut: StaticArray<f64> = new StaticArray<f64>(MAX_SSX_SEEDS * 5);
+
+export function ssxSetSurfaceA(
+  degU: i32, degV: i32, nRowsU: i32, nColsV: i32,
+  knotsU: Float64Array, knotsV: Float64Array,
+  ctrlPts: Float64Array, weights: Float64Array
+): void {
+  ssxSADegU = degU;
+  ssxSADegV = degV;
+  ssxSANRowsU = nRowsU;
+  ssxSANColsV = nColsV;
+  ssxSAKnotsU = knotsU;
+  ssxSAKnotsV = knotsV;
+  ssxSACtrlPts = ctrlPts;
+  ssxSAWeights = weights;
+}
+
+export function ssxSetSurfaceB(
+  degU: i32, degV: i32, nRowsU: i32, nColsV: i32,
+  knotsU: Float64Array, knotsV: Float64Array,
+  ctrlPts: Float64Array, weights: Float64Array
+): void {
+  ssxSBDegU = degU;
+  ssxSBDegV = degV;
+  ssxSBNRowsU = nRowsU;
+  ssxSBNColsV = nColsV;
+  ssxSBKnotsU = knotsU;
+  ssxSBKnotsV = knotsV;
+  ssxSBCtrlPts = ctrlPts;
+  ssxSBWeights = weights;
+}
+
+export function getSsxRefineOutPtr(): usize {
+  return changetype<usize>(ssxRefineOut);
+}
+
+export function getSsxSeedsOutPtr(): usize {
+  return changetype<usize>(ssxSeedsOut);
+}
+
+export function getSsxMaxSeeds(): i32 {
+  return MAX_SSX_SEEDS;
+}
+
+/**
+ * Refine a candidate intersection point using the balanced tangent-plane
+ * iteration: each surface moves halfway toward the other, projecting the
+ * 3D displacement into its local tangent plane via the 2×2 normal-equations
+ * system. Terminates when ||SA - SB|| < eps or maxIter is reached.
+ *
+ * Writes the refined [uA, vA, uB, vB, finalResidual] to ssxRefineOut.
+ * Returns 1 if converged within eps, else 0.
+ */
+export function ssxRefinePair(
+  uA0: f64, vA0: f64, uB0: f64, vB0: f64,
+  maxIter: i32, eps: f64
+): u32 {
+  if (ssxSAKnotsU == null || ssxSBKnotsU == null ||
+      ssxSAKnotsV == null || ssxSBKnotsV == null ||
+      ssxSACtrlPts == null || ssxSBCtrlPts == null ||
+      ssxSAWeights == null || ssxSBWeights == null) return 0;
+
+  const kAU: Float64Array = ssxSAKnotsU!;
+  const kAV: Float64Array = ssxSAKnotsV!;
+  const kBU: Float64Array = ssxSBKnotsU!;
+  const kBV: Float64Array = ssxSBKnotsV!;
+
+  const uAMin: f64 = unchecked(kAU[ssxSADegU]);
+  const uAMax: f64 = unchecked(kAU[ssxSANRowsU]);
+  const vAMin: f64 = unchecked(kAV[ssxSADegV]);
+  const vAMax: f64 = unchecked(kAV[ssxSANColsV]);
+  const uBMin: f64 = unchecked(kBU[ssxSBDegU]);
+  const uBMax: f64 = unchecked(kBU[ssxSBNRowsU]);
+  const vBMin: f64 = unchecked(kBV[ssxSBDegV]);
+  const vBMax: f64 = unchecked(kBV[ssxSBNColsV]);
+
+  let uA: f64 = uA0, vA: f64 = vA0;
+  let uB: f64 = uB0, vB: f64 = vB0;
+
+  const eps2: f64 = eps * eps;
+  let lastDist2: f64 = 0;
+
+  for (let iter: i32 = 0; iter < maxIter; iter++) {
+    // Evaluate surface A (writes derivBuf: S, Su, Sv at slots 0..8)
+    nurbsSurfaceDerivEval(
+      ssxSADegU, ssxSADegV, ssxSANRowsU, ssxSANColsV,
+      ssxSACtrlPts!, kAU, kAV, ssxSAWeights!, uA, vA,
+    );
+    const SAx: f64 = unchecked(derivBuf[0]);
+    const SAy: f64 = unchecked(derivBuf[1]);
+    const SAz: f64 = unchecked(derivBuf[2]);
+    const SuAx: f64 = unchecked(derivBuf[3]);
+    const SuAy: f64 = unchecked(derivBuf[4]);
+    const SuAz: f64 = unchecked(derivBuf[5]);
+    const SvAx: f64 = unchecked(derivBuf[6]);
+    const SvAy: f64 = unchecked(derivBuf[7]);
+    const SvAz: f64 = unchecked(derivBuf[8]);
+
+    // Evaluate surface B (overwrites derivBuf)
+    nurbsSurfaceDerivEval(
+      ssxSBDegU, ssxSBDegV, ssxSBNRowsU, ssxSBNColsV,
+      ssxSBCtrlPts!, kBU, kBV, ssxSBWeights!, uB, vB,
+    );
+    const SBx: f64 = unchecked(derivBuf[0]);
+    const SBy: f64 = unchecked(derivBuf[1]);
+    const SBz: f64 = unchecked(derivBuf[2]);
+    const SuBx: f64 = unchecked(derivBuf[3]);
+    const SuBy: f64 = unchecked(derivBuf[4]);
+    const SuBz: f64 = unchecked(derivBuf[5]);
+    const SvBx: f64 = unchecked(derivBuf[6]);
+    const SvBy: f64 = unchecked(derivBuf[7]);
+    const SvBz: f64 = unchecked(derivBuf[8]);
+
+    const dx: f64 = SAx - SBx;
+    const dy: f64 = SAy - SBy;
+    const dz: f64 = SAz - SBz;
+    lastDist2 = dx * dx + dy * dy + dz * dz;
+    if (lastDist2 < eps2) {
+      unchecked(ssxRefineOut[0] = uA);
+      unchecked(ssxRefineOut[1] = vA);
+      unchecked(ssxRefineOut[2] = uB);
+      unchecked(ssxRefineOut[3] = vB);
+      unchecked(ssxRefineOut[4] = sqrt(lastDist2));
+      return 1;
+    }
+
+    const halfX: f64 = dx * 0.5;
+    const halfY: f64 = dy * 0.5;
+    const halfZ: f64 = dz * 0.5;
+
+    // Solve 2×2 for A: move A by -(halfX,halfY,halfZ) in its tangent plane.
+    //   [Su·Su  Su·Sv] [ΔuA]   [Su·(-half)]
+    //   [Su·Sv  Sv·Sv] [ΔvA] = [Sv·(-half)]
+    {
+      const a: f64 = SuAx * SuAx + SuAy * SuAy + SuAz * SuAz;
+      const b: f64 = SuAx * SvAx + SuAy * SvAy + SuAz * SvAz;
+      const c: f64 = SvAx * SvAx + SvAy * SvAy + SvAz * SvAz;
+      const rU: f64 = -(SuAx * halfX + SuAy * halfY + SuAz * halfZ);
+      const rV: f64 = -(SvAx * halfX + SvAy * halfY + SvAz * halfZ);
+      const det: f64 = a * c - b * b;
+      if (det > 1e-20) {
+        const invDet: f64 = 1.0 / det;
+        const dU: f64 = (c * rU - b * rV) * invDet;
+        const dV: f64 = (a * rV - b * rU) * invDet;
+        uA += dU;
+        vA += dV;
+      }
+    }
+
+    // Same for B: target displacement is +half.
+    {
+      const a: f64 = SuBx * SuBx + SuBy * SuBy + SuBz * SuBz;
+      const b: f64 = SuBx * SvBx + SuBy * SvBy + SuBz * SvBz;
+      const c: f64 = SvBx * SvBx + SvBy * SvBy + SvBz * SvBz;
+      const rU: f64 = (SuBx * halfX + SuBy * halfY + SuBz * halfZ);
+      const rV: f64 = (SvBx * halfX + SvBy * halfY + SvBz * halfZ);
+      const det: f64 = a * c - b * b;
+      if (det > 1e-20) {
+        const invDet: f64 = 1.0 / det;
+        const dU: f64 = (c * rU - b * rV) * invDet;
+        const dV: f64 = (a * rV - b * rU) * invDet;
+        uB += dU;
+        vB += dV;
+      }
+    }
+
+    // Clamp to parameter domains.
+    if (uA < uAMin) uA = uAMin; else if (uA > uAMax) uA = uAMax;
+    if (vA < vAMin) vA = vAMin; else if (vA > vAMax) vA = vAMax;
+    if (uB < uBMin) uB = uBMin; else if (uB > uBMax) uB = uBMax;
+    if (vB < vBMin) vB = vBMin; else if (vB > vBMax) vB = vBMax;
+  }
+
+  unchecked(ssxRefineOut[0] = uA);
+  unchecked(ssxRefineOut[1] = vA);
+  unchecked(ssxRefineOut[2] = uB);
+  unchecked(ssxRefineOut[3] = vB);
+  unchecked(ssxRefineOut[4] = sqrt(lastDist2));
+  return 0;
+}
+
+/**
+ * Grid-sample slot-A, for each sample find the closest point on slot-B
+ * by a second nested grid sweep, and record candidate seeds where the
+ * 3D distance is below `threshold`. Seeds are sorted ascending by dist
+ * (insertion-sort while inserting into `ssxSeedsOut`) and capped at
+ * `maxSeeds` (≤ MAX_SSX_SEEDS).
+ *
+ * Returns the number of seeds written (≤ maxSeeds). The outer marcher
+ * in JS consumes the seed list and calls ssxRefinePair per seed.
+ */
+export function ssxFindSeeds(
+  samplesA: i32, samplesB: i32, threshold: f64, maxSeeds: i32,
+): i32 {
+  if (ssxSAKnotsU == null || ssxSBKnotsU == null) return 0;
+  if (maxSeeds > MAX_SSX_SEEDS) maxSeeds = MAX_SSX_SEEDS;
+  if (maxSeeds <= 0) return 0;
+
+  const kAU: Float64Array = ssxSAKnotsU!;
+  const kAV: Float64Array = ssxSAKnotsV!;
+  const kBU: Float64Array = ssxSBKnotsU!;
+  const kBV: Float64Array = ssxSBKnotsV!;
+  const uAMin: f64 = unchecked(kAU[ssxSADegU]);
+  const uAMax: f64 = unchecked(kAU[ssxSANRowsU]);
+  const vAMin: f64 = unchecked(kAV[ssxSADegV]);
+  const vAMax: f64 = unchecked(kAV[ssxSANColsV]);
+  const uBMin: f64 = unchecked(kBU[ssxSBDegU]);
+  const uBMax: f64 = unchecked(kBU[ssxSBNRowsU]);
+  const vBMin: f64 = unchecked(kBV[ssxSBDegV]);
+  const vBMax: f64 = unchecked(kBV[ssxSBNColsV]);
+
+  const dUA: f64 = (uAMax - uAMin) / <f64>samplesA;
+  const dVA: f64 = (vAMax - vAMin) / <f64>samplesA;
+  const dUB: f64 = (uBMax - uBMin) / <f64>samplesB;
+  const dVB: f64 = (vBMax - vBMin) / <f64>samplesB;
+
+  const thr2: f64 = threshold * threshold;
+  let written: i32 = 0;
+
+  for (let i: i32 = 0; i <= samplesA; i++) {
+    const uA: f64 = uAMin + <f64>i * dUA;
+    for (let j: i32 = 0; j <= samplesA; j++) {
+      const vA: f64 = vAMin + <f64>j * dVA;
+
+      nurbsSurfaceDerivEval(
+        ssxSADegU, ssxSADegV, ssxSANRowsU, ssxSANColsV,
+        ssxSACtrlPts!, kAU, kAV, ssxSAWeights!, uA, vA,
+      );
+      const pAx: f64 = unchecked(derivBuf[0]);
+      const pAy: f64 = unchecked(derivBuf[1]);
+      const pAz: f64 = unchecked(derivBuf[2]);
+
+      let bestD2: f64 = 1e300;
+      let bestUB: f64 = uBMin;
+      let bestVB: f64 = vBMin;
+      for (let ii: i32 = 0; ii <= samplesB; ii++) {
+        const uB: f64 = uBMin + <f64>ii * dUB;
+        for (let jj: i32 = 0; jj <= samplesB; jj++) {
+          const vB: f64 = vBMin + <f64>jj * dVB;
+          nurbsSurfaceDerivEval(
+            ssxSBDegU, ssxSBDegV, ssxSBNRowsU, ssxSBNColsV,
+            ssxSBCtrlPts!, kBU, kBV, ssxSBWeights!, uB, vB,
+          );
+          const dx: f64 = pAx - unchecked(derivBuf[0]);
+          const dy: f64 = pAy - unchecked(derivBuf[1]);
+          const dz: f64 = pAz - unchecked(derivBuf[2]);
+          const d2: f64 = dx * dx + dy * dy + dz * dz;
+          if (d2 < bestD2) {
+            bestD2 = d2;
+            bestUB = uB;
+            bestVB = vB;
+          }
+        }
+      }
+
+      if (bestD2 > thr2) continue;
+
+      // Insertion-sort into ssxSeedsOut by distance.
+      const dist: f64 = sqrt(bestD2);
+      let insertAt: i32 = written;
+      while (insertAt > 0) {
+        const prevD: f64 = unchecked(ssxSeedsOut[(insertAt - 1) * 5 + 4]);
+        if (prevD <= dist) break;
+        // Shift right
+        const srcBase: i32 = (insertAt - 1) * 5;
+        const dstBase: i32 = insertAt * 5;
+        if (insertAt < maxSeeds) {
+          for (let k: i32 = 0; k < 5; k++) {
+            unchecked(ssxSeedsOut[dstBase + k] = ssxSeedsOut[srcBase + k]);
+          }
+        }
+        insertAt--;
+      }
+      if (insertAt < maxSeeds) {
+        const base: i32 = insertAt * 5;
+        unchecked(ssxSeedsOut[base + 0] = uA);
+        unchecked(ssxSeedsOut[base + 1] = vA);
+        unchecked(ssxSeedsOut[base + 2] = bestUB);
+        unchecked(ssxSeedsOut[base + 3] = bestVB);
+        unchecked(ssxSeedsOut[base + 4] = dist);
+        if (written < maxSeeds) written++;
+      }
+    }
+  }
+
+  return written;
+}
+

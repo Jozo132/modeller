@@ -14,6 +14,87 @@ import { DEFAULT_TOLERANCE } from './Tolerance.js';
 import { SurfaceType } from './BRepTopology.js';
 import { GeometryEvaluator } from './GeometryEvaluator.js';
 
+// ─── Optional WASM backend for the numeric marcher ────────────────────
+// Loaded synchronously via the same module the GeometryEvaluator uses.
+// We probe for the Newton refiner / seed-finder exports; if present, the
+// marcher's hot inner loop switches to the WASM path.
+let _ssxMod = null;
+try {
+  // eslint-disable-next-line no-undef
+  _ssxMod = await import('../../build/release.js');
+  if (
+    typeof _ssxMod.ssxRefinePair !== 'function' ||
+    typeof _ssxMod.ssxFindSeeds !== 'function' ||
+    typeof _ssxMod.ssxSetSurfaceA !== 'function' ||
+    typeof _ssxMod.ssxSetSurfaceB !== 'function'
+  ) {
+    _ssxMod = null;
+  }
+} catch (_e) {
+  _ssxMod = null;
+}
+
+// Keep Float64Array references alive while the kernel holds pointers.
+let _ssxPairKeepAlive = null;
+
+function _ssxBuildSurfaceBuffers(surf) {
+  const nRowsU = surf.numRowsU;
+  const nColsV = surf.numColsV;
+  const total = nRowsU * nColsV;
+  const cp = new Float64Array(total * 3);
+  const w = new Float64Array(total);
+  for (let k = 0; k < total; k++) {
+    const p = surf.controlPoints[k];
+    cp[k * 3 + 0] = p.x;
+    cp[k * 3 + 1] = p.y;
+    cp[k * 3 + 2] = p.z;
+    w[k] = surf.weights[k] != null ? surf.weights[k] : 1;
+  }
+  return {
+    degU: surf.degreeU,
+    degV: surf.degreeV,
+    nRowsU,
+    nColsV,
+    ctrlPts: cp,
+    weights: w,
+    knotsU: Float64Array.from(surf.knotsU),
+    knotsV: Float64Array.from(surf.knotsV),
+  };
+}
+
+function _ssxLoadPair(surfA, surfB) {
+  if (!_ssxMod) return false;
+  try {
+    const a = _ssxBuildSurfaceBuffers(surfA);
+    const b = _ssxBuildSurfaceBuffers(surfB);
+    _ssxMod.ssxSetSurfaceA(a.degU, a.degV, a.nRowsU, a.nColsV, a.knotsU, a.knotsV, a.ctrlPts, a.weights);
+    _ssxMod.ssxSetSurfaceB(b.degU, b.degV, b.nRowsU, b.nColsV, b.knotsU, b.knotsV, b.ctrlPts, b.weights);
+    _ssxPairKeepAlive = { a, b };
+    return true;
+  } catch (_e) {
+    _ssxPairKeepAlive = null;
+    return false;
+  }
+}
+
+function _ssxFindSeedsWasm(samples, threshold, maxSeeds = 64) {
+  const n = _ssxMod.ssxFindSeeds(samples, samples, threshold, maxSeeds);
+  if (n <= 0) return [];
+  const buf = new Float64Array(_ssxMod.memory.buffer, _ssxMod.getSsxSeedsOutPtr(), n * 5);
+  const out = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const b = i * 5;
+    out[i] = { uA: buf[b], vA: buf[b + 1], uB: buf[b + 2], vB: buf[b + 3], dist: buf[b + 4] };
+  }
+  return out;
+}
+
+function _ssxRefineWasm(uA, vA, uB, vB, maxIter, eps) {
+  _ssxMod.ssxRefinePair(uA, vA, uB, vB, maxIter, eps);
+  const buf = new Float64Array(_ssxMod.memory.buffer, _ssxMod.getSsxRefineOutPtr(), 5);
+  return { uA: buf[0], vA: buf[1], uB: buf[2], vB: buf[3] };
+}
+
 /**
  * Compute intersection curve(s) between two surfaces.
  *
@@ -438,10 +519,20 @@ function _numericMarch(surfA, surfB, tol) {
   const seedSamples = 16;
   const results = [];
 
-  // Find seed points by sampling
-  const seeds = _findSeeds(surfA, surfB, seedSamples, eps);
+  // Load the pair into the WASM kernel for the hot loop (seeds + Newton
+  // refinement). Falls back to the pure-JS path when WASM is unavailable
+  // or the pair cannot be marshalled.
+  const wasm = _ssxLoadPair(surfA, surfB);
 
-  if (seeds.length === 0) return results;
+  // Find seed points by sampling
+  const seeds = wasm
+    ? _ssxFindSeedsWasm(seedSamples, eps * 1000, 20)
+    : _findSeeds(surfA, surfB, seedSamples, eps);
+
+  if (seeds.length === 0) {
+    _ssxPairKeepAlive = null;
+    return results;
+  }
 
   // Trace curves from seed points
   const usedSeeds = new Set();
@@ -462,6 +553,7 @@ function _numericMarch(surfA, surfB, tol) {
     }
   }
 
+  _ssxPairKeepAlive = null;
   return results;
 }
 
@@ -591,6 +683,16 @@ function _traceIntersection(surfA, surfB, seed, eps) {
  * Refine an intersection point using Newton iteration.
  */
 function _refinePoint(surfA, uA, vA, surfB, uB, vB, eps) {
+  // Fast path: WASM Newton refiner (balanced tangent-plane iteration).
+  // Requires that the pair already be loaded into kernel slots A/B via
+  // _ssxLoadPair. If slots belong to some other pair (concurrent calls,
+  // not currently supported), this would silently refine the wrong pair;
+  // guard by only using this path when _ssxPairKeepAlive is set by the
+  // active _numericMarch invocation.
+  if (_ssxMod && _ssxPairKeepAlive) {
+    const r = _ssxRefineWasm(uA, vA, uB, vB, 20, eps);
+    return r;
+  }
   for (let iter = 0; iter < 10; iter++) {
     const rA = GeometryEvaluator.evalSurface(surfA, uA, vA);
     const rB = GeometryEvaluator.evalSurface(surfB, uB, vB);
