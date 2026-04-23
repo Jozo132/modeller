@@ -42,6 +42,9 @@ const faceMinDist2 = new StaticArray<f64>(16384);
 /** Plane/plane intersection output: point(3) + direction(3). */
 const planePlaneOut = new StaticArray<f64>(6);
 
+/** Plane/sphere intersection output: circleCenter(3) + circleNormal(3) + radius. */
+const planeSphereOut = new StaticArray<f64>(7);
+
 // ─── Per-intersection error bound tracking ───────────────────────────
 
 /** Max tracked intersections per boolean pass. */
@@ -242,6 +245,43 @@ export function planePlaneIntersect(
 
 export function getPlanePlaneIntersectPtr(): usize {
   return changetype<usize>(planePlaneOut);
+}
+
+/**
+ * Intersect a plane (point+normal, normal assumed unit) with a sphere
+ * (center+radius). Writes circleCenter(3)+circleNormal(3)+radius to
+ * `planeSphereOut` and returns 1 on hit. Returns 0 when the plane misses
+ * the sphere (|dist| > radius+distTol) or grazes it tangentially
+ * (|radius - |dist|| < distTol), matching the JS fallback.
+ */
+export function planeSphereIntersect(
+  pPx: f64, pPy: f64, pPz: f64,
+  pNx: f64, pNy: f64, pNz: f64,
+  sCx: f64, sCy: f64, sCz: f64,
+  sR: f64,
+  distTol: f64,
+): u32 {
+  const dist = (sCx - pPx) * pNx + (sCy - pPy) * pNy + (sCz - pPz) * pNz;
+  const absDist = dist < 0 ? -dist : dist;
+  if (absDist > sR + distTol) return 0;
+
+  const r2 = sR * sR - dist * dist;
+  if (r2 <= 0) return 0;
+  const circleR = Math.sqrt(r2);
+  if (circleR < distTol) return 0;
+
+  unchecked(planeSphereOut[0] = sCx - dist * pNx);
+  unchecked(planeSphereOut[1] = sCy - dist * pNy);
+  unchecked(planeSphereOut[2] = sCz - dist * pNz);
+  unchecked(planeSphereOut[3] = pNx);
+  unchecked(planeSphereOut[4] = pNy);
+  unchecked(planeSphereOut[5] = pNz);
+  unchecked(planeSphereOut[6] = circleR);
+  return 1;
+}
+
+export function getPlaneSphereIntersectPtr(): usize {
+  return changetype<usize>(planeSphereOut);
 }
 
 function _isxRayPlane(

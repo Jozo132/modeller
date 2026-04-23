@@ -28,6 +28,7 @@ let _wasmLoadPromise = null;
 const _debugSurfaceBackend = {
   last: 'js',
   wasmPlanePlaneCalls: 0,
+  wasmPlaneSphereCalls: 0,
 };
 async function _ensureWasm() {
   if (_wasm) return true;
@@ -68,6 +69,7 @@ export function _getIntersectionsDebugStateForTests() {
 export function _resetIntersectionsDebugStateForTests() {
   _debugSurfaceBackend.last = 'js';
   _debugSurfaceBackend.wasmPlanePlaneCalls = 0;
+  _debugSurfaceBackend.wasmPlaneSphereCalls = 0;
 }
 
 /**
@@ -164,36 +166,126 @@ export function intersectSurfaces(surfA, typeA, surfB, typeB, tol = DEFAULT_TOLE
 
 function _intersectSurfacesWasm(surfA, typeA, surfB, typeB, tol) {
   if (!_wasmReady() || !_wasmMem) return null;
-  if (typeA !== SurfaceType.PLANE || typeB !== SurfaceType.PLANE) return null;
-  if (typeof _wasm.planePlaneIntersect !== 'function' || typeof _wasm.getPlanePlaneIntersectPtr !== 'function') {
-    return null;
+
+  // Plane × Plane ────────────────────────────────────────────────────
+  if (typeA === SurfaceType.PLANE && typeB === SurfaceType.PLANE) {
+    if (typeof _wasm.planePlaneIntersect !== 'function' || typeof _wasm.getPlanePlaneIntersectPtr !== 'function') {
+      return null;
+    }
+    const evalA = GeometryEvaluator.evalSurface(surfA, 0.5, 0.5);
+    const evalB = GeometryEvaluator.evalSurface(surfB, 0.5, 0.5);
+    const hit = _wasm.planePlaneIntersect(
+      evalA.p.x, evalA.p.y, evalA.p.z,
+      evalA.n.x, evalA.n.y, evalA.n.z,
+      evalB.p.x, evalB.p.y, evalB.p.z,
+      evalB.n.x, evalB.n.y, evalB.n.z,
+      tol.angularParallelism,
+    );
+
+    _debugSurfaceBackend.last = 'wasm-plane-plane';
+    _debugSurfaceBackend.wasmPlanePlaneCalls++;
+    if (!hit) return [];
+
+    const out = new Float64Array(_wasmMem.buffer, _wasm.getPlanePlaneIntersectPtr(), 6);
+    const pt = { x: out[0], y: out[1], z: out[2] };
+    const dir = { x: out[3], y: out[4], z: out[5] };
+    const extent = 1000;
+    const p0 = { x: pt.x - dir.x * extent, y: pt.y - dir.y * extent, z: pt.z - dir.z * extent };
+    const p1 = { x: pt.x + dir.x * extent, y: pt.y + dir.y * extent, z: pt.z + dir.z * extent };
+    return [{
+      curve: NurbsCurve.createLine(p0, p1),
+      paramsA: [_computePlaneUV(surfA, p0), _computePlaneUV(surfA, p1)],
+      paramsB: [_computePlaneUV(surfB, p0), _computePlaneUV(surfB, p1)],
+    }];
   }
 
-  const evalA = GeometryEvaluator.evalSurface(surfA, 0.5, 0.5);
-  const evalB = GeometryEvaluator.evalSurface(surfB, 0.5, 0.5);
-  const hit = _wasm.planePlaneIntersect(
-    evalA.p.x, evalA.p.y, evalA.p.z,
-    evalA.n.x, evalA.n.y, evalA.n.z,
-    evalB.p.x, evalB.p.y, evalB.p.z,
-    evalB.n.x, evalB.n.y, evalB.n.z,
-    tol.angularParallelism,
-  );
+  // Plane × Sphere / Sphere × Plane ──────────────────────────────────
+  if ((typeA === SurfaceType.PLANE && typeB === SurfaceType.SPHERE)
+    || (typeA === SurfaceType.SPHERE && typeB === SurfaceType.PLANE)) {
+    if (typeof _wasm.planeSphereIntersect !== 'function' || typeof _wasm.getPlaneSphereIntersectPtr !== 'function') {
+      return null;
+    }
+    const planeSurf = typeA === SurfaceType.PLANE ? surfA : surfB;
+    const sphereSurf = typeA === SurfaceType.SPHERE ? surfA : surfB;
+    const sphInfo = _extractSphereInfoCompat(sphereSurf);
+    if (!sphInfo) return null; // let JS fallback handle degenerate sphere
 
-  _debugSurfaceBackend.last = 'wasm-plane-plane';
-  _debugSurfaceBackend.wasmPlanePlaneCalls++;
-  if (!hit) return [];
+    const evalP = GeometryEvaluator.evalSurface(planeSurf, 0.5, 0.5);
+    const hit = _wasm.planeSphereIntersect(
+      evalP.p.x, evalP.p.y, evalP.p.z,
+      evalP.n.x, evalP.n.y, evalP.n.z,
+      sphInfo.center.x, sphInfo.center.y, sphInfo.center.z,
+      sphInfo.radius,
+      tol.distance,
+    );
 
-  const out = new Float64Array(_wasmMem.buffer, _wasm.getPlanePlaneIntersectPtr(), 6);
-  const pt = { x: out[0], y: out[1], z: out[2] };
-  const dir = { x: out[3], y: out[4], z: out[5] };
-  const extent = 1000;
-  const p0 = { x: pt.x - dir.x * extent, y: pt.y - dir.y * extent, z: pt.z - dir.z * extent };
-  const p1 = { x: pt.x + dir.x * extent, y: pt.y + dir.y * extent, z: pt.z + dir.z * extent };
-  return [{
-    curve: NurbsCurve.createLine(p0, p1),
-    paramsA: [_computePlaneUV(surfA, p0), _computePlaneUV(surfA, p1)],
-    paramsB: [_computePlaneUV(surfB, p0), _computePlaneUV(surfB, p1)],
-  }];
+    _debugSurfaceBackend.last = 'wasm-plane-sphere';
+    _debugSurfaceBackend.wasmPlaneSphereCalls++;
+    if (!hit) return [];
+
+    const out = new Float64Array(_wasmMem.buffer, _wasm.getPlaneSphereIntersectPtr(), 7);
+    const center = { x: out[0], y: out[1], z: out[2] };
+    const normal = { x: out[3], y: out[4], z: out[5] };
+    const radius = out[6];
+    const curve = _buildCircleCurve9Pt(center, normal, radius);
+    return [{ curve, paramsA: [], paramsB: [] }];
+  }
+
+  return null;
+}
+
+function _extractSphereInfoCompat(surface) {
+  if (!surface) return null;
+  const src = (surface._analyticParams && surface._analyticParams.type === 'sphere')
+    ? surface._analyticParams
+    : (surface.surfaceInfo && surface.surfaceInfo.type === 'sphere')
+      ? surface.surfaceInfo
+      : null;
+  if (!src) return null;
+  const center = src.center || src.origin;
+  if (!center || src.radius == null) return null;
+  return { center, radius: src.radius };
+}
+
+function _buildCircleCurve9Pt(center, normal, radius) {
+  let uDir;
+  if (Math.abs(normal.y) < 0.9) uDir = { x: -normal.z, y: 0, z: normal.x };
+  else uDir = { x: 0, y: normal.z, z: -normal.y };
+  const uLen = Math.sqrt(uDir.x * uDir.x + uDir.y * uDir.y + uDir.z * uDir.z) || 1;
+  uDir = { x: uDir.x / uLen, y: uDir.y / uLen, z: uDir.z / uLen };
+  const vDir = {
+    x: normal.y * uDir.z - normal.z * uDir.y,
+    y: normal.z * uDir.x - normal.x * uDir.z,
+    z: normal.x * uDir.y - normal.y * uDir.x,
+  };
+  // Standard 9-point rational NURBS circle. Axis CPs sit on the circle
+  // (weight 1); corner CPs sit at the intersection of the two
+  // neighboring tangents (weight √2/2). For a unit quarter-arc from
+  // angle α to α+π/2, the corner CP direction is (cos α + cos(α+π/2),
+  // sin α + sin(α+π/2)) in the local (u,v) frame.
+  const w = Math.SQRT1_2;
+  const cp = [];
+  const weights = [];
+  for (let i = 0; i < 9; i++) {
+    const isCorner = (i % 2) === 1;
+    let a, b;
+    if (isCorner) {
+      const k = (i - 1) / 2;
+      a = Math.cos(k * Math.PI / 2) + Math.cos((k + 1) * Math.PI / 2);
+      b = Math.sin(k * Math.PI / 2) + Math.sin((k + 1) * Math.PI / 2);
+    } else {
+      const k = i / 2;
+      a = Math.cos(k * Math.PI / 2);
+      b = Math.sin(k * Math.PI / 2);
+    }
+    cp.push({
+      x: center.x + radius * (a * uDir.x + b * vDir.x),
+      y: center.y + radius * (a * uDir.y + b * vDir.y),
+      z: center.z + radius * (a * uDir.z + b * vDir.z),
+    });
+    weights.push(isCorner ? w : 1.0);
+  }
+  return new NurbsCurve(2, cp, [0, 0, 0, 0.25, 0.25, 0.5, 0.5, 0.75, 0.75, 1, 1, 1], weights);
 }
 
 function _computePlaneUV(planeSurface, point3D) {

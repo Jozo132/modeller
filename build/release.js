@@ -685,6 +685,14 @@ async function instantiate(module, imports = {}) {
       // assembly/kernel/ops/getPlanePlaneIntersectPtr() => usize
       return exports.getPlanePlaneIntersectPtr() >>> 0;
     },
+    planeSphereIntersect(pPx, pPy, pPz, pNx, pNy, pNz, sCx, sCy, sCz, sR, distTol) {
+      // assembly/kernel/ops/planeSphereIntersect(f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64) => u32
+      return exports.planeSphereIntersect(pPx, pPy, pPz, pNx, pNy, pNz, sCx, sCy, sCz, sR, distTol) >>> 0;
+    },
+    getPlaneSphereIntersectPtr() {
+      // assembly/kernel/ops/getPlaneSphereIntersectPtr() => usize
+      return exports.getPlaneSphereIntersectPtr() >>> 0;
+    },
     pointToPlaneDistance(px, py, pz, gOff, reversed) {
       // assembly/kernel/ops/pointToPlaneDistance(f64, f64, f64, u32, bool) => f64
       reversed = reversed ? 1 : 0;
@@ -1137,6 +1145,8 @@ export const {
   classifyFacesViaOctree,
   planePlaneIntersect,
   getPlanePlaneIntersectPtr,
+  planeSphereIntersect,
+  getPlaneSphereIntersectPtr,
   getFaceClassification,
   setFaceClassification,
   pointToPlaneDistance,

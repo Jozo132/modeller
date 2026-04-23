@@ -393,24 +393,35 @@ function _createCircleCurve(center, normal, radius) {
     z: normal.x * uDir.y - normal.y * uDir.x,
   };
 
-  // 9-point rational circle (degree 2)
+  // 9-point rational circle (degree 2). Axis CPs sit on the circle
+  // (weight 1); corner CPs sit at the intersection of the two
+  // neighboring tangents (weight √2/2). For the quarter-arc from α to
+  // α+π/2 the corner direction is (cos α + cos(α+π/2), sin α + sin(α+π/2))
+  // in the local (u,v) frame.
   const w = Math.SQRT1_2; // weight for corner control points
   const cp = [];
   const weights = [];
   for (let i = 0; i < 9; i++) {
-    const angle = (i / 8) * Math.PI * 2;
     const isCorner = (i % 2) === 1;
-    const cos = Math.cos(angle);
-    const sin = Math.sin(angle);
+    let a, b;
+    if (isCorner) {
+      const k = (i - 1) / 2;
+      a = Math.cos(k * Math.PI / 2) + Math.cos((k + 1) * Math.PI / 2);
+      b = Math.sin(k * Math.PI / 2) + Math.sin((k + 1) * Math.PI / 2);
+    } else {
+      const k = i / 2;
+      a = Math.cos(k * Math.PI / 2);
+      b = Math.sin(k * Math.PI / 2);
+    }
     cp.push({
-      x: center.x + radius * (cos * uDir.x + sin * vDir.x),
-      y: center.y + radius * (cos * uDir.y + sin * vDir.y),
-      z: center.z + radius * (cos * uDir.z + sin * vDir.z),
+      x: center.x + radius * (a * uDir.x + b * vDir.x),
+      y: center.y + radius * (a * uDir.y + b * vDir.y),
+      z: center.z + radius * (a * uDir.z + b * vDir.z),
     });
     weights.push(isCorner ? w : 1.0);
   }
 
-  return new NurbsCurve(2, [0, 0, 0, 0.25, 0.25, 0.5, 0.5, 0.75, 0.75, 1, 1, 1], cp, weights);
+  return new NurbsCurve(2, cp, [0, 0, 0, 0.25, 0.25, 0.5, 0.5, 0.75, 0.75, 1, 1, 1], weights);
 }
 
 // -----------------------------------------------------------------------
