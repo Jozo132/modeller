@@ -7,6 +7,7 @@
 
 import { Feature } from './Feature.js';
 import { arrayBufferToBase64, base64ToArrayBuffer } from './CbrepEncoding.js';
+import { DirtyFaceTracker, stampDirtyFieldsOnResult } from './DirtyFaceTracker.js';
 
 /**
  * FeatureTree manages the ordered list of parametric features.
@@ -43,6 +44,14 @@ export class FeatureTree {
     // Map from wasmHandleId (number) → featureId (string) for reverse lookup.
     // Needed because WASM setFeatureId takes u32 (revision counter), not a string.
     this._handleToFeatureId = new Map();
+
+    // C3: dirty-face tracker. Every successful solid result is stamped with
+    // allFacesDirty=true by default; features that know which faces they
+    // mutated can opt in to discrete tracking via markFaceDirty / markFacesDirty
+    // before the feature returns. Consumers (incremental tessellation cache,
+    // render dirty-rect propagation) read result.allFacesDirty /
+    // result.invalidatedFaceIds and then call clearDirtyFaces(featureId).
+    this._dirtyFaces = new DirtyFaceTracker();
   }
 
   // -----------------------------------------------------------------------
@@ -348,9 +357,7 @@ export class FeatureTree {
     const feature = this.featureMap.get(featureId);
     if (feature && feature._irHash) {
       result.irHash = feature._irHash;
-    }
-
-    // Allocate a WASM handle if a registry is attached
+    }    // Allocate a WASM handle if a registry is attached
     if (this._handleRegistry && this._handleRegistry.ready) {
       const reg = this._handleRegistry;
       const handle = reg.alloc();
@@ -371,6 +378,15 @@ export class FeatureTree {
     if (this._residencyManager) {
       this._residencyManager.markAccessed(featureId);
     }
+
+    // C3: default every new solid result to allFacesDirty=true. Feature
+    // execute() implementations that report discrete face-level mutations
+    // (via DirtyFaceTracker.markFacesDirty before returning) will override
+    // this default; for now the whole-body signal matches legacy behavior.
+    if (!result._dirtyOverride) {
+      this._dirtyFaces.markAllDirty(featureId);
+    }
+    stampDirtyFieldsOnResult(result, featureId, this._dirtyFaces);
   }
 
   /**
@@ -453,6 +469,7 @@ export class FeatureTree {
     this.featureMap.delete(featureId);
     this._releaseResultHandle(this.results[featureId], featureId);
     delete this.results[featureId];
+    this._dirtyFaces.clear(featureId);
     
     return true;
   }
@@ -752,6 +769,43 @@ export class FeatureTree {
     this.features = [];
     this.featureMap.clear();
     this.results = {};
+    this._dirtyFaces.clearAll();
+  }
+
+  // -----------------------------------------------------------------------
+  // C3: dirty-face tracking accessors
+  // -----------------------------------------------------------------------
+
+  /**
+   * Mark a specific face ID on a feature result as dirty. Intended for
+   * feature.execute() implementations that know they only mutated a subset
+   * of faces (e.g. an edge-specific chamfer). Callers should invoke this
+   * BEFORE returning the result so `_stampSolidResult` can preserve the
+   * discrete set by setting `result._dirtyOverride = true`.
+   */
+  markFaceDirty(featureId, faceId) {
+    this._dirtyFaces.markFaceDirty(featureId, faceId);
+  }
+
+  /** Bulk variant of markFaceDirty. */
+  markFacesDirty(featureId, faceIds) {
+    this._dirtyFaces.markFacesDirty(featureId, faceIds);
+  }
+
+  /** True when the feature's entire body is flagged dirty (the default). */
+  isAllFacesDirty(featureId) {
+    return this._dirtyFaces.isAllDirty(featureId);
+  }
+
+  /** Snapshot of discrete dirty face IDs. Empty when `isAllFacesDirty`. */
+  getDirtyFaceIds(featureId) {
+    return this._dirtyFaces.getDirtyFaceIds(featureId);
+  }
+
+  /** Called by consumers (tessellation cache, selector remap) after they
+   * have processed the invalidation for a given feature. */
+  clearDirtyFaces(featureId) {
+    this._dirtyFaces.clear(featureId);
   }
 
   /**

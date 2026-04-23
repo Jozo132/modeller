@@ -64,5 +64,7 @@
     "test-worker-dispatcher.js": 0.177,
     "test-mirror-pattern.js": 0.176,
     "test-touch-gestures.js": 0.163,
-    "test-containment.js": 0.077
+    "test-containment.js": 0.077,
+    "test-dirty-face-tracking.js": 0.033,
+    "test-history-cbrep-checkpoints.js": 0.02
 }
