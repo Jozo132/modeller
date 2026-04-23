@@ -11,6 +11,8 @@ import {
   computeSilhouetteEdges,
 } from './render/part-render-core.js';
 import { renderBaseMeshOverlay } from './render/mesh-overlay-renderer.js';
+import { LodManager } from './render/lod-manager.js';
+import { GpuTessPipeline } from './render/gpu-tess-pipeline.js';
 
 function _projectPolygon2D(verts, normal) {
   const an = {
@@ -276,6 +278,35 @@ export class WasmRenderer {
     // Callback for camera change events (used by interaction recorder)
     this.onCameraInteraction = null; // (type: 'orbit_start'|'pan_start'|'orbit_end'|'zoom', state) => void
 
+    // H14/H15: dynamic level-of-detail dispatch for 3D mode. The LodManager
+    // watches orbit radius each frame and fires `onRetessellate(segsU, segsV)`
+    // when the band changes. The retessellation callback is opt-in — consumers
+    // (PartManager / main.js) wire it via `onLodChange(cb)` so this renderer
+    // can be constructed without a live feature tree in unit tests.
+    this._lodManager = new LodManager();
+    this._lodManager.onRetessellate = (segsU, segsV) => {
+      if (typeof this.onLodChangeCallback === 'function') {
+        try { this.onLodChangeCallback(segsU, segsV); } catch (_) { /* swallow */ }
+      }
+    };
+    this.onLodChangeCallback = null;
+
+    // H14/H15: optional WebGPU/WebGL2-backed tessellation pipeline. Created
+    // lazily if the environment supports it (`GpuTessPipeline.isAvailable()`),
+    // but only activated when `initGpuTessPipeline(registry)` is called with
+    // a valid WASM handle registry — matching the SceneRenderer contract so
+    // main.js line "this._renderer3d?.initGpuTessPipeline(registry)" actually
+    // reaches a real method instead of silently no-op'ing.
+    this._gpuTessPipeline = null;
+    this._gpuTessReady = false;
+    if (typeof GpuTessPipeline.isAvailable === 'function' && GpuTessPipeline.isAvailable()) {
+      try {
+        this._gpuTessPipeline = new GpuTessPipeline();
+      } catch (_) {
+        this._gpuTessPipeline = null;
+      }
+    }
+
     // Bind 3D mouse controls
     this._bind3DControls();
 
@@ -366,6 +397,13 @@ export class WasmRenderer {
       this._orbitDirty = false;
     }
 
+    // H14/H15: LoD dispatch in 3D mode. update() returns true when the band
+    // changes, which fires onRetessellate via the pipe set up in the
+    // constructor. No-op when no consumer subscribed via onLodChange.
+    if (this.mode === '3d') {
+      this._lodManager.update(this._orbitRadius);
+    }
+
     wasm.render();
     const ptr = wasm.getCommandBufferPtr();
     const len = wasm.getCommandBufferLen();
@@ -384,6 +422,57 @@ export class WasmRenderer {
 
     if (this.onPostRender) this.onPostRender();
   }
+
+  // -----------------------------------------------------------------------
+  // H14/H15: public API for GPU tessellation pipeline + LoD dispatch
+  // -----------------------------------------------------------------------
+
+  /**
+   * Initialize the optional GPU tessellation pipeline. Called by main.js
+   * during WASM handle subsystem bootstrap. Returns true when the pipeline
+   * successfully binds to the registry, false when no pipeline is available
+   * (legacy fallback) or initialization fails.
+   *
+   * @param {object} registry — WASM handle registry from part-manager.js
+   * @returns {Promise<boolean>}
+   */
+  async initGpuTessPipeline(registry) {
+    if (!this._gpuTessPipeline || !registry) {
+      this._gpuTessReady = false;
+      return false;
+    }
+    try {
+      this._gpuTessReady = await this._gpuTessPipeline.init(registry);
+    } catch (err) {
+      this._gpuTessReady = false;
+      if (typeof console !== 'undefined' && console.warn) {
+        console.warn('[WasmRenderer] initGpuTessPipeline failed:', err);
+      }
+    }
+    return this._gpuTessReady;
+  }
+
+  /**
+   * Subscribe to LoD band changes. The callback receives the new
+   * tessellation density as (segsU, segsV). Consumers are responsible for
+   * triggering the actual re-tessellation of the active feature tree.
+   *
+   * Passing null removes the subscription.
+   *
+   * @param {((segsU:number, segsV:number)=>void)|null} cb
+   */
+  onLodChange(cb) {
+    this.onLodChangeCallback = typeof cb === 'function' ? cb : null;
+  }
+
+  /** @returns {LodManager} */
+  get lodManager() { return this._lodManager; }
+
+  /** @returns {GpuTessPipeline|null} */
+  get gpuTessPipeline() { return this._gpuTessPipeline; }
+
+  /** @returns {boolean} */
+  get gpuTessReady() { return this._gpuTessReady; }
 
   /* ---------- 3D orbit controls ---------- */
 

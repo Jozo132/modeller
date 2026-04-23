@@ -26,8 +26,8 @@
     "test-evaluator-parity.js": 1.075,
     "test-incremental-tessellation.js": 1.031,
     "test-intersection-validator.js": 1.002,
+    "test-nurbs.js": 0.974,
     "test-spline-multi-extrude.js": 0.972,
-    "test-nurbs.js": 0.952,
     "test-step-parser-wasm.js": 0.951,
     "test-geometry-evaluator.js": 0.941,
     "test-wasm-tessellation.js": 0.904,
@@ -38,10 +38,10 @@
     "test-fallback-boolean.js": 0.82,
     "test-step-export.js": 0.771,
     "test-step-topology-wasm.js": 0.771,
+    "test-boolean-hardening.js": 0.749,
     "test-step-lexer-wasm.js": 0.702,
     "test-intersections-wasm-preload.js": 0.657,
     "test-phase456.js": 0.656,
-    "test-boolean-hardening.js": 0.618,
     "test-wasm-brep-kernel.js": 0.607,
     "test-feature-editor-ux.js": 0.604,
     "test-ir-determinism.js": 0.485,
@@ -65,6 +65,6 @@
     "test-mirror-pattern.js": 0.176,
     "test-touch-gestures.js": 0.163,
     "test-containment.js": 0.077,
-    "test-dirty-face-tracking.js": 0.033,
-    "test-history-cbrep-checkpoints.js": 0.02
+    "test-history-cbrep-checkpoints.js": 0.02,
+    "test-dirty-face-tracking.js": 0.011
 }
