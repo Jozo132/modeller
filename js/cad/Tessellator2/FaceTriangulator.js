@@ -978,9 +978,14 @@ export class FaceTriangulator {
       const loop = [];
       let prevUv = null;
       for (const p of loop3D) {
-        const uv = periodicSurface
-          ? surface.closestPointUV(p, 16)
-          : surface.closestPointUV(p, 16, prevUv);
+        // Always pass the previous UV as a hint so closestPointUV can
+        // unwrap angular coordinates continuously.  Without the hint, a
+        // self-loop (full-revolution sample run) collapses to a u-range
+        // inside a single period, which creates pinch points in the
+        // CDT polygon when the loop returns to its start vertex in 3D.
+        // With the hint, the self-loop's u coordinate walks monotonically
+        // across one full period, keeping the polygon simple.
+        const uv = surface.closestPointUV(p, 16, prevUv);
         // Attach original 3D position so evalPoint can preserve the exact
         // EdgeSampler coordinates.  Re-evaluating from UV introduces tiny
         // floating-point drift that prevents MeshStitcher from deduplicating
