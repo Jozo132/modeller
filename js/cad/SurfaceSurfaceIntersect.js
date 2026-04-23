@@ -15,24 +15,23 @@ import { SurfaceType } from './BRepTopology.js';
 import { GeometryEvaluator } from './GeometryEvaluator.js';
 
 // ─── Optional WASM backend for the numeric marcher ────────────────────
-// Loaded synchronously via the same module the GeometryEvaluator uses.
-// We probe for the Newton refiner / seed-finder exports; if present, the
-// marcher's hot inner loop switches to the WASM path.
+// Loaded lazily (fire-and-forget) so this module does NOT hold a
+// top-level await. A top-level await here would propagate through
+// js/cad/index.js → state/persist/cmod/history/motion → main.js and
+// stall the entire app boot on the wasm fetch — breaking cmod cache
+// restore on refresh. Until the import resolves, `_numericMarch` falls
+// back to the pure-JS path.
 let _ssxMod = null;
-try {
-  // eslint-disable-next-line no-undef
-  _ssxMod = await import('../../build/release.js');
+import('../../build/release.js').then((mod) => {
   if (
-    typeof _ssxMod.ssxRefinePair !== 'function' ||
-    typeof _ssxMod.ssxFindSeeds !== 'function' ||
-    typeof _ssxMod.ssxSetSurfaceA !== 'function' ||
-    typeof _ssxMod.ssxSetSurfaceB !== 'function'
+    typeof mod.ssxRefinePair === 'function' &&
+    typeof mod.ssxFindSeeds === 'function' &&
+    typeof mod.ssxSetSurfaceA === 'function' &&
+    typeof mod.ssxSetSurfaceB === 'function'
   ) {
-    _ssxMod = null;
+    _ssxMod = mod;
   }
-} catch (_e) {
-  _ssxMod = null;
-}
+}).catch(() => { /* JS fallback remains active */ });
 
 // Keep Float64Array references alive while the kernel holds pointers.
 let _ssxPairKeepAlive = null;
