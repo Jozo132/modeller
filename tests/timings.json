@@ -50,6 +50,7 @@
     "test-feature-revision.js": 0.443,
     "test-wasm-tess-ops.js": 0.42,
     "test-classify-point-triangles.js": 0.4,
+    "test-lod-retess.js": 0.39,
     "test-assembly-design.js": 0.383,
     "test-telemetry.js": 0.278,
     "test-boolean-nurbs.js": 0.263,

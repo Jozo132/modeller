@@ -20,6 +20,7 @@ import { importSTEP, importSTEPAsync, ensureWasmReady } from './cad/StepImport.j
 import { exportSTEPDetailed } from './cad/StepExport.js';
 import { wasmTessellation } from './cad/WasmTessellation.js';
 import { globalTessConfig } from './cad/TessellationConfig.js';
+import { retessellateForLod } from './cad/LodRetess.js';
 import { GeometryEvaluator } from './cad/GeometryEvaluator.js';
 import { WasmBrepHandleRegistry } from './cad/WasmBrepHandleRegistry.js';
 import { HandleResidencyManager } from './cad/HandleResidencyManager.js';
@@ -125,6 +126,15 @@ class App {
         // Wire up WASM handle registry + residency manager after WASM is loaded
         await this._initWasmHandleSubsystem();
       });
+    }
+
+    // Tier-3 H21 consumer: subscribe to LoD band changes. When the camera
+    // zoom crosses a LodManager hysteresis band, retessellate every solid
+    // feature result in the active part at the new density. Feature BRep
+    // work is NOT re-run (band change → tessellation density only). See
+    // js/cad/LodRetess.js for the pure retessellation routine.
+    if (typeof this._renderer3d.onLodChange === 'function') {
+      this._renderer3d.onLodChange((segsU, segsV) => this._onLodBandChanged(segsU, segsV));
     }
 
     // Navigation ViewCube — visible only in part (3D) mode
@@ -5400,6 +5410,23 @@ class App {
     this._showLeftFeatureParams(null);
   }
 
+  /**
+   * Handler for LoD band changes from WasmRenderer.onLodChange.
+   * Retessellates every solid feature result at the new density without
+   * re-running feature BRep work (booleans/fillets/chamfers stay cached).
+   */
+  _onLodBandChanged(segsU, segsV) {
+    if (!this._partManager) return;
+    const part = this._partManager.getActivePart();
+    if (!part) return;
+    const outcome = retessellateForLod(part, segsU, segsV);
+    if (outcome.retessellated.length === 0 && outcome.failed.length === 0) return;
+    // Push the new meshes to the renderer. No executeAll / save: LoD is a
+    // view-only density change and should not bump the .cmod modified time.
+    this._update3DView();
+    this._scheduleRender();
+  }
+
   _update3DView() {
     if (!this._renderer3d) return;
 
@@ -5407,7 +5434,6 @@ class App {
     if (this._workspaceMode === 'part') {
       debouncedSave();
     }
-
     const part = this._partManager.getPart();
     if (!part) {
       this._diagnosticBackfaceHatchAuto = false;
