@@ -36,9 +36,15 @@ export const CBREP_MAGIC = 0x50524243;
 export const CBREP_VERSION = 0;
 
 // Feature flags (bitmask)
+//   HAS_SURFACE_INFOS_V2 — each surfaceInfo record also carries an optional
+//   xDir unit vector. Without it, canonicalize → write → read loses the
+//   analytic surface's parametric orientation (which edge is u=0), and the
+//   STEP-import tessellator cannot reproduce the live mesh from a restored
+//   body. Readers that don't know this flag must ignore the extra bytes.
 export const FeatureFlag = Object.freeze({
   NONE: 0,
   HAS_SURFACE_INFOS: 1 << 0,
+  HAS_SURFACE_INFOS_V2: 1 << 1,
 });
 
 // Section type identifiers

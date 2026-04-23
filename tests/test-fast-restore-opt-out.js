@@ -69,11 +69,22 @@ check('tree without opt-out features still fast-restores', () => {
   assert.equal(ok, true, 'succeeds when no feature opts out');
 });
 
-check('StepImportFeature exposes canFastRestoreFromCbrep === false', async () => {
+check('StepImportFeature may safely fast-restore from CBREP once xDir was serialized', async () => {
+  // The per-feature `canFastRestoreFromCbrep()` hook is retained as a
+  // general-purpose opt-out mechanism for future features whose geometry
+  // pipeline is known to be lossy through CBREP. StepImportFeature opted
+  // out originally (see commit e9c33c4) until HAS_SURFACE_INFOS_V2 added
+  // xDir to surfaceInfo records. With that landed, the Unnamed-Body.step
+  // roundtrip is bit-exact (tools/cbrep-roundtrip-diff.js: 0/60 divergent).
+  // StepImportFeature no longer overrides the hook, so the base Feature
+  // class's default (hook returns true/undefined) applies.
   const mod = await import('../js/cad/StepImportFeature.js');
   const f = new mod.StepImportFeature('Import', 'ISO-10303-21;\nHEADER;\nENDSEC;\nDATA;\nENDSEC;\nEND-ISO-10303-21;\n');
-  assert.equal(typeof f.canFastRestoreFromCbrep, 'function');
-  assert.equal(f.canFastRestoreFromCbrep(), false);
+  const hook = f.canFastRestoreFromCbrep;
+  // Either the method is inherited (falsy / not defined) or defined to return truthy.
+  if (typeof hook === 'function') {
+    assert.notEqual(hook.call(f), false, 'StepImportFeature must no longer force the opt-out');
+  }
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

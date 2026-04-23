@@ -126,5 +126,40 @@ check('box-fillet-3.step — total surface area preserved across roundtrip', () 
   }
 });
 
+// With HAS_SURFACE_INFOS_V2 (xDir serialization) the mixed planar +
+// cylinder Unnamed-Body.step model now roundtrips bit-exactly. This
+// guards the fidelity fix against future regressions — if anyone drops
+// xDir from the CBREP surfaceInfo record or perturbs cylinder
+// tessellation, the harness flags it immediately.
+check('Unnamed-Body.step (planar + cylinder, with xDir) — per-face fidelity', () => {
+  const { live, rest } = loadAndRoundtrip('Unnamed-Body.step');
+  if (live.length !== rest.length) {
+    throw new Error(`face count mismatch: live=${live.length} restored=${rest.length}`);
+  }
+  let divergent = 0;
+  let worstRel = 0;
+  for (let i = 0; i < live.length; i++) {
+    const L = live[i], R = rest[i];
+    const areaDelta = Math.abs(L.area - R.area);
+    const areaRel = L.area > 1e-9 ? areaDelta / L.area : areaDelta;
+    if (areaRel > 1e-9 || L.triCount !== R.triCount) {
+      divergent++;
+      if (areaRel > worstRel) worstRel = areaRel;
+    }
+  }
+  if (divergent > 0) {
+    throw new Error(`${divergent}/${live.length} faces diverged (worst relΔ=${(worstRel * 100).toFixed(3)}%). Run tools/cbrep-roundtrip-diff.js for details.`);
+  }
+});
+
+check('Unnamed-Body.step — total surface area bit-exact across roundtrip', () => {
+  const { live, rest } = loadAndRoundtrip('Unnamed-Body.step');
+  const sumL = live.reduce((s, f) => s + f.area, 0);
+  const sumR = rest.reduce((s, f) => s + f.area, 0);
+  if (Math.abs(sumL - sumR) > 1e-6) {
+    throw new Error(`total area diverged: live=${sumL} restored=${sumR}`);
+  }
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

@@ -180,24 +180,6 @@ export class StepImportFeature extends Feature {
     };
   }
 
-  /**
-   * STEP-imported geometry must not be restored via the generic CBREP
-   * fast-restore path. The JS-side CBREP roundtrip (readCbrep → TopoBody →
-   * tessellateBody) produces visibly corrupt output because the restored
-   * body loses analytic-surface metadata that the WASM STEP pipeline
-   * originally attached (axes, xDirs, periodic-surface seam flags,
-   * surfaceInfo for cylinders/cones/tori), and the JS tessellator falls
-   * back to 3D CDT on faces whose UV domain becomes degenerate. Since the
-   * raw STEP text is always kept in `this.stepData`, re-running execute()
-   * on restore is both authoritative and cheap (importSTEP internally
-   * caches by content hash).
-   *
-   * @returns {boolean} false — always force a full replay for this feature.
-   */
-  canFastRestoreFromCbrep() {
-    return false;
-  }
-
   _applyIrCachePayload(hash, buf) {
     this._irHash = hash;
     this._irBytes = buf;

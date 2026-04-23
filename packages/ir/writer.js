@@ -55,6 +55,7 @@
 import {
   CBREP_MAGIC, CBREP_VERSION,
   SectionType, HEADER_SIZE, SECTION_ENTRY_SIZE, NULL_IDX,
+  FeatureFlag,
 } from './schema.js';
 
 /**
@@ -122,12 +123,16 @@ export function writeCbrep(canon) {
   sections.push({ type: SectionType.SURFACES, size: surfSize });
 
   // SurfaceInfos: variable length (only if present)
+  const hasXDir = (canon.featureFlags & FeatureFlag.HAS_SURFACE_INFOS_V2) !== 0;
   let siSize = 0;
   if (canon.surfaceInfos.length > 0) {
     siSize = 4; // count
     for (const si of canon.surfaceInfos) {
       siSize += 1 + 24 + 1 + (si.axis ? 24 : 0) + 32;
       // typeId(1) + origin(24) + hasAxis(1) + axis?(24) + radius+semiAngle+majorR+minorR(32)
+      if (hasXDir) {
+        siSize += 1 + (si.xDir ? 24 : 0); // hasXDir(1) + xDir?(24)
+      }
     }
     sections.push({ type: SectionType.SURF_INFOS, size: siSize });
   }
@@ -290,6 +295,15 @@ export function writeCbrep(canon) {
         dv.setFloat64(pos, si.axis.x, true); pos += 8;
         dv.setFloat64(pos, si.axis.y, true); pos += 8;
         dv.setFloat64(pos, si.axis.z, true); pos += 8;
+      }
+      if (hasXDir) {
+        const hasX = si.xDir ? 1 : 0;
+        dv.setUint8(pos, hasX); pos += 1;
+        if (si.xDir) {
+          dv.setFloat64(pos, si.xDir.x, true); pos += 8;
+          dv.setFloat64(pos, si.xDir.y, true); pos += 8;
+          dv.setFloat64(pos, si.xDir.z, true); pos += 8;
+        }
       }
       dv.setFloat64(pos, si.radius, true); pos += 8;
       dv.setFloat64(pos, si.semiAngle, true); pos += 8;

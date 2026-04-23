@@ -53,7 +53,7 @@ export function readCbrepCanon(buf) {
   // Read each section
   const curves = _readCurves(dv, sectionMap);
   const surfaces = _readSurfaces(dv, sectionMap);
-  const surfaceInfos = _readSurfInfos(dv, sectionMap);
+  const surfaceInfos = _readSurfInfos(dv, sectionMap, featureFlags);
   const vertices = _readVertices(dv, sectionMap);
   const edges = _readEdges(dv, sectionMap);
   const coedges = _readCoEdges(dv, sectionMap);
@@ -140,6 +140,25 @@ export function readCbrep(buf, deps = null) {
         origin: { ...si.origin },
       };
       if (si.axis) face.surfaceInfo.axis = { ...si.axis };
+      if (si.xDir) {
+        face.surfaceInfo.xDir = { ...si.xDir };
+        // yDir is derived: z × x. Computed here so the STEP-import
+        // tessellator's downstream consumers (_computeVertexNormal,
+        // _tessellateStripFromEdgeBounds) see the same frame as the live
+        // import path.
+        if (si.axis) {
+          const ax = si.axis, xd = si.xDir;
+          face.surfaceInfo.yDir = {
+            x: ax.y * xd.z - ax.z * xd.y,
+            y: ax.z * xd.x - ax.x * xd.z,
+            z: ax.x * xd.y - ax.y * xd.x,
+          };
+        }
+      }
+      // PLANE uses `normal` field; STEP import sets it from axis.zDir
+      if (si.axis && (SurfInfoTypeStr[si.typeId] || 'plane') === 'plane') {
+        face.surfaceInfo.normal = { ...si.axis };
+      }
       if (si.radius) face.surfaceInfo.radius = si.radius;
       if (si.semiAngle) face.surfaceInfo.semiAngle = si.semiAngle;
       if (si.majorR) face.surfaceInfo.majorR = si.majorR;
@@ -388,9 +407,10 @@ function _readSurfaces(dv, sectionMap) {
   return arr;
 }
 
-function _readSurfInfos(dv, sectionMap) {
+function _readSurfInfos(dv, sectionMap, featureFlags = 0) {
   const sec = sectionMap.get(SectionType.SURF_INFOS);
   if (!sec) return [];
+  const hasXDir = (featureFlags & FeatureFlag.HAS_SURFACE_INFOS_V2) !== 0;
   let pos = sec.offset;
   const count = dv.getUint32(pos, true); pos += 4;
   const arr = [];
@@ -407,11 +427,21 @@ function _readSurfInfos(dv, sectionMap) {
       const az = dv.getFloat64(pos, true); pos += 8;
       axis = { x: ax, y: ay, z: az };
     }
+    let xDir = null;
+    if (hasXDir) {
+      const hasX = dv.getUint8(pos); pos += 1;
+      if (hasX) {
+        const xx = dv.getFloat64(pos, true); pos += 8;
+        const xy = dv.getFloat64(pos, true); pos += 8;
+        const xz = dv.getFloat64(pos, true); pos += 8;
+        xDir = { x: xx, y: xy, z: xz };
+      }
+    }
     const radius = dv.getFloat64(pos, true); pos += 8;
     const semiAngle = dv.getFloat64(pos, true); pos += 8;
     const majorR = dv.getFloat64(pos, true); pos += 8;
     const minorR = dv.getFloat64(pos, true); pos += 8;
-    arr.push({ typeId, origin: { x: ox, y: oy, z: oz }, axis, radius, semiAngle, majorR, minorR });
+    arr.push({ typeId, origin: { x: ox, y: oy, z: oz }, axis, xDir, radius, semiAngle, majorR, minorR });
   }
   return arr;
 }

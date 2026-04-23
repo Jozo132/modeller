@@ -123,10 +123,12 @@ export function canonicalize(body) {
     const typeId = SurfInfoTypeId[info.type] ?? 0;
     const origin = info.origin ? snapPoint(info.origin) : { x: 0, y: 0, z: 0 };
     const axis = info.axis ? snapPoint(info.axis) : null;
+    const xDir = info.xDir ? snapPoint(info.xDir) : null;
     surfaceInfos.push({
       typeId,
       origin,
       axis,
+      xDir,
       radius: info.radius ?? 0,
       semiAngle: info.semiAngle ?? 0,
       majorR: info.majorR ?? 0,
@@ -186,6 +188,11 @@ export function canonicalize(body) {
       if (face.surfaceInfo) {
         siIdx = internSurfaceInfo(face.surfaceInfo);
         featureFlags |= FeatureFlag.HAS_SURFACE_INFOS;
+        // Any xDir anywhere promotes the file to the v2 layout. Writer
+        // reads this flag to decide record size; reader keys on it too.
+        if (face.surfaceInfo.xDir) {
+          featureFlags |= FeatureFlag.HAS_SURFACE_INFOS_V2;
+        }
       }
 
       faces[fIdx] = {
