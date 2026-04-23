@@ -66,6 +66,7 @@
     "test-mirror-pattern.js": 0.176,
     "test-touch-gestures.js": 0.163,
     "test-containment.js": 0.077,
+    "test-feature-tree-incremental-tess.js": 0.062,
     "test-cache-stores.js": 0.054,
     "test-incremental-tess-dirty.js": 0.048,
     "test-dirty-face-tracking.js": 0.012,
