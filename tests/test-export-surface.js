@@ -105,11 +105,15 @@ await asyncTest('"./ir" exports schema + IR symbols', async () => {
   assert.ok(typeof mod.hashCbrep === 'function', 'hashCbrep');
 });
 
-await asyncTest('"./cache" exports CacheStore, NodeFsCacheStore, BrowserIdbCacheStore', async () => {
+await asyncTest('"./cache" exports CacheStore, getNodeFsCacheStore, BrowserIdbCacheStore', async () => {
   const mod = await import('../js/cache/index.js');
   assert.ok(typeof mod.CacheStore === 'function', 'CacheStore');
-  assert.ok(typeof mod.NodeFsCacheStore === 'function', 'NodeFsCacheStore');
+  assert.ok(typeof mod.getNodeFsCacheStore === 'function', 'getNodeFsCacheStore');
   assert.ok(typeof mod.BrowserIdbCacheStore === 'function', 'BrowserIdbCacheStore');
+  // Dynamic factory loads the Node-only store on demand without polluting
+  // the browser-safe static import graph.
+  const NodeFsCacheStore = await mod.getNodeFsCacheStore();
+  assert.ok(typeof NodeFsCacheStore === 'function', 'NodeFsCacheStore class');
 });
 
 await asyncTest('"./cmod" exports buildCMOD, parseCMOD', async () => {

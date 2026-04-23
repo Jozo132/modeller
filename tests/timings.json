@@ -19,7 +19,6 @@
     "test-face-triangulator.js": 1.202,
     "test-brep-arc.js": 1.181,
     "test-fallback-warn-once.js": 1.113,
-    "test-export-surface.js": 1.095,
     "test-api-migration.js": 1.078,
     "test-evaluator-parity.js": 1.075,
     "test-incremental-tessellation.js": 1.031,
@@ -38,6 +37,7 @@
     "test-step-export.js": 0.771,
     "test-step-topology-wasm.js": 0.771,
     "test-boolean-hardening.js": 0.749,
+    "test-export-surface.js": 0.718,
     "test-csg-tjunction-fix.js": 0.715,
     "test-step-lexer-wasm.js": 0.702,
     "test-intersections-wasm-preload.js": 0.657,
@@ -52,7 +52,6 @@
     "test-assembly-design.js": 0.383,
     "test-telemetry.js": 0.278,
     "test-boolean-nurbs.js": 0.263,
-    "test-cache-stores.js": 0.242,
     "test-toolkit.js": 0.236,
     "test-brep-topology.js": 0.229,
     "test-boolean-analytic.js": 0.219,
@@ -65,7 +64,8 @@
     "test-mirror-pattern.js": 0.176,
     "test-touch-gestures.js": 0.163,
     "test-containment.js": 0.077,
+    "test-cache-stores.js": 0.054,
     "test-incremental-tess-dirty.js": 0.048,
-    "test-history-cbrep-checkpoints.js": 0.02,
+    "test-history-cbrep-checkpoints.js": 0.014,
     "test-dirty-face-tracking.js": 0.011
 }

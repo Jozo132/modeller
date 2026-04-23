@@ -6,7 +6,23 @@ import { Scene } from './cad/Scene.js';
 import { tessellateBody } from './cad/Tessellation.js';
 import { computeFeatureEdges } from './cad/EdgeAnalysis.js';
 import { calculateMeshVolume, calculateBoundingBox } from './cad/toolkit/MeshAnalysis.js';
-import { readCbrep } from '../packages/ir/reader.js';
+import { readCbrep, setTopoDeps } from '../packages/ir/reader.js';
+import {
+  TopoVertex, TopoEdge, TopoCoEdge, TopoLoop, TopoFace, TopoShell, TopoBody,
+  SurfaceType,
+} from './cad/BRepTopology.js';
+import { NurbsCurve } from './cad/NurbsCurve.js';
+import { NurbsSurface } from './cad/NurbsSurface.js';
+
+// Pre-register the topology class bundle with the CBREP reader. Browser
+// callers (FeatureTree fast-restore, WasmBrepHandleRegistry dehydration) go
+// through the deps-less `readCbrep(buf)` signature; without this call those
+// paths throw "readCbrep requires topology class dependencies" and fall back
+// to a full executeAll replay.
+setTopoDeps({
+  TopoVertex, TopoEdge, TopoCoEdge, TopoLoop, TopoFace, TopoShell, TopoBody,
+  NurbsCurve, NurbsSurface, SurfaceType,
+});
 
 // C1: dependency bundle for FeatureTree.tryFastRestoreFromCheckpoints. Built
 // once at module load so .cmod loads can skip the full executeAll replay when
