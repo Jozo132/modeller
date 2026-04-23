@@ -665,6 +665,10 @@ export class FeatureTree {
         feature.error = null;
         this._stampSolidResult(feature.id, result);
         this.results[feature.id] = result;
+        // H3/H4: capture the input fingerprint so future recalculateFrom
+        // passes can short-circuit downstream features whose inputs are
+        // unchanged.
+        feature._lastInputFingerprint = this._computeInputFingerprint(feature);
       } catch (error) {
         feature.error = error.message;
         this.results[feature.id] = { error: error.message };
@@ -714,7 +718,32 @@ export class FeatureTree {
           this.results[feature.id] = { error: feature.error };
           continue;
         }
-        
+
+        // H3/H4 full: input-fingerprint short-circuit. Skip re-execution (and
+        // therefore skip handle churn, CBREP rebuild, tessellation) when the
+        // feature's own serialized parameters AND every dependency's irHash
+        // are byte-identical to the previous successful execution. The
+        // edited feature itself falls through because its serialize() output
+        // will differ from `_lastInputFingerprint` by construction — so the
+        // short-circuit only ever benefits downstream features whose inputs
+        // didn't actually change. Features without an irHash on all their
+        // deps opt out automatically (fingerprint contains `null`, never
+        // matches cleanly).
+        const fingerprint = this._computeInputFingerprint(feature);
+        const existing = this.results[feature.id];
+        if (
+          fingerprint != null &&
+          feature._lastInputFingerprint === fingerprint &&
+          existing && !existing.error && !existing.suppressed &&
+          (existing.type === 'solid' || existing.type === 'sketch')
+        ) {
+          // Result is still valid — keep its handle, keep its CBREP, keep
+          // its irHash. Do NOT stamp it (no revision bump, no dirty-face
+          // mark): the body is unchanged, so downstream consumers shouldn't
+          // see a dirty signal.
+          continue;
+        }
+
         const oldResult = this.results[feature.id];
         const result = feature.execute(context);
         feature.result = result;
@@ -722,6 +751,7 @@ export class FeatureTree {
         this._releaseResultHandle(oldResult, feature.id);
         this._stampSolidResult(feature.id, result);
         this.results[feature.id] = result;
+        feature._lastInputFingerprint = fingerprint;
       } catch (error) {
         feature.error = error.message;
         this._releaseResultHandle(this.results[feature.id], feature.id);
@@ -740,6 +770,59 @@ export class FeatureTree {
   }
 
   /**
+   * Compute a stable fingerprint of a feature's input state:
+   * serialized parameters + dependency irHashes. Returns a string, or null
+   * when any dependency lacks an irHash (in which case callers must NOT
+   * short-circuit — we cannot prove inputs are unchanged).
+   *
+   * This is the primitive that drives H3/H4 handle-churn avoidance: when a
+   * feature's fingerprint matches the one captured on its last successful
+   * execute, its result is byte-for-byte reproducible and re-execution is
+   * skipped.
+   *
+   * @param {import('./Feature.js').Feature} feature
+   * @returns {string|null}
+   */
+  _computeInputFingerprint(feature) {
+    if (!feature || typeof feature.serialize !== 'function') return null;
+    let params;
+    try {
+      params = feature.serialize();
+    } catch { return null; }
+    // Strip metadata fields that don't affect output: `modified` and
+    // `created` are user-visible timestamps, not inputs to execute().
+    // Leaving them in would make every markModified() call a cache miss
+    // even when the edit was a no-op (e.g. setParam(x) where x is the
+    // current value).
+    if (params && typeof params === 'object') {
+      params = { ...params };
+      delete params.modified;
+      delete params.created;
+    }
+    const depHashes = [];
+    const deps = Array.isArray(feature.dependencies) ? feature.dependencies : [];
+    for (const depId of deps) {
+      const depResult = this.results[depId];
+      if (!depResult || depResult.error || depResult.suppressed) return null;
+      const h = depResult.irHash;
+      // Sketches are pure-data inputs without irHash; their serialized form
+      // is already captured on the feature itself via dependencies, but we
+      // still need *something* stable to incorporate. Fall back to the
+      // dependency's revision id, which is bumped on every stamp.
+      const marker = h != null ? String(h) : (depResult.exactBodyRevisionId != null
+        ? `rev:${depResult.exactBodyRevisionId}`
+        : null);
+      if (marker == null) return null;
+      depHashes.push(`${depId}:${marker}`);
+    }
+    try {
+      return JSON.stringify({ p: params, d: depHashes });
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Mark a feature as modified and trigger recalculation.
    * @param {string|Feature} featureOrId - Feature or feature ID that changed
    */
@@ -749,6 +832,14 @@ export class FeatureTree {
     
     if (feature) {
       feature.modified = new Date();
+      // H3/H4: the markModified contract means "force this feature to
+      // re-execute on the next recalculateFrom." Clear the stored
+      // fingerprint so the short-circuit cannot accidentally skip this
+      // feature (possible when `feature.modified = new Date()` lands in the
+      // same millisecond as the previous stamp, yielding an identical
+      // serialize() payload). Downstream features still get the short-
+      // circuit benefit when their own inputs are unchanged.
+      feature._lastInputFingerprint = null;
       this.recalculateFrom(featureId);
     }
   }

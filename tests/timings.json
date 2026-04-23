@@ -36,7 +36,6 @@
     "test-fallback-boolean.js": 0.82,
     "test-step-export.js": 0.771,
     "test-step-topology-wasm.js": 0.771,
-    "test-boolean-hardening.js": 0.749,
     "test-export-surface.js": 0.718,
     "test-csg-tjunction-fix.js": 0.715,
     "test-step-lexer-wasm.js": 0.702,
@@ -44,9 +43,10 @@
     "test-phase456.js": 0.656,
     "test-wasm-brep-kernel.js": 0.607,
     "test-feature-editor-ux.js": 0.604,
+    "test-boolean-hardening.js": 0.579,
     "test-ir-determinism.js": 0.485,
     "test-stable-hash.js": 0.481,
-    "test-feature-revision.js": 0.47,
+    "test-feature-revision.js": 0.443,
     "test-wasm-tess-ops.js": 0.42,
     "test-classify-point-triangles.js": 0.4,
     "test-assembly-design.js": 0.383,
@@ -67,5 +67,6 @@
     "test-cache-stores.js": 0.054,
     "test-incremental-tess-dirty.js": 0.048,
     "test-history-cbrep-checkpoints.js": 0.014,
-    "test-dirty-face-tracking.js": 0.011
+    "test-dirty-face-tracking.js": 0.012,
+    "test-recalculate-handle-churn.js": 0.011
 }
