@@ -21,6 +21,7 @@ import { GeometryEvaluator } from './GeometryEvaluator.js';
 import { getFlag } from '../featureFlags.js';
 import { warnOnceForFallback } from './fallback/warnOnce.js';
 import { SurfaceType } from './BRepTopology.js';
+import { loadBodyIntoWasm } from './wasm/TopoSerializer.js';
 
 // ---------------------------------------------------------------------------
 // WASM native containment — trimmed-face via tessellation-based ray-cast
@@ -96,6 +97,9 @@ function _wasmCanClassify(body) {
 /**
  * Load a body into the WASM kernel topology/geometry buffers.
  * Uses body._id as a cache key to avoid redundant loads.
+ * Delegates the actual body walk to the shared H11 serializer so other
+ * consumers (future FaceSplitter WASM path) can reuse the same upload
+ * contract instead of duplicating it locally.
  * @returns {number} face count, or 0 on failure
  */
 function _wasmLoadBody(body) {
@@ -115,192 +119,15 @@ function _wasmLoadBody(body) {
   w.bodyBegin();
   w.geomPoolReset();
 
-  const allFaces = body.faces();
-  const vertexMap = new Map();
-
-  // Load vertices
-  for (const face of allFaces) {
-    for (const loop of [face.outerLoop, ...(face.innerLoops || [])]) {
-      if (!loop) continue;
-      for (const ce of loop.coedges || []) {
-        const edge = ce.edge;
-        if (!edge) continue;
-        if (edge.startVertex && !vertexMap.has(edge.startVertex)) {
-          const v = edge.startVertex.point || edge.startVertex;
-          vertexMap.set(edge.startVertex, w.vertexAdd(v.x, v.y, v.z));
-        }
-        if (edge.endVertex && !vertexMap.has(edge.endVertex)) {
-          const v = edge.endVertex.point || edge.endVertex;
-          vertexMap.set(edge.endVertex, w.vertexAdd(v.x, v.y, v.z));
-        }
-      }
-    }
-  }
-
-  // Load edges
-  const edgeMap = new Map();
-  for (const face of allFaces) {
-    for (const loop of [face.outerLoop, ...(face.innerLoops || [])]) {
-      if (!loop) continue;
-      for (const ce of loop.coedges || []) {
-        const edge = ce.edge;
-        if (!edge || edgeMap.has(edge)) continue;
-        const sv = vertexMap.get(edge.startVertex);
-        const ev = vertexMap.get(edge.endVertex);
-        if (sv === undefined || ev === undefined) continue; // skip incomplete edges
-        edgeMap.set(edge, w.edgeAdd(sv, ev, w.GEOM_LINE, 0));
-      }
-    }
-  }
-
-  // Load faces with geometry
-  let wasmFaceId = 0;
-  for (const face of allFaces) {
-    const loops = [face.outerLoop, ...(face.innerLoops || [])].filter(Boolean);
-    if (loops.length === 0) continue;
-
-    // Store surface geometry
-    let geomType = w.GEOM_PLANE;
-    let geomOffset = 0;
-
-    if (face.surfaceType === SurfaceType.PLANE && face.surface) {
-      const s = face.surface;
-      const si = s.surfaceInfo || s._analyticParams;
-      if (si && si.origin && si.normal) {
-        const rd = si.refDir || si.xDir || _computeRefDir(si.normal);
-        geomOffset = w.planeStore(
-          si.origin.x, si.origin.y, si.origin.z,
-          si.normal.x, si.normal.y, si.normal.z,
-          rd.x, rd.y, rd.z,
-        );
-      } else if (face.outerLoop) {
-        // Derive plane from boundary vertices
-        const pts = face.outerLoop.points();
-        if (pts.length >= 3) {
-          const n = _polyNormal(pts);
-          const rd = _computeRefDir(n);
-          geomOffset = w.planeStore(pts[0].x, pts[0].y, pts[0].z, n.x, n.y, n.z, rd.x, rd.y, rd.z);
-        }
-      }
-      geomType = w.GEOM_PLANE;
-    } else if (face.surfaceType === SurfaceType.SPHERE && face.surface) {
-      const si = face.surface.surfaceInfo || face.surface._analyticParams;
-      // surfaceInfo shape varies across producers: StepImportWasm + RevolveFeature
-      // emit {origin,axis,xDir,radius}; earlier code used {center,axis,refDir,radius}.
-      const ctr = si && (si.origin || si.center);
-      if (si && ctr && si.radius != null) {
-        const ax = si.axis || { x: 0, y: 0, z: 1 };
-        const rd = si.xDir || si.refDir || _computeRefDir(ax);
-        geomOffset = w.sphereStore(
-          ctr.x, ctr.y, ctr.z,
-          ax.x, ax.y, ax.z,
-          rd.x, rd.y, rd.z,
-          si.radius,
-        );
-        geomType = w.GEOM_SPHERE;
-      }
-    } else if (face.surfaceType === SurfaceType.CYLINDER && face.surface) {
-      const si = face.surface.surfaceInfo || face.surface._analyticParams;
-      if (si && si.origin && si.axis && si.radius != null) {
-        const rd = si.xDir || si.refDir || _computeRefDir(si.axis);
-        geomOffset = w.cylinderStore(
-          si.origin.x, si.origin.y, si.origin.z,
-          si.axis.x, si.axis.y, si.axis.z,
-          rd.x, rd.y, rd.z,
-          si.radius,
-        );
-        geomType = w.GEOM_CYLINDER;
-      }
-    } else if (face.surfaceType === SurfaceType.CONE && face.surface) {
-      const si = face.surface.surfaceInfo || face.surface._analyticParams;
-      if (si && si.origin && si.axis && si.radius != null && si.semiAngle != null) {
-        const rd = si.xDir || si.refDir || _computeRefDir(si.axis);
-        geomOffset = w.coneStore(
-          si.origin.x, si.origin.y, si.origin.z,
-          si.axis.x, si.axis.y, si.axis.z,
-          rd.x, rd.y, rd.z,
-          si.radius, si.semiAngle,
-        );
-        geomType = w.GEOM_CONE;
-      }
-    } else if (face.surfaceType === SurfaceType.TORUS && face.surface) {
-      const si = face.surface.surfaceInfo || face.surface._analyticParams;
-      // Support both {majorR,minorR} (StepImportWasm) and {majorRadius,minorRadius}
-      const majorR = si && (si.majorR ?? si.majorRadius);
-      const minorR = si && (si.minorR ?? si.minorRadius);
-      if (si && si.origin && si.axis && majorR != null && minorR != null) {
-        const rd = si.xDir || si.refDir || _computeRefDir(si.axis);
-        geomOffset = w.torusStore(
-          si.origin.x, si.origin.y, si.origin.z,
-          si.axis.x, si.axis.y, si.axis.z,
-          rd.x, rd.y, rd.z,
-          majorR, minorR,
-        );
-        geomType = w.GEOM_TORUS;
-      }
-    }
-
-    const orient = face.sameSense !== false ? w.ORIENT_FORWARD : w.ORIENT_REVERSED;
-
-    // Build coedge loops
-    let firstLoopId = -1;
-    let numLoops = 0;
-    for (let li = 0; li < loops.length; li++) {
-      const loop = loops[li];
-      const coedges = loop.coedges || [];
-      if (coedges.length === 0) continue;
-
-      const isOuter = li === 0 ? 1 : 0;
-      const ceIds = [];
-      const predictedLoopId = w.coedgeGetCount ? w.loopGetCount() : 0;
-      for (const ce of coedges) {
-        const eid = edgeMap.get(ce.edge);
-        if (eid === undefined) continue; // skip missing edges
-        const ceOrient = ce.sameSense ? w.ORIENT_FORWARD : w.ORIENT_REVERSED;
-        ceIds.push(w.coedgeAdd(eid, ceOrient, 0, predictedLoopId + numLoops));
-      }
-      for (let i = 0; i < ceIds.length; i++) {
-        w.coedgeSetNext(ceIds[i], ceIds[(i + 1) % ceIds.length]);
-      }
-      const loopId = w.loopAdd(ceIds[0], wasmFaceId, isOuter);
-      if (firstLoopId < 0) firstLoopId = loopId;
-      numLoops++;
-    }
-
-    if (firstLoopId < 0) continue;
-    w.faceAdd(firstLoopId, 0, geomType, geomOffset, orient, numLoops);
-    wasmFaceId++;
-  }
-
-  if (wasmFaceId > 0) {
-    w.shellAdd(0, wasmFaceId, 1);
+  const { faceCount } = loadBodyIntoWasm(body, w);
+  if (faceCount > 0) {
     w.bodyEnd();
   }
 
   _wasmBodyCache.bodyId = bodyId;
   _wasmBodyCache.bodyRev = bodyRev;
-  _wasmBodyCache.faceCount = wasmFaceId;
-  return wasmFaceId;
-}
-
-/**
- * Compute a reference direction perpendicular to a given normal.
- * Used to fill the refDir parameter for planeStore/sphereStore.
- */
-function _computeRefDir(n) {
-  // Pick the axis least-aligned with n for a stable cross product
-  const ax = Math.abs(n.x), ay = Math.abs(n.y), az = Math.abs(n.z);
-  let up;
-  if (ax <= ay && ax <= az) up = { x: 1, y: 0, z: 0 };
-  else if (ay <= az) up = { x: 0, y: 1, z: 0 };
-  else up = { x: 0, y: 0, z: 1 };
-  // cross(n, up)
-  const rx = n.y * up.z - n.z * up.y;
-  const ry = n.z * up.x - n.x * up.z;
-  const rz = n.x * up.y - n.y * up.x;
-  const len = Math.sqrt(rx * rx + ry * ry + rz * rz);
-  if (len < 1e-14) return { x: 1, y: 0, z: 0 };
-  return { x: rx / len, y: ry / len, z: rz / len };
+  _wasmBodyCache.faceCount = faceCount;
+  return faceCount;
 }
 
 /**
