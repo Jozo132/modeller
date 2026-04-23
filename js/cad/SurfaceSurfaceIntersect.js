@@ -64,8 +64,10 @@ export function surfaceSurfaceIntersect(surfA, typeA, surfB, typeB, tol = DEFAUL
 
 function _planePlane(planeA, planeB, tol) {
   // Evaluate normals from the planar surfaces
-  const nA = GeometryEvaluator.evalSurface(planeA, 0.5, 0.5).n;
-  const nB = GeometryEvaluator.evalSurface(planeB, 0.5, 0.5).n;
+  const evalA = GeometryEvaluator.evalSurface(planeA, 0.5, 0.5);
+  const evalB = GeometryEvaluator.evalSurface(planeB, 0.5, 0.5);
+  const nA = evalA.n;
+  const nB = evalB.n;
 
   // Cross product = line direction
   const dx = nA.y * nB.z - nA.z * nB.y;
@@ -80,25 +82,19 @@ function _planePlane(planeA, planeB, tol) {
 
   const dir = { x: dx / dLen, y: dy / dLen, z: dz / dLen };
 
-  // Find a point on the intersection line
-  // Use the average of surface origins as a starting guess
-  const pA = GeometryEvaluator.evalSurface(planeA, 0.5, 0.5).p;
-  const pB = GeometryEvaluator.evalSurface(planeB, 0.5, 0.5).p;
-  const origin = {
-    x: (pA.x + pB.x) / 2,
-    y: (pA.y + pB.y) / 2,
-    z: (pA.z + pB.z) / 2,
-  };
-
-  // Project origin onto both planes and average
-  const distA = nA.x * (origin.x - pA.x) + nA.y * (origin.y - pA.y) + nA.z * (origin.z - pA.z);
-  const distB = nB.x * (origin.x - pB.x) + nB.y * (origin.y - pB.y) + nB.z * (origin.z - pB.z);
-
-  // Use the cross of normals with normals to find a point
+  // Closed-form line anchor: ((dA*nB - dB*nA) x (nA x nB)) / |nA x nB|^2.
+  const pA = evalA.p;
+  const pB = evalB.p;
+  const dA = nA.x * pA.x + nA.y * pA.y + nA.z * pA.z;
+  const dB = nB.x * pB.x + nB.y * pB.y + nB.z * pB.z;
+  const mx = dA * nB.x - dB * nA.x;
+  const my = dA * nB.y - dB * nA.y;
+  const mz = dA * nB.z - dB * nA.z;
+  const invDirLen2 = 1 / (dx * dx + dy * dy + dz * dz);
   const pt = {
-    x: origin.x - distA * nA.x - distB * nB.x,
-    y: origin.y - distA * nA.y - distB * nB.y,
-    z: origin.z - distA * nA.z - distB * nB.z,
+    x: (my * dz - mz * dy) * invDirLen2,
+    y: (mz * dx - mx * dz) * invDirLen2,
+    z: (mx * dy - my * dx) * invDirLen2,
   };
 
   // Create a line as a NURBS curve (degree 1)

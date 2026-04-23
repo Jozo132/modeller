@@ -84,6 +84,7 @@ export {
 export {
   CLASSIFY_OUTSIDE, CLASSIFY_INSIDE, CLASSIFY_ON_BOUNDARY, CLASSIFY_UNKNOWN,
   classifyPointVsShell, classifyPointVsTriangles, classifyFacesViaOctree,
+  planePlaneIntersect, getPlanePlaneIntersectPtr,
   getFaceClassification, setFaceClassification,
   pointToPlaneDistance, pointToSphereDistance, pointToCylinderDistance,
   getFaceClassificationPtr,

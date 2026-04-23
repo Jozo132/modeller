@@ -677,6 +677,14 @@ async function instantiate(module, imports = {}) {
       // assembly/kernel/ops/classifyFacesViaOctree(u32, u32, u32, u32) => u32
       return exports.classifyFacesViaOctree(faceStartA, faceEndA, faceStartB, faceEndB) >>> 0;
     },
+    planePlaneIntersect(pAx, pAy, pAz, nAx, nAy, nAz, pBx, pBy, pBz, nBx, nBy, nBz, angularTol) {
+      // assembly/kernel/ops/planePlaneIntersect(f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64) => u32
+      return exports.planePlaneIntersect(pAx, pAy, pAz, nAx, nAy, nAz, pBx, pBy, pBz, nBx, nBy, nBz, angularTol) >>> 0;
+    },
+    getPlanePlaneIntersectPtr() {
+      // assembly/kernel/ops/getPlanePlaneIntersectPtr() => usize
+      return exports.getPlanePlaneIntersectPtr() >>> 0;
+    },
     pointToPlaneDistance(px, py, pz, gOff, reversed) {
       // assembly/kernel/ops/pointToPlaneDistance(f64, f64, f64, u32, bool) => f64
       reversed = reversed ? 1 : 0;
@@ -1127,6 +1135,8 @@ export const {
   classifyPointVsShell,
   classifyPointVsTriangles,
   classifyFacesViaOctree,
+  planePlaneIntersect,
+  getPlanePlaneIntersectPtr,
   getFaceClassification,
   setFaceClassification,
   pointToPlaneDistance,

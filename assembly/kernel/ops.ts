@@ -39,6 +39,9 @@ const faceClassification = new StaticArray<u8>(16384); // MAX_FACES
 /** Per-face point-on-surface test: closest approach distance². */
 const faceMinDist2 = new StaticArray<f64>(16384);
 
+/** Plane/plane intersection output: point(3) + direction(3). */
+const planePlaneOut = new StaticArray<f64>(6);
+
 // ─── Per-intersection error bound tracking ───────────────────────────
 
 /** Max tracked intersections per boolean pass. */
@@ -201,6 +204,44 @@ export function isxRayFace(
     return _isxRayCylinder(faceId, partnerFaceId, gOff, reversed, ox, oy, oz, dx, dy, dz);
   }
   return -1.0;
+}
+
+/**
+ * Intersect two planes defined by point+normal.
+ * Writes point(3)+unitDirection(3) to `planePlaneOut` and returns 1 on hit.
+ * Returns 0 for parallel / coincident planes.
+ */
+export function planePlaneIntersect(
+  pAx: f64, pAy: f64, pAz: f64,
+  nAx: f64, nAy: f64, nAz: f64,
+  pBx: f64, pBy: f64, pBz: f64,
+  nBx: f64, nBy: f64, nBz: f64,
+  angularTol: f64,
+): u32 {
+  const dx = nAy * nBz - nAz * nBy;
+  const dy = nAz * nBx - nAx * nBz;
+  const dz = nAx * nBy - nAy * nBx;
+  const dirLen = Math.sqrt(dx * dx + dy * dy + dz * dz);
+  if (dirLen < angularTol) return 0;
+
+  const dA = pAx * nAx + pAy * nAy + pAz * nAz;
+  const dB = pBx * nBx + pBy * nBy + pBz * nBz;
+  const mx = dA * nBx - dB * nAx;
+  const my = dA * nBy - dB * nAy;
+  const mz = dA * nBz - dB * nAz;
+  const invDirLen2 = 1.0 / (dx * dx + dy * dy + dz * dz);
+
+  unchecked(planePlaneOut[0] = (my * dz - mz * dy) * invDirLen2);
+  unchecked(planePlaneOut[1] = (mz * dx - mx * dz) * invDirLen2);
+  unchecked(planePlaneOut[2] = (mx * dy - my * dx) * invDirLen2);
+  unchecked(planePlaneOut[3] = dx / dirLen);
+  unchecked(planePlaneOut[4] = dy / dirLen);
+  unchecked(planePlaneOut[5] = dz / dirLen);
+  return 1;
+}
+
+export function getPlanePlaneIntersectPtr(): usize {
+  return changetype<usize>(planePlaneOut);
 }
 
 function _isxRayPlane(

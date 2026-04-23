@@ -8,6 +8,7 @@
 import { curveCurveIntersect } from './CurveCurveIntersect.js';
 import { curveSurfaceIntersect } from './CurveSurfaceIntersect.js';
 import { surfaceSurfaceIntersect } from './SurfaceSurfaceIntersect.js';
+import { NurbsCurve } from './NurbsCurve.js';
 import { DEFAULT_TOLERANCE } from './Tolerance.js';
 import { SurfaceType } from './BRepTopology.js';
 import { GeometryEvaluator } from './GeometryEvaluator.js';
@@ -24,6 +25,10 @@ let _wasmMem = null;
 // calls benefit from the WASM octree, and callers that can afford to
 // await (main.js bootstrap, tests) can explicitly `preloadIntersectionsWasm()`.
 let _wasmLoadPromise = null;
+const _debugSurfaceBackend = {
+  last: 'js',
+  wasmPlanePlaneCalls: 0,
+};
 async function _ensureWasm() {
   if (_wasm) return true;
   if (!_wasmLoadPromise) {
@@ -53,6 +58,16 @@ function _wasmReady() { return _wasm != null; }
  */
 export async function preloadIntersectionsWasm() {
   return _ensureWasm();
+}
+
+// Test-only backend probe for the H8 narrowphase migration.
+export function _getIntersectionsDebugStateForTests() {
+  return { ..._debugSurfaceBackend };
+}
+
+export function _resetIntersectionsDebugStateForTests() {
+  _debugSurfaceBackend.last = 'js';
+  _debugSurfaceBackend.wasmPlanePlaneCalls = 0;
 }
 
 /**
@@ -141,7 +156,67 @@ export function intersectCurveSurface(curve, surface, tol = DEFAULT_TOLERANCE) {
  * @returns {Array<{curve: import('./NurbsCurve.js').NurbsCurve, paramsA: Array<{u,v}>, paramsB: Array<{u,v}>}>}
  */
 export function intersectSurfaces(surfA, typeA, surfB, typeB, tol = DEFAULT_TOLERANCE) {
+  const wasmResult = _intersectSurfacesWasm(surfA, typeA, surfB, typeB, tol);
+  if (wasmResult) return wasmResult;
+  _debugSurfaceBackend.last = 'js';
   return surfaceSurfaceIntersect(surfA, typeA, surfB, typeB, tol);
+}
+
+function _intersectSurfacesWasm(surfA, typeA, surfB, typeB, tol) {
+  if (!_wasmReady() || !_wasmMem) return null;
+  if (typeA !== SurfaceType.PLANE || typeB !== SurfaceType.PLANE) return null;
+  if (typeof _wasm.planePlaneIntersect !== 'function' || typeof _wasm.getPlanePlaneIntersectPtr !== 'function') {
+    return null;
+  }
+
+  const evalA = GeometryEvaluator.evalSurface(surfA, 0.5, 0.5);
+  const evalB = GeometryEvaluator.evalSurface(surfB, 0.5, 0.5);
+  const hit = _wasm.planePlaneIntersect(
+    evalA.p.x, evalA.p.y, evalA.p.z,
+    evalA.n.x, evalA.n.y, evalA.n.z,
+    evalB.p.x, evalB.p.y, evalB.p.z,
+    evalB.n.x, evalB.n.y, evalB.n.z,
+    tol.angularParallelism,
+  );
+
+  _debugSurfaceBackend.last = 'wasm-plane-plane';
+  _debugSurfaceBackend.wasmPlanePlaneCalls++;
+  if (!hit) return [];
+
+  const out = new Float64Array(_wasmMem.buffer, _wasm.getPlanePlaneIntersectPtr(), 6);
+  const pt = { x: out[0], y: out[1], z: out[2] };
+  const dir = { x: out[3], y: out[4], z: out[5] };
+  const extent = 1000;
+  const p0 = { x: pt.x - dir.x * extent, y: pt.y - dir.y * extent, z: pt.z - dir.z * extent };
+  const p1 = { x: pt.x + dir.x * extent, y: pt.y + dir.y * extent, z: pt.z + dir.z * extent };
+  return [{
+    curve: NurbsCurve.createLine(p0, p1),
+    paramsA: [_computePlaneUV(surfA, p0), _computePlaneUV(surfA, p1)],
+    paramsB: [_computePlaneUV(surfB, p0), _computePlaneUV(surfB, p1)],
+  }];
+}
+
+function _computePlaneUV(planeSurface, point3D) {
+  const cp = planeSurface.controlPoints;
+  if (!cp || cp.length < 4) return { u: 0, v: 0 };
+
+  const orig = cp[0];
+  const uDir = { x: cp[2].x - cp[0].x, y: cp[2].y - cp[0].y, z: cp[2].z - cp[0].z };
+  const vDir = { x: cp[1].x - cp[0].x, y: cp[1].y - cp[0].y, z: cp[1].z - cp[0].z };
+  const dp = { x: point3D.x - orig.x, y: point3D.y - orig.y, z: point3D.z - orig.z };
+
+  const uu = uDir.x * uDir.x + uDir.y * uDir.y + uDir.z * uDir.z;
+  const uv = uDir.x * vDir.x + uDir.y * vDir.y + uDir.z * vDir.z;
+  const vv = vDir.x * vDir.x + vDir.y * vDir.y + vDir.z * vDir.z;
+  const up = uDir.x * dp.x + uDir.y * dp.y + uDir.z * dp.z;
+  const vp = vDir.x * dp.x + vDir.y * dp.y + vDir.z * dp.z;
+  const det = uu * vv - uv * uv;
+  if (Math.abs(det) < 1e-20) return { u: 0, v: 0 };
+
+  return {
+    u: (vv * up - uv * vp) / det,
+    v: (uu * vp - uv * up) / det,
+  };
 }
 
 /**

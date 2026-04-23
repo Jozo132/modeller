@@ -1629,6 +1629,29 @@ export declare function classifyPointVsTriangles(px: number, py: number, pz: num
  */
 export declare function classifyFacesViaOctree(faceStartA: number, faceEndA: number, faceStartB: number, faceEndB: number): number;
 /**
+ * assembly/kernel/ops/planePlaneIntersect
+ * @param pAx `f64`
+ * @param pAy `f64`
+ * @param pAz `f64`
+ * @param nAx `f64`
+ * @param nAy `f64`
+ * @param nAz `f64`
+ * @param pBx `f64`
+ * @param pBy `f64`
+ * @param pBz `f64`
+ * @param nBx `f64`
+ * @param nBy `f64`
+ * @param nBz `f64`
+ * @param angularTol `f64`
+ * @returns `u32`
+ */
+export declare function planePlaneIntersect(pAx: number, pAy: number, pAz: number, nAx: number, nAy: number, nAz: number, pBx: number, pBy: number, pBz: number, nBx: number, nBy: number, nBz: number, angularTol: number): number;
+/**
+ * assembly/kernel/ops/getPlanePlaneIntersectPtr
+ * @returns `usize`
+ */
+export declare function getPlanePlaneIntersectPtr(): number;
+/**
  * assembly/kernel/ops/getFaceClassification
  * @param faceId `u32`
  * @returns `u8`
