@@ -469,6 +469,8 @@ export {
   planePlaneIntersect, getPlanePlaneIntersectPtr,
   planeSphereIntersect, getPlaneSphereIntersectPtr,
   planeCylinderIntersect, getPlaneCylinderIntersectPtr,
+  planeConeIntersect, getPlaneConeIntersectPtr,
+  sphereSphereIntersect, getSphereSphereIntersectPtr,
   getFaceClassification, setFaceClassification,
   pointToPlaneDistance, pointToSphereDistance, pointToCylinderDistance,
   getFaceClassificationPtr,

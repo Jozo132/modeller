@@ -30,6 +30,8 @@ const _debugSurfaceBackend = {
   wasmPlanePlaneCalls: 0,
   wasmPlaneSphereCalls: 0,
   wasmPlaneCylinderCalls: 0,
+  wasmPlaneConeCalls: 0,
+  wasmSphereSphereCalls: 0,
 };
 async function _ensureWasm() {
   if (_wasm) return true;
@@ -72,6 +74,8 @@ export function _resetIntersectionsDebugStateForTests() {
   _debugSurfaceBackend.wasmPlanePlaneCalls = 0;
   _debugSurfaceBackend.wasmPlaneSphereCalls = 0;
   _debugSurfaceBackend.wasmPlaneCylinderCalls = 0;
+  _debugSurfaceBackend.wasmPlaneConeCalls = 0;
+  _debugSurfaceBackend.wasmSphereSphereCalls = 0;
 }
 
 /**
@@ -291,6 +295,75 @@ function _intersectSurfacesWasm(surfA, typeA, surfB, typeB, tol) {
     return null;
   }
 
+  // Plane × Cone / Cone × Plane ──────────────────────────────────────
+  if ((typeA === SurfaceType.PLANE && typeB === SurfaceType.CONE)
+    || (typeA === SurfaceType.CONE && typeB === SurfaceType.PLANE)) {
+    if (typeof _wasm.planeConeIntersect !== 'function' || typeof _wasm.getPlaneConeIntersectPtr !== 'function') {
+      return null;
+    }
+    const planeSurf = typeA === SurfaceType.PLANE ? surfA : surfB;
+    const coneSurf = typeA === SurfaceType.CONE ? surfA : surfB;
+    const coneInfo = _extractConeInfoCompat(coneSurf);
+    if (!coneInfo) return null; // degenerate / unknown cone → JS fallback
+
+    const evalP = GeometryEvaluator.evalSurface(planeSurf, 0.5, 0.5);
+    const tag = _wasm.planeConeIntersect(
+      evalP.p.x, evalP.p.y, evalP.p.z,
+      evalP.n.x, evalP.n.y, evalP.n.z,
+      coneInfo.origin.x, coneInfo.origin.y, coneInfo.origin.z,
+      coneInfo.axis.x, coneInfo.axis.y, coneInfo.axis.z,
+      coneInfo.radius, coneInfo.semiAngle,
+      tol.angularParallelism,
+      _distTol(tol),
+    );
+
+    // Oblique regimes (ellipse/parabola/hyperbola/lines-through-apex)
+    // fall back to the JS numeric marcher.
+    if (tag === 255) return null;
+
+    _debugSurfaceBackend.last = 'wasm-plane-cone';
+    _debugSurfaceBackend.wasmPlaneConeCalls++;
+    if (tag === 0) return [];
+
+    const out = new Float64Array(_wasmMem.buffer, _wasm.getPlaneConeIntersectPtr(), 7);
+    if (tag === 1) {
+      const center = { x: out[0], y: out[1], z: out[2] };
+      const normal = { x: out[3], y: out[4], z: out[5] };
+      const radius = out[6];
+      return [{ curve: _buildCircleCurve9Pt(center, normal, radius), paramsA: [], paramsB: [] }];
+    }
+    return null;
+  }
+
+  // Sphere × Sphere ──────────────────────────────────────────────────
+  if (typeA === SurfaceType.SPHERE && typeB === SurfaceType.SPHERE) {
+    if (typeof _wasm.sphereSphereIntersect !== 'function' || typeof _wasm.getSphereSphereIntersectPtr !== 'function') {
+      return null;
+    }
+    const aInfo = _extractSphereInfoCompat(surfA);
+    const bInfo = _extractSphereInfoCompat(surfB);
+    if (!aInfo || !bInfo) return null;
+
+    const tag = _wasm.sphereSphereIntersect(
+      aInfo.center.x, aInfo.center.y, aInfo.center.z, aInfo.radius,
+      bInfo.center.x, bInfo.center.y, bInfo.center.z, bInfo.radius,
+      _distTol(tol),
+    );
+
+    // Concentric → let JS fallback decide (equal radii = coincident; else empty).
+    if (tag === 255) return null;
+
+    _debugSurfaceBackend.last = 'wasm-sphere-sphere';
+    _debugSurfaceBackend.wasmSphereSphereCalls++;
+    if (tag === 0) return [];
+
+    const out = new Float64Array(_wasmMem.buffer, _wasm.getSphereSphereIntersectPtr(), 7);
+    const center = { x: out[0], y: out[1], z: out[2] };
+    const normal = { x: out[3], y: out[4], z: out[5] };
+    const radius = out[6];
+    return [{ curve: _buildCircleCurve9Pt(center, normal, radius), paramsA: [], paramsB: [] }];
+  }
+
   return null;
 }
 
@@ -340,6 +413,26 @@ function _extractSphereInfoCompat(surface) {
   const center = src.center || src.origin;
   if (!center || src.radius == null) return null;
   return { center, radius: src.radius };
+}
+
+function _extractConeInfoCompat(surface) {
+  if (!surface) return null;
+  const src = (surface._analyticParams && surface._analyticParams.type === 'cone')
+    ? surface._analyticParams
+    : (surface.surfaceInfo && surface.surfaceInfo.type === 'cone')
+      ? surface.surfaceInfo
+      : null;
+  if (!src) return null;
+  const origin = src.origin || src.center;
+  const axis = src.axis;
+  if (!origin || !axis || src.radius == null || src.semiAngle == null) return null;
+  const aLen = Math.sqrt(axis.x * axis.x + axis.y * axis.y + axis.z * axis.z) || 1;
+  return {
+    origin,
+    axis: { x: axis.x / aLen, y: axis.y / aLen, z: axis.z / aLen },
+    radius: src.radius,
+    semiAngle: src.semiAngle,
+  };
 }
 
 function _buildCircleCurve9Pt(center, normal, radius) {

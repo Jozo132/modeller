@@ -414,6 +414,135 @@ export function getPlaneCylinderIntersectPtr(): usize {
   return changetype<usize>(planeCylinderOut);
 }
 
+/** Plane/cone intersection output: circle center(3) + normal(3) + radius(1). */
+const planeConeOut = new StaticArray<f64>(7);
+
+/**
+ * Intersect a plane with an infinite cone defined by
+ *   apex  = origin + (-radius / tan(semiAngle)) * axis
+ *   axis  = unit direction pointing toward growing radius
+ *   radius = cone radius at `origin` along axis
+ *   semiAngle = half-angle (radians; assumed > 0)
+ *
+ * Only the perpendicular-to-axis analytic regime is handled here:
+ * plane normal parallel (or antiparallel) to cone axis → circle (or
+ * apex / empty). All other regimes (oblique ellipse, parabola,
+ * hyperbola, plane-through-apex line pair) return tag 255 so the JS
+ * caller can fall back.
+ *
+ * Returns:
+ *   0   — miss (plane perpendicular to axis on the "wrong" side of apex, or circle radius < distTol)
+ *   1   — circle (writes center(3)+normal(3)+radius(1))
+ *   255 — oblique regime, JS fallback
+ */
+export function planeConeIntersect(
+  pPx: f64, pPy: f64, pPz: f64,
+  pNx: f64, pNy: f64, pNz: f64,
+  cOx: f64, cOy: f64, cOz: f64,
+  cAx: f64, cAy: f64, cAz: f64,
+  cR: f64, semiAngle: f64,
+  angularTol: f64,
+  distTol: f64,
+): u32 {
+  const cosTheta = pNx * cAx + pNy * cAy + pNz * cAz;
+  const absCos = cosTheta < 0 ? -cosTheta : cosTheta;
+
+  // Only handle the perpendicular-to-axis regime analytically.
+  if (absCos < 1.0 - angularTol) return 255;
+
+  // Compute apex: radius -> 0 requires moving along -axis by cR/tan(semiAngle).
+  // Guard tan(semiAngle) → 0 (cylinder degenerate).
+  const tanA = Math.tan(semiAngle);
+  if (tanA < distTol && tanA > -distTol) return 255;
+
+  const tApex = -cR / tanA;
+  const apexX = cOx + tApex * cAx;
+  const apexY = cOy + tApex * cAy;
+  const apexZ = cOz + tApex * cAz;
+
+  // Solve (apex + t*axis - planeP)·planeN = 0 for t.
+  //   t*cosTheta = (planeP - apex)·planeN
+  const rhs = (pPx - apexX) * pNx + (pPy - apexY) * pNy + (pPz - apexZ) * pNz;
+  const t = rhs / cosTheta;
+
+  // For a one-sided cone, t must be >= 0 (axis points toward growing radius).
+  // STEP/cone surfaces are conventionally two-sided, but the trimming is
+  // handled upstream — we emit the analytic circle regardless of sign so
+  // both nappes are reachable.
+  const circleR = t * tanA;
+  const absR = circleR < 0 ? -circleR : circleR;
+  if (absR < distTol) return 0; // plane passes through apex → fallback handles line pair
+
+  // Circle center: project apex onto plane along axis.
+  unchecked(planeConeOut[0] = apexX + t * cAx);
+  unchecked(planeConeOut[1] = apexY + t * cAy);
+  unchecked(planeConeOut[2] = apexZ + t * cAz);
+  // Circle normal = plane normal (== ±cone axis in this regime).
+  unchecked(planeConeOut[3] = pNx);
+  unchecked(planeConeOut[4] = pNy);
+  unchecked(planeConeOut[5] = pNz);
+  unchecked(planeConeOut[6] = absR);
+  return 1;
+}
+
+export function getPlaneConeIntersectPtr(): usize {
+  return changetype<usize>(planeConeOut);
+}
+
+/** Sphere/sphere intersection output: circle center(3) + normal(3) + radius(1). */
+const sphereSphereOut = new StaticArray<f64>(7);
+
+/**
+ * Intersect two spheres (center+radius each).
+ *
+ * Returns:
+ *   0   — miss (too far / one inside the other / tangent within distTol)
+ *   1   — circle (writes center(3) + unit normal(3) + radius(1))
+ *   255 — concentric (requires JS-level decision / fallback)
+ */
+export function sphereSphereIntersect(
+  aCx: f64, aCy: f64, aCz: f64, aR: f64,
+  bCx: f64, bCy: f64, bCz: f64, bR: f64,
+  distTol: f64,
+): u32 {
+  const dx = bCx - aCx;
+  const dy = bCy - aCy;
+  const dz = bCz - aCz;
+  const d2 = dx * dx + dy * dy + dz * dz;
+  const d = Math.sqrt(d2);
+  if (d < distTol) return 255; // concentric — JS fallback decides
+
+  const rSum = aR + bR;
+  const rDif = aR > bR ? aR - bR : bR - aR;
+  if (d > rSum + distTol) return 0;        // too far apart
+  if (d < rDif - distTol) return 0;        // one strictly inside the other
+  // Tangent externally (d == rSum) or internally (d == rDif) → degenerate point circle
+  const absExt = d - rSum;
+  const absInt = d - rDif;
+  if ((absExt < distTol && absExt > -distTol) || (absInt < distTol && absInt > -distTol)) return 0;
+
+  // a = distance from aC to plane of intersection along (b - a)
+  const a = (d2 + aR * aR - bR * bR) / (2.0 * d);
+  const h2 = aR * aR - a * a;
+  if (h2 <= 0) return 0;
+  const h = Math.sqrt(h2);
+  if (h < distTol) return 0;
+
+  const invD = 1.0 / d;
+  unchecked(sphereSphereOut[0] = aCx + a * dx * invD);
+  unchecked(sphereSphereOut[1] = aCy + a * dy * invD);
+  unchecked(sphereSphereOut[2] = aCz + a * dz * invD);
+  unchecked(sphereSphereOut[3] = dx * invD);
+  unchecked(sphereSphereOut[4] = dy * invD);
+  unchecked(sphereSphereOut[5] = dz * invD);
+  unchecked(sphereSphereOut[6] = h);
+  return 1;
+}
+
+export function getSphereSphereIntersectPtr(): usize {
+  return changetype<usize>(sphereSphereOut);
+}
+
 function _isxRayPlane(
   faceId: u32, partnerFaceId: u32,
   gOff: u32, reversed: bool,

@@ -701,6 +701,22 @@ async function instantiate(module, imports = {}) {
       // assembly/kernel/ops/getPlaneCylinderIntersectPtr() => usize
       return exports.getPlaneCylinderIntersectPtr() >>> 0;
     },
+    planeConeIntersect(pPx, pPy, pPz, pNx, pNy, pNz, cOx, cOy, cOz, cAx, cAy, cAz, cR, semiAngle, angularTol, distTol) {
+      // assembly/kernel/ops/planeConeIntersect(f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64) => u32
+      return exports.planeConeIntersect(pPx, pPy, pPz, pNx, pNy, pNz, cOx, cOy, cOz, cAx, cAy, cAz, cR, semiAngle, angularTol, distTol) >>> 0;
+    },
+    getPlaneConeIntersectPtr() {
+      // assembly/kernel/ops/getPlaneConeIntersectPtr() => usize
+      return exports.getPlaneConeIntersectPtr() >>> 0;
+    },
+    sphereSphereIntersect(aCx, aCy, aCz, aR, bCx, bCy, bCz, bR, distTol) {
+      // assembly/kernel/ops/sphereSphereIntersect(f64, f64, f64, f64, f64, f64, f64, f64, f64) => u32
+      return exports.sphereSphereIntersect(aCx, aCy, aCz, aR, bCx, bCy, bCz, bR, distTol) >>> 0;
+    },
+    getSphereSphereIntersectPtr() {
+      // assembly/kernel/ops/getSphereSphereIntersectPtr() => usize
+      return exports.getSphereSphereIntersectPtr() >>> 0;
+    },
     pointToPlaneDistance(px, py, pz, gOff, reversed) {
       // assembly/kernel/ops/pointToPlaneDistance(f64, f64, f64, u32, bool) => f64
       reversed = reversed ? 1 : 0;
@@ -1157,6 +1173,10 @@ export const {
   getPlaneSphereIntersectPtr,
   planeCylinderIntersect,
   getPlaneCylinderIntersectPtr,
+  planeConeIntersect,
+  getPlaneConeIntersectPtr,
+  sphereSphereIntersect,
+  getSphereSphereIntersectPtr,
   getFaceClassification,
   setFaceClassification,
   pointToPlaneDistance,

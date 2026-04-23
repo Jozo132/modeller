@@ -1698,6 +1698,51 @@ export declare function planeCylinderIntersect(pPx: number, pPy: number, pPz: nu
  */
 export declare function getPlaneCylinderIntersectPtr(): number;
 /**
+ * assembly/kernel/ops/planeConeIntersect
+ * @param pPx `f64`
+ * @param pPy `f64`
+ * @param pPz `f64`
+ * @param pNx `f64`
+ * @param pNy `f64`
+ * @param pNz `f64`
+ * @param cOx `f64`
+ * @param cOy `f64`
+ * @param cOz `f64`
+ * @param cAx `f64`
+ * @param cAy `f64`
+ * @param cAz `f64`
+ * @param cR `f64`
+ * @param semiAngle `f64`
+ * @param angularTol `f64`
+ * @param distTol `f64`
+ * @returns `u32`
+ */
+export declare function planeConeIntersect(pPx: number, pPy: number, pPz: number, pNx: number, pNy: number, pNz: number, cOx: number, cOy: number, cOz: number, cAx: number, cAy: number, cAz: number, cR: number, semiAngle: number, angularTol: number, distTol: number): number;
+/**
+ * assembly/kernel/ops/getPlaneConeIntersectPtr
+ * @returns `usize`
+ */
+export declare function getPlaneConeIntersectPtr(): number;
+/**
+ * assembly/kernel/ops/sphereSphereIntersect
+ * @param aCx `f64`
+ * @param aCy `f64`
+ * @param aCz `f64`
+ * @param aR `f64`
+ * @param bCx `f64`
+ * @param bCy `f64`
+ * @param bCz `f64`
+ * @param bR `f64`
+ * @param distTol `f64`
+ * @returns `u32`
+ */
+export declare function sphereSphereIntersect(aCx: number, aCy: number, aCz: number, aR: number, bCx: number, bCy: number, bCz: number, bR: number, distTol: number): number;
+/**
+ * assembly/kernel/ops/getSphereSphereIntersectPtr
+ * @returns `usize`
+ */
+export declare function getSphereSphereIntersectPtr(): number;
+/**
  * assembly/kernel/ops/getFaceClassification
  * @param faceId `u32`
  * @returns `u8`
