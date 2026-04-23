@@ -29,6 +29,7 @@ const _debugSurfaceBackend = {
   last: 'js',
   wasmPlanePlaneCalls: 0,
   wasmPlaneSphereCalls: 0,
+  wasmPlaneCylinderCalls: 0,
 };
 async function _ensureWasm() {
   if (_wasm) return true;
@@ -70,6 +71,7 @@ export function _resetIntersectionsDebugStateForTests() {
   _debugSurfaceBackend.last = 'js';
   _debugSurfaceBackend.wasmPlanePlaneCalls = 0;
   _debugSurfaceBackend.wasmPlaneSphereCalls = 0;
+  _debugSurfaceBackend.wasmPlaneCylinderCalls = 0;
 }
 
 /**
@@ -216,7 +218,7 @@ function _intersectSurfacesWasm(surfA, typeA, surfB, typeB, tol) {
       evalP.n.x, evalP.n.y, evalP.n.z,
       sphInfo.center.x, sphInfo.center.y, sphInfo.center.z,
       sphInfo.radius,
-      tol.distance,
+      _distTol(tol),
     );
 
     _debugSurfaceBackend.last = 'wasm-plane-sphere';
@@ -231,7 +233,100 @@ function _intersectSurfacesWasm(surfA, typeA, surfB, typeB, tol) {
     return [{ curve, paramsA: [], paramsB: [] }];
   }
 
+  // Plane × Cylinder / Cylinder × Plane ──────────────────────────────
+  if ((typeA === SurfaceType.PLANE && typeB === SurfaceType.CYLINDER)
+    || (typeA === SurfaceType.CYLINDER && typeB === SurfaceType.PLANE)) {
+    if (typeof _wasm.planeCylinderIntersect !== 'function' || typeof _wasm.getPlaneCylinderIntersectPtr !== 'function') {
+      return null;
+    }
+    const planeSurf = typeA === SurfaceType.PLANE ? surfA : surfB;
+    const cylSurf = typeA === SurfaceType.CYLINDER ? surfA : surfB;
+    const cylInfo = _extractCylinderInfoCompat(cylSurf);
+    if (!cylInfo) return null; // let JS fallback handle degenerate/unknown cylinder
+
+    const evalP = GeometryEvaluator.evalSurface(planeSurf, 0.5, 0.5);
+    const tag = _wasm.planeCylinderIntersect(
+      evalP.p.x, evalP.p.y, evalP.p.z,
+      evalP.n.x, evalP.n.y, evalP.n.z,
+      cylInfo.origin.x, cylInfo.origin.y, cylInfo.origin.z,
+      cylInfo.axis.x, cylInfo.axis.y, cylInfo.axis.z,
+      cylInfo.radius,
+      tol.angularParallelism,
+      _distTol(tol),
+    );
+
+    // Oblique ellipse: tag=255. Fall back to the JS numeric marcher.
+    if (tag === 255) return null;
+
+    _debugSurfaceBackend.last = 'wasm-plane-cylinder';
+    _debugSurfaceBackend.wasmPlaneCylinderCalls++;
+    if (tag === 0) return [];
+
+    const out = new Float64Array(_wasmMem.buffer, _wasm.getPlaneCylinderIntersectPtr(), 12);
+
+    if (tag === 1) {
+      const center = { x: out[0], y: out[1], z: out[2] };
+      const normal = { x: out[3], y: out[4], z: out[5] };
+      const radius = out[6];
+      return [{ curve: _buildCircleCurve9Pt(center, normal, radius), paramsA: [], paramsB: [] }];
+    }
+
+    if (tag === 2) {
+      const pt = { x: out[0], y: out[1], z: out[2] };
+      const dir = { x: out[3], y: out[4], z: out[5] };
+      return [_buildLineResultAlongDir(pt, dir)];
+    }
+
+    if (tag === 3) {
+      const pt0 = { x: out[0], y: out[1], z: out[2] };
+      const dir0 = { x: out[3], y: out[4], z: out[5] };
+      const pt1 = { x: out[6], y: out[7], z: out[8] };
+      const dir1 = { x: out[9], y: out[10], z: out[11] };
+      return [
+        _buildLineResultAlongDir(pt0, dir0),
+        _buildLineResultAlongDir(pt1, dir1),
+      ];
+    }
+
+    return null;
+  }
+
   return null;
+}
+
+function _buildLineResultAlongDir(pt, dir) {
+  const extent = 1000;
+  const p0 = { x: pt.x - dir.x * extent, y: pt.y - dir.y * extent, z: pt.z - dir.z * extent };
+  const p1 = { x: pt.x + dir.x * extent, y: pt.y + dir.y * extent, z: pt.z + dir.z * extent };
+  return { curve: NurbsCurve.createLine(p0, p1), paramsA: [], paramsB: [] };
+}
+
+// Linear tolerance for narrowphase guards. `Tolerance.distance(a,b)` is a
+// method, not a field — coerce to a safe numeric by picking one of the
+// linear-distance epsilons that actually exist on the Tolerance object.
+function _distTol(tol) {
+  if (tol && typeof tol.modelingEpsilon === 'number') return tol.modelingEpsilon;
+  if (tol && typeof tol.pointCoincidence === 'number') return tol.pointCoincidence;
+  return 1e-8;
+}
+
+function _extractCylinderInfoCompat(surface) {
+  if (!surface) return null;
+  const src = (surface._analyticParams && surface._analyticParams.type === 'cylinder')
+    ? surface._analyticParams
+    : (surface.surfaceInfo && surface.surfaceInfo.type === 'cylinder')
+      ? surface.surfaceInfo
+      : null;
+  if (!src) return null;
+  const origin = src.origin || src.center;
+  const axis = src.axis;
+  if (!origin || !axis || src.radius == null) return null;
+  const aLen = Math.sqrt(axis.x * axis.x + axis.y * axis.y + axis.z * axis.z) || 1;
+  return {
+    origin,
+    axis: { x: axis.x / aLen, y: axis.y / aLen, z: axis.z / aLen },
+    radius: src.radius,
+  };
 }
 
 function _extractSphereInfoCompat(surface) {

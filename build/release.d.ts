@@ -1673,6 +1673,31 @@ export declare function planeSphereIntersect(pPx: number, pPy: number, pPz: numb
  */
 export declare function getPlaneSphereIntersectPtr(): number;
 /**
+ * assembly/kernel/ops/planeCylinderIntersect
+ * @param pPx `f64`
+ * @param pPy `f64`
+ * @param pPz `f64`
+ * @param pNx `f64`
+ * @param pNy `f64`
+ * @param pNz `f64`
+ * @param cOx `f64`
+ * @param cOy `f64`
+ * @param cOz `f64`
+ * @param cAx `f64`
+ * @param cAy `f64`
+ * @param cAz `f64`
+ * @param cR `f64`
+ * @param angularTol `f64`
+ * @param distTol `f64`
+ * @returns `u32`
+ */
+export declare function planeCylinderIntersect(pPx: number, pPy: number, pPz: number, pNx: number, pNy: number, pNz: number, cOx: number, cOy: number, cOz: number, cAx: number, cAy: number, cAz: number, cR: number, angularTol: number, distTol: number): number;
+/**
+ * assembly/kernel/ops/getPlaneCylinderIntersectPtr
+ * @returns `usize`
+ */
+export declare function getPlaneCylinderIntersectPtr(): number;
+/**
  * assembly/kernel/ops/getFaceClassification
  * @param faceId `u32`
  * @returns `u8`

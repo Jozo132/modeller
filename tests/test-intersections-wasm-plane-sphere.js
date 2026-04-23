@@ -32,12 +32,9 @@ function sub(a, b) { return { x: a.x - b.x, y: a.y - b.y, z: a.z - b.z }; }
 function dot(a, b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 function len(v) { return Math.sqrt(dot(v, v)); }
 
-/** Build a plane surface with an explicit unit normal. */
-function makePlane(origin, u, v) {
-  const corner = origin;
-  const uEnd = { x: origin.x + u.x, y: origin.y + u.y, z: origin.z + u.z };
-  const vEnd = { x: origin.x + v.x, y: origin.y + v.y, z: origin.z + v.z };
-  return NurbsSurface.createPlane(corner, uEnd, vEnd);
+function makePlane(origin, uDir, vDir) {
+  // NurbsSurface.createPlane takes (origin, uDir, vDir) as direction vectors.
+  return NurbsSurface.createPlane(origin, uDir, vDir);
 }
 
 /**

@@ -45,6 +45,15 @@ const planePlaneOut = new StaticArray<f64>(6);
 /** Plane/sphere intersection output: circleCenter(3) + circleNormal(3) + radius. */
 const planeSphereOut = new StaticArray<f64>(7);
 
+/**
+ * Plane/cylinder intersection output.
+ * Layout depends on the returned tag (see planeCylinderIntersect):
+ *   tag=1 (circle): center(3) + normal(3) + radius(1)                  →  7 doubles
+ *   tag=2 (tangent line): point(3) + direction(3)                       →  6 doubles
+ *   tag=3 (two lines): point0(3) + dir0(3) + point1(3) + dir1(3)        → 12 doubles
+ */
+const planeCylinderOut = new StaticArray<f64>(12);
+
 // ─── Per-intersection error bound tracking ───────────────────────────
 
 /** Max tracked intersections per boolean pass. */
@@ -282,6 +291,127 @@ export function planeSphereIntersect(
 
 export function getPlaneSphereIntersectPtr(): usize {
   return changetype<usize>(planeSphereOut);
+}
+
+/**
+ * Intersect a plane (point+normal, normal assumed unit) with an infinite
+ * cylinder (origin+axis+radius, axis assumed unit). Handles the two
+ * analytic regimes and reports the general oblique case as unsupported
+ * so the JS caller can fall back to the numeric marcher.
+ *
+ * Returns a tag:
+ *   0   — no intersection (plane parallel to axis and outside cylinder, or tangent rejected)
+ *   1   — circle (plane perpendicular to axis)
+ *   2   — single tangent line (plane parallel to axis, touches cylinder)
+ *   3   — two parallel lines (plane parallel to axis, cuts cylinder)
+ *   255 — oblique case (ellipse); caller should fall back
+ *
+ * Output layout (in planeCylinderOut):
+ *   tag=1: center(3) + normal(3) + radius(1)           → 7 doubles
+ *   tag=2: point(3) + direction(3)                      → 6 doubles
+ *   tag=3: point0(3) + dir0(3) + point1(3) + dir1(3)    → 12 doubles
+ */
+export function planeCylinderIntersect(
+  pPx: f64, pPy: f64, pPz: f64,
+  pNx: f64, pNy: f64, pNz: f64,
+  cOx: f64, cOy: f64, cOz: f64,
+  cAx: f64, cAy: f64, cAz: f64,
+  cR: f64,
+  angularTol: f64,
+  distTol: f64,
+): u32 {
+  // Angle between plane normal and cylinder axis
+  const cosTheta = pNx * cAx + pNy * cAy + pNz * cAz;
+  const absCos = cosTheta < 0 ? -cosTheta : cosTheta;
+  const sinTheta = Math.sqrt(Math.max(0.0, 1.0 - cosTheta * cosTheta));
+
+  // Signed distance from cylinder origin to plane
+  const d = (cOx - pPx) * pNx + (cOy - pPy) * pNy + (cOz - pPz) * pNz;
+
+  // ── Regime 1: plane parallel to axis (0 / 1 / 2 parallel lines) ──
+  if (absCos < angularTol) {
+    // Project plane normal into the plane perpendicular to the axis
+    const pNax = pNx - cosTheta * cAx;
+    const pNay = pNy - cosTheta * cAy;
+    const pNaz = pNz - cosTheta * cAz;
+    const pNaLen = Math.sqrt(pNax * pNax + pNay * pNay + pNaz * pNaz);
+    if (pNaLen < 1e-15) return 0;
+
+    const invPNaLen = 1.0 / pNaLen;
+    const distToAxis = (d < 0 ? -d : d) * invPNaLen;
+    if (distToAxis > cR + distTol) return 0;
+
+    // Foot of perpendicular from cylinder origin onto plane, projected
+    // onto the plane perpendicular to the axis (which is where it
+    // naturally lands in this regime).
+    const fx = cOx - d * pNx;
+    const fy = cOy - d * pNy;
+    const fz = cOz - d * pNz;
+
+    if (distToAxis > cR - distTol) {
+      // Tangent — single line through foot, along cylinder axis
+      unchecked(planeCylinderOut[0] = fx);
+      unchecked(planeCylinderOut[1] = fy);
+      unchecked(planeCylinderOut[2] = fz);
+      unchecked(planeCylinderOut[3] = cAx);
+      unchecked(planeCylinderOut[4] = cAy);
+      unchecked(planeCylinderOut[5] = cAz);
+      return 2;
+    }
+
+    // Two secant lines. Chord direction is (axis × planeNormal),
+    // normalised. Length of half-chord is √(r² − distToAxis²).
+    const halfChord = Math.sqrt(cR * cR - distToAxis * distToAxis);
+    let tx = cAy * pNz - cAz * pNy;
+    let ty = cAz * pNx - cAx * pNz;
+    let tz = cAx * pNy - cAy * pNx;
+    const tLen = Math.sqrt(tx * tx + ty * ty + tz * tz);
+    if (tLen < 1e-15) return 0;
+    const invT = 1.0 / tLen;
+    tx *= invT; ty *= invT; tz *= invT;
+
+    unchecked(planeCylinderOut[0] = fx - halfChord * tx);
+    unchecked(planeCylinderOut[1] = fy - halfChord * ty);
+    unchecked(planeCylinderOut[2] = fz - halfChord * tz);
+    unchecked(planeCylinderOut[3] = cAx);
+    unchecked(planeCylinderOut[4] = cAy);
+    unchecked(planeCylinderOut[5] = cAz);
+    unchecked(planeCylinderOut[6] = fx + halfChord * tx);
+    unchecked(planeCylinderOut[7] = fy + halfChord * ty);
+    unchecked(planeCylinderOut[8] = fz + halfChord * tz);
+    unchecked(planeCylinderOut[9]  = cAx);
+    unchecked(planeCylinderOut[10] = cAy);
+    unchecked(planeCylinderOut[11] = cAz);
+    return 3;
+  }
+
+  // ── Regime 2: plane perpendicular to axis (circle) ──
+  if (sinTheta < angularTol) {
+    // Move along the cylinder axis from the origin until we hit the plane.
+    // The plane equation is (x − pP)·pN = 0, so t solves (cO + t·cA − pP)·pN = 0.
+    const denom = cosTheta;
+    if (denom == 0.0) return 0;
+    const t = -d / denom;
+    const cx = cOx + t * cAx;
+    const cy = cOy + t * cAy;
+    const cz = cOz + t * cAz;
+    // Orient the circle normal along the cylinder axis (unit).
+    unchecked(planeCylinderOut[0] = cx);
+    unchecked(planeCylinderOut[1] = cy);
+    unchecked(planeCylinderOut[2] = cz);
+    unchecked(planeCylinderOut[3] = cAx);
+    unchecked(planeCylinderOut[4] = cAy);
+    unchecked(planeCylinderOut[5] = cAz);
+    unchecked(planeCylinderOut[6] = cR);
+    return 1;
+  }
+
+  // ── Regime 3: oblique (ellipse) — signal caller to fall back ──
+  return 255;
+}
+
+export function getPlaneCylinderIntersectPtr(): usize {
+  return changetype<usize>(planeCylinderOut);
 }
 
 function _isxRayPlane(

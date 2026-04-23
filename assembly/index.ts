@@ -468,6 +468,7 @@ export {
   classifyPointVsShell, classifyPointVsTriangles, classifyFacesViaOctree,
   planePlaneIntersect, getPlanePlaneIntersectPtr,
   planeSphereIntersect, getPlaneSphereIntersectPtr,
+  planeCylinderIntersect, getPlaneCylinderIntersectPtr,
   getFaceClassification, setFaceClassification,
   pointToPlaneDistance, pointToSphereDistance, pointToCylinderDistance,
   getFaceClassificationPtr,
