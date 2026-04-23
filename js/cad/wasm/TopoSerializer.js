@@ -39,11 +39,22 @@ function _kernelConstants(w) {
     GEOM_CONE: _num(w.GEOM_CONE, 3),
     GEOM_SPHERE: _num(w.GEOM_SPHERE, 4),
     GEOM_TORUS: _num(w.GEOM_TORUS, 5),
+    GEOM_NURBS_SURFACE: _num(w.GEOM_NURBS_SURFACE, 6),
     GEOM_LINE: _num(w.GEOM_LINE, 7),
+    GEOM_NURBS_CURVE: _num(w.GEOM_NURBS_CURVE, 8),
     ORIENT_FORWARD: _num(w.ORIENT_FORWARD, 0),
     ORIENT_REVERSED: _num(w.ORIENT_REVERSED, 1),
   };
 }
+
+/**
+ * @typedef {Object} TopoFaceInfo
+ * @property {object} face - The source TopoFace.
+ * @property {number} geomType - Kernel GEOM_* tag actually stored.
+ * @property {number} geomOffset - Offset into the kernel geometry pool.
+ * @property {boolean} isCurved - True if the surface is not a plane.
+ * @property {object|null} surfaceInfo - The original `face.surfaceInfo`, if any.
+ */
 
 /**
  * @typedef {Object} TopoSerializeResult
@@ -51,6 +62,17 @@ function _kernelConstants(w) {
  * @property {Map<object, number>} vertexMap - TopoVertex → WASM vertex id.
  * @property {Map<object, number>} edgeMap - TopoEdge → WASM edge id.
  * @property {Map<object, number>} faceMap - TopoFace → WASM face id.
+ * @property {TopoFaceInfo[]} faceInfos - Parallel to WASM face ids (0..faceCount-1).
+ */
+
+/**
+ * @typedef {Object} TopoSerializeOptions
+ * @property {boolean} [nurbs] - If true, store NURBS curves on edges and
+ *   NURBS surfaces on faces via the kernel's `nurbs*StoreFromStaging`
+ *   exports. Defaults to auto-detect (enabled iff those exports exist).
+ * @property {WebAssembly.Memory} [memory] - Optional kernel memory; if
+ *   omitted, the serializer falls back to `wasm.memory`. Only used when
+ *   `nurbs` is enabled (for writing into the kernel staging buffer).
  */
 
 /**
@@ -62,19 +84,29 @@ function _kernelConstants(w) {
  * inject additional per-body state (e.g. handle metadata) before closing.
  *
  * Supported analytic surfaces: PLANE, SPHERE, CYLINDER, CONE, TORUS.
+ * With `opts.nurbs=true` (auto-detected by default) NURBS curves on edges
+ * and NURBS surfaces on faces are also stored.
  * Faces with unsupported surface types are still added topologically but
  * carry `GEOM_NONE`, matching the prior Containment behavior.
  *
  * @param {import('../BRepTopology.js').TopoBody} body
  * @param {object} wasm - WASM kernel module (build/release.js exports)
+ * @param {TopoSerializeOptions} [opts]
  * @returns {TopoSerializeResult}
  */
-export function loadBodyIntoWasm(body, wasm) {
+export function loadBodyIntoWasm(body, wasm, opts = {}) {
   const w = wasm;
   const K = _kernelConstants(w);
+  const nurbsEnabled = opts.nurbs === true || (opts.nurbs !== false
+    && typeof w.nurbsCurveStoreFromStaging === 'function'
+    && typeof w.nurbsSurfaceStoreFromStaging === 'function'
+    && typeof w.geomStagingPtr === 'function');
+  const mem = opts.memory || w.memory;
+  const ctx = { w, K, nurbsEnabled, mem };
   const vertexMap = new Map();
   const edgeMap = new Map();
   const faceMap = new Map();
+  const faceInfos = [];
 
   const allFaces = body.faces();
 
@@ -105,7 +137,8 @@ export function loadBodyIntoWasm(body, wasm) {
         const sv = vertexMap.get(edge.startVertex);
         const ev = vertexMap.get(edge.endVertex);
         if (sv === undefined || ev === undefined) continue;
-        edgeMap.set(edge, w.edgeAdd(sv, ev, K.GEOM_LINE, 0));
+        const curveGeom = _storeEdgeGeometry(edge, ctx);
+        edgeMap.set(edge, w.edgeAdd(sv, ev, curveGeom.geomType, curveGeom.geomOffset));
       }
     }
   }
@@ -116,7 +149,7 @@ export function loadBodyIntoWasm(body, wasm) {
     const loops = _loopsOf(face).filter(Boolean);
     if (loops.length === 0) continue;
 
-    const { geomType, geomOffset } = _storeFaceGeometry(face, w, K);
+    const { geomType, geomOffset } = _storeFaceGeometry(face, ctx);
     const orient = face.sameSense !== false ? K.ORIENT_FORWARD : K.ORIENT_REVERSED;
 
     let firstLoopId = -1;
@@ -147,6 +180,13 @@ export function loadBodyIntoWasm(body, wasm) {
     if (firstLoopId < 0) continue;
     const faceId = w.faceAdd(firstLoopId, 0, geomType, geomOffset, orient, numLoops);
     faceMap.set(face, faceId);
+    faceInfos.push({
+      face,
+      geomType,
+      geomOffset,
+      isCurved: geomType !== K.GEOM_PLANE && geomType !== K.GEOM_NONE,
+      surfaceInfo: face.surfaceInfo || (face.surface && face.surface.surfaceInfo) || null,
+    });
     wasmFaceId++;
   }
 
@@ -154,7 +194,7 @@ export function loadBodyIntoWasm(body, wasm) {
     w.shellAdd(0, wasmFaceId, 1);
   }
 
-  return { faceCount: wasmFaceId, vertexMap, edgeMap, faceMap };
+  return { faceCount: wasmFaceId, vertexMap, edgeMap, faceMap, faceInfos };
 }
 
 function _loopsOf(face) {
@@ -162,10 +202,39 @@ function _loopsOf(face) {
   return [face.outerLoop, ...(face.innerLoops || [])].filter(Boolean);
 }
 
-function _storeFaceGeometry(face, w, K) {
+function _storeEdgeGeometry(edge, ctx) {
+  const { w, K, nurbsEnabled, mem } = ctx;
+  if (!edge || !edge.curve || !nurbsEnabled || !mem) {
+    return { geomType: K.GEOM_LINE, geomOffset: 0 };
+  }
+  const curve = edge.curve;
+  if (curve.degree == null || !curve.controlPoints || !curve.knots) {
+    return { geomType: K.GEOM_LINE, geomOffset: 0 };
+  }
+  const nCtrl = curve.controlPoints.length;
+  const nKnots = curve.knots.length;
+  if (nCtrl === 0 || nKnots === 0) {
+    return { geomType: K.GEOM_LINE, geomOffset: 0 };
+  }
+  const stagingPtr = w.geomStagingPtr() >>> 0;
+  const view = new Float64Array(mem.buffer, stagingPtr, nKnots + nCtrl * 3 + nCtrl);
+  let i = 0;
+  for (let k = 0; k < nKnots; k++) view[i++] = curve.knots[k];
+  for (let k = 0; k < nCtrl; k++) {
+    const cp = curve.controlPoints[k];
+    view[i++] = cp.x; view[i++] = cp.y; view[i++] = cp.z;
+  }
+  for (let k = 0; k < nCtrl; k++) view[i++] = curve.weights ? curve.weights[k] : 1.0;
+  const offset = w.nurbsCurveStoreFromStaging(curve.degree, nCtrl, nKnots);
+  return { geomType: K.GEOM_NURBS_CURVE, geomOffset: offset };
+}
+
+function _storeFaceGeometry(face, ctx) {
+  const { w, K } = ctx;
   const fallback = { geomType: K.GEOM_NONE, geomOffset: 0 };
   if (!face) return fallback;
-  const si = face.surface ? (face.surface.surfaceInfo || face.surface._analyticParams) : null;
+  const si = (face.surfaceInfo)
+    || (face.surface ? (face.surface.surfaceInfo || face.surface._analyticParams) : null);
 
   if (face.surfaceType === SurfaceType.PLANE) {
     if (si && si.origin && si.normal) {
@@ -261,6 +330,43 @@ function _storeFaceGeometry(face, w, K) {
       };
     }
     return fallback;
+  }
+
+  // NURBS / B-spline surfaces (auto-enabled when the kernel exports the
+  // staging path and the caller supplied a memory buffer).
+  if (ctx.nurbsEnabled && ctx.mem && face.surface) {
+    const s = face.surface;
+    const isBSplineKind = face.surfaceType === SurfaceType.BSPLINE
+      || face.surfaceType === SurfaceType.EXTRUSION
+      || face.surfaceType === SurfaceType.REVOLUTION
+      || face.surfaceType === SurfaceType.UNKNOWN;
+    if (isBSplineKind && s.degreeU != null && s.controlPoints && s.knotsU && s.knotsV) {
+      const numU = s.numRowsU;
+      const numV = s.numColsV;
+      const nCtrl = numU * numV;
+      const nKnotsU = s.knotsU.length;
+      const nKnotsV = s.knotsV.length;
+      if (nCtrl > 0 && nKnotsU > 0 && nKnotsV > 0) {
+        const stagingPtr = w.geomStagingPtr() >>> 0;
+        const view = new Float64Array(
+          ctx.mem.buffer,
+          stagingPtr,
+          nKnotsU + nKnotsV + nCtrl * 3 + nCtrl,
+        );
+        let i = 0;
+        for (let k = 0; k < nKnotsU; k++) view[i++] = s.knotsU[k];
+        for (let k = 0; k < nKnotsV; k++) view[i++] = s.knotsV[k];
+        for (let k = 0; k < nCtrl; k++) {
+          const cp = s.controlPoints[k];
+          view[i++] = cp.x; view[i++] = cp.y; view[i++] = cp.z;
+        }
+        for (let k = 0; k < nCtrl; k++) view[i++] = s.weights ? s.weights[k] : 1.0;
+        const offset = w.nurbsSurfaceStoreFromStaging(
+          s.degreeU, s.degreeV, numU, numV, nKnotsU, nKnotsV,
+        );
+        return { geomType: K.GEOM_NURBS_SURFACE, geomOffset: offset };
+      }
+    }
   }
 
   return fallback;
