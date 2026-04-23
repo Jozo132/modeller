@@ -1,8 +1,12 @@
-// js/cad/CSGLegacy.js — Boolean operation dispatcher
+// js/cad/BooleanDispatch.js — Boolean operation dispatcher
 //
 // Routes boolean operations through the exact B-Rep kernel.
 // Legacy mesh BSP booleans have been removed — operands MUST carry
 // exact topology (TopoBody).
+//
+// Renamed from CSGLegacy.js (H10 retire CSG.js/CSGLegacy.js). The file is
+// not legacy in behavior — it is the live dispatcher for every boolean
+// op in the feature pipeline.
 
 import { exactBooleanOp, hasExactTopology } from './BooleanKernel.js';
 import { computeFeatureEdges } from './EdgeAnalysis.js';

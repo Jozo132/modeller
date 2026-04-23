@@ -5,7 +5,7 @@
 // enabling STEP-quality export and exact boolean operations.
 
 import { Feature } from './Feature.js';
-import { booleanOp } from './CSGLegacy.js';
+import { booleanOp } from './BooleanDispatch.js';
 import { computeFeatureEdges } from './EdgeAnalysis.js';
 import { calculateMeshVolume, calculateBoundingBox } from './toolkit/MeshAnalysis.js';
 import { constrainedTriangulate } from './Tessellator2/CDT.js';

@@ -6,7 +6,7 @@
 
 import { Feature } from './Feature.js';
 import { ExtrudeFeature } from './ExtrudeFeature.js';
-import { booleanOp } from './CSGLegacy.js';
+import { booleanOp } from './BooleanDispatch.js';
 import { computeFeatureEdges } from './EdgeAnalysis.js';
 import { calculateMeshVolume, calculateBoundingBox } from './toolkit/MeshAnalysis.js';
 

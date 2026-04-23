@@ -54,16 +54,17 @@ export {
   clearVariables, serializeVariables, deserializeVariables,
 } from './Constraint.js';
 export { disconnect, union, trim, split, movePoint, moveShape } from './Operations.js';
-export { booleanOp } from './CSGLegacy.js';
+export { booleanOp } from './BooleanDispatch.js';
 export { computeFeatureEdges, makeEdgeKey, expandPathEdgeKeys } from './EdgeAnalysis.js';
 export { applyBRepChamfer } from './BRepChamfer.js';
 export {
   calculateMeshVolume, calculateBoundingBox, calculateSurfaceArea,
   detectDisconnectedBodies, calculateWallThickness, countInvertedFaces,
 } from './toolkit/MeshAnalysis.js';
-// Legacy aliases — applyChamfer now points to BRep chamfer, applyFillet throws
+// Back-compat aliases — applyChamfer / applyFillet now point at the live
+// BRep kernel implementations. Mesh-based stubs were removed by H10.
 export { applyBRepChamfer as applyChamfer } from './BRepChamfer.js';
-export { applyFillet } from './CSG.js';
+export { applyBRepFillet as applyFillet } from './BRepFillet.js';
 export { NurbsCurve } from './NurbsCurve.js';
 export { NurbsSurface } from './NurbsSurface.js';
 export { BRep, BRepVertex, BRepEdge, BRepFace, tessellateNurbsFaces } from './BRep.js';

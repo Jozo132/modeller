@@ -6,7 +6,7 @@
 
 import { Feature } from './Feature.js';
 import { resolveSketchRevolveAxis } from './SketchFeature.js';
-import { booleanOp } from './CSGLegacy.js';
+import { booleanOp } from './BooleanDispatch.js';
 import { computeFeatureEdges } from './EdgeAnalysis.js';
 import { calculateMeshVolume, calculateBoundingBox } from './toolkit/MeshAnalysis.js';
 import { NurbsCurve } from './NurbsCurve.js';
