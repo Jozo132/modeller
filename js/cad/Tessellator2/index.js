@@ -83,6 +83,16 @@ export function robustTessellateBody(body, opts = {}) {
   const previousFaceMeshesByKey = previousCache ? previousCache.faceMeshesByKey : null;
   const previousFaceKeys = new Set(previousCache?.faceKeys || []);
   const previousEdgeKeys = new Set(previousCache?.edgeKeys || []);
+  // H21: explicit face-id invalidation set from C3 DirtyFaceTracker. When
+  // provided alongside an incremental cache, any face whose id is in this
+  // set bypasses the cache lookup and is re-triangulated. This is
+  // orthogonal to the content-addressed key invalidation that already
+  // happens automatically when a face's geometric signature changes — it
+  // lets callers force eviction by identity without round-tripping through
+  // key recomputation. A Set is normalised; arrays / null are accepted.
+  const dirtyFaceIds = opts.dirtyFaceIds instanceof Set
+    ? opts.dirtyFaceIds
+    : (Array.isArray(opts.dirtyFaceIds) ? new Set(opts.dirtyFaceIds) : null);
   const nextFaceMeshesByKey = new Map();
   const currentFaceKeys = new Set();
   const currentEdgeKeys = new Set();
@@ -110,6 +120,11 @@ export function robustTessellateBody(body, opts = {}) {
 
       let rawFaceMesh = previousFaceMeshesByKey ? previousFaceMeshesByKey.get(faceKey) : null;
       if (rawFaceMesh && rawFaceMesh._error) {
+        rawFaceMesh = null;
+      }
+      // H21: if the caller flagged this face id as dirty, ignore any cached
+      // mesh and force a fresh triangulation.
+      if (rawFaceMesh && dirtyFaceIds && face?.id != null && dirtyFaceIds.has(face.id)) {
         rawFaceMesh = null;
       }
 

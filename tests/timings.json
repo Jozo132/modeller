@@ -65,6 +65,7 @@
     "test-mirror-pattern.js": 0.176,
     "test-touch-gestures.js": 0.163,
     "test-containment.js": 0.077,
+    "test-incremental-tess-dirty.js": 0.048,
     "test-history-cbrep-checkpoints.js": 0.02,
     "test-dirty-face-tracking.js": 0.011
 }
