@@ -1353,7 +1353,15 @@ export class FaceTriangulator {
       meshVertices.push({ ...pa }, { ...pb }, { ...pc });
     }
 
-    meshFaces = splitSkippedBoundaryMeshEdges(meshFaces, [outer3D, ...holeLoops3D]);
+    // For periodic analytic surfaces, skip splitSkippedBoundaryMeshEdges:
+    // its multi-pass fan-insertion can produce overlapping fans over the
+    // same boundary chain when two "long" CDT edges each skip the chain
+    // but attach to different apex vertices.  The periodic path's seam
+    // handling and subdivision already produce a valid triangulation;
+    // running the skip-fix can only introduce duplicated tris here.
+    if (!periodicSurface) {
+      meshFaces = splitSkippedBoundaryMeshEdges(meshFaces, [outer3D, ...holeLoops3D]);
+    }
 
     // Periodic-seam dedup.  For full-revolution cylinder/torus faces the UV
     // domain keeps two copies of each seam vertex (u ≈ uMin and u ≈ uMax,
