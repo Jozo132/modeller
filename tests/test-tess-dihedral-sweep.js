@@ -792,14 +792,16 @@ for (const [a, b] of PAIRS) {
 }
 
 // --- All 3 concurrent edges at once, multiple orderings & op mixes ---
-// NOTE: all-fillet on three concurrent edges opens a micro-hole at the
-// common corner vertex (the three fillet patches don't close up into a
-// corner blend — there's no sphere patch inserted).  Similar issue for
-// (F,C,F) mixes.  Audit catches these as non-watertight; `{ known: true }`
-// so the suite still runs them.
+// NOTE: three mutually-adjacent fillets meeting at a corner generate an
+// exact Cobb spherical corner patch (via BRepFillet._buildExactTrihedronFaceDesc);
+// that face is now tessellated through Tessellator2's sphere fast path so
+// the boundary samples are preserved and the mesh is watertight.
+// (F,C,F) mixes still fail — applyBRepChamfer does not stitch cleanly to
+// an adjacent fillet face.  Audit catches this as non-watertight; {known:true}
+// so the suite still runs it.
 runCombo('XYZ all chamfer (X→Y→Z)',   [['X', 'chamfer'], ['Y', 'chamfer'], ['Z', 'chamfer']]);
-runCombo('XYZ all fillet  (X→Y→Z)',   [['X', 'fillet'],  ['Y', 'fillet'],  ['Z', 'fillet']],  { known: true });
-runCombo('XYZ all fillet  (Z→Y→X)',   [['Z', 'fillet'],  ['Y', 'fillet'],  ['X', 'fillet']],  { known: true });
+runCombo('XYZ all fillet  (X→Y→Z)',   [['X', 'fillet'],  ['Y', 'fillet'],  ['Z', 'fillet']]);
+runCombo('XYZ all fillet  (Z→Y→X)',   [['Z', 'fillet'],  ['Y', 'fillet'],  ['X', 'fillet']]);
 runCombo('XYZ mixed      (C,F,C)',    [['X', 'chamfer'], ['Y', 'fillet'],  ['Z', 'chamfer']]);
 runCombo('XYZ mixed      (F,C,F)',    [['X', 'fillet'],  ['Y', 'chamfer'], ['Z', 'fillet']],  { known: true });
 // Another order of same mix — proves commutativity of disjoint-edge ops.

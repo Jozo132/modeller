@@ -1007,9 +1007,19 @@ function _buildExactTrihedronFaceDesc(cornerGroup) {
   if (sphereCenter) sharedData._sphereCenter = { ...sphereCenter };
   if (sphereRadius > 0) sharedData._sphereRadius = sphereRadius;
 
+  // Attach analytic sphere surfaceInfo so the tessellator's sphere fast path
+  // can triangulate this 3-edge corner patch by slerping rings from the
+  // centroid toward the boundary (instead of relying on the Cobb NURBS UV
+  // map, whose pole-collapse at the u=0 edge causes CDT to emit chord
+  // triangles that skip interior boundary samples).
+  const surfaceInfo = (sphereCenter && sphereRadius > 0)
+    ? { type: 'sphere', origin: { ...sphereCenter }, radius: sphereRadius }
+    : null;
+
   return {
     surface,
     surfaceType: surface ? SurfaceType.SPHERE : SurfaceType.PLANE,
+    surfaceInfo,
     vertices,
     edgeCurves,
     sameSense,

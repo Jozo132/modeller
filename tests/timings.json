@@ -1,8 +1,8 @@
 {
     "test-cbrep-tess-roundtrip.js": 15.306,
+    "test-tess-dihedral-sweep.js": 12.023,
     "test-step-import-nist.js": 9.761,
     "test-boolean-corpus.js": 9.533,
-    "test-tess-dihedral-sweep.js": 8.981,
     "test-feature-pipeline.js": 8.572,
     "test-workflow-recordings.js": 7.976,
     "test-nurbs-fillet-chamfer-variants.js": 5.207,

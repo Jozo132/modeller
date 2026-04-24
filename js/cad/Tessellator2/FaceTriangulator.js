@@ -1754,6 +1754,17 @@ export class FaceTriangulator {
       boundaryEdgeSet.add(_edgeKey(allPts[i], allPts[(i + 1) % allPts.length]));
     }
 
+    // Mark every boundary sample so subdivision can recognize CDT chords
+    // that skipped intermediate samples.  When UV projection collapses a
+    // portion of the boundary (e.g. small 3-coedge corner sphere patches),
+    // CDT emits long triangle edges whose BOTH endpoints are boundary
+    // samples but whose midpoint is interior to the face.  Subdividing
+    // such chords would insert off-boundary midpoints and create T-junctions
+    // with the adjacent face's denser sampling.  Leave these chords intact
+    // so splitSkippedBoundaryMeshEdges can fan-split them along the actual
+    // boundary sample chain after subdivision finishes.
+    const boundarySamplePtSet = new Set(allPts);
+
     let triangles = [];
     for (const [a, b, c] of triIndices) {
       const pa = combinedPts[a], pb = combinedPts[b], pc = combinedPts[c];
@@ -1964,6 +1975,12 @@ export class FaceTriangulator {
           // Never split original boundary edges — they are shared with
           // adjacent B-Rep faces and splitting would create T-junctions.
           if (boundaryEdgeSet.has(ek)) continue;
+          // Never split CDT boundary chords — any edge whose BOTH endpoints
+          // are original boundary samples is a chord that skipped one or
+          // more intermediate samples.  Subdividing would insert an
+          // off-boundary midpoint; the splitSkippedBoundaryMeshEdges pass
+          // repairs these by fan-splitting through the actual sample chain.
+          if (boundarySamplePtSet.has(p) && boundarySamplePtSet.has(q)) continue;
           if (edgeDeviation(p, q) > deviationTol) {
             edgeSplitSet.add(ek);
           }
