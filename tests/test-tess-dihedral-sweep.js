@@ -5,7 +5,7 @@ import './_watchdog.mjs';
  * Fast, minimal tessellation verification across all dihedral "attack angles"
  * between two adjacent face boundaries. Complements the larger
  * test-nurbs-fillet-chamfer-variants.js (~5 s, 1702 LOC) with a tight
- * ~1 s unit utility whose job is purely to assert that the tessellator
+ * ~3 s unit utility whose job is purely to assert that the tessellator
  * produces a sound mesh for every (angle, feature) combination.
  *
  * For each dihedral θ in {30°, 45°, 60°, 75°, 90°, 105°, 120°, 135°, 150°}
@@ -451,7 +451,7 @@ test('audit self-test: collapsed zero-area triangle → rejected (degenerate)', 
   const base = getExtrudeGeometry(part);
   const mutated = cloneGeometry(base);
   // Collapse vertex 2 onto vertex 0 → degenerate triangle, zero area.
-  // Also breaks manifoldness (edge 0-1 now has one real + one zero-area neighbour),
+  // Also breaks manifoldness (edge 0-1 now has one real + one zero-area neighbor),
   // but the dedicated degenerate check must fire first.
   const f = mutated.faces[0];
   f.vertices[2].x = f.vertices[0].x;
@@ -636,9 +636,16 @@ function runCombo(name, steps, opts = {}) {
   if (opts.known) {
     // Still execute — so if the defect is fixed, we notice immediately and
     // the author can remove the `known` flag.  A lingering failure is
-    // counted towards knownFail, not failed.
+    // counted towards knownFail, not failed.  Re-throw non-assertion errors
+    // (crashes, TypeErrors, etc.) so they're not silently swallowed as a
+    // "known defect" — only assertion failures are the expected signal here.
     let passed = false;
-    try { wrapped(); passed = true; } catch (_) { /* expected */ }
+    try {
+      wrapped();
+      passed = true;
+    } catch (err) {
+      if (!(err instanceof assert.AssertionError)) throw err;
+    }
     if (passed) {
       // Silent surprise-pass message; don't fail the suite on good news,
       // but do surface it so the flag can be flipped.
