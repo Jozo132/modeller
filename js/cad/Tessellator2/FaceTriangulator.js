@@ -1127,6 +1127,29 @@ export class FaceTriangulator {
       return _normalize(n);
     };
 
+    // 3D-position-keyed edge helpers.  Used on periodic analytic surfaces so
+    // the subdivision pass treats seam-equivalent UV edges (u=uMin vs u=uMax
+    // copies mapping to the same 3D line) as a single edge.  Keeps midpoint
+    // generation UV-local (each side gets its own UV midpoint) while ensuring
+    // both sides decide to split together.
+    const POS_PREC_3D = 1e-9;
+    const q3 = (c) => Math.round(c / POS_PREC_3D);
+    const posKey3D = (uv) => {
+      const p = evalPoint(uv);
+      return `${q3(p.x)},${q3(p.y)},${q3(p.z)}`;
+    };
+    const edgeKey3D = (a, b) => {
+      const ka = posKey3D(a), kb = posKey3D(b);
+      return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+    };
+    const boundaryEdgeSet3D = new Set();
+    if (periodicSurface) {
+      for (const loop of [outerUv, ...holeUvs]) {
+        for (let i = 0; i < loop.length; i++) {
+          boundaryEdgeSet3D.add(edgeKey3D(loop[i], loop[(i + 1) % loop.length]));
+        }
+      }
+    }
     let triangles = [];
     for (const [a, b, c] of triIndices) {
       const ua = allUv[a], ub = allUv[b], uc = allUv[c];
@@ -1235,10 +1258,18 @@ export class FaceTriangulator {
         : Math.min(surfaceSegments, 4);
     for (let pass = 0; pass < maxPasses; pass++) {
       const edgeSplitSet = new Set();
+      // On periodic surfaces, decide splits by 3D-position edge identity so
+      // both seam copies of the "same" edge are split together.  Otherwise
+      // one side splits and the other doesn't, leaving T-junctions that show
+      // up as 3-triangle-per-edge non-manifold artifacts on cylinder/torus
+      // rims.  The boundary-skip check and the per-triangle split lookup
+      // both use the matching key scheme.
+      const keyOf = periodicSurface ? edgeKey3D : edgeKey;
+      const boundarySet = periodicSurface ? boundaryEdgeSet3D : boundaryEdgeSet;
       for (const [a, b, c] of triangles) {
         for (const [p, q] of [[a, b], [b, c], [c, a]]) {
-          const key = edgeKey(p, q);
-          if (boundaryEdgeSet.has(key)) continue;
+          const key = keyOf(p, q);
+          if (boundarySet.has(key)) continue;
           if (edgeDeviation(p, q) > deviationTol) edgeSplitSet.add(key);
         }
       }
@@ -1247,9 +1278,9 @@ export class FaceTriangulator {
       let anySplit = false;
       const next = [];
       for (const [a, b, c] of triangles) {
-        const splitAB = edgeSplitSet.has(edgeKey(a, b));
-        const splitBC = edgeSplitSet.has(edgeKey(b, c));
-        const splitCA = edgeSplitSet.has(edgeKey(c, a));
+        const splitAB = edgeSplitSet.has(keyOf(a, b));
+        const splitBC = edgeSplitSet.has(keyOf(b, c));
+        const splitCA = edgeSplitSet.has(keyOf(c, a));
         const splitCount = (splitAB ? 1 : 0) + (splitBC ? 1 : 0) + (splitCA ? 1 : 0);
         if (splitCount === 0) { next.push([a, b, c]); continue; }
 
@@ -1348,7 +1379,16 @@ export class FaceTriangulator {
       meshVertices.push({ ...pa }, { ...pb }, { ...pc });
     }
 
-    meshFaces = splitSkippedBoundaryMeshEdges(meshFaces, [outer3D, ...holeLoops3D]);
+    // For periodic analytic surfaces (cylinder/torus) the analytic UV mapping
+    // already preserves every boundary sample in `outerUv`/`holeUvs`, so the
+    // CDT output cannot skip boundary vertices.  Running
+    // splitSkippedBoundaryMeshEdges on a periodic surface's outer loop
+    // (which concatenates top-rim + seam + bottom-rim) produces spurious
+    // fan triangles that overlap existing rim triangles — the root cause of
+    // 3-triangle-per-edge non-manifold artifacts on cylinder/torus rims.
+    if (!periodicSurface) {
+      meshFaces = splitSkippedBoundaryMeshEdges(meshFaces, [outer3D, ...holeLoops3D]);
+    }
 
     // Periodic-seam dedup.  For full-revolution cylinder/torus faces the UV
     // domain keeps two copies of each seam vertex (u ≈ uMin and u ≈ uMax,
