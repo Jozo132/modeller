@@ -1640,7 +1640,34 @@ function _extendTrimsAtPreviousFilletJunctions(trimmedFaces, edgeDataList, faces
       const evk = _edgeVKey(edgeVertex);
       if (!vertexPrevFillet.has(evk)) continue;
 
-      const prevFillet = vertexPrevFillet.get(evk);
+      let prevFillet = vertexPrevFillet.get(evk);
+      let tangentContactOnly = false;
+
+      // Geometric overlap check: the new fillet and prev fillet only have a
+      // genuine junction curve when their cylindrical surfaces interpenetrate.
+      // If the new fillet's axis endpoint sits outside the prev fillet's
+      // cylinder (distance from prev axis line >= prev radius), the two
+      // cylinders meet only tangentially at a single point and there is no
+      // junction curve.  This happens, e.g., in the F,C,F corner combo where
+      // an intermediate chamfer truncates the new fillet's axis short of the
+      // prev fillet, leaving only tangential contact at the shared corner.
+      // In that case we must leave the trim alone — neither the junction
+      // path nor the fallback flat-clip path is valid (the latter would
+      // strip legitimate prev-fillet arc samples from the adjacent face).
+      if (prevFillet) {
+        const apEnd = _vec3Sub(edgeVertex, prevFillet.axisStart);
+        const prevAxisDir = _vec3Normalize(
+          _vec3Sub(prevFillet.axisEnd, prevFillet.axisStart),
+        );
+        const along = _vec3Dot(apEnd, prevAxisDir);
+        const radial = _vec3Sub(apEnd, _vec3Scale(prevAxisDir, along));
+        const distToPrevAxis = _vec3Len(radial);
+        const overlapTol = Math.max(1e-4, prevFillet.radius * 1e-3);
+        if (distToPrevAxis >= prevFillet.radius - overlapTol) {
+          prevFillet = null;
+          tangentContactOnly = true;
+        }
+      }
 
       // Attempt to compute 3D intersection curve
       let intCurve = null;
@@ -1665,6 +1692,8 @@ function _extendTrimsAtPreviousFilletJunctions(trimmedFaces, edgeDataList, faces
           trimmedFaces, data, faces, edgeVertex,
           offsDir0, offsDir1, tangentDist, intCurve, isA,
         );
+      } else if (tangentContactOnly) {
+        // Skip — no real junction; preserve existing trim & arc samples.
       } else {
         // Fallback: old flat-clip approach (corner face + offset intersection)
         const sideParams = [
