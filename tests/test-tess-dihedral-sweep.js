@@ -535,6 +535,7 @@ test('audit self-test: face self-intersection (intra-face) → rejected', () => 
   // Part 2 — prove the full audit pipeline rejects the corrupted geometry:
   const part = buildPart(90, EXTRUDE_HT, PROFILE_W, PROFILE_H);
   const base = getExtrudeGeometry(part);
+  assert.ok(base.faces.length > 0, 'intra-face self-test: base mesh must have at least one face');
   const mutated = cloneGeometry(base);
   // Append the piercing pair with the same faceGroup as an existing face,
   // simulating a tessellator bug that produces overlapping patches.
@@ -573,6 +574,7 @@ test('audit self-test: cross-face intersection (inter-face) → rejected', () =>
   // Use two distinct faceGroup values to model two different B-Rep faces
   // whose mesh triangles intersect.
   const groups = [...new Set(base.faces.map((f) => f.faceGroup))];
+  assert.ok(groups.length >= 2, 'inter-face self-test: need at least 2 distinct faceGroups');
   mutated.faces.push(
     { vertices: SELF_INTER_T1, normal: { x: 0, y: 0, z: 1 }, faceGroup: groups[0] },
     { vertices: SELF_INTER_T2, normal: { x: 0, y: 1, z: 0 }, faceGroup: groups[groups.length - 1] },
