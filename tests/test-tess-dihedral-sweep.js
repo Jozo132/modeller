@@ -796,14 +796,20 @@ for (const [a, b] of PAIRS) {
 // exact Cobb spherical corner patch (via BRepFillet._buildExactTrihedronFaceDesc);
 // that face is now tessellated through Tessellator2's sphere fast path so
 // the boundary samples are preserved and the mesh is watertight.
-// (F,C,F) mixes still fail — applyBRepChamfer does not stitch cleanly to
-// an adjacent fillet face.  Audit catches this as non-watertight; {known:true}
-// so the suite still runs it.
+// (F,C,F) — the third op (Z-fillet on an already F+C body) is where the
+// remaining defect lives: BRepFillet emits a stray planar triangle with
+// one vertex on a surface that was already removed by the prior chamfer
+// (topoFaceId=24, verts include (10,7.4,6) on a chamfered-away region,
+// and (9.4,8,5.4) which lies on the neighbor y=8 plane, not x=10).
+// That is a BRepFillet neighbor-topology-rebuild bug, not a chamfer or
+// tessellation sampling issue. The BRepChamfer path itself succeeds
+// end-to-end for this case (see commit 0b36557). Marked {known:true}
+// pending the BRepFillet rewrite folded into the WASM migration.
 runCombo('XYZ all chamfer (X→Y→Z)',   [['X', 'chamfer'], ['Y', 'chamfer'], ['Z', 'chamfer']]);
 runCombo('XYZ all fillet  (X→Y→Z)',   [['X', 'fillet'],  ['Y', 'fillet'],  ['Z', 'fillet']]);
 runCombo('XYZ all fillet  (Z→Y→X)',   [['Z', 'fillet'],  ['Y', 'fillet'],  ['X', 'fillet']]);
 runCombo('XYZ mixed      (C,F,C)',    [['X', 'chamfer'], ['Y', 'fillet'],  ['Z', 'chamfer']]);
-runCombo('XYZ mixed      (F,C,F)',    [['X', 'fillet'],  ['Y', 'chamfer'], ['Z', 'fillet']],  { known: true });
+runCombo('XYZ mixed      (F,C,F)',    [['X', 'fillet'],  ['Y', 'chamfer'], ['Z', 'fillet']], { known: true });
 // Another order of same mix — proves commutativity of disjoint-edge ops.
 runCombo('XYZ mixed reordered (Z,X,Y)', [['Z', 'chamfer'], ['X', 'fillet'],  ['Y', 'chamfer']]);
 
