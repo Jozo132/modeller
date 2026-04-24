@@ -776,17 +776,17 @@ for (const axis of ['X', 'Y', 'Z']) {
 
 // --- Pairs of concurrent edges, various op mixes and orderings ---
 // (C,F) × ordering × pair = enough coverage without blowing up runtime.
-// NOTE: `fillet→chamfer` on concurrent edges sharing a corner is a
-// long-standing feature-pipeline defect (the chamfer's trim of the already
-// filleted face produces mesh-level winding errors near the corner).  The
-// audit catches these — we mark them `known: true` so the suite doesn't
-// hide them, and so a fix will surface as a "SURPRISE PASS".
+// NOTE: the previous `fillet→chamfer` defect on concurrent edges was fixed
+// by filtering degenerate zero-length self-loop coedges in
+// `_collectLoopPoints` (Tessellator2/index.js) — chamfer trim of a
+// previously-filleted face was leaving a zero-length stub coedge at the
+// junction corner, producing folded/overlapping triangulation.
 const PAIRS = [['X', 'Y'], ['X', 'Z'], ['Y', 'Z']];
 for (const [a, b] of PAIRS) {
   runCombo(`${a}+${b} chamfer→chamfer`, [[a, 'chamfer'], [b, 'chamfer']]);
   runCombo(`${a}+${b} fillet→fillet`,   [[a, 'fillet'],  [b, 'fillet']]);
   runCombo(`${a}+${b} chamfer→fillet`,  [[a, 'chamfer'], [b, 'fillet']]);
-  runCombo(`${a}+${b} fillet→chamfer`,  [[a, 'fillet'],  [b, 'chamfer']], { known: true });
+  runCombo(`${a}+${b} fillet→chamfer`,  [[a, 'fillet'],  [b, 'chamfer']]);
   // Reverse ordering proves order-independence for disjoint edges.
   runCombo(`${b}+${a} chamfer→fillet (reversed order)`, [[b, 'chamfer'], [a, 'fillet']]);
 }

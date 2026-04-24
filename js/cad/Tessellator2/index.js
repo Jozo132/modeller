@@ -1938,6 +1938,30 @@ function _collectLoopPoints(loop, edgeSampler, edgeSegs) {
     const samples = edgeSampler.sampleCoEdge(coedge, edgeSegs);
     if (samples.length === 0) continue;
 
+    // Drop degenerate zero-length self-loop coedges. These can appear as
+    // trim-residue stubs after chamfer/fillet interactions — a coedge whose
+    // start==end vertex AND whose curve tessellates to points all within
+    // 1e-9 of a single 3D position carries no boundary information, but
+    // pushes a pinch vertex into the polygon that CDT triangulates as
+    // folded/overlapping triangles (seen as winding errors on the face).
+    //
+    // Legitimate full-revolution self-loops on periodic analytic surfaces
+    // (cylinder/torus caps) have substantial 3D arc length and pass this
+    // filter; they are handled by the selfLoopRing fast path.
+    if (coedge.edge
+        && coedge.edge.startVertex === coedge.edge.endVertex
+        && samples.length >= 2) {
+      let maxD2 = 0;
+      const s0 = samples[0];
+      for (let i = 1; i < samples.length; i++) {
+        const s = samples[i];
+        const dx = s.x - s0.x, dy = s.y - s0.y, dz = s.z - s0.z;
+        const d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 > maxD2) maxD2 = d2;
+      }
+      if (maxD2 < 1e-18) continue; // < 1e-9 in any direction
+    }
+
     // Skip the first point if it duplicates the last accumulated point
     const startIdx = (allPts.length > 0) ? 1 : 0;
     for (let i = startIdx; i < samples.length; i++) {
