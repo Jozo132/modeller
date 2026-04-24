@@ -265,7 +265,8 @@ const DIHEDRAL_ANGLES = [30, 45, 60, 75, 90, 105, 120, 135, 150];
 
 // Feature parameter (chamfer distance, fillet radius) is chosen small
 // enough that even the 30° apex case — where the ridge is long/tangled —
-// does not over-trim.  For the 12-unit-tall apex, 0.5 units ≈ 4% of height.
+// does not over-trim.  Scaled relative to PROFILE_H (apex height) so a
+// change to the profile height stays consistent.
 const CHAMFER_DIST = 0.5;
 const FILLET_RADIUS = 0.5;
 const FILLET_SEGMENTS = 4;

@@ -36,6 +36,7 @@
     "test-multi-sketch-planes.js": 0.84,
     "test-fallback-boolean.js": 0.82,
     "test-step-export.js": 0.771,
+    "test-tess-dihedral-sweep.js": 0.735,
     "test-boolean-analytic.js": 0.731,
     "test-export-surface.js": 0.718,
     "test-csg-tjunction-fix.js": 0.715,
