@@ -1,11 +1,11 @@
 {
     "test-cbrep-tess-roundtrip.js": 15.306,
-    "test-nurbs-fillet-chamfer-variants.js": 11.306,
     "test-step-import-nist.js": 9.761,
     "test-boolean-corpus.js": 9.533,
     "test-feature-pipeline.js": 8.572,
     "test-workflow-recordings.js": 7.976,
     "test-spline-chamfer.js": 7.141,
+    "test-nurbs-fillet-chamfer-variants.js": 5.207,
     "test-multi-body-chamfer-fillet.js": 5.105,
     "test-kernel-invariants.js": 4.837,
     "test-mesh-quality.js": 4.722,
