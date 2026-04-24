@@ -402,9 +402,22 @@ function _intersectPlanarOffsetWithNeighbor(coedge, origin, uAxis, vAxis, target
   if (curve && curve.degree === 2 && curve.controlPoints.length >= 3) {
     const center = _recoverArcCenter(curve, start, end);
     if (center) {
-      const centerUV = toUV(center);
       const radius = vec3Len(vec3Sub(start, center));
+      const centerUV = toUV(center);
       const dy = targetV - centerUV.y;
+
+      // Tangent-continuous neighbor arc (common when chamfering an edge whose
+      // endpoint vertex was previously filleted): the arc is tangent to the
+      // chamfered edge at their shared vertex, so the parallel-offset line at
+      // `targetV` passes through (or near) the arc center.  In that case the
+      // line-circle equation has two symmetric roots at `centerX ± radius`,
+      // both equidistant from `nearPoint`, so miter-intersecting would
+      // arbitrarily snap the chamfer endpoint to one of the arc's extremities
+      // (collapsing the adjacent fillet face).  Detect this and keep the raw
+      // parallel-offset endpoint — the fillet face's arc stays intact and
+      // Step 3's gap-closer will connect the chamfer offset cleanly to the
+      // shared vertex's original location.
+      if (Math.abs(dy) < radius * 0.1) return null;
       const inside = radius * radius - dy * dy;
       if (inside >= -1e-8) {
         const dx = Math.sqrt(Math.max(0, inside));
@@ -422,9 +435,11 @@ function _intersectPlanarOffsetWithNeighbor(coedge, origin, uAxis, vAxis, target
   const endUV = toUV(end);
   const dy = endUV.y - startUV.y;
   if (Math.abs(dy) < 1e-10) return null;
+
   const t = (targetV - startUV.y) / dy;
   const x = startUV.x + t * (endUV.x - startUV.x);
-  return fromUV(x, targetV);
+  const result = fromUV(x, targetV);
+  return result;
 }
 
 /**
@@ -1371,6 +1386,8 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
   // Step 3: Build face descriptors for new TopoBody
   const faceDescs = [];
 
+  const _dbgFCF = process.env.DEBUG_FCF === '1';
+
   for (const shell of topoBody.shells) {
     for (const face of shell.faces) {
       // Walk the boundary and rebuild with offsets
@@ -1409,6 +1426,11 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
 
               const off = matchedFace === sci.face0 ? sci.off0 : sci.off1;
               const isStart = vec3Len(vec3Sub(off.startVertexPoint || sci.topoEdge.startVertex.point, vertexPoint)) < 1e-8;
+              if (_dbgFCF) {
+                const fmt = p => p ? `(${p.x.toFixed(3)},${p.y.toFixed(3)},${p.z.toFixed(3)})` : 'null';
+                const result = isStart ? off.startPt : off.endPt;
+                console.log(`[FCF] resolveEndpoint face=${face.id} edgeFaces=[${edgeFaces.map(f=>f.id).join(',')}] vertex=${fmt(vertexPoint)} -> ${fmt(result)} (matchedFace=${matchedFace.id} chamFace0=${sci.face0.id} chamFace1=${sci.face1.id} isStart=${isStart})`);
+              }
               return isStart ? off.startPt : off.endPt;
             }
 
@@ -1476,20 +1498,60 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
       // between the offset endpoints on different faces
       const finalVerts = [];
       const finalCurves = [];
-      for (let i = 0; i < rebuiltEdges.length; i++) {
-        const current = rebuiltEdges[i];
-        const next = rebuiltEdges[(i + 1) % rebuiltEdges.length];
+      // Filter zero-length rebuilt edges: when both endpoints of a
+      // non-chamfered edge are resolved to the same point by an adjacent
+      // chamfer (e.g. a fillet face's arc-chord edge whose start vertex
+      // collapses onto its end vertex through a tangent chamfer miter),
+      // the edge degenerates.  Drop it so the face boundary remains
+      // non-degenerate and buildTopoBody doesn't emit a zero-length edge.
+      const activeEdges = rebuiltEdges.filter(e =>
+        vec3Len(vec3Sub(e.start, e.end)) > 1e-8
+      );
+      if (activeEdges.length < 3) continue;
+      for (let i = 0; i < activeEdges.length; i++) {
+        const current = activeEdges[i];
+        const next = activeEdges[(i + 1) % activeEdges.length];
         finalVerts.push(current.start);
         finalCurves.push(current.curve);
 
         // Check if there's a gap between this edge's endpoint and next edge's start
         if (vec3Len(vec3Sub(current.end, next.start)) > 1e-8) {
           finalVerts.push(current.end);
-          finalCurves.push(NurbsCurve.createLine(current.end, next.start));
+          // For non-planar faces (e.g. a cylindrical fillet face whose
+          // boundary gap results from a tangent-chamfer collapse), a
+          // straight 3-D chord between two points on the surface does not
+          // lie on the surface.  Sample the gap curve on the surface by
+          // linearly interpolating UVs and evaluating, so downstream
+          // triangulation gets a boundary that actually lies on the face.
+          let gapCurve;
+          if (face.surface && face.surfaceType !== SurfaceType.PLANE &&
+              typeof face.surface.closestPointUV === 'function') {
+            const uvA = face.surface.closestPointUV(current.end);
+            const uvB = face.surface.closestPointUV(next.start, 16, uvA);
+            const N = 8;
+            const pts = [];
+            for (let k = 0; k <= N; k++) {
+              const t = k / N;
+              const u = uvA.u + (uvB.u - uvA.u) * t;
+              const v = uvA.v + (uvB.v - uvA.v) * t;
+              pts.push(face.surface.evaluate(u, v));
+            }
+            pts[0] = current.end;
+            pts[pts.length - 1] = next.start;
+            gapCurve = NurbsCurve.createPolyline(pts);
+          } else {
+            gapCurve = NurbsCurve.createLine(current.end, next.start);
+          }
+          finalCurves.push(gapCurve);
         }
       }
 
       if (finalVerts.length < 3) continue;
+
+      if (_dbgFCF) {
+        const fmt = p => `(${p.x.toFixed(3)},${p.y.toFixed(3)},${p.z.toFixed(3)})`;
+        console.log(`[FCF] face.id=${face.id} type=${face.surfaceType} verts:`, finalVerts.map(fmt).join(' -> '));
+      }
 
       faceDescs.push({
         surface: face.surface,
@@ -1570,6 +1632,10 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
       edgeCurves: curves,
       shared: ci.face0.shared ? { ...ci.face0.shared, isChamfer: true } : { isChamfer: true },
     });
+    if (_dbgFCF) {
+      const fmt = p => `(${p.x.toFixed(3)},${p.y.toFixed(3)},${p.z.toFixed(3)})`;
+      console.log('[FCF] CHAMFER face verts:', verts.map(fmt).join(' -> '));
+    }
   }
 
   // Step 5: Add corner faces where chamfers meet at a vertex
@@ -1622,7 +1688,30 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
 
   const topoBoundaryEdges = countTopoBodyBoundaryEdges(newTopoBody);
   if (topoBoundaryEdges !== 0) {
-    _debugBRepChamfer('topo-boundary-edges', { topoBoundaryEdges, faceCount: faceDescs.length });
+    // Dump which edges are open and the faces they belong to so we can see
+    // which seam is failing to stitch.
+    const edgeRefs = new Map();
+    for (const shell of newTopoBody.shells || []) {
+      for (const face of shell.faces) {
+        for (const loop of face.allLoops()) {
+          for (const coedge of loop.coedges) {
+            const e = coedge.edge;
+            if (!edgeRefs.has(e.id)) edgeRefs.set(e.id, { edge: e, faces: [] });
+            edgeRefs.get(e.id).faces.push(face.id);
+          }
+        }
+      }
+    }
+    const open = [];
+    for (const { edge, faces } of edgeRefs.values()) {
+      if (faces.length < 2) {
+        const a = edge.startVertex?.point;
+        const b = edge.endVertex?.point;
+        const fmt = p => p ? `(${p.x.toFixed(4)},${p.y.toFixed(4)},${p.z.toFixed(4)})` : '?';
+        open.push({ id: edge.id, a: fmt(a), b: fmt(b), faces: [...faces] });
+      }
+    }
+    _debugBRepChamfer('topo-boundary-edges', { topoBoundaryEdges, faceCount: faceDescs.length, openEdges: open });
     return null;
   }
 
