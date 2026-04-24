@@ -978,9 +978,14 @@ export class FaceTriangulator {
       const loop = [];
       let prevUv = null;
       for (const p of loop3D) {
-        const uv = periodicSurface
-          ? surface.closestPointUV(p, 16)
-          : surface.closestPointUV(p, 16, prevUv);
+        // Always pass the previous UV as a hint so closestPointUV can
+        // unwrap angular coordinates continuously.  Without the hint, a
+        // self-loop (full-revolution sample run) collapses to a u-range
+        // inside a single period, which creates pinch points in the
+        // CDT polygon when the loop returns to its start vertex in 3D.
+        // With the hint, the self-loop's u coordinate walks monotonically
+        // across one full period, keeping the polygon simple.
+        const uv = surface.closestPointUV(p, 16, prevUv);
         // Attach original 3D position so evalPoint can preserve the exact
         // EdgeSampler coordinates.  Re-evaluating from UV introduces tiny
         // floating-point drift that prevents MeshStitcher from deduplicating
@@ -1379,13 +1384,16 @@ export class FaceTriangulator {
       meshVertices.push({ ...pa }, { ...pb }, { ...pc });
     }
 
-    // For periodic analytic surfaces (cylinder/torus) the analytic UV mapping
-    // already preserves every boundary sample in `outerUv`/`holeUvs`, so the
-    // CDT output cannot skip boundary vertices.  Running
-    // splitSkippedBoundaryMeshEdges on a periodic surface's outer loop
-    // (which concatenates top-rim + seam + bottom-rim) produces spurious
-    // fan triangles that overlap existing rim triangles — the root cause of
-    // 3-triangle-per-edge non-manifold artifacts on cylinder/torus rims.
+    // For periodic analytic surfaces, skip splitSkippedBoundaryMeshEdges:
+    // the analytic UV mapping already preserves every boundary sample in
+    // `outerUv`/`holeUvs`, so CDT cannot skip boundary vertices, and the
+    // skip-fix's multi-pass fan-insertion can produce overlapping fans over
+    // the same boundary chain when two "long" CDT edges each skip the chain
+    // but attach to different apex vertices.  The periodic path's seam
+    // handling and subdivision already produce a valid triangulation;
+    // running the skip-fix can only introduce duplicated tris here — the
+    // root cause of 3-triangle-per-edge non-manifold artifacts on
+    // cylinder/torus rims.
     if (!periodicSurface) {
       meshFaces = splitSkippedBoundaryMeshEdges(meshFaces, [outer3D, ...holeLoops3D]);
     }

@@ -630,16 +630,56 @@ function _tessellateSelfLoopRingFace(face, edgeSampler, edgeSegs, surfSegs) {
   if (analyticType !== 'cylinder' && analyticType !== 'cone' && analyticType !== 'torus') return null;
 
   const outerCoedges = face.outerLoop?.coedges;
-  if (!outerCoedges || outerCoedges.length !== 1) return null;
-  if (!outerCoedges[0]?.edge || outerCoedges[0].edge.startVertex !== outerCoedges[0].edge.endVertex) return null;
-  if (!Array.isArray(face.innerLoops) || face.innerLoops.length !== 1) return null;
+  if (!outerCoedges) return null;
 
-  const innerCoedges = face.innerLoops[0]?.coedges;
-  if (!innerCoedges || innerCoedges.length !== 1) return null;
-  if (!innerCoedges[0]?.edge || innerCoedges[0].edge.startVertex !== innerCoedges[0].edge.endVertex) return null;
+  // Detect two ring-coedges on a single loop: either
+  //   (a) classic layout — outerLoop = 1 self-loop, innerLoop = 1 self-loop,
+  //   (b) full-revolution torus layout — outerLoop has 4 coedges:
+  //       [seam_down, self-loop @ vMin, seam_up, self-loop @ vMax] where
+  //       the two seams traverse the same 3D meridian in opposite
+  //       directions, leaving the two self-loops as the actual ring
+  //       boundaries.  CDT cannot handle the pinch points this layout
+  //       introduces, so we need to route it through the ring tessellator.
+  let outerRingCoedge = null;
+  let innerRingCoedge = null;
 
-  const outerSamples = edgeSampler.sampleCoEdge(outerCoedges[0], edgeSegs);
-  const innerSamples = edgeSampler.sampleCoEdge(innerCoedges[0], edgeSegs);
+  if (outerCoedges.length === 1
+      && outerCoedges[0]?.edge
+      && outerCoedges[0].edge.startVertex === outerCoedges[0].edge.endVertex
+      && Array.isArray(face.innerLoops)
+      && face.innerLoops.length === 1
+      && face.innerLoops[0]?.coedges?.length === 1
+      && face.innerLoops[0].coedges[0]?.edge
+      && face.innerLoops[0].coedges[0].edge.startVertex === face.innerLoops[0].coedges[0].edge.endVertex) {
+    outerRingCoedge = outerCoedges[0];
+    innerRingCoedge = face.innerLoops[0].coedges[0];
+  } else if (outerCoedges.length === 4
+      && (!face.innerLoops || face.innerLoops.length === 0)) {
+    // Find self-loop coedges (start === end vertex).
+    const selfLoops = outerCoedges.filter(ce =>
+      ce?.edge && ce.edge.startVertex === ce.edge.endVertex);
+    const seams = outerCoedges.filter(ce =>
+      ce?.edge && ce.edge.startVertex !== ce.edge.endVertex);
+    if (selfLoops.length === 2 && seams.length === 2) {
+      // Verify the two seams share the same pair of vertices (i.e. they
+      // are the meridian traversed up then down).
+      const s0Start = seams[0].edge.startVertex;
+      const s0End = seams[0].edge.endVertex;
+      const s1Start = seams[1].edge.startVertex;
+      const s1End = seams[1].edge.endVertex;
+      const seamPair = (s0Start === s1End && s0End === s1Start)
+        || (s0Start === s1Start && s0End === s1End);
+      if (seamPair) {
+        outerRingCoedge = selfLoops[0];
+        innerRingCoedge = selfLoops[1];
+      }
+    }
+  }
+
+  if (!outerRingCoedge || !innerRingCoedge) return null;
+
+  const outerSamples = edgeSampler.sampleCoEdge(outerRingCoedge, edgeSegs);
+  const innerSamples = edgeSampler.sampleCoEdge(innerRingCoedge, edgeSegs);
   const outerRow = _trimClosedLoopSamples(outerSamples);
   const innerRowRaw = _trimClosedLoopSamples(innerSamples);
 
