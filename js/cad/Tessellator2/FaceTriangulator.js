@@ -2102,8 +2102,23 @@ export class FaceTriangulator {
       meshVertices.push({ ...a }, { ...b }, { ...c });
     }
 
+    // Fan-split triangles whose CDT or subdivision skipped boundary vertices.
+    // On strongly curved trimmed NURBS faces (for example the 3-coedge
+    // corner sphere patch produced by three mutually adjacent fillets) the
+    // UV projection collapses middle boundary samples onto nearly the same
+    // UV coordinate so CDT emits one long triangle edge that spans several
+    // adjacent boundary samples.  Those skipped samples remain in the
+    // adjacent fillet strip's mesh, producing T-junctions and non-manifold
+    // edges when MeshStitcher runs.  Skip this pass for periodic surfaces
+    // (cylinder/torus) where the seam handling can create spurious "long"
+    // edges that the fan split would duplicate.
+    let outFaces = meshFaces;
+    if (!periodic) {
+      outFaces = splitSkippedBoundaryMeshEdges(meshFaces, [allPts]);
+    }
+
     console.log(`[FaceTriangulator] surface: ${allPts.length} boundary, ${steiner3D.length} steiner, ${triangles.length} tris (${maxPasses} subdiv passes, ${midCache.size} midpt cache, sameSense=${sameSense}, uvValid=${uvValid}, periodic=${periodic}, deviationTol=${deviationTol.toFixed(6)}, faceDiag=${faceDiag.toFixed(3)})`);
 
-    return { vertices: meshVertices, faces: meshFaces };
+    return { vertices: meshVertices, faces: outFaces };
   }
 }
