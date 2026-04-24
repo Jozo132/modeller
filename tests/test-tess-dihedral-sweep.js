@@ -475,6 +475,112 @@ test('audit self-test: duplicated triangle → rejected (non-manifold)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Face self-intersection self-tests.
+//
+// A NURBS surface is unbounded in its parametric domain; the bounded region
+// within the B-Rep face must never produce a tessellation where:
+//   (a) triangles from the SAME face pierce one another (face self-fold), or
+//   (b) triangles from DIFFERENT faces pierce one another without a shared
+//       edge loop (which would have been introduced by a boolean union).
+//
+// These two tests use the same synthetic piercing pair:
+//   T1 — horizontal triangle flat in the XY-plane at z=0
+//   T2 — a vertical sliver whose edge T2[0]→T2[1] passes through the
+//         interior of T1 at (2.0, 1.2, 0) — verified analytically with the
+//         Möller-Trumbore formulation used by detectSelfIntersections.
+//
+// Each test has two parts:
+//   1. Direct-detector check: call detectSelfIntersections on the synthetic
+//      pair and assert count > 0.  This proves the detector is not blind to
+//      the specific geometry class.
+//   2. Full-audit rejection: append the piercing pair to a real prism mesh
+//      and assert the full audit pipeline rejects the resulting geometry.
+// ---------------------------------------------------------------------------
+
+// Shared piercing pair for both tests (coordinates verified above).
+// T1: equilateral-ish triangle flat in the z=0 plane.
+const SELF_INTER_T1 = [
+  { x: 0, y: 0, z: 0 },
+  { x: 4, y: 0, z: 0 },
+  { x: 2, y: 4, z: 0 },
+];
+// T2: thin vertical sliver.  Its edge [0]→[1] stabs through T1's interior at
+// z=0, (x≈2.0, y≈1.2).  No vertex of T2 is within 1e-10 of any vertex of T1
+// (confirmed: nearest distance > 1.2 units), so _sharesVertexOrEdge is false
+// and the Möller-Trumbore test fires.
+const SELF_INTER_T2 = [
+  { x: 1.5, y: 1.2, z: -1 },
+  { x: 2.5, y: 1.2, z:  1 },
+  { x: 2.0, y: 1.2, z: -1 },
+];
+
+test('audit self-test: face self-intersection (intra-face) → rejected', () => {
+  // An unbounded NURBS surface can theoretically self-fold outside its
+  // bounded domain.  The tessellator must never produce overlapping patches
+  // for a single bounded B-Rep face (same faceGroup).
+
+  // Part 1 — prove the detector catches this class of error:
+  const si = detectSelfIntersections(
+    [
+      { vertices: SELF_INTER_T1, faceGroup: 7 },
+      { vertices: SELF_INTER_T2, faceGroup: 7 }, // same faceGroup = same face
+    ],
+    { sameTopoFaceOnly: false },
+  );
+  assert.ok(
+    si.count > 0,
+    `intra-face self-test: detectSelfIntersections missed the piercing pair (count=${si.count})`,
+  );
+
+  // Part 2 — prove the full audit pipeline rejects the corrupted geometry:
+  const part = buildPart(90, EXTRUDE_HT, PROFILE_W, PROFILE_H);
+  const base = getExtrudeGeometry(part);
+  const mutated = cloneGeometry(base);
+  // Append the piercing pair with the same faceGroup as an existing face,
+  // simulating a tessellator bug that produces overlapping patches.
+  const g = base.faces[0].faceGroup;
+  mutated.faces.push(
+    { vertices: SELF_INTER_T1, normal: { x: 0, y: 0, z: 1 }, faceGroup: g },
+    { vertices: SELF_INTER_T2, normal: { x: 0, y: 1, z: 0 }, faceGroup: g },
+  );
+  assertAuditRejects(mutated, 'self-test intra-face self-intersection');
+});
+
+test('audit self-test: cross-face intersection (inter-face) → rejected', () => {
+  // Two triangles from DIFFERENT B-Rep faces that pierce each other without
+  // a shared edge loop indicate the feature kernel failed to properly clip
+  // (trim) one face against the other.  A boolean union that introduces an
+  // intersection would instead have merged a shared boundary loop first;
+  // if that loop is absent the intersection is always a defect.
+
+  // Part 1 — prove the detector catches this cross-group variant:
+  const si = detectSelfIntersections(
+    [
+      { vertices: SELF_INTER_T1, faceGroup: 3 },
+      { vertices: SELF_INTER_T2, faceGroup: 5 }, // different faceGroup = different face
+    ],
+    { sameTopoFaceOnly: false },
+  );
+  assert.ok(
+    si.count > 0,
+    `inter-face self-test: detectSelfIntersections missed the cross-face piercing pair (count=${si.count})`,
+  );
+
+  // Part 2 — prove the full audit pipeline rejects the corrupted geometry:
+  const part = buildPart(90, EXTRUDE_HT, PROFILE_W, PROFILE_H);
+  const base = getExtrudeGeometry(part);
+  const mutated = cloneGeometry(base);
+  // Use two distinct faceGroup values to model two different B-Rep faces
+  // whose mesh triangles intersect.
+  const groups = [...new Set(base.faces.map((f) => f.faceGroup))];
+  mutated.faces.push(
+    { vertices: SELF_INTER_T1, normal: { x: 0, y: 0, z: 1 }, faceGroup: groups[0] },
+    { vertices: SELF_INTER_T2, normal: { x: 0, y: 1, z: 0 }, faceGroup: groups[groups.length - 1] },
+  );
+  assertAuditRejects(mutated, 'self-test cross-face intersection');
+});
+
+// ---------------------------------------------------------------------------
 // Box-corner combinatorial coverage.
 //
 // At the corner of a box three faces meet along three concurrent edges.
