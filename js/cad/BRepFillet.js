@@ -1724,6 +1724,340 @@ function _extendTrimsAtPreviousFilletJunctions(trimmedFaces, edgeDataList, faces
   }
 }
 
+// -----------------------------------------------------------------------
+// Fillet–chamfer junction
+// -----------------------------------------------------------------------
+
+/**
+ * Sample the curve where a fillet cylinder intersects a planar face (e.g. a
+ * previous chamfer's bevel plane).  The curve is the cylinder's silhouette
+ * on the plane — a circular arc when the plane is perpendicular to the
+ * axis, otherwise an ellipse arc.
+ *
+ * Cylinder is parameterised in cross-section as
+ *   P(θ, t) = cylCenter + r · cos θ · ex + r · sin θ · ey + t · axis
+ * where {ex, ey} is an orthonormal frame perpendicular to `axis`.
+ *
+ * The plane is `(P − planePoint) · planeNormal = 0`.  Substituting and
+ * solving for `t(θ)` gives a single-valued function (provided the cylinder
+ * axis is not parallel to the plane), so each θ yields a unique 3D point
+ * on the intersection curve.
+ *
+ * `startPt` and `endPt` must lie on both surfaces (within tolerance);
+ * their θ values define the arc parameter range.  The shorter angular
+ * sweep is sampled.
+ *
+ * @returns {Array<{x,y,z}>|null} `segments+1` polyline samples from
+ *          `startPt` to `endPt`, inclusive.  `null` on failure
+ *          (axis ∥ plane, degenerate frame, etc.).
+ */
+function _computeFilletChamferArcSamples(
+  cylCenter, axisDir, radius, ex, ey,
+  planePoint, planeNormal,
+  startPt, endPt, segments = 12,
+) {
+  const C = _vec3Dot(axisDir, planeNormal);
+  if (Math.abs(C) < 1e-9) return null; // axis parallel to plane
+
+  const K = _vec3Dot(_vec3Sub(cylCenter, planePoint), planeNormal);
+  const A = _vec3Dot(ex, planeNormal);
+  const B = _vec3Dot(ey, planeNormal);
+
+  const at = (theta) => {
+    const ct = Math.cos(theta), st = Math.sin(theta);
+    const t = -(K + radius * ct * A + radius * st * B) / C;
+    return _vec3Add(
+      _vec3Add(cylCenter, _vec3Scale(axisDir, t)),
+      _vec3Add(_vec3Scale(ex, radius * ct), _vec3Scale(ey, radius * st)),
+    );
+  };
+
+  const thetaOf = (pt) => {
+    const rel = _vec3Sub(pt, cylCenter);
+    return Math.atan2(_vec3Dot(rel, ey), _vec3Dot(rel, ex));
+  };
+
+  const t0 = thetaOf(startPt);
+  const t1 = thetaOf(endPt);
+  let dt = t1 - t0;
+  while (dt > Math.PI) dt -= 2 * Math.PI;
+  while (dt < -Math.PI) dt += 2 * Math.PI;
+  if (Math.abs(dt) < 1e-6) return null;
+
+  const out = [];
+  for (let i = 0; i <= segments; i++) {
+    out.push(at(t0 + dt * (i / segments)));
+  }
+  // Snap exact endpoints to avoid sub-tol drift
+  out[0] = { ...startPt };
+  out[out.length - 1] = { ...endPt };
+  return out;
+}
+
+/**
+ * Replace stitched-line trims with proper cylinder-plane arc samples where
+ * a new fillet meets a previous chamfer face.
+ *
+ * Symptom: at the corner where (a) the new fillet edge ends and (b) a
+ * previous chamfer face also has a corner, the trim builder splits the
+ * shared corner vertex into two trim points (`p0?` on one adjacent face's
+ * plane, `p1?` on the other).  The chamfer face — which was supposed to
+ * stay planar — receives the OFF-PLANE trim point, producing a wedge that
+ * juts out of the chamfer plane.  Visually this is a non-planar bevel.
+ *
+ * Fix: for every fillet edge endpoint that touches a chamfer face, locate
+ *   - `inPlanePt`  — the trim point that already lies on the chamfer plane
+ *   - `offPlanePt` — the trim point that does NOT
+ *   - `cornerPt`  — the chamfer-face corner that originally was adjacent
+ *                   to the now-trimmed edgeVertex (it is on both the
+ *                   chamfer plane AND the second adjacent face, e.g. the
+ *                   side face), and remains in the chamfer's loop.
+ * Sample the cylinder ∩ chamfer-plane arc from `inPlanePt` to `cornerPt`
+ * and re-stitch three faces:
+ *   - chamfer face: drop offPlanePt, insert arc samples between inPlanePt
+ *     and cornerPt → face becomes planar again
+ *   - "second adjacent" face (the one carrying offPlanePt): drop
+ *     offPlanePt → it becomes a clean rectangle
+ *   - fillet face / edge data: rewire the trim end-point from offPlanePt
+ *     to cornerPt and replace the cap polyline with the arc → cylinder
+ *     extends past the simple cross-section to meet the chamfer cleanly
+ */
+function _extendTrimsAtPreviousChamferJunctions(
+  trimmedFaces, edgeDataList, faces, origTopoBody, radius,
+) {
+  if (!origTopoBody || !origTopoBody.shells) return;
+  const _dbg = (typeof process !== 'undefined' && process.env && process.env.DEBUG_FCJ === '1');
+  const log = (...a) => { if (_dbg) console.log('[FCJ]', ...a); };
+
+  // Build vertex-key → list of chamfer TopoFaces touching that vertex
+  const vertexChamfer = new Map();
+  for (const shell of origTopoBody.shells) {
+    for (const topoFace of shell.faces || []) {
+      if (!(topoFace.shared && topoFace.shared.isChamfer)) continue;
+      if (!topoFace.outerLoop) continue;
+      const verts = topoFace.outerLoop.coedges.map(ce =>
+        ce.sameSense !== false
+          ? { ...ce.edge.startVertex.point }
+          : { ...ce.edge.endVertex.point },
+      );
+      if (verts.length < 3) continue;
+      const planeNormal = _computePolygonNormal(verts);
+      if (!planeNormal) continue;
+      const nLen = _vec3Len(planeNormal);
+      if (nLen < 1e-9) continue;
+      const normalUnit = { x: planeNormal.x / nLen, y: planeNormal.y / nLen, z: planeNormal.z / nLen };
+      const info = { topoFace, verts, planePoint: verts[0], planeNormal: normalUnit };
+      for (const v of verts) {
+        const vk = _edgeVKey(v);
+        if (!vertexChamfer.has(vk)) vertexChamfer.set(vk, []);
+        vertexChamfer.get(vk).push(info);
+      }
+    }
+  }
+  if (vertexChamfer.size === 0) return;
+  log(`chamfer faces touching ${vertexChamfer.size} vertex keys`);
+
+  for (const data of edgeDataList) {
+    const edgeDir = _vec3Normalize(_vec3Sub(data.edgeB, data.edgeA));
+    const { offsDir0, offsDir1 } = _computeOffsetDirs(
+      faces[data.fi0], faces[data.fi1], data.edgeA, data.edgeB,
+    );
+    const alpha = Math.acos(Math.max(-1, Math.min(1, _vec3Dot(offsDir0, offsDir1))));
+    if (alpha < 1e-6) continue;
+    const centerDist = radius / Math.sin(alpha / 2);
+    const bisector = _vec3Normalize(_vec3Add(offsDir0, offsDir1));
+    if (_vec3Len(bisector) < 1e-6) continue;
+
+    for (const isA of [true, false]) {
+      const edgeVertex = isA ? data.edgeA : data.edgeB;
+      const evk = _edgeVKey(edgeVertex);
+      const chamferList = vertexChamfer.get(evk);
+      if (!chamferList || chamferList.length === 0) continue;
+      log(`fillet end ${evk} touches ${chamferList.length} chamfer face(s)`);
+
+      const p0 = isA ? data.p0a : data.p0b;
+      const p1 = isA ? data.p1a : data.p1b;
+
+      // Cylinder cross-section frame at this end
+      const cylCenter = _vec3Add(edgeVertex, _vec3Scale(bisector, centerDist));
+      const evRel = _vec3Sub(edgeVertex, cylCenter);
+      const evAlong = _vec3Dot(evRel, edgeDir);
+      const evPerp = _vec3Sub(evRel, _vec3Scale(edgeDir, evAlong));
+      const exLen = _vec3Len(evPerp);
+      if (exLen < 1e-9) continue;
+      const ex = { x: evPerp.x / exLen, y: evPerp.y / exLen, z: evPerp.z / exLen };
+      const ey = _vec3Cross(edgeDir, ex); // already unit since edgeDir ⊥ ex and both unit
+
+      for (const { topoFace, verts: chamferVerts, planePoint, planeNormal } of chamferList) {
+        // Cylinder axis must not be parallel to the chamfer plane
+        const axisDotN = _vec3Dot(edgeDir, planeNormal);
+        if (Math.abs(axisDotN) < 1e-6) continue;
+
+        // Decide which of {p0,p1} lies on the chamfer plane (= "inPlane")
+        // and which is off (= "offPlane").  Tolerance scales with radius.
+        const tol = Math.max(1e-4, radius * 1e-2);
+        const d0 = _vec3Dot(_vec3Sub(p0, planePoint), planeNormal);
+        const d1 = _vec3Dot(_vec3Sub(p1, planePoint), planeNormal);
+        let inPlane, offPlane, isInP0;
+        if (Math.abs(d0) < tol && Math.abs(d1) > tol) {
+          inPlane = p0; offPlane = p1; isInP0 = true;
+        } else if (Math.abs(d1) < tol && Math.abs(d0) > tol) {
+          inPlane = p1; offPlane = p0; isInP0 = false;
+        } else {
+          log(`  ambiguous d0=${d0.toFixed(4)} d1=${d1.toFixed(4)}`);
+          continue; // ambiguous — skip
+        }
+        const inPlaneKey = _edgeVKey(inPlane);
+        const offPlaneKey = _edgeVKey(offPlane);
+
+        // The "other adjacent face" is the one whose plane contains offPlane
+        // — fi0 if isInP0=false, fi1 if isInP0=true.
+        const otherFaceIdx = isInP0 ? data.fi1 : data.fi0;
+        const otherFace = faces[otherFaceIdx];
+        if (!otherFace || otherFace.topoFaceId === undefined) continue;
+
+        // Find the chamfer-corner = neighbour of edgeVertex in chamferVerts
+        // that lies on the OTHER adjacent face's plane (so it's shared
+        // between the chamfer and that face — i.e. it survives as a corner
+        // of the chamfer face after the fillet trim).
+        const otherNormal = otherFace.normal
+          ? _vec3Normalize(otherFace.normal)
+          : null;
+        const otherPlanePt = (otherFace.vertices && otherFace.vertices[0]) || null;
+        if (!otherNormal || !otherPlanePt) continue;
+        const onOtherPlane = (p) =>
+          Math.abs(_vec3Dot(_vec3Sub(p, otherPlanePt), otherNormal)) < tol;
+
+        let evIdx = -1;
+        for (let i = 0; i < chamferVerts.length; i++) {
+          if (_edgeVKey(chamferVerts[i]) === evk) { evIdx = i; break; }
+        }
+        if (evIdx < 0) continue;
+        const m = chamferVerts.length;
+        const prev = chamferVerts[(evIdx - 1 + m) % m];
+        const next = chamferVerts[(evIdx + 1) % m];
+        let corner = null;
+        if (_edgeVKey(prev) !== evk && onOtherPlane(prev)) corner = prev;
+        else if (_edgeVKey(next) !== evk && onOtherPlane(next)) corner = next;
+        if (!corner) { log('  no corner found'); continue; }
+        const cornerKey = _edgeVKey(corner);
+        log(`  inPlane=${inPlaneKey} offPlane=${offPlaneKey} corner=${cornerKey}`);
+
+        // Compute arc samples from inPlane to corner on cylinder ∩ plane
+        const segments = 8;
+        const arc = _computeFilletChamferArcSamples(
+          cylCenter, edgeDir, radius, ex, ey,
+          planePoint, planeNormal,
+          inPlane, corner, segments,
+        );
+        if (!arc || arc.length < 3) continue;
+
+        // ── (a) Surgery on the chamfer face's trimmed loop ──
+        // Find offPlane in the loop; verify its neighbours are inPlane
+        // and corner; replace offPlane with the *interior* arc samples.
+        const chamferTrim = trimmedFaces.find(
+          f => f.topoFaceId === topoFace.id,
+        );
+        if (!chamferTrim || !chamferTrim.vertices) { log('  chamferTrim missing'); continue; }
+        const cv = chamferTrim.vertices;
+        const offIdx = cv.findIndex(v => _edgeVKey(v) === offPlaneKey);
+        if (offIdx < 0) { log('  offIdx<0 in chamferTrim'); continue; }
+        const cn = cv.length;
+        const pK = _edgeVKey(cv[(offIdx - 1 + cn) % cn]);
+        const nK = _edgeVKey(cv[(offIdx + 1) % cn]);
+
+        // The expected layouts at this point in the loop are
+        //   [..., other, offPlane, inPlane, corner, ...]    (forward)
+        //   [..., corner, inPlane, offPlane, other, ...]    (reverse)
+        // i.e. offPlane is adjacent to inPlane, and corner is 2 vertices
+        // away from offPlane (one step past inPlane).
+        let chamferInsertion = null;
+        let removeIdx = -1;
+        if (nK === inPlaneKey) {
+          const nnK = _edgeVKey(cv[(offIdx + 2) % cn]);
+          if (nnK === cornerKey) {
+            // forward: replace [off] with nothing, then insert arc-interior
+            // between inPlane (now at offIdx after splice) and corner.
+            removeIdx = offIdx;
+            chamferInsertion = arc.slice(1, -1).map(p => ({ ...p }));
+          }
+        } else if (pK === inPlaneKey) {
+          const ppK = _edgeVKey(cv[(offIdx - 2 + cn) % cn]);
+          if (ppK === cornerKey) {
+            // reverse: traversal order is [corner, inPlane, offPlane],
+            // so arc-interior must be reversed.
+            removeIdx = offIdx;
+            chamferInsertion = arc.slice(1, -1).reverse().map(p => ({ ...p }));
+          }
+        }
+        if (removeIdx < 0 || !chamferInsertion) {
+          log(`  chamfer loop neighbours: prev=${pK} next=${nK} (need inPlane+corner)`);
+          continue;
+        }
+
+        // ── (b) Surgery on the "other adjacent" face ──
+        // It carries offPlane between two corners on its own plane;
+        // simply remove offPlane → loop becomes a clean polygon.
+        const otherTrim = trimmedFaces.find(
+          f => f.topoFaceId === otherFace.topoFaceId,
+        );
+        if (!otherTrim || !otherTrim.vertices) continue;
+        const otherOffIdx = otherTrim.vertices.findIndex(
+          v => _edgeVKey(v) === offPlaneKey,
+        );
+        if (otherOffIdx < 0) { log('  otherOffIdx<0'); continue; }
+        if (otherTrim.vertices.length - 1 < 3) continue;
+        log(`  applying surgery: chamfer.id=${topoFace.id} other.id=${otherFace.topoFaceId}`);
+
+        // ── (c) Update edgeData so the fillet face uses the corner ──
+        // The cap polyline (arcA/arcB) becomes the cylinder ∩ plane arc
+        // and the trim end-point on the offPlane side becomes the corner.
+        // Direction matters: arc[0] = inPlane = p0 side, arc[last] = corner = p1 side.
+        // arcA / arcB are stored as p0 → p1 in the existing computeArc code.
+        // If isInP0 === true, then inPlane is p0, corner is p1 — direction matches.
+        // If isInP0 === false, inPlane is p1, corner is p0 — reverse.
+        const arcForCap = isInP0
+          ? arc.map(p => ({ ...p }))
+          : arc.slice().reverse().map(p => ({ ...p }));
+
+        // Apply commits — only AFTER we've passed every sanity check above.
+        // Layout: forward = [..., other, off, in, corner, ...]
+        //         reverse = [..., corner, in, off, other, ...]
+        // After removing off the loop reads:
+        //         forward = [..., other, in, corner, ...] — insert arc[1..-1] AFTER in
+        //         reverse = [..., corner, in, other, ...] — insert arc[1..-1] reversed BEFORE in
+        const _isForward = chamferInsertion === null
+          ? false
+          : (nK === inPlaneKey);
+        chamferTrim.vertices = (() => {
+          const newVerts = cv.slice();
+          newVerts.splice(removeIdx, 1);
+          const inIdxNew = newVerts.findIndex(v => _edgeVKey(v) === inPlaneKey);
+          if (inIdxNew >= 0) {
+            const insertAt = _isForward ? inIdxNew + 1 : inIdxNew;
+            newVerts.splice(insertAt, 0, ...chamferInsertion);
+          }
+          return newVerts;
+        })();
+        otherTrim.vertices = (() => {
+          const newVerts = otherTrim.vertices.slice();
+          newVerts.splice(otherOffIdx, 1);
+          return newVerts;
+        })();
+        if (isA) {
+          if (isInP0) data.p1a = { ...corner }; else data.p0a = { ...corner };
+          data.arcA = arcForCap;
+          data._chamferArcAtA = true;
+        } else {
+          if (isInP0) data.p1b = { ...corner }; else data.p0b = { ...corner };
+          data.arcB = arcForCap;
+          data._chamferArcAtB = true;
+        }
+      }
+    }
+  }
+}
+
 /**
  * Apply the 3D intersection curve to mesh-level trimmed faces.
  *
@@ -2555,6 +2889,14 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
   // planar face, extend the trim to the arc–offset intersection so the
   // boundary transitions smoothly instead of creating a "notch".
   _extendTrimsAtPreviousFilletJunctions(
+    trimmedFaces, edgeDataList, faces, topoBody, radius,
+  );
+
+  // Step 4c: Where the new fillet meets a previous CHAMFER face, replace
+  // the linear stitch (which left the chamfer face non-planar) with the
+  // proper cylinder ∩ chamfer-plane arc.  See the function's doc-comment
+  // for the geometric construction.
+  _extendTrimsAtPreviousChamferJunctions(
     trimmedFaces, edgeDataList, faces, topoBody, radius,
   );
 
