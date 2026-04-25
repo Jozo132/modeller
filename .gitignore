@@ -8,6 +8,7 @@ tests/samples/*.png
 tests/step/*.png
 tests/nist-samples/
 tests/reports/
+tests/output-dihedral-sweep/
 playwright-report/
 test-results/
 *.png

@@ -48,6 +48,28 @@ import {
 } from '../js/cad/MeshValidator.js';
 import { edgeKeyFromVerts } from '../js/cad/toolkit/Vec3Utils.js';
 import { createTestContext, assertManifold } from './test-helpers.js';
+import { renderMeshToPNG, slugifyLabel } from './_mesh-png-renderer.js';
+import path from 'path';
+
+// Optional PNG dump of every audited mesh.  Enable with DIHEDRAL_PNG=1 in
+// the environment.  Output goes to tests/output-dihedral-sweep/<slug>.png —
+// the directory is gitignored.
+const PNG_OUT_DIR = path.resolve('tests', 'output-dihedral-sweep');
+const PNG_ENABLED = !!process.env.DIHEDRAL_PNG && process.env.DIHEDRAL_PNG !== '0';
+const _pngLabelSeen = new Map();
+function dumpMeshPNG(geometry, label) {
+  if (!PNG_ENABLED) return;
+  const slugBase = slugifyLabel(label);
+  const n = (_pngLabelSeen.get(slugBase) || 0) + 1;
+  _pngLabelSeen.set(slugBase, n);
+  const slug = n === 1 ? slugBase : `${slugBase}-${n}`;
+  try {
+    renderMeshToPNG(geometry, path.join(PNG_OUT_DIR, `${slug}.png`));
+  } catch (err) {
+    // Don't let a render failure break the underlying test.
+    console.warn(`  (PNG render failed for "${label}": ${err.message})`);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Sketch / Part factories
@@ -190,6 +212,11 @@ function auditTessellation(geometry, label, opts = {}) {
     expectedVolume = null,
     volumeTolerance = null,
   } = opts;
+
+  // Always dump a PNG (when enabled) BEFORE the asserts so we get an image
+  // even for the failing cases — visual diagnosis of holes etc. is the
+  // whole point.
+  dumpMeshPNG(geometry, label);
 
   assert.ok(geometry && Array.isArray(geometry.faces), `${label}: geometry.faces missing`);
   const triCount = geometry.faces.length;
