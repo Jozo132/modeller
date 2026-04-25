@@ -1386,7 +1386,7 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
   // Step 3: Build face descriptors for new TopoBody
   const faceDescs = [];
 
-  const _dbgFCF = process.env.DEBUG_FCF === '1';
+  const _dbgFCF = (typeof process !== 'undefined' && process.env && process.env.DEBUG_FCF === '1');
 
   for (const shell of topoBody.shells) {
     for (const face of shell.faces) {
