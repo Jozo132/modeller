@@ -596,6 +596,37 @@ export class WasmBrepHandleRegistry {
     }
 
     /**
+     * Tessellate only the topology range owned by a resident WASM handle.
+     * Returns null when the handle is invalid, non-resident, malformed, or the
+     * kernel output buffers overflow.
+     *
+     * @param {number} handle
+     * @param {number} [segsU=64]
+     * @param {number} [segsV=16]
+     */
+    tessellateHandle(handle, segsU = 64, segsV = 16) {
+        if (!handle || typeof _wasm.tessBuildHandleFaces !== 'function') return null;
+        const nTris = _wasm.tessBuildHandleFaces(handle, segsU, segsV);
+        if (nTris < 0) return null;
+        if (nTris === 0) return { vertices: new Float64Array(0), normals: new Float64Array(0), indices: new Uint32Array(0), faceMap: new Uint32Array(0) };
+
+        const nVerts = _wasm.getTessOutVertCount() >>> 0;
+        const buf = _wasmMem.buffer;
+
+        const vertsPtr = _wasm.getTessOutVertsPtr() >>> 0;
+        const normsPtr = _wasm.getTessOutNormalsPtr() >>> 0;
+        const idxPtr = _wasm.getTessOutIndicesPtr() >>> 0;
+        const fmapPtr = _wasm.getTessOutFaceMapPtr() >>> 0;
+
+        return {
+            vertices: new Float64Array(buf, vertsPtr, nVerts * 3).slice(),
+            normals: new Float64Array(buf, normsPtr, nVerts * 3).slice(),
+            indices: new Uint32Array(buf, idxPtr, nTris * 3).slice(),
+            faceMap: new Uint32Array(buf, fmapPtr, nTris).slice(),
+        };
+    }
+
+    /**
      * Tessellate a single face.
      * @param {number} faceId
      * @param {number} [segsU=64]

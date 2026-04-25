@@ -195,6 +195,13 @@ function buildCylinder(ox, oy, oz, ax, ay, az, radius, height) {
     wasm.bodyEnd();
 }
 
+function snapshotCurrentCbrep() {
+    const len = wasm.cbrepDehydrate() >>> 0;
+    assert.ok(len > 0, 'expected non-empty CBREP snapshot');
+    const ptr = wasm.getCbrepOutPtr() >>> 0;
+    return new Uint8Array(wasm.memory.buffer, ptr, len).slice();
+}
+
 // ===========================================================================
 // Tessellation Tests
 // ===========================================================================
@@ -315,6 +322,45 @@ test('tessReset clears state', () => {
     wasm.tessReset();
     assert.strictEqual(wasm.getTessOutTriCount() >>> 0, 0);
     assert.strictEqual(wasm.getTessOutVertCount() >>> 0, 0);
+});
+
+test('tessBuildHandleFaces — resident handle range excludes other bodies', () => {
+    buildUnitCube();
+    const cbrep = snapshotCurrentCbrep();
+
+    wasm.topologyResetAll();
+    wasm.geomPoolReset();
+    wasm.handleReleaseAll();
+
+    const h1 = wasm.handleAlloc() >>> 0;
+    const h2 = wasm.handleAlloc() >>> 0;
+    assert.ok(h1 > 0 && h2 > 0, 'expected handle allocation');
+    assert.strictEqual(wasm.tessBuildHandleFaces(h1, 16, 16), -3, 'unmaterialized handle must not tessellate');
+
+    assert.strictEqual(wasm.cbrepHydrateForHandle(h1, cbrep, cbrep.byteLength), 1);
+    assert.strictEqual(wasm.cbrepHydrateForHandle(h2, cbrep, cbrep.byteLength), 1);
+    wasm.handleSetResidency(h1, wasm.RESIDENCY_RESIDENT);
+    wasm.handleSetResidency(h2, wasm.RESIDENCY_RESIDENT);
+
+    assert.strictEqual(wasm.faceGetCount() >>> 0, 12, 'two resident cubes should append 12 faces globally');
+
+    const n1 = wasm.tessBuildHandleFaces(h1, 16, 16);
+    assert.strictEqual(n1, 12, 'first handle should tessellate one cube');
+    let fmapPtr = wasm.getTessOutFaceMapPtr() >>> 0;
+    let fmap = new Uint32Array(wasm.memory.buffer, fmapPtr, n1);
+    assert.strictEqual(fmap[0], 0);
+    assert.strictEqual(fmap[11], 5);
+
+    const n2 = wasm.tessBuildHandleFaces(h2, 16, 16);
+    assert.strictEqual(n2, 12, 'second handle should tessellate one cube');
+    fmapPtr = wasm.getTessOutFaceMapPtr() >>> 0;
+    fmap = new Uint32Array(wasm.memory.buffer, fmapPtr, n2);
+    assert.strictEqual(fmap[0], 6);
+    assert.strictEqual(fmap[11], 11);
+
+    const all = wasm.tessBuildAllFaces(16, 16);
+    assert.strictEqual(all, 24, 'global tessellation still sees both cubes');
+    wasm.handleReleaseAll();
 });
 
 // ===========================================================================
@@ -470,6 +516,27 @@ test('getEdgeSamples returns cached samples', () => {
     const samples = registry.getEdgeSamples(0);
     assert.ok(samples !== null);
     assert.strictEqual(samples.length, 6); // 2 points × 3 components
+});
+
+test('tessellateHandle returns mesh for resident handle', () => {
+    buildUnitCube();
+    const cbrep = registry.dehydrate();
+    assert.ok(cbrep && cbrep.byteLength > 0);
+
+    registry.resetTopology();
+    const handle = registry.alloc();
+    assert.ok(handle > 0);
+    assert.strictEqual(registry.hydrateForHandle(handle, cbrep), true);
+    registry.setResidency(handle, registry.RESIDENT);
+
+    const mesh = registry.tessellateHandle(handle, 16, 16);
+    assert.ok(mesh !== null);
+    assert.strictEqual(mesh.indices.length, 12 * 3);
+    assert.strictEqual(mesh.vertices.length, 24 * 3);
+    assert.strictEqual(mesh.normals.length, 24 * 3);
+    assert.strictEqual(mesh.faceMap.length, 12);
+    assert.strictEqual(mesh.faceMap[0], 0);
+    assert.strictEqual(mesh.faceMap[11], 5);
 });
 
 test('classifyPoint returns valid result', () => {

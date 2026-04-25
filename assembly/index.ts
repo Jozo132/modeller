@@ -469,7 +469,7 @@ export {
   getGpuKnotBufPtr, getGpuKnotBufLen,
   getGpuSurfaceCount,
   // tessellation: native face-level mesh extraction
-  tessBuildAllFaces, tessBuildFace, tessReset,
+  tessBuildAllFaces, tessBuildHandleFaces, tessBuildFace, tessReset,
   getTessOutVertsPtr, getTessOutNormalsPtr, getTessOutIndicesPtr, getTessOutFaceMapPtr,
   getTessOutVertCount, getTessOutTriCount,
   getEdgeSamplePtsPtr, getEdgeSampleCount, getEdgeSampleStart,

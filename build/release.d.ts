@@ -1582,6 +1582,14 @@ export declare function getGpuSurfaceCount(): number;
  */
 export declare function tessBuildAllFaces(segsU: number, segsV: number): number;
 /**
+ * assembly/kernel/tessellation/tessBuildHandleFaces
+ * @param handleId `u32`
+ * @param segsU `i32`
+ * @param segsV `i32`
+ * @returns `i32`
+ */
+export declare function tessBuildHandleFaces(handleId: number, segsU: number, segsV: number): number;
+/**
  * assembly/kernel/tessellation/tessBuildFace
  * @param faceId `u32`
  * @param segsU `i32`

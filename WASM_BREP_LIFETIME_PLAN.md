@@ -15,32 +15,45 @@ heap.
 
 ## Current Baseline
 
-- STEP import currently runs as:
-  `STEP text -> parseSTEPTopology() -> TopoBody -> tessellateBodyRouted() -> StepImportFeature post-processing`.
-- `StepImportFeature` is the feature-tree boundary for imported solids.
-- The repo already has three useful seams for a native residency plan:
-  - `js/workers/step-import-worker.js` for off-main-thread import work.
-  - `packages/ir/*` for deterministic CBREP canonicalization and binary storage.
-  - `FeatureTree.results` for exact-result ownership and invalidation.
-- WASM already exists for evaluation and tessellation:
-  - `assembly/nurbs.ts` — Cox-de Boor NURBS evaluation, surface/curve
-    tessellation with pre-allocated output buffers (max 128×128 grid).
-  - `assembly/tessellation.ts` — ear-clip triangulation, bounding box, mesh
-    volume.
-  - `js/cad/WasmTessellation.js` — JS bridge reading WASM output buffers via
-    pointer + byte-length pattern.
-  - `js/cad/GeometryEvaluator.js` — WASM-preferred, JS-fallback surface
-    evaluator with derivative and normal support.
-- Boolean operations (`js/cad/BooleanKernel.js`) are exact B-Rep: surface-
-  surface intersection → face splitting → containment classification → shell
-  stitching. No spatial indexing beyond linear AABB scan.
-- Rendering is WebGL-only (`js/webgl-executor.js`, 4 shader programs). No
-  WebGPU or compute-shader path exists yet.
-- All AssemblyScript memory is GC-managed. No `@unmanaged` structs. No std430-
-  aligned layouts for GPU buffer interop.
-- There is no owned WASM B-Rep lifetime yet, no native exact transform pipeline,
-  no octree or advanced spatial index, and no fully modular AssemblyScript kernel
-  boundary for B-Rep operations.
+As of 2026-04-26, the project is no longer at the "JS TopoBody with optional
+WASM acceleration" starting point. The kernel has real native residency pieces
+and the remaining work is to make those pieces the default runtime path.
+
+- `assembly/kernel/core.ts` owns native handles, residency states, revisions,
+  reference counts, and per-handle topology/geometry ranges.
+- `assembly/kernel/topology.ts` and `assembly/kernel/geometry.ts` store native
+  B-Rep topology and analytic/NURBS geometry in append-only pools, with
+  `bodyBeginForHandle()` / `bodyEndForHandle()` recording each handle's ranges.
+- `assembly/kernel/interop.ts` supports deterministic CBREP hydrate/dehydrate,
+  including `cbrepHydrateForHandle()` for appending a body into a specific
+  handle without clearing other resident bodies.
+- `js/cad/WasmBrepHandleRegistry.js` bridges allocation, residency, CBREP
+  hydration/dehydration, transforms, octree queries, GPU buffer access, and now
+  handle-scoped tessellation through `tessellateHandle()`.
+- `assembly/kernel/tessellation.ts` tessellates kernel-owned topology directly
+  for planes, cylinders, cones, spheres, tori, and NURBS surfaces. It exposes
+  both the legacy global `tessBuildAllFaces()` and the resident-handle scoped
+  `tessBuildHandleFaces(handleId, segsU, segsV)` path.
+- `assembly/kernel/step_lexer.ts`, `step_parser.ts`, and `step_topology.ts`
+  can build STEP topology directly into the native pools for the opt-in native
+  STEP path.
+- `assembly/kernel/ops.ts` contains topology-aware classification support,
+  octree-backed candidate routing, error-bound tracking, and several analytic
+  H8 narrowphase slices, including plane/plane, plane/cylinder, plane/cone,
+  plane/sphere, sphere/sphere, and parallel-axis cylinder/cylinder.
+- `assembly/kernel/gpu.ts`, `js/render/nurbs-tess.wgsl.js`, and
+  `js/render/gpu-tess-pipeline.js` provide the first WebGPU buffer/shader
+  scaffold. GPU work is an acceleration layer that consumes kernel-owned
+  geometry; it is not the owner of exact topology.
+- JS still owns too much runtime orchestration: most feature operations,
+  `FeatureTree.tryFastRestoreFromCheckpoints()`, production registry/residency
+  startup, and some rendering paths still materialize JS `TopoBody` or mesh data
+  when a resident handle could be used instead.
+
+The immediate architectural rule is therefore: production code should pass
+opaque handle ids plus small operation/tessellation parameters across the
+JS/WASM boundary. CBREP is for persistence, cache restore, and deliberate
+hydrate/dehydrate boundaries, not for routine in-session body transport.
 
 ## Target End State
 
@@ -803,7 +816,7 @@ WASM-tessellate + CBREP-bridge approach satisfies all concrete Phase 3 tasks.
   production code path. JS-side tessellation exists only when explicitly tagged
   `@legacy` or `@test-baseline` for regression comparison.
 
-Status: **complete** — transform module with identity/translation/
+Status: **in progress** — transform module with identity/translation/
 rotation/scale/multiply + point/direction/boundingBox transforms.
 WasmBrepHandleRegistry exposes setTranslation/setRotation/setScale/setIdentity,
 transformPoint, transformDirection, transformAllVertices, loadTransformMatrix.
@@ -825,8 +838,15 @@ Native tessellation module (`kernel/tessellation.ts`) tessellates all face types
 - Fixed NURBS tessellation: `nurbsSurfaceTessellate()` now receives correct
   `numCtrlU` / `numCtrlV` parameters (was incorrectly passing `numCtrlU + degU`).
 JS bridge provides tessellateBody/tessellateFace/tessReset.
-All 4 test suites passing: 29 topology + 30 tess-ops + 37 phase456 + 33 STEP
-import = 129 tests.
+- Handle-scoped tessellation is now available through
+  `tessBuildHandleFaces(handleId, segsU, segsV)` and
+  `WasmBrepHandleRegistry.tessellateHandle(handleId, segsU, segsV)`, so two or
+  more resident bodies can coexist in the native pools and be meshed by handle
+  range without resetting global topology.
+
+Remaining Phase 3a work: route production fast-restore, LoD, and render refresh
+paths to `hydrateForHandle()` + `tessellateHandle()` so the app stops decoding
+CBREP back into JS `TopoBody` for bodies already resident in the kernel.
 
 ### Phase 4: Robust Native Boolean Operations
 
@@ -927,11 +947,11 @@ tree clear. `_releaseResultHandle` accepts featureId for residency cleanup.
 1. `HandleResidencyManager` is never instantiated in production code — only
    in test-phase456.js. `FeatureTree.setResidencyManager()` exists but no
    application code calls it.
-2. The `hydrate(cbrep)` method restores topology into GLOBAL kernel buffers
-   (a single shared WASM linear memory). Loading body A then body B
-   overwrites A's data, making A's handle reference stale topology.
-   Per-handle isolation requires either multiple WASM instances, a
-   body-indexing scheme in the kernel, or save/restore snapshots.
+2. The legacy `hydrate(cbrep)` method still restores topology into global
+  single-body mode and should be treated as compatibility glue. New runtime
+  code must use `hydrateForHandle(handle, cbrep)` so native topology is
+  appended to the handle's recorded ranges, followed by handle-scoped
+  operations such as `tessBuildHandleFaces()`.
 3. `setFeatureId(handle, revisionCounter)` stores a numeric revision
    rather than the string featureId — this is correct given the u32 WASM
    constraint but the naming can be confusing.
@@ -978,6 +998,14 @@ tree clear. `_releaseResultHandle` accepts featureId for residency cleanup.
     culls grid triangles via ray-casting even-odd rule. Fixed NURBS
     nurbsSurfaceTessellate parameter bug (was passing numCtrlU + degU
     instead of numCtrlU). 129 tests passing across 4 suites.
+7b. ~~Add resident-handle scoped tessellation so native bodies can be meshed
+    without reloading global topology.~~
+    Done: `tessBuildHandleFaces(handleId, segsU, segsV)` validates handle
+    residency, reads `handleGetFaceStart/End`, and tessellates only that face
+    range. `WasmBrepHandleRegistry.tessellateHandle()` returns copied typed
+    arrays for vertices, normals, indices, and faceMap. `tests/test-wasm-tess-ops.js`
+    covers two co-resident cube handles and verifies handle meshes remain
+    scoped while `tessBuildAllFaces()` still sees the combined global topology.
 8. ~~Route `StepImportFeature` to store deterministic CBREP before any native
    hydration attempt.~~
    Done: STEP import worker now produces CBREP + irHash alongside result;
@@ -1046,6 +1074,28 @@ tree clear. `_releaseResultHandle` accepts featureId for residency cleanup.
     Done: telemetry.residencySummary() and telemetry.gpuSummary() with
     hit/miss/hydration/eviction counters and GPU dispatch/upload/readback
     timing. summary() includes both.
+
+### Current Runtime-Migration Queue
+
+20. Route `FeatureTree.tryFastRestoreFromCheckpoints()` through resident handle
+    hydration and `tessellateHandle()` instead of `readCbrep(buffer)` followed
+    by JS `tessellateBody(topoBody)`.
+21. Instantiate `WasmBrepHandleRegistry` and `HandleResidencyManager` in the
+    production part/app startup path so feature results become resident by
+    default when CBREP is available.
+22. Move parametric feature operation inputs toward handle-based contracts:
+    JS may own UI parameters and dependency ordering, but boolean/chamfer/
+    fillet/extrude/revolve execution should consume and produce native handles
+    whenever the required surface classes are supported.
+23. Extend `kernel/ops` beyond narrowphase helpers into result-building
+    operations that allocate new topology ranges for output handles, rather than
+    returning serialized fragments to JS.
+24. Finish WebGPU integration as an acceleration layer: initialize the GPU
+    pipeline from the production registry, batch kernel-owned NURBS surfaces into
+    std430 buffers, dispatch compute for render LoD, and avoid CPU readback on
+    the normal render path.
+25. Keep JS `TopoBody` materialization only for persistence tooling, debug views,
+    legacy fallbacks, and explicit compatibility tests.
 
 ## Expected Gains
 

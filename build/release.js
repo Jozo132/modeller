@@ -1204,6 +1204,7 @@ export const {
   getGpuKnotBufLen,
   getGpuSurfaceCount,
   tessBuildAllFaces,
+  tessBuildHandleFaces,
   tessBuildFace,
   tessReset,
   getTessOutVertsPtr,

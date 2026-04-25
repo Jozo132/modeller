@@ -44,6 +44,14 @@ import {
   getTessVertsPtr, getTessNormalsPtr, getTessFacesPtr,
 } from '../nurbs';
 
+import {
+  RESIDENCY_RESIDENT,
+  handleGetFaceEnd,
+  handleGetFaceStart,
+  handleGetResidency,
+  handleIsValid,
+} from './core';
+
 // ─── Output buffer constants ─────────────────────────────────────────
 
 /** Max output vertices across all faces combined. */
@@ -143,39 +151,25 @@ let _surfNX: f64 = 0, _surfNY: f64 = 0, _surfNZ: f64 = 0;
  * @returns number of triangles written, or -1 on overflow
  */
 export function tessBuildAllFaces(segsU: i32, segsV: i32): i32 {
-  outVertCount = 0;
-  outTriCount = 0;
-  edgeSampleTotal = 0;
+  tessReset();
+  return _tessBuildFaceRange(0, faceGetCount(), segsU, segsV);
+}
 
-  // Clear edge cache
-  const nFaces = faceGetCount();
-  for (let e: u32 = 0; e < MAX_EDGE_CACHE; e++) {
-    unchecked(edgeCacheDone[e] = 0);
-  }
+/**
+ * Tessellate only the face range owned by a resident handle.
+ * Returns the number of triangles written, or a negative error code:
+ *   -1 overflow, -2 invalid handle, -3 handle is not resident, -4 bad range.
+ */
+export function tessBuildHandleFaces(handleId: u32, segsU: i32, segsV: i32): i32 {
+  if (!handleIsValid(handleId)) return -2;
+  if (handleGetResidency(handleId) != RESIDENCY_RESIDENT) return -3;
 
-  for (let f: u32 = 0; f < nFaces; f++) {
-    const geomType = faceGetGeomType(f);
-    let result: i32 = 0;
+  const faceStart = handleGetFaceStart(handleId);
+  const faceEnd = handleGetFaceEnd(handleId);
+  if (faceEnd < faceStart || faceEnd > faceGetCount()) return -4;
 
-    if (geomType == GEOM_PLANE) {
-      result = _tessPlaneFace(f);
-    } else if (geomType == GEOM_CYLINDER) {
-      result = _tessCylinderFace(f, segsU, segsV);
-    } else if (geomType == GEOM_CONE) {
-      result = _tessConeFace(f, segsU, segsV);
-    } else if (geomType == GEOM_SPHERE) {
-      result = _tessSphereFace(f, segsU, segsV);
-    } else if (geomType == GEOM_TORUS) {
-      result = _tessTorusFace(f, segsU, segsV);
-    } else if (geomType == GEOM_NURBS_SURFACE) {
-      result = _tessNurbsFace(f, segsU, segsV);
-    }
-    // GEOM_NONE faces are skipped
-
-    if (result < 0) return -1; // overflow
-  }
-
-  return <i32>outTriCount;
+  tessReset();
+  return _tessBuildFaceRange(faceStart, faceEnd, segsU, segsV);
 }
 
 /**
@@ -186,6 +180,18 @@ export function tessBuildAllFaces(segsU: i32, segsV: i32): i32 {
  * @returns number of triangles added, or -1 on overflow
  */
 export function tessBuildFace(faceId: u32, segsU: i32, segsV: i32): i32 {
+  return _tessBuildOneFace(faceId, segsU, segsV);
+}
+
+function _tessBuildFaceRange(faceStart: u32, faceEnd: u32, segsU: i32, segsV: i32): i32 {
+  for (let f: u32 = faceStart; f < faceEnd; f++) {
+    const result = _tessBuildOneFace(f, segsU, segsV);
+    if (result < 0) return -1;
+  }
+  return <i32>outTriCount;
+}
+
+function _tessBuildOneFace(faceId: u32, segsU: i32, segsV: i32): i32 {
   const geomType = faceGetGeomType(faceId);
 
   if (geomType == GEOM_PLANE) return _tessPlaneFace(faceId);

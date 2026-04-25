@@ -1,268 +1,223 @@
 # WASM Tessellation Migration Plan
 
-Status: draft — September 2024
+Status: active — revised 2026-04-26
 Owner: modeller / CAD kernel
-Scope: move the entire Tessellator2 pipeline (`js/cad/Tessellator2/`) into the
-AssemblyScript kernel (`assembly/kernel/`) so that per-face tessellation runs
-end-to-end in WASM and returns a ready-to-render vertex/index buffer with
-zero JS-side curve/surface evaluation.
 
-## 1. Why
+## 1. Direction
 
-Today the hot path is:
+The old migration target was to marshal a JS `TopoBody` blob into WASM, run a
+native tessellator, and decode a mesh blob back in JS. That is no longer the
+right architecture.
 
-```
-JS: BRepTopology → Tessellator2 → EdgeSampler ─┐
-                                     │         │  surface.evaluate(u,v)
-                                     ├─────────┼──── curve.tessellate()
-                                     │         │  closestPointUV()
-                                     ▼         ▼
-                           FaceTriangulator → WASM-JS boundary
-                                     │
-                                     ▼
-                                MeshStitcher
-```
-
-Every call to `surface.evaluate` / `surface.normal` /
-`surface.closestPointUV` / `curve.tessellate` is a JS→WASM (or JS-only
-fallback) trampoline that serializes `{u, v}` / 3D points through the shared
-heap. A single mid-complexity face produces thousands of such calls (Step 3
-adaptive subdivision + Steiner grid + boundary sampling). For a 100-face
-body we already measure > 500k boundary crossings per tessellation, with
-object allocations on both sides each call.
-
-Pulling the pipeline into WASM removes the per-point serialization cost,
-keeps NURBS state (knot vectors, control points) resident across
-evaluations, enables SIMD/loop-vectorization in subdivision hot loops, and
-frees the JS event loop for UI work.
-
-## 2. Current Pipeline Inventory (JS side to move)
-
-File → responsibility → WASM target module
-
-| JS file                                                 | Role                                                  | WASM target                        |
-| ------------------------------------------------------- | ----------------------------------------------------- | ---------------------------------- |
-| `Tessellator2/index.js`                                 | Dispatcher, fast paths (sphere pole, periodic strips) | `assembly/kernel/tessellator.ts`   |
-| `Tessellator2/EdgeSampler.js`                           | Uniform / curve edge sampling + cache                 | `assembly/kernel/edge-sampler.ts`  |
-| `Tessellator2/FaceTriangulator.js`                      | Planar / analytic / NURBS CDT + subdivision           | `assembly/kernel/face-triangulator.ts` |
-| `Tessellator2/MeshStitcher.js`                          | Vertex dedup, per-face → per-body merge               | `assembly/kernel/mesh-stitcher.ts` |
-| `Tessellator2/GeometryEvaluator.js` (thin shim)         | `evalSurface` wrapper                                 | inlined into `face-triangulator.ts`|
-| `js/cad/NurbsCurve.js`, `NurbsSurface.js`               | NURBS evaluators (already dual JS/WASM)               | Use existing `assembly/nurbs.ts`   |
-| `js/cad/toolkit/CDT.js` (`constrainedTriangulate`)      | Sweep-line / Bowyer–Watson CDT                        | `assembly/kernel/cdt.ts`           |
-| `js/cad/toolkit/Vec3Utils.js` (fmtCoord, edgeKeyFromVerts) | Hashing, key helpers                                | `assembly/kernel/vec3-utils.ts`    |
-
-What stays in JS:
-
-- **TopoBody construction** (`BRepTopology.js`, `BRepChamfer.js`,
-  `BRepFillet.js`): authored by feature operators; too intertwined with the
-  feature tree to move now.
-- **Tessellator entry point** in `js/cad/Tessellator2/index.js` becomes a
-  thin shim that (a) marshals the TopoBody into a packed WASM struct, (b)
-  calls `tessellateBodyWASM(bodyPtr)`, (c) decodes the returned mesh.
-- **Rendering** (`js/wasm-renderer.js`, `js/webgl-executor.js`): already
-  operates on Float32Array vertex/index buffers, so once we emit those in
-  WASM we can pass them through without decoding.
-
-## 3. Boundary Representation in WASM
-
-We need a stable, side-effect-free snapshot of the TopoBody that WASM can
-read. Define a packed binary layout (AssemblyScript-friendly, no GC
-pressure):
+The runtime target is handle-resident tessellation:
 
 ```
-TopoBodyBlob {
-  u32  magic          = 'TPBD'
-  u32  version
-  u32  numVertices
-  u32  numEdges
-  u32  numCoEdges
-  u32  numLoops
-  u32  numFaces
-  u32  numShells
-  Vertex[numVertices]     // {f64 x,y,z; u32 id}
-  Curve[numEdges]         // tagged union; see below
-  Edge[numEdges]          // {u32 id; u32 startV; u32 endV; u32 curveIdx; f32 tMin; f32 tMax}
-  CoEdge[numCoEdges]      // {u32 edgeIdx; u8 sameSense; u32 loopIdx}
-  Surface[numFaces]       // tagged union
-  Loop[numLoops]          // {u32 firstCoEdge; u32 coEdgeCount; u32 faceIdx}
-  Face[numFaces]          // {u32 id; u32 outerLoopIdx; u32 firstInnerLoop; u32 innerLoopCount;
-                          //  u32 surfaceIdx; u8 surfaceTypeTag; u8 sameSense; u16 flags}
-  Shell[numShells]        // {u32 firstFace; u32 faceCount}
-}
-
-Curve = tag(u8) ∈ { LINE=0, CIRCLE_ARC=1, NURBS_CURVE=2 }
-  LINE        → {f64 sx,sy,sz, ex,ey,ez}
-  CIRCLE_ARC  → {f64 cx,cy,cz, ax,ay,az, ux,uy,uz, r, startAng, endAng}
-  NURBS_CURVE → {u32 degree; u32 nCP; f64[] CP (4*n: wx,wy,wz,w); u32 nKnots; f64[] knots}
-
-Surface = tag(u8) ∈ { PLANE=0, CYLINDER=1, CONE=2, SPHERE=3, TORUS=4, NURBS_SURFACE=5 }
-  // packed similarly; existing assembly/nurbs.ts already holds the NURBS
-  // layout, so we alias the CP/knot table pointers to save a copy.
+Feature result / import / operation
+        |
+        v
+WASM handle owns topology + geometry ranges
+        |
+        v
+kernel/tessellation reads native pools in place
+        |
+        +-- CPU fallback: typed mesh buffers in WASM memory
+        +-- GPU path: kernel-prepared std430 buffers -> WebGPU compute/render
 ```
 
-Shared-memory strategy:
+JavaScript should pass opaque handle ids and small tessellation parameters.
+It should not serialize live `TopoBody` graphs across the JS/WASM boundary for
+routine in-session rendering, LoD refresh, mass-property fallback, or operation
+preview. CBREP remains the deterministic persistence and cache-hydration format,
+not the steady-state transport for every mesh rebuild.
 
-1. JS side allocates a `Uint8Array` (or `Float64Array` view) large enough to
-   hold the blob, writes it directly, then calls `wasm.tessellateBody(ptr,
-   len, optsPtr, optsLen)` with a WASM-owned memory pointer.
-2. WASM side builds internal `StaticArray<Vertex>`, `StaticArray<Face>`, etc.
-   from the blob (no heap churn per face).
-3. Return path: WASM writes a `MeshBlob` to a second region; JS receives
-   `{vertexPtr, vertexCount, facePtr, faceCount}` and wraps them as typed
-   arrays (zero-copy view into WASM linear memory).
+## 2. Current State
+
+Already landed:
+
+- `assembly/kernel/core.ts` tracks handle allocation, residency, revisions, and
+  per-handle vertex/edge/coedge/loop/face/shell/geometry ranges.
+- `assembly/kernel/topology.ts` can append topology for a handle through
+  `bodyBeginForHandle()` / `bodyEndForHandle()`.
+- `assembly/kernel/interop.ts` supports `cbrepHydrateForHandle()` so CBREP can
+  hydrate into a handle without clearing other resident bodies.
+- `assembly/kernel/tessellation.ts` tessellates planes, cylinders, cones,
+  spheres, tori, and NURBS surfaces from native topology/geometry pools.
+- `tessBuildAllFaces(segsU, segsV)` remains for legacy global-body callers.
+- `tessBuildHandleFaces(handleId, segsU, segsV)` tessellates only the resident
+  handle's recorded face range.
+- `js/cad/WasmBrepHandleRegistry.js` exposes `tessellateBody()`,
+  `tessellateFace()`, and `tessellateHandle()`.
+- `assembly/kernel/gpu.ts` exposes std430-shaped header/control/knot buffers;
+  `js/render/nurbs-tess.wgsl.js` and `js/render/gpu-tess-pipeline.js` provide
+  the first WebGPU compute scaffold.
+
+Still not finished:
+
+- `FeatureTree.tryFastRestoreFromCheckpoints()` still restores solids by
+  decoding CBREP into a JS `TopoBody` and tessellating that body in JS.
+- Production startup does not consistently instantiate and wire
+  `WasmBrepHandleRegistry` plus `HandleResidencyManager`.
+- Some render and LoD paths still operate on JS mesh/body results even when a
+  resident handle exists.
+- The GPU compute pipeline is scaffolded but not the production render path;
+  CPU readback/debug plumbing still exists and must not become the normal path.
+- Parametric feature execution still mostly produces JS topology, then hydrates
+  or serializes afterward. The target is native handle-in, handle-out operation
+  execution for supported features.
+
+## 3. Runtime Rules
+
+1. JS owns feature ordering, UI state, persistence metadata, and fallback
+   routing.
+2. WASM owns runtime exact topology, geometry pools, tessellation buffers, and
+   native operation outputs for supported paths.
+3. CBREP crosses the boundary only for persistence, cache restore, worker
+   handoff, or explicit debug/export compatibility.
+4. A resident body is addressed by handle id. Operations should read ranges from
+   `kernel/core`, not infer ownership from global counters.
+5. `hydrate(cbrep)` is compatibility glue for single-body callers.
+   Runtime code should prefer `hydrateForHandle(handle, cbrep)`.
+6. GPU acceleration consumes kernel-prepared data. The GPU path may accelerate
+   NURBS basis evaluation, normals, and LoD mesh generation, but the exact body
+   remains owned by the WASM kernel.
+7. JS `TopoBody` materialization is allowed for tests, debug tools, legacy
+   fallbacks, and file-format compatibility. It is not the desired production
+   render/update path.
+
+## 4. Phases
+
+### Phase A — Resident Handle Tessellation API
+
+Status: complete.
+
+- Add `tessBuildHandleFaces(handleId, segsU, segsV)` in
+  `assembly/kernel/tessellation.ts`.
+- Validate handle allocation and `RESIDENCY_RESIDENT` before reading topology.
+- Use `handleGetFaceStart()` / `handleGetFaceEnd()` to avoid global-body
+  assumptions.
+- Keep `tessBuildAllFaces()` routed through the same internal face-range helper
+  so legacy behavior remains stable.
+- Export through `assembly/kernel/index.ts`, `assembly/index.ts`, and the
+  generated release WASM glue.
+- Add `WasmBrepHandleRegistry.tessellateHandle()`.
+- Test two co-resident handles to prove scoped tessellation does not mesh the
+  combined global topology.
+
+Validation:
+
+- `node tests/test-wasm-tess-ops.js` — 32/32 passing.
+
+### Phase B — Fast Restore Uses Resident Tessellation
+
+Status: next.
+
+`FeatureTree.tryFastRestoreFromCheckpoints()` should stop doing:
 
 ```
-MeshBlob {
-  u32  magic         = 'MESH'
-  u32  numVertices
-  u32  numTriangles
-  u32  numFaceGroups
-  f32[numVertices * 8]    // x,y,z, nx,ny,nz, u,v
-  u32[numTriangles * 3]   // triangle vertex indices
-  FaceGroup[numFaceGroups] // {u32 firstTri; u32 triCount; u32 topoFaceId; u8 flags}
-}
+readCbrep(buffer) -> JS TopoBody -> deps.tessellateBody(topoBody)
 ```
 
-The renderer already consumes an interleaved xyz+n+uv buffer, so no JS-side
-repacking is required.
+Preferred flow:
 
-## 4. Phased Migration
+```
+allocate handle
+hydrateForHandle(handle, cbrep)
+set RESIDENT
+tessellateHandle(handle, segsU, segsV)
+attach mesh snapshot + handle metadata to result
+```
 
-Each phase is independently testable against the golden fixtures and can
-ship behind a feature flag.
+The feature result may still keep CBREP bytes for persistence and future lazy
+rehydration, but the runtime mesh should come from the resident handle.
 
-### Phase 0 — Baseline & parity harness (prerequisite)
+Tests needed:
 
-- Capture golden tessellations for the full corpus currently exercised by
-  `tests/test-tess-dihedral-sweep.js`, `tests/test-boolean-corpus.js`, and
-  `tests/test-brep-*.js`. Store under
-  `tests/fixtures/tess-golden/*.mesh.json` as `{vertices, indices,
-  faceGroups}` with sha-256 content hashes.
-- Add `tests/test-tess-parity.js` that runs BOTH the JS pipeline and the
-  (future) WASM pipeline on the same `TopoBody`, asserts vertex-count,
-  triangle-count, and max-point-deviation within `1e-9`, and snapshots the
-  result.
-- Add a feature flag `window.featureFlags.tess.wasm` (default `false`)
-  consumed by `js/cad/Tessellator2/index.js`.
-- Wire a micro-benchmark `tests/bench-tess.mjs` capturing (ms, triangles,
-  faces) per fixture so regressions in either path are caught early.
+- Fast-restore checkpoint builds a mesh without calling `deps.readCbrep()` for
+  supported solid results.
+- A failed handle hydration falls back to the existing JS path.
+- Restored results preserve `wasmHandleId`, residency, `irHash`, volume, bounds,
+  and feature-edge metadata.
 
-### Phase 1 — EdgeSampler + line/arc sampling in WASM
+### Phase C — Production Registry And Residency Wiring
 
-Why first: EdgeSampler is pure, cacheable, and the single biggest source of
-point allocations (thousands per body).
+Status: pending.
 
-- Port `_sampleLinear` and analytic arc / line-curve detection to
-  `assembly/kernel/edge-sampler.ts`.
-- Reuse `assembly/kernel/nurbs.ts` for NURBS curve sampling — extend with a
-  `sampleUniform(curve, nSegs, startPt, endPt, outPtrF64)` export.
-- Build the edge-sample cache inside WASM, keyed on `(edgeId, segments)`
-  with a compact hashmap (linear probing over `StaticArray<u32>`).
-- JS entry point calls `wasm.sampleEdge(edgeIdx, segments, outPtr)` and
-  receives the packed `f64[3*n]` sample array as a typed view.
-- Keep the JS EdgeSampler as a shim so callers are unchanged; internally it
-  delegates to WASM when the flag is on.
-- Parity gate: `tests/test-tess-parity.js` with only Phase 1 enabled must
-  match JS results vertex-for-vertex.
+- Instantiate `WasmBrepHandleRegistry` in the production app/part bootstrap path.
+- Instantiate `HandleResidencyManager` and attach it to each `FeatureTree`.
+- On `.cmod` load and undo/redo, restore metadata and CBREP first, then hydrate
+  handles lazily when render, operation, export, or selection needs exact data.
+- Ensure stale/replaced feature results release handles and residency entries.
+- Add diagnostics that show resident count, hydration count, eviction count, and
+  handle-scoped tessellation count.
 
-### Phase 2 — FaceTriangulator planar path in WASM
+### Phase D — Render And LoD Consume Handles
 
-- Port `triangulatePlanar` (Newell normal, `projectTo2D`, ear-clipping-free
-  CDT dispatch, `splitSkippedBoundaryChains`, `splitSkippedBoundaryMeshEdges`).
-- Port the constrained Delaunay core from `js/cad/toolkit/CDT.js` to
-  `assembly/kernel/cdt.ts`. This is the riskiest single step — the existing
-  CDT has many correctness workarounds (sliver removal, zero-area triangle
-  filters, robust predicates). Use a *direct* port, not a rewrite, and keep
-  the JS implementation alongside for A/B parity.
-- `boundaryEdgeSet` / `meshEdgeKey` become `Map<u64, u32>` (packed 3D-coord
-  keys), no strings.
-- Parity gate: planar faces must match 1:1 in triangle indices after
-  deterministic sort.
+Status: pending.
 
-### Phase 3 — Analytic surface path in WASM
+- Route render refresh for resident solids through `tessellateHandle()`.
+- Keep CPU typed-array output as the fallback for browsers without WebGPU.
+- Preserve faceMap/topology id data so selection and highlighting remain stable.
+- Avoid repeated JS mesh rebuilds when only tessellation density changes.
+- Make LoD changes update segment parameters and re-run handle tessellation, not
+  feature replay.
 
-- Port `triangulateAnalyticSurface` (`_makeAnalyticSurface`, cylinder /
-  cone / sphere / torus closures) to
-  `assembly/kernel/analytic-surfaces.ts`.
-- Port `_normalizePeriodicLoop` and seam-jump rotation.
-- Port `mapLoopToUV` — this is the single largest driver for WASM gains
-  because it currently calls `surface.closestPointUV` ~N×8 per face.
-- Parity gate: cylinder / cone / sphere fixtures match within `1e-10` after
-  deterministic point ordering.
+### Phase E — Parametric Handle-In, Handle-Out Operations
 
-### Phase 4 — NURBS surface path (most complex)
+Status: pending.
 
-- Port `triangulateSurface` (the 700-line function in `FaceTriangulator.js`),
-  including: periodic detection, UV unwrap, UV-self-intersection check,
-  Newell boundary normal vs surface normal, Steiner grid, 4-pass adaptive
-  subdivision with deviation tolerance, fan-split boundary repair.
-- `surfaceMidpoint` / `midpointUv` cache becomes a packed open-address
-  hashmap keyed on `u32 (edgeKey)`.
-- Subdivision triangle storage becomes `StaticArray<u32>` index lists
-  instead of `[a,b,c]` tuples.
-- Per-vertex normal compute (`surface.normal(u,v)` × 3 per triangle) batches
-  into one WASM call that produces all normals for the final triangle
-  list.
-- Parity gate: NURBS fixtures match within `1e-8` for vertex positions and
-  within `1e-6` for normals (small cos deviation allowed because the JS
-  centroid-evaluation can take a different code path than WASM SIMD-evaluation).
+The end goal is not just faster tessellation. Parametric and exact operations
+must produce native result handles directly:
 
-### Phase 5 — MeshStitcher + return buffer in WASM
+- sketches and constraints may remain UI-authored in JS while the solver/core
+  math lives in WASM where practical;
+- feature parameters cross the boundary as compact numeric structs;
+- supported operations allocate a new output handle and append topology/geometry
+  directly into kernel pools;
+- unsupported operations explicitly fall back to the JS exact path and then
+  hydrate the result handle from CBREP.
 
-- Port `MeshStitcher.stitch` — vertex-dedup map becomes a robin-hood hash
-  over `u64` coordinate keys.
-- Emit the final `MeshBlob` directly into WASM memory.
-- JS `tessellateBodyWASM` wraps the returned pointers with typed-array
-  views and tags them with `{topoFaceId, fusedGroupId, isCorner, isFillet}`
-  from a parallel `FaceGroup[]` table emitted alongside.
-- Parity gate: full-body tessellation bit-exact with JS path for planar
-  corpus and `<1e-9` for curved corpus.
+Initial candidates:
 
-### Phase 6 — Cleanup
+- transform/copy/move/rotate on resident handles;
+- primitive/extrude/revolve generation into a new handle;
+- boolean result allocation once trimmed classification is safe;
+- chamfer/fillet slices only after the topology cases are proven by tests.
 
-- Delete the JS implementations (keep as historical reference tag
-  `pre-wasm-tess` only).
-- Flip `featureFlags.tess.wasm` default to `true`.
-- Remove the parity harness or relegate it to a nightly job.
+### Phase F — GPU Compute As Acceleration Layer
 
-## 5. Risks & Mitigations
+Status: pending/in progress.
 
-| Risk | Detail | Mitigation |
-| ---- | ------ | ---------- |
-| CDT correctness drift | The JS CDT has years of sliver / degeneracy fixes embedded in test-driven patches. A rewrite will reintroduce bugs. | *Direct port, not a rewrite*. Keep test-boolean-corpus green at every phase. Diff triangle index lists deterministically. |
-| Floating-point divergence | JS uses f64 everywhere; WASM may use f64 ops that differ on transcendentals (sin/cos/sqrt) depending on compiler. | Lock tolerances explicitly in parity tests; prefer `Mathf` only where irrelevant (normal normalization). Never use f32 for UV / CDT predicates. |
-| Memory management | Blob-based marshaling can leak if WASM panics. | Use a ring-buffer allocator per tessellation call; reset on completion. Add `tessellateBody_free(ptr)` export. |
-| Shared-edge sample identity across faces | Today EdgeSampler returns the same JS array reference to both neighboring faces, which MeshStitcher relies on for dedup. | In WASM, share by edge *sample offset* in the blob, not by pointer identity. MeshStitcher dedups by `fmtCoord`-keyed hash which is already position-based, so identity reliance is implicit but safe. |
-| Feature-flag regressions | Turning on the WASM path mid-session could change tessellation results in the middle of a user edit. | Flag reads `sessionStorage` on boot; switch requires reload. Parity harness runs on CI for each PR. |
-| Fallback when WASM evaluator unavailable | The existing `[CAD-Fallback] evaluator:wasm-to-js` path exists because some environments cannot load the stack fallback WASM. | Keep the JS pipeline live until Phase 6. If WASM evaluator reports `unavailable`, the dispatcher auto-routes to JS. |
+- Build GPU batches from kernel-owned NURBS surfaces and tessellation settings.
+- Initialize `GpuTessPipeline` from the production registry.
+- Upload std430 buffers from WASM memory to WebGPU storage buffers without JS
+  per-element packing.
+- Dispatch compute for NURBS surface samples and normals.
+- Feed compute output directly into render vertex buffers.
+- Keep CPU readback only for diagnostics/tests, not normal rendering.
+- Preserve the CPU WASM tessellator as the deterministic fallback and comparison
+  baseline.
 
-## 6. Out-of-scope for this plan (explicit)
+## 5. Success Metrics
 
-- BRep kernel (fillet / chamfer / boolean) stays in JS. That is a separate,
-  far larger port touching the FeatureTree.
-- STEP import / export stays in JS.
-- Incremental tessellation cache (`_incrementalTessellationCache`) — will
-  need a parallel WASM-side cache store once Phase 5 lands. Deferred.
+1. Resident fast restore can rebuild display mesh without JS `TopoBody`
+   materialization for supported CBREP results.
+2. Multiple resident bodies can be hydrated and tessellated independently in one
+   WASM instance.
+3. Render LoD changes re-run handle tessellation without feature replay.
+4. WebGPU NURBS tessellation can render without CPU readback when available.
+5. JS tessellation remains only as legacy/test fallback, not the default route.
+6. Existing topology and STEP regression suites remain green after each phase.
 
-## 7. Success metrics
+## 6. Open Risks
 
-1. `tests/test-tess-parity.js` green across every phase.
-2. `tests/bench-tess.mjs` shows ≥ 3× speedup on the `XYZ all fillet` corner
-   fixture once Phase 5 lands (measured on v22 Node, Intel i7).
-3. No regressions in the full `tests/index.js` suite at any phase.
-4. Zero `[CAD-Fallback] evaluator:wasm-to-js` warnings when the WASM
-   evaluator is actually available — today's code path pessimistically logs
-   this even when WASM is loadable.
-
-## 8. Estimated complexity (relative)
-
-- Phase 0: S (fixtures + flag)
-- Phase 1: S (EdgeSampler is ~200 lines)
-- Phase 2: M (planar CDT port — careful)
-- Phase 3: M (analytic surfaces — follows Phase 2 template)
-- Phase 4: L (NURBS triangulate — the biggest function in the codebase)
-- Phase 5: S (stitcher + blob plumbing)
-- Phase 6: S (cleanup)
-
-Total: roughly 3 L-weeks of focused kernel work with a parity harness that
-pays for itself by catching regressions early.
+- The resident native pools are append-only today. Long sessions need compaction
+  or reclamation once many handles are released.
+- Some containment/classification paths still need trimmed-face boundary checks
+  before broad native boolean execution is safe.
+- GPU compute must not weaken exact-kernel ownership. It accelerates evaluation
+  and rendering, while topology and persistent exact geometry stay in WASM CPU
+  memory.
+- Selection, highlighting, and diagnostics depend on stable face ids. Any
+  handle-scoped render path must preserve faceMap semantics.
+- Fallback paths must be explicit and observable so unsupported regimes do not
+  silently reintroduce repeated serialization.
