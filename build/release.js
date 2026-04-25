@@ -749,6 +749,14 @@ async function instantiate(module, imports = {}) {
       // assembly/kernel/ops/getPlaneConeIntersectPtr() => usize
       return exports.getPlaneConeIntersectPtr() >>> 0;
     },
+    cylinderCylinderIntersect(aOx, aOy, aOz, aAx0, aAy0, aAz0, aR, bOx, bOy, bOz, bAx0, bAy0, bAz0, bR, angularTol, distTol) {
+      // assembly/kernel/ops/cylinderCylinderIntersect(f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64) => u32
+      return exports.cylinderCylinderIntersect(aOx, aOy, aOz, aAx0, aAy0, aAz0, aR, bOx, bOy, bOz, bAx0, bAy0, bAz0, bR, angularTol, distTol) >>> 0;
+    },
+    getCylinderCylinderIntersectPtr() {
+      // assembly/kernel/ops/getCylinderCylinderIntersectPtr() => usize
+      return exports.getCylinderCylinderIntersectPtr() >>> 0;
+    },
     sphereSphereIntersect(aCx, aCy, aCz, aR, bCx, bCy, bCz, bR, distTol) {
       // assembly/kernel/ops/sphereSphereIntersect(f64, f64, f64, f64, f64, f64, f64, f64, f64) => u32
       return exports.sphereSphereIntersect(aCx, aCy, aCz, aR, bCx, bCy, bCz, bR, distTol) >>> 0;
@@ -1222,6 +1230,8 @@ export const {
   getPlaneCylinderIntersectPtr,
   planeConeIntersect,
   getPlaneConeIntersectPtr,
+  cylinderCylinderIntersect,
+  getCylinderCylinderIntersectPtr,
   sphereSphereIntersect,
   getSphereSphereIntersectPtr,
   getFaceClassification,

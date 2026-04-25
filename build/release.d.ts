@@ -1783,6 +1783,32 @@ export declare function planeConeIntersect(pPx: number, pPy: number, pPz: number
  */
 export declare function getPlaneConeIntersectPtr(): number;
 /**
+ * assembly/kernel/ops/cylinderCylinderIntersect
+ * @param aOx `f64`
+ * @param aOy `f64`
+ * @param aOz `f64`
+ * @param aAx0 `f64`
+ * @param aAy0 `f64`
+ * @param aAz0 `f64`
+ * @param aR `f64`
+ * @param bOx `f64`
+ * @param bOy `f64`
+ * @param bOz `f64`
+ * @param bAx0 `f64`
+ * @param bAy0 `f64`
+ * @param bAz0 `f64`
+ * @param bR `f64`
+ * @param angularTol `f64`
+ * @param distTol `f64`
+ * @returns `u32`
+ */
+export declare function cylinderCylinderIntersect(aOx: number, aOy: number, aOz: number, aAx0: number, aAy0: number, aAz0: number, aR: number, bOx: number, bOy: number, bOz: number, bAx0: number, bAy0: number, bAz0: number, bR: number, angularTol: number, distTol: number): number;
+/**
+ * assembly/kernel/ops/getCylinderCylinderIntersectPtr
+ * @returns `usize`
+ */
+export declare function getCylinderCylinderIntersectPtr(): number;
+/**
  * assembly/kernel/ops/sphereSphereIntersect
  * @param aCx `f64`
  * @param aCy `f64`

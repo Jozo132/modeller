@@ -31,6 +31,7 @@ const _debugSurfaceBackend = {
   wasmPlaneSphereCalls: 0,
   wasmPlaneCylinderCalls: 0,
   wasmPlaneConeCalls: 0,
+  wasmCylinderCylinderCalls: 0,
   wasmSphereSphereCalls: 0,
 };
 async function _ensureWasm() {
@@ -75,6 +76,7 @@ export function _resetIntersectionsDebugStateForTests() {
   _debugSurfaceBackend.wasmPlaneSphereCalls = 0;
   _debugSurfaceBackend.wasmPlaneCylinderCalls = 0;
   _debugSurfaceBackend.wasmPlaneConeCalls = 0;
+  _debugSurfaceBackend.wasmCylinderCylinderCalls = 0;
   _debugSurfaceBackend.wasmSphereSphereCalls = 0;
 }
 
@@ -331,6 +333,52 @@ function _intersectSurfacesWasm(surfA, typeA, surfB, typeB, tol) {
       const normal = { x: out[3], y: out[4], z: out[5] };
       const radius = out[6];
       return [{ curve: _buildCircleCurve9Pt(center, normal, radius), paramsA: [], paramsB: [] }];
+    }
+    return null;
+  }
+
+  // Cylinder × Cylinder ───────────────────────────────────────────────
+  if (typeA === SurfaceType.CYLINDER && typeB === SurfaceType.CYLINDER) {
+    if (typeof _wasm.cylinderCylinderIntersect !== 'function' || typeof _wasm.getCylinderCylinderIntersectPtr !== 'function') {
+      return null;
+    }
+    const aInfo = _extractCylinderInfoCompat(surfA);
+    const bInfo = _extractCylinderInfoCompat(surfB);
+    if (!aInfo || !bInfo) return null;
+
+    const tag = _wasm.cylinderCylinderIntersect(
+      aInfo.origin.x, aInfo.origin.y, aInfo.origin.z,
+      aInfo.axis.x, aInfo.axis.y, aInfo.axis.z,
+      aInfo.radius,
+      bInfo.origin.x, bInfo.origin.y, bInfo.origin.z,
+      bInfo.axis.x, bInfo.axis.y, bInfo.axis.z,
+      bInfo.radius,
+      tol.angularParallelism,
+      _distTol(tol),
+    );
+
+    // Non-parallel axes and coincident same-radius cylinders stay with JS.
+    if (tag === 255) return null;
+
+    _debugSurfaceBackend.last = 'wasm-cylinder-cylinder';
+    _debugSurfaceBackend.wasmCylinderCylinderCalls++;
+    if (tag === 0) return [];
+
+    const out = new Float64Array(_wasmMem.buffer, _wasm.getCylinderCylinderIntersectPtr(), 12);
+    if (tag === 2) {
+      const pt = { x: out[0], y: out[1], z: out[2] };
+      const dir = { x: out[3], y: out[4], z: out[5] };
+      return [_buildLineResultAlongDir(pt, dir)];
+    }
+    if (tag === 3) {
+      const pt0 = { x: out[0], y: out[1], z: out[2] };
+      const dir0 = { x: out[3], y: out[4], z: out[5] };
+      const pt1 = { x: out[6], y: out[7], z: out[8] };
+      const dir1 = { x: out[9], y: out[10], z: out[11] };
+      return [
+        _buildLineResultAlongDir(pt0, dir0),
+        _buildLineResultAlongDir(pt1, dir1),
+      ];
     }
     return null;
   }

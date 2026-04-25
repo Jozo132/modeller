@@ -54,6 +54,9 @@ const planeSphereOut = new StaticArray<f64>(7);
  */
 const planeCylinderOut = new StaticArray<f64>(12);
 
+/** Cylinder/cylinder intersection output: up to two lines, point(3)+direction(3) each. */
+const cylinderCylinderOut = new StaticArray<f64>(12);
+
 // ─── Per-intersection error bound tracking ───────────────────────────
 
 /** Max tracked intersections per boolean pass. */
@@ -487,6 +490,106 @@ export function planeConeIntersect(
 
 export function getPlaneConeIntersectPtr(): usize {
   return changetype<usize>(planeConeOut);
+}
+
+/**
+ * Intersect two infinite cylinders for the parallel-axis analytic regime.
+ *
+ * Returns:
+ *   0   — miss (parallel axes, cross-section circles do not cross)
+ *   2   — tangent line (writes point(3) + direction(3))
+ *   3   — two parallel secant lines (writes 2 · (point(3) + direction(3)))
+ *   255 — non-parallel axes or coincident same-radius cylinders, JS fallback
+ */
+export function cylinderCylinderIntersect(
+  aOx: f64, aOy: f64, aOz: f64,
+  aAx0: f64, aAy0: f64, aAz0: f64,
+  aR: f64,
+  bOx: f64, bOy: f64, bOz: f64,
+  bAx0: f64, bAy0: f64, bAz0: f64,
+  bR: f64,
+  angularTol: f64,
+  distTol: f64,
+): u32 {
+  const aLen = Math.sqrt(aAx0 * aAx0 + aAy0 * aAy0 + aAz0 * aAz0);
+  const bLen = Math.sqrt(bAx0 * bAx0 + bAy0 * bAy0 + bAz0 * bAz0);
+  if (aLen < distTol || bLen < distTol) return 255;
+
+  const aAx = aAx0 / aLen;
+  const aAy = aAy0 / aLen;
+  const aAz = aAz0 / aLen;
+  const bAx = bAx0 / bLen;
+  const bAy = bAy0 / bLen;
+  const bAz = bAz0 / bLen;
+
+  const cosAxes = aAx * bAx + aAy * bAy + aAz * bAz;
+  const absCos = cosAxes < 0 ? -cosAxes : cosAxes;
+  if (absCos < 1.0 - angularTol) return 255;
+
+  const dx = bOx - aOx;
+  const dy = bOy - aOy;
+  const dz = bOz - aOz;
+  const axial = dx * aAx + dy * aAy + dz * aAz;
+  const perpX = dx - axial * aAx;
+  const perpY = dy - axial * aAy;
+  const perpZ = dz - axial * aAz;
+  const d2 = perpX * perpX + perpY * perpY + perpZ * perpZ;
+  const d = Math.sqrt(d2);
+
+  if (d < distTol) {
+    const rDiff = aR - bR;
+    const absRDiff = rDiff < 0 ? -rDiff : rDiff;
+    return absRDiff < distTol ? 255 : 0;
+  }
+
+  const rSum = aR + bR;
+  const rDiffAB = aR > bR ? aR - bR : bR - aR;
+  if (d > rSum + distTol) return 0;
+  if (d < rDiffAB - distTol) return 0;
+
+  const ex = perpX / d;
+  const ey = perpY / d;
+  const ez = perpZ / d;
+  const along = (aR * aR - bR * bR + d2) / (2.0 * d);
+  const h2 = aR * aR - along * along;
+  if (h2 < -(distTol * distTol)) return 0;
+
+  const baseX = aOx + along * ex;
+  const baseY = aOy + along * ey;
+  const baseZ = aOz + along * ez;
+  const h = h2 <= 0 ? 0.0 : Math.sqrt(h2);
+
+  if (h < distTol) {
+    unchecked(cylinderCylinderOut[0] = baseX);
+    unchecked(cylinderCylinderOut[1] = baseY);
+    unchecked(cylinderCylinderOut[2] = baseZ);
+    unchecked(cylinderCylinderOut[3] = aAx);
+    unchecked(cylinderCylinderOut[4] = aAy);
+    unchecked(cylinderCylinderOut[5] = aAz);
+    return 2;
+  }
+
+  const tx = aAy * ez - aAz * ey;
+  const ty = aAz * ex - aAx * ez;
+  const tz = aAx * ey - aAy * ex;
+
+  unchecked(cylinderCylinderOut[0] = baseX - h * tx);
+  unchecked(cylinderCylinderOut[1] = baseY - h * ty);
+  unchecked(cylinderCylinderOut[2] = baseZ - h * tz);
+  unchecked(cylinderCylinderOut[3] = aAx);
+  unchecked(cylinderCylinderOut[4] = aAy);
+  unchecked(cylinderCylinderOut[5] = aAz);
+  unchecked(cylinderCylinderOut[6] = baseX + h * tx);
+  unchecked(cylinderCylinderOut[7] = baseY + h * ty);
+  unchecked(cylinderCylinderOut[8] = baseZ + h * tz);
+  unchecked(cylinderCylinderOut[9] = aAx);
+  unchecked(cylinderCylinderOut[10] = aAy);
+  unchecked(cylinderCylinderOut[11] = aAz);
+  return 3;
+}
+
+export function getCylinderCylinderIntersectPtr(): usize {
+  return changetype<usize>(cylinderCylinderOut);
 }
 
 /** Sphere/sphere intersection output: circle center(3) + normal(3) + radius(1). */
