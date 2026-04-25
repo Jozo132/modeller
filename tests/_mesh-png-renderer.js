@@ -92,7 +92,11 @@ function writePNG(filePath, width, height, rgb /* Uint8Array w*h*3 */) {
 // ---------------------------------------------------------------------------
 
 const PREC = 6;
-const _vk = (v) => `${v.x.toFixed(PREC)}|${v.y.toFixed(PREC)}|${v.z.toFixed(PREC)}`;
+// Match MeshValidator.detectBoundaryEdges keying exactly so the PNG's
+// pink/red highlights agree with the audit's boundaryCount.  In particular
+// the `(+c.toFixed(PREC) || 0)` step normalises -0 → 0.
+const _fmt = (c) => (+c.toFixed(PREC) || 0).toFixed(PREC);
+const _vk = (v) => `${_fmt(v.x)},${_fmt(v.y)},${_fmt(v.z)}`;
 const _ek = (a, b) => {
   const ka = _vk(a), kb = _vk(b);
   return ka < kb ? `${ka}::${kb}` : `${kb}::${ka}`;
