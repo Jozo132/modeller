@@ -1997,11 +1997,13 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
                 sameSense: coedge.sameSense !== false,
                 count: 0,
                 faceIds: [],
+                faces: [],
               });
             }
             const r = edgeRefs.get(e.id);
             r.count++;
             r.faceIds.push(face.id);
+            r.faces.push(face);
           }
         }
       }
@@ -2019,6 +2021,7 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
         aKey: _vkey(a),
         bKey: _vkey(b),
         faceIds: r.faceIds,
+        faces: r.faces,
       });
     }
     return out;
@@ -2035,7 +2038,7 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
     const loops = [];
     while (remaining.length > 0) {
       const start = remaining.shift();
-      const loop = [{ a: start.a, b: start.b, aKey: start.aKey, bKey: start.bKey, curve: start.curve }];
+      const loop = [{ a: start.a, b: start.b, aKey: start.aKey, bKey: start.bKey, curve: start.curve, faces: start.faces }];
       let curEndKey = start.bKey;
       const startKey = start.aKey;
       let safety = remaining.length + 1;
@@ -2053,6 +2056,7 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
             a: next.b, b: next.a,
             aKey: next.bKey, bKey: next.aKey,
             curve: next.curve ? next.curve.reversed() : null,
+            faces: next.faces,
           });
           curEndKey = next.aKey;
         } else {
@@ -2060,6 +2064,7 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
             a: next.a, b: next.b,
             aKey: next.aKey, bKey: next.bKey,
             curve: next.curve,
+            faces: next.faces,
           });
           curEndKey = next.bKey;
         }
@@ -2128,6 +2133,133 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
     };
   };
 
+  // -----------------------------------------------------------------------
+  // Helper: when an open 3-vertex loop bounds 3 chamfer planes (one per
+  // edge), the geometrically correct cap is NOT a single planar triangle
+  // through the 3 loop verts — that produces a flat-face "stub" at the
+  // 3-fold corner instead of a sharp symmetric tip.  Compute the analytic
+  // tip T as the intersection of the 3 chamfer planes and emit 3 small
+  // triangle faces, each lying on its respective chamfer plane and
+  // sharing T as the apex.  The result is a true sharp tip where the 3
+  // chamfer planes converge.
+  //
+  // Returns an array of 3 face descriptors, or null if the configuration
+  // doesn't apply (loop not 3-vert, edges not adjacent to chamfer planes,
+  // planes parallel/degenerate, or T outside a sanity bound around the
+  // loop centroid).
+  // -----------------------------------------------------------------------
+  const _emitThreePlaneTipFromLoop = (loop) => {
+    if (loop.length !== 3) return null;
+    // Each loop edge must be on exactly one face that is a planar chamfer
+    // (face.shared.isChamfer && surfaceType === PLANE).  Collect 3 planes:
+    // (point on plane, normal).
+    const planes = [];
+    for (const seg of loop) {
+      if (!seg.faces || seg.faces.length !== 1) return null;
+      const f = seg.faces[0];
+      if (!f || !f.shared || !f.shared.isChamfer) return null;
+      if (f.surfaceType !== SurfaceType.PLANE) return null;
+      const surf = f.surface;
+      if (!surf || typeof surf.evaluate !== 'function') return null;
+      const p0 = surf.evaluate(0.5, 0.5);
+      let n;
+      if (typeof surf.normal === 'function') {
+        n = surf.normal(0.5, 0.5);
+      } else {
+        const eps = 1e-4;
+        const pu = surf.evaluate(0.5 + eps, 0.5);
+        const pv = surf.evaluate(0.5, 0.5 + eps);
+        n = vec3Cross(vec3Sub(pu, p0), vec3Sub(pv, p0));
+      }
+      const nLen = vec3Len(n);
+      if (nLen < 1e-12) return null;
+      n = vec3Scale(n, 1 / nLen);
+      planes.push({ face: f, p0, n });
+    }
+    // Solve 3-plane intersection: each plane is n·(x - p0) = 0 → n·x = n·p0.
+    // Build 3x3 matrix [n0; n1; n2] and right-hand side d = [n0·p0_0, ...].
+    const M = [
+      [planes[0].n.x, planes[0].n.y, planes[0].n.z],
+      [planes[1].n.x, planes[1].n.y, planes[1].n.z],
+      [planes[2].n.x, planes[2].n.y, planes[2].n.z],
+    ];
+    const d = [
+      vec3Dot(planes[0].n, planes[0].p0),
+      vec3Dot(planes[1].n, planes[1].p0),
+      vec3Dot(planes[2].n, planes[2].p0),
+    ];
+    // Determinant via cofactor expansion
+    const det =
+      M[0][0] * (M[1][1] * M[2][2] - M[1][2] * M[2][1]) -
+      M[0][1] * (M[1][0] * M[2][2] - M[1][2] * M[2][0]) +
+      M[0][2] * (M[1][0] * M[2][1] - M[1][1] * M[2][0]);
+    if (Math.abs(det) < 1e-10) return null;
+    // Cramer's rule
+    const detX =
+      d[0]    * (M[1][1] * M[2][2] - M[1][2] * M[2][1]) -
+      M[0][1] * (d[1]    * M[2][2] - M[1][2] * d[2]) +
+      M[0][2] * (d[1]    * M[2][1] - M[1][1] * d[2]);
+    const detY =
+      M[0][0] * (d[1]    * M[2][2] - M[1][2] * d[2]) -
+      d[0]    * (M[1][0] * M[2][2] - M[1][2] * M[2][0]) +
+      M[0][2] * (M[1][0] * d[2]    - d[1]    * M[2][0]);
+    const detZ =
+      M[0][0] * (M[1][1] * d[2]    - d[1]    * M[2][1]) -
+      M[0][1] * (M[1][0] * d[2]    - d[1]    * M[2][0]) +
+      d[0]    * (M[1][0] * M[2][1] - M[1][1] * M[2][0]);
+    const T = { x: detX / det, y: detY / det, z: detZ / det };
+    // Sanity: T should be near the loop centroid (within a few times the
+    // loop's bounding-box diagonal).  Otherwise the planes meet at a far
+    // point, indicating this isn't a true 3-fold convergence corner.
+    const cx = (loop[0].a.x + loop[1].a.x + loop[2].a.x) / 3;
+    const cy = (loop[0].a.y + loop[1].a.y + loop[2].a.y) / 3;
+    const cz = (loop[0].a.z + loop[1].a.z + loop[2].a.z) / 3;
+    let diag = 0;
+    for (let i = 0; i < 3; i++) {
+      for (let j = i + 1; j < 3; j++) {
+        const dx = loop[i].a.x - loop[j].a.x;
+        const dy = loop[i].a.y - loop[j].a.y;
+        const dz = loop[i].a.z - loop[j].a.z;
+        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        if (dist > diag) diag = dist;
+      }
+    }
+    const tipDist = Math.sqrt((T.x - cx) ** 2 + (T.y - cy) ** 2 + (T.z - cz) ** 2);
+    if (tipDist > 4 * diag) return null;
+    // Verify T lies on all 3 planes (numerical sanity).
+    for (const pl of planes) {
+      const off = vec3Dot(pl.n, vec3Sub(T, pl.p0));
+      if (Math.abs(off) > 1e-6) return null;
+    }
+    // Emit 3 triangle face descriptors.  For each loop edge (a→b on plane
+    // P), the triangle is (a, b, T) — already on plane P since a, b, T
+    // all satisfy P's equation.
+    const descs = [];
+    for (const seg of loop) {
+      const a = seg.a;
+      const b = seg.b;
+      const verts = [a, b, T];
+      const u0 = vec3Sub(b, a);
+      const v0 = vec3Sub(T, a);
+      const cr = vec3Cross(u0, v0);
+      if (vec3Len(cr) < 1e-12) return null; // degenerate triangle
+      const surface = NurbsSurface.createPlane(a, u0, v0);
+      const curves = [
+        seg.curve ? seg.curve.clone() : NurbsCurve.createLine(a, b),
+        NurbsCurve.createLine(b, T),
+        NurbsCurve.createLine(T, a),
+      ];
+      descs.push({
+        surface,
+        surfaceType: SurfaceType.PLANE,
+        vertices: verts,
+        edgeCurves: curves,
+        shared: { isCorner: true, isAutoCap: true, isChamfer: true, isSharpTip: true },
+      });
+    }
+    return descs;
+  };
+
   // Step 6: Build new TopoBody and tessellate
   let newTopoBody;
   try {
@@ -2149,7 +2281,18 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
     const openEdges = _collectOpenEdges(newTopoBody);
     const loops = _extractClosedLoops(openEdges);
     let appendedCaps = 0;
+    let sharpTips = 0;
     for (const loop of loops) {
+      // Prefer the analytic 3-chamfer-plane sharp-tip emission for 3-vert
+      // loops bounded by 3 chamfer planes — produces a true sharp corner
+      // instead of a flat cap stub.
+      const tipDescs = _emitThreePlaneTipFromLoop(loop);
+      if (tipDescs) {
+        for (const d of tipDescs) faceDescs.push(d);
+        appendedCaps += tipDescs.length;
+        sharpTips++;
+        continue;
+      }
       const cap = _emitCornerCapFromLoop(loop);
       if (cap) {
         faceDescs.push(cap);
@@ -2157,7 +2300,7 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
       }
     }
     if (appendedCaps > 0) {
-      _debugBRepChamfer('auto-cap', { appendedCaps, loops: loops.length });
+      _debugBRepChamfer('auto-cap', { appendedCaps, sharpTips, loops: loops.length });
       try {
         newTopoBody = buildTopoBody(faceDescs);
         topoBoundaryEdges = countTopoBodyBoundaryEdges(newTopoBody);
