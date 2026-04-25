@@ -721,6 +721,7 @@ function applyOp(part, axis, op) {
     // still-resolvable" contract holds.
     throw new Error(`concurrent edge ${axis} no longer resolvable — prior ops consumed it`);
   }
+  const featureCountBefore = part.featureTree.features.length;
   if (op === 'chamfer') {
     part.chamfer([key], CORNER_PARAM);
   } else if (op === 'fillet') {
@@ -728,6 +729,9 @@ function applyOp(part, axis, op) {
   } else {
     throw new Error(`unknown op ${op}`);
   }
+  const addedFeature = part.featureTree.features[featureCountBefore];
+  assert.ok(addedFeature, `${axis} ${op}: feature was not added`);
+  assert.ok(addedFeature.result, `${axis} ${op}: feature execution did not produce a result`);
 }
 
 /**

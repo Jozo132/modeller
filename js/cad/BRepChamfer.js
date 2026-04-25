@@ -1142,6 +1142,65 @@ function _intersectLineCylinder(P0, dir, axisP, axisDir, radius) {
   return vec3Add(P0, vec3Scale(dir, t));
 }
 
+function _intersectLineCylinderAll(P0, dir, axisP, axisDir, radius) {
+  const W = vec3Sub(P0, axisP);
+  const wAx = vec3Dot(W, axisDir);
+  const dAx = vec3Dot(dir, axisDir);
+  const wp = vec3Sub(W, vec3Scale(axisDir, wAx));
+  const dp = vec3Sub(dir, vec3Scale(axisDir, dAx));
+  const a = vec3Dot(dp, dp);
+  const b = 2 * vec3Dot(wp, dp);
+  const c = vec3Dot(wp, wp) - radius * radius;
+  if (Math.abs(a) < 1e-12) return [];
+  const disc = b * b - 4 * a * c;
+  if (disc < -1e-10) return [];
+  if (Math.abs(disc) <= 1e-10) {
+    return [vec3Add(P0, vec3Scale(dir, -b / (2 * a)))];
+  }
+  const sq = Math.sqrt(Math.max(0, disc));
+  return [
+    vec3Add(P0, vec3Scale(dir, (-b - sq) / (2 * a))),
+    vec3Add(P0, vec3Scale(dir, (-b + sq) / (2 * a))),
+  ];
+}
+
+function _planeFromFace(face) {
+  if (!face || face.surfaceType !== SurfaceType.PLANE || !face.surface) return null;
+  if (typeof face.surface.evaluate !== 'function') return null;
+  const p0 = face.surface.evaluate(0.5, 0.5);
+  let n = null;
+  if (typeof face.surface.normal === 'function') {
+    n = face.surface.normal(0.5, 0.5);
+  } else {
+    const eps = 1e-4;
+    const pu = face.surface.evaluate(0.5 + eps, 0.5);
+    const pv = face.surface.evaluate(0.5, 0.5 + eps);
+    n = vec3Cross(vec3Sub(pu, p0), vec3Sub(pv, p0));
+  }
+  const nLen = vec3Len(n);
+  if (nLen < 1e-12) return null;
+  n = vec3Scale(n, 1 / nLen);
+  if (face.sameSense === false) n = vec3Scale(n, -1);
+  return { p0, n };
+}
+
+function _intersectPlanesWithCylinder(planeA, planeB, axisP, axisDir, radius, nearPt) {
+  const dir = vec3Cross(planeA.n, planeB.n);
+  const dirLen = vec3Len(dir);
+  if (dirLen < 1e-10) return null;
+  const lineDir = vec3Scale(dir, 1 / dirLen);
+  const dA = vec3Dot(planeA.n, planeA.p0);
+  const dB = vec3Dot(planeB.n, planeB.p0);
+  const dirSq = vec3Dot(dir, dir);
+  const termA = vec3Scale(vec3Cross(planeB.n, dir), dA);
+  const termB = vec3Scale(vec3Cross(dir, planeA.n), dB);
+  const linePt = vec3Scale(vec3Add(termA, termB), 1 / dirSq);
+  const hits = _intersectLineCylinderAll(linePt, lineDir, axisP, axisDir, radius);
+  if (hits.length === 0) return null;
+  hits.sort((a, b) => vec3Len(vec3Sub(a, nearPt)) - vec3Len(vec3Sub(b, nearPt)));
+  return hits[0];
+}
+
 function _debugBRepChamfer(...args) {
   if (typeof process === 'undefined' || !process?.env?.DEBUG_BREP_CHAMFER) return;
   console.log('[applyBRepChamfer]', ...args);
@@ -1520,6 +1579,8 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
     return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
   };
   const junctionArcByPair = new Map(); // unordered pairKey → { samples, curve }
+  const junctionSplitByPair = new Map(); // unordered pairKey → { a, mid, b, curveAMid, curveMidB }
+  const junctionEndpointOverrides = [];
 
   const _findFilletAtVertex = (V, excludeFaces) => {
     const vk = _vkey(V);
@@ -1536,6 +1597,40 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
         });
         if (has) return { face, axisStart: sh._exactAxisStart, axisEnd: sh._exactAxisEnd, radius: sh._exactRadius };
       }
+    }
+    return null;
+  };
+
+  const _findChamferAtVertex = (V, excludeFaces) => {
+    const vk = _vkey(V);
+    for (const shell of topoBody.shells) {
+      for (const face of shell.faces) {
+        if (excludeFaces.includes(face)) continue;
+        const sh = face.shared;
+        if (!sh || !sh.isChamfer) continue;
+        if (!face.outerLoop) continue;
+        const has = face.outerLoop.coedges.some(ce => {
+          const sv = ce.edge.startVertex.point;
+          const ev = ce.edge.endVertex.point;
+          return _vkey(sv) === vk || _vkey(ev) === vk;
+        });
+        if (has) return face;
+      }
+    }
+    return null;
+  };
+
+  const _findSharedEdgeOtherEndpoint = (faceA, faceB, atVertex) => {
+    const vk = _vkey(atVertex);
+    for (const ce of faceA.outerLoop.coedges) {
+      const faces = ce.edge.coedges
+        .map(edgeCoedge => edgeCoedge?.loop?.face)
+        .filter(Boolean);
+      if (!faces.includes(faceB)) continue;
+      const sp = ce.edge.startVertex.point;
+      const ep = ce.edge.endVertex.point;
+      if (_vkey(sp) === vk) return ep;
+      if (_vkey(ep) === vk) return sp;
     }
     return null;
   };
@@ -1608,6 +1703,102 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
       const tol = Math.max(1e-3, fi.radius * 0.02);
       if (r0 > fi.radius + tol || r1 > fi.radius + tol) continue;
 
+      // Compute the current chamfer plane from the three "non-extended"
+      // corners of the chamfer face quad (using the offset endpoints at the
+      // opposite end of the chamfer edge plus the current end's offsets).
+      const oppV = (V === teSp) ? teEp : teSp;
+      const oppE0 = _offEndAtVertex(ci.off0, oppV).get();
+      let pn = vec3Cross(vec3Sub(e0.get(), oppE0), vec3Sub(e1.get(), oppE0));
+      const pnLen = vec3Len(pn);
+      if (pnLen < 1e-9) continue;
+      pn = vec3Scale(pn, 1 / pnLen);
+      if (Math.abs(vec3Dot(cylAxisDir, pn)) < 1e-6) continue;
+
+      const inside0 = r0 < fi.radius - tol;
+      const inside1 = r1 < fi.radius - tol;
+      const on0 = Math.abs(r0 - fi.radius) <= tol;
+      const on1 = Math.abs(r1 - fi.radius) <= tol;
+
+      // Mixed 3-fold corner: current chamfer meets a previous fillet and a
+      // previous chamfer at the same vertex.  In this case the offset that
+      // lies inside the cylinder is usually the plane-plane intersection
+      // point (previous chamfer plane ∩ current chamfer plane), not a point
+      // that should be extended all the way to the cylinder.  The correct
+      // topology inserts T where both chamfer planes meet the fillet
+      // cylinder, splitting the new chamfer connector into cylinder arc +
+      // plane-plane line and trimming the old fillet/chamfer seam to T.
+      if (inside0 !== inside1 && ((inside0 && on1) || (inside1 && on0))) {
+        const prevChamferFace = _findChamferAtVertex(V, [ci.face0, ci.face1, fi.face]);
+        const prevPlane = _planeFromFace(prevChamferFace);
+        if (prevPlane) {
+          const insideEnd = inside0 ? e0 : e1;
+          const cylEnd = inside0 ? e1 : e0;
+          const insidePt = insideEnd.get();
+          const cylPt = cylEnd.get();
+          const tip = _intersectPlanesWithCylinder(
+            prevPlane,
+            { p0: oppE0, n: pn },
+            cylAxisStart,
+            cylAxisDir,
+            fi.radius,
+            cylPt,
+          );
+          const scale = Math.max(fi.radius, vec3Len(vec3Sub(cylPt, insidePt)), 1e-6);
+          if (tip && vec3Len(vec3Sub(tip, cylPt)) < scale * 4) {
+            const along = vec3Dot(vec3Sub(cylPt, cylAxisStart), cylAxisDir);
+            const cylCenter = vec3Add(cylAxisStart, vec3Scale(cylAxisDir, along));
+            const ex0Vec = vec3Sub(cylPt, cylCenter);
+            const exLen = vec3Len(ex0Vec);
+            if (exLen >= 1e-9) {
+              const ex = vec3Scale(ex0Vec, 1 / exLen);
+              const ey = vec3Cross(cylAxisDir, ex);
+              const currentSamples = _computeCylPlaneArcSamples(
+                cylCenter, cylAxisDir, fi.radius, ex, ey,
+                oppE0, pn, cylPt, tip, 8,
+              );
+              const currentArc = _curveFromSamples(currentSamples);
+              if (currentArc) {
+                junctionArcByPair.set(_pairKey(cylPt, tip), { samples: currentSamples, curve: currentArc });
+                junctionSplitByPair.set(_pairKey(cylPt, insidePt), {
+                  a: cylPt,
+                  mid: tip,
+                  b: insidePt,
+                  curveAMid: currentArc,
+                  curveMidB: NurbsCurve.createLine(tip, insidePt),
+                });
+                junctionEndpointOverrides.push({
+                  vertexKey: _vkey(V),
+                  filletFace: fi.face,
+                  chamferFace: prevChamferFace,
+                  point: tip,
+                });
+
+                const seamOther = _findSharedEdgeOtherEndpoint(fi.face, prevChamferFace, V);
+                if (seamOther) {
+                  const prevAlong = vec3Dot(vec3Sub(seamOther, cylAxisStart), cylAxisDir);
+                  const prevCenter = vec3Add(cylAxisStart, vec3Scale(cylAxisDir, prevAlong));
+                  const prevExVec = vec3Sub(seamOther, prevCenter);
+                  const prevExLen = vec3Len(prevExVec);
+                  if (prevExLen >= 1e-9) {
+                    const prevEx = vec3Scale(prevExVec, 1 / prevExLen);
+                    const prevEy = vec3Cross(cylAxisDir, prevEx);
+                    const prevSamples = _computeCylPlaneArcSamples(
+                      prevCenter, cylAxisDir, fi.radius, prevEx, prevEy,
+                      prevPlane.p0, prevPlane.n, seamOther, tip, 8,
+                    );
+                    const prevArc = _curveFromSamples(prevSamples);
+                    if (prevArc) junctionArcByPair.set(_pairKey(seamOther, tip), { samples: prevSamples, curve: prevArc });
+                  }
+                }
+
+                _logFJ(`mixed junction at V=${_vkey(V)}: inside=${_vkey(insidePt)} cyl=${_vkey(cylPt)} tip=${_vkey(tip)}`);
+                continue;
+              }
+            }
+          }
+        }
+      }
+
       let ext0Pt = e0.get();
       let ext1Pt = e1.get();
       if (r0 < fi.radius - tol) {
@@ -1622,17 +1813,6 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
         if (!hit) continue;
         ext1Pt = hit;
       }
-
-      // Compute chamfer plane from the three "non-extended" corners of
-      // the chamfer face quad (using the offset endpoints at the OPPOSITE
-      // end of the chamfer edge plus the current end's offsets).
-      const oppV = (V === teSp) ? teEp : teSp;
-      const oppE0 = _offEndAtVertex(ci.off0, oppV).get();
-      let pn = vec3Cross(vec3Sub(e0.get(), oppE0), vec3Sub(e1.get(), oppE0));
-      const pnLen = vec3Len(pn);
-      if (pnLen < 1e-9) continue;
-      pn = vec3Scale(pn, 1 / pnLen);
-      if (Math.abs(vec3Dot(cylAxisDir, pn)) < 1e-6) continue;
 
       const along = vec3Dot(vec3Sub(ext0Pt, cylAxisStart), cylAxisDir);
       const cylCenter = vec3Add(cylAxisStart, vec3Scale(cylAxisDir, along));
@@ -1691,6 +1871,17 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
           let ep = edgeEp;
 
           const resolveEndpoint = (vertexPoint) => {
+            const vk = _vkey(vertexPoint);
+            for (const ov of junctionEndpointOverrides) {
+              if (ov.vertexKey !== vk) continue;
+              if (edgeFaces.includes(ov.filletFace) && edgeFaces.includes(ov.chamferFace)) {
+                if (_dbgFCF) {
+                  const fmt = p => p ? `(${p.x.toFixed(3)},${p.y.toFixed(3)},${p.z.toFixed(3)})` : 'null';
+                  console.log(`[FCF] resolveEndpoint mixed-override face=${face.id} vertex=${fmt(vertexPoint)} -> ${fmt(ov.point)}`);
+                }
+                return ov.point;
+              }
+            }
             const chamfersAtVertex = vertexChamfers.get(_vkey(vertexPoint));
             if (!chamfersAtVertex) return vertexPoint;
 
@@ -1730,9 +1921,16 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
           const isCurveEdge = originalCurve && originalCurve.degree >= 2;
 
           let curve;
-          if (endpointsUnchanged) {
+          const storedEdge = junctionArcByPair.get(_pairKey(sp, ep));
+          if (storedEdge) {
+            const startK = _vkey(storedEdge.samples[0]);
+            const spK = _vkey(sp);
+            curve = startK === spK
+              ? storedEdge.curve.clone()
+              : storedEdge.curve.reversed();
+          } else if (endpointsUnchanged) {
             curve = originalCurve || NurbsCurve.createLine(sp, ep);
-          } else if (isCurveEdge && originalCurve.controlPoints && originalCurve.controlPoints.length >= 3) {
+          } else if ((isCurveEdge || (originalCurve?.degree === 1 && originalCurve.controlPoints?.length > 2)) && originalCurve.controlPoints && originalCurve.controlPoints.length >= 3) {
             // Adjust curve control points to match the new endpoints.
             // For a clamped NURBS curve, cp[0] = start, cp[n-1] = end.
             // Linearly interpolate the endpoint displacement across all
@@ -1868,7 +2066,6 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
       ? SurfaceType.CONE
       : SurfaceType.PLANE;
 
-    let verts = [off0.startPt, off0.endPt, off1.endPt, off1.startPt];
     // If a chamfer-edge endpoint sits at a previous fillet's vertex, use
     // the precomputed cylinder ∩ chamfer-plane arc as the connector edge
     // so the chamfer face's seam matches the fillet face's gap-fill.
@@ -1879,12 +2076,48 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
       const aK = _vkey(a);
       return startK === aK ? stored.curve.clone() : stored.curve.reversed();
     };
-    let curves = [
-      off0.curve,
-      _connector(off0.endPt, off1.endPt),
-      off1.curve.reversed(),
-      _connector(off1.startPt, off0.startPt),
-    ];
+    const _buildChamferBoundary = (reversed = false) => {
+      const start = off0.startPt;
+      const startKey = _vkey(start);
+      const vertsOut = [start];
+      const curvesOut = [];
+      const addEdge = (to, curve) => {
+        curvesOut.push(curve);
+        if (_vkey(to) !== startKey) vertsOut.push(to);
+      };
+      const addConnector = (a, b) => {
+        const split = junctionSplitByPair.get(_pairKey(a, b));
+        if (!split) {
+          addEdge(b, _connector(a, b));
+          return;
+        }
+        const aK = _vkey(a), bK = _vkey(b);
+        const splitAK = _vkey(split.a), splitBK = _vkey(split.b);
+        if (aK === splitAK && bK === splitBK) {
+          addEdge(split.mid, split.curveAMid.clone());
+          addEdge(b, split.curveMidB.clone());
+        } else if (aK === splitBK && bK === splitAK) {
+          addEdge(split.mid, split.curveMidB.reversed());
+          addEdge(b, split.curveAMid.reversed());
+        } else {
+          addEdge(b, _connector(a, b));
+        }
+      };
+
+      if (!reversed) {
+        addEdge(off0.endPt, off0.curve);
+        addConnector(off0.endPt, off1.endPt);
+        addEdge(off1.startPt, off1.curve.reversed());
+        addConnector(off1.startPt, off0.startPt);
+      } else {
+        addConnector(off0.startPt, off1.startPt);
+        addEdge(off1.endPt, off1.curve);
+        addConnector(off1.endPt, off0.endPt);
+        addEdge(off0.startPt, off0.curve.reversed());
+      }
+      return { verts: vertsOut, curves: curvesOut };
+    };
+    let { verts, curves } = _buildChamferBoundary(false);
 
     // Verify the chamfer face vertex winding produces an outward-pointing
     // Newell normal.  The expected outward direction is the average of the
@@ -1915,13 +2148,7 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
       }
       // If the vertex Newell normal opposes the expected outward, reverse
       if (lnx * outX + lny * outY + lnz * outZ < 0) {
-        verts = [off0.startPt, off1.startPt, off1.endPt, off0.endPt];
-        curves = [
-          _connector(off0.startPt, off1.startPt),
-          off1.curve,
-          _connector(off1.endPt, off0.endPt),
-          off0.curve.reversed(),
-        ];
+        ({ verts, curves } = _buildChamferBoundary(true));
       }
     }
 
