@@ -1076,6 +1076,141 @@ function _buildExactCornerFaceDescs(faces) {
   return descs;
 }
 
+function _collectOpenTopoEdgesForCap(body) {
+  const edgeRefs = new Map();
+  for (const shell of body.shells || []) {
+    for (const face of shell.faces || []) {
+      for (const loop of face.allLoops()) {
+        for (const coedge of loop.coedges) {
+          const edge = coedge.edge;
+          if (!edgeRefs.has(edge.id)) {
+            edgeRefs.set(edge.id, {
+              edge,
+              curve: coedge.curve || edge.curve || null,
+              count: 0,
+              faces: [],
+            });
+          }
+          const ref = edgeRefs.get(edge.id);
+          ref.count++;
+          ref.faces.push(face);
+        }
+      }
+    }
+  }
+
+  const out = [];
+  for (const ref of edgeRefs.values()) {
+    if (ref.count >= 2) continue;
+    const a = ref.edge.startVertex?.point;
+    const b = ref.edge.endVertex?.point;
+    if (!a || !b) continue;
+    out.push({
+      a,
+      b,
+      aKey: _edgeVKey(a),
+      bKey: _edgeVKey(b),
+      curve: ref.curve,
+      faces: ref.faces,
+    });
+  }
+  return out;
+}
+
+function _extractClosedTopoLoopsForCap(openEdges) {
+  const remaining = [...openEdges];
+  const loops = [];
+
+  while (remaining.length > 0) {
+    const start = remaining.shift();
+    const loop = [{ ...start }];
+    const startKey = start.aKey;
+    let currentEndKey = start.bKey;
+    let safety = remaining.length + 1;
+
+    while (currentEndKey !== startKey && safety-- > 0) {
+      let foundIdx = -1;
+      let flip = false;
+      for (let i = 0; i < remaining.length; i++) {
+        if (remaining[i].aKey === currentEndKey) { foundIdx = i; break; }
+        if (remaining[i].bKey === currentEndKey) { foundIdx = i; flip = true; break; }
+      }
+      if (foundIdx < 0) break;
+      const next = remaining.splice(foundIdx, 1)[0];
+      if (flip) {
+        loop.push({
+          a: next.b,
+          b: next.a,
+          aKey: next.bKey,
+          bKey: next.aKey,
+          curve: next.curve ? next.curve.reversed() : null,
+          faces: next.faces,
+        });
+        currentEndKey = next.aKey;
+      } else {
+        loop.push({ ...next });
+        currentEndKey = next.bKey;
+      }
+    }
+
+    if (currentEndKey === startKey && loop.length >= 3) loops.push(loop);
+  }
+
+  return loops;
+}
+
+function _buildMixedFilletCornerCapDesc(loop) {
+  if (!loop || loop.length !== 3) return null;
+  const adjacentFaces = loop.flatMap(seg => seg.faces || []);
+  const hasChamfer = adjacentFaces.some(face => face.shared?.isChamfer);
+  const filletCount = adjacentFaces.filter(face => face.shared?.isFillet).length;
+  if (!hasChamfer || filletCount < 2) return null;
+
+  const vertices = loop.map(seg => ({ ...seg.a }));
+  const edgeCurves = loop.map(seg =>
+    seg.curve ? seg.curve.clone() : NurbsCurve.createLine(seg.a, seg.b)
+  );
+  const uDir = _vec3Sub(vertices[1], vertices[0]);
+  const vDir = _vec3Sub(vertices[2], vertices[0]);
+  if (_vec3Len(_vec3Cross(uDir, vDir)) < 1e-12) return null;
+  const surface = NurbsSurface.createPlane(vertices[0], uDir, vDir);
+
+  return {
+    surface,
+    surfaceType: SurfaceType.PLANE,
+    vertices,
+    edgeCurves,
+    sameSense: false,
+    shared: { isCorner: true, isFillet: true, isMixedFilletCorner: true, isApproxCornerCap: true },
+  };
+}
+
+function _capMixedFilletOpenLoops(faceDescs) {
+  let body = buildTopoBody(faceDescs);
+  let boundaryEdges = countTopoBodyBoundaryEdges(body);
+  if (boundaryEdges === 0) return body;
+
+  const openEdges = _collectOpenTopoEdgesForCap(body);
+  const loops = _extractClosedTopoLoopsForCap(openEdges);
+  let appended = 0;
+  for (const loop of loops) {
+    const desc = _buildMixedFilletCornerCapDesc(loop);
+    if (!desc) continue;
+    faceDescs.push(desc);
+    appended++;
+  }
+  if (appended === 0) return body;
+
+  body = buildTopoBody(faceDescs);
+  boundaryEdges = countTopoBodyBoundaryEdges(body);
+  if (boundaryEdges !== 0) {
+    _debugBRepFillet('mixed-corner-cap-incomplete', { appended, boundaryEdges });
+  } else {
+    _debugBRepFillet('mixed-corner-cap', { appended });
+  }
+  return body;
+}
+
 // -----------------------------------------------------------------------
 // Reconstruct face description from original TopoFace
 // -----------------------------------------------------------------------
@@ -2546,7 +2681,7 @@ function _buildExactFilletTopoBody(faces, edgeDataList, origTopoBody = null) {
   // deduplication succeeds.
   _replaceEdgesWithArcCurves(faceDescs, edgeDataList, faces, origTopoFaces);
 
-  return buildTopoBody(faceDescs);
+  return _capMixedFilletOpenLoops(faceDescs);
 }
 
 /**
@@ -3113,8 +3248,11 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
   const bodyCurved = newTopoBody.shells.some(
     (s) => s.faces.some((f) => f.surfaceType !== 'plane')
   );
+  const hasMixedCornerCap = newTopoBody.shells.some(
+    (s) => s.faces.some((f) => f.shared?.isMixedFilletCorner)
+  );
   const preFixTopology = measureMeshTopology(mesh.faces);
-  if (!bodyCurved &&
+  if ((!bodyCurved || hasMixedCornerCap) &&
       preFixTopology.boundaryEdges === 0 && preFixTopology.nonManifoldEdges === 0) {
     fixWindingConsistency(mesh.faces);
     recomputeFaceNormals(mesh.faces);

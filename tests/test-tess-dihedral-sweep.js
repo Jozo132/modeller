@@ -827,22 +827,16 @@ for (const [a, b] of PAIRS) {
 // exact Cobb spherical corner patch (via BRepFillet._buildExactTrihedronFaceDesc);
 // that face is now tessellated through Tessellator2's sphere fast path so
 // the boundary samples are preserved and the mesh is watertight.
-// (F,C,F) — partially-fixed defect: the bogus fillet–fillet junction
-// curve corruption was eliminated (BRepFillet now skips junction
-// processing when the new fillet's axis endpoint lies outside the prev
-// fillet's cylinder, i.e. tangent-only contact, see _extendTrimsAtPrev-
-// FilletJunctions geometric overlap check).  A residual topology gap
-// remains: face 24 (post-Z-fillet x=10 plane) carries X-fillet arc
-// samples whose mid-arc segment has no matching coedge on the Z-fillet
-// (face 28) or chamfer (face 27) faces, producing 4 boundary edges.
-// Resolving this requires either splitting the Z-fillet face boundary to
-// follow the X-fillet arc above its trim plane, or introducing a corner
-// patch at (10,8,5.4); deferred to the WASM BRep migration.
+// (F,C,F) now exercises the mixed fillet/chamfer/fillet corner cap path:
+// the final fillet can leave a three-edge loop bounded by the prior fillet,
+// the intermediate chamfer plane, and the new fillet.  BRepFillet closes
+// that loop with a constrained corner cap and then reconciles winding for
+// the otherwise-manifold capped body.
 runCombo('XYZ all chamfer (X→Y→Z)',   [['X', 'chamfer'], ['Y', 'chamfer'], ['Z', 'chamfer']]);
 runCombo('XYZ all fillet  (X→Y→Z)',   [['X', 'fillet'],  ['Y', 'fillet'],  ['Z', 'fillet']]);
 runCombo('XYZ all fillet  (Z→Y→X)',   [['Z', 'fillet'],  ['Y', 'fillet'],  ['X', 'fillet']]);
 runCombo('XYZ mixed      (C,F,C)',    [['X', 'chamfer'], ['Y', 'fillet'],  ['Z', 'chamfer']]);
-runCombo('XYZ mixed      (F,C,F)',    [['X', 'fillet'],  ['Y', 'chamfer'], ['Z', 'fillet']], { known: true });
+runCombo('XYZ mixed      (F,C,F)',    [['X', 'fillet'],  ['Y', 'chamfer'], ['Z', 'fillet']]);
 // Another order of same mix — proves commutativity of disjoint-edge ops.
 runCombo('XYZ mixed reordered (Z,X,Y)', [['Z', 'chamfer'], ['X', 'fillet'],  ['Y', 'chamfer']]);
 
