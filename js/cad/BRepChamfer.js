@@ -1977,6 +1977,157 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
     }
   }
 
+  // -----------------------------------------------------------------------
+  // Helper: scan a TopoBody for unmatched (open) edges, returning each as
+  // { edge, curve, a, b, aKey, bKey } — collected from the FIRST occurrence
+  // of each edge so we have both endpoints and the boundary curve geometry
+  // available for capping.
+  // -----------------------------------------------------------------------
+  const _collectOpenEdges = (body) => {
+    const edgeRefs = new Map();
+    for (const shell of body.shells || []) {
+      for (const face of shell.faces) {
+        for (const loop of face.allLoops()) {
+          for (const coedge of loop.coedges) {
+            const e = coedge.edge;
+            if (!edgeRefs.has(e.id)) {
+              edgeRefs.set(e.id, {
+                edge: e,
+                curve: coedge.curve || e.curve || null,
+                sameSense: coedge.sameSense !== false,
+                count: 0,
+                faceIds: [],
+              });
+            }
+            const r = edgeRefs.get(e.id);
+            r.count++;
+            r.faceIds.push(face.id);
+          }
+        }
+      }
+    }
+    const out = [];
+    for (const r of edgeRefs.values()) {
+      if (r.count >= 2) continue;
+      const a = r.edge.startVertex?.point;
+      const b = r.edge.endVertex?.point;
+      if (!a || !b) continue;
+      out.push({
+        edge: r.edge,
+        curve: r.curve,
+        a, b,
+        aKey: _vkey(a),
+        bKey: _vkey(b),
+        faceIds: r.faceIds,
+      });
+    }
+    return out;
+  };
+
+  // -----------------------------------------------------------------------
+  // Helper: walk open edges to extract closed loops.  Each edge appears in
+  // exactly one loop.  A loop's vertices form a cycle: edge[i].b == edge[i+1].a.
+  // Edges may be flipped to align directionality (an open edge on a hole
+  // boundary has no preferred orientation).
+  // -----------------------------------------------------------------------
+  const _extractClosedLoops = (openEdges) => {
+    const remaining = [...openEdges];
+    const loops = [];
+    while (remaining.length > 0) {
+      const start = remaining.shift();
+      const loop = [{ a: start.a, b: start.b, aKey: start.aKey, bKey: start.bKey, curve: start.curve }];
+      let curEndKey = start.bKey;
+      const startKey = start.aKey;
+      let safety = remaining.length + 1;
+      while (curEndKey !== startKey && safety-- > 0) {
+        let foundIdx = -1;
+        let flip = false;
+        for (let i = 0; i < remaining.length; i++) {
+          if (remaining[i].aKey === curEndKey) { foundIdx = i; flip = false; break; }
+          if (remaining[i].bKey === curEndKey) { foundIdx = i; flip = true; break; }
+        }
+        if (foundIdx < 0) break;
+        const next = remaining.splice(foundIdx, 1)[0];
+        if (flip) {
+          loop.push({
+            a: next.b, b: next.a,
+            aKey: next.bKey, bKey: next.aKey,
+            curve: next.curve ? next.curve.reversed() : null,
+          });
+          curEndKey = next.aKey;
+        } else {
+          loop.push({
+            a: next.a, b: next.b,
+            aKey: next.aKey, bKey: next.bKey,
+            curve: next.curve,
+          });
+          curEndKey = next.bKey;
+        }
+      }
+      if (curEndKey === startKey && loop.length >= 3) loops.push(loop);
+    }
+    return loops;
+  };
+
+  // -----------------------------------------------------------------------
+  // Helper: emit a planar corner-cap face descriptor closing a loop of
+  // unmatched boundary edges.  Used when buildTopoBody reports open edges
+  // around a 3-fold (or higher) corner where multiple chamfer/fillet
+  // operations from PRIOR feature calls meet at the new chamfer's vertex.
+  // The cap is planar through the cycle's vertices (3 points always
+  // coplanar; >3 points may be slightly non-planar but fitTopology accepts
+  // it for closing 3-junction holes that are dominated by short segments).
+  // -----------------------------------------------------------------------
+  const _emitCornerCapFromLoop = (loop) => {
+    if (loop.length < 3) return null;
+    // Restrict auto-cap to loops composed entirely of straight-line edges.
+    // Loops involving curve edges (e.g. cylinder-arc segments left by a
+    // prior fillet, stored either as degree>1 NURBS or as degree-1
+    // polylines approximating arcs) describe a non-planar saddle region
+    // that a planar surface cannot triangulate without producing
+    // non-manifold seams; in those cases we leave the cap to a future
+    // surface-aware pass.
+    for (const seg of loop) {
+      const c = seg.curve;
+      if (!c) continue;
+      if (c.degree > 1) return null;
+      if (c.controlPoints && c.controlPoints.length > 2) return null;
+    }
+    // Use first vertex of each segment as the polygon vertex sequence
+    const verts = loop.map(seg => seg.a);
+    const curves = loop.map(seg =>
+      seg.curve ? seg.curve.clone() : NurbsCurve.createLine(seg.a, seg.b)
+    );
+
+    // Planar surface through first three non-collinear vertices.  The
+    // basis vectors are (verts[1]-verts[0]) and (verts[k]-verts[0]) for
+    // smallest k yielding a non-degenerate cross product — ensures the
+    // surface is well-defined even if the first three are nearly collinear.
+    let kPick = -1;
+    let bestArea = 0;
+    const u0 = vec3Sub(verts[1], verts[0]);
+    for (let k = 2; k < verts.length; k++) {
+      const vk = vec3Sub(verts[k], verts[0]);
+      const cr = vec3Cross(u0, vk);
+      const a2 = vec3Len(cr);
+      if (a2 > bestArea) { bestArea = a2; kPick = k; }
+    }
+    if (kPick < 0 || bestArea < 1e-12) return null;
+    const surface = NurbsSurface.createPlane(
+      verts[0],
+      u0,
+      vec3Sub(verts[kPick], verts[0]),
+    );
+
+    return {
+      surface,
+      surfaceType: SurfaceType.PLANE,
+      vertices: verts,
+      edgeCurves: curves,
+      shared: { isCorner: true, isAutoCap: true },
+    };
+  };
+
   // Step 6: Build new TopoBody and tessellate
   let newTopoBody;
   try {
@@ -1986,31 +2137,41 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
     return null; // fallback to mesh chamfer
   }
 
-  const topoBoundaryEdges = countTopoBodyBoundaryEdges(newTopoBody);
+  let topoBoundaryEdges = countTopoBodyBoundaryEdges(newTopoBody);
   if (topoBoundaryEdges !== 0) {
-    // Dump which edges are open and the faces they belong to so we can see
-    // which seam is failing to stitch.
-    const edgeRefs = new Map();
-    for (const shell of newTopoBody.shells || []) {
-      for (const face of shell.faces) {
-        for (const loop of face.allLoops()) {
-          for (const coedge of loop.coedges) {
-            const e = coedge.edge;
-            if (!edgeRefs.has(e.id)) edgeRefs.set(e.id, { edge: e, faces: [] });
-            edgeRefs.get(e.id).faces.push(face.id);
-          }
-        }
+    // Auto-cap pass: when chamfer/fillet operations from PRIOR feature
+    // calls meet at the new chamfer's vertex, the new chamfer face's
+    // connector terminates at offset endpoints that don't coincide with
+    // existing prior-feature face vertices — leaving a small unmatched
+    // boundary cycle.  Detect closed loops of unmatched edges and emit
+    // a planar cap face for each.  This handles the cross-call analogue
+    // of Step 5's in-call corner cap emission.
+    const openEdges = _collectOpenEdges(newTopoBody);
+    const loops = _extractClosedLoops(openEdges);
+    let appendedCaps = 0;
+    for (const loop of loops) {
+      const cap = _emitCornerCapFromLoop(loop);
+      if (cap) {
+        faceDescs.push(cap);
+        appendedCaps++;
       }
     }
-    const open = [];
-    for (const { edge, faces } of edgeRefs.values()) {
-      if (faces.length < 2) {
-        const a = edge.startVertex?.point;
-        const b = edge.endVertex?.point;
-        const fmt = p => p ? `(${p.x.toFixed(4)},${p.y.toFixed(4)},${p.z.toFixed(4)})` : '?';
-        open.push({ id: edge.id, a: fmt(a), b: fmt(b), faces: [...faces] });
+    if (appendedCaps > 0) {
+      _debugBRepChamfer('auto-cap', { appendedCaps, loops: loops.length });
+      try {
+        newTopoBody = buildTopoBody(faceDescs);
+        topoBoundaryEdges = countTopoBodyBoundaryEdges(newTopoBody);
+      } catch (error) {
+        _debugBRepChamfer('build-topobody-after-cap-failed', error?.message || String(error));
+        return null;
       }
     }
+  }
+
+  if (topoBoundaryEdges !== 0) {
+    const openEdges = _collectOpenEdges(newTopoBody);
+    const fmt = p => p ? `(${p.x.toFixed(4)},${p.y.toFixed(4)},${p.z.toFixed(4)})` : '?';
+    const open = openEdges.map(o => ({ id: o.edge.id, a: fmt(o.a), b: fmt(o.b), faces: o.faceIds }));
     _debugBRepChamfer('topo-boundary-edges', { topoBoundaryEdges, faceCount: faceDescs.length, openEdges: open });
     return null;
   }
