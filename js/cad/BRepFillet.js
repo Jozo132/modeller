@@ -1829,12 +1829,22 @@ function _extendTrimsAtPreviousChamferJunctions(
   const _dbg = (typeof process !== 'undefined' && process.env && process.env.DEBUG_FCJ === '1');
   const log = (...a) => { if (_dbg) console.log('[FCJ]', ...a); };
 
-  // Build vertex-key → list of chamfer TopoFaces touching that vertex
+  // Build vertex-key → list of planar bridge TopoFaces touching that vertex.
+  // A "bridge" is any planar face whose loop contains the fillet endpoint
+  // and that participates in the trim-builder's vertex-split (so both p0
+  // and p1 trim points end up in its loop).  Chamfer faces are the
+  // canonical example, but any planar transition face produced by a prior
+  // operation (bevel from boolean, manual draft, blended bridge, …) ends up
+  // in the same shape and benefits from the same surgery.  The downstream
+  // geometric checks (offIdx ≥ 0, neighbours = inPlane + corner) already
+  // reject faces that don't actually have the bridge topology.
   const vertexChamfer = new Map();
   for (const shell of origTopoBody.shells) {
     for (const topoFace of shell.faces || []) {
-      if (!(topoFace.shared && topoFace.shared.isChamfer)) continue;
       if (!topoFace.outerLoop) continue;
+      // Surface must be planar — cylinder/plane intersection is what we
+      // build; non-planar neighbours are handled by phase 3.
+      if (topoFace.surfaceType && topoFace.surfaceType !== 'plane') continue;
       const verts = topoFace.outerLoop.coedges.map(ce =>
         ce.sameSense !== false
           ? { ...ce.edge.startVertex.point }
@@ -1855,7 +1865,7 @@ function _extendTrimsAtPreviousChamferJunctions(
     }
   }
   if (vertexChamfer.size === 0) return;
-  log(`chamfer faces touching ${vertexChamfer.size} vertex keys`);
+  log(`planar bridge candidates touching ${vertexChamfer.size} vertex keys`);
 
   for (const data of edgeDataList) {
     const edgeDir = _vec3Normalize(_vec3Sub(data.edgeB, data.edgeA));
@@ -1889,6 +1899,12 @@ function _extendTrimsAtPreviousChamferJunctions(
       const ey = _vec3Cross(edgeDir, ex); // already unit since edgeDir ⊥ ex and both unit
 
       for (const { topoFace, verts: chamferVerts, planePoint, planeNormal } of chamferList) {
+        // Skip the fillet's own adjacent faces — extending into them would
+        // re-fillet the face the cylinder is already rolling on.
+        const f0Id = faces[data.fi0]?.topoFaceId;
+        const f1Id = faces[data.fi1]?.topoFaceId;
+        if (topoFace.id === f0Id || topoFace.id === f1Id) continue;
+
         // Cylinder axis must not be parallel to the chamfer plane
         const axisDotN = _vec3Dot(edgeDir, planeNormal);
         if (Math.abs(axisDotN) < 1e-6) continue;
