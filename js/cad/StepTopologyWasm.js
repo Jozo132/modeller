@@ -212,10 +212,26 @@ export function importStepNativeSync(stepText, opts = {}) {
     faceGeomTypes[i] = w.faceGetGeomType(i >>> 0) & 0xff;
   }
 
+  const snapCoord = (value) => Math.abs(value) < 5e-12 ? 0 : value;
+  const triangleNormal = (a, b, c) => {
+    const abx = b.x - a.x, aby = b.y - a.y, abz = b.z - a.z;
+    const acx = c.x - a.x, acy = c.y - a.y, acz = c.z - a.z;
+    let nx = aby * acz - abz * acy;
+    let ny = abz * acx - abx * acz;
+    let nz = abx * acy - aby * acx;
+    const len = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+    nx /= len; ny /= len; nz /= len;
+    return { x: nx, y: ny, z: nz };
+  };
+
   const vertices = new Array(vertCount);
   for (let i = 0; i < vertCount; i++) {
     const b = i * 3;
-    vertices[i] = { x: vertsF64[b], y: vertsF64[b + 1], z: vertsF64[b + 2] };
+    vertices[i] = {
+      x: snapCoord(vertsF64[b]),
+      y: snapCoord(vertsF64[b + 1]),
+      z: snapCoord(vertsF64[b + 2]),
+    };
   }
 
   const faces = new Array(triCount);
@@ -228,9 +244,16 @@ export function importStepNativeSync(stepText, opts = {}) {
     let nz = normsF64[a * 3 + 2] + normsF64[bb * 3 + 2] + normsF64[c * 3 + 2];
     const nl = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
     nx /= nl; ny /= nl; nz /= nl;
+    let v0 = vertices[a], v1 = vertices[bb], v2 = vertices[c];
+    const gn = triangleNormal(v0, v1, v2);
+    if (gn.x * nx + gn.y * ny + gn.z * nz < 0) {
+      const tmp = v1;
+      v1 = v2;
+      v2 = tmp;
+    }
     const fg = faceMapU32[t] | 0;
     faces[t] = {
-      vertices: [vertices[a], vertices[bb], vertices[c]],
+      vertices: [v0, v1, v2],
       normal: { x: nx, y: ny, z: nz },
       faceGroup: fg,
       isCurved: fg < faceGeomTypes.length ? (faceGeomTypes[fg] !== GEOM_PLANE) : false,

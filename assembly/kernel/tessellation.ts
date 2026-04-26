@@ -31,7 +31,7 @@ import {
   edgeGetGeomType, edgeGetGeomOffset,
   vertexGetX, vertexGetY, vertexGetZ,
   GEOM_PLANE, GEOM_CYLINDER, GEOM_CONE, GEOM_SPHERE, GEOM_TORUS,
-  GEOM_NURBS_SURFACE, GEOM_NURBS_CURVE,
+  GEOM_NURBS_SURFACE, GEOM_NURBS_CURVE, GEOM_CIRCLE,
   ORIENT_REVERSED,
 } from './topology';
 
@@ -102,6 +102,8 @@ let _bndCount: u32 = 0;
 const MAX_BND_LOOPS: u32 = 128;
 const _bndLoopStart = new StaticArray<u32>(MAX_BND_LOOPS);
 const _bndLoopEnd = new StaticArray<u32>(MAX_BND_LOOPS);
+const _bndLoopFirstU = new StaticArray<f64>(MAX_BND_LOOPS);
+const _bndLoopFirstV = new StaticArray<f64>(MAX_BND_LOOPS);
 let _bndLoopCount: u32 = 0;
 
 /** UV bounding box (U shifted relative to center). */
@@ -194,7 +196,7 @@ function _tessBuildFaceRange(faceStart: u32, faceEnd: u32, segsU: i32, segsV: i3
 function _tessBuildOneFace(faceId: u32, segsU: i32, segsV: i32): i32 {
   const geomType = faceGetGeomType(faceId);
 
-  if (geomType == GEOM_PLANE) return _tessPlaneFace(faceId);
+  if (geomType == GEOM_PLANE) return _tessPlaneFace(faceId, segsU);
   if (geomType == GEOM_CYLINDER) return _tessCylinderFace(faceId, segsU, segsV);
   if (geomType == GEOM_CONE) return _tessConeFace(faceId, segsU, segsV);
   if (geomType == GEOM_SPHERE) return _tessSphereFace(faceId, segsU, segsV);
@@ -371,6 +373,30 @@ function _projectPoint(px: f64, py: f64, pz: f64): void {
   }
 }
 
+function _projectCircleEdgePoint(edgeId: u32, theta: f64): void {
+  const off = edgeGetGeomOffset(edgeId);
+  const cx = geomPoolRead(off);
+  const cy = geomPoolRead(off + 1);
+  const cz = geomPoolRead(off + 2);
+  const ax = geomPoolRead(off + 3);
+  const ay = geomPoolRead(off + 4);
+  const az = geomPoolRead(off + 5);
+  const rx = geomPoolRead(off + 6);
+  const ry = geomPoolRead(off + 7);
+  const rz = geomPoolRead(off + 8);
+  const radius = geomPoolRead(off + 9);
+  const bx = ay * rz - az * ry;
+  const by = az * rx - ax * rz;
+  const bz = ax * ry - ay * rx;
+  const c = Math.cos(theta);
+  const s = Math.sin(theta);
+  _projectPoint(
+    cx + radius * (rx * c + bx * s),
+    cy + radius * (ry * c + by * s),
+    cz + radius * (rz * c + bz * s),
+  );
+}
+
 // ─── Internal: boundary UV collection ────────────────────────────────
 
 /**
@@ -391,6 +417,9 @@ function _collectBoundaryUV(faceId: u32): void {
   for (let l: u32 = 0; l < nLoops; l++) {
     const loopId = firstLoop + l;
     const loopStartIdx = _bndCount;
+    let loopFirstU: f64 = 0.0;
+    let loopFirstV: f64 = 0.0;
+    let loopHaveFirst: bool = false;
 
     const firstCE = loopGetFirstCoedge(loopId);
     let ce = firstCE;
@@ -404,6 +433,11 @@ function _collectBoundaryUV(faceId: u32): void {
       const vid = orient == ORIENT_REVERSED
         ? edgeGetEndVertex(eid) : edgeGetStartVertex(eid);
       _projectPoint(vertexGetX(vid), vertexGetY(vid), vertexGetZ(vid));
+      if (!loopHaveFirst) {
+        loopFirstU = _projU;
+        loopFirstV = _projV;
+        loopHaveFirst = true;
+      }
       if (_bndCount < MAX_BND) {
         unchecked(_bndU[_bndCount] = _projU);
         unchecked(_bndV[_bndCount] = _projV);
@@ -443,6 +477,21 @@ function _collectBoundaryUV(faceId: u32): void {
             nSamples++;
           }
         }
+      } else if (edgeGetGeomType(eid) == GEOM_CIRCLE) {
+        const rev = orient == ORIENT_REVERSED;
+        for (let s: i32 = 1; s <= EDGE_INTERP; s++) {
+          const frac: f64 = <f64>s / <f64>(EDGE_INTERP + 1);
+          const theta = (rev ? -2.0 : 2.0) * Math.PI * frac;
+          _projectCircleEdgePoint(eid, theta);
+          if (_bndCount < MAX_BND) {
+            unchecked(_bndU[_bndCount] = _projU);
+            unchecked(_bndV[_bndCount] = _projV);
+            _bndCount++;
+          }
+          sumCos += Math.cos(_projU);
+          sumSin += Math.sin(_projU);
+          nSamples++;
+        }
       }
 
       ce = coedgeGetNext(ce);
@@ -452,6 +501,8 @@ function _collectBoundaryUV(faceId: u32): void {
     if (_bndLoopCount < MAX_BND_LOOPS) {
       unchecked(_bndLoopStart[_bndLoopCount] = loopStartIdx);
       unchecked(_bndLoopEnd[_bndLoopCount] = _bndCount);
+      unchecked(_bndLoopFirstU[_bndLoopCount] = loopFirstU);
+      unchecked(_bndLoopFirstV[_bndLoopCount] = loopFirstV);
       _bndLoopCount++;
     }
   }
@@ -507,9 +558,11 @@ function _collectBoundaryUV(faceId: u32): void {
     _uvUmax = Math.PI;
   }
 
-  // Small margin to avoid clipping at exact boundaries
-  const uMargin: f64 = 0.001;
-  const vMargin: f64 = 0.001;
+  // Small margin helps centroid culling on polygon-trimmed faces, but it
+  // breaks watertight seams on full-revolution faces by moving grid
+  // boundaries past the exact STEP trim loops.
+  const uMargin: f64 = _trimEnabled ? 0.001 : 0.0;
+  const vMargin: f64 = _trimEnabled ? 0.001 : 0.0;
   _uvUmin -= uMargin;
   _uvUmax += uMargin;
   _uvVmin -= vMargin;
@@ -651,9 +704,134 @@ function _emitTri(i0: u32, i1: u32, i2: u32, faceId: u32): i32 {
 
 // ─── Planar face tessellation ────────────────────────────────────────
 
-function _tessPlaneFace(faceId: u32): i32 {
+const INVALID_ID: u32 = 0xFFFFFFFF;
+
+function _singleCircleLoopEdge(loopId: u32): u32 {
+  const firstCE = loopGetFirstCoedge(loopId);
+  const nextCE = coedgeGetNext(firstCE);
+  if (nextCE != firstCE) return INVALID_ID;
+  const eid = coedgeGetEdge(firstCE);
+  if (edgeGetGeomType(eid) != GEOM_CIRCLE) return INVALID_ID;
+  return eid;
+}
+
+function _circleRadius(edgeId: u32): f64 {
+  return geomPoolRead(edgeGetGeomOffset(edgeId) + 9);
+}
+
+function _circleCentersCoincident(a: u32, b: u32): bool {
+  const ao = edgeGetGeomOffset(a);
+  const bo = edgeGetGeomOffset(b);
+  const dx = geomPoolRead(ao) - geomPoolRead(bo);
+  const dy = geomPoolRead(ao + 1) - geomPoolRead(bo + 1);
+  const dz = geomPoolRead(ao + 2) - geomPoolRead(bo + 2);
+  return dx * dx + dy * dy + dz * dz < 1e-12;
+}
+
+function _emitCircleVertex(edgeId: u32, theta: f64, nx: f64, ny: f64, nz: f64): u32 {
+  const off = edgeGetGeomOffset(edgeId);
+  const cx = geomPoolRead(off);
+  const cy = geomPoolRead(off + 1);
+  const cz = geomPoolRead(off + 2);
+  const ax = geomPoolRead(off + 3);
+  const ay = geomPoolRead(off + 4);
+  const az = geomPoolRead(off + 5);
+  const rx = geomPoolRead(off + 6);
+  const ry = geomPoolRead(off + 7);
+  const rz = geomPoolRead(off + 8);
+  const r = geomPoolRead(off + 9);
+  const bx = ay * rz - az * ry;
+  const by = az * rx - ax * rz;
+  const bz = ax * ry - ay * rx;
+  const c = Math.cos(theta);
+  const s = Math.sin(theta);
+  return _emitVert(
+    cx + r * (rx * c + bx * s),
+    cy + r * (ry * c + by * s),
+    cz + r * (rz * c + bz * s),
+    nx, ny, nz,
+  );
+}
+
+function _emitPlaneTriOriented(i0: u32, i1: u32, i2: u32, nx: f64, ny: f64, nz: f64, faceId: u32): i32 {
+  const a = i0 * 3;
+  const b = i1 * 3;
+  const c = i2 * 3;
+  const abx = unchecked(tessOutVerts[b]) - unchecked(tessOutVerts[a]);
+  const aby = unchecked(tessOutVerts[b + 1]) - unchecked(tessOutVerts[a + 1]);
+  const abz = unchecked(tessOutVerts[b + 2]) - unchecked(tessOutVerts[a + 2]);
+  const acx = unchecked(tessOutVerts[c]) - unchecked(tessOutVerts[a]);
+  const acy = unchecked(tessOutVerts[c + 1]) - unchecked(tessOutVerts[a + 1]);
+  const acz = unchecked(tessOutVerts[c + 2]) - unchecked(tessOutVerts[a + 2]);
+  const tx = aby * acz - abz * acy;
+  const ty = abz * acx - abx * acz;
+  const tz = abx * acy - aby * acx;
+  const dot = tx * nx + ty * ny + tz * nz;
+  return dot >= 0.0
+    ? _emitTri(i0, i1, i2, faceId)
+    : _emitTri(i0, i2, i1, faceId);
+}
+
+function _tessCircularPlaneFace(faceId: u32, segsU: i32, nx: f64, ny: f64, nz: f64): i32 {
+  const nLoops = faceGetLoopCount(faceId);
+  if (nLoops < 1 || nLoops > 2) return -2;
+  const firstLoop = faceGetFirstLoop(faceId);
+  const edge0 = _singleCircleLoopEdge(firstLoop);
+  if (edge0 == INVALID_ID) return -2;
+
+  let segs = segsU;
+  if (segs < 8) segs = 8;
+  if (segs > 512) segs = 512;
+
+  if (nLoops == 1) {
+    const off = edgeGetGeomOffset(edge0);
+    const center = _emitVert(geomPoolRead(off), geomPoolRead(off + 1), geomPoolRead(off + 2), nx, ny, nz);
+    if (center == INVALID_ID) return -1;
+    const ringBase = outVertCount;
+    for (let i: i32 = 0; i < segs; i++) {
+      if (_emitCircleVertex(edge0, 2.0 * Math.PI * <f64>i / <f64>segs, nx, ny, nz) == INVALID_ID) return -1;
+    }
+    for (let i: i32 = 0; i < segs; i++) {
+      const a = ringBase + <u32>i;
+      const b = ringBase + <u32>((i + 1) % segs);
+      if (_emitPlaneTriOriented(center, a, b, nx, ny, nz, faceId) < 0) return -1;
+    }
+    return segs;
+  }
+
+  const edge1 = _singleCircleLoopEdge(firstLoop + 1);
+  if (edge1 == INVALID_ID) return -2;
+  if (!_circleCentersCoincident(edge0, edge1)) return -2;
+
+  const r0 = _circleRadius(edge0);
+  const r1 = _circleRadius(edge1);
+  if (Math.abs(r0 - r1) < 1e-10) return -2;
+  const outer = r0 > r1 ? edge0 : edge1;
+  const inner = r0 > r1 ? edge1 : edge0;
+
+  const outerBase = outVertCount;
+  for (let i: i32 = 0; i < segs; i++) {
+    if (_emitCircleVertex(outer, 2.0 * Math.PI * <f64>i / <f64>segs, nx, ny, nz) == INVALID_ID) return -1;
+  }
+  const innerBase = outVertCount;
+  for (let i: i32 = 0; i < segs; i++) {
+    if (_emitCircleVertex(inner, 2.0 * Math.PI * <f64>i / <f64>segs, nx, ny, nz) == INVALID_ID) return -1;
+  }
+  for (let i: i32 = 0; i < segs; i++) {
+    const next = (i + 1) % segs;
+    const o0 = outerBase + <u32>i;
+    const o1 = outerBase + <u32>next;
+    const i0 = innerBase + <u32>i;
+    const i1 = innerBase + <u32>next;
+    if (_emitPlaneTriOriented(o0, o1, i1, nx, ny, nz, faceId) < 0) return -1;
+    if (_emitPlaneTriOriented(o0, i1, i0, nx, ny, nz, faceId) < 0) return -1;
+  }
+
+  return segs * 2;
+}
+
+function _tessPlaneFace(faceId: u32, segsU: i32): i32 {
   _collectOuterLoopVerts(faceId);
-  if (loopVertCount < 3) return 0;
 
   const gOff = faceGetGeomOffset(faceId);
   const reversed = faceGetOrient(faceId) == ORIENT_REVERSED;
@@ -663,6 +841,11 @@ function _tessPlaneFace(faceId: u32): i32 {
   let ny = geomPoolRead(gOff + 4);
   let nz = geomPoolRead(gOff + 5);
   if (reversed) { nx = -nx; ny = -ny; nz = -nz; }
+
+  const circular = _tessCircularPlaneFace(faceId, segsU, nx, ny, nz);
+  if (circular != -2) return circular;
+
+  if (loopVertCount < 3) return 0;
 
   // Emit vertices
   const baseVert = outVertCount;
@@ -966,13 +1149,46 @@ function _tessTrimmedParametricGrid(
   const vRange = _uvVmax - _uvVmin;
   if (uRange < 1e-10 || vRange < 1e-10) return 0;
 
+  let useLoopPhaseBlend = false;
+  let phaseV0: f64 = 0.0;
+  let phaseV1: f64 = 0.0;
+  let phaseU0: f64 = 0.0;
+  let phaseU1: f64 = 0.0;
+  if (!_trimEnabled && _bndLoopCount >= 2 && Math.abs(uRange - 2.0 * Math.PI) < 0.01) {
+    let minLoop: u32 = 0;
+    let maxLoop: u32 = 0;
+    let minV = unchecked(_bndLoopFirstV[0]);
+    let maxV = minV;
+    for (let l: u32 = 1; l < _bndLoopCount; l++) {
+      const lv = unchecked(_bndLoopFirstV[l]);
+      if (lv < minV) { minV = lv; minLoop = l; }
+      if (lv > maxV) { maxV = lv; maxLoop = l; }
+    }
+    if (Math.abs(maxV - minV) > 1e-10) {
+      phaseV0 = minV;
+      phaseV1 = maxV;
+      phaseU0 = unchecked(_bndLoopFirstU[minLoop]);
+      phaseU1 = unchecked(_bndLoopFirstU[maxLoop]);
+      while (phaseU1 - phaseU0 > Math.PI) phaseU1 -= 2.0 * Math.PI;
+      while (phaseU1 - phaseU0 < -Math.PI) phaseU1 += 2.0 * Math.PI;
+      useLoopPhaseBlend = true;
+    }
+  }
+
   // Emit all grid vertices (some may be unused after boundary trimming)
   for (let j: i32 = 0; j <= sv; j++) {
     const vParam = _uvVmin + (<f64>j / <f64>sv) * vRange;
 
     for (let i: i32 = 0; i <= su; i++) {
       const uShifted = _uvUmin + (<f64>i / <f64>su) * uRange;
-      const uActual = uShifted + _uvUcenter; // un-shift for surface evaluation
+      let uActual = uShifted + _uvUcenter; // un-shift for surface evaluation
+      if (useLoopPhaseBlend) {
+        let alpha = (vParam - phaseV0) / (phaseV1 - phaseV0);
+        if (alpha < 0.0) alpha = 0.0;
+        else if (alpha > 1.0) alpha = 1.0;
+        const rowPhase = phaseU0 + alpha * (phaseU1 - phaseU0);
+        uActual = rowPhase + (<f64>i / <f64>su) * 2.0 * Math.PI;
+      }
 
       _evalSurface(surfType, uActual, vParam,
         ox, oy, oz, ax, ay, az, rx, ry, rz, bx, by, bz,

@@ -126,6 +126,25 @@ export function nurbsCurveStore(
   return offset;
 }
 
+/**
+ * Store a circle curve definition: center (3) + axis (3) + refDir (3) + radius (1) = 10 slots.
+ */
+export function circleStore(
+  cx: f64, cy: f64, cz: f64,
+  ax: f64, ay: f64, az: f64,
+  rx: f64, ry: f64, rz: f64,
+  radius: f64
+): u32 {
+  const offset = poolReserve(10);
+  if (offset == 0xFFFFFFFF) return offset;
+  let p = offset;
+  unchecked(pool[p++] = cx); unchecked(pool[p++] = cy); unchecked(pool[p++] = cz);
+  unchecked(pool[p++] = ax); unchecked(pool[p++] = ay); unchecked(pool[p++] = az);
+  unchecked(pool[p++] = rx); unchecked(pool[p++] = ry); unchecked(pool[p++] = rz);
+  unchecked(pool[p++] = radius);
+  return offset;
+}
+
 // ---------- analytic surface storage ----------
 
 /**

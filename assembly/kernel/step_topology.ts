@@ -40,7 +40,7 @@ import {
 } from './topology';
 import {
   geomPoolReset,
-  planeStore, cylinderStore, sphereStore, coneStore, torusStore,
+  planeStore, cylinderStore, sphereStore, coneStore, torusStore, circleStore,
   nurbsSurfaceStoreFromStaging, nurbsCurveStoreFromStaging,
   geomStagingPtr, geomStagingCapacity,
 } from './geometry';
@@ -441,6 +441,21 @@ function readAxis2Placement3D(entIdx: u32): bool {
 let outGeomType: u8 = GEOM_NONE;
 let outGeomOffset: u32 = 0;
 
+function buildCircleCurve(curveEntIdx: u32): bool {
+  if (curveEntIdx == ID_NONE) return false;
+  if (entityTypeHash(curveEntIdx) != H_CIRCLE) return false;
+  const root = entArgRoot(curveEntIdx);
+  if (argKind(root) != ARG_LIST || argListCount(root) < 3) return false;
+  if (!readAxis2Placement3D(argRefToEntityIdx(argListChild(root, 1)))) return false;
+  const radius = argAsF64(argListChild(root, 2));
+  if (radius <= 0.0) return false;
+  const off = circleStore(axOx, axOy, axOz, axZx, axZy, axZz, axXx, axXy, axXz, radius);
+  if (off == 0xFFFFFFFF) return false;
+  outGeomType = GEOM_CIRCLE;
+  outGeomOffset = off;
+  return true;
+}
+
 // ─── Phase 2: complex-entity sub-entity walker ──────────────────────
 //
 // Complex entity root LIST contains `nSub` children, each of which is
@@ -820,7 +835,10 @@ function getOrCreateEdgeByRef(edgeCurveRefArg: u32): u32 {
     if (h == H_LINE) {
       geomType = GEOM_LINE;
     } else if (h == H_CIRCLE) {
-      geomType = GEOM_CIRCLE;
+      if (buildCircleCurve(curveIdx)) {
+        geomType = outGeomType;
+        geomOffset = outGeomOffset;
+      }
     } else if (h == H_ELLIPSE) {
       geomType = GEOM_ELLIPSE;
     } else if (h == H_B_SPLINE_CURVE_WITH_KNOTS || entIsComplex(curveIdx)) {

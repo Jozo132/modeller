@@ -32,8 +32,16 @@ import {
   importStepNativeSync as _importStepNativeSync,
 } from './StepTopologyWasm.js';
 
-// Re-export for callers that need to pre-load WASM before sync importSTEP
-export const ensureWasmReady = _ensureWasmReady;
+// Re-export for callers that need to pre-load WASM before sync importSTEP.
+// The UI calls this before StepImportFeature executes synchronously, so it
+// must prepare both WASM tessellation bridges used by the STEP fast path.
+export async function ensureWasmReady() {
+  const ready = await _ensureWasmReady();
+  if (_nativePipelineEnabled()) {
+    try { await _ensureStepTopologyReady(); } catch (_err) { /* non-fatal */ }
+  }
+  return ready;
+}
 
 // Native STEP→topology→mesh pipeline (Stage F).  Default ON — override
 // with STEP_BUILD_WASM=0 to force the legacy JS-only path (the native
@@ -490,13 +498,60 @@ function _meshNeedsRobustFallback(body, mesh) {
     return `open-or-nonmanifold-mesh:${edgeSymptoms.boundaryEdges}/${edgeSymptoms.nonManifoldEdges}`;
   }
 
+  const analyticSymptoms = _countAnalyticNormalSymptoms(body, mesh);
+  if (analyticSymptoms.invertedTriangles > 0) {
+    return `analytic-normal-inversions:${analyticSymptoms.invertedTriangles}`;
+  }
+
   return null;
+}
+
+function _countAnalyticNormalSymptoms(body, mesh) {
+  const faceInfoMap = new Map();
+  for (const face of body.faces()) {
+    if (face.surfaceInfo) {
+      faceInfoMap.set(face.id, {
+        surfaceInfo: face.surfaceInfo,
+        sameSense: face.sameSense,
+      });
+    }
+  }
+
+  let invertedTriangles = 0;
+  for (const tri of mesh.faces || []) {
+    const info = faceInfoMap.get(tri?.topoFaceId);
+    const vertices = tri?.vertices || [];
+    if (!info || vertices.length < 3) continue;
+    const geometricNormal = _triangleNormal(vertices[0], vertices[1], vertices[2]);
+    if (!geometricNormal) continue;
+    const centroid = {
+      x: (vertices[0].x + vertices[1].x + vertices[2].x) / 3,
+      y: (vertices[0].y + vertices[1].y + vertices[2].y) / 3,
+      z: (vertices[0].z + vertices[1].z + vertices[2].z) / 3,
+    };
+    const analyticNormal = _computeVertexNormal(centroid, info.surfaceInfo, info.sameSense);
+    const dot = geometricNormal.x * analyticNormal.x + geometricNormal.y * analyticNormal.y + geometricNormal.z * analyticNormal.z;
+    if (dot < -1e-6) invertedTriangles++;
+  }
+
+  return { invertedTriangles };
+}
+
+function _triangleNormal(a, b, c) {
+  const abx = b.x - a.x, aby = b.y - a.y, abz = b.z - a.z;
+  const acx = c.x - a.x, acy = c.y - a.y, acz = c.z - a.z;
+  let nx = aby * acz - abz * acy;
+  let ny = abz * acx - abx * acz;
+  let nz = abx * acy - aby * acx;
+  const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+  if (len < 1e-14) return null;
+  nx /= len; ny /= len; nz /= len;
+  return { x: nx, y: ny, z: nz };
 }
 
 function _countMeshEdgeSymptoms(mesh) {
   const edgeUse = new Map();
-  const keyScale = 1e6;
-  const vertexKey = (v) => `${Math.round((v?.x ?? 0) * keyScale)},${Math.round((v?.y ?? 0) * keyScale)},${Math.round((v?.z ?? 0) * keyScale)}`;
+  const vertexKey = (v) => `${(v?.x ?? 0).toFixed(6)},${(v?.y ?? 0).toFixed(6)},${(v?.z ?? 0).toFixed(6)}`;
   const edgeKey = (a, b) => {
     const ka = vertexKey(a);
     const kb = vertexKey(b);
