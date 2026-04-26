@@ -151,6 +151,7 @@ export function tessellateBodyWasm(body, opts = {}) {
                 ],
                 normal: { x: nx / nl, y: ny / nl, z: nz / nl },
                 faceGroup: fi,
+                topoFaceId: info.topoFace?.id ?? fi,
                 isCurved: info.isCurved || false,
                 surfaceInfo: info.surfaceInfo,
                 shared: null,

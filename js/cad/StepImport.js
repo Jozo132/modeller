@@ -315,7 +315,7 @@ function _tessellateSTEPBody(body, opts = {}) {
   let faceGroupCounter = 0;
 
   for (const topoFace of body.faces()) {
-    const result = _tessellateFace(topoFace, curveSegments, surfaceSegments, faceGroupCounter);
+    const result = _tessellateFace(topoFace, curveSegments, surfaceSegments, topoFace.id);
     if (result) {
       for (let i = 0; i < result.vertices.length; i++) allVertices.push(result.vertices[i]);
       for (let i = 0; i < result.faces.length; i++) allFaces.push(result.faces[i]);
@@ -343,11 +343,12 @@ function _tessellateSTEPBody(body, opts = {}) {
 export function importSTEP(stepString, opts = {}) {
   const timings = {};
   const totalStart = _now();
+  let body = null;
 
   // Stage F fast path: native STEP→WASM topology + tessellation.  Zero
   // JS TopoBody allocation on the hot path; the legacy path still runs
   // afterwards so downstream TopoBody consumers (feature-edge analysis,
-  // bounds, etc.) keep working unchanged.  Opt-in via STEP_BUILD_WASM=1.
+  // bounds, etc.) keep working unchanged.  Disable with STEP_BUILD_WASM=0.
   if (_nativePipelineEnabled() && _stepTopologyReadySync()) {
     const t0 = _now();
     const native = _importStepNativeSync(stepString, {
@@ -377,24 +378,31 @@ export function importSTEP(stepString, opts = {}) {
       // We still build a JS TopoBody because downstream code (bounds,
       // edge analysis, hit-testing) queries it.  The native pipeline is
       // what produces the mesh that's actually rendered.
-      const body = _measureStepPhase(timings, 'parseMs', 'step:import:parse', () =>
+      body = _measureStepPhase(timings, 'parseMs', 'step:import:parse', () =>
         parseSTEPTopology(stepString),
       );
-      timings.totalMs = telemetry.recordTimer('step:import:total', _now() - totalStart, totalStart);
-      timings.shellCount = body.shells.length;
-      timings.faceCount = body.faces().length;
-      timings.meshVertexCount = native.vertices.length;
-      timings.meshFaceCount = native.faces.length;
-      return { body, vertices: native.vertices, faces: native.faces, timings };
+      _stampMeshTopoFaceIds(body, native);
+      const rejectReason = _meshNeedsRobustFallback(body, native);
+      if (!rejectReason) {
+        timings.totalMs = telemetry.recordTimer('step:import:total', _now() - totalStart, totalStart);
+        timings.shellCount = body.shells.length;
+        timings.faceCount = body.faces().length;
+        timings.meshVertexCount = native.vertices.length;
+        timings.meshFaceCount = native.faces.length;
+        return { body, vertices: native.vertices, faces: native.faces, timings };
+      }
+      timings.nativeRejectedReason = rejectReason;
     }
     // Fallthrough to legacy path on any failure (including partial
     // coverage when native build skipped too many faces).
     timings.nativeFallbackReason = native ? (native.reason || 'unknown') : 'unavailable';
   }
 
-  const body = _measureStepPhase(timings, 'parseMs', 'step:import:parse', () =>
-    parseSTEPTopology(stepString),
-  );
+  if (!body) {
+    body = _measureStepPhase(timings, 'parseMs', 'step:import:parse', () =>
+      parseSTEPTopology(stepString),
+    );
+  }
 
   // Primary path: WASM tessellation (all processing inside WASM)
   let mesh = null;
@@ -405,7 +413,14 @@ export function importSTEP(stepString, opts = {}) {
     }),
   );
   if (mesh && mesh.faces.length > 0) {
-    timings.tessellator = 'wasm';
+    _stampMeshTopoFaceIds(body, mesh);
+    const rejectReason = _meshNeedsRobustFallback(body, mesh);
+    if (rejectReason) {
+      timings.wasmRejectedReason = rejectReason;
+      mesh = null;
+    } else {
+      timings.tessellator = 'wasm';
+    }
   }
 
   // Cold-start fallback: JS Tessellator2 only if WASM module not loaded yet
@@ -417,7 +432,10 @@ export function importSTEP(stepString, opts = {}) {
         surfaceSegments: opts.surfaceSegments ?? globalTessConfig.surfaceSegments,
       }),
     );
-    timings.tessellator = 'js-cold-start-fallback';
+    _stampMeshTopoFaceIds(body, mesh);
+    timings.tessellator = timings.nativeRejectedReason || timings.wasmRejectedReason
+      ? 'js-robust-fallback'
+      : 'js-cold-start-fallback';
 
     // Post-process: apply analytic per-vertex normals and surface projection
     // for faces that have surfaceInfo but no NurbsSurface (sphere, cylinder, etc.)
@@ -433,6 +451,74 @@ export function importSTEP(stepString, opts = {}) {
   timings.meshFaceCount = mesh.faces.length;
 
   return { body, vertices: mesh.vertices, faces: mesh.faces, timings };
+}
+
+function _stampMeshTopoFaceIds(body, mesh) {
+  if (!body || !mesh || !Array.isArray(mesh.faces)) return mesh;
+  const faces = body.faces();
+  for (const tri of mesh.faces) {
+    if (!tri || typeof tri.topoFaceId === 'number') continue;
+    const faceIndex = Number.isInteger(tri.faceGroup) ? tri.faceGroup : -1;
+    if (faceIndex < 0 || faceIndex >= faces.length) continue;
+    tri.topoFaceId = faces[faceIndex].id;
+  }
+  return mesh;
+}
+
+function _meshNeedsRobustFallback(body, mesh) {
+  if (!mesh || !Array.isArray(mesh.faces) || mesh.faces.length === 0) return 'empty-mesh';
+  if (!body) return null;
+
+  const faces = body.faces();
+  if (faces.length === 0) return null;
+
+  const coveredFaceIds = new Set();
+  for (const tri of mesh.faces) {
+    if (typeof tri?.topoFaceId === 'number') coveredFaceIds.add(tri.topoFaceId);
+  }
+  let missingFaces = 0;
+  for (const face of faces) {
+    if (!coveredFaceIds.has(face.id)) missingFaces++;
+  }
+  if (missingFaces > 0) return `missing-${missingFaces}-faces`;
+
+  const closedShell = Array.isArray(body.shells) && body.shells.some((shell) => shell?.closed === true);
+  if (!closedShell) return null;
+
+  const edgeSymptoms = _countMeshEdgeSymptoms(mesh);
+  if (edgeSymptoms.boundaryEdges > 0 || edgeSymptoms.nonManifoldEdges > 0) {
+    return `open-or-nonmanifold-mesh:${edgeSymptoms.boundaryEdges}/${edgeSymptoms.nonManifoldEdges}`;
+  }
+
+  return null;
+}
+
+function _countMeshEdgeSymptoms(mesh) {
+  const edgeUse = new Map();
+  const keyScale = 1e6;
+  const vertexKey = (v) => `${Math.round((v?.x ?? 0) * keyScale)},${Math.round((v?.y ?? 0) * keyScale)},${Math.round((v?.z ?? 0) * keyScale)}`;
+  const edgeKey = (a, b) => {
+    const ka = vertexKey(a);
+    const kb = vertexKey(b);
+    return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+  };
+
+  for (const tri of mesh.faces || []) {
+    const vertices = tri?.vertices || [];
+    if (vertices.length < 3) continue;
+    for (let i = 0; i < vertices.length; i++) {
+      const key = edgeKey(vertices[i], vertices[(i + 1) % vertices.length]);
+      edgeUse.set(key, (edgeUse.get(key) || 0) + 1);
+    }
+  }
+
+  let boundaryEdges = 0;
+  let nonManifoldEdges = 0;
+  for (const count of edgeUse.values()) {
+    if (count === 1) boundaryEdges++;
+    else if (count > 2) nonManifoldEdges++;
+  }
+  return { boundaryEdges, nonManifoldEdges };
 }
 
 /**

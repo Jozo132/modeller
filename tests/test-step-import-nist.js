@@ -1,5 +1,9 @@
 #!/usr/bin/env node
-import './_watchdog.mjs';
+const isSingleSampleRun = process.argv.some((arg) => arg === '--sample' || arg.startsWith('--sample='));
+if (!process.env.TEST_WATCHDOG_MS && !isSingleSampleRun) {
+  process.env.TEST_WATCHDOG_MS = '120000';
+}
+await import('./_watchdog.mjs');
 /**
  * tests/test-step-import-nist.js
  *
