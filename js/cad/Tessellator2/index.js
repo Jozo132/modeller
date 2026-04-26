@@ -1738,6 +1738,9 @@ function _bbox3(points) {
 }
 
 function _projectFacePoint(face, point) {
+  const analyticProjection = _projectOntoAnalyticSurface(point, face.surfaceInfo);
+  if (analyticProjection) return analyticProjection;
+
   if (face.surface) {
     try {
       const uv = face.surface.closestPointUV(point);
@@ -1748,7 +1751,7 @@ function _projectFacePoint(face, point) {
     }
   }
 
-  return _projectOntoAnalyticSurface(point, face.surfaceInfo) || point;
+  return point;
 }
 
 function _projectOntoAnalyticSurface(point, surfaceInfo) {
@@ -1810,6 +1813,13 @@ function _projectOntoAnalyticSurface(point, surfaceInfo) {
 }
 
 function _faceOutwardNormal(face, point) {
+  const normal = _analyticNormal(face.surfaceInfo, point);
+  if (normal) {
+    return face.sameSense === false
+      ? { x: -normal.x, y: -normal.y, z: -normal.z }
+      : normal;
+  }
+
   if (face.surface) {
     try {
       const uv = face.surface.closestPointUV(point);
@@ -1824,11 +1834,7 @@ function _faceOutwardNormal(face, point) {
     }
   }
 
-  const normal = _analyticNormal(face.surfaceInfo, point);
-  if (!normal) return { x: 0, y: 0, z: 1 };
-  return face.sameSense === false
-    ? { x: -normal.x, y: -normal.y, z: -normal.z }
-    : normal;
+  return { x: 0, y: 0, z: 1 };
 }
 
 function _analyticNormal(surfaceInfo, point) {

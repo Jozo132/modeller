@@ -715,6 +715,15 @@ function _singleCircleLoopEdge(loopId: u32): u32 {
   return eid;
 }
 
+function _singleSelfLoopEdge(loopId: u32): u32 {
+  const firstCE = loopGetFirstCoedge(loopId);
+  const nextCE = coedgeGetNext(firstCE);
+  if (nextCE != firstCE) return INVALID_ID;
+  const eid = coedgeGetEdge(firstCE);
+  if (edgeGetStartVertex(eid) != edgeGetEndVertex(eid)) return INVALID_ID;
+  return eid;
+}
+
 function _circleRadius(edgeId: u32): f64 {
   return geomPoolRead(edgeGetGeomOffset(edgeId) + 9);
 }
@@ -871,6 +880,132 @@ function _tessPlaneFace(faceId: u32, segsU: i32): i32 {
   return <i32>nTris;
 }
 
+function _tessFullRevolutionBand(
+  faceId: u32, reversed: bool,
+  segsU: i32, segsV: i32,
+  surfType: i32,
+  ox: f64, oy: f64, oz: f64,
+  ax: f64, ay: f64, az: f64,
+  rx: f64, ry: f64, rz: f64,
+  bx: f64, by: f64, bz: f64,
+  radius: f64, semiAngle: f64,
+  majorR: f64, minorR: f64
+): i32 {
+  if (_bndLoopCount != 2) return -2;
+  const firstLoop = faceGetFirstLoop(faceId);
+  if (_singleSelfLoopEdge(firstLoop) == INVALID_ID) return -2;
+  if (_singleSelfLoopEdge(firstLoop + 1) == INVALID_ID) return -2;
+
+  let su = segsU > 0 ? segsU : DEFAULT_SEGS;
+  let sv = segsV > 0 ? segsV : DEFAULT_SEGS;
+  if (su < 32) su = 32;
+  if (sv < 1) sv = 1;
+
+  const v0 = unchecked(_bndLoopFirstV[0]);
+  const v1 = unchecked(_bndLoopFirstV[1]);
+  if (Math.abs(v1 - v0) < 1e-10) return -2;
+
+  let phase0 = unchecked(_bndLoopFirstU[0]);
+  let phase1 = unchecked(_bndLoopFirstU[1]);
+  while (phase1 - phase0 > Math.PI) phase1 -= 2.0 * Math.PI;
+  while (phase1 - phase0 < -Math.PI) phase1 += 2.0 * Math.PI;
+
+  const baseVert = outVertCount;
+  let triCount: i32 = 0;
+
+  for (let j: i32 = 0; j <= sv; j++) {
+    const alpha = <f64>j / <f64>sv;
+    const vParam = v0 + alpha * (v1 - v0);
+    const rowPhase = phase0 + alpha * (phase1 - phase0);
+
+    for (let i: i32 = 0; i <= su; i++) {
+      const uActual = rowPhase + (<f64>i / <f64>su) * 2.0 * Math.PI;
+      _evalSurface(surfType, uActual, vParam,
+        ox, oy, oz, ax, ay, az, rx, ry, rz, bx, by, bz,
+        radius, semiAngle, majorR, minorR);
+
+      let nx = _surfNX, ny = _surfNY, nz = _surfNZ;
+      if (reversed) { nx = -nx; ny = -ny; nz = -nz; }
+      if (_emitVert(_surfX, _surfY, _surfZ, nx, ny, nz) == INVALID_ID) return -1;
+    }
+  }
+
+  for (let j: i32 = 0; j < sv; j++) {
+    for (let i: i32 = 0; i < su; i++) {
+      const i00 = baseVert + <u32>(j * (su + 1) + i);
+      const i10 = baseVert + <u32>((j + 1) * (su + 1) + i);
+      const i11 = baseVert + <u32>((j + 1) * (su + 1) + i + 1);
+      const i01 = baseVert + <u32>(j * (su + 1) + i + 1);
+      if (reversed) {
+        if (_emitTri(i00, i10, i11, faceId) < 0) return -1;
+        if (_emitTri(i00, i11, i01, faceId) < 0) return -1;
+      } else {
+        if (_emitTri(i00, i11, i10, faceId) < 0) return -1;
+        if (_emitTri(i00, i01, i11, faceId) < 0) return -1;
+      }
+      triCount += 2;
+    }
+  }
+
+  return triCount;
+}
+
+function _tessConeApexFace(
+  faceId: u32, reversed: bool,
+  segsU: i32,
+  ox: f64, oy: f64, oz: f64,
+  ax: f64, ay: f64, az: f64,
+  rx: f64, ry: f64, rz: f64,
+  bx: f64, by: f64, bz: f64,
+  radius: f64, semiAngle: f64
+): i32 {
+  if (_bndLoopCount != 1) return -2;
+  const firstLoop = faceGetFirstLoop(faceId);
+  if (_singleSelfLoopEdge(firstLoop) == INVALID_ID) return -2;
+
+  const tanSA = Math.tan(semiAngle);
+  if (Math.abs(tanSA) < 1e-12) return -2;
+  const apexV = -radius / tanSA;
+  const ringV = unchecked(_bndLoopFirstV[0]);
+  if (Math.abs(ringV - apexV) < 1e-10) return -2;
+
+  let su = segsU > 0 ? segsU : DEFAULT_SEGS;
+  if (su < 32) su = 32;
+
+  const phase = unchecked(_bndLoopFirstU[0]);
+
+  _evalSurface(2, phase, apexV,
+    ox, oy, oz, ax, ay, az, rx, ry, rz, bx, by, bz,
+    radius, semiAngle, 0.0, 0.0);
+  let anx = _surfNX, any = _surfNY, anz = _surfNZ;
+  if (reversed) { anx = -anx; any = -any; anz = -anz; }
+  const apex = _emitVert(_surfX, _surfY, _surfZ, anx, any, anz);
+  if (apex == INVALID_ID) return -1;
+
+  const ringBase = outVertCount;
+  for (let i: i32 = 0; i <= su; i++) {
+    const uActual = phase + (<f64>i / <f64>su) * 2.0 * Math.PI;
+    _evalSurface(2, uActual, ringV,
+      ox, oy, oz, ax, ay, az, rx, ry, rz, bx, by, bz,
+      radius, semiAngle, 0.0, 0.0);
+    let nx = _surfNX, ny = _surfNY, nz = _surfNZ;
+    if (reversed) { nx = -nx; ny = -ny; nz = -nz; }
+    if (_emitVert(_surfX, _surfY, _surfZ, nx, ny, nz) == INVALID_ID) return -1;
+  }
+
+  for (let i: i32 = 0; i < su; i++) {
+    const a = ringBase + <u32>i;
+    const b = ringBase + <u32>(i + 1);
+    if (reversed) {
+      if (_emitTri(apex, a, b, faceId) < 0) return -1;
+    } else {
+      if (_emitTri(apex, b, a, faceId) < 0) return -1;
+    }
+  }
+
+  return su;
+}
+
 // ─── Cylinder face tessellation ──────────────────────────────────────
 
 function _tessCylinderFace(faceId: u32, segsU: i32, segsV: i32): i32 {
@@ -902,6 +1037,10 @@ function _tessCylinderFace(faceId: u32, segsU: i32, segsV: i32): i32 {
   _proj_bx = bx; _proj_by = by; _proj_bz = bz;
 
   _collectBoundaryUV(faceId);
+  const fullBand = _tessFullRevolutionBand(faceId, reversed, segsU, segsV,
+    1, ox, oy, oz, ax, ay, az, rx, ry, rz, bx, by, bz, radius, 0.0, 0.0, 0.0);
+  if (fullBand != -2) return fullBand;
+
   if (_uvVmax - _uvVmin < 1e-10 || _uvUmax - _uvUmin < 1e-10) return 0;
 
   let cylSegsU = segsU;
@@ -943,6 +1082,10 @@ function _tessConeFace(faceId: u32, segsU: i32, segsV: i32): i32 {
   _proj_bx = bx; _proj_by = by; _proj_bz = bz;
 
   _collectBoundaryUV(faceId);
+  const apexFace = _tessConeApexFace(faceId, reversed, segsU,
+    ox, oy, oz, ax, ay, az, rx, ry, rz, bx, by, bz, radius, semiAngle);
+  if (apexFace != -2) return apexFace;
+
   if (_uvVmax - _uvVmin < 1e-10 || _uvUmax - _uvUmin < 1e-10) return 0;
 
   return _tessTrimmedParametricGrid(faceId, reversed, segsU, segsV,

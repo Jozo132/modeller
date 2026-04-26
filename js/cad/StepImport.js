@@ -552,17 +552,15 @@ function _triangleNormal(a, b, c) {
 function _countMeshEdgeSymptoms(mesh) {
   const edgeUse = new Map();
   const vertexKey = (v) => `${(v?.x ?? 0).toFixed(6)},${(v?.y ?? 0).toFixed(6)},${(v?.z ?? 0).toFixed(6)}`;
-  const edgeKey = (a, b) => {
-    const ka = vertexKey(a);
-    const kb = vertexKey(b);
-    return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
-  };
 
   for (const tri of mesh.faces || []) {
     const vertices = tri?.vertices || [];
     if (vertices.length < 3) continue;
-    for (let i = 0; i < vertices.length; i++) {
-      const key = edgeKey(vertices[i], vertices[(i + 1) % vertices.length]);
+    const vertexKeys = vertices.map(vertexKey);
+    for (let i = 0; i < vertexKeys.length; i++) {
+      const ka = vertexKeys[i];
+      const kb = vertexKeys[(i + 1) % vertexKeys.length];
+      const key = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
       edgeUse.set(key, (edgeUse.get(key) || 0) + 1);
     }
   }
