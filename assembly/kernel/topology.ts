@@ -64,6 +64,7 @@ export function vertexGetCount(): u32 { return vertexCount; }
 const edgeStartVertex = new StaticArray<u32>(MAX_EDGES);
 const edgeEndVertex = new StaticArray<u32>(MAX_EDGES);
 const edgeGeomType = new StaticArray<u8>(MAX_EDGES);
+const edgeCurveSameSense = new StaticArray<u8>(MAX_EDGES);
 /** Offset into a geometry data pool (curve definition). */
 const edgeGeomOffset = new StaticArray<u32>(MAX_EDGES);
 let edgeCount: u32 = 0;
@@ -74,6 +75,7 @@ export function edgeAdd(startV: u32, endV: u32, geomType: u8, geomOffset: u32): 
   unchecked(edgeStartVertex[id] = startV);
   unchecked(edgeEndVertex[id] = endV);
   unchecked(edgeGeomType[id] = geomType);
+  unchecked(edgeCurveSameSense[id] = 1);
   unchecked(edgeGeomOffset[id] = geomOffset);
   edgeCount++;
   return id;
@@ -82,7 +84,9 @@ export function edgeAdd(startV: u32, endV: u32, geomType: u8, geomOffset: u32): 
 export function edgeGetStartVertex(id: u32): u32 { return unchecked(edgeStartVertex[id]); }
 export function edgeGetEndVertex(id: u32): u32 { return unchecked(edgeEndVertex[id]); }
 export function edgeGetGeomType(id: u32): u8 { return unchecked(edgeGeomType[id]); }
+export function edgeGetCurveSameSense(id: u32): u8 { return unchecked(edgeCurveSameSense[id]); }
 export function edgeGetGeomOffset(id: u32): u32 { return unchecked(edgeGeomOffset[id]); }
+export function edgeSetCurveSameSense(id: u32, sameSense: u8): void { unchecked(edgeCurveSameSense[id] = sameSense); }
 export function edgeGetCount(): u32 { return edgeCount; }
 
 // ---------- coedge ----------

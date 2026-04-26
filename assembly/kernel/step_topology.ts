@@ -29,6 +29,7 @@ import {
   bodyBegin, bodyEnd,
   vertexAdd,
   edgeAdd,
+  edgeSetCurveSameSense,
   coedgeAdd, coedgeSetNext,
   loopAdd,
   faceAdd,
@@ -815,6 +816,7 @@ function getOrCreateEdgeByRef(edgeCurveRefArg: u32): u32 {
   // EDGE_CURVE(name, startV_ref, endV_ref, curve_ref, edgeGeometrySameSense)
   const startVid = getOrCreateVertexByRef(argListChild(root, 1));
   const endVid = getOrCreateVertexByRef(argListChild(root, 2));
+  const edgeGeometrySameSense = argEnumIs(argListChild(root, 4), "T");
   if (startVid == ID_NONE || endVid == ID_NONE) return ID_NONE;
 
   // Inspect the underlying curve and tag geomType.  SURFACE_CURVE /
@@ -854,6 +856,7 @@ function getOrCreateEdgeByRef(edgeCurveRefArg: u32): u32 {
 
   const eid = edgeAdd(startVid, endVid, geomType, geomOffset);
   if (eid == 0xFFFFFFFF) return ID_NONE;
+  edgeSetCurveSameSense(eid, edgeGeometrySameSense ? 1 : 0);
   unchecked(edgeCache[sid] = eid);
   return eid;
 }
