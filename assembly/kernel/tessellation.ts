@@ -780,7 +780,7 @@ function _tessCircularPlaneFace(faceId: u32, segsU: i32, nx: f64, ny: f64, nz: f
   if (edge0 == INVALID_ID) return -2;
 
   let segs = segsU;
-  if (segs < 8) segs = 8;
+  if (segs < 32) segs = 32;
   if (segs > 512) segs = 512;
 
   if (nLoops == 1) {
@@ -904,7 +904,12 @@ function _tessCylinderFace(faceId: u32, segsU: i32, segsV: i32): i32 {
   _collectBoundaryUV(faceId);
   if (_uvVmax - _uvVmin < 1e-10 || _uvUmax - _uvUmin < 1e-10) return 0;
 
-  return _tessTrimmedParametricGrid(faceId, reversed, segsU, segsV,
+  let cylSegsU = segsU;
+  if (!_trimEnabled && Math.abs((_uvUmax - _uvUmin) - 2.0 * Math.PI) < 0.01 && cylSegsU < 32) {
+    cylSegsU = 32;
+  }
+
+  return _tessTrimmedParametricGrid(faceId, reversed, cylSegsU, segsV,
     1, ox, oy, oz, ax, ay, az, rx, ry, rz, bx, by, bz, radius, 0.0, 0.0, 0.0);
 }
 
@@ -1033,7 +1038,17 @@ function _tessTorusFace(faceId: u32, segsU: i32, segsV: i32): i32 {
 
   if (_uvVmax - _uvVmin < 1e-10 || _uvUmax - _uvUmin < 1e-10) return 0;
 
-  return _tessTrimmedParametricGrid(faceId, reversed, segsU, segsV,
+  let torusSegsU = segsU;
+  let torusSegsV = segsV;
+  if (!_trimEnabled && _bndLoopCount >= 2 && Math.abs((_uvUmax - _uvUmin) - 2.0 * Math.PI) < 0.01) {
+    // Phase-blended full-revolution trims can be watertight but twisted at
+    // coarse quality.  Refine just these torus bands; native tessellation is
+    // still millisecond-scale and avoids the much slower robust JS fallback.
+    if (torusSegsU < 32) torusSegsU = 32;
+    if (torusSegsV < 32) torusSegsV = 32;
+  }
+
+  return _tessTrimmedParametricGrid(faceId, reversed, torusSegsU, torusSegsV,
     4, cx, cy, cz, ax, ay, az, rx, ry, rz, bx, by, bz, 0.0, 0.0, majorR, minorR);
 }
 
