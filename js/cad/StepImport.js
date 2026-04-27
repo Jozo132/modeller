@@ -23,6 +23,8 @@
 
 import { NurbsCurve } from './NurbsCurve.js';
 import { NurbsSurface } from './NurbsSurface.js';
+import { EdgeSampler } from './Tessellator2/EdgeSampler.js';
+import { FaceTriangulator } from './Tessellator2/FaceTriangulator.js';
 import { tessellateBodyRouted } from './Tessellator2/index.js';
 import { tessellateBodyWasm, ensureWasmReady as _ensureWasmReady } from './StepImportWasm.js';
 import { globalTessConfig } from './TessellationConfig.js';
@@ -51,6 +53,72 @@ _ensureStepTopologyReady().catch(() => {});
 function _nativePipelineEnabled() {
   const env = (typeof process !== 'undefined' && process.env && process.env.STEP_BUILD_WASM);
   return env !== '0' && env !== 'false';
+}
+
+const DEFAULT_WASM_HYBRID_MAX_FACES = 32;
+const DEFAULT_WASM_HYBRID_TRACE_LIMIT = 64;
+const DEFAULT_WASM_HYBRID_HUB_FACE_FANOUT = 12;
+const DEFAULT_WASM_HYBRID_HUB_FACE_INNER_LOOPS = 12;
+const DEFAULT_WASM_HYBRID_CLUSTER_PLANE_FANOUT = 4;
+const DEFAULT_WASM_HYBRID_CLUSTER_PLANE_OUTER_COEDGES = 8;
+const DEFAULT_WASM_HYBRID_CLUSTER_PLANE_INNER_LOOPS = 5;
+
+function _boundaryPreservingHybridConfig(opts = {}) {
+  const explicit = opts.wasmHybrid;
+  const env = typeof process !== 'undefined' && process.env ? process.env : null;
+  const envEnabled = env && env.STEP_WASM_HYBRID != null
+    ? env.STEP_WASM_HYBRID !== '0' && env.STEP_WASM_HYBRID !== 'false'
+    : false;
+  if (explicit === false) return null;
+  if (!explicit && !envEnabled) return null;
+
+  const rawConfig = explicit && typeof explicit === 'object' ? explicit : null;
+  const readPositiveInt = (value, fallback) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+  };
+  const readBoolean = (value, fallback = false) => {
+    if (value == null) return fallback;
+    if (typeof value === 'boolean') return value;
+    if (typeof value === 'number') return value !== 0;
+    if (typeof value === 'string') return value !== '0' && value !== 'false';
+    return fallback;
+  };
+
+  return {
+    minBoundaryOwners: readPositiveInt(
+      rawConfig?.minBoundaryOwners ?? env?.STEP_WASM_HYBRID_MIN_OWNER_EDGES,
+      32,
+    ),
+    maxFaces: readPositiveInt(
+      rawConfig?.maxFaces ?? env?.STEP_WASM_HYBRID_MAX_FACES,
+      DEFAULT_WASM_HYBRID_MAX_FACES,
+    ),
+    surfaceSegments: readPositiveInt(
+      rawConfig?.surfaceSegments ?? opts.surfaceSegments ?? globalTessConfig.surfaceSegments,
+      globalTessConfig.surfaceSegments,
+    ),
+    edgeSegments: readPositiveInt(
+      rawConfig?.edgeSegments ?? opts.curveSegments ?? globalTessConfig.edgeSegments,
+      globalTessConfig.edgeSegments,
+    ),
+    reuseTopologyEdges: readBoolean(
+      rawConfig?.reuseTopologyEdges ?? env?.STEP_WASM_HYBRID_REUSE_TOPOLOGY_EDGES,
+      false,
+    ),
+    includeAdjacentFaces: readBoolean(
+      rawConfig?.includeAdjacentFaces ?? env?.STEP_WASM_HYBRID_INCLUDE_ADJACENT_FACES,
+      false,
+    ),
+    trace: readBoolean(
+      rawConfig?.trace ?? env?.STEP_WASM_HYBRID_TRACE,
+      false,
+    ),
+    traceLimit: readPositiveInt(
+      rawConfig?.traceLimit ?? env?.STEP_WASM_HYBRID_TRACE_LIMIT,
+      DEFAULT_WASM_HYBRID_TRACE_LIMIT,
+    ),
+  };
 }
 
 // Test-only exports — parity harness for the WASM parser migration.
@@ -422,12 +490,47 @@ export function importSTEP(stepString, opts = {}) {
   );
   if (mesh && mesh.faces.length > 0) {
     _stampMeshTopoFaceIds(body, mesh);
-    const rejectReason = _meshNeedsRobustFallback(body, mesh);
+    let rejectReason = _meshNeedsRobustFallback(body, mesh);
     if (rejectReason) {
-      timings.wasmRejectedReason = rejectReason;
-      mesh = null;
-    } else {
-      timings.tessellator = 'wasm';
+      const hybridConfig = _boundaryPreservingHybridConfig(opts);
+      if (hybridConfig && rejectReason.startsWith('open-or-nonmanifold-mesh:')) {
+        timings.wasmInitialRejectedReason = rejectReason;
+        const hybridResult = _measureStepPhase(
+          timings,
+          'wasmHybridMs',
+          'step:import:tessellate:wasm-hybrid',
+          () => _applyBoundaryPreservingHybrid(body, mesh, hybridConfig),
+        );
+        if (hybridResult) {
+          if (hybridResult.trace) timings.wasmHybridTrace = hybridResult.trace;
+          timings.wasmHybridAttemptedFaceCount = hybridResult.attemptedFaceIds.length;
+          timings.wasmHybridFaceCount = hybridResult.faceIds.length;
+          timings.wasmHybridBoundaryEdgesBefore = hybridResult.before.boundaryEdges;
+          timings.wasmHybridBoundaryEdgesAfter = hybridResult.after.boundaryEdges;
+          timings.wasmHybridNonManifoldEdgesBefore = hybridResult.before.nonManifoldEdges;
+          timings.wasmHybridNonManifoldEdgesAfter = hybridResult.after.nonManifoldEdges;
+          if (hybridResult.mesh) {
+            const hybridRejectReason = _meshNeedsRobustFallback(body, hybridResult.mesh);
+            if (!hybridRejectReason) {
+              mesh = hybridResult.mesh;
+              timings.tessellator = 'wasm-hybrid';
+              timings.wasmHybridRecoveredFrom = rejectReason;
+              rejectReason = null;
+            } else {
+              timings.wasmHybridRejectedReason = hybridRejectReason;
+            }
+          } else if (hybridResult.rejectedReason) {
+            timings.wasmHybridInternalRejectedReason = hybridResult.rejectedReason;
+          }
+        }
+      }
+      if (rejectReason) {
+        timings.wasmRejectedReason = rejectReason;
+        mesh = null;
+      }
+    }
+    if (mesh) {
+      timings.tessellator = timings.tessellator || 'wasm';
     }
   }
 
@@ -550,7 +653,13 @@ function _triangleNormal(a, b, c) {
 }
 
 function _countMeshEdgeSymptoms(mesh) {
+  const { boundaryEdges, nonManifoldEdges } = _analyzeMeshEdgeSymptoms(mesh);
+  return { boundaryEdges, nonManifoldEdges };
+}
+
+function _analyzeMeshEdgeSymptoms(mesh) {
   const edgeUse = new Map();
+  const edgeOwners = new Map();
   const vertexKey = (v) => `${(v?.x ?? 0).toFixed(6)},${(v?.y ?? 0).toFixed(6)},${(v?.z ?? 0).toFixed(6)}`;
 
   for (const tri of mesh.faces || []) {
@@ -562,18 +671,570 @@ function _countMeshEdgeSymptoms(mesh) {
       const kb = vertexKeys[(i + 1) % vertexKeys.length];
       const key = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
       edgeUse.set(key, (edgeUse.get(key) || 0) + 1);
+      if (!edgeOwners.has(key)) edgeOwners.set(key, new Set());
+      if (typeof tri?.topoFaceId === 'number') edgeOwners.get(key).add(tri.topoFaceId);
     }
   }
 
   let boundaryEdges = 0;
   let nonManifoldEdges = 0;
-  for (const count of edgeUse.values()) {
-    if (count === 1) boundaryEdges++;
+  const boundaryOwners = new Map();
+  for (const [edgeKey, count] of edgeUse) {
+    if (count === 1) {
+      boundaryEdges++;
+      for (const faceId of edgeOwners.get(edgeKey) || []) {
+        boundaryOwners.set(faceId, (boundaryOwners.get(faceId) || 0) + 1);
+      }
+    }
     else if (count > 2) nonManifoldEdges++;
   }
-  return { boundaryEdges, nonManifoldEdges };
+  return {
+    boundaryEdges,
+    nonManifoldEdges,
+    boundaryOwners: [...boundaryOwners.entries()].sort((a, b) => b[1] - a[1]),
+  };
 }
 
+function _applyBoundaryPreservingHybrid(body, mesh, config = {}) {
+  if (!body || !mesh || !Array.isArray(mesh.faces) || mesh.faces.length === 0) return null;
+
+  const before = _analyzeMeshEdgeSymptoms(mesh);
+  const selectedFaceIds = _selectBoundaryPreservingHybridFaceIds(before, config);
+  const useTopologyBoundaryReuse = config.reuseTopologyEdges && selectedFaceIds.length > 1;
+  const expandToAdjacentFaces = config.includeAdjacentFaces && selectedFaceIds.length > 1;
+  const candidateFaceIds = expandToAdjacentFaces
+    ? _expandBoundaryPreservingHybridFaceIds(body, selectedFaceIds)
+    : selectedFaceIds;
+  const selectedFaceIdSet = new Set(selectedFaceIds);
+  const trace = _createHybridFaceTrace(config, selectedFaceIds, before, candidateFaceIds.length);
+  if (selectedFaceIds.length === 0) {
+    if (!trace) return null;
+    return {
+      mesh: null,
+      faceIds: [],
+      attemptedFaceIds: [],
+      before,
+      after: before,
+      rejectedReason: 'no-selected-faces',
+      trace: _finalizeHybridFaceTrace(trace, before, 'no-selected-faces', 'no-selected-faces'),
+    };
+  }
+
+  const triangulator = new FaceTriangulator();
+  const edgeSampler = useTopologyBoundaryReuse ? new EdgeSampler() : null;
+  const faceMap = new Map(body.faces().map((face) => [face.id, face]));
+  const boundaryOwnerMap = trace ? new Map(before.boundaryOwners) : null;
+  const trianglesByFace = new Map();
+  for (const tri of mesh.faces) {
+    if (typeof tri?.topoFaceId !== 'number') continue;
+    if (!trianglesByFace.has(tri.topoFaceId)) trianglesByFace.set(tri.topoFaceId, []);
+    trianglesByFace.get(tri.topoFaceId).push(tri);
+  }
+
+  const attemptedFaceIds = [];
+  const replacedFaceIds = [];
+  const replacementFaces = [];
+  for (const faceId of candidateFaceIds) {
+    const face = faceMap.get(faceId);
+    const faceTriangles = trianglesByFace.get(faceId) || [];
+    const unsupportedReason = _unsupportedBoundaryPreservingHybridFaceReason(face);
+    const shouldTraceFace = selectedFaceIdSet.has(faceId);
+    const faceTrace = trace && shouldTraceFace
+      ? {
+        faceId,
+        boundaryOwnerEdges: boundaryOwnerMap.get(faceId) || 0,
+        sourceTriangleCount: faceTriangles.length,
+        surfaceType: face?.surfaceType ?? SurfaceType.UNKNOWN,
+        analyticType: face?.surfaceInfo?.type ?? null,
+        outerCoedgeCount: face?.outerLoop?.coedges?.length || 0,
+        innerLoopCount: face?.innerLoops?.length || 0,
+      }
+      : null;
+    if (unsupportedReason) {
+      if (shouldTraceFace) {
+        _pushHybridFaceTrace(trace, {
+          ...faceTrace,
+          status: 'skipped',
+          reason: unsupportedReason,
+        });
+      }
+      continue;
+    }
+
+    attemptedFaceIds.push(faceId);
+    const replacement = edgeSampler
+      ? _retriangulateFaceFromTopology(face, edgeSampler, config.edgeSegments, triangulator, config.surfaceSegments)
+      : _retriangulateMeshFaceFromBoundary(face, faceTriangles, triangulator, config.surfaceSegments);
+    if (!replacement?.mesh || !Array.isArray(replacement.mesh.faces) || replacement.mesh.faces.length === 0) {
+      if (shouldTraceFace) {
+        _pushHybridFaceTrace(trace, {
+          ...faceTrace,
+          status: 'skipped',
+          reason: replacement?.reason || 'empty-retriangulation',
+          expectedLoopCount: replacement?.expectedLoopCount ?? null,
+          extractedLoopCount: replacement?.extractedLoopCount ?? null,
+        });
+      }
+      continue;
+    }
+    replacedFaceIds.push(faceId);
+    if (shouldTraceFace) {
+      _pushHybridFaceTrace(trace, {
+        ...faceTrace,
+        status: 'replaced',
+        replacementFaceCount: replacement.mesh.faces.length,
+        expectedLoopCount: replacement.expectedLoopCount,
+        extractedLoopCount: replacement.extractedLoopCount,
+      });
+    }
+    for (const tri of replacement.mesh.faces) {
+      tri.topoFaceId = faceId;
+      tri.faceGroup = faceId;
+    }
+    replacementFaces.push(...replacement.mesh.faces);
+  }
+  if (replacementFaces.length === 0) {
+    if (!trace) return null;
+    return {
+      mesh: null,
+      faceIds: replacedFaceIds,
+      attemptedFaceIds,
+      before,
+      after: before,
+      rejectedReason: 'no-face-replacements',
+      trace: _finalizeHybridFaceTrace(trace, before, 'no-face-replacements', 'no-face-replacements'),
+    };
+  }
+
+  const replacedFaceIdSet = new Set(replacedFaceIds);
+  const keptFaces = mesh.faces.filter((tri) => !replacedFaceIdSet.has(tri?.topoFaceId));
+  const hybridMesh = _rebuildHybridMesh({
+    ...mesh,
+    faces: [...keptFaces, ...replacementFaces],
+  });
+  const after = _analyzeMeshEdgeSymptoms(hybridMesh);
+  if (!_isImprovedHybridEdgeSymptoms(before, after)) {
+    if (!trace) return null;
+    return {
+      mesh: null,
+      faceIds: replacedFaceIds,
+      attemptedFaceIds,
+      before,
+      after,
+      rejectedReason: 'edge-symptoms-not-improved',
+      trace: _finalizeHybridFaceTrace(trace, after, 'edge-symptoms-not-improved', 'edge-symptoms-not-improved'),
+    };
+  }
+  return {
+    mesh: hybridMesh,
+    faceIds: replacedFaceIds,
+    attemptedFaceIds,
+    before,
+    after,
+    trace: _finalizeHybridFaceTrace(trace, after, 'local-edge-improvement'),
+  };
+}
+
+function _selectBoundaryPreservingHybridFaceIds(analysis, config = {}) {
+  const minBoundaryOwners = Number.isFinite(config.minBoundaryOwners) ? config.minBoundaryOwners : 32;
+  const maxFaces = Number.isFinite(config.maxFaces) ? config.maxFaces : DEFAULT_WASM_HYBRID_MAX_FACES;
+  return (analysis?.boundaryOwners || [])
+    .filter(([, count]) => count >= minBoundaryOwners)
+    .slice(0, maxFaces)
+    .map(([faceId]) => faceId);
+}
+
+function _isImprovedHybridEdgeSymptoms(before, after) {
+  if (!before || !after) return false;
+  if (after.nonManifoldEdges !== before.nonManifoldEdges) {
+    return after.nonManifoldEdges < before.nonManifoldEdges;
+  }
+  return after.boundaryEdges < before.boundaryEdges;
+}
+
+function _unsupportedBoundaryPreservingHybridFaceReason(face) {
+  if (!face) return 'missing-face';
+  return null;
+}
+
+function _expandBoundaryPreservingHybridFaceIds(body, faceIds) {
+  if (!body || !Array.isArray(faceIds) || faceIds.length === 0) return [];
+  const faceMap = new Map(body.faces().map((face) => [face.id, face]));
+  const selectedFaceIds = new Set(faceIds);
+  const selectedAdjacency = new Map();
+  for (const faceId of faceIds) {
+    const face = faceMap.get(faceId);
+    if (!face) continue;
+    for (const adjacentFaceId of _collectHybridAdjacentFaceIds(face)) {
+      if (!selectedAdjacency.has(adjacentFaceId)) selectedAdjacency.set(adjacentFaceId, new Set());
+      selectedAdjacency.get(adjacentFaceId).add(faceId);
+    }
+  }
+
+  const expanded = new Set(faceIds);
+  for (const [candidateFaceId, touchingSelectedFaceIds] of selectedAdjacency.entries()) {
+    if (selectedFaceIds.has(candidateFaceId)) {
+      expanded.add(candidateFaceId);
+      continue;
+    }
+    const candidateFace = faceMap.get(candidateFaceId);
+    const selectedNeighborCount = touchingSelectedFaceIds.size;
+    if (_isHybridExpansionHubPlane(candidateFace, selectedNeighborCount)) continue;
+    if (_shouldSkipHybridExpandedCylinder(candidateFace, faceMap, selectedFaceIds, selectedAdjacency)) continue;
+    expanded.add(candidateFaceId);
+  }
+  return [...expanded];
+}
+
+function _collectHybridAdjacentFaceIds(face) {
+  const adjacentFaceIds = new Set();
+  const loops = [face?.outerLoop, ...(face?.innerLoops || [])].filter(Boolean);
+  for (const loop of loops) {
+    for (const coedge of loop.coedges || []) {
+      for (const adjacentCoedge of coedge.edge?.coedges || []) {
+        const adjacentFaceId = adjacentCoedge.face?.id;
+        if (typeof adjacentFaceId === 'number' && adjacentFaceId !== face.id) {
+          adjacentFaceIds.add(adjacentFaceId);
+        }
+      }
+    }
+  }
+  return adjacentFaceIds;
+}
+
+function _isHybridExpansionHubPlane(face, adjacentSelectedCount) {
+  if (!face || face.surfaceType !== SurfaceType.PLANE) return false;
+  const innerLoopCount = face.innerLoops?.length || 0;
+  return adjacentSelectedCount >= DEFAULT_WASM_HYBRID_HUB_FACE_FANOUT
+    || innerLoopCount >= DEFAULT_WASM_HYBRID_HUB_FACE_INNER_LOOPS;
+}
+
+function _isHybridExpansionClusterPlane(face, adjacentSelectedCount) {
+  if (!face || face.surfaceType !== SurfaceType.PLANE) return false;
+  const outerCoedgeCount = face.outerLoop?.coedges?.length || 0;
+  const innerLoopCount = face.innerLoops?.length || 0;
+  return adjacentSelectedCount >= DEFAULT_WASM_HYBRID_CLUSTER_PLANE_FANOUT
+    && (outerCoedgeCount >= DEFAULT_WASM_HYBRID_CLUSTER_PLANE_OUTER_COEDGES
+      || innerLoopCount >= DEFAULT_WASM_HYBRID_CLUSTER_PLANE_INNER_LOOPS);
+}
+
+function _shouldSkipHybridExpandedCylinder(face, faceMap, selectedFaceIds, selectedAdjacency) {
+  if (!face || face.surfaceType !== SurfaceType.CYLINDER) return false;
+  let hasSelectedNeighbor = false;
+  let hasSelectedNonCylinderNeighbor = false;
+  let hasClusterPlaneNeighbor = false;
+  for (const adjacentFaceId of _collectHybridAdjacentFaceIds(face)) {
+    if (selectedFaceIds.has(adjacentFaceId)) {
+      hasSelectedNeighbor = true;
+      const adjacentFace = faceMap.get(adjacentFaceId);
+      if (adjacentFace && adjacentFace.surfaceType !== SurfaceType.CYLINDER) {
+        hasSelectedNonCylinderNeighbor = true;
+      }
+      continue;
+    }
+    const adjacentFace = faceMap.get(adjacentFaceId);
+    const selectedNeighborCount = selectedAdjacency.get(adjacentFaceId)?.size || 0;
+    if (_isHybridExpansionClusterPlane(adjacentFace, selectedNeighborCount)) {
+      hasClusterPlaneNeighbor = true;
+    }
+  }
+  return hasSelectedNeighbor && !hasSelectedNonCylinderNeighbor && hasClusterPlaneNeighbor;
+}
+
+function _createHybridFaceTrace(config, selectedFaceIds, before, expandedFaceCount = selectedFaceIds.length) {
+  if (!config?.trace) return null;
+  return {
+    limit: Number.isFinite(config.traceLimit) ? config.traceLimit : DEFAULT_WASM_HYBRID_TRACE_LIMIT,
+    selectedFaceCount: selectedFaceIds.length,
+    expandedFaceCount,
+    omittedFaceCount: 0,
+    summary: {
+      selected: selectedFaceIds.length,
+      replaced: 0,
+      skipped: {},
+    },
+    before: before
+      ? {
+        boundaryEdges: before.boundaryEdges,
+        nonManifoldEdges: before.nonManifoldEdges,
+      }
+      : null,
+    faces: [],
+  };
+}
+
+function _pushHybridFaceTrace(trace, faceTrace) {
+  if (!trace || !faceTrace) return;
+  if (faceTrace.status === 'replaced') trace.summary.replaced++;
+  else {
+    const reason = faceTrace.reason || 'unknown';
+    trace.summary.skipped[reason] = (trace.summary.skipped[reason] || 0) + 1;
+  }
+  if (trace.faces.length < trace.limit) trace.faces.push(faceTrace);
+  else trace.omittedFaceCount++;
+}
+
+function _finalizeHybridFaceTrace(trace, after, finalStatus, rejectedReason = null) {
+  if (!trace) return null;
+  trace.after = after
+    ? {
+      boundaryEdges: after.boundaryEdges,
+      nonManifoldEdges: after.nonManifoldEdges,
+    }
+    : null;
+  trace.finalStatus = finalStatus;
+  if (rejectedReason) trace.rejectedReason = rejectedReason;
+  return trace;
+}
+
+function _retriangulateMeshFaceFromBoundary(face, faceTriangles, triangulator, surfaceSegments) {
+  const expectedLoopCount = (face?.outerLoop ? 1 : 0) + (face?.innerLoops?.length || 0);
+  if (!face) {
+    return {
+      mesh: null,
+      reason: 'missing-face',
+      expectedLoopCount,
+      extractedLoopCount: 0,
+    };
+  }
+  if (!Array.isArray(faceTriangles) || faceTriangles.length === 0) {
+    return {
+      mesh: null,
+      reason: 'no-source-triangles',
+      expectedLoopCount,
+      extractedLoopCount: 0,
+    };
+  }
+  const loops = _extractMeshFaceLoops(faceTriangles);
+  if (loops.length === 0) {
+    return {
+      mesh: null,
+      reason: 'no-boundary-loops',
+      expectedLoopCount,
+      extractedLoopCount: 0,
+    };
+  }
+
+  const [outerLoop, ...innerLoops] = loops;
+  const analyticType = face.surfaceInfo?.type;
+  const hasAnalyticSurface = analyticType === 'cylinder'
+    || analyticType === 'cone'
+    || analyticType === 'sphere'
+    || analyticType === 'torus';
+
+  let mesh = null;
+  if (hasAnalyticSurface && face.surfaceType !== SurfaceType.PLANE) {
+    mesh = triangulator.triangulateAnalyticSurface(face, outerLoop, innerLoops, surfaceSegments);
+  }
+  else if (face.surface && face.surfaceType !== SurfaceType.PLANE) {
+    mesh = triangulator.triangulateSurface(face, outerLoop, surfaceSegments, face.sameSense);
+  }
+  else {
+    mesh = triangulator.triangulatePlanar(outerLoop, innerLoops, null, face.sameSense);
+  }
+
+  return {
+    mesh,
+    reason: !mesh || !Array.isArray(mesh.faces) || mesh.faces.length === 0 ? 'empty-retriangulation' : null,
+    expectedLoopCount,
+    extractedLoopCount: loops.length,
+  };
+}
+
+function _extractMeshFaceLoops(faceTriangles) {
+  const boundaryEdges = new Map();
+  const vertexMap = new Map();
+  const pointKey = (v) => `${(v?.x ?? 0).toFixed(10)},${(v?.y ?? 0).toFixed(10)},${(v?.z ?? 0).toFixed(10)}`;
+
+  for (const tri of faceTriangles) {
+    const vertices = tri?.vertices || [];
+    if (vertices.length < 3) continue;
+    for (let i = 0; i < vertices.length; i++) {
+      const a = vertices[i];
+      const b = vertices[(i + 1) % vertices.length];
+      const ak = pointKey(a);
+      const bk = pointKey(b);
+      vertexMap.set(ak, { x: a.x, y: a.y, z: a.z });
+      vertexMap.set(bk, { x: b.x, y: b.y, z: b.z });
+      const edgeKey = ak < bk ? `${ak}|${bk}` : `${bk}|${ak}`;
+      if (!boundaryEdges.has(edgeKey)) boundaryEdges.set(edgeKey, { count: 0, a: ak, b: bk });
+      boundaryEdges.get(edgeKey).count++;
+    }
+  }
+
+  const adjacency = new Map();
+  for (const entry of boundaryEdges.values()) {
+    if (entry.count !== 1) continue;
+    if (!adjacency.has(entry.a)) adjacency.set(entry.a, []);
+    if (!adjacency.has(entry.b)) adjacency.set(entry.b, []);
+    adjacency.get(entry.a).push(entry.b);
+    adjacency.get(entry.b).push(entry.a);
+  }
+
+  const usedEdges = new Set();
+  const loops = [];
+  for (const entry of boundaryEdges.values()) {
+    if (entry.count !== 1) continue;
+    const seedKey = entry.a < entry.b ? `${entry.a}|${entry.b}` : `${entry.b}|${entry.a}`;
+    if (usedEdges.has(seedKey)) continue;
+
+    const loopKeys = [entry.a];
+    const first = entry.a;
+    let prev = null;
+    let curr = first;
+    while (true) {
+      const neighbors = adjacency.get(curr) || [];
+      const next = neighbors.find((candidate) => candidate !== prev && !usedEdges.has(curr < candidate ? `${curr}|${candidate}` : `${candidate}|${curr}`))
+        || neighbors.find((candidate) => candidate !== prev)
+        || null;
+      if (!next) break;
+      usedEdges.add(curr < next ? `${curr}|${next}` : `${next}|${curr}`);
+      prev = curr;
+      curr = next;
+      if (curr === first) break;
+      loopKeys.push(curr);
+    }
+
+    const loop = loopKeys.map((key) => ({ ...vertexMap.get(key) }));
+    if (loop.length >= 3) loops.push(loop);
+  }
+
+  loops.sort((a, b) => _loopPerimeter(b) - _loopPerimeter(a));
+  return loops;
+}
+
+function _loopPerimeter(loop) {
+  if (!Array.isArray(loop) || loop.length < 2) return 0;
+  let perimeter = 0;
+  for (let i = 0; i < loop.length; i++) {
+    perimeter += _dist3D(loop[i], loop[(i + 1) % loop.length]);
+  }
+  return perimeter;
+}
+
+function _rebuildHybridMesh(mesh) {
+  const vertexMap = new Map();
+  const vertices = [];
+  const pointKey = (v) => `${(v?.x ?? 0).toFixed(10)},${(v?.y ?? 0).toFixed(10)},${(v?.z ?? 0).toFixed(10)}`;
+
+  const faces = (mesh.faces || []).map((tri) => ({
+    ...tri,
+    vertices: (tri.vertices || []).map((vertex) => {
+      const key = pointKey(vertex);
+      if (vertexMap.has(key)) return vertexMap.get(key);
+      const canonical = { x: vertex.x, y: vertex.y, z: vertex.z };
+      vertexMap.set(key, canonical);
+      vertices.push(canonical);
+      return canonical;
+    }),
+  }));
+
+  return {
+    ...mesh,
+    vertices,
+    faces,
+  };
+}
+
+
+function _collectHybridLoopPoints(loop, edgeSampler, edgeSegments) {
+  if (!loop || !Array.isArray(loop.coedges) || loop.coedges.length === 0) return [];
+
+  const allPts = [];
+  for (const coedge of loop.coedges) {
+    const samples = edgeSampler.sampleCoEdge(coedge, edgeSegments);
+    if (!Array.isArray(samples) || samples.length === 0) continue;
+
+    if (coedge.edge
+        && coedge.edge.startVertex === coedge.edge.endVertex
+        && samples.length >= 2) {
+      let maxD2 = 0;
+      const start = samples[0];
+      for (let i = 1; i < samples.length; i++) {
+        const sample = samples[i];
+        const dx = sample.x - start.x;
+        const dy = sample.y - start.y;
+        const dz = sample.z - start.z;
+        const d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 > maxD2) maxD2 = d2;
+      }
+      if (maxD2 < 1e-18) continue;
+    }
+
+    const startIndex = allPts.length > 0 ? 1 : 0;
+    for (let i = startIndex; i < samples.length; i++) allPts.push(samples[i]);
+  }
+
+  if (allPts.length > 1) {
+    const first = allPts[0];
+    const last = allPts[allPts.length - 1];
+    const dx = first.x - last.x;
+    const dy = first.y - last.y;
+    const dz = first.z - last.z;
+    if (Math.sqrt(dx * dx + dy * dy + dz * dz) < 1e-10) allPts.pop();
+  }
+
+  return allPts;
+}
+
+function _retriangulateFaceFromTopology(face, edgeSampler, edgeSegments, triangulator, surfaceSegments) {
+  const expectedLoopCount = (face?.outerLoop ? 1 : 0) + (face?.innerLoops?.length || 0);
+  if (!face) {
+    return {
+      mesh: null,
+      reason: 'missing-face',
+      expectedLoopCount,
+      extractedLoopCount: 0,
+    };
+  }
+
+  const outerLoop = _collectHybridLoopPoints(face.outerLoop, edgeSampler, edgeSegments);
+  if (outerLoop.length < 3) {
+    return {
+      mesh: null,
+      reason: 'no-topology-loop-points',
+      expectedLoopCount,
+      extractedLoopCount: 0,
+    };
+  }
+
+  const innerLoops = (face.innerLoops || [])
+    .map((loop) => _collectHybridLoopPoints(loop, edgeSampler, edgeSegments))
+    .filter((loop) => loop.length >= 3);
+
+  const analyticType = face.surfaceInfo?.type;
+  const hasAnalyticSurface = analyticType === 'cylinder'
+    || analyticType === 'cone'
+    || analyticType === 'sphere'
+    || analyticType === 'torus';
+
+  let mesh = null;
+  if (hasAnalyticSurface && face.surfaceType !== SurfaceType.PLANE) {
+    mesh = triangulator.triangulateAnalyticSurface(face, outerLoop, innerLoops, surfaceSegments);
+  }
+  else if (face.surface && face.surfaceType !== SurfaceType.PLANE) {
+    mesh = triangulator.triangulateSurface(face, outerLoop, surfaceSegments, face.sameSense);
+  }
+  else {
+    mesh = triangulator.triangulatePlanar(outerLoop, innerLoops, null, face.sameSense);
+  }
+
+  if (!mesh || !Array.isArray(mesh.faces) || mesh.faces.length === 0) {
+    return {
+      mesh: null,
+      reason: 'empty-retriangulation',
+      expectedLoopCount,
+      extractedLoopCount: 1 + innerLoops.length,
+    };
+  }
+
+  return {
+    mesh,
+    reason: null,
+    expectedLoopCount,
+    extractedLoopCount: 1 + innerLoops.length,
+  };
+}
 /**
  * Async version of importSTEP that ensures the WASM tessellator is loaded
  * before running. Use this from async call sites (UI handlers, workers) for

@@ -450,7 +450,7 @@ export {
   topoGetSummary,
   // geometry: NURBS + analytic
   nurbsSurfaceStore, nurbsCurveStore,
-  planeStore, cylinderStore, sphereStore, coneStore, torusStore,
+  circleStore, planeStore, cylinderStore, sphereStore, coneStore, torusStore,
   geomPoolRead, getGeomPoolPtr, geomPoolUsed, geomPoolReset, geomPoolSetUsed,
   geomStagingPtr, geomStagingCapacity,
   nurbsSurfaceStoreFromStaging, nurbsCurveStoreFromStaging,

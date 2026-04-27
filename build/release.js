@@ -535,6 +535,10 @@ async function instantiate(module, imports = {}) {
         __release(ctrlPts);
       }
     },
+    circleStore(cx, cy, cz, ax, ay, az, rx, ry, rz, radius) {
+      // assembly/kernel/geometry/circleStore(f64, f64, f64, f64, f64, f64, f64, f64, f64, f64) => u32
+      return exports.circleStore(cx, cy, cz, ax, ay, az, rx, ry, rz, radius) >>> 0;
+    },
     planeStore(ox, oy, oz, nx, ny, nz, rx, ry, rz) {
       // assembly/kernel/geometry/planeStore(f64, f64, f64, f64, f64, f64, f64, f64, f64) => u32
       return exports.planeStore(ox, oy, oz, nx, ny, nz, rx, ry, rz) >>> 0;
@@ -1160,6 +1164,7 @@ export const {
   topoGetSummary,
   nurbsSurfaceStore,
   nurbsCurveStore,
+  circleStore,
   planeStore,
   cylinderStore,
   sphereStore,

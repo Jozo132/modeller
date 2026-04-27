@@ -1042,7 +1042,9 @@ function _tessRuledCircleQuadFace(
   if (((railBIdx - railAIdx + 4) & 3) != 2) return -2;
 
   let su = segsU > 0 ? segsU : DEFAULT_SEGS;
-  if (su < 16) su = 16;
+  if (surfType == 1) {
+    if (su < 32) su = 32;
+  } else if (su < 16) su = 16;
   if (su + 1 > RULED_QUAD_MAX_SAMPLES) su = RULED_QUAD_MAX_SAMPLES - 1;
 
   if (!_sampleCircleCoedgeRow(railAEdge, railAOrient, su, ruledQuadRowA)) return -2;

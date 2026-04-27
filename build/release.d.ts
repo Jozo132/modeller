@@ -1265,6 +1265,21 @@ export declare function nurbsSurfaceStore(degreeU: number, degreeV: number, numC
  */
 export declare function nurbsCurveStore(degree: number, numCtrl: number, knots: ArrayLike<number>, ctrlPts: ArrayLike<number>, weights: ArrayLike<number>): number;
 /**
+ * assembly/kernel/geometry/circleStore
+ * @param cx `f64`
+ * @param cy `f64`
+ * @param cz `f64`
+ * @param ax `f64`
+ * @param ay `f64`
+ * @param az `f64`
+ * @param rx `f64`
+ * @param ry `f64`
+ * @param rz `f64`
+ * @param radius `f64`
+ * @returns `u32`
+ */
+export declare function circleStore(cx: number, cy: number, cz: number, ax: number, ay: number, az: number, rx: number, ry: number, rz: number, radius: number): number;
+/**
  * assembly/kernel/geometry/planeStore
  * @param ox `f64`
  * @param oy `f64`

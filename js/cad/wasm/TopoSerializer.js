@@ -16,6 +16,15 @@
 // already exports.
 
 import { SurfaceType } from '../BRepTopology.js';
+import {
+  circumCenter3D,
+  vec3Cross,
+  vec3Dot,
+  vec3Len,
+  vec3Normalize,
+  vec3Scale,
+  vec3Sub,
+} from '../toolkit/Vec3Utils.js';
 
 // The AssemblyScript loader re-exports `export const X: u8` values as
 // `WebAssembly.Global` objects rather than plain numbers. Passing a
@@ -41,7 +50,8 @@ function _kernelConstants(w) {
     GEOM_TORUS: _num(w.GEOM_TORUS, 5),
     GEOM_NURBS_SURFACE: _num(w.GEOM_NURBS_SURFACE, 6),
     GEOM_LINE: _num(w.GEOM_LINE, 7),
-    GEOM_NURBS_CURVE: _num(w.GEOM_NURBS_CURVE, 8),
+    GEOM_CIRCLE: _num(w.GEOM_CIRCLE, 8),
+    GEOM_NURBS_CURVE: _num(w.GEOM_NURBS_CURVE, 10),
     ORIENT_FORWARD: _num(w.ORIENT_FORWARD, 0),
     ORIENT_REVERSED: _num(w.ORIENT_REVERSED, 1),
   };
@@ -204,7 +214,15 @@ function _loopsOf(face) {
 
 function _storeEdgeGeometry(edge, ctx) {
   const { w, K, nurbsEnabled, mem } = ctx;
-  if (!edge || !edge.curve || !nurbsEnabled || !mem) {
+  if (!edge || !edge.curve) {
+    return { geomType: K.GEOM_LINE, geomOffset: 0 };
+  }
+  if (_isSimpleLineCurve(edge.curve)) {
+    return { geomType: K.GEOM_LINE, geomOffset: 0 };
+  }
+  const circleGeom = _storeCircleGeometry(edge, ctx);
+  if (circleGeom) return circleGeom;
+  if (!nurbsEnabled || !mem) {
     return { geomType: K.GEOM_LINE, geomOffset: 0 };
   }
   const curve = edge.curve;
@@ -227,6 +245,80 @@ function _storeEdgeGeometry(edge, ctx) {
   for (let k = 0; k < nCtrl; k++) view[i++] = curve.weights ? curve.weights[k] : 1.0;
   const offset = w.nurbsCurveStoreFromStaging(curve.degree, nCtrl, nKnots);
   return { geomType: K.GEOM_NURBS_CURVE, geomOffset: offset };
+}
+
+function _isSimpleLineCurve(curve) {
+  if (!curve || curve.degree !== 1) return false;
+  if (!Array.isArray(curve.controlPoints) || curve.controlPoints.length !== 2) return false;
+  if (!Array.isArray(curve.weights) || curve.weights.length !== 2) return false;
+  return Math.abs(curve.weights[0] - 1) <= 1e-8 && Math.abs(curve.weights[1] - 1) <= 1e-8;
+}
+
+function _storeCircleGeometry(edge, ctx) {
+  const { w, K } = ctx;
+  if (typeof w.circleStore !== 'function') return null;
+  const curve = edge?.curve;
+  if (!curve || curve.degree !== 2 || typeof curve.evaluate !== 'function') return null;
+
+  const controlPoints = curve.controlPoints;
+  const weights = curve.weights;
+  if (!Array.isArray(controlPoints) || controlPoints.length < 3 || (controlPoints.length % 2) === 0) return null;
+  if (!Array.isArray(weights) || weights.length !== controlPoints.length) return null;
+
+  let nonUnitWeight = false;
+  for (const weight of weights) {
+    if (!Number.isFinite(weight) || weight <= 0) return null;
+    if (Math.abs(weight - 1) > 1e-8) nonUnitWeight = true;
+  }
+  if (!nonUnitWeight) return null;
+
+  const uMin = curve.uMin;
+  const uMax = curve.uMax;
+  const uRange = uMax - uMin;
+  if (!(uRange > 1e-9)) return null;
+
+  const sampleParams = [0.0, 0.2, 0.35, 0.5, 0.8, 1.0]
+    .map((t) => uMin + uRange * t);
+  const samples = sampleParams.map((u) => curve.evaluate(u));
+
+  let center = null;
+  for (let i = 0; i < samples.length - 2 && !center; i++) {
+    for (let j = i + 1; j < samples.length - 1 && !center; j++) {
+      for (let k = j + 1; k < samples.length && !center; k++) {
+        center = circumCenter3D(samples[i], samples[j], samples[k]);
+      }
+    }
+  }
+  if (!center) return null;
+
+  const startPoint = edge.startVertex?.point || samples[0];
+  const xAxis = vec3Normalize(vec3Sub(startPoint, center));
+  const radius = vec3Len(vec3Sub(startPoint, center));
+  if (radius < 1e-8 || vec3Len(xAxis) < 0.99) return null;
+
+  let tangent = vec3Sub(curve.evaluate(uMin + uRange * 0.05), startPoint);
+  if (vec3Len(tangent) < 1e-8) tangent = vec3Sub(samples[2], startPoint);
+  const normal = vec3Normalize(vec3Cross(xAxis, tangent));
+  if (vec3Len(normal) < 0.99) return null;
+
+  const planeTol = Math.max(1e-6, radius * 1e-5);
+  const radiusTol = Math.max(1e-6, radius * 1e-5);
+  for (const point of samples) {
+    const radial = vec3Sub(point, center);
+    if (Math.abs(vec3Dot(radial, normal)) > planeTol) return null;
+    const inPlane = vec3Sub(radial, vec3Scale(normal, vec3Dot(radial, normal)));
+    if (Math.abs(vec3Len(inPlane) - radius) > radiusTol) return null;
+  }
+
+  return {
+    geomType: K.GEOM_CIRCLE,
+    geomOffset: w.circleStore(
+      center.x, center.y, center.z,
+      normal.x, normal.y, normal.z,
+      xAxis.x, xAxis.y, xAxis.z,
+      radius,
+    ),
+  };
 }
 
 function _storeFaceGeometry(face, ctx) {
@@ -261,8 +353,6 @@ function _storeFaceGeometry(face, ctx) {
     }
     return fallback;
   }
-
-  if (!face.surface) return fallback;
 
   if (face.surfaceType === SurfaceType.SPHERE) {
     const ctr = si && (si.origin || si.center);
@@ -331,6 +421,8 @@ function _storeFaceGeometry(face, ctx) {
     }
     return fallback;
   }
+
+  if (!face.surface) return fallback;
 
   // NURBS / B-spline surfaces (auto-enabled when the kernel exports the
   // staging path and the caller supplied a memory buffer).

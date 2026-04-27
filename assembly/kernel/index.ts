@@ -43,7 +43,7 @@ export {
 // ---- geometry: NURBS + analytic surface storage ----
 export {
   nurbsSurfaceStore, nurbsCurveStore,
-  planeStore, cylinderStore, sphereStore, coneStore, torusStore,
+  circleStore, planeStore, cylinderStore, sphereStore, coneStore, torusStore,
   geomPoolRead, getGeomPoolPtr, geomPoolUsed, geomPoolReset, geomPoolSetUsed,
   geomStagingPtr, geomStagingCapacity,
   nurbsSurfaceStoreFromStaging, nurbsCurveStoreFromStaging

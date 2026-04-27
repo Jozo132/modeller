@@ -656,6 +656,203 @@ function _normalizePeriodicLoop(loop, surface) {
   return reordered;
 }
 
+function _bestClosedLoopAlignment(baseRow, candidateRow, distanceFn) {
+  const orientations = [
+    { reverse: false, row: candidateRow },
+    { reverse: true, row: [...candidateRow].reverse() },
+  ];
+  let best = { reverse: false, shift: 0 };
+  let bestScore = Infinity;
+
+  for (const orientation of orientations) {
+    for (let shift = 0; shift < orientation.row.length; shift++) {
+      let score = 0;
+      for (let i = 0; i < baseRow.length; i++) {
+        score += distanceFn(baseRow[i], orientation.row[(i + shift) % orientation.row.length]);
+      }
+      if (score < bestScore) {
+        bestScore = score;
+        best = { reverse: orientation.reverse, shift };
+      }
+    }
+  }
+
+  return best;
+}
+
+function _applyClosedLoopAlignment(candidateRow, alignment, mapper = (point) => ({ ...point }), baseRow = null) {
+  const oriented = alignment.reverse ? [...candidateRow].reverse() : [...candidateRow];
+  return oriented.map((_, i) => mapper(oriented[(i + alignment.shift) % oriented.length], i, baseRow));
+}
+
+function _mergePeriodicBoundaryLoops(outerLoop, splitLoop) {
+  if (!Array.isArray(outerLoop) || !Array.isArray(splitLoop)) return null;
+  if (outerLoop.length < 3 || splitLoop.length < 3) return null;
+  if (outerLoop.length !== splitLoop.length) return null;
+
+  const alignment = _bestClosedLoopAlignment(outerLoop, splitLoop, (a, b) => {
+    const dx = a.x - b.x;
+    const dy = a.y - b.y;
+    const dz = a.z - b.z;
+    return dx * dx + dy * dy + dz * dz;
+  });
+  const alignedSplitLoop = _applyClosedLoopAlignment(splitLoop, alignment);
+  const merged = [];
+  const mergedPoints = [...outerLoop, ...[...alignedSplitLoop].reverse()];
+  for (const point of mergedPoints) {
+    const prev = merged[merged.length - 1];
+    if (prev
+      && Math.abs(prev.x - point.x) < 1e-10
+      && Math.abs(prev.y - point.y) < 1e-10
+      && Math.abs(prev.z - point.z) < 1e-10) {
+      continue;
+    }
+    merged.push({ ...point });
+  }
+  if (merged.length > 1) {
+    const first = merged[0];
+    const last = merged[merged.length - 1];
+    if (Math.abs(first.x - last.x) < 1e-10
+      && Math.abs(first.y - last.y) < 1e-10
+      && Math.abs(first.z - last.z) < 1e-10) {
+      merged.pop();
+    }
+  }
+  return merged.length >= 3 ? merged : null;
+}
+
+function _triangulateAnalyticSelfLoopRing(face, surface, outerRow3D, innerRow3D, surfaceSegments, sameSense) {
+  if (!face || !surface) return null;
+  if (!Array.isArray(outerRow3D) || !Array.isArray(innerRow3D)) return null;
+  if (outerRow3D.length < 3 || innerRow3D.length < 3) return null;
+  if (outerRow3D.length !== innerRow3D.length) return null;
+
+  const mapRowToUv = (row) => {
+    const uvRow = [];
+    let prevUv = null;
+    for (const point of row) {
+      const uv = surface.closestPointUV(point, 16, prevUv);
+      if (!uv) return null;
+      const next = { u: uv.u, v: uv.v, x: uv.u, y: uv.v, _orig3D: point };
+      uvRow.push(next);
+      prevUv = uv;
+    }
+    const normalized = _normalizePeriodicLoop(uvRow, surface);
+    return normalized.length === row.length ? normalized : null;
+  };
+
+  const outerUv = mapRowToUv(outerRow3D);
+  const innerUvRaw = mapRowToUv(innerRow3D);
+  if (!outerUv || !innerUvRaw) return null;
+
+  const alignment = _bestClosedLoopAlignment(outerRow3D, innerRow3D, (a, b) => {
+    const dx = a.x - b.x;
+    const dy = a.y - b.y;
+    const dz = a.z - b.z;
+    return dx * dx + dy * dy + dz * dz;
+  });
+  const alignedInnerRow = _applyClosedLoopAlignment(innerRow3D, alignment);
+  const alignedInnerUv = _applyClosedLoopAlignment(innerUvRaw, alignment, (point, i) => {
+    const ref = outerUv[i];
+    const u = surface.periodicU && Number.isFinite(surface.periodU)
+      ? _wrapNear(point.u, ref.u, surface.periodU)
+      : point.u;
+    return { ...point, u, x: u, y: point.v };
+  });
+
+  const rowCount = Math.max(2, Math.ceil(surfaceSegments / 2));
+  const rows = [outerRow3D.map((point) => ({ ...point }))];
+  const uvRows = [outerUv.map((point) => ({ ...point }))];
+  for (let rowIndex = 1; rowIndex < rowCount - 1; rowIndex++) {
+    const t = rowIndex / (rowCount - 1);
+    const row = [];
+    const uvRow = [];
+    for (let columnIndex = 0; columnIndex < outerUv.length; columnIndex++) {
+      const outerUvPoint = outerUv[columnIndex];
+      const innerUvPoint = alignedInnerUv[columnIndex];
+      const u = outerUvPoint.u + t * (innerUvPoint.u - outerUvPoint.u);
+      const v = outerUvPoint.v + t * (innerUvPoint.v - outerUvPoint.v);
+      const point = surface.evaluate(u, v);
+      row.push({ x: point.x, y: point.y, z: point.z });
+      uvRow.push({ u, v, x: u, y: v });
+    }
+    rows.push(row);
+    uvRows.push(uvRow);
+  }
+  rows.push(alignedInnerRow.map((point) => ({ ...point })));
+  uvRows.push(alignedInnerUv.map((point) => ({ ...point })));
+
+  const meshVertices = [];
+  const meshFaces = [];
+  const flip = sameSense ? 1 : -1;
+  for (let rowIndex = 0; rowIndex < rows.length - 1; rowIndex++) {
+    for (let columnIndex = 0; columnIndex < outerUv.length; columnIndex++) {
+      const nextColumnIndex = (columnIndex + 1) % outerUv.length;
+      const trianglePairs = [
+        [
+          rows[rowIndex][columnIndex],
+          rows[rowIndex][nextColumnIndex],
+          rows[rowIndex + 1][columnIndex],
+        ],
+        [
+          rows[rowIndex + 1][columnIndex],
+          rows[rowIndex][nextColumnIndex],
+          rows[rowIndex + 1][nextColumnIndex],
+        ],
+      ];
+      const triangleUvs = [
+        [
+          uvRows[rowIndex][columnIndex],
+          uvRows[rowIndex][nextColumnIndex],
+          uvRows[rowIndex + 1][columnIndex],
+        ],
+        [
+          uvRows[rowIndex + 1][columnIndex],
+          uvRows[rowIndex][nextColumnIndex],
+          uvRows[rowIndex + 1][nextColumnIndex],
+        ],
+      ];
+
+      for (let triangleIndex = 0; triangleIndex < trianglePairs.length; triangleIndex++) {
+        const vertices = trianglePairs[triangleIndex].map((point) => ({ ...point }));
+        const uvs = triangleUvs[triangleIndex];
+        if (_triangleArea3D(vertices[0], vertices[1], vertices[2]) < 1e-12) continue;
+
+        const centroidU = (uvs[0].u + uvs[1].u + uvs[2].u) / 3;
+        const centroidV = (uvs[0].v + uvs[1].v + uvs[2].v) / 3;
+        let faceNormal = surface.normal(centroidU, centroidV);
+        faceNormal = faceNormal
+          ? _normalize({ x: faceNormal.x * flip, y: faceNormal.y * flip, z: faceNormal.z * flip })
+          : calculateNormal(vertices[0], vertices[1], vertices[2]);
+        if (_dot(faceNormal, calculateNormal(vertices[0], vertices[1], vertices[2])) < 0) {
+          const tmpVertex = vertices[1];
+          vertices[1] = vertices[2];
+          vertices[2] = tmpVertex;
+          const tmpUv = uvs[1];
+          uvs[1] = uvs[2];
+          uvs[2] = tmpUv;
+        }
+
+        const vertexNormals = uvs.map((uv) => {
+          const normal = surface.normal(uv.u, uv.v);
+          return normal
+            ? _normalize({ x: normal.x * flip, y: normal.y * flip, z: normal.z * flip })
+            : { ...faceNormal };
+        });
+
+        meshFaces.push({
+          vertices,
+          normal: faceNormal,
+          vertexNormals,
+        });
+        meshVertices.push(...vertices.map((point) => ({ ...point })));
+      }
+    }
+  }
+
+  return meshFaces.length > 0 ? { vertices: meshVertices, faces: meshFaces } : null;
+}
+
 function _makeAnalyticSurface(surfaceInfo) {
   if (!surfaceInfo) return null;
 
@@ -967,12 +1164,33 @@ export class FaceTriangulator {
     const sameSense = face.sameSense !== false;
     const periodicSurface = surface.periodicU || surface.periodicV;
 
-    const outer3D = removeCollinearPoints([...boundaryPts3D]);
+    let outer3D = removeCollinearPoints([...boundaryPts3D]);
     if (outer3D.length < 3) return { vertices: [], faces: [] };
 
-    const holeLoops3D = holePts3D
+    let holeLoops3D = holePts3D
       .map(loop => removeCollinearPoints([...loop]))
       .filter(loop => loop.length >= 3);
+
+    const selfLoopRingMesh = periodicSurface
+      && (surface.type === 'cylinder' || surface.type === 'cone' || surface.type === 'torus')
+      && face?.outerLoop?.coedges?.length === 1
+      && (face?.innerLoops?.length || 0) === 1
+      && face.innerLoops?.[0]?.coedges?.length === 1
+      && holeLoops3D.length === 1
+      ? _triangulateAnalyticSelfLoopRing(face, surface, outer3D, holeLoops3D[0], surfaceSegments, sameSense)
+      : null;
+    if (selfLoopRingMesh?.faces?.length) return selfLoopRingMesh;
+
+    if (periodicSurface
+      && (surface.type === 'cylinder' || surface.type === 'cone')
+      && (face?.innerLoops?.length || 0) === 0
+      && holeLoops3D.length === 1) {
+      const mergedOuter3D = _mergePeriodicBoundaryLoops(outer3D, holeLoops3D[0]);
+      if (mergedOuter3D) {
+        outer3D = removeCollinearPoints(mergedOuter3D);
+        holeLoops3D = [];
+      }
+    }
 
     const mapLoopToUV = (loop3D) => {
       const loop = [];
@@ -1257,7 +1475,7 @@ export class FaceTriangulator {
     const maxPasses = surface.type === 'torus'
       ? Math.min(surfaceSegments, 3)
       : surface.type === 'cylinder'
-        ? Math.min(surfaceSegments, 1)
+        ? Math.min(surfaceSegments, 2)
       : periodicSurface
         ? Math.min(surfaceSegments, 3)
         : Math.min(surfaceSegments, 4);
