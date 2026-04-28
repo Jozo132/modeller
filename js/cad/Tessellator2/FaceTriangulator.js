@@ -1112,6 +1112,32 @@ export class FaceTriangulator {
     // CDT triangulation
     const triIndices = constrainedTriangulate(outerPts2d, holes2d);
 
+    const planarProjected = pts2d.map((point, index) => ({ x: point.x, y: point.y, _index: index }));
+    const planarOuterLoop = planarProjected.slice(0, outerClean.length);
+    const planarHoleLoops = [];
+    offset = outerClean.length;
+    for (const hole of holesClean) {
+      planarHoleLoops.push(planarProjected.slice(offset, offset + hole.length));
+      offset += hole.length;
+    }
+
+    const pointKey2D = (point) => `${Math.round(point.x * 1e8)},${Math.round(point.y * 1e8)}`;
+    const planarEdgeKey = (a, b) => {
+      const ka = pointKey2D(a);
+      const kb = pointKey2D(b);
+      return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+    };
+
+    let triangles = [];
+    for (const [a, b, c] of triIndices) {
+      const pa = planarProjected[a];
+      const pb = planarProjected[b];
+      const pc = planarProjected[c];
+      if (!pa || !pb || !pc) continue;
+      triangles.push([pa, pb, pc]);
+    }
+    triangles = splitSkippedBoundaryChains(triangles, [planarOuterLoop, ...planarHoleLoops], planarEdgeKey);
+
     // Orient normal
     let outNormal = { ...normal };
     if (!sameSense) {
@@ -1119,8 +1145,9 @@ export class FaceTriangulator {
     }
 
     const meshFaces = [];
-    for (const [a, b, c] of triIndices) {
-      const pa = allPts[a], pb = allPts[b], pc = allPts[c];
+    for (const [a, b, c] of triangles) {
+      const pa = allPts[a._index], pb = allPts[b._index], pc = allPts[c._index];
+      if (!pa || !pb || !pc) continue;
       const area = _triangleArea3D(pa, pb, pc);
       if (area < 1e-12) continue;
 
@@ -1546,16 +1573,14 @@ export class FaceTriangulator {
     const flip = sameSense ? 1 : -1;
     for (const [a, b, c] of triangles) {
       const ua = a, ub = b, uc = c;
-      const pa = evalPoint(ua), pb = evalPoint(ub), pc = evalPoint(uc);
+      let pa = evalPoint(ua), pb = evalPoint(ub), pc = evalPoint(uc);
       const areaThreshold = faceDiag > 0 ? faceDiag * faceDiag * 1e-8 : 1e-14;
       if (_triangleArea3D(pa, pb, pc) < areaThreshold) continue;
 
-      // Do NOT swap vertices per-triangle here.  The global winding fix
-      // (above, before subdivision) already oriented ALL CDT triangles
-      // consistently.  Per-triangle swaps break shared-edge consistency
-      // on strongly curved faces (cones, large-arc cylinders), producing
-      // fan/cross artifacts in smooth shading because adjacent triangles
-      // end up with inconsistent vertex normals at shared vertices.
+      // The global winding pass orients the CDT result as a whole, but the
+      // final chord triangle can still disagree with the local analytic
+      // surface normal on trimmed periodic patches. Correct that by flipping
+      // the output winding together with its vertex normals.
 
       const na = surface.normal(ua.u, ua.v);
       const nb = surface.normal(ub.u, ub.v);
@@ -1565,9 +1590,9 @@ export class FaceTriangulator {
       // faces that span a large arc (>90°), vertex normals at the
       // extremes legitimately oppose the geometric normal, and flipping
       // them would corrupt the shading direction.
-      const vna = _normalize(na ? { x: na.x * flip, y: na.y * flip, z: na.z * flip } : outwardRef);
-      const vnb = _normalize(nb ? { x: nb.x * flip, y: nb.y * flip, z: nb.z * flip } : outwardRef);
-      const vnc = _normalize(nc ? { x: nc.x * flip, y: nc.y * flip, z: nc.z * flip } : outwardRef);
+      let vna = _normalize(na ? { x: na.x * flip, y: na.y * flip, z: na.z * flip } : outwardRef);
+      let vnb = _normalize(nb ? { x: nb.x * flip, y: nb.y * flip, z: nb.z * flip } : outwardRef);
+      let vnc = _normalize(nc ? { x: nc.x * flip, y: nc.y * flip, z: nc.z * flip } : outwardRef);
 
       // Compute face normal from centroid surface normal for a stable
       // outward direction.  The averaged vertex normals can cancel on
@@ -1587,11 +1612,16 @@ export class FaceTriangulator {
       }
 
       // On strongly curved triangles the centroid surface normal may still
-      // oppose the geometric winding — flip the face normal so the
-      // renderer's front-face determination matches the vertex order.
+      // oppose the geometric winding. Keep the B-Rep surface normal as the
+      // source of truth and flip the triangle winding to match it.
       const geoN = calculateNormal(pa, pb, pc);
       if (_dot(faceN, geoN) < 0) {
-        faceN = { x: -faceN.x, y: -faceN.y, z: -faceN.z };
+        const swappedVertex = pb;
+        pb = pc;
+        pc = swappedVertex;
+        const swappedNormal = vnb;
+        vnb = vnc;
+        vnc = swappedNormal;
       }
 
       meshFaces.push({
@@ -2308,13 +2338,17 @@ export class FaceTriangulator {
           // Keep the averaged outNormal when centroid eval fails.
         }
       }
-      // Ensure the face normal agrees with the geometric winding direction.
-      // On very curved triangles, the surface normal at the centroid can
-      // still oppose the geometric winding — flip in that case so the
-      // renderer's front-face determination matches the vertex order.
+      // Ensure the geometric winding agrees with the surface outward normal.
+      // Flipping only the stored normal hides the issue from mesh diagnostics
+      // but leaves renderer-facing curved surfaces effectively inside-out.
       const geoN = calculateNormal(a, b, c);
       if (_dot(faceNormal, geoN) < 0) {
-        faceNormal = { x: -faceNormal.x, y: -faceNormal.y, z: -faceNormal.z };
+        const swappedVertex = b;
+        b = c;
+        c = swappedVertex;
+        const swappedNormal = vertexNormals[1];
+        vertexNormals[1] = vertexNormals[2];
+        vertexNormals[2] = swappedNormal;
       }
 
       meshFaces.push({

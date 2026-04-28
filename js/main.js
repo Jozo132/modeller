@@ -5726,7 +5726,8 @@ class App {
   _hasMeshHoles(geometry) {
     if (!geometry || !geometry.faces || geometry.faces.length === 0) return false;
     const edgeCounts = new Map();
-    const vertexKey = (v) => `${v.x.toFixed(5)},${v.y.toFixed(5)},${v.z.toFixed(5)}`;
+    const coordKey = (value) => (Math.abs(value) < 0.5e-5 ? 0 : value).toFixed(5);
+    const vertexKey = (v) => `${coordKey(v.x)},${coordKey(v.y)},${coordKey(v.z)}`;
     for (const face of geometry.faces) {
       const verts = face.vertices || [];
       for (let i = 0; i < verts.length; i++) {

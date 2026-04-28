@@ -304,7 +304,10 @@ export class FeatureTree {
         if (!buffer) throw new Error(`empty payload for ${feature.id}`);
 
         const topoBody = deps.readCbrep(buffer);
-        const mesh = deps.tessellateBody(topoBody, { validate: false });
+        const mesh = deps.tessellateBody(topoBody, {
+          validate: false,
+          fallbackOnInvalidWasm: true,
+        });
         if (!mesh || !mesh.faces || mesh.faces.length === 0) {
           throw new Error(`empty mesh from CBREP for ${feature.id}`);
         }

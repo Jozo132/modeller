@@ -40,6 +40,7 @@ import { geomPoolRead } from './geometry';
 
 import {
   nurbsSurfaceTessellate,
+  nurbsSurfaceNormal,
   nurbsCurveEvaluate,
   getResultPtr,
   getTessVertsPtr, getTessNormalsPtr, getTessFacesPtr,
@@ -88,6 +89,28 @@ let edgeSampleTotal: u32 = 0;
 /** Boundary loop vertices (indices) for the current face. */
 const loopVerts = new StaticArray<u32>(8192);
 let loopVertCount: u32 = 0;
+
+/** Planar face working buffers: sampled loop points and a bridged polygon path. */
+const MAX_PLANAR_PTS: u32 = 16384;
+const MAX_PLANAR_PATH: u32 = 32768;
+const MAX_PLANAR_LOOPS: u32 = 128;
+const _planarX = new StaticArray<f64>(MAX_PLANAR_PTS);
+const _planarY = new StaticArray<f64>(MAX_PLANAR_PTS);
+const _planarZ = new StaticArray<f64>(MAX_PLANAR_PTS);
+const _planarU = new StaticArray<f64>(MAX_PLANAR_PTS);
+const _planarV = new StaticArray<f64>(MAX_PLANAR_PTS);
+const _planarLoopStart = new StaticArray<u32>(MAX_PLANAR_LOOPS);
+const _planarLoopEnd = new StaticArray<u32>(MAX_PLANAR_LOOPS);
+const _planarPath = new StaticArray<u32>(MAX_PLANAR_PATH);
+const _planarPathNext = new StaticArray<u32>(MAX_PLANAR_PATH);
+const _planarRemaining = new StaticArray<u32>(MAX_PLANAR_PATH);
+let _planarPointCount: u32 = 0;
+let _planarLoopCount: u32 = 0;
+let _planarPathCount: u32 = 0;
+
+let _planeOx: f64 = 0, _planeOy: f64 = 0, _planeOz: f64 = 0;
+let _planeRx: f64 = 1, _planeRy: f64 = 0, _planeRz: f64 = 0;
+let _planeYx: f64 = 0, _planeYy: f64 = 1, _planeYz: f64 = 0;
 
 /** Default tessellation segments for analytic surfaces. */
 const DEFAULT_SEGS: i32 = 16;
@@ -776,6 +799,7 @@ let _rowStatVMin: f64 = 0.0;
 let _rowStatVMax: f64 = 0.0;
 let _rowStatUAvg: f64 = 0.0;
 let _rowStatVAvg: f64 = 0.0;
+let _ruledStripNormalSign: f64 = 1.0;
 
 @inline
 function _ruledRowWrite(row: StaticArray<f64>, idx: i32, x: f64, y: f64, z: f64): void {
@@ -869,10 +893,20 @@ function _sampleCircleCoedgeRow(edgeId: u32, orient: u8, segs: i32, row: StaticA
   const bz = ax * ry - ay * rx;
   const startV = edgeGetStartVertex(edgeId);
   const endV = edgeGetEndVertex(edgeId);
+  const coStart = orient == ORIENT_REVERSED ? endV : startV;
+  const coEnd = orient == ORIENT_REVERSED ? startV : endV;
   const startAngle = _circleAngleAtVertex(edgeId, startV);
   const endAngle = _circleAngleAtVertex(edgeId, endV);
   const sweep = _directedPeriodicSweep(startAngle, endAngle, edgeGetCurveSameSense(edgeId) != 0, startV == endV);
   for (let i: i32 = 0; i <= segs; i++) {
+    if (i == 0) {
+      _ruledRowWrite(row, i, vertexGetX(coStart), vertexGetY(coStart), vertexGetZ(coStart));
+      continue;
+    }
+    if (i == segs) {
+      _ruledRowWrite(row, i, vertexGetX(coEnd), vertexGetY(coEnd), vertexGetZ(coEnd));
+      continue;
+    }
     let frac = <f64>i / <f64>segs;
     if (orient == ORIENT_REVERSED) frac = 1.0 - frac;
     const theta = startAngle + frac * sweep;
@@ -884,6 +918,161 @@ function _sampleCircleCoedgeRow(edgeId: u32, orient: u8, segs: i32, row: StaticA
       cz + radius * (rz * c + bz * s));
   }
   return true;
+}
+
+function _sampleLineCoedgeRow(edgeId: u32, orient: u8, segs: i32, row: StaticArray<f64>): bool {
+  if (segs < 1 || segs + 1 > RULED_QUAD_MAX_SAMPLES) return false;
+  const startV = orient == ORIENT_REVERSED ? edgeGetEndVertex(edgeId) : edgeGetStartVertex(edgeId);
+  const endV = orient == ORIENT_REVERSED ? edgeGetStartVertex(edgeId) : edgeGetEndVertex(edgeId);
+  const sx = vertexGetX(startV);
+  const sy = vertexGetY(startV);
+  const sz = vertexGetZ(startV);
+  const ex = vertexGetX(endV);
+  const ey = vertexGetY(endV);
+  const ez = vertexGetZ(endV);
+  for (let i: i32 = 0; i <= segs; i++) {
+    const t = <f64>i / <f64>segs;
+    _ruledRowWrite(row, i,
+      sx + (ex - sx) * t,
+      sy + (ey - sy) * t,
+      sz + (ez - sz) * t);
+  }
+  return true;
+}
+
+function _sampleNurbsCoedgeRow(edgeId: u32, orient: u8, segs: i32, row: StaticArray<f64>): bool {
+  if (segs < 1 || segs + 1 > RULED_QUAD_MAX_SAMPLES) return false;
+  if (!_loadCurve(edgeGetGeomOffset(edgeId))) return _sampleLineCoedgeRow(edgeId, orient, segs, row);
+  const startV = orient == ORIENT_REVERSED ? edgeGetEndVertex(edgeId) : edgeGetStartVertex(edgeId);
+  const endV = orient == ORIENT_REVERSED ? edgeGetStartVertex(edgeId) : edgeGetEndVertex(edgeId);
+  for (let i: i32 = 0; i <= segs; i++) {
+    if (i == 0) {
+      _ruledRowWrite(row, i, vertexGetX(startV), vertexGetY(startV), vertexGetZ(startV));
+      continue;
+    }
+    if (i == segs) {
+      _ruledRowWrite(row, i, vertexGetX(endV), vertexGetY(endV), vertexGetZ(endV));
+      continue;
+    }
+    let frac = <f64>i / <f64>segs;
+    if (orient == ORIENT_REVERSED) frac = 1.0 - frac;
+    const t = _crvTmin + frac * (_crvTmax - _crvTmin);
+    nurbsCurveEvaluate(_crvDeg, _crvNCtrl, _crvCtrl, _crvKnots, _crvWts, t);
+    const rp = getResultPtr();
+    _ruledRowWrite(row, i, load<f64>(rp), load<f64>(rp + 8), load<f64>(rp + 16));
+  }
+  return true;
+}
+
+function _sampleCoedgeRow(edgeId: u32, orient: u8, segs: i32, row: StaticArray<f64>): bool {
+  const geomType = edgeGetGeomType(edgeId);
+  if (geomType == GEOM_CIRCLE) return _sampleCircleCoedgeRow(edgeId, orient, segs, row);
+  if (geomType == GEOM_NURBS_CURVE) return _sampleNurbsCoedgeRow(edgeId, orient, segs, row);
+  return _sampleLineCoedgeRow(edgeId, orient, segs, row);
+}
+
+function _reverseRuledRow(row: StaticArray<f64>, segs: i32): void {
+  for (let i: i32 = 0; i <= segs / 2; i++) {
+    const j = segs - i;
+    const pi = i * 3;
+    const pj = j * 3;
+    const tx = unchecked(row[pi]);
+    const ty = unchecked(row[pi + 1]);
+    const tz = unchecked(row[pi + 2]);
+    unchecked(row[pi] = unchecked(row[pj]));
+    unchecked(row[pi + 1] = unchecked(row[pj + 1]));
+    unchecked(row[pi + 2] = unchecked(row[pj + 2]));
+    unchecked(row[pj] = tx);
+    unchecked(row[pj + 1] = ty);
+    unchecked(row[pj + 2] = tz);
+  }
+}
+
+function _ruledStripNormalAt(idx: i32, segs: i32): void {
+  const prev = idx > 0 ? idx - 1 : idx;
+  const next = idx < segs ? idx + 1 : idx;
+  const pi = idx * 3;
+  const pp = prev * 3;
+  const pn = next * 3;
+
+  const tx = (unchecked(ruledQuadRowA[pn]) - unchecked(ruledQuadRowA[pp]))
+    + (unchecked(ruledQuadRowB[pn]) - unchecked(ruledQuadRowB[pp]));
+  const ty = (unchecked(ruledQuadRowA[pn + 1]) - unchecked(ruledQuadRowA[pp + 1]))
+    + (unchecked(ruledQuadRowB[pn + 1]) - unchecked(ruledQuadRowB[pp + 1]));
+  const tz = (unchecked(ruledQuadRowA[pn + 2]) - unchecked(ruledQuadRowA[pp + 2]))
+    + (unchecked(ruledQuadRowB[pn + 2]) - unchecked(ruledQuadRowB[pp + 2]));
+  const ax = unchecked(ruledQuadRowB[pi]) - unchecked(ruledQuadRowA[pi]);
+  const ay = unchecked(ruledQuadRowB[pi + 1]) - unchecked(ruledQuadRowA[pi + 1]);
+  const az = unchecked(ruledQuadRowB[pi + 2]) - unchecked(ruledQuadRowA[pi + 2]);
+
+  let nx = ty * az - tz * ay;
+  let ny = tz * ax - tx * az;
+  let nz = tx * ay - ty * ax;
+  const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+  if (len > 1e-14) {
+    nx /= len;
+    ny /= len;
+    nz /= len;
+  } else {
+    nx = 0.0;
+    ny = 0.0;
+    nz = 1.0;
+  }
+  _surfNX = nx * _ruledStripNormalSign;
+  _surfNY = ny * _ruledStripNormalSign;
+  _surfNZ = nz * _ruledStripNormalSign;
+}
+
+function _emitRuledStripVertex(row: StaticArray<f64>, idx: i32, segs: i32): u32 {
+  _ruledStripNormalAt(idx, segs);
+  return _ruledRowEmit(row, idx, _surfNX, _surfNY, _surfNZ);
+}
+
+function _emitTriTowardVertexNormals(i0: u32, i1: u32, i2: u32, faceId: u32): i32 {
+  const a = i0 * 3;
+  const b = i1 * 3;
+  const c = i2 * 3;
+  const nx = unchecked(tessOutNormals[a]) + unchecked(tessOutNormals[b]) + unchecked(tessOutNormals[c]);
+  const ny = unchecked(tessOutNormals[a + 1]) + unchecked(tessOutNormals[b + 1]) + unchecked(tessOutNormals[c + 1]);
+  const nz = unchecked(tessOutNormals[a + 2]) + unchecked(tessOutNormals[b + 2]) + unchecked(tessOutNormals[c + 2]);
+  if (nx * nx + ny * ny + nz * nz < 1e-14) return _emitTri(i0, i1, i2, faceId);
+  return _emitPlaneTriOriented(i0, i1, i2, nx, ny, nz, faceId);
+}
+
+function _calibrateRuledStripNormalSign(
+  degU: i32,
+  degV: i32,
+  numCtrlU: i32,
+  numCtrlV: i32,
+  ctrlPts: Float64Array,
+  knotsU: Float64Array,
+  knotsV: Float64Array,
+  weights: Float64Array,
+  reversed: bool,
+  segs: i32,
+): void {
+  _ruledStripNormalSign = 1.0;
+  const midIndex = segs / 2;
+  _ruledStripNormalAt(midIndex, segs);
+  const tx = _surfNX;
+  const ty = _surfNY;
+  const tz = _surfNZ;
+  const uMin = unchecked(knotsU[degU]);
+  const uMax = unchecked(knotsU[numCtrlU]);
+  const vMin = unchecked(knotsV[degV]);
+  const vMax = unchecked(knotsV[numCtrlV]);
+  nurbsSurfaceNormal(
+    degU, degV, numCtrlU, numCtrlV,
+    ctrlPts, knotsU, knotsV, weights,
+    0.5 * (uMin + uMax),
+    0.5 * (vMin + vMax),
+  );
+  const rp = getResultPtr();
+  let nx = load<f64>(rp + 24);
+  let ny = load<f64>(rp + 32);
+  let nz = load<f64>(rp + 40);
+  if (reversed) { nx = -nx; ny = -ny; nz = -nz; }
+  if (tx * nx + ty * ny + tz * nz < 0.0) _ruledStripNormalSign = -1.0;
 }
 
 function _measureProjectedRow(row: StaticArray<f64>, segs: i32): void {
@@ -1298,6 +1487,513 @@ function _emitPlaneTriOriented(i0: u32, i1: u32, i2: u32, nx: f64, ny: f64, nz: 
     : _emitTri(i0, i2, i1, faceId);
 }
 
+@inline
+function _planarProject(x: f64, y: f64, z: f64): void {
+  const dx = x - _planeOx;
+  const dy = y - _planeOy;
+  const dz = z - _planeOz;
+  _projU = dx * _planeRx + dy * _planeRy + dz * _planeRz;
+  _projV = dx * _planeYx + dy * _planeYy + dz * _planeYz;
+}
+
+function _setPlaneProjection(gOff: u32, nx: f64, ny: f64, nz: f64): void {
+  _planeOx = geomPoolRead(gOff);
+  _planeOy = geomPoolRead(gOff + 1);
+  _planeOz = geomPoolRead(gOff + 2);
+
+  let rx = geomPoolRead(gOff + 6);
+  let ry = geomPoolRead(gOff + 7);
+  let rz = geomPoolRead(gOff + 8);
+  const dot = rx * nx + ry * ny + rz * nz;
+  rx -= dot * nx;
+  ry -= dot * ny;
+  rz -= dot * nz;
+  let rLen = Math.sqrt(rx * rx + ry * ry + rz * rz);
+  if (rLen < 1e-14) {
+    if (Math.abs(nx) <= Math.abs(ny) && Math.abs(nx) <= Math.abs(nz)) { rx = 1.0; ry = 0.0; rz = 0.0; }
+    else if (Math.abs(ny) <= Math.abs(nz)) { rx = 0.0; ry = 1.0; rz = 0.0; }
+    else { rx = 0.0; ry = 0.0; rz = 1.0; }
+    const dot2 = rx * nx + ry * ny + rz * nz;
+    rx -= dot2 * nx;
+    ry -= dot2 * ny;
+    rz -= dot2 * nz;
+    rLen = Math.sqrt(rx * rx + ry * ry + rz * rz);
+  }
+  if (rLen < 1e-14) { rx = 1.0; ry = 0.0; rz = 0.0; rLen = 1.0; }
+  _planeRx = rx / rLen;
+  _planeRy = ry / rLen;
+  _planeRz = rz / rLen;
+
+  _planeYx = ny * _planeRz - nz * _planeRy;
+  _planeYy = nz * _planeRx - nx * _planeRz;
+  _planeYz = nx * _planeRy - ny * _planeRx;
+  const yLen = Math.sqrt(_planeYx * _planeYx + _planeYy * _planeYy + _planeYz * _planeYz);
+  if (yLen > 1e-14) {
+    _planeYx /= yLen;
+    _planeYy /= yLen;
+    _planeYz /= yLen;
+  }
+}
+
+function _planarAppendPoint(x: f64, y: f64, z: f64, loopStart: u32): bool {
+  if (_planarPointCount >= MAX_PLANAR_PTS) return false;
+  if (_planarPointCount > loopStart) {
+    const prev = _planarPointCount - 1;
+    const dx = x - unchecked(_planarX[prev]);
+    const dy = y - unchecked(_planarY[prev]);
+    const dz = z - unchecked(_planarZ[prev]);
+    if (dx * dx + dy * dy + dz * dz < 1e-20) return true;
+  }
+  _planarProject(x, y, z);
+  unchecked(_planarX[_planarPointCount] = x);
+  unchecked(_planarY[_planarPointCount] = y);
+  unchecked(_planarZ[_planarPointCount] = z);
+  unchecked(_planarU[_planarPointCount] = _projU);
+  unchecked(_planarV[_planarPointCount] = _projV);
+  _planarPointCount++;
+  return true;
+}
+
+function _planarAppendVertex(vertexId: u32, loopStart: u32): bool {
+  return _planarAppendPoint(vertexGetX(vertexId), vertexGetY(vertexId), vertexGetZ(vertexId), loopStart);
+}
+
+function _planarAppendCircleCoedge(edgeId: u32, orient: u8, segsU: i32, loopStart: u32): bool {
+  let segs = segsU;
+  if (segs < 32) segs = 32;
+  if (segs > 192) segs = 192;
+
+  const off = edgeGetGeomOffset(edgeId);
+  const cx = geomPoolRead(off);
+  const cy = geomPoolRead(off + 1);
+  const cz = geomPoolRead(off + 2);
+  const ax = geomPoolRead(off + 3);
+  const ay = geomPoolRead(off + 4);
+  const az = geomPoolRead(off + 5);
+  const rx = geomPoolRead(off + 6);
+  const ry = geomPoolRead(off + 7);
+  const rz = geomPoolRead(off + 8);
+  const radius = geomPoolRead(off + 9);
+  const bx = ay * rz - az * ry;
+  const by = az * rx - ax * rz;
+  const bz = ax * ry - ay * rx;
+  const startV = edgeGetStartVertex(edgeId);
+  const endV = edgeGetEndVertex(edgeId);
+  const coStart = orient == ORIENT_REVERSED ? endV : startV;
+  const coEnd = orient == ORIENT_REVERSED ? startV : endV;
+  const startAngle = _circleAngleAtVertex(edgeId, startV);
+  const endAngle = _circleAngleAtVertex(edgeId, endV);
+  const sweep = _directedPeriodicSweep(startAngle, endAngle, edgeGetCurveSameSense(edgeId) != 0, startV == endV);
+
+  for (let i: i32 = 0; i <= segs; i++) {
+    if (i == 0) {
+      if (!_planarAppendVertex(coStart, loopStart)) return false;
+      continue;
+    }
+    if (i == segs) {
+      if (!_planarAppendVertex(coEnd, loopStart)) return false;
+      continue;
+    }
+    let frac = <f64>i / <f64>segs;
+    if (orient == ORIENT_REVERSED) frac = 1.0 - frac;
+    const theta = startAngle + frac * sweep;
+    const c = Math.cos(theta);
+    const s = Math.sin(theta);
+    if (!_planarAppendPoint(
+      cx + radius * (rx * c + bx * s),
+      cy + radius * (ry * c + by * s),
+      cz + radius * (rz * c + bz * s),
+      loopStart,
+    )) return false;
+  }
+  return true;
+}
+
+function _planarAppendNurbsCoedge(edgeId: u32, orient: u8, segsU: i32, loopStart: u32): bool {
+  if (!_loadCurve(edgeGetGeomOffset(edgeId))) {
+    const startV = orient == ORIENT_REVERSED ? edgeGetEndVertex(edgeId) : edgeGetStartVertex(edgeId);
+    const endV = orient == ORIENT_REVERSED ? edgeGetStartVertex(edgeId) : edgeGetEndVertex(edgeId);
+    return _planarAppendVertex(startV, loopStart) && _planarAppendVertex(endV, loopStart);
+  }
+  let segs = segsU;
+  if (segs < 8) segs = 8;
+  if (segs > 192) segs = 192;
+  const startV = orient == ORIENT_REVERSED ? edgeGetEndVertex(edgeId) : edgeGetStartVertex(edgeId);
+  const endV = orient == ORIENT_REVERSED ? edgeGetStartVertex(edgeId) : edgeGetEndVertex(edgeId);
+  for (let i: i32 = 0; i <= segs; i++) {
+    if (i == 0) {
+      if (!_planarAppendVertex(startV, loopStart)) return false;
+      continue;
+    }
+    if (i == segs) {
+      if (!_planarAppendVertex(endV, loopStart)) return false;
+      continue;
+    }
+    let frac = <f64>i / <f64>segs;
+    if (orient == ORIENT_REVERSED) frac = 1.0 - frac;
+    const t = _crvTmin + frac * (_crvTmax - _crvTmin);
+    nurbsCurveEvaluate(_crvDeg, _crvNCtrl, _crvCtrl, _crvKnots, _crvWts, t);
+    const rp = getResultPtr();
+    if (!_planarAppendPoint(load<f64>(rp), load<f64>(rp + 8), load<f64>(rp + 16), loopStart)) return false;
+  }
+  return true;
+}
+
+function _collectPlanarLoops(faceId: u32, segsU: i32): bool {
+  _planarPointCount = 0;
+  _planarLoopCount = 0;
+  _planarPathCount = 0;
+
+  const firstLoop = faceGetFirstLoop(faceId);
+  const nLoops = faceGetLoopCount(faceId);
+  for (let l: u32 = 0; l < nLoops; l++) {
+    if (_planarLoopCount >= MAX_PLANAR_LOOPS) return false;
+    const loopId = firstLoop + l;
+    const loopStart = _planarPointCount;
+    const firstCE = loopGetFirstCoedge(loopId);
+    let ce = firstCE;
+    let guard: u32 = 0;
+
+    do {
+      const eid = coedgeGetEdge(ce);
+      const orient = coedgeGetOrient(ce);
+      _cacheEdgeSamples(eid);
+      const geomType = edgeGetGeomType(eid);
+      if (geomType == GEOM_CIRCLE) {
+        if (!_planarAppendCircleCoedge(eid, orient, segsU, loopStart)) return false;
+      } else if (geomType == GEOM_NURBS_CURVE) {
+        if (!_planarAppendNurbsCoedge(eid, orient, segsU, loopStart)) return false;
+      } else {
+        const startV = orient == ORIENT_REVERSED ? edgeGetEndVertex(eid) : edgeGetStartVertex(eid);
+        const endV = orient == ORIENT_REVERSED ? edgeGetStartVertex(eid) : edgeGetEndVertex(eid);
+        if (!_planarAppendVertex(startV, loopStart)) return false;
+        if (!_planarAppendVertex(endV, loopStart)) return false;
+      }
+      ce = coedgeGetNext(ce);
+      guard++;
+    } while (ce != firstCE && guard < 65536);
+
+    if (_planarPointCount > loopStart + 1) {
+      const last = _planarPointCount - 1;
+      const dx = unchecked(_planarX[last]) - unchecked(_planarX[loopStart]);
+      const dy = unchecked(_planarY[last]) - unchecked(_planarY[loopStart]);
+      const dz = unchecked(_planarZ[last]) - unchecked(_planarZ[loopStart]);
+      if (dx * dx + dy * dy + dz * dz < 1e-20) _planarPointCount--;
+    }
+
+    if (_planarPointCount - loopStart >= 3) {
+      unchecked(_planarLoopStart[_planarLoopCount] = loopStart);
+      unchecked(_planarLoopEnd[_planarLoopCount] = _planarPointCount);
+      _planarLoopCount++;
+    } else {
+      _planarPointCount = loopStart;
+    }
+  }
+
+  return _planarLoopCount > 0 && _planarPointCount >= 3;
+}
+
+function _planarLoopArea(loopNo: u32): f64 {
+  const start = unchecked(_planarLoopStart[loopNo]);
+  const end = unchecked(_planarLoopEnd[loopNo]);
+  const n = end - start;
+  let area: f64 = 0.0;
+  if (n < 3) return 0.0;
+  let j = end - 1;
+  for (let i: u32 = start; i < end; i++) {
+    area += unchecked(_planarU[j]) * unchecked(_planarV[i]) - unchecked(_planarU[i]) * unchecked(_planarV[j]);
+    j = i;
+  }
+  return 0.5 * area;
+}
+
+function _planarLoopIndexAt(loopNo: u32, offset: u32, reverse: bool): u32 {
+  const start = unchecked(_planarLoopStart[loopNo]);
+  const end = unchecked(_planarLoopEnd[loopNo]);
+  const n = end - start;
+  const local = offset % n;
+  return reverse ? start + (n - 1 - local) : start + local;
+}
+
+function _planarLoopOffsetForPoint(loopNo: u32, pointId: u32, reverse: bool): u32 {
+  const start = unchecked(_planarLoopStart[loopNo]);
+  const end = unchecked(_planarLoopEnd[loopNo]);
+  const n = end - start;
+  for (let i: u32 = 0; i < n; i++) {
+    if (_planarLoopIndexAt(loopNo, i, reverse) == pointId) return i;
+  }
+  return 0;
+}
+
+function _planarAppendPathIndex(pointId: u32): bool {
+  if (_planarPathCount >= MAX_PLANAR_PATH) return false;
+  unchecked(_planarPath[_planarPathCount] = pointId);
+  _planarPathCount++;
+  return true;
+}
+
+function _planarInitOuterPath(): bool {
+  _planarPathCount = 0;
+  const n = unchecked(_planarLoopEnd[0]) - unchecked(_planarLoopStart[0]);
+  const reverse = _planarLoopArea(0) < 0.0;
+  for (let i: u32 = 0; i < n; i++) {
+    if (!_planarAppendPathIndex(_planarLoopIndexAt(0, i, reverse))) return false;
+  }
+  return _planarPathCount >= 3;
+}
+
+@inline
+function _planarOrient(a: u32, b: u32, c: u32): f64 {
+  return (unchecked(_planarU[b]) - unchecked(_planarU[a])) * (unchecked(_planarV[c]) - unchecked(_planarV[a]))
+    - (unchecked(_planarV[b]) - unchecked(_planarV[a])) * (unchecked(_planarU[c]) - unchecked(_planarU[a]));
+}
+
+function _planarSegmentsProperlyIntersect(a: u32, b: u32, c: u32, d: u32): bool {
+  if (a == c || a == d || b == c || b == d) return false;
+  const o1 = _planarOrient(a, b, c);
+  const o2 = _planarOrient(a, b, d);
+  const o3 = _planarOrient(c, d, a);
+  const o4 = _planarOrient(c, d, b);
+  return o1 * o2 < -1e-12 && o3 * o4 < -1e-12;
+}
+
+function _planarPointInLoop(u: f64, v: f64, loopNo: u32): bool {
+  const start = unchecked(_planarLoopStart[loopNo]);
+  const end = unchecked(_planarLoopEnd[loopNo]);
+  const n = end - start;
+  if (n < 3) return false;
+  let inside = false;
+  let j = end - 1;
+  for (let i: u32 = start; i < end; i++) {
+    const vi = unchecked(_planarV[i]);
+    const vj = unchecked(_planarV[j]);
+    if ((vi > v) != (vj > v)) {
+      const ui = unchecked(_planarU[i]);
+      const uj = unchecked(_planarU[j]);
+      const uCross = ui + (v - vi) / ((vj - vi) == 0.0 ? 1e-30 : (vj - vi)) * (uj - ui);
+      if (u < uCross) inside = !inside;
+    }
+    j = i;
+  }
+  return inside;
+}
+
+function _planarPointInsideTrim(u: f64, v: f64): bool {
+  if (!_planarPointInLoop(u, v, 0)) return false;
+  for (let l: u32 = 1; l < _planarLoopCount; l++) {
+    if (_planarPointInLoop(u, v, l)) return false;
+  }
+  return true;
+}
+
+function _planarBridgeVisible(a: u32, b: u32): bool {
+  const mu = (unchecked(_planarU[a]) + unchecked(_planarU[b])) * 0.5;
+  const mv = (unchecked(_planarV[a]) + unchecked(_planarV[b])) * 0.5;
+  if (!_planarPointInsideTrim(mu, mv)) return false;
+
+  for (let l: u32 = 0; l < _planarLoopCount; l++) {
+    const start = unchecked(_planarLoopStart[l]);
+    const end = unchecked(_planarLoopEnd[l]);
+    const n = end - start;
+    if (n < 2) continue;
+    let prev = end - 1;
+    for (let i: u32 = start; i < end; i++) {
+      if (_planarSegmentsProperlyIntersect(a, b, prev, i)) return false;
+      prev = i;
+    }
+  }
+  return true;
+}
+
+function _planarBridgeHole(loopNo: u32): bool {
+  const start = unchecked(_planarLoopStart[loopNo]);
+  const end = unchecked(_planarLoopEnd[loopNo]);
+  const n = end - start;
+  if (n < 3) return true;
+
+  let holePoint = start;
+  for (let i: u32 = start + 1; i < end; i++) {
+    const u = unchecked(_planarU[i]);
+    const hu = unchecked(_planarU[holePoint]);
+    if (u > hu || (Math.abs(u - hu) < 1e-10 && unchecked(_planarV[i]) < unchecked(_planarV[holePoint]))) {
+      holePoint = i;
+    }
+  }
+
+  let bestPos: i32 = -1;
+  let bestDist: f64 = Infinity;
+  for (let pi: u32 = 0; pi < _planarPathCount; pi++) {
+    const candidate = unchecked(_planarPath[pi]);
+    if (!_planarBridgeVisible(holePoint, candidate)) continue;
+    const du = unchecked(_planarU[candidate]) - unchecked(_planarU[holePoint]);
+    const dv = unchecked(_planarV[candidate]) - unchecked(_planarV[holePoint]);
+    const dist = du * du + dv * dv;
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestPos = <i32>pi;
+    }
+  }
+  if (bestPos < 0) return false;
+
+  const holeReverse = _planarLoopArea(loopNo) > 0.0;
+  const holeOffset = _planarLoopOffsetForPoint(loopNo, holePoint, holeReverse);
+  const bridgePoint = unchecked(_planarPath[<u32>bestPos]);
+
+  let outCount: u32 = 0;
+  for (let i: u32 = 0; i <= <u32>bestPos; i++) {
+    if (outCount >= MAX_PLANAR_PATH) return false;
+    unchecked(_planarPathNext[outCount++] = unchecked(_planarPath[i]));
+  }
+  if (outCount >= MAX_PLANAR_PATH) return false;
+  unchecked(_planarPathNext[outCount++] = holePoint);
+  for (let k: u32 = 1; k < n; k++) {
+    if (outCount >= MAX_PLANAR_PATH) return false;
+    unchecked(_planarPathNext[outCount++] = _planarLoopIndexAt(loopNo, (holeOffset + k) % n, holeReverse));
+  }
+  if (outCount + 2 >= MAX_PLANAR_PATH) return false;
+  unchecked(_planarPathNext[outCount++] = holePoint);
+  unchecked(_planarPathNext[outCount++] = bridgePoint);
+  for (let i: u32 = <u32>bestPos + 1; i < _planarPathCount; i++) {
+    if (outCount >= MAX_PLANAR_PATH) return false;
+    unchecked(_planarPathNext[outCount++] = unchecked(_planarPath[i]));
+  }
+
+  _planarPathCount = outCount;
+  for (let i: u32 = 0; i < _planarPathCount; i++) {
+    unchecked(_planarPath[i] = unchecked(_planarPathNext[i]));
+  }
+  return true;
+}
+
+function _planarBuildBridgedPath(): bool {
+  if (!_planarInitOuterPath()) return false;
+  for (let l: u32 = 1; l < _planarLoopCount; l++) {
+    if (!_planarBridgeHole(l)) return false;
+  }
+  return _planarPathCount >= 3;
+}
+
+function _planarPathArea(): f64 {
+  let area: f64 = 0.0;
+  if (_planarPathCount < 3) return 0.0;
+  let prev = unchecked(_planarPath[_planarPathCount - 1]);
+  for (let i: u32 = 0; i < _planarPathCount; i++) {
+    const curr = unchecked(_planarPath[i]);
+    area += unchecked(_planarU[prev]) * unchecked(_planarV[curr]) - unchecked(_planarU[curr]) * unchecked(_planarV[prev]);
+    prev = curr;
+  }
+  return 0.5 * area;
+}
+
+function _planarPointInTri(p: u32, a: u32, b: u32, c: u32, winding: f64): bool {
+  if (p == a || p == b || p == c) return false;
+  const c1 = _planarOrient(a, b, p) * winding;
+  const c2 = _planarOrient(b, c, p) * winding;
+  const c3 = _planarOrient(c, a, p) * winding;
+  return c1 >= -1e-9 && c2 >= -1e-9 && c3 >= -1e-9;
+}
+
+function _tessPlanarPolygonFace(faceId: u32, segsU: i32, nx: f64, ny: f64, nz: f64): i32 {
+  if (!_collectPlanarLoops(faceId, segsU)) return -2;
+  if (!_planarBuildBridgedPath()) return -2;
+
+  const baseVert = outVertCount;
+  const baseTri = outTriCount;
+  for (let i: u32 = 0; i < _planarPointCount; i++) {
+    const v = _emitVert(unchecked(_planarX[i]), unchecked(_planarY[i]), unchecked(_planarZ[i]), nx, ny, nz);
+    if (v == INVALID_ID) {
+      outVertCount = baseVert;
+      outTriCount = baseTri;
+      return -1;
+    }
+  }
+
+  let remCount = _planarPathCount;
+  if (remCount > MAX_PLANAR_PATH) return -1;
+  for (let i: u32 = 0; i < remCount; i++) unchecked(_planarRemaining[i] = unchecked(_planarPath[i]));
+
+  const pathArea = _planarPathArea();
+  const winding: f64 = pathArea >= 0.0 ? 1.0 : -1.0;
+  let triCount: i32 = 0;
+  let guard: u32 = 0;
+  const maxGuard = remCount * remCount + 16;
+
+  while (remCount > 3 && guard < maxGuard) {
+    let earFound = false;
+    for (let ri: u32 = 0; ri < remCount; ri++) {
+      const prevPos = (ri + remCount - 1) % remCount;
+      const nextPos = (ri + 1) % remCount;
+      const a = unchecked(_planarRemaining[prevPos]);
+      const b = unchecked(_planarRemaining[ri]);
+      const c = unchecked(_planarRemaining[nextPos]);
+      const cross = _planarOrient(a, b, c) * winding;
+
+      if (a == b || b == c) {
+        for (let s: u32 = ri; s + 1 < remCount; s++) unchecked(_planarRemaining[s] = unchecked(_planarRemaining[s + 1]));
+        remCount--;
+        earFound = true;
+        break;
+      }
+      if (a == c || Math.abs(cross) <= 1e-10) continue;
+      if (cross < 0.0) continue;
+
+      const cu = (unchecked(_planarU[a]) + unchecked(_planarU[b]) + unchecked(_planarU[c])) / 3.0;
+      const cv = (unchecked(_planarV[a]) + unchecked(_planarV[b]) + unchecked(_planarV[c])) / 3.0;
+      if (!_planarPointInsideTrim(cu, cv)) continue;
+
+      let contains = false;
+      for (let oi: u32 = 0; oi < remCount; oi++) {
+        if (oi == prevPos || oi == ri || oi == nextPos) continue;
+        const p = unchecked(_planarRemaining[oi]);
+        if (_planarPointInTri(p, a, b, c, winding)) { contains = true; break; }
+      }
+      if (contains) continue;
+
+      if (_emitPlaneTriOriented(baseVert + a, baseVert + b, baseVert + c, nx, ny, nz, faceId) < 0) {
+        outVertCount = baseVert;
+        outTriCount = baseTri;
+        return -1;
+      }
+      triCount++;
+      for (let s: u32 = ri; s + 1 < remCount; s++) unchecked(_planarRemaining[s] = unchecked(_planarRemaining[s + 1]));
+      remCount--;
+      earFound = true;
+      break;
+    }
+    if (!earFound) {
+      outVertCount = baseVert;
+      outTriCount = baseTri;
+      return -2;
+    }
+    guard++;
+  }
+
+  if (remCount != 3) {
+    outVertCount = baseVert;
+    outTriCount = baseTri;
+    return -2;
+  }
+
+  const a = unchecked(_planarRemaining[0]);
+  const b = unchecked(_planarRemaining[1]);
+  const c = unchecked(_planarRemaining[2]);
+  const cu = (unchecked(_planarU[a]) + unchecked(_planarU[b]) + unchecked(_planarU[c])) / 3.0;
+  const cv = (unchecked(_planarV[a]) + unchecked(_planarV[b]) + unchecked(_planarV[c])) / 3.0;
+  if (!_planarPointInsideTrim(cu, cv) || Math.abs(_planarOrient(a, b, c)) <= 1e-10) {
+    outVertCount = baseVert;
+    outTriCount = baseTri;
+    return -2;
+  }
+  if (_emitPlaneTriOriented(baseVert + a, baseVert + b, baseVert + c, nx, ny, nz, faceId) < 0) {
+    outVertCount = baseVert;
+    outTriCount = baseTri;
+    return -1;
+  }
+  triCount++;
+
+  return triCount > 0 ? triCount : -2;
+}
+
 function _tessCircularPlaneFace(faceId: u32, segsU: i32, nx: f64, ny: f64, nz: f64): i32 {
   const nLoops = faceGetLoopCount(faceId);
   if (nLoops < 1 || nLoops > 2) return -2;
@@ -1370,6 +2066,10 @@ function _tessPlaneFace(faceId: u32, segsU: i32): i32 {
 
   const circular = _tessCircularPlaneFace(faceId, segsU, nx, ny, nz);
   if (circular != -2) return circular;
+
+  _setPlaneProjection(gOff, nx, ny, nz);
+  const polygon = _tessPlanarPolygonFace(faceId, segsU, nx, ny, nz);
+  if (polygon != -2) return polygon;
 
   if (loopVertCount < 3) return 0;
 
@@ -1724,6 +2424,136 @@ function _tessTorusFace(faceId: u32, segsU: i32, segsV: i32): i32 {
 
 // ─── NURBS face tessellation ─────────────────────────────────────────
 
+function _edgeRowMinSegments(edgeType: u8): i32 {
+  if (edgeType == GEOM_CIRCLE) return 32;
+  if (edgeType == GEOM_NURBS_CURVE) return 8;
+  return 1;
+}
+
+function _tessNurbsRuledBoundaryQuadFace(
+  faceId: u32,
+  segsU: i32,
+  degU: i32,
+  degV: i32,
+  numCtrlU: i32,
+  numCtrlV: i32,
+  ctrlPts: Float64Array,
+  knotsU: Float64Array,
+  knotsV: Float64Array,
+  weights: Float64Array,
+  reversed: bool,
+): i32 {
+  const surfaceIsRuled = (degU == 1 && numCtrlU == 2) || (degV == 1 && numCtrlV == 2);
+  if (!surfaceIsRuled) return -2;
+  if (faceGetLoopCount(faceId) != 1) return -2;
+
+  const loopId = faceGetFirstLoop(faceId);
+  const ce0 = loopGetFirstCoedge(loopId);
+  const ce1 = coedgeGetNext(ce0);
+  const ce2 = coedgeGetNext(ce1);
+  const ce3 = coedgeGetNext(ce2);
+  if (coedgeGetNext(ce3) != ce0) return -2;
+
+  const edge0 = coedgeGetEdge(ce0);
+  const edge1 = coedgeGetEdge(ce1);
+  const edge2 = coedgeGetEdge(ce2);
+  const edge3 = coedgeGetEdge(ce3);
+  if (edgeGetStartVertex(edge0) == edgeGetEndVertex(edge0)) return -2;
+  if (edgeGetStartVertex(edge1) == edgeGetEndVertex(edge1)) return -2;
+  if (edgeGetStartVertex(edge2) == edgeGetEndVertex(edge2)) return -2;
+  if (edgeGetStartVertex(edge3) == edgeGetEndVertex(edge3)) return -2;
+
+  const type0 = edgeGetGeomType(edge0);
+  const type1 = edgeGetGeomType(edge1);
+  const type2 = edgeGetGeomType(edge2);
+  const type3 = edgeGetGeomType(edge3);
+  const line0 = type0 == GEOM_LINE;
+  const line1 = type1 == GEOM_LINE;
+  const line2 = type2 == GEOM_LINE;
+  const line3 = type3 == GEOM_LINE;
+  const rail0 = type0 == GEOM_CIRCLE || type0 == GEOM_NURBS_CURVE;
+  const rail1 = type1 == GEOM_CIRCLE || type1 == GEOM_NURBS_CURVE;
+  const rail2 = type2 == GEOM_CIRCLE || type2 == GEOM_NURBS_CURVE;
+  const rail3 = type3 == GEOM_CIRCLE || type3 == GEOM_NURBS_CURVE;
+  const lineCount = (line0 ? 1 : 0) + (line1 ? 1 : 0) + (line2 ? 1 : 0) + (line3 ? 1 : 0);
+  const railCount = (rail0 ? 1 : 0) + (rail1 ? 1 : 0) + (rail2 ? 1 : 0) + (rail3 ? 1 : 0);
+  if (lineCount != 2 || railCount != 2) return -2;
+
+  let railAEdge: u32 = INVALID_ID;
+  let railBEdge: u32 = INVALID_ID;
+  let railAOrient: u8 = 0;
+  let railBOrient: u8 = 0;
+  let railAType: u8 = GEOM_LINE;
+  let railBType: u8 = GEOM_LINE;
+  if (rail0 && rail2) {
+    railAEdge = edge0; railAOrient = coedgeGetOrient(ce0); railAType = type0;
+    railBEdge = edge2; railBOrient = coedgeGetOrient(ce2); railBType = type2;
+  } else if (rail1 && rail3) {
+    railAEdge = edge1; railAOrient = coedgeGetOrient(ce1); railAType = type1;
+    railBEdge = edge3; railBOrient = coedgeGetOrient(ce3); railBType = type3;
+  } else {
+    return -2;
+  }
+
+  let su = segsU > 0 ? segsU : DEFAULT_SEGS;
+  const minA = _edgeRowMinSegments(railAType);
+  const minB = _edgeRowMinSegments(railBType);
+  if (su < minA) su = minA;
+  if (su < minB) su = minB;
+  if (su + 1 > RULED_QUAD_MAX_SAMPLES) su = RULED_QUAD_MAX_SAMPLES - 1;
+
+  if (!_sampleCoedgeRow(railAEdge, railAOrient, su, ruledQuadRowA)) return -2;
+  if (!_sampleCoedgeRow(railBEdge, railBOrient, su, ruledQuadRowB)) return -2;
+
+  const end = su * 3;
+  const directDx0 = unchecked(ruledQuadRowA[0]) - unchecked(ruledQuadRowB[0]);
+  const directDy0 = unchecked(ruledQuadRowA[1]) - unchecked(ruledQuadRowB[1]);
+  const directDz0 = unchecked(ruledQuadRowA[2]) - unchecked(ruledQuadRowB[2]);
+  const directDx1 = unchecked(ruledQuadRowA[end]) - unchecked(ruledQuadRowB[end]);
+  const directDy1 = unchecked(ruledQuadRowA[end + 1]) - unchecked(ruledQuadRowB[end + 1]);
+  const directDz1 = unchecked(ruledQuadRowA[end + 2]) - unchecked(ruledQuadRowB[end + 2]);
+  const reverseDx0 = unchecked(ruledQuadRowA[0]) - unchecked(ruledQuadRowB[end]);
+  const reverseDy0 = unchecked(ruledQuadRowA[1]) - unchecked(ruledQuadRowB[end + 1]);
+  const reverseDz0 = unchecked(ruledQuadRowA[2]) - unchecked(ruledQuadRowB[end + 2]);
+  const reverseDx1 = unchecked(ruledQuadRowA[end]) - unchecked(ruledQuadRowB[0]);
+  const reverseDy1 = unchecked(ruledQuadRowA[end + 1]) - unchecked(ruledQuadRowB[1]);
+  const reverseDz1 = unchecked(ruledQuadRowA[end + 2]) - unchecked(ruledQuadRowB[2]);
+  const reverseB =
+    reverseDx0 * reverseDx0 + reverseDy0 * reverseDy0 + reverseDz0 * reverseDz0
+    + reverseDx1 * reverseDx1 + reverseDy1 * reverseDy1 + reverseDz1 * reverseDz1
+    < directDx0 * directDx0 + directDy0 * directDy0 + directDz0 * directDz0
+      + directDx1 * directDx1 + directDy1 * directDy1 + directDz1 * directDz1;
+  if (reverseB) _reverseRuledRow(ruledQuadRowB, su);
+
+  _calibrateRuledStripNormalSign(
+    degU, degV, numCtrlU, numCtrlV,
+    ctrlPts, knotsU, knotsV, weights,
+    reversed, su,
+  );
+
+  const baseA = outVertCount;
+  for (let i: i32 = 0; i <= su; i++) {
+    if (_emitRuledStripVertex(ruledQuadRowA, i, su) == INVALID_ID) return -1;
+  }
+  const baseB = outVertCount;
+  for (let i: i32 = 0; i <= su; i++) {
+    if (_emitRuledStripVertex(ruledQuadRowB, i, su) == INVALID_ID) return -1;
+  }
+
+  let triCount: i32 = 0;
+  for (let i: i32 = 0; i < su; i++) {
+    const a0 = baseA + <u32>i;
+    const a1 = baseA + <u32>(i + 1);
+    const b0 = baseB + <u32>i;
+    const b1 = baseB + <u32>(i + 1);
+    if (_emitTriTowardVertexNormals(a0, a1, b0, faceId) < 0) return -1;
+    if (_emitTriTowardVertexNormals(b0, a1, b1, faceId) < 0) return -1;
+    triCount += 2;
+  }
+
+  return triCount;
+}
+
 function _tessNurbsFace(faceId: u32, segsU: i32, segsV: i32): i32 {
   const gOff = faceGetGeomOffset(faceId);
   const reversed = faceGetOrient(faceId) == ORIENT_REVERSED;
@@ -1759,6 +2589,12 @@ function _tessNurbsFace(faceId: u32, segsU: i32, segsV: i32): i32 {
 
   const su = segsU > 0 ? segsU : DEFAULT_SEGS;
   const sv = segsV > 0 ? segsV : DEFAULT_SEGS;
+
+  const ruledBoundary = _tessNurbsRuledBoundaryQuadFace(
+    faceId, segsU, degU, degV, numCtrlU, numCtrlV,
+    ctrlPts, knotsU, knotsV, weights, reversed,
+  );
+  if (ruledBoundary != -2) return ruledBoundary;
 
   // Delegate to existing NURBS tessellator (fixed: pass control point counts)
   const nTris = nurbsSurfaceTessellate(

@@ -7,13 +7,11 @@ import './_watchdog.mjs';
 // it means vertex coordinates or face orientation were perturbed by
 // canonicalize → writer → reader.
 //
-// This is a deliberately narrow guardrail: analytic surfaces (cylinder,
-// cone, torus, sphere) currently lose metadata during CBREP roundtrip
-// (surfaceInfo xDir/yDir are not serialized, fusedGroupId is dropped,
-// etc.) so we cannot yet assert fidelity on them. The roundtrip
-// diagnostic harness in tools/cbrep-roundtrip-diff.js is the iteration
-// surface for that work.
+// The same harness now also guards analytic-surface render metadata so
+// restored CBREP meshes keep the curved-face normals expected by the WebGL
+// renderer.
 
+import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -29,6 +27,9 @@ import { NurbsCurve } from '../js/cad/NurbsCurve.js';
 import { NurbsSurface } from '../js/cad/NurbsSurface.js';
 import { parseSTEPTopology } from '../js/cad/StepImport.js';
 import { tessellateBody } from '../js/cad/Tessellation.js';
+import { ensureWasmReady } from '../js/cad/StepImportWasm.js';
+
+await ensureWasmReady().catch(() => null);
 
 setTopoDeps({
   TopoVertex, TopoEdge, TopoCoEdge, TopoLoop, TopoFace, TopoShell, TopoBody,
@@ -74,12 +75,12 @@ function loadAndRoundtrip(stepFile) {
   const stepText = readFileSync(join(STEP_DIR, stepFile), 'utf-8');
   resetTopoIds();
   const body = parseSTEPTopology(stepText);
-  const liveMesh = tessellateBody(body, { validate: false });
+  const liveMesh = tessellateBody(body, { validate: false, fallbackOnInvalidWasm: true });
 
   const buf = writeCbrep(canonicalize(body));
   resetTopoIds();
   const restored = readCbrep(buf);
-  const restMesh = tessellateBody(restored, { validate: false });
+  const restMesh = tessellateBody(restored, { validate: false, fallbackOnInvalidWasm: true });
 
   return {
     live: aggregateByFace(liveMesh, body),
@@ -158,6 +159,21 @@ check('Unnamed-Body.step — total surface area bit-exact across roundtrip', () 
   const sumR = rest.reduce((s, f) => s + f.area, 0);
   if (Math.abs(sumL - sumR) > 1e-6) {
     throw new Error(`total area diverged: live=${sumL} restored=${sumR}`);
+  }
+});
+
+check('Unnamed-Body.step — restored curved faces keep render normals', () => {
+  const { restMesh, restored } = loadAndRoundtrip('Unnamed-Body.step');
+  const curvedFaceIds = new Set(
+    restored.faces()
+      .filter((face) => face.surfaceInfo && face.surfaceInfo.type !== 'plane')
+      .map((face) => face.id),
+  );
+  const curvedTriangles = restMesh.faces.filter((face) => curvedFaceIds.has(face.topoFaceId));
+  assert.ok(curvedTriangles.length > 0, 'expected restored mesh to contain curved-face triangles');
+  for (const face of curvedTriangles) {
+    assert.equal(face.isCurved, true, `topoFace ${face.topoFaceId} should be marked curved`);
+    assert.equal(face.vertexNormals?.length, face.vertices.length, `topoFace ${face.topoFaceId} should carry per-vertex normals`);
   }
 });
 

@@ -13,6 +13,19 @@
 import { loadBodyIntoWasm } from './wasm/TopoSerializer.js';
 import { globalTessConfig } from './TessellationConfig.js';
 
+function cleanComponent(value) {
+    return Math.abs(value) < 1e-12 ? 0 : value;
+}
+
+function readVector(buffer, index) {
+    const offset = index * 3;
+    return {
+        x: cleanComponent(buffer[offset]),
+        y: cleanComponent(buffer[offset + 1]),
+        z: cleanComponent(buffer[offset + 2]),
+    };
+}
+
 // ── Lazy WASM module singleton ──────────────────────────────────────
 let _wasm = null;
 let _wasmMem = null;
@@ -114,11 +127,7 @@ export function tessellateBodyWasm(body, opts = {}) {
     // ── 7. Convert to {vertices, faces} format ──────────────────────
     const outVertices = [];
     for (let i = 0; i < nVerts; i++) {
-        outVertices.push({
-            x: verts[i * 3],
-            y: verts[i * 3 + 1],
-            z: verts[i * 3 + 2],
-        });
+        outVertices.push(readVector(verts, i));
     }
 
     // Group triangles by source face
@@ -145,16 +154,22 @@ export function tessellateBodyWasm(body, opts = {}) {
 
             outFaces.push({
                 vertices: [
-                    { x: verts[i0 * 3], y: verts[i0 * 3 + 1], z: verts[i0 * 3 + 2] },
-                    { x: verts[i1 * 3], y: verts[i1 * 3 + 1], z: verts[i1 * 3 + 2] },
-                    { x: verts[i2 * 3], y: verts[i2 * 3 + 1], z: verts[i2 * 3 + 2] },
+                    readVector(verts, i0),
+                    readVector(verts, i1),
+                    readVector(verts, i2),
                 ],
-                normal: { x: nx / nl, y: ny / nl, z: nz / nl },
+                normal: { x: cleanComponent(nx / nl), y: cleanComponent(ny / nl), z: cleanComponent(nz / nl) },
+                vertexNormals: [
+                    readVector(norms, i0),
+                    readVector(norms, i1),
+                    readVector(norms, i2),
+                ],
                 faceGroup: fi,
                 topoFaceId: info.topoFace?.id ?? fi,
+                faceType: info.isCurved ? `curved-${info.topoFace?.surfaceType || 'surface'}` : 'planar',
                 isCurved: info.isCurved || false,
                 surfaceInfo: info.surfaceInfo,
-                shared: null,
+                shared: info.topoFace?.shared ? { ...info.topoFace.shared } : null,
             });
         }
     }

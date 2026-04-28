@@ -442,6 +442,66 @@ function _intersectPlanarOffsetWithNeighbor(coedge, origin, uAxis, vAxis, target
   return result;
 }
 
+function _projectPlanarPoint(point, normal) {
+  const absX = Math.abs(normal?.x || 0);
+  const absY = Math.abs(normal?.y || 0);
+  const absZ = Math.abs(normal?.z || 0);
+  if (absZ >= absX && absZ >= absY) return { x: point.x, y: point.y };
+  if (absY >= absX) return { x: point.x, y: point.z };
+  return { x: point.y, y: point.z };
+}
+
+function _pointInPolygon2D(point, polygon) {
+  let inside = false;
+  for (let currentIndex = 0, previousIndex = polygon.length - 1; currentIndex < polygon.length; previousIndex = currentIndex++) {
+    const current = polygon[currentIndex];
+    const previous = polygon[previousIndex];
+    const crosses = (current.y > point.y) !== (previous.y > point.y);
+    if (!crosses) continue;
+    const xAtY = (previous.x - current.x) * (point.y - current.y) / ((previous.y - current.y) || 1e-30) + current.x;
+    if (point.x < xAtY) inside = !inside;
+  }
+  return inside;
+}
+
+function _sampleLoopPoints(loop, segments = 16) {
+  if (!loop || !Array.isArray(loop.coedges)) return [];
+  const points = [];
+  for (const coedge of loop.coedges) {
+    let samples = coedge?.edge ? _sampleExactEdgePoints(coedge.edge, segments) : [];
+    if (coedge && coedge.sameSense === false) samples = samples.reverse();
+    if (points.length > 0 && samples.length > 0) samples = samples.slice(1);
+    points.push(...samples);
+  }
+  if (points.length > 1 && vec3Len(vec3Sub(points[0], points[points.length - 1])) < 1e-8) {
+    points.pop();
+  }
+  return points;
+}
+
+function _planarFaceContainsPoint(face, point, normal) {
+  const projectedPoint = _projectPlanarPoint(point, normal);
+  const outer = _sampleLoopPoints(face.outerLoop, 24).map((sample) => _projectPlanarPoint(sample, normal));
+  if (outer.length < 3 || !_pointInPolygon2D(projectedPoint, outer)) return false;
+
+  for (const innerLoop of face.innerLoops || []) {
+    const hole = _sampleLoopPoints(innerLoop, 24).map((sample) => _projectPlanarPoint(sample, normal));
+    if (hole.length >= 3 && _pointInPolygon2D(projectedPoint, hole)) return false;
+  }
+  return true;
+}
+
+function _chooseLocalPlanarOffsetDirection(face, edgeMid, offDir, dist, edgeLen, faceNormal) {
+  const probeDistance = Math.max(Math.min(Math.abs(dist || 0) * 0.25, Math.max(edgeLen, 1) * 0.05), 1e-5);
+  const positivePoint = vec3Add(edgeMid, vec3Scale(offDir, probeDistance));
+  const negativePoint = vec3Add(edgeMid, vec3Scale(offDir, -probeDistance));
+  const positiveInside = _planarFaceContainsPoint(face, positivePoint, faceNormal);
+  const negativeInside = _planarFaceContainsPoint(face, negativePoint, faceNormal);
+  if (positiveInside && !negativeInside) return offDir;
+  if (negativeInside && !positiveInside) return vec3Scale(offDir, -1);
+  return null;
+}
+
 /**
  * Compute the offset curve of a TopoEdge on a given adjacent face.
  *
@@ -498,10 +558,11 @@ function _offsetEdgeOnSurface(topoEdge, face, coedge, dist) {
 
     // Offset direction: cross(faceNormal, edgeDir) pointing into the face
     let offDir = vec3Normalize(vec3Cross(faceNormal, edgeDir));
-    // Ensure offDir points into the face (toward face centroid)
-    const centroid = faceCentroid(face);
     const edgeMid = vec3Lerp(sp, ep, 0.5);
-    if (vec3Dot(vec3Sub(centroid, edgeMid), offDir) < 0) {
+    const localOffDir = _chooseLocalPlanarOffsetDirection(face, edgeMid, offDir, dist, edgeLen, faceNormal);
+    if (localOffDir) {
+      offDir = localOffDir;
+    } else if (vec3Dot(vec3Sub(faceCentroid(face), edgeMid), offDir) < 0) {
       offDir = vec3Scale(offDir, -1);
     }
 

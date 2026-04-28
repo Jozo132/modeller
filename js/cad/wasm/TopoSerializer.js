@@ -160,7 +160,9 @@ export function loadBodyIntoWasm(body, wasm, opts = {}) {
     if (loops.length === 0) continue;
 
     const { geomType, geomOffset } = _storeFaceGeometry(face, ctx);
-    const orient = face.sameSense !== false ? K.ORIENT_FORWARD : K.ORIENT_REVERSED;
+    const orient = _faceOrientForWasm(face, geomType, K)
+      ? K.ORIENT_FORWARD
+      : K.ORIENT_REVERSED;
 
     let firstLoopId = -1;
     let numLoops = 0;
@@ -369,7 +371,6 @@ function _storeFaceGeometry(face, ctx) {
         ),
       };
     }
-    return fallback;
   }
 
   if (face.surfaceType === SurfaceType.CYLINDER) {
@@ -385,7 +386,6 @@ function _storeFaceGeometry(face, ctx) {
         ),
       };
     }
-    return fallback;
   }
 
   if (face.surfaceType === SurfaceType.CONE) {
@@ -401,7 +401,6 @@ function _storeFaceGeometry(face, ctx) {
         ),
       };
     }
-    return fallback;
   }
 
   if (face.surfaceType === SurfaceType.TORUS) {
@@ -419,7 +418,6 @@ function _storeFaceGeometry(face, ctx) {
         ),
       };
     }
-    return fallback;
   }
 
   if (!face.surface) return fallback;
@@ -428,11 +426,7 @@ function _storeFaceGeometry(face, ctx) {
   // staging path and the caller supplied a memory buffer).
   if (ctx.nurbsEnabled && ctx.mem && face.surface) {
     const s = face.surface;
-    const isBSplineKind = face.surfaceType === SurfaceType.BSPLINE
-      || face.surfaceType === SurfaceType.EXTRUSION
-      || face.surfaceType === SurfaceType.REVOLUTION
-      || face.surfaceType === SurfaceType.UNKNOWN;
-    if (isBSplineKind && s.degreeU != null && s.controlPoints && s.knotsU && s.knotsV) {
+    if (s.degreeU != null && s.degreeV != null && s.controlPoints && s.knotsU && s.knotsV) {
       const numU = s.numRowsU;
       const numV = s.numColsV;
       const nCtrl = numU * numV;
@@ -462,6 +456,90 @@ function _storeFaceGeometry(face, ctx) {
   }
 
   return fallback;
+}
+
+function _faceOrientForWasm(face, geomType, K) {
+  const sameSense = face?.sameSense !== false ? 1 : -1;
+  const analyticSign = _wasmAnalyticNormalSign(face, geomType, K);
+  return sameSense * analyticSign >= 0;
+}
+
+function _wasmAnalyticNormalSign(face, geomType, K) {
+  if (!face || !face.surface || geomType === K.GEOM_NONE || geomType === K.GEOM_NURBS_SURFACE) return 1;
+  if (typeof face.surface.closestPointUV !== 'function' || typeof face.surface.normal !== 'function') return 1;
+
+  const point = _sampleFacePoint(face);
+  if (!point) return 1;
+  const analytic = _wasmAnalyticNormalAt(face, point, geomType, K);
+  if (!analytic || vec3Len(analytic) < 0.5) return 1;
+
+  try {
+    const uv = face.surface.closestPointUV(point);
+    const surfaceNormal = vec3Normalize(face.surface.normal(uv.u, uv.v));
+    if (vec3Len(surfaceNormal) < 0.5) return 1;
+    return vec3Dot(surfaceNormal, analytic) < -0.25 ? -1 : 1;
+  } catch (_) {
+    return 1;
+  }
+}
+
+function _sampleFacePoint(face) {
+  const pts = face?.outerLoop?.points?.() || [];
+  for (const point of pts) {
+    if (Number.isFinite(point?.x) && Number.isFinite(point?.y) && Number.isFinite(point?.z)) return point;
+  }
+  return null;
+}
+
+function _wasmAnalyticNormalAt(face, point, geomType, K) {
+  const si = (face.surfaceInfo)
+    || (face.surface ? (face.surface.surfaceInfo || face.surface._analyticParams) : null);
+
+  if (geomType === K.GEOM_PLANE) {
+    if (si?.normal) return vec3Normalize(si.normal);
+    const pts = face?.outerLoop?.points?.() || [];
+    if (pts.length >= 3) return _polyNormal(pts);
+    return null;
+  }
+
+  if (!si?.origin) return null;
+  if (geomType === K.GEOM_CYLINDER && si.axis) {
+    const axis = vec3Normalize(si.axis);
+    const delta = vec3Sub(point, si.origin);
+    const axial = vec3Dot(delta, axis);
+    return vec3Normalize(vec3Sub(delta, vec3Scale(axis, axial)));
+  }
+
+  if (geomType === K.GEOM_SPHERE) {
+    return vec3Normalize(vec3Sub(point, si.origin));
+  }
+
+  if (geomType === K.GEOM_CONE && si.axis) {
+    const axis = vec3Normalize(si.axis);
+    const delta = vec3Sub(point, si.origin);
+    const axial = vec3Dot(delta, axis);
+    const radial = vec3Normalize(vec3Sub(delta, vec3Scale(axis, axial)));
+    const cosAngle = Math.cos(si.semiAngle || 0);
+    const sinAngle = Math.sin(si.semiAngle || 0);
+    return vec3Normalize(vec3Sub(vec3Scale(radial, cosAngle), vec3Scale(axis, sinAngle)));
+  }
+
+  if (geomType === K.GEOM_TORUS && si.axis) {
+    const majorR = si.majorR ?? si.majorRadius;
+    if (majorR == null) return null;
+    const axis = vec3Normalize(si.axis);
+    const delta = vec3Sub(point, si.origin);
+    const axial = vec3Dot(delta, axis);
+    const radial = vec3Normalize(vec3Sub(delta, vec3Scale(axis, axial)));
+    const center = {
+      x: si.origin.x + radial.x * majorR,
+      y: si.origin.y + radial.y * majorR,
+      z: si.origin.z + radial.z * majorR,
+    };
+    return vec3Normalize(vec3Sub(point, center));
+  }
+
+  return null;
 }
 
 function _computeRefDir(n) {
