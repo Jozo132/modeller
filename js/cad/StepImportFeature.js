@@ -180,6 +180,10 @@ export class StepImportFeature extends Feature {
     };
   }
 
+  canFastRestoreFromCbrep() {
+    return false;
+  }
+
   _applyIrCachePayload(hash, buf) {
     this._irHash = hash;
     this._irBytes = buf;

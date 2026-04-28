@@ -747,6 +747,13 @@ export class Part {
     part.description = data.description || '';
     part.created = data.created ? new Date(data.created) : new Date();
     part.modified = data.modified ? new Date(data.modified) : new Date();
+
+    // Feature deserialization executes the tree immediately, and STEP imports
+    // read the module-level tessellation singleton while building their mesh.
+    // Restore the saved part config first so browser-storage refreshes replay
+    // with the same quality settings as the original CMOD/session.
+    part.tessellationConfig = TessellationConfig.deserialize(data.tessellationConfig);
+    Object.assign(globalTessConfig, part.tessellationConfig);
     
     // Deserialize feature tree
     if (data.featureTree) {
@@ -801,11 +808,6 @@ export class Part {
     part._originPlanesAutoHidden = data.originPlanesAutoHidden !== undefined
       ? data.originPlanesAutoHidden
       : (part.featureTree.features.length > 0);
-
-    // Restore global tessellation config (falls back to defaults for old files)
-    part.tessellationConfig = TessellationConfig.deserialize(data.tessellationConfig);
-    // Sync the global singleton so all callers see the deserialized values
-    Object.assign(globalTessConfig, part.tessellationConfig);
 
     part.setWasmHandleSubsystem(options.handleRegistry ?? null, options.residencyManager ?? null);
 
