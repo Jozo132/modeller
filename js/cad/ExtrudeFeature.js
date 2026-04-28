@@ -1071,10 +1071,25 @@ export class ExtrudeFeature extends Feature {
         { sourceFeatureId: this.id });
       return { geometry: resultGeom };
     } catch (err) {
-      console.warn(`Boolean operation '${this.operation}' failed:`, err.message);
-      // Preserve the previous solid rather than replacing it with the new geometry
-      return solid;
+      const message = this._formatBooleanError(err);
+      const error = new Error(message);
+      error.cause = err;
+      error.diagnostics = err?.diagnostics;
+      throw error;
     }
+  }
+
+  _formatBooleanError(err) {
+    const base = err?.message || String(err);
+    const diagnostics = err?.diagnostics;
+    const finalBody = diagnostics?.finalBodyValidation;
+    const invariant = diagnostics?.invariantValidation;
+    const detail = finalBody?.diagnostics?.[0]?.detail || invariant?.diagnostics?.[0]?.detail;
+    const count = finalBody?.count || invariant?.diagnosticCount || 0;
+    const suffix = detail
+      ? ` (${count > 1 ? `${count} issues; ` : ''}${detail})`
+      : '';
+    return `Boolean ${this.operation} failed: ${base}${suffix}`;
   }
 
   /**

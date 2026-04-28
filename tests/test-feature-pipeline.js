@@ -19,7 +19,7 @@ import { resetFeatureIds } from '../js/cad/Feature.js';
 import { resetTopoIds, buildTopoBody } from '../js/cad/BRepTopology.js';
 import { robustTessellateBody } from '../js/cad/Tessellator2/index.js';
 import { tessellateBody } from '../js/cad/Tessellation.js';
-import { ensureWasmReady } from '../js/cad/StepImportWasm.js';
+import { ensureWasmReady, tessellateBodyWasm } from '../js/cad/StepImportWasm.js';
 import { TessellationConfig } from '../js/cad/TessellationConfig.js';
 import {
   calculateMeshVolume, countInvertedFaces,
@@ -256,6 +256,68 @@ function validateGeometry(geom, label, opts = {}) {
   }
 
   return { vol, inv, edgeUsage };
+}
+
+function assertRawWasmClosed(topoBody, label) {
+  assert.ok(topoBody, `${label}: expected topoBody for raw WASM tessellation`);
+  const raw = tessellateBodyWasm(topoBody, { edgeSegments: 16, surfaceSegments: 16 });
+  assert.ok(raw?.faces?.length > 0, `${label}: raw WASM tessellation should produce faces`);
+  const edgeUsage = collectMeshEdgeUsage(raw.faces);
+  assert.strictEqual(edgeUsage.boundary, 0,
+    `${label}: raw WASM tessellation should be closed, got ${edgeUsage.boundary} boundary edges`);
+  assert.strictEqual(edgeUsage.nonManifold, 0,
+    `${label}: raw WASM tessellation should be manifold, got ${edgeUsage.nonManifold} non-manifold edges`);
+  return raw;
+}
+
+function planeFromTopoFace(face) {
+  const points = [];
+  for (const loop of face.allLoops()) {
+    for (const ce of loop.coedges) points.push(ce.startVertex().point);
+  }
+  for (let i = 0; i < points.length - 2; i++) {
+    for (let j = i + 1; j < points.length - 1; j++) {
+      for (let k = j + 1; k < points.length; k++) {
+        const a = points[i], b = points[j], c = points[k];
+        const ux = b.x - a.x, uy = b.y - a.y, uz = b.z - a.z;
+        const vx = c.x - a.x, vy = c.y - a.y, vz = c.z - a.z;
+        const nx = uy * vz - uz * vy;
+        const ny = uz * vx - ux * vz;
+        const nz = ux * vy - uy * vx;
+        const len = Math.hypot(nx, ny, nz);
+        if (len > 1e-9) return { point: a, normal: { x: nx / len, y: ny / len, z: nz / len } };
+      }
+    }
+  }
+  return null;
+}
+
+function assertPlanarTrimCurvesOnPlanes(topoBody, label, tolerance = 1e-4) {
+  let maxDistance = 0;
+  let worst = null;
+  for (const face of topoBody.faces()) {
+    if (face.surfaceType !== 'plane') continue;
+    const plane = planeFromTopoFace(face);
+    assert.ok(plane, `${label}: expected plane for topo face ${face.id}`);
+    for (const ce of face.outerLoop.coedges) {
+      const samples = ce.edge.curve?.tessellate
+        ? ce.edge.curve.tessellate(32)
+        : [ce.startVertex().point, ce.endVertex().point];
+      for (const point of samples) {
+        const dist = Math.abs(
+          (point.x - plane.point.x) * plane.normal.x
+          + (point.y - plane.point.y) * plane.normal.y
+          + (point.z - plane.point.z) * plane.normal.z,
+        );
+        if (dist > maxDistance) {
+          maxDistance = dist;
+          worst = { faceId: face.id, edgeId: ce.edge.id, point, dist };
+        }
+      }
+    }
+  }
+  assert.ok(maxDistance <= tolerance,
+    `${label}: planar trim curve drift ${maxDistance} exceeds ${tolerance} (${JSON.stringify(worst)})`);
 }
 
 /**
@@ -886,9 +948,8 @@ test('box-fillet-2-s.cmod (two sequential fillets) produces valid mesh', () => {
   assert.ok(part, 'Should load box-fillet-2-s.cmod');
   const geom = getFinalGeometry(part);
   assert.ok(geom, 'Should have geometry');
-  // Sequential fillets now properly preserve BRep faces from previous
-  // fillet operations, producing a watertight topology.
-  validateGeometry(geom, 'box-fillet-2-s', { allowBoundaryEdges: true });
+  validateGeometry(geom, 'box-fillet-2-s');
+  assertRawWasmClosed(geom.topoBody, 'box-fillet-2-s');
 });
 
 test('box-fillet-2-s.cmod junction has no boundary notch', () => {
@@ -957,8 +1018,8 @@ test('box-fillet-3.cmod (single multi-edge fillet) produces valid mesh', () => {
   assert.ok(part, 'Should load box-fillet-3.cmod');
   const geom = getFinalGeometry(part);
   assert.ok(geom, 'Should have geometry');
-  // Known: multi-edge fillet with 3 edges produces corner boundary gaps.
-  validateGeometry(geom, 'box-fillet-3', { allowBoundaryEdges: true });
+  validateGeometry(geom, 'box-fillet-3');
+  assertRawWasmClosed(geom.topoBody, 'box-fillet-3');
 });
 
 test('custom-part-1.cmod (non-axis-aligned fillet + chamfer) produces valid mesh', () => {
@@ -966,7 +1027,9 @@ test('custom-part-1.cmod (non-axis-aligned fillet + chamfer) produces valid mesh
   if (!part) return; // skip if file not present
   const geom = getFinalGeometry(part);
   assert.ok(geom, 'Should have geometry');
-  validateGeometry(geom, 'custom-part-1', { allowBoundaryEdges: true });
+  validateGeometry(geom, 'custom-part-1');
+  assertRawWasmClosed(geom.topoBody, 'custom-part-1');
+  assertPlanarTrimCurvesOnPlanes(geom.topoBody, 'custom-part-1');
 });
 
 test('Non-90-degree fillet produces watertight topology', () => {

@@ -269,14 +269,22 @@ function _orientShell(shell) {
   }
 
   for (let fi = 0; fi < shell.faces.length; fi++) {
-    if (flip[fi]) shell.faces[fi].sameSense = !shell.faces[fi].sameSense;
+    if (flip[fi]) _flipFaceOrientation(shell.faces[fi]);
   }
 
   const signedVolume = _approximateShellVolume(shell);
   if (signedVolume < -1e-8) {
     for (const face of shell.faces) {
-      face.sameSense = !face.sameSense;
+      _flipFaceOrientation(face);
     }
+  }
+}
+
+function _flipFaceOrientation(face) {
+  face.sameSense = !face.sameSense;
+  for (const loop of face.allLoops()) {
+    loop.coedges.reverse();
+    for (const ce of loop.coedges) ce.sameSense = !ce.sameSense;
   }
 }
 

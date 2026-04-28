@@ -2715,6 +2715,42 @@ body.workspace-part #parameters-panel {
   color: var(--text-primary);
 }
 
+.node-tree-feature.has-error {
+  color: var(--text-primary);
+}
+
+.node-tree-feature.has-error .node-tree-label {
+  color: #ffb4a8;
+}
+
+.node-tree-feature.has-warning .node-tree-label {
+  color: #ffd27a;
+}
+
+.node-tree-status {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-left: auto;
+  border-radius: 50%;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.node-tree-status-error {
+  color: #1d0907;
+  background: #ff7a66;
+}
+
+.node-tree-status-warning {
+  color: #241800;
+  background: #f5b83b;
+}
+
 .node-tree-feature.suppressed {
   opacity: 0.4;
   text-decoration: line-through;

@@ -6489,6 +6489,37 @@ class App {
     this.setStatus(`Imported ${count} entities from ${filename} (scale ${scale})`);
   }
 
+  _getFeatureTreeStatus(feature) {
+    if (!feature) return null;
+    const part = this._partManager?.getPart?.();
+    const result = part?.featureTree?.results?.[feature.id] || feature.result || null;
+    const errorMessage = feature.error || result?.error;
+    if (errorMessage) {
+      return {
+        kind: 'error',
+        message: String(errorMessage),
+      };
+    }
+
+    const resultGrade = result?.resultGrade || result?.geometry?.resultGrade;
+    if (resultGrade && resultGrade !== 'exact') {
+      return {
+        kind: 'warning',
+        message: `Feature produced a ${resultGrade} result`,
+      };
+    }
+
+    const fallbackDiagnostics = result?.fallbackDiagnostics || result?.geometry?.fallbackDiagnostics;
+    if (fallbackDiagnostics?.grade && fallbackDiagnostics.grade !== 'exact') {
+      return {
+        kind: 'warning',
+        message: fallbackDiagnostics.reason || `Feature produced a ${fallbackDiagnostics.grade} result`,
+      };
+    }
+
+    return null;
+  }
+
   _updateNodeTree() {
     const container = document.getElementById('node-tree-features');
     if (!container) return;
@@ -6595,10 +6626,22 @@ class App {
         div.classList.add('active');
       }
 
+      const status = this._getFeatureTreeStatus(feature);
+      if (status) div.classList.add(`has-${status.kind}`);
+
       const icon = getFeatureIconSVG(feature.type);
       const eyeIcon = feature.visible ? '👁' : '—';
       const hiddenTag = feature.visible ? '' : ' <span class="node-tree-hidden-indicator" title="Hidden">[hidden]</span>';
       div.innerHTML = `<span class="node-tree-eye" title="Toggle feature visibility">${eyeIcon}</span><span class="node-tree-icon">${icon}</span><span class="node-tree-label">${feature.name}${hiddenTag}</span>`;
+
+      if (status) {
+        const statusEl = document.createElement('span');
+        statusEl.className = `node-tree-status node-tree-status-${status.kind}`;
+        statusEl.textContent = status.kind === 'error' ? '!' : '?';
+        statusEl.title = status.message;
+        statusEl.setAttribute('aria-label', status.message);
+        div.appendChild(statusEl);
+      }
 
       const eyeEl = div.querySelector('.node-tree-eye');
       if (eyeEl) {

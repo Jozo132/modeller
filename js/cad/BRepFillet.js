@@ -180,6 +180,31 @@ function _precomputeFilletEdge(faces, edgeKey, radius, segments, exactAdjacencyB
     const e1 = rawE1Len > 1e-10
       ? _vec3Scale(rawE1, 1 / rawE1Len)
       : _vec3Normalize(_vec3Cross(edgeDir, e0));
+
+    // The terminal cap curve is the intersection of the fillet cylinder
+    // with the neighbouring end face. For non-90 degree corners that
+    // intersection is an ellipse, not a circular section that can be
+    // linearly dragged to new endpoints.
+    const capNormal = _vec3Normalize(_vec3Cross(
+      _vec3Sub(trimPt0, vertex),
+      _vec3Sub(trimPt1, vertex),
+    ));
+    if (_vec3Len(capNormal) > 1e-10) {
+      const capArc = _computeFilletChamferArcSamples(
+        center,
+        edgeDir,
+        radius,
+        e0,
+        e1,
+        vertex,
+        capNormal,
+        trimPt0,
+        trimPt1,
+        segments,
+      );
+      if (capArc && capArc.length >= 2) return capArc;
+    }
+
     // Use NURBS arc tessellation to match EdgeSampler's parameterization.
     // This ensures polygon arc boundaries align exactly with NURBS edge samples.
     let arcPoints;
@@ -204,11 +229,8 @@ function _precomputeFilletEdge(faces, edgeKey, radius, segments, exactAdjacencyB
       }
     }
 
-    // Blend arc endpoints to match corner-adapted trim points.
-    // For 90° corners, trimPt0/trimPt1 match the standard offsets, so
-    // the displacement is zero and the arc is unchanged.
-    // For non-90° corners, the endpoints are smoothly shifted to align
-    // with the neighboring face edges, producing correct watertight geometry.
+    // Fallback only: if cylinder-plane intersection failed, preserve the
+    // previous endpoint adaptation rather than leaving an open topology.
     const nPts = arcPoints.length - 1;
     if (nPts >= 1) {
       const d0 = _vec3Sub(trimPt0, arcPoints[0]);
@@ -1775,21 +1797,21 @@ function _extendTrimsAtPreviousFilletJunctions(trimmedFaces, edgeDataList, faces
       const evk = _edgeVKey(edgeVertex);
       if (!vertexPrevFillet.has(evk)) continue;
 
-      let prevFillet = vertexPrevFillet.get(evk);
-      let tangentContactOnly = false;
+      const prevFillet = vertexPrevFillet.get(evk);
 
-      // Geometric overlap check: the new fillet and prev fillet only have a
-      // genuine junction curve when their cylindrical surfaces interpenetrate.
-      // If the new fillet's axis endpoint sits outside the prev fillet's
-      // cylinder (distance from prev axis line >= prev radius), the two
-      // cylinders meet only tangentially at a single point and there is no
-      // junction curve.  This happens, e.g., in the F,C,F corner combo where
-      // an intermediate chamfer truncates the new fillet's axis short of the
-      // prev fillet, leaving only tangential contact at the shared corner.
-      // In that case we must leave the trim alone — neither the junction
-      // path nor the fallback flat-clip path is valid (the latter would
-      // strip legitimate prev-fillet arc samples from the adjacent face).
+      // Attempt to compute 3D intersection curve.  Do this before applying
+      // the endpoint-only tangent-contact guard: an edge endpoint can lie on
+      // the previous fillet boundary while the new fillet cylinder still cuts
+      // through the previous fillet surface beyond that endpoint.
+      let intCurve = null;
       if (prevFillet) {
+        intCurve = _computeFilletFilletIntersectionCurve(
+          prevFillet, data, faces, radius, isA, origTopoBody,
+        );
+      }
+
+      let tangentContactOnly = false;
+      if (!intCurve && prevFillet) {
         const apEnd = _vec3Sub(edgeVertex, prevFillet.axisStart);
         const prevAxisDir = _vec3Normalize(
           _vec3Sub(prevFillet.axisEnd, prevFillet.axisStart),
@@ -1798,18 +1820,7 @@ function _extendTrimsAtPreviousFilletJunctions(trimmedFaces, edgeDataList, faces
         const radial = _vec3Sub(apEnd, _vec3Scale(prevAxisDir, along));
         const distToPrevAxis = _vec3Len(radial);
         const overlapTol = Math.max(1e-4, prevFillet.radius * 1e-3);
-        if (distToPrevAxis >= prevFillet.radius - overlapTol) {
-          prevFillet = null;
-          tangentContactOnly = true;
-        }
-      }
-
-      // Attempt to compute 3D intersection curve
-      let intCurve = null;
-      if (prevFillet) {
-        intCurve = _computeFilletFilletIntersectionCurve(
-          prevFillet, data, faces, radius, isA, origTopoBody,
-        );
+        tangentContactOnly = distToPrevAxis >= prevFillet.radius - overlapTol;
       }
 
       if (intCurve && intCurve.curve && intCurve.curve.length >= 2) {
