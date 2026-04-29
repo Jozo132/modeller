@@ -430,6 +430,8 @@ export {
   handleSetBodyStart, handleSetBodyEnd,
   handleGetFaceStart, handleGetFaceEnd,
   handleGetVertexStart, handleGetVertexEnd,
+  handleGetEdgeStart, handleGetEdgeEnd,
+  handleGetCoedgeStart, handleGetCoedgeEnd,
   handleGetShellStart, handleGetShellEnd,
   handleGetGeomStart, handleGetGeomEnd,
   // topology: B-Rep entities
@@ -515,4 +517,13 @@ export {
   STEP_BUILD_ERR_UNSUPPORTED_CURVE, STEP_BUILD_ERR_BAD_ARGS, STEP_BUILD_ERR_TOPOLOGY_OVERFLOW,
   stepBuildInit, stepBuildRun,
   stepBuildGetSkippedFaceCount, stepBuildGetLastError, stepBuildGetLastErrorStepId,
+  // extrude: native feature construction and shell validation
+  NATIVE_EXTRUDE_OK, NATIVE_EXTRUDE_ERR_INVALID_HANDLE,
+  NATIVE_EXTRUDE_ERR_BAD_PROFILE, NATIVE_EXTRUDE_ERR_STAGING_OVERFLOW,
+  NATIVE_EXTRUDE_ERR_TOPOLOGY_OVERFLOW, NATIVE_EXTRUDE_ERR_DEGENERATE,
+  NATIVE_EXTRUDE_EDGE_LINE, NATIVE_EXTRUDE_EDGE_ARC,
+  nativeExtrudeStagingPtr, nativeExtrudeStagingCapacity,
+  nativeExtrudeBuildFromStaging,
+  nativeExtrudeGetLastError, nativeExtrudeGetLastIssueEdge,
+  nativeShellValidateHandle,
 } from './kernel/index';

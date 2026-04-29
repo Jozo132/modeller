@@ -372,17 +372,35 @@ export class FeatureTree {
     const feature = this.featureMap.get(featureId);
     if (feature && feature._irHash) {
       result.irHash = feature._irHash;
-    }    // Allocate a WASM handle if a registry is attached
+    }
+
+    // Adopt a WASM handle if the feature produced one natively. This keeps
+    // direct kernel feature builders resident instead of allocating a second
+    // unmaterialized handle that would need CBREP hydration later.
     if (this._handleRegistry && this._handleRegistry.ready) {
       const reg = this._handleRegistry;
-      const handle = reg.alloc();
-      if (handle !== 0) {
-        result.wasmHandleId = handle;
-        reg.setResidency(handle, reg.UNMATERIALIZED);
-        reg.setFeatureId(handle, this._revisionCounter);
-        reg.bumpRevision(handle);
-        // Maintain JS-side reverse lookup: handle → featureId (string)
-        this._handleToFeatureId.set(handle, featureId);
+      const existingHandle = result.wasmHandleId || result.geometry?.wasmHandleId || 0;
+      if (existingHandle && typeof reg.isValid === 'function' && reg.isValid(existingHandle)) {
+        result.wasmHandleId = existingHandle;
+        result.wasmHandleResident = true;
+        if (result.geometry) {
+          result.geometry.wasmHandleId = existingHandle;
+          result.geometry.wasmHandleResident = true;
+        }
+        if (typeof reg.setResidency === 'function') reg.setResidency(existingHandle, reg.RESIDENT);
+        reg.setFeatureId(existingHandle, this._revisionCounter);
+        reg.bumpRevision(existingHandle);
+        this._handleToFeatureId.set(existingHandle, featureId);
+      } else {
+        const handle = reg.alloc();
+        if (handle !== 0) {
+          result.wasmHandleId = handle;
+          reg.setResidency(handle, reg.UNMATERIALIZED);
+          reg.setFeatureId(handle, this._revisionCounter);
+          reg.bumpRevision(handle);
+          // Maintain JS-side reverse lookup: handle → featureId (string)
+          this._handleToFeatureId.set(handle, featureId);
+        }
       }
     }
 

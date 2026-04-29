@@ -310,6 +310,22 @@ async function instantiate(module, imports = {}) {
       // assembly/kernel/core/handleGetVertexEnd(u32) => u32
       return exports.handleGetVertexEnd(id) >>> 0;
     },
+    handleGetEdgeStart(id) {
+      // assembly/kernel/core/handleGetEdgeStart(u32) => u32
+      return exports.handleGetEdgeStart(id) >>> 0;
+    },
+    handleGetEdgeEnd(id) {
+      // assembly/kernel/core/handleGetEdgeEnd(u32) => u32
+      return exports.handleGetEdgeEnd(id) >>> 0;
+    },
+    handleGetCoedgeStart(id) {
+      // assembly/kernel/core/handleGetCoedgeStart(u32) => u32
+      return exports.handleGetCoedgeStart(id) >>> 0;
+    },
+    handleGetCoedgeEnd(id) {
+      // assembly/kernel/core/handleGetCoedgeEnd(u32) => u32
+      return exports.handleGetCoedgeEnd(id) >>> 0;
+    },
     handleGetShellStart(id) {
       // assembly/kernel/core/handleGetShellStart(u32) => u32
       return exports.handleGetShellStart(id) >>> 0;
@@ -876,6 +892,36 @@ async function instantiate(module, imports = {}) {
       // assembly/kernel/step_topology/stepBuildGetLastErrorStepId() => u32
       return exports.stepBuildGetLastErrorStepId() >>> 0;
     },
+    NATIVE_EXTRUDE_EDGE_LINE: {
+      // assembly/kernel/extrude/NATIVE_EXTRUDE_EDGE_LINE: u32
+      valueOf() { return this.value; },
+      get value() {
+        return exports.NATIVE_EXTRUDE_EDGE_LINE.value >>> 0;
+      }
+    },
+    NATIVE_EXTRUDE_EDGE_ARC: {
+      // assembly/kernel/extrude/NATIVE_EXTRUDE_EDGE_ARC: u32
+      valueOf() { return this.value; },
+      get value() {
+        return exports.NATIVE_EXTRUDE_EDGE_ARC.value >>> 0;
+      }
+    },
+    nativeExtrudeStagingPtr() {
+      // assembly/kernel/extrude/nativeExtrudeStagingPtr() => usize
+      return exports.nativeExtrudeStagingPtr() >>> 0;
+    },
+    nativeExtrudeStagingCapacity() {
+      // assembly/kernel/extrude/nativeExtrudeStagingCapacity() => u32
+      return exports.nativeExtrudeStagingCapacity() >>> 0;
+    },
+    nativeExtrudeGetLastIssueEdge() {
+      // assembly/kernel/extrude/nativeExtrudeGetLastIssueEdge() => u32
+      return exports.nativeExtrudeGetLastIssueEdge() >>> 0;
+    },
+    nativeShellValidateHandle(handleId) {
+      // assembly/kernel/extrude/nativeShellValidateHandle(u32) => u32
+      return exports.nativeShellValidateHandle(handleId) >>> 0;
+    },
   }, exports);
   function __liftString(pointer) {
     if (!pointer) return null;
@@ -1091,6 +1137,10 @@ export const {
   handleGetFaceEnd,
   handleGetVertexStart,
   handleGetVertexEnd,
+  handleGetEdgeStart,
+  handleGetEdgeEnd,
+  handleGetCoedgeStart,
+  handleGetCoedgeEnd,
   handleGetShellStart,
   handleGetShellEnd,
   handleGetGeomStart,
@@ -1324,6 +1374,20 @@ export const {
   stepBuildGetSkippedFaceCount,
   stepBuildGetLastError,
   stepBuildGetLastErrorStepId,
+  NATIVE_EXTRUDE_OK,
+  NATIVE_EXTRUDE_ERR_INVALID_HANDLE,
+  NATIVE_EXTRUDE_ERR_BAD_PROFILE,
+  NATIVE_EXTRUDE_ERR_STAGING_OVERFLOW,
+  NATIVE_EXTRUDE_ERR_TOPOLOGY_OVERFLOW,
+  NATIVE_EXTRUDE_ERR_DEGENERATE,
+  NATIVE_EXTRUDE_EDGE_LINE,
+  NATIVE_EXTRUDE_EDGE_ARC,
+  nativeExtrudeStagingPtr,
+  nativeExtrudeStagingCapacity,
+  nativeExtrudeBuildFromStaging,
+  nativeExtrudeGetLastError,
+  nativeExtrudeGetLastIssueEdge,
+  nativeShellValidateHandle,
 } = await (async url => instantiate(
   await (async () => {
     const isNodeOrBun = typeof process != "undefined" && process.versions != null && (process.versions.node != null || process.versions.bun != null);

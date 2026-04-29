@@ -838,6 +838,30 @@ export declare function handleGetVertexStart(id: number): number;
  */
 export declare function handleGetVertexEnd(id: number): number;
 /**
+ * assembly/kernel/core/handleGetEdgeStart
+ * @param id `u32`
+ * @returns `u32`
+ */
+export declare function handleGetEdgeStart(id: number): number;
+/**
+ * assembly/kernel/core/handleGetEdgeEnd
+ * @param id `u32`
+ * @returns `u32`
+ */
+export declare function handleGetEdgeEnd(id: number): number;
+/**
+ * assembly/kernel/core/handleGetCoedgeStart
+ * @param id `u32`
+ * @returns `u32`
+ */
+export declare function handleGetCoedgeStart(id: number): number;
+/**
+ * assembly/kernel/core/handleGetCoedgeEnd
+ * @param id `u32`
+ * @returns `u32`
+ */
+export declare function handleGetCoedgeEnd(id: number): number;
+/**
  * assembly/kernel/core/handleGetShellStart
  * @param id `u32`
  * @returns `u32`
@@ -2310,3 +2334,88 @@ export declare function stepBuildGetLastError(): number;
  * @returns `u32`
  */
 export declare function stepBuildGetLastErrorStepId(): number;
+/** assembly/kernel/extrude/NATIVE_EXTRUDE_OK */
+export declare const NATIVE_EXTRUDE_OK: {
+  /** @type `i32` */
+  get value(): number
+};
+/** assembly/kernel/extrude/NATIVE_EXTRUDE_ERR_INVALID_HANDLE */
+export declare const NATIVE_EXTRUDE_ERR_INVALID_HANDLE: {
+  /** @type `i32` */
+  get value(): number
+};
+/** assembly/kernel/extrude/NATIVE_EXTRUDE_ERR_BAD_PROFILE */
+export declare const NATIVE_EXTRUDE_ERR_BAD_PROFILE: {
+  /** @type `i32` */
+  get value(): number
+};
+/** assembly/kernel/extrude/NATIVE_EXTRUDE_ERR_STAGING_OVERFLOW */
+export declare const NATIVE_EXTRUDE_ERR_STAGING_OVERFLOW: {
+  /** @type `i32` */
+  get value(): number
+};
+/** assembly/kernel/extrude/NATIVE_EXTRUDE_ERR_TOPOLOGY_OVERFLOW */
+export declare const NATIVE_EXTRUDE_ERR_TOPOLOGY_OVERFLOW: {
+  /** @type `i32` */
+  get value(): number
+};
+/** assembly/kernel/extrude/NATIVE_EXTRUDE_ERR_DEGENERATE */
+export declare const NATIVE_EXTRUDE_ERR_DEGENERATE: {
+  /** @type `i32` */
+  get value(): number
+};
+/** assembly/kernel/extrude/NATIVE_EXTRUDE_EDGE_LINE */
+export declare const NATIVE_EXTRUDE_EDGE_LINE: {
+  /** @type `u32` */
+  get value(): number
+};
+/** assembly/kernel/extrude/NATIVE_EXTRUDE_EDGE_ARC */
+export declare const NATIVE_EXTRUDE_EDGE_ARC: {
+  /** @type `u32` */
+  get value(): number
+};
+/**
+ * assembly/kernel/extrude/nativeExtrudeStagingPtr
+ * @returns `usize`
+ */
+export declare function nativeExtrudeStagingPtr(): number;
+/**
+ * assembly/kernel/extrude/nativeExtrudeStagingCapacity
+ * @returns `u32`
+ */
+export declare function nativeExtrudeStagingCapacity(): number;
+/**
+ * assembly/kernel/extrude/nativeExtrudeBuildFromStaging
+ * @param handleId `u32`
+ * @param loopCount `u32`
+ * @param dx `f64`
+ * @param dy `f64`
+ * @param dz `f64`
+ * @param planeOx `f64`
+ * @param planeOy `f64`
+ * @param planeOz `f64`
+ * @param planeNx `f64`
+ * @param planeNy `f64`
+ * @param planeNz `f64`
+ * @param refX `f64`
+ * @param refY `f64`
+ * @param refZ `f64`
+ * @returns `i32`
+ */
+export declare function nativeExtrudeBuildFromStaging(handleId: number, loopCount: number, dx: number, dy: number, dz: number, planeOx: number, planeOy: number, planeOz: number, planeNx: number, planeNy: number, planeNz: number, refX: number, refY: number, refZ: number): number;
+/**
+ * assembly/kernel/extrude/nativeExtrudeGetLastError
+ * @returns `i32`
+ */
+export declare function nativeExtrudeGetLastError(): number;
+/**
+ * assembly/kernel/extrude/nativeExtrudeGetLastIssueEdge
+ * @returns `u32`
+ */
+export declare function nativeExtrudeGetLastIssueEdge(): number;
+/**
+ * assembly/kernel/extrude/nativeShellValidateHandle
+ * @param handleId `u32`
+ * @returns `u32`
+ */
+export declare function nativeShellValidateHandle(handleId: number): number;

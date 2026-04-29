@@ -10,6 +10,7 @@ import { computeFeatureEdges } from './EdgeAnalysis.js';
 import { calculateMeshVolume, calculateBoundingBox } from './toolkit/MeshAnalysis.js';
 import { constrainedTriangulate } from './Tessellator2/CDT.js';
 import { tessellateBody } from './Tessellation.js';
+import { tryBuildNativeExtrude } from './wasm/NativeExtrude.js';
 import { NurbsCurve } from './NurbsCurve.js';
 import { NurbsSurface } from './NurbsSurface.js';
 import {
@@ -584,7 +585,220 @@ export class ExtrudeFeature extends Feature {
       geometry.topoBody = null;
     }
 
+    const nativeGeometry = this._tryBuildNativeExtrudeGeometry(
+      profiles,
+      resolvedPlane,
+      extrusionVector,
+      planeFrame,
+      baseOffset,
+      tipOffset,
+      holes,
+      geometry.topoBody,
+    );
+    if (nativeGeometry) return nativeGeometry;
+
     return geometry;
+  }
+
+  _tryBuildNativeExtrudeGeometry(profiles, plane, extrusionVector, planeFrame, baseOffset, tipOffset, holes, topoBody) {
+    if (this.operation !== 'new') return null;
+    if (this.symmetric || this.taper || this.extrudeType !== 'distance') return null;
+    if (!topoBody) return null;
+    if (!this._nativeProfilesAreLinear(profiles, holes)) return null;
+
+    const nativeVector = {
+      x: extrusionVector.x + tipOffset.x - baseOffset.x,
+      y: extrusionVector.y + tipOffset.y - baseOffset.y,
+      z: extrusionVector.z + tipOffset.z - baseOffset.z,
+    };
+    const extDir = _normalize(nativeVector);
+    const loops = [];
+
+    for (let profileIndex = 0; profileIndex < profiles.length; profileIndex++) {
+      const outerLoop = this._buildNativeExtrudeLoop(profiles[profileIndex], true, true, plane, planeFrame, baseOffset, extDir);
+      if (!outerLoop) return null;
+      loops.push(outerLoop);
+      if (profileIndex === 0) {
+        for (const hole of holes || []) {
+          const holeLoop = this._buildNativeExtrudeLoop(hole, false, false, plane, planeFrame, baseOffset, extDir);
+          if (!holeLoop) return null;
+          loops.push(holeLoop);
+        }
+      }
+    }
+
+    const nativeGeometry = tryBuildNativeExtrude({
+      loops,
+      plane,
+      extrusionVector: nativeVector,
+      refDir: plane.xAxis || { x: 1, y: 0, z: 0 },
+      topoBody,
+      sourceFeatureId: this.id,
+    });
+    if (!nativeGeometry) return null;
+
+    const edgeResult = computeFeatureEdges(nativeGeometry.faces || []);
+    nativeGeometry.edges = edgeResult.edges;
+    nativeGeometry.paths = edgeResult.paths;
+    nativeGeometry.visualEdges = edgeResult.visualEdges;
+    return nativeGeometry;
+  }
+
+  _nativeProfilesAreLinear(profiles, holes = []) {
+    for (const profile of [...(profiles || []), ...(holes || [])]) {
+      for (const edge of profile?.edges || []) {
+        const type = edge?.type || 'segment';
+        if (type !== 'segment' && type !== 'line') return false;
+      }
+    }
+    return true;
+  }
+
+  _buildNativeExtrudeLoop(profile, wantCCW, isOuter, plane, planeFrame, baseOffset, extDir) {
+    if (!profile || !Array.isArray(profile.points) || profile.points.length < 3) return null;
+    let pts = profile.points.map((point) => planeFrame.toPlanePoint(point));
+    let profileEdges = profile.edges || null;
+
+    let signedArea = 0;
+    for (let i = 0; i < pts.length; i++) {
+      const j = (i + 1) % pts.length;
+      signedArea += pts[i].x * pts[j].y - pts[j].x * pts[i].y;
+    }
+    const isCCW = signedArea >= 0;
+    if (isCCW !== wantCCW) {
+      if (profileEdges) {
+        const reversedProfile = _reverseProfileWinding(pts, profileEdges);
+        pts = reversedProfile.points;
+        profileEdges = reversedProfile.edges;
+      } else {
+        pts = [...pts].reverse();
+      }
+    }
+
+    const bottomVerts = pts.map((point) => {
+      const world = this.sketchToWorld(point, plane);
+      return {
+        x: world.x + baseOffset.x,
+        y: world.y + baseOffset.y,
+        z: world.z + baseOffset.z,
+      };
+    });
+
+    const ranges = _buildEdgeRanges(profileEdges, bottomVerts.length);
+    if (ranges.some((range) => range.type === 'spline' || range.type === 'bezier')) return null;
+
+    if (ranges.length === 1 && ranges[0].type === 'circle' && ranges[0].center && ranges[0].radius) {
+      return this._buildNativeCircleLoop(ranges[0], bottomVerts, plane, baseOffset, extDir, isOuter);
+    }
+
+    const nativePoints = [];
+    const nativeEdges = [];
+    const addPoint = (point) => {
+      if (nativePoints.length > 0 && _distanceSq(nativePoints[nativePoints.length - 1], point) < 1e-20) {
+        return nativePoints.length - 1;
+      }
+      if (nativePoints.length > 2 && _distanceSq(nativePoints[0], point) < 1e-20) {
+        return 0;
+      }
+      nativePoints.push(point);
+      return nativePoints.length - 1;
+    };
+
+    for (const range of ranges) {
+      const spanIndices = [];
+      for (let k = range.startIdx; ; k = (k + 1) % bottomVerts.length) {
+        spanIndices.push(k);
+        if (k === range.endIdx) break;
+      }
+
+      if ((range.type === 'arc' || range.type === 'circle') && range.center && range.radius) {
+        const centerWorld = this.sketchToWorld(range.center, plane);
+        const center = {
+          x: centerWorld.x + baseOffset.x,
+          y: centerWorld.y + baseOffset.y,
+          z: centerWorld.z + baseOffset.z,
+        };
+        const startIdx = addPoint(bottomVerts[range.startIdx]);
+        const endIdx = addPoint(bottomVerts[range.endIdx]);
+        const sweep = this._nativeArcSweep(range, bottomVerts, center, extDir);
+        nativeEdges.push({ type: 'arc', startIdx, endIdx, center, radius: range.radius, sweep });
+        continue;
+      }
+
+      if (range.type !== 'segment') return null;
+      const segmentCount = spanIndices.length - 1;
+      for (let si = 0; si < segmentCount; si++) {
+        const startIdx = addPoint(bottomVerts[spanIndices[si]]);
+        const endIdx = addPoint(bottomVerts[spanIndices[si + 1]]);
+        nativeEdges.push({ type: 'line', startIdx, endIdx });
+      }
+    }
+
+    if (nativePoints.length > 2 && _distanceSq(nativePoints[0], nativePoints[nativePoints.length - 1]) < 1e-20) {
+      nativePoints.pop();
+      for (const edge of nativeEdges) {
+        if (edge.startIdx === nativePoints.length) edge.startIdx = 0;
+        if (edge.endIdx === nativePoints.length) edge.endIdx = 0;
+      }
+    }
+
+    return nativePoints.length >= 3 && nativeEdges.length >= 3
+      ? { points: nativePoints, edges: nativeEdges, isOuter }
+      : null;
+  }
+
+  _buildNativeCircleLoop(range, bottomVerts, plane, baseOffset, extDir, isOuter) {
+    const centerWorld = this.sketchToWorld(range.center, plane);
+    const center = {
+      x: centerWorld.x + baseOffset.x,
+      y: centerWorld.y + baseOffset.y,
+      z: centerWorld.z + baseOffset.z,
+    };
+    const seam = bottomVerts[range.startIdx];
+    const r0 = _sub(seam, center);
+    const r0Len = Math.hypot(r0.x, r0.y, r0.z);
+    if (r0Len < 1e-12) return null;
+    const xAx = { x: r0.x / r0Len, y: r0.y / r0Len, z: r0.z / r0Len };
+    const positiveYAx = _normalize(_cross(extDir, xAx));
+    const tangentIdx = range.endIdx !== range.startIdx ? range.endIdx : ((range.startIdx + 1) % bottomVerts.length);
+    const tangent = _normalize(_sub(bottomVerts[tangentIdx], seam));
+    const yAx = _dot(tangent, positiveYAx) >= 0
+      ? positiveYAx
+      : { x: -positiveYAx.x, y: -positiveYAx.y, z: -positiveYAx.z };
+    const points = [seam];
+    for (const angle of [Math.PI * 0.5, Math.PI, Math.PI * 1.5]) {
+      const ca = Math.cos(angle);
+      const sa = Math.sin(angle);
+      points.push({
+        x: center.x + range.radius * (ca * xAx.x + sa * yAx.x),
+        y: center.y + range.radius * (ca * xAx.y + sa * yAx.y),
+        z: center.z + range.radius * (ca * xAx.z + sa * yAx.z),
+      });
+    }
+    const edges = [0, 1, 2, 3].map((startIdx) => ({
+      type: 'arc',
+      startIdx,
+      endIdx: (startIdx + 1) % 4,
+      center,
+      radius: range.radius,
+      sweep: Math.PI * 0.5,
+    }));
+    return { points, edges, isOuter };
+  }
+
+  _nativeArcSweep(range, bottomVerts, center, extDir) {
+    if (range.sweepAngle !== undefined) return range.sweepAngle;
+    const r0 = _sub(bottomVerts[range.startIdx], center);
+    const r1 = _sub(bottomVerts[range.endIdx], center);
+    const r0Len = Math.hypot(r0.x, r0.y, r0.z);
+    const r1Len = Math.hypot(r1.x, r1.y, r1.z);
+    if (r0Len < 1e-12 || r1Len < 1e-12) return Math.PI;
+    const cosA = Math.max(-1, Math.min(1, _dot(r0, r1) / (r0Len * r1Len)));
+    const crossR = _cross(r0, r1);
+    const sinSign = _dot(crossR, extDir);
+    let sweep = Math.acos(cosA);
+    if (sinSign < 0) sweep = 2 * Math.PI - sweep;
+    return sweep;
   }
 
   /**
@@ -1367,6 +1581,13 @@ function _normalize(v) {
 
 function _dot(a, b) {
   return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+function _distanceSq(a, b) {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  const dz = a.z - b.z;
+  return dx * dx + dy * dy + dz * dz;
 }
 
 function _reverseFaceGeometry(vertices, edgeCurves) {

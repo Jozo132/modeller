@@ -290,6 +290,22 @@ export function handleGetVertexEnd(id: u32): u32 {
   if (id == HANDLE_NONE || id > MAX_HANDLES) return 0;
   return unchecked(handleVertexEnd[id]);
 }
+export function handleGetEdgeStart(id: u32): u32 {
+  if (id == HANDLE_NONE || id > MAX_HANDLES) return 0;
+  return unchecked(handleEdgeStart[id]);
+}
+export function handleGetEdgeEnd(id: u32): u32 {
+  if (id == HANDLE_NONE || id > MAX_HANDLES) return 0;
+  return unchecked(handleEdgeEnd[id]);
+}
+export function handleGetCoedgeStart(id: u32): u32 {
+  if (id == HANDLE_NONE || id > MAX_HANDLES) return 0;
+  return unchecked(handleCoedgeStart[id]);
+}
+export function handleGetCoedgeEnd(id: u32): u32 {
+  if (id == HANDLE_NONE || id > MAX_HANDLES) return 0;
+  return unchecked(handleCoedgeEnd[id]);
+}
 export function handleGetShellStart(id: u32): u32 {
   if (id == HANDLE_NONE || id > MAX_HANDLES) return 0;
   return unchecked(handleShellStart[id]);
