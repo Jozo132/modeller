@@ -172,7 +172,7 @@ export class Part {
     this.centerOfMass = { x: 0, y: 0, z: 0 };
 
     // Global tessellation quality config — all features inherit from this
-    this.tessellationConfig = new TessellationConfig();
+    this.tessellationConfig = TessellationConfig.deserialize(globalTessConfig.serialize());
   }
 
   /**
@@ -608,6 +608,8 @@ export class Part {
     const name = options.name || this._nextTypeName('step-import', 'STEP Import');
     const feature = new StepImportFeature(name, stepData, {
       curveSegments: globalTessConfig.curveSegments,
+      edgeSegments: globalTessConfig.edgeSegments,
+      surfaceSegments: globalTessConfig.surfaceSegments,
     });
 
     this.featureTree.addFeature(feature);
@@ -750,9 +752,11 @@ export class Part {
 
     // Feature deserialization executes the tree immediately, and STEP imports
     // read the module-level tessellation singleton while building their mesh.
-    // Restore the saved part config first so browser-storage refreshes replay
-    // with the same quality settings as the original CMOD/session.
-    part.tessellationConfig = TessellationConfig.deserialize(data.tessellationConfig);
+    // Restore the saved part config first unless the caller provides a
+    // user-level override that should win over serialized model quality.
+    part.tessellationConfig = TessellationConfig.deserialize(
+      options.tessellationConfigOverride || data.tessellationConfig,
+    );
     Object.assign(globalTessConfig, part.tessellationConfig);
     
     // Deserialize feature tree

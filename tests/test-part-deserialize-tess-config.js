@@ -119,6 +119,28 @@ check('Unnamed-Body.cmod restore uses saved tessellation before STEP replay', ()
   );
 });
 
+check('deserialize tessellation override wins over serialized model quality', () => {
+  const cmod = parseCMOD(readFileSync(join(SAMPLE_DIR, 'Unnamed-Body.cmod'), 'utf8'));
+  const override = {
+    curveSegments: 32,
+    surfaceSegments: 16,
+    edgeSegments: 32,
+    adaptiveSubdivision: true,
+    tessellator: 'legacy',
+  };
+
+  const restored = Part.deserialize(cmod.data.part, { tessellationConfigOverride: override });
+  const feature = restored.featureTree.features.find((candidate) => candidate.type === 'step-import');
+
+  assert.equal(restored.tessellationConfig.curveSegments, override.curveSegments);
+  assert.equal(restored.tessellationConfig.edgeSegments, override.edgeSegments);
+  assert.equal(restored.tessellationConfig.surfaceSegments, override.surfaceSegments);
+  assert.equal(globalTessConfig.curveSegments, override.curveSegments);
+  assert.equal(feature?._cachedMesh?.curveSegments, override.curveSegments);
+  assert.equal(feature?._cachedMesh?.edgeSegments, override.edgeSegments);
+  assert.equal(feature?._cachedMesh?.surfaceSegments, override.surfaceSegments);
+});
+
 check('Unnamed-Body.cmod checkpoint restore replays STEP import instead of CBREP fast restore', () => {
   const serialized = serializedUnnamedBodyWithCheckpoint();
   assert.ok(serialized.featureTree?.checkpoints, 'test fixture should include a serialized CBREP checkpoint');

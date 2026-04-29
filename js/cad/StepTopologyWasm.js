@@ -25,6 +25,8 @@
 // file; currently the bridge also returns `{ ok: false }` when the
 // skipped ratio exceeds a threshold.
 
+import { globalTessConfig } from './TessellationConfig.js';
+
 let _wasm = null;
 let _wasmLoadPromise = null;
 let _wasmInitialised = false;
@@ -175,10 +177,10 @@ export function importStepNativeSync(stepText, opts = {}) {
   if (!built.ok) return { ...built, timings: { buildMs, tessMs: 0 } };
 
   const w = _wasm;
-  const edgeSegs = opts.edgeSegments ?? 32;
-  const surfSegs = opts.surfaceSegments ?? 24;
+  const edgeSegs = opts.edgeSegments ?? globalTessConfig.edgeSegments;
+  const surfSegs = opts.surfaceSegments ?? globalTessConfig.surfaceSegments;
   const tTess = _now();
-  const triCount = w.tessBuildAllFaces(surfSegs, surfSegs);
+  const triCount = w.tessBuildAllFaces(edgeSegs, surfSegs);
   const tessMs = _now() - tTess;
   if (triCount < 0) {
     return {

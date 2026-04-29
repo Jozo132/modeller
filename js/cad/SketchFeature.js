@@ -3,6 +3,7 @@
 
 import { Feature } from './Feature.js';
 import { Sketch } from './Sketch.js';
+import { globalTessConfig } from './TessellationConfig.js';
 
 /**
  * SketchFeature represents a 2D sketch in the parametric feature tree.
@@ -56,7 +57,7 @@ export class SketchFeature extends Feature {
     // Handle circles as closed profiles (a circle is inherently a closed loop)
     for (const circle of this.sketch.circles) {
       if (circle.construction || circle.visible === false) continue;
-      const numPoints = 32;
+      const numPoints = _profileCurveSegments();
       const points = [];
       for (let i = 0; i < numPoints; i++) {
         const angle = (i / numPoints) * Math.PI * 2;
@@ -82,7 +83,7 @@ export class SketchFeature extends Feature {
       if (spl.construction || !spl.visible) continue;
       if (spl.p1 && spl.p2 && spl.p1 === spl.p2) {
         visited.add(spl.id);
-        const pts = spl.tessellate2D(32);
+        const pts = spl.tessellate2D(_profileCurveSegments());
         if (pts.length >= 3) {
           // Remove the duplicate closing point if present
           const last = pts[pts.length - 1];
@@ -109,7 +110,7 @@ export class SketchFeature extends Feature {
       if (bez.construction || !bez.visible) continue;
       if (bez.p1 && bez.p2 && bez.p1 === bez.p2) {
         visited.add(bez.id);
-        const pts = bez.tessellate2D(16);
+        const pts = bez.tessellate2D(_profileCurveSegments());
         if (pts.length >= 3) {
           const last = pts[pts.length - 1];
           const first = pts[0];
@@ -652,7 +653,7 @@ function _tessellateEdge(edge, forward) {
   if (edge.type === 'arc' && edge.arc) {
     // Arc: tessellate into polyline
     const arc = edge.arc;
-    const numSegs = 16;
+    const numSegs = _profileCurveSegmentsForSweep(arc.endAngle - arc.startAngle);
     let startA = arc.startAngle;
     let endA = arc.endAngle;
     let sweep = endA - startA;
@@ -670,13 +671,13 @@ function _tessellateEdge(edge, forward) {
 
   if (edge.type === 'spline') {
     // Spline: tessellate using the spline's own method
-    const pts = edge.tessellate2D(32);
+    const pts = edge.tessellate2D(_profileCurveSegments());
     return forward ? pts : [...pts].reverse();
   }
 
   if (edge.type === 'bezier') {
     // Bezier: tessellate using the bezier's own method
-    const pts = edge.tessellate2D(16);
+    const pts = edge.tessellate2D(_profileCurveSegments());
     return forward ? pts : [...pts].reverse();
   }
 
@@ -684,4 +685,15 @@ function _tessellateEdge(edge, forward) {
   return forward
     ? [{ x: edge.p1.x, y: edge.p1.y }, { x: edge.p2.x, y: edge.p2.y }]
     : [{ x: edge.p2.x, y: edge.p2.y }, { x: edge.p1.x, y: edge.p1.y }];
+}
+
+function _profileCurveSegments() {
+  const value = Number(globalTessConfig.curveSegments);
+  return Number.isFinite(value) && value > 0 ? Math.max(4, Math.floor(value)) : 32;
+}
+
+function _profileCurveSegmentsForSweep(sweep) {
+  let normalized = sweep;
+  while (normalized <= 0) normalized += Math.PI * 2;
+  return Math.max(2, Math.ceil(_profileCurveSegments() * Math.abs(normalized) / (Math.PI * 2)));
 }

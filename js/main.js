@@ -66,10 +66,38 @@ const MESH_TRIANGLE_OVERLAY_MODE_OUTLINE = 'outline';
 const NORMAL_COLOR_SHADING_KEY = 'cad-modeller-normal-color-shading';
 const RECORDING_BAR_VISIBLE_KEY = 'cad-modeller-recording-bar-visible';
 const COMMAND_BAR_VISIBLE_KEY = 'cad-modeller-command-bar-visible';
+const TESS_QUALITY_STORAGE_KEY = 'cad-modeller-tessellation-quality-preset';
+const TESS_QUALITY_PRESETS = new Set(['draft', 'normal', 'fine', 'ultra']);
+
+function readPersistedTessellationPreset() {
+  try {
+    const stored = localStorage.getItem(TESS_QUALITY_STORAGE_KEY);
+    return TESS_QUALITY_PRESETS.has(stored) ? stored : null;
+  } catch {
+    return null;
+  }
+}
+
+function writePersistedTessellationPreset(preset) {
+  if (!TESS_QUALITY_PRESETS.has(preset)) return;
+  try {
+    localStorage.setItem(TESS_QUALITY_STORAGE_KEY, preset);
+  } catch {
+    // Ignore storage failures; the active session still uses the preset.
+  }
+}
+
+function applyStoredTessellationPreset() {
+  const preset = readPersistedTessellationPreset() || 'normal';
+  globalTessConfig.applyPreset(preset);
+  writePersistedTessellationPreset(preset);
+  return preset;
+}
 
 class App {
   constructor() {
     info('App initialization started');
+    applyStoredTessellationPreset();
     this._renderer3d = null;
     this._workspaceMode = null; // 'part' | null (quick-start)
     this._sketchingOnPlane = false; // true when in sketch-on-plane mode inside Part workspace
@@ -2178,11 +2206,14 @@ class App {
     if (tessSelect) {
       // Sync initial UI state from global config
       const currentPreset = globalTessConfig.getPreset();
-      if (currentPreset) tessSelect.value = currentPreset;
+      tessSelect.value = TESS_QUALITY_PRESETS.has(currentPreset) ? currentPreset : applyStoredTessellationPreset();
 
       tessSelect.addEventListener('change', () => {
-        globalTessConfig.applyPreset(tessSelect.value);
-        info(`Tessellation quality set to: ${tessSelect.value} (curves=${globalTessConfig.curveSegments}, surfaces=${globalTessConfig.surfaceSegments})`);
+        const preset = TESS_QUALITY_PRESETS.has(tessSelect.value) ? tessSelect.value : 'normal';
+        globalTessConfig.applyPreset(preset);
+        tessSelect.value = preset;
+        writePersistedTessellationPreset(preset);
+        info(`Tessellation quality set to: ${preset} (curves=${globalTessConfig.curveSegments}, surfaces=${globalTessConfig.surfaceSegments}, edges=${globalTessConfig.edgeSegments})`);
 
         // Re-execute all features with new tessellation resolution
         if (this._partManager) {
@@ -2201,7 +2232,7 @@ class App {
             debouncedSave();
           }
         }
-        this.setStatus(`Tessellation quality: ${tessSelect.value}`);
+        this.setStatus(`Tessellation quality: ${preset}`);
       });
     }
 
@@ -6927,17 +6958,9 @@ class App {
     const features = this._partManager.getFeatures();
     if (features.length === 0) return;
     const pos = this._rollbackIndex < 0 ? features.length : this._rollbackIndex;
-    for (let i = 0; i < features.length; i++) {
-      if (i < pos) {
-        if (features[i].suppressed) features[i].unsuppress();
-      } else {
-        if (!features[i].suppressed) features[i].suppress();
-      }
-    }
-    // Re-execute the feature tree
     const part = this._partManager.getPart();
     if (part) {
-      part.featureTree.executeAll();
+      part.featureTree.applyRollbackSuppression(pos);
       part.modified = new Date();
     }
     this._partManager.notifyListeners();

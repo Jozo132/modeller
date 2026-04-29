@@ -8,6 +8,9 @@
 import { Feature } from './Feature.js';
 import { arrayBufferToBase64, base64ToArrayBuffer } from './CbrepEncoding.js';
 import { DirtyFaceTracker, stampDirtyFieldsOnResult } from './DirtyFaceTracker.js';
+import { canonicalize } from '../../packages/ir/canonicalize.js';
+import { writeCbrep } from '../../packages/ir/writer.js';
+import { hashCbrep } from '../../packages/ir/hash.js';
 
 /**
  * FeatureTree manages the ordered list of parametric features.
@@ -368,8 +371,10 @@ export class FeatureTree {
     this._revisionCounter++;
     result.exactBodyRevisionId = this._revisionCounter;
 
-    // Propagate irHash from the feature instance if available
     const feature = this.featureMap.get(featureId);
+    this._ensureSolidResultCheckpoint(featureId, result, feature);
+
+    // Propagate irHash from the feature instance if available
     if (feature && feature._irHash) {
       result.irHash = feature._irHash;
     }
@@ -420,6 +425,35 @@ export class FeatureTree {
       this._dirtyFaces.markAllDirty(featureId);
     }
     stampDirtyFieldsOnResult(result, featureId, this._dirtyFaces);
+  }
+
+  _ensureSolidResultCheckpoint(featureId, result, feature = null) {
+    if (!result || result.type !== 'solid') return false;
+
+    if (result.cbrepBuffer) {
+      if (!result.irHash) result.irHash = hashCbrep(result.cbrepBuffer);
+      if (feature && !feature._irHash) feature._irHash = result.irHash;
+      return true;
+    }
+
+    if (typeof feature?.canFastRestoreFromCbrep === 'function' && feature.canFastRestoreFromCbrep() === false) {
+      return false;
+    }
+
+    const body = result.body || result.solid?.topoBody || result.solid?.body || result.geometry?.topoBody;
+    if (!body || typeof body.faces !== 'function') return false;
+
+    try {
+      const cbrepBuffer = writeCbrep(canonicalize(body));
+      const irHash = hashCbrep(cbrepBuffer);
+      result.cbrepBuffer = cbrepBuffer;
+      result.irHash = irHash;
+      if (feature) feature._irHash = irHash;
+      return true;
+    } catch (err) {
+      result._cbrepCheckpointError = err?.message || String(err);
+      return false;
+    }
   }
 
   /**
@@ -710,6 +744,44 @@ export class FeatureTree {
     }
     
     return this.results;
+  }
+
+  /**
+   * Apply a rollback cutoff using cached results when possible. Features at
+   * or after activeFeatureCount are suppressed for display/history-tree state,
+   * but their existing result payloads are preserved so dragging the rollback
+   * handle forward can be instant when inputs have not changed.
+   * @param {number} activeFeatureCount
+   * @returns {{replayed:boolean}}
+   */
+  applyRollbackSuppression(activeFeatureCount) {
+    const pos = Math.max(0, Math.min(this.features.length, Number.isFinite(activeFeatureCount) ? activeFeatureCount : this.features.length));
+    let needsReplay = false;
+
+    for (let i = 0; i < this.features.length; i++) {
+      const feature = this.features[i];
+      const shouldSuppress = i >= pos;
+      if (shouldSuppress) {
+        if (!feature.suppressed) feature.suppress();
+        continue;
+      }
+
+      if (feature.suppressed) feature.unsuppress();
+      const result = this.results[feature.id];
+      if (!result || result.error || result.suppressed) {
+        needsReplay = true;
+        continue;
+      }
+      if (feature.type !== 'sketch' && result.type !== 'solid') {
+        needsReplay = true;
+      }
+    }
+
+    if (needsReplay) {
+      this.executeAll();
+      return { replayed: true };
+    }
+    return { replayed: false };
   }
 
   /**

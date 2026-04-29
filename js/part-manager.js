@@ -3,6 +3,7 @@
 import { Part } from './cad/Part.js';
 import { Sketch } from './cad/Sketch.js';
 import { Scene } from './cad/Scene.js';
+import { globalTessConfig } from './cad/TessellationConfig.js';
 import { tessellateBody } from './cad/Tessellation.js';
 import { computeFeatureEdges } from './cad/EdgeAnalysis.js';
 import { calculateMeshVolume, calculateBoundingBox } from './cad/toolkit/MeshAnalysis.js';
@@ -339,6 +340,7 @@ export class PartManager {
       finalCbrepPayload: options.finalCbrepPayload ?? null,
       finalCbrepHash: options.finalCbrepHash ?? null,
       fastRestoreDeps: FAST_RESTORE_DEPS,
+      tessellationConfigOverride: options.tessellationConfigOverride || globalTessConfig.serialize(),
     });
     this._wirePart(this.part);
     this.activeFeature = null;

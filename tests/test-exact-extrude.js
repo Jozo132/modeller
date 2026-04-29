@@ -11,6 +11,7 @@ import { resetFeatureIds } from '../js/cad/Feature.js';
 import { resetTopoIds } from '../js/cad/BRepTopology.js';
 import { validateBody, validateFull } from '../js/cad/BRepValidator.js';
 import { tessellateBody } from '../js/cad/Tessellation.js';
+import { globalTessConfig } from '../js/cad/TessellationConfig.js';
 import { formatTimingSuffix, startTiming } from './test-timing.js';
 
 let passed = 0;
@@ -424,6 +425,23 @@ test('Extrude bezier profile: topoBody can be tessellated', () => {
   const mesh = tessellateBody(geom.topoBody);
   assert.ok(mesh.faces.length > 0, 'Tessellated mesh should have faces');
   assert.ok(mesh.vertices.length > 0, 'Tessellated mesh should have vertices');
+});
+
+test('Sketch profile tessellation follows global curve quality', () => {
+  const savedConfig = globalTessConfig.serialize();
+  try {
+    const sketch = new Sketch();
+    sketch.addCircle(0, 0, 5);
+    const sketchFeature = new SketchFeature('QualityCircle', sketch);
+
+    globalTessConfig.applyPreset('draft');
+    assert.strictEqual(sketchFeature.extractProfiles()[0].points.length, 8);
+
+    globalTessConfig.applyPreset('ultra');
+    assert.strictEqual(sketchFeature.extractProfiles()[0].points.length, 64);
+  } finally {
+    Object.assign(globalTessConfig, savedConfig);
+  }
 });
 
 // ============================================================

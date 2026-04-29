@@ -99,7 +99,7 @@ function _boundaryPreservingHybridConfig(opts = {}) {
       globalTessConfig.surfaceSegments,
     ),
     edgeSegments: readPositiveInt(
-      rawConfig?.edgeSegments ?? opts.curveSegments ?? globalTessConfig.edgeSegments,
+      rawConfig?.edgeSegments ?? opts.edgeSegments ?? opts.curveSegments ?? globalTessConfig.edgeSegments,
       globalTessConfig.edgeSegments,
     ),
     reuseTopologyEdges: readBoolean(
@@ -378,13 +378,14 @@ function _scalePlaneAngle(value, unitScales = {}) {
  *
  * @param {TopoBody} body - Exact B-Rep topology body
  * @param {Object} [opts]
- * @param {number} [opts.curveSegments=64] - Segments for curved edge tessellation
+ * @param {number} [opts.curveSegments=64] - Legacy alias for edge segment count
+ * @param {number} [opts.edgeSegments=64] - Segments for curved edge tessellation
  * @param {number} [opts.surfaceSegments=16] - Segments per axis for B-spline surface tessellation
  * @returns {{ vertices: {x,y,z}[], faces: {vertices:{x,y,z}[], normal:{x,y,z}}[] }}
  */
 function _tessellateSTEPBody(body, opts = {}) {
-  const curveSegments = opts.curveSegments ?? 64;
-  const surfaceSegments = opts.surfaceSegments ?? 16;
+  const curveSegments = opts.edgeSegments ?? opts.curveSegments ?? globalTessConfig.edgeSegments;
+  const surfaceSegments = opts.surfaceSegments ?? globalTessConfig.surfaceSegments;
 
   const allVertices = [];
   const allFaces = [];
@@ -412,7 +413,8 @@ function _tessellateSTEPBody(body, opts = {}) {
  *
  * @param {string} stepString - Contents of a STEP file
  * @param {Object} [opts]
- * @param {number} [opts.curveSegments=64] - Segments for curved edge tessellation
+ * @param {number} [opts.curveSegments=64] - Legacy alias for edge segment count
+ * @param {number} [opts.edgeSegments=64] - Segments for curved edge tessellation
  * @param {number} [opts.surfaceSegments=16] - Segments for surface tessellation
  * @returns {{ body: TopoBody, vertices: {x,y,z}[], faces: {vertices:{x,y,z}[], normal:{x,y,z}}[] }}
  */
@@ -428,7 +430,7 @@ export function importSTEP(stepString, opts = {}) {
   if (_nativePipelineEnabled() && _stepTopologyReadySync()) {
     const t0 = _now();
     const native = _importStepNativeSync(stepString, {
-      edgeSegments: opts.curveSegments ?? globalTessConfig.edgeSegments,
+      edgeSegments: opts.edgeSegments ?? opts.curveSegments ?? globalTessConfig.edgeSegments,
       surfaceSegments: opts.surfaceSegments ?? globalTessConfig.surfaceSegments,
     });
     if (native && native.ok && native.vertices.length > 0 && native.faces.length > 0) {
@@ -484,7 +486,7 @@ export function importSTEP(stepString, opts = {}) {
   let mesh = null;
   mesh = _measureStepPhase(timings, 'tessellateMs', 'step:import:tessellate:wasm', () =>
     tessellateBodyWasm(body, {
-      edgeSegments: opts.curveSegments ?? globalTessConfig.edgeSegments,
+      edgeSegments: opts.edgeSegments ?? opts.curveSegments ?? globalTessConfig.edgeSegments,
       surfaceSegments: opts.surfaceSegments ?? globalTessConfig.surfaceSegments,
     }),
   );
@@ -539,7 +541,7 @@ export function importSTEP(stepString, opts = {}) {
     mesh = _measureStepPhase(timings, 'tessellateMs', 'step:import:tessellate', () =>
       tessellateBodyRouted(body, {
         tessellator: 'robust',
-        edgeSegments: opts.curveSegments ?? globalTessConfig.edgeSegments,
+        edgeSegments: opts.edgeSegments ?? opts.curveSegments ?? globalTessConfig.edgeSegments,
         surfaceSegments: opts.surfaceSegments ?? globalTessConfig.surfaceSegments,
       }),
     );

@@ -46,7 +46,9 @@ export class StepImportFeature extends Feature {
    * @param {string} name - Feature name
    * @param {string} stepData - Raw STEP file contents
    * @param {Object} [options]
-   * @param {number} [options.curveSegments=64] - Tessellation segments for curves
+    * @param {number} [options.curveSegments=64] - Tessellation segments for curves
+    * @param {number} [options.edgeSegments=64] - Tessellation segments for edges
+    * @param {number} [options.surfaceSegments=16] - Tessellation segments for surfaces
    */
   constructor(name = 'STEP Import', stepData = '', options = {}) {
     super(name);
@@ -57,6 +59,8 @@ export class StepImportFeature extends Feature {
 
     /** Tessellation quality */
     this.curveSegments = options.curveSegments ?? 64;
+    this.edgeSegments = options.edgeSegments ?? this.curveSegments;
+    this.surfaceSegments = options.surfaceSegments ?? 16;
 
     /** Cached parsed mesh (set after first execute) */
     this._cachedMesh = null;
@@ -94,12 +98,21 @@ export class StepImportFeature extends Feature {
     let cacheHit = true;
 
     // Re-use cached result unless global tessellation config changed
-    const currentSegments = globalTessConfig.curveSegments;
-    if (!this._cachedMesh || this._cachedMesh.curveSegments !== currentSegments) {
+    const currentTessellation = {
+      curveSegments: globalTessConfig.curveSegments,
+      edgeSegments: globalTessConfig.edgeSegments,
+      surfaceSegments: globalTessConfig.surfaceSegments,
+    };
+    Object.assign(this, currentTessellation);
+    const cacheMatches = this._cachedMesh &&
+      this._cachedMesh.curveSegments === currentTessellation.curveSegments &&
+      this._cachedMesh.edgeSegments === currentTessellation.edgeSegments &&
+      this._cachedMesh.surfaceSegments === currentTessellation.surfaceSegments;
+    if (!cacheMatches) {
       cacheHit = false;
       const buildTimings = {};
       const buildStart = _now();
-      const result = importSTEP(this.stepData, { curveSegments: currentSegments });
+      const result = importSTEP(this.stepData, currentTessellation);
       const edgeResult = _measureSync(buildTimings, 'edgeAnalysisMs', 'step:feature:edge-analysis', () =>
         computeFeatureEdges(result.faces),
       );
@@ -112,7 +125,7 @@ export class StepImportFeature extends Feature {
 
       this._cachedMesh = {
         ...result,
-        curveSegments: currentSegments,
+        ...currentTessellation,
         edgeResult,
         volume,
         boundingBox,
@@ -313,6 +326,8 @@ export class StepImportFeature extends Feature {
       ...super.serialize(),
       stepData: this.stepData,
       curveSegments: this.curveSegments,
+      edgeSegments: this.edgeSegments,
+      surfaceSegments: this.surfaceSegments,
       irHash: this._irHash || null,
     };
 
@@ -334,6 +349,8 @@ export class StepImportFeature extends Feature {
     // Restore STEP-specific properties
     feature.stepData = data.stepData || '';
     feature.curveSegments = data.curveSegments ?? 64;
+    feature.edgeSegments = data.edgeSegments ?? feature.curveSegments;
+    feature.surfaceSegments = data.surfaceSegments ?? 16;
     feature._irHash = data.irHash || null;
     if (data.cbrepPayload) {
       try {
