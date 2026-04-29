@@ -216,6 +216,15 @@
     ]
   },
   {
+    "file": "puzzle-extrude-ff.cmod",
+    "label": "Puzzle Extrude Ff",
+    "featureTypes": [
+      "sketch",
+      "extrude",
+      "fillet"
+    ]
+  },
+  {
     "file": "puzzle-extrude.cmod",
     "label": "Puzzle Extrude",
     "featureTypes": [

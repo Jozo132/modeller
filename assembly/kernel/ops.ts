@@ -417,6 +417,87 @@ export function getPlaneCylinderIntersectPtr(): usize {
   return changetype<usize>(planeCylinderOut);
 }
 
+/** Cylinder/plane arc sampling output: up to 257 xyz points. */
+const cylinderPlaneArcOut = new StaticArray<f64>(257 * 3);
+
+/**
+ * Sample the finite arc of an infinite cylinder intersected by a plane.
+ *
+ * The cylinder is parameterized as:
+ *   P(theta, t) = center + axis * t + radius*cos(theta)*ex + radius*sin(theta)*ey
+ * where {ex, ey} are unit vectors perpendicular to axis.  The plane equation
+ * solves a single t(theta), so the output points are exactly on both surfaces.
+ *
+ * Returns the number of xyz points written, or 0 on degeneracy.  `segments`
+ * is clamped by the fixed output buffer to [1, 256].
+ */
+export function cylinderPlaneArcSample(
+  cOx: f64, cOy: f64, cOz: f64,
+  cAx: f64, cAy: f64, cAz: f64,
+  cR: f64,
+  exX: f64, exY: f64, exZ: f64,
+  eyX: f64, eyY: f64, eyZ: f64,
+  pPx: f64, pPy: f64, pPz: f64,
+  pNx: f64, pNy: f64, pNz: f64,
+  sX: f64, sY: f64, sZ: f64,
+  eX: f64, eY: f64, eZ: f64,
+  segments: i32,
+  angularTol: f64,
+): u32 {
+  if (segments < 1) segments = 1;
+  if (segments > 256) segments = 256;
+  if (cR <= 0.0) return 0;
+
+  const C = cAx * pNx + cAy * pNy + cAz * pNz;
+  const absC = C < 0.0 ? -C : C;
+  if (absC < angularTol) return 0;
+
+  const K = (cOx - pPx) * pNx + (cOy - pPy) * pNy + (cOz - pPz) * pNz;
+  const A = exX * pNx + exY * pNy + exZ * pNz;
+  const B = eyX * pNx + eyY * pNy + eyZ * pNz;
+
+  const rsX = sX - cOx;
+  const rsY = sY - cOy;
+  const rsZ = sZ - cOz;
+  const reX = eX - cOx;
+  const reY = eY - cOy;
+  const reZ = eZ - cOz;
+  const t0 = Math.atan2(rsX * eyX + rsY * eyY + rsZ * eyZ, rsX * exX + rsY * exY + rsZ * exZ);
+  const t1 = Math.atan2(reX * eyX + reY * eyY + reZ * eyZ, reX * exX + reY * exY + reZ * exZ);
+
+  let dt = t1 - t0;
+  const twoPi = 2.0 * Math.PI;
+  while (dt > Math.PI) dt -= twoPi;
+  while (dt < -Math.PI) dt += twoPi;
+  const absDt = dt < 0.0 ? -dt : dt;
+  if (absDt < 1e-6) return 0;
+
+  const count = segments + 1;
+  for (let i = 0; i < count; i++) {
+    const theta = t0 + dt * (<f64>i / <f64>segments);
+    const ct = Math.cos(theta);
+    const st = Math.sin(theta);
+    const axisT = -(K + cR * ct * A + cR * st * B) / C;
+    const base = i * 3;
+    unchecked(cylinderPlaneArcOut[base] = cOx + cAx * axisT + exX * cR * ct + eyX * cR * st);
+    unchecked(cylinderPlaneArcOut[base + 1] = cOy + cAy * axisT + exY * cR * ct + eyY * cR * st);
+    unchecked(cylinderPlaneArcOut[base + 2] = cOz + cAz * axisT + exZ * cR * ct + eyZ * cR * st);
+  }
+
+  unchecked(cylinderPlaneArcOut[0] = sX);
+  unchecked(cylinderPlaneArcOut[1] = sY);
+  unchecked(cylinderPlaneArcOut[2] = sZ);
+  const last = (count - 1) * 3;
+  unchecked(cylinderPlaneArcOut[last] = eX);
+  unchecked(cylinderPlaneArcOut[last + 1] = eY);
+  unchecked(cylinderPlaneArcOut[last + 2] = eZ);
+  return <u32>count;
+}
+
+export function getCylinderPlaneArcSamplePtr(): usize {
+  return changetype<usize>(cylinderPlaneArcOut);
+}
+
 /** Plane/cone intersection output: circle center(3) + normal(3) + radius(1). */
 const planeConeOut = new StaticArray<f64>(7);
 

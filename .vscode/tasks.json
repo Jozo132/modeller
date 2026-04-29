@@ -1,0 +1,18 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "ctc02-baseline-check",
+			"type": "shell",
+			"command": "pwsh",
+			"args": [
+				"-NoLogo",
+				"-NoProfile",
+				"-Command",
+				"$env:STEP_BUILD_WASM='0'; node tests/test-step-import-nist.js --sample ctc_02"
+			],
+			"isBackground": false,
+			"group": "test"
+		}
+	]
+}

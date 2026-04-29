@@ -1804,6 +1804,43 @@ export declare function planeCylinderIntersect(pPx: number, pPy: number, pPz: nu
  */
 export declare function getPlaneCylinderIntersectPtr(): number;
 /**
+ * assembly/kernel/ops/cylinderPlaneArcSample
+ * @param cOx `f64`
+ * @param cOy `f64`
+ * @param cOz `f64`
+ * @param cAx `f64`
+ * @param cAy `f64`
+ * @param cAz `f64`
+ * @param cR `f64`
+ * @param exX `f64`
+ * @param exY `f64`
+ * @param exZ `f64`
+ * @param eyX `f64`
+ * @param eyY `f64`
+ * @param eyZ `f64`
+ * @param pPx `f64`
+ * @param pPy `f64`
+ * @param pPz `f64`
+ * @param pNx `f64`
+ * @param pNy `f64`
+ * @param pNz `f64`
+ * @param sX `f64`
+ * @param sY `f64`
+ * @param sZ `f64`
+ * @param eX `f64`
+ * @param eY `f64`
+ * @param eZ `f64`
+ * @param segments `i32`
+ * @param angularTol `f64`
+ * @returns `u32`
+ */
+export declare function cylinderPlaneArcSample(cOx: number, cOy: number, cOz: number, cAx: number, cAy: number, cAz: number, cR: number, exX: number, exY: number, exZ: number, eyX: number, eyY: number, eyZ: number, pPx: number, pPy: number, pPz: number, pNx: number, pNy: number, pNz: number, sX: number, sY: number, sZ: number, eX: number, eY: number, eZ: number, segments: number, angularTol: number): number;
+/**
+ * assembly/kernel/ops/getCylinderPlaneArcSamplePtr
+ * @returns `usize`
+ */
+export declare function getCylinderPlaneArcSamplePtr(): number;
+/**
  * assembly/kernel/ops/planeConeIntersect
  * @param pPx `f64`
  * @param pPy `f64`

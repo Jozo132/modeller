@@ -100,6 +100,18 @@ export class FeatureTree {
       typeof deps.calculateBoundingBox === 'function';
   }
 
+  _getFeatureCbrepCacheVersion(feature) {
+    if (!feature || typeof feature.getCbrepCacheVersion !== 'function') return null;
+    const version = feature.getCbrepCacheVersion();
+    return version == null ? null : String(version);
+  }
+
+  _isCbrepCheckpointCompatible(feature, entry) {
+    const expectedVersion = this._getFeatureCbrepCacheVersion(feature);
+    if (!expectedVersion) return true;
+    return !!entry && entry.version === expectedVersion;
+  }
+
   /**
    * Attach a CBREP payload to an existing solid result after asynchronous IR
    * production completes, and mirror it into residency for lazy restore.
@@ -119,6 +131,8 @@ export class FeatureTree {
     if (irHash != null) {
       result.irHash = irHash;
     }
+    const cacheVersion = this._getFeatureCbrepCacheVersion(feature);
+    if (cacheVersion) result.cbrepCacheVersion = cacheVersion;
 
     if (this._residencyManager) {
       this._residencyManager.storeCbrep(featureId, cbrepBuffer, result.irHash ?? 0);
@@ -277,6 +291,7 @@ export class FeatureTree {
       }
       const entry = checkpoints[feature.id];
       if (!entry || !entry.payload) return false;
+      if (!this._isCbrepCheckpointCompatible(feature, entry)) return false;
     }
 
     // Build results in order. Sketch features run their execute(); solid
@@ -318,7 +333,13 @@ export class FeatureTree {
         }
         if (!buffer) throw new Error(`empty payload for ${feature.id}`);
 
-        const result = this._buildSolidResultFromCbrep(feature.id, buffer, entry.hash ?? null, deps);
+        const result = this._buildSolidResultFromCbrep(
+          feature.id,
+          buffer,
+          entry.hash ?? null,
+          deps,
+          this._getFeatureCbrepCacheVersion(feature),
+        );
         feature.result = result;
         feature.error = null;
         if (feature._irHash == null && entry.hash != null) {
@@ -417,6 +438,9 @@ export class FeatureTree {
   _ensureSolidResultCheckpoint(featureId, result, feature = null) {
     if (!result || result.type !== 'solid') return false;
 
+    const cacheVersion = this._getFeatureCbrepCacheVersion(feature);
+    if (cacheVersion) result.cbrepCacheVersion = cacheVersion;
+
     if (result.cbrepBuffer) {
       if (!result.irHash) result.irHash = hashCbrep(result.cbrepBuffer);
       if (feature && !feature._irHash) feature._irHash = result.irHash;
@@ -435,6 +459,7 @@ export class FeatureTree {
       const irHash = hashCbrep(cbrepBuffer);
       result.cbrepBuffer = cbrepBuffer;
       result.irHash = irHash;
+      if (cacheVersion) result.cbrepCacheVersion = cacheVersion;
       if (feature) feature._irHash = irHash;
       return true;
     } catch (err) {
@@ -443,7 +468,7 @@ export class FeatureTree {
     }
   }
 
-  _buildSolidResultFromCbrep(featureId, buffer, irHash, deps) {
+  _buildSolidResultFromCbrep(featureId, buffer, irHash, deps, cbrepCacheVersion = null) {
     if (!this._hasValidFastRestoreDeps(deps)) {
       throw new Error('missing CBREP restore dependencies');
     }
@@ -465,7 +490,7 @@ export class FeatureTree {
       mesh.visualEdges = edgeInfo.visualEdges ?? mesh.visualEdges ?? [];
     }
 
-    return {
+    const result = {
       type: 'solid',
       geometry: mesh,
       solid: { geometry: mesh, topoBody },
@@ -476,6 +501,8 @@ export class FeatureTree {
       irHash,
       _restoredFromCheckpoint: true,
     };
+    if (cbrepCacheVersion) result.cbrepCacheVersion = cbrepCacheVersion;
+    return result;
   }
 
   _restoreSolidResultFromCheckpoint(featureId, deps = this._fastRestoreDeps) {
@@ -486,10 +513,12 @@ export class FeatureTree {
     if (typeof feature.canFastRestoreFromCbrep === 'function' && feature.canFastRestoreFromCbrep() === false) {
       return false;
     }
+    const cacheVersion = this._getFeatureCbrepCacheVersion(feature);
+    if (cacheVersion && oldResult.cbrepCacheVersion !== cacheVersion) return false;
 
     let nextResult;
     try {
-      nextResult = this._buildSolidResultFromCbrep(featureId, oldResult.cbrepBuffer, oldResult.irHash ?? null, deps);
+      nextResult = this._buildSolidResultFromCbrep(featureId, oldResult.cbrepBuffer, oldResult.irHash ?? null, deps, cacheVersion);
     } catch (err) {
       oldResult._cbrepRestoreError = err?.message || String(err);
       return false;
@@ -1138,6 +1167,7 @@ export class FeatureTree {
       if (!payload) continue;
       const entry = { payload };
       if (result.irHash) entry.hash = result.irHash;
+      if (result.cbrepCacheVersion) entry.version = result.cbrepCacheVersion;
       out[feature.id] = entry;
       count++;
     }
@@ -1204,6 +1234,7 @@ export class FeatureTree {
     for (const feature of this.features) {
       const entry = checkpoints[feature.id];
       if (!entry || !entry.payload) continue;
+      if (!this._isCbrepCheckpointCompatible(feature, entry)) continue;
       const result = this.results[feature.id];
       if (!result || result.type !== 'solid') continue;
       // If the live replay produced an irHash and the checkpoint hash does

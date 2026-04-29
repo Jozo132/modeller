@@ -6,6 +6,13 @@ import { NurbsCurve } from './NurbsCurve.js';
 import { buildTopoBody, SurfaceType } from './BRepTopology.js';
 import { tessellateBody } from './Tessellation.js';
 import { computeFeatureEdges } from './EdgeAnalysis.js';
+import { sampleCylinderPlaneArcWasmReady } from './WasmGeometryOps.js';
+import {
+  findTerminalCapFace,
+  projectLineToPlane,
+  topoFacePlane,
+  topoPointsClose,
+} from './CapProjection.js';
 
 import {
   vec3Sub,
@@ -164,6 +171,21 @@ function _buildPlanarFaceDesc(face, edgeDataList = null) {
     ? boundarySegments.map((segment) => ({ ...segment.start }))
     : face.vertices.map((vertex) => ({ ...vertex }));
 
+  const innerLoops = Array.isArray(face.innerLoops)
+    ? face.innerLoops.map((loop) => {
+      if (!loop) return null;
+      if (Array.isArray(loop.coedges)) return _extractLoopDesc(loop);
+      const vertices = Array.isArray(loop.vertices)
+        ? loop.vertices.map((vertex) => ({ ...vertex }))
+        : [];
+      if (vertices.length < 3) return null;
+      const edgeCurves = Array.isArray(loop.edgeCurves) && loop.edgeCurves.length === vertices.length
+        ? loop.edgeCurves.map((curve, index) => curve || NurbsCurve.createLine(vertices[index], vertices[(index + 1) % vertices.length]))
+        : vertices.map((vertex, index) => NurbsCurve.createLine(vertex, vertices[(index + 1) % vertices.length]));
+      return { vertices, edgeCurves };
+    }).filter(Boolean)
+    : [];
+
   return {
     surface,
     surfaceType: SurfaceType.PLANE,
@@ -172,6 +194,7 @@ function _buildPlanarFaceDesc(face, edgeDataList = null) {
       ? boundarySegments.map((segment) => segment.curve)
       : face.vertices.map((vertex, index) =>
         NurbsCurve.createLine(vertex, face.vertices[(index + 1) % face.vertices.length])),
+    innerLoops,
     shared: face.shared ? { ...face.shared } : null,
     stableHash: face.topoFaceStableHash || face.stableHash || null,
   };
@@ -181,21 +204,71 @@ function _buildPlanarFaceDesc(face, edgeDataList = null) {
 // Mesh-level chamfer helpers (shared with fillet path in CSG.js)
 // -----------------------------------------------------------------------
 
+function _findFaceEdgeDirectionSign(face, edgeA, edgeB) {
+  const verts = face && Array.isArray(face.vertices) ? face.vertices : null;
+  if (!verts || verts.length < 3) return 0;
+
+  let indexA = -1;
+  let indexB = -1;
+  for (let i = 0; i < verts.length; i++) {
+    if (indexA < 0 && vec3Len(vec3Sub(verts[i], edgeA)) < 1e-5) indexA = i;
+    if (indexB < 0 && vec3Len(vec3Sub(verts[i], edgeB)) < 1e-5) indexB = i;
+    if (indexA >= 0 && indexB >= 0) break;
+  }
+  if (indexA < 0 || indexB < 0 || indexA === indexB) return 0;
+
+  const n = verts.length;
+  const nextA = (indexA + 1) % n;
+  const prevA = (indexA - 1 + n) % n;
+  if (nextA === indexB) return 1;
+  if (prevA === indexB) return -1;
+
+  const edgeDir = vec3Normalize(vec3Sub(edgeB, edgeA));
+  const nextDir = vec3Normalize(vec3Sub(verts[nextA], edgeA));
+  const prevDir = vec3Normalize(vec3Sub(verts[prevA], edgeA));
+  if (vec3Dot(nextDir, edgeDir) > 0.7) return 1;
+  if (vec3Dot(prevDir, edgeDir) > 0.7) return -1;
+
+  const nextB = (indexB + 1) % n;
+  const prevB = (indexB - 1 + n) % n;
+  const fromPrevB = vec3Normalize(vec3Sub(edgeB, verts[prevB]));
+  const toNextB = vec3Normalize(vec3Sub(verts[nextB], edgeB));
+  if (vec3Dot(fromPrevB, edgeDir) > 0.7) return 1;
+  if (vec3Dot(toNextB, edgeDir) > 0.7) return -1;
+
+  return 0;
+}
+
+function _faceInteriorOffsetDir(face, edgeA, edgeB, edgeDir) {
+  const sign = _findFaceEdgeDirectionSign(face, edgeA, edgeB);
+  if (sign === 0) return null;
+  const normal = vec3Normalize(face.normal);
+  return sign > 0
+    ? vec3Normalize(vec3Cross(normal, edgeDir))
+    : vec3Normalize(vec3Cross(edgeDir, normal));
+}
+
 function _computeOffsetDirs(face0, face1, edgeA, edgeB) {
   const n0 = vec3Normalize(face0.normal);
   const n1 = vec3Normalize(face1.normal);
   const edgeDir = vec3Normalize(vec3Sub(edgeB, edgeA));
 
-  const offsDir0 = vec3Normalize(vec3Cross(n0, edgeDir));
-  const offsDir1 = vec3Normalize(vec3Cross(edgeDir, n1));
+  const boundaryDir0 = _faceInteriorOffsetDir(face0, edgeA, edgeB, edgeDir);
+  const boundaryDir1 = _faceInteriorOffsetDir(face1, edgeA, edgeB, edgeDir);
+  const offsDir0 = boundaryDir0 || vec3Normalize(vec3Cross(n0, edgeDir));
+  const offsDir1 = boundaryDir1 || vec3Normalize(vec3Cross(edgeDir, n1));
 
-  const cen0 = faceCentroid(face0);
-  if (vec3Dot(offsDir0, vec3Sub(cen0, edgeA)) < 0) {
-    offsDir0.x = -offsDir0.x; offsDir0.y = -offsDir0.y; offsDir0.z = -offsDir0.z;
+  if (!boundaryDir0) {
+    const cen0 = faceCentroid(face0);
+    if (vec3Dot(offsDir0, vec3Sub(cen0, edgeA)) < 0) {
+      offsDir0.x = -offsDir0.x; offsDir0.y = -offsDir0.y; offsDir0.z = -offsDir0.z;
+    }
   }
-  const cen1 = faceCentroid(face1);
-  if (vec3Dot(offsDir1, vec3Sub(cen1, edgeA)) < 0) {
-    offsDir1.x = -offsDir1.x; offsDir1.y = -offsDir1.y; offsDir1.z = -offsDir1.z;
+  if (!boundaryDir1) {
+    const cen1 = faceCentroid(face1);
+    if (vec3Dot(offsDir1, vec3Sub(cen1, edgeA)) < 0) {
+      offsDir1.x = -offsDir1.x; offsDir1.y = -offsDir1.y; offsDir1.z = -offsDir1.z;
+    }
   }
   // Detect concave (reflex) edge: offset into face0 aligns with face1 outward normal
   const isConcave = vec3Dot(offsDir0, n1) > 1e-6;
@@ -1110,6 +1183,42 @@ function _rebuildOffsetCurve(off) {
   }
 }
 
+function _projectChamferOffsetEndpointToCapPlane(off, vertexPoint, capPlane) {
+  if (!off || !capPlane) return false;
+  const isStart = topoPointsClose(off.startVertexPoint, vertexPoint);
+  const isEnd = topoPointsClose(off.endVertexPoint, vertexPoint);
+  if (!isStart && !isEnd) return false;
+
+  const lineDir = vec3Normalize(vec3Sub(off.endPt, off.startPt));
+  if (vec3Len(lineDir) < 1e-12) return false;
+  const projected = projectLineToPlane(off.startPt, lineDir, capPlane);
+  if (!projected) return false;
+
+  if (isStart) off.startPt = projected;
+  if (isEnd) off.endPt = projected;
+  _rebuildOffsetCurve(off);
+  return true;
+}
+
+function _projectTerminalChamferCapsOntoAdjacentFaces(topoBody, chamferInfos, vertexChamfers) {
+  if (!topoBody || !Array.isArray(chamferInfos)) return;
+  for (const ci of chamferInfos) {
+    const projectAtVertex = (vertexPoint) => {
+      const touches = vertexChamfers.get(edgeVKey(vertexPoint)) || [];
+      if (touches.length > 1) return;
+      const capFace = findTerminalCapFace(topoBody, ci.topoEdge, ci.face0, ci.face1, vertexPoint);
+      const capPlane = topoFacePlane(capFace);
+      if (!capPlane) return;
+
+      _projectChamferOffsetEndpointToCapPlane(ci.off0, vertexPoint, capPlane);
+      _projectChamferOffsetEndpointToCapPlane(ci.off1, vertexPoint, capPlane);
+    };
+
+    if (ci.topoEdge.startVertex && ci.topoEdge.startVertex.point) projectAtVertex(ci.topoEdge.startVertex.point);
+    if (ci.topoEdge.endVertex && ci.topoEdge.endVertex.point) projectAtVertex(ci.topoEdge.endVertex.point);
+  }
+}
+
 // -----------------------------------------------------------------------
 // Cylinder-plane intersection helpers (used by fillet-junction surgery
 // to extend chamfer offsets that land inside a previous fillet's cylinder
@@ -1136,6 +1245,20 @@ function _computeCylPlaneArcSamples(
   cylCenter, axisDir, radius, ex, ey,
   planePoint, planeNormal, startPt, endPt, segments = 12,
 ) {
+  const wasmSamples = sampleCylinderPlaneArcWasmReady({
+    cylCenter,
+    axisDir,
+    radius,
+    ex,
+    ey,
+    planePoint,
+    planeNormal,
+    startPt,
+    endPt,
+    segments,
+  });
+  if (wasmSamples) return wasmSamples;
+
   const C = vec3Dot(axisDir, planeNormal);
   if (Math.abs(C) < 1e-9) return null;
   const K = vec3Dot(vec3Sub(cylCenter, planePoint), planeNormal);
@@ -1283,6 +1406,15 @@ function _sampleExactEdgePoints(edge, segments = 8) {
   return edge.tessellate(sampleCount).map((point) => canonicalPoint(point));
 }
 
+function _isLinearTopoEdge(edge) {
+  const curve = edge && edge.curve;
+  return !curve || (
+    curve.degree === 1 &&
+    Array.isArray(curve.controlPoints) &&
+    curve.controlPoints.length === 2
+  );
+}
+
 function _buildExactEdgeAdjacencyLookupFromTopoBody(topoBody, faces, edgeSegments = 8) {
   if (!topoBody || !topoBody.shells || !Array.isArray(faces) || faces.length === 0) {
     return null;
@@ -1332,13 +1464,36 @@ function _buildExactEdgeAdjacencyLookupFromTopoBody(topoBody, faces, edgeSegment
 
       addAdjacency(edgeKeyFromVerts(startPoint, endPoint));
       addAdjacency(edgeKeyFromVerts(samples[0], samples[samples.length - 1]));
+
+      if (!_isLinearTopoEdge(edge)) {
+        for (let sampleIndex = 0; sampleIndex < samples.length - 1; sampleIndex++) {
+          const sampleA = samples[sampleIndex];
+          const sampleB = samples[sampleIndex + 1];
+          const segmentEntries = [];
+          for (const coedge of edge.coedges || []) {
+            const topoFaceId = coedge && coedge.face ? coedge.face.id : undefined;
+            const fi = repFaceIndexByTopoFaceId.get(topoFaceId);
+            if (fi === undefined) continue;
+            const sameSense = !coedge || coedge.sameSense !== false;
+            segmentEntries.push({
+              fi,
+              a: sameSense ? { ...sampleA } : { ...sampleB },
+              b: sameSense ? { ...sampleB } : { ...sampleA },
+            });
+          }
+          if (segmentEntries.length >= 2) {
+            const key = edgeKeyFromVerts(sampleA, sampleB);
+            if (!adjacencyByKey.has(key)) adjacencyByKey.set(key, segmentEntries);
+          }
+        }
+      }
     }
   }
 
   return adjacencyByKey;
 }
 
-function _extractFeatureFacesFromTopoBody(geometry) {
+function _extractFeatureFacesFromTopoBody(geometry, edgeSegments = 8) {
   if (!geometry || !geometry.topoBody || !Array.isArray(geometry.topoBody.shells)) {
     return Array.isArray(geometry && geometry.faces) ? geometry.faces : [];
   }
@@ -1350,7 +1505,7 @@ function _extractFeatureFacesFromTopoBody(geometry) {
       const vertices = [];
       for (const coedge of topoFace.outerLoop.coedges) {
         let samples = coedge && coedge.edge
-          ? _sampleExactEdgePoints(coedge.edge, 8)
+          ? _sampleExactEdgePoints(coedge.edge, edgeSegments)
           : [];
         if (coedge && coedge.sameSense === false) samples = samples.reverse();
         if (vertices.length > 0 && samples.length > 0) samples = samples.slice(1);
@@ -1377,6 +1532,7 @@ function _extractFeatureFacesFromTopoBody(geometry) {
       }
       const faceData = {
         vertices: vertices.map((vertex) => ({ x: vertex.x, y: vertex.y, z: vertex.z })),
+        innerLoops: (topoFace.innerLoops || []).map((loop) => _extractLoopDesc(loop)),
         normal: normal && vec3Len(normal) > 1e-10 ? vec3Normalize(normal) : { x: 0, y: 0, z: 1 },
         shared: topoFace.shared ? { ...topoFace.shared } : null,
         isFillet: !!(topoFace.shared && topoFace.shared.isFillet),
@@ -1508,6 +1664,8 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
       vertexChamfers.get(k).push(ci);
     }
   }
+
+  _projectTerminalChamferCapsOntoAdjacentFaces(topoBody, chamferInfos, vertexChamfers);
 
   // Step 2.5: Intersect offset endpoints at corners where multiple chamfers meet.
   // When 2+ chamfer edges meet at a vertex on the same face, each offset is computed
@@ -2722,6 +2880,8 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
 
 export {
   _extractFeatureFacesFromTopoBody,
+  _mapSegmentKeysToTopoEdges,
+  _proximityMatchEdgeKeys,
   _buildExactEdgeAdjacencyLookupFromTopoBody,
   _sampleExactEdgePoints,
   _precomputeChamferEdge,

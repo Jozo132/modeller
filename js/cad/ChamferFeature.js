@@ -24,6 +24,10 @@ export class ChamferFeature extends Feature {
     this._resultExact = false;
   }
 
+  getCbrepCacheVersion() {
+    return 'chamfer-exact-brep-v2-projected-caps';
+  }
+
   execute(context) {
     const solid = this._getPreviousSolid(context);
     if (!solid || !solid.geometry || !solid.geometry.faces) {

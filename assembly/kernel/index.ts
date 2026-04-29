@@ -89,6 +89,7 @@ export {
   planePlaneIntersect, getPlanePlaneIntersectPtr,
   planeSphereIntersect, getPlaneSphereIntersectPtr,
   planeCylinderIntersect, getPlaneCylinderIntersectPtr,
+  cylinderPlaneArcSample, getCylinderPlaneArcSamplePtr,
   planeConeIntersect, getPlaneConeIntersectPtr,
   cylinderCylinderIntersect, getCylinderCylinderIntersectPtr,
   sphereSphereIntersect, getSphereSphereIntersectPtr,

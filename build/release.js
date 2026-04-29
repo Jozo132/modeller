@@ -761,6 +761,14 @@ async function instantiate(module, imports = {}) {
       // assembly/kernel/ops/getPlaneCylinderIntersectPtr() => usize
       return exports.getPlaneCylinderIntersectPtr() >>> 0;
     },
+    cylinderPlaneArcSample(cOx, cOy, cOz, cAx, cAy, cAz, cR, exX, exY, exZ, eyX, eyY, eyZ, pPx, pPy, pPz, pNx, pNy, pNz, sX, sY, sZ, eX, eY, eZ, segments, angularTol) {
+      // assembly/kernel/ops/cylinderPlaneArcSample(f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, i32, f64) => u32
+      return exports.cylinderPlaneArcSample(cOx, cOy, cOz, cAx, cAy, cAz, cR, exX, exY, exZ, eyX, eyY, eyZ, pPx, pPy, pPz, pNx, pNy, pNz, sX, sY, sZ, eX, eY, eZ, segments, angularTol) >>> 0;
+    },
+    getCylinderPlaneArcSamplePtr() {
+      // assembly/kernel/ops/getCylinderPlaneArcSamplePtr() => usize
+      return exports.getCylinderPlaneArcSamplePtr() >>> 0;
+    },
     planeConeIntersect(pPx, pPy, pPz, pNx, pNy, pNz, cOx, cOy, cOz, cAx, cAy, cAz, cR, semiAngle, angularTol, distTol) {
       // assembly/kernel/ops/planeConeIntersect(f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64) => u32
       return exports.planeConeIntersect(pPx, pPy, pPz, pNx, pNy, pNz, cOx, cOy, cOz, cAx, cAy, cAz, cR, semiAngle, angularTol, distTol) >>> 0;
@@ -1284,6 +1292,8 @@ export const {
   getPlaneSphereIntersectPtr,
   planeCylinderIntersect,
   getPlaneCylinderIntersectPtr,
+  cylinderPlaneArcSample,
+  getCylinderPlaneArcSamplePtr,
   planeConeIntersect,
   getPlaneConeIntersectPtr,
   cylinderCylinderIntersect,

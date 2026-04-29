@@ -111,8 +111,24 @@ function findFinalSolidFeature(featureTree) {
   return null;
 }
 
-function restoreFinalCbrepPayload(part, payload, irHash) {
+function getFeatureCbrepCacheVersion(feature) {
+  if (!feature || typeof feature.getCbrepCacheVersion !== 'function') return null;
+  const version = feature.getCbrepCacheVersion();
+  return version == null ? null : String(version);
+}
+
+function restoreFinalCbrepPayload(part, payload, irHash, cacheVersion = null) {
   if (!part?.featureTree || !payload) return false;
+
+  const finalFeature = findFinalSolidFeature(part.featureTree);
+  if (!finalFeature) return false;
+
+  const expectedVersion = getFeatureCbrepCacheVersion(finalFeature);
+  if (expectedVersion && cacheVersion !== expectedVersion) return false;
+
+  const existingResult = part.featureTree.results?.[finalFeature.id] || null;
+  if (existingResult?.irHash && irHash && existingResult.irHash !== irHash) return false;
+  if (existingResult?.cbrepBuffer) return true;
 
   let cbrepBuffer;
   try {
@@ -120,9 +136,6 @@ function restoreFinalCbrepPayload(part, payload, irHash) {
   } catch {
     return false;
   }
-
-  const finalFeature = findFinalSolidFeature(part.featureTree);
-  if (!finalFeature) return false;
 
   if (irHash && typeof finalFeature._applyIrCachePayload === 'function') {
     finalFeature._applyIrCachePayload(irHash, cbrepBuffer);
@@ -736,6 +749,9 @@ export class Part {
       if (finalResult.irHash) {
         serialized._finalCbrepHash = finalResult.irHash;
       }
+      if (finalResult.cbrepCacheVersion) {
+        serialized._finalCbrepVersion = finalResult.cbrepCacheVersion;
+      }
     }
 
     return serialized;
@@ -817,7 +833,8 @@ export class Part {
 
     const finalCbrepPayload = options.finalCbrepPayload ?? data._finalCbrepPayload ?? null;
     const finalCbrepHash = options.finalCbrepHash ?? data._finalCbrepHash ?? null;
-    restoreFinalCbrepPayload(part, finalCbrepPayload, finalCbrepHash);
+    const finalCbrepVersion = options.finalCbrepVersion ?? data._finalCbrepVersion ?? null;
+    restoreFinalCbrepPayload(part, finalCbrepPayload, finalCbrepHash, finalCbrepVersion);
 
     return part;
   }

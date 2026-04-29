@@ -25,6 +25,10 @@ export class FilletFeature extends Feature {
     this._resultExact = false;
   }
 
+  getCbrepCacheVersion() {
+    return 'fillet-exact-brep-v2-plane-cylinder-caps';
+  }
+
   execute(context) {
     const { solid, edgeKeys, edgeOwnerMap } = this._resolveFilletExecutionInput(context);
     if (!solid || !solid.geometry || !solid.geometry.faces) {
