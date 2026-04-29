@@ -53,5 +53,21 @@ check('extrude-on-extrude-dual-with-cut applies the subtract exactly', () => {
   assert.equal(watertight.boundaryCount, 0, `expected watertight display mesh, got ${watertight.boundaryCount} boundary edges`);
 });
 
+check('puzzle-extrude-cc4 cuts multiple sketch faces exactly', () => {
+  const part = loadPart('puzzle-extrude-cc4.cmod');
+  const cutFeature = part.featureTree.features.find((feature) => feature.type === 'extrude-cut');
+  assert.ok(cutFeature, 'expected sample to contain an extrude-cut feature');
+  assert.equal(cutFeature.error, null, `extrude cut should execute without an error: ${cutFeature.error}`);
+
+  const geometry = part.getFinalGeometry()?.geometry;
+  assert.ok(geometry?.topoBody, 'expected exact topology after multi-profile cut');
+
+  const validation = validateBooleanResult(geometry.topoBody, { operation: 'subtract' }).toJSON();
+  assert.equal(validation.valid, true, JSON.stringify(validation.diagnostics, null, 2));
+
+  const watertight = checkWatertight(geometry.faces || []);
+  assert.equal(watertight.boundaryCount, 0, `expected watertight display mesh, got ${watertight.boundaryCount} boundary edges`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

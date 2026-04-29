@@ -257,6 +257,7 @@ function _planeCylinder(plane, cylinder, tol) {
   if (!cylInfo) return _numericMarch(plane, cylinder, tol);
 
   const { origin: cylO, axis: cylA, radius: cylR } = cylInfo;
+  const distTol = _distTol(tol);
 
   // cos(angle) between plane normal and cylinder axis
   const cosTheta = planeN.x * cylA.x + planeN.y * cylA.y + planeN.z * cylA.z;
@@ -278,8 +279,8 @@ function _planeCylinder(plane, cylinder, tol) {
     if (pNlen < 1e-15) return [];
 
     const distToAxis = Math.abs(d) / pNlen;
-    if (distToAxis > cylR + tol.distance) return [];
-    if (Math.abs(distToAxis - cylR) < tol.distance) {
+    if (distToAxis > cylR + distTol) return [];
+    if (Math.abs(distToAxis - cylR) < distTol) {
       // Tangent: single line
       const tangentPt = {
         x: cylO.x - (d / pNlen) * (pNx / pNlen),
@@ -336,6 +337,12 @@ function _planeCylinder(plane, cylinder, tol) {
   // The intersection is an ellipse with semi-major a = r/sin(theta)
   // and semi-minor b = r
   return _numericMarch(plane, cylinder, tol);
+}
+
+function _distTol(tol) {
+  if (tol && typeof tol.modelingEpsilon === 'number') return tol.modelingEpsilon;
+  if (tol && typeof tol.pointCoincidence === 'number') return tol.pointCoincidence;
+  return 1e-8;
 }
 
 // -----------------------------------------------------------------------

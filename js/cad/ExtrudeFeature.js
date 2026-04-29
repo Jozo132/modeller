@@ -9,6 +9,7 @@ import { booleanOp } from './BooleanDispatch.js';
 import { computeFeatureEdges } from './EdgeAnalysis.js';
 import { calculateMeshVolume, calculateBoundingBox } from './toolkit/MeshAnalysis.js';
 import { constrainedTriangulate } from './Tessellator2/CDT.js';
+import { tessellateBody } from './Tessellation.js';
 import { NurbsCurve } from './NurbsCurve.js';
 import { NurbsSurface } from './NurbsSurface.js';
 import {
@@ -87,6 +88,21 @@ export class ExtrudeFeature extends Feature {
 
     const profileGeometries = profileGroups.map((group) =>
       this.generateGeometry([group.outer], plane, group.holes));
+
+    if (solid && this.operation === 'subtract') {
+      const directCut = this._tryApplyPlanarThroughCut(solid, profileGroups, plane);
+      if (directCut) {
+        solid = directCut;
+        const finalGeometry = solid.geometry;
+        return {
+          type: 'solid',
+          geometry: finalGeometry,
+          solid,
+          volume: this.calculateVolume(finalGeometry),
+          boundingBox: this.calculateBoundingBox(finalGeometry),
+        };
+      }
+    }
 
     // When adding/subtracting/intersecting against an existing solid, combine
     // all bodies from this feature first and run a single boolean. Sequential
@@ -177,6 +193,152 @@ export class ExtrudeFeature extends Feature {
     }
 
     return combined;
+  }
+
+  _tryApplyPlanarThroughCut(solid, profileGroups, plane) {
+    if (!Array.isArray(profileGroups) || profileGroups.length < 2) return null;
+    if (this.symmetric || this.taper || this.extrudeType !== 'distance') return null;
+    const sourceBody = solid?.geometry?.topoBody;
+    if (!sourceBody || !sourceBody.shells || sourceBody.shells.length === 0) return null;
+
+    try {
+      const planeFrame = this.resolvePlaneFrame(plane);
+      const resolvedPlane = planeFrame.plane;
+      const extrusionVector = {
+        x: resolvedPlane.normal.x * this.distance * this.direction,
+        y: resolvedPlane.normal.y * this.distance * this.direction,
+        z: resolvedPlane.normal.z * this.distance * this.direction,
+      };
+      const endPoint = {
+        x: resolvedPlane.origin.x + extrusionVector.x,
+        y: resolvedPlane.origin.y + extrusionVector.y,
+        z: resolvedPlane.origin.z + extrusionVector.z,
+      };
+
+      const resultBody = TopoBody.deserialize(sourceBody.serialize());
+      const shell = resultBody.outerShell();
+      if (!shell) return null;
+
+      const entryFace = this._findPlanarFaceAtPoint(resultBody, resolvedPlane.origin, resolvedPlane.normal);
+      const exitFace = this._findPlanarFaceAtPoint(resultBody, endPoint, resolvedPlane.normal);
+      if (!entryFace || !exitFace || entryFace === exitFace) return null;
+
+      for (const group of profileGroups) {
+        const toolBody = this.buildExactBrep(
+          [group.outer],
+          resolvedPlane,
+          extrusionVector,
+          planeFrame,
+          { x: 0, y: 0, z: 0 },
+          { x: 0, y: 0, z: 0 },
+          group.holes,
+        );
+        const toolFaces = toolBody.faces();
+        const entryCap = toolFaces.find(face => face.stableHash?.includes('_Face_Bottom_'));
+        const exitCap = toolFaces.find(face => face.stableHash?.includes('_Face_Top_'));
+        if (!entryCap?.outerLoop || !exitCap?.outerLoop) return null;
+
+        this._orientLoopAsInner(entryFace, entryCap.outerLoop);
+        this._orientLoopAsInner(exitFace, exitCap.outerLoop);
+        entryFace.addInnerLoop(entryCap.outerLoop);
+        exitFace.addInnerLoop(exitCap.outerLoop);
+
+        for (const sideFace of toolFaces) {
+          if (sideFace === entryCap || sideFace === exitCap) continue;
+          this._flipFaceOrientation(sideFace);
+          sideFace.shared = { sourceFeatureId: this.id };
+          if (sideFace.stableHash) sideFace.stableHash = `${this.id}_Cut_${sideFace.stableHash}`;
+          shell.addFace(sideFace);
+        }
+      }
+
+      return this._solidFromTopoBody(resultBody);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  _solidFromTopoBody(topoBody) {
+    const mesh = tessellateBody(topoBody, { validate: false });
+    const edgeResult = computeFeatureEdges(mesh.faces || []);
+    return {
+      geometry: {
+        ...mesh,
+        edges: edgeResult.edges,
+        paths: edgeResult.paths,
+        visualEdges: edgeResult.visualEdges,
+        topoBody,
+      },
+    };
+  }
+
+  _findPlanarFaceAtPoint(body, point, normal) {
+    const candidates = [];
+    const targetNormal = _normalize(normal);
+    for (const face of body.faces()) {
+      if (face.surfaceType !== SurfaceType.PLANE || !face.outerLoop) continue;
+      const points = face.outerLoop.points();
+      if (points.length < 3) continue;
+      const faceNormal = this._faceLoopNormal(face);
+      if (!faceNormal) continue;
+      if (Math.abs(_dot(faceNormal, targetNormal)) < 0.999) continue;
+      const distance = Math.abs(_dot(faceNormal, _sub(point, points[0])));
+      if (distance > 1e-4) continue;
+      candidates.push({ face, distance, area: this._loopArea(points, faceNormal) });
+    }
+    candidates.sort((a, b) => a.distance - b.distance || b.area - a.area);
+    return candidates[0]?.face || null;
+  }
+
+  _orientLoopAsInner(face, loop) {
+    const outerNormal = this._faceLoopNormal(face);
+    const loopNormal = this._polygonNormal(loop.points());
+    if (!outerNormal || !loopNormal) return;
+    if (_dot(outerNormal, loopNormal) > 0) this._reverseLoop(loop);
+  }
+
+  _flipFaceOrientation(face) {
+    face.sameSense = !face.sameSense;
+    for (const loop of face.allLoops()) this._reverseLoop(loop);
+  }
+
+  _reverseLoop(loop) {
+    loop.coedges.reverse();
+    for (const coedge of loop.coedges) coedge.sameSense = !coedge.sameSense;
+  }
+
+  _faceLoopNormal(face) {
+    const normal = this._polygonNormal(face.outerLoop?.points() || []);
+    if (!normal) return null;
+    return face.sameSense === false
+      ? { x: -normal.x, y: -normal.y, z: -normal.z }
+      : normal;
+  }
+
+  _polygonNormal(points) {
+    let nx = 0;
+    let ny = 0;
+    let nz = 0;
+    for (let i = 0; i < points.length; i++) {
+      const a = points[i];
+      const b = points[(i + 1) % points.length];
+      nx += (a.y - b.y) * (a.z + b.z);
+      ny += (a.z - b.z) * (a.x + b.x);
+      nz += (a.x - b.x) * (a.y + b.y);
+    }
+    const len = Math.hypot(nx, ny, nz);
+    if (len <= 1e-10) return null;
+    return { x: nx / len, y: ny / len, z: nz / len };
+  }
+
+  _loopArea(points, normal) {
+    let area = 0;
+    for (let i = 0; i < points.length; i++) {
+      const a = points[i];
+      const b = points[(i + 1) % points.length];
+      area += _dot(_cross(a, b), normal);
+    }
+    return Math.abs(area) * 0.5;
   }
 
   /**
@@ -510,11 +672,10 @@ export class ExtrudeFeature extends Feature {
           };
 
           if (type === 'circle') {
-            // Split the full circle into two half-cylinder faces (each
-            // spanning π radians) to avoid self-loop seam edges whose
-            // self-touching boundary polygon causes self-intersecting
-            // tessellation.  This mirrors standard B-Rep practice
-            // (OpenCascade, Parasolid) for full-revolution surfaces.
+            // Split full circles into quarter-cylinder faces.  This avoids
+            // self-loop seam edges, and gives cap loops at least four coedges
+            // so exact boolean validation does not treat circular caps as
+            // degenerate two-edge fragments.
             const seamIdx = spanIndices[0];
             const r0 = _sub(bottomVerts[seamIdx], center3D);
             const r0Len = Math.sqrt(r0.x * r0.x + r0.y * r0.y + r0.z * r0.z);
@@ -526,53 +687,48 @@ export class ExtrudeFeature extends Feature {
               ? positiveYAx
               : { x: -positiveYAx.x, y: -positiveYAx.y, z: -positiveYAx.z };
 
-            // Add the antipodal vertex (at angle π from seam) to the
-            // vertex arrays so both halves reference it.
-            const midBotPt = {
-              x: center3D.x - range.radius * xAx.x,
-              y: center3D.y - range.radius * xAx.y,
-              z: center3D.z - range.radius * xAx.z,
-            };
-            const midTopPt = {
-              x: topCenter3D.x - range.radius * xAx.x,
-              y: topCenter3D.y - range.radius * xAx.y,
-              z: topCenter3D.z - range.radius * xAx.z,
-            };
-            const midIdx = bottomVerts.length;
-            bottomVerts.push(midBotPt);
-            topVerts.push(midTopPt);
+            const splitIndices = [seamIdx];
+            for (const angle of [Math.PI * 0.5, Math.PI, Math.PI * 1.5]) {
+              const ca = Math.cos(angle);
+              const sa = Math.sin(angle);
+              const bottomPoint = {
+                x: center3D.x + range.radius * (ca * xAx.x + sa * yAx.x),
+                y: center3D.y + range.radius * (ca * xAx.y + sa * yAx.y),
+                z: center3D.z + range.radius * (ca * xAx.z + sa * yAx.z),
+              };
+              const topPoint = {
+                x: topCenter3D.x + range.radius * (ca * xAx.x + sa * yAx.x),
+                y: topCenter3D.y + range.radius * (ca * xAx.y + sa * yAx.y),
+                z: topCenter3D.z + range.radius * (ca * xAx.z + sa * yAx.z),
+              };
+              const idx = bottomVerts.length;
+              bottomVerts.push(bottomPoint);
+              topVerts.push(topPoint);
+              splitIndices.push(idx);
+            }
+            splitIndices.push(seamIdx);
 
-            // Tag both halves with a shared fusedGroupId so that the
-            // edge analysis and selection logic treat them as one
-            // logical face (suppress the seam, select as one surface).
+            // Tag all quarters with a shared fusedGroupId so that the edge
+            // analysis and selection logic treat them as one logical face.
             const fusedId = `cyl-${_nextFusedId++}`;
 
-            // First half: 0 → π
-            edgeInfos.push({
-              type: 'arc',
-              startIdx: seamIdx,
-              endIdx: midIdx,
-              spanIndices: [seamIdx, midIdx],
-              isArc: true,
-              bottomCurve: NurbsCurve.createArc(center3D, range.radius, xAx, yAx, 0, Math.PI),
-              topCurve: NurbsCurve.createArc(topCenter3D, range.radius, xAx, yAx, 0, Math.PI),
-              cylSurf: NurbsSurface.createCylinder(center3D, extDir, range.radius, extHeight, xAx, yAx, 0, Math.PI),
-              cylSurfaceInfo: { type: 'cylinder', origin: center3D, axis: extDir, xDir: xAx, yDir: yAx, radius: range.radius },
-              fusedGroupId: fusedId,
-            });
-            // Second half: π → 2π  (startAngle=π, sweepAngle=π)
-            edgeInfos.push({
-              type: 'arc',
-              startIdx: midIdx,
-              endIdx: seamIdx,
-              spanIndices: [midIdx, seamIdx],
-              isArc: true,
-              bottomCurve: NurbsCurve.createArc(center3D, range.radius, xAx, yAx, Math.PI, Math.PI),
-              topCurve: NurbsCurve.createArc(topCenter3D, range.radius, xAx, yAx, Math.PI, Math.PI),
-              cylSurf: NurbsSurface.createCylinder(center3D, extDir, range.radius, extHeight, xAx, yAx, Math.PI, Math.PI),
-              cylSurfaceInfo: { type: 'cylinder', origin: center3D, axis: extDir, xDir: xAx, yDir: yAx, radius: range.radius },
-              fusedGroupId: fusedId,
-            });
+            for (let quarter = 0; quarter < 4; quarter++) {
+              const startAngle = quarter * Math.PI * 0.5;
+              const startIdx = splitIndices[quarter];
+              const endIdx = splitIndices[quarter + 1];
+              edgeInfos.push({
+                type: 'arc',
+                startIdx,
+                endIdx,
+                spanIndices: [startIdx, endIdx],
+                isArc: true,
+                bottomCurve: NurbsCurve.createArc(center3D, range.radius, xAx, yAx, startAngle, Math.PI * 0.5),
+                topCurve: NurbsCurve.createArc(topCenter3D, range.radius, xAx, yAx, startAngle, Math.PI * 0.5),
+                cylSurf: NurbsSurface.createCylinder(center3D, extDir, range.radius, extHeight, xAx, yAx, startAngle, Math.PI * 0.5),
+                cylSurfaceInfo: { type: 'cylinder', origin: center3D, axis: extDir, xDir: xAx, yDir: yAx, radius: range.radius },
+                fusedGroupId: fusedId,
+              });
+            }
             continue;
           }
 
@@ -797,8 +953,9 @@ export class ExtrudeFeature extends Feature {
           ];
 
           if (this.direction < 0) {
-            vertices = [...vertices].reverse();
-            edgeCurves = edgeCurves.reverse();
+            const reversed = _reverseFaceGeometry(vertices, edgeCurves);
+            vertices = reversed.vertices;
+            edgeCurves = reversed.edgeCurves;
           }
 
           faceDescs.push({
@@ -830,8 +987,9 @@ export class ExtrudeFeature extends Feature {
           ];
 
           if (this.direction < 0) {
-            vertices = [...vertices].reverse();
-            edgeCurves = edgeCurves.reverse();
+            const reversed = _reverseFaceGeometry(vertices, edgeCurves);
+            vertices = reversed.vertices;
+            edgeCurves = reversed.edgeCurves;
           }
 
           faceDescs.push({
@@ -1209,6 +1367,17 @@ function _normalize(v) {
 
 function _dot(a, b) {
   return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+function _reverseFaceGeometry(vertices, edgeCurves) {
+  const n = vertices.length;
+  return {
+    vertices: [...vertices].reverse(),
+    edgeCurves: edgeCurves.map((_, i) => {
+      const curve = edgeCurves[(n - 2 - i + n) % n];
+      return curve && typeof curve.reversed === 'function' ? curve.reversed() : curve;
+    }),
+  };
 }
 
 /**

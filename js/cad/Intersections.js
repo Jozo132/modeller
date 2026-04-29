@@ -94,12 +94,14 @@ function _faceAABB(face) {
   // Walk boundary vertices
   const verts = face.vertices();
   for (const v of verts) {
-    if (v.x < minX) minX = v.x;
-    if (v.y < minY) minY = v.y;
-    if (v.z < minZ) minZ = v.z;
-    if (v.x > maxX) maxX = v.x;
-    if (v.y > maxY) maxY = v.y;
-    if (v.z > maxZ) maxZ = v.z;
+    const p = v?.point || v;
+    if (!p) continue;
+    if (p.x < minX) minX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.z < minZ) minZ = p.z;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y > maxY) maxY = p.y;
+    if (p.z > maxZ) maxZ = p.z;
   }
 
   // For curved surfaces, also sample a few interior points
@@ -582,6 +584,8 @@ export function intersectBodies(bodyA, bodyB, tol = DEFAULT_TOLERANCE) {
     const fA = facesA[iA];
     const fB = facesB[iB];
     if (!fA.surface || !fB.surface) continue;
+    _attachFaceAnalyticInfo(fA);
+    _attachFaceAnalyticInfo(fB);
 
     const curves = intersectSurfaces(
       fA.surface, fA.surfaceType,
@@ -595,6 +599,12 @@ export function intersectBodies(bodyA, bodyB, tol = DEFAULT_TOLERANCE) {
   }
 
   return results;
+}
+
+function _attachFaceAnalyticInfo(face) {
+  if (!face?.surface || !face.surfaceInfo) return;
+  if (!face.surface.surfaceInfo) face.surface.surfaceInfo = face.surfaceInfo;
+  if (!face.surface._analyticParams) face.surface._analyticParams = face.surfaceInfo;
 }
 
 /**

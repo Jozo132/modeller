@@ -144,7 +144,7 @@ function _mergeEdges(fragments, tol) {
       const sameForward = ei.startVertex === ej.startVertex && ei.endVertex === ej.endVertex;
       const sameReverse = ei.startVertex === ej.endVertex && ei.endVertex === ej.startVertex;
 
-      if (sameForward || sameReverse) {
+      if ((sameForward || sameReverse) && _edgeCurvesCompatible(ei, ej, tol)) {
         merged.set(ej.id, { target: ei, reversed: sameReverse });
       }
     }
@@ -163,6 +163,52 @@ function _mergeEdges(fragments, tol) {
       }
     }
   }
+}
+
+function _edgeCurvesCompatible(edgeA, edgeB, tol) {
+  const sampleTol = Math.max(tol?.sewing ?? 0, tol?.edgeOverlap ?? 0, 1e-6);
+  let directOk = true;
+  let reverseOk = true;
+
+  for (const t of [0.25, 0.5, 0.75]) {
+    const a = _edgePointAtFraction(edgeA, t);
+    const bDirect = _edgePointAtFraction(edgeB, t);
+    const bReverse = _edgePointAtFraction(edgeB, 1 - t);
+    if (!a || !bDirect || !bReverse) return false;
+    if (_pointDistance(a, bDirect) > sampleTol) directOk = false;
+    if (_pointDistance(a, bReverse) > sampleTol) reverseOk = false;
+    if (!directOk && !reverseOk) return false;
+  }
+
+  return true;
+}
+
+function _edgePointAtFraction(edge, t) {
+  if (!edge) return null;
+  if (edge.curve && typeof edge.curve.evaluate === 'function') {
+    try {
+      const uMin = Number.isFinite(edge.curve.uMin) ? edge.curve.uMin : 0;
+      const uMax = Number.isFinite(edge.curve.uMax) ? edge.curve.uMax : 1;
+      const p = edge.curve.evaluate(uMin + (uMax - uMin) * t);
+      if (p?.p) return p.p;
+      if (Number.isFinite(p?.x) && Number.isFinite(p?.y) && Number.isFinite(p?.z)) return p;
+    } catch (_) {
+      // Fall through to straight endpoint interpolation.
+    }
+  }
+
+  const start = edge.startVertex?.point;
+  const end = edge.endVertex?.point;
+  if (!start || !end) return null;
+  return {
+    x: start.x + (end.x - start.x) * t,
+    y: start.y + (end.y - start.y) * t,
+    z: start.z + (end.z - start.z) * t,
+  };
+}
+
+function _pointDistance(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
 }
 
 /**
