@@ -31,6 +31,27 @@ function makeRectSketch(x1, y1, x2, y2) {
   return sketch;
 }
 
+function makeArcSketch() {
+  const sketch = new Sketch();
+  sketch.addSegment(-10, -10, -10, 10);
+  sketch.addSegment(-10, 10, 10, 10);
+  sketch.addArc(10, 0, 10, Math.PI / 2, -Math.PI / 2);
+  sketch.addSegment(10, -10, -10, -10);
+  return sketch;
+}
+
+function makeSplineSketch() {
+  const sketch = new Sketch();
+  sketch.addSegment(0, 0, 10, 0);
+  sketch.addSpline([
+    { x: 10, y: 0 },
+    { x: 8, y: 6 },
+    { x: 2, y: 6 },
+    { x: 0, y: 0 },
+  ]);
+  return sketch;
+}
+
 const plane = {
   origin: { x: 0, y: 0, z: 0 },
   normal: { x: 0, y: 0, z: 1 },
@@ -81,6 +102,38 @@ check('ExtrudeFeature uses the native resident path when WASM is ready', () => {
   assert.equal(geometry.nativeExtrude, true, 'feature geometry should come from native extrude');
   assert.ok(geometry.wasmHandleId > 0, 'feature geometry should keep the native handle');
   assert.ok(geometry.topoBody, 'JS exact topology should remain available for current API callers');
+});
+
+check('ExtrudeFeature uses the native path for arc profiles with curved metadata', () => {
+  const part = new Part('NativeArcExtrudePart');
+  part.addSketch(makeArcSketch(), plane);
+  const feature = part.extrude(part.getSketches()[0].id, 10);
+  assert.equal(feature.error, null, `feature should execute cleanly: ${feature.error}`);
+
+  const geometry = feature.result?.geometry;
+  assert.ok(geometry, 'feature should return geometry');
+  assert.equal(geometry.nativeExtrude, true, 'arc profile should route through native extrude');
+  assert.ok(geometry.faces.some((face) => face.isCurved && face.surfaceInfo?.type === 'cylinder'), 'native mesh should keep cylinder metadata');
+
+  const curvedTopEdge = (geometry.edges || []).find((edge) =>
+    Math.abs(edge.start.z - 10) < 1e-6 &&
+    Math.abs(edge.end.z - 10) < 1e-6 &&
+    Math.abs(edge.start.x - edge.end.x) > 0.5 &&
+    Math.abs(edge.start.y - edge.end.y) > 0.01
+  );
+  assert.ok(curvedTopEdge, 'curved top edge should remain selectable');
+});
+
+check('Spline profiles keep exact BSpline topology until native NURBS staging exists', () => {
+  const part = new Part('SplineExtrudePart');
+  part.addSketch(makeSplineSketch(), plane);
+  const feature = part.extrude(part.getSketches()[0].id, 10);
+  assert.equal(feature.error, null, `feature should execute cleanly: ${feature.error}`);
+
+  const geometry = feature.result?.geometry;
+  assert.ok(geometry?.topoBody, 'spline extrude should keep exact topology');
+  assert.notEqual(geometry.nativeExtrude, true, 'spline profile should not use the line/arc native route yet');
+  assert.ok(geometry.topoBody.faces().some((face) => face.surfaceType === 'bspline'), 'spline side face should remain BSpline-backed');
 });
 
 const registry = new WasmBrepHandleRegistry();

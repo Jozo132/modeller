@@ -6,6 +6,7 @@ import './_watchdog.mjs';
 import assert from 'assert';
 import { Part } from '../js/cad/Part.js';
 import { Sketch } from '../js/cad/Sketch.js';
+import { SketchFeature } from '../js/cad/SketchFeature.js';
 import { resetFeatureIds } from '../js/cad/Feature.js';
 import { resetTopoIds } from '../js/cad/BRepTopology.js';
 import { validateBody, validateFull } from '../js/cad/BRepValidator.js';
@@ -42,9 +43,46 @@ function makeRectSketch(x1, y1, x2, y2) {
   return s;
 }
 
+function polygonArea(points) {
+  let area = 0;
+  for (let i = 0; i < points.length; i++) {
+    const j = (i + 1) % points.length;
+    area += points[i].x * points[j].y - points[j].x * points[i].y;
+  }
+  return area * 0.5;
+}
+
 // ============================================================
 console.log('=== Exact Extrude B-Rep Tests ===\n');
 // ============================================================
+
+test('Nested sketch profiles alternate material by odd-even depth', () => {
+  resetFeatureIds();
+  resetTopoIds();
+  const sketchFeature = new SketchFeature('NestedProfiles');
+  const addRect = (x1, y1, x2, y2) => {
+    sketchFeature.sketch.addSegment(x1, y1, x2, y1);
+    sketchFeature.sketch.addSegment(x2, y1, x2, y2);
+    sketchFeature.sketch.addSegment(x2, y2, x1, y2);
+    sketchFeature.sketch.addSegment(x1, y2, x1, y1);
+  };
+
+  addRect(0, 0, 40, 40);
+  addRect(5, 5, 35, 35);
+  addRect(10, 10, 30, 30);
+  addRect(15, 15, 25, 25);
+
+  const profiles = sketchFeature.extractProfiles();
+  assert.strictEqual(profiles.length, 4, 'should extract all four nested loops');
+  const byArea = profiles
+    .map((profile, index) => ({ profile, index, area: Math.abs(polygonArea(profile.points)) }))
+    .sort((a, b) => b.area - a.area);
+
+  assert.deepStrictEqual(byArea.map((entry) => entry.profile.nestingDepth), [0, 1, 2, 3]);
+  assert.deepStrictEqual(byArea.map((entry) => entry.profile.isHole), [false, true, false, true]);
+  assert.ok(byArea[0].profile.holes.includes(byArea[1].index), 'depth-1 loop should be a hole in the outer loop');
+  assert.ok(byArea[2].profile.holes.includes(byArea[3].index), 'depth-3 loop should be a hole in the depth-2 island');
+});
 
 test('Extrude produces topoBody on geometry', () => {
   resetFeatureIds();

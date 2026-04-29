@@ -10,6 +10,7 @@ import { computeFeatureEdges } from './EdgeAnalysis.js';
 import { calculateMeshVolume, calculateBoundingBox } from './toolkit/MeshAnalysis.js';
 import { constrainedTriangulate } from './Tessellator2/CDT.js';
 import { tessellateBody } from './Tessellation.js';
+import { chainEdgePaths } from './toolkit/EdgePathUtils.js';
 import { tryBuildNativeExtrude } from './wasm/NativeExtrude.js';
 import { NurbsCurve } from './NurbsCurve.js';
 import { NurbsSurface } from './NurbsSurface.js';
@@ -150,8 +151,10 @@ export class ExtrudeFeature extends Feature {
           if (!f.shared) f.shared = { sourceFeatureId: this.id };
         }
         const edgeResult = computeFeatureEdges(geometry.faces);
-        geometry.edges = edgeResult.edges;
-        geometry.paths = edgeResult.paths;
+        geometry.edges = geometry.nativeExtrude
+          ? _augmentNativeCurvedSelectableEdges(edgeResult.edges, geometry.faces)
+          : edgeResult.edges;
+        geometry.paths = geometry.nativeExtrude ? chainEdgePaths(geometry.edges) : edgeResult.paths;
         geometry.visualEdges = edgeResult.visualEdges;
       }
       return { geometry };
@@ -604,7 +607,7 @@ export class ExtrudeFeature extends Feature {
     if (this.operation !== 'new') return null;
     if (this.symmetric || this.taper || this.extrudeType !== 'distance') return null;
     if (!topoBody) return null;
-    if (!this._nativeProfilesAreLinear(profiles, holes)) return null;
+    if (!this._nativeProfilesAreSupported(profiles, holes)) return null;
 
     const nativeVector = {
       x: extrusionVector.x + tipOffset.x - baseOffset.x,
@@ -638,17 +641,18 @@ export class ExtrudeFeature extends Feature {
     if (!nativeGeometry) return null;
 
     const edgeResult = computeFeatureEdges(nativeGeometry.faces || []);
-    nativeGeometry.edges = edgeResult.edges;
-    nativeGeometry.paths = edgeResult.paths;
+    nativeGeometry.edges = _augmentNativeCurvedSelectableEdges(edgeResult.edges, nativeGeometry.faces || []);
+    nativeGeometry.paths = chainEdgePaths(nativeGeometry.edges);
     nativeGeometry.visualEdges = edgeResult.visualEdges;
     return nativeGeometry;
   }
 
-  _nativeProfilesAreLinear(profiles, holes = []) {
+  _nativeProfilesAreSupported(profiles, holes = []) {
     for (const profile of [...(profiles || []), ...(holes || [])]) {
       for (const edge of profile?.edges || []) {
         const type = edge?.type || 'segment';
-        if (type !== 'segment' && type !== 'line') return false;
+        if (type === 'spline' || type === 'bezier') return false;
+        if (type !== 'segment' && type !== 'line' && type !== 'arc' && type !== 'circle') return false;
       }
     }
     return true;
@@ -685,7 +689,6 @@ export class ExtrudeFeature extends Feature {
     });
 
     const ranges = _buildEdgeRanges(profileEdges, bottomVerts.length);
-    if (ranges.some((range) => range.type === 'spline' || range.type === 'bezier')) return null;
 
     if (ranges.length === 1 && ranges[0].type === 'circle' && ranges[0].center && ranges[0].radius) {
       return this._buildNativeCircleLoop(ranges[0], bottomVerts, plane, baseOffset, extDir, isOuter);
@@ -1423,8 +1426,10 @@ export class ExtrudeFeature extends Feature {
         }
         // Compute feature edges and face groups for the initial geometry
         const edgeResult = computeFeatureEdges(geometry.faces);
-        geometry.edges = edgeResult.edges;
-        geometry.paths = edgeResult.paths;
+        geometry.edges = geometry.nativeExtrude
+          ? _augmentNativeCurvedSelectableEdges(edgeResult.edges, geometry.faces)
+          : edgeResult.edges;
+        geometry.paths = geometry.nativeExtrude ? chainEdgePaths(geometry.edges) : edgeResult.paths;
         geometry.visualEdges = edgeResult.visualEdges;
       }
       return { geometry };
@@ -1588,6 +1593,97 @@ function _distanceSq(a, b) {
   const dy = a.y - b.y;
   const dz = a.z - b.z;
   return dx * dx + dy * dy + dz * dz;
+}
+
+function _augmentNativeCurvedSelectableEdges(edges, faces) {
+  if (!Array.isArray(edges) || edges.length === 0 || !Array.isArray(faces) || faces.length === 0) {
+    return edges || [];
+  }
+
+  const buckets = new Map();
+  const zPlaneTol = 1e-6;
+  for (const edge of edges) {
+    if (!edge || !Array.isArray(edge.faceIndices) || edge.faceIndices.length < 2) continue;
+    if (Math.abs((edge.start?.z ?? 0) - (edge.end?.z ?? 0)) > zPlaneTol) continue;
+    const adjacentFaces = edge.faceIndices.map((faceIndex) => faces[faceIndex]).filter(Boolean);
+    const curvedFace = adjacentFaces.find((face) => face.isCurved && face.surfaceInfo?.type === 'cylinder');
+    const planarFace = adjacentFaces.find((face) => !face.isCurved);
+    if (!curvedFace || !planarFace) continue;
+    const curvedId = curvedFace.topoFaceId ?? curvedFace.faceGroup ?? 'curved';
+    const planeKey = Math.round(edge.start.z * 1e6);
+    const key = `${curvedId}|${planeKey}`;
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key).push(edge);
+  }
+
+  const augmented = [...edges];
+  const existing = new Set(edges.map((edge) => _edgeSelectionKey(edge.start, edge.end)));
+  for (const bucketEdges of buckets.values()) {
+    const paths = chainEdgePaths(bucketEdges);
+    for (const path of paths) {
+      const orderedPoints = _orderedEdgePathPoints(bucketEdges, path.edgeIndices);
+      if (orderedPoints.length < 4) continue;
+      const chunk = 3;
+      for (let startIndex = 0; startIndex + chunk < orderedPoints.length; startIndex += chunk) {
+        const start = orderedPoints[startIndex];
+        const end = orderedPoints[startIndex + chunk];
+        if (_distanceSq(start, end) < 0.25) continue;
+        const key = _edgeSelectionKey(start, end);
+        if (existing.has(key)) continue;
+        existing.add(key);
+        augmented.push({
+          start,
+          end,
+          faceIndices: bucketEdges[path.edgeIndices[0]]?.faceIndices || [],
+          normals: bucketEdges[path.edgeIndices[0]]?.normals || [],
+          nativeSelectableSpan: true,
+        });
+      }
+    }
+  }
+
+  return augmented;
+}
+
+function _orderedEdgePathPoints(edges, edgeIndices) {
+  const remaining = edgeIndices.map((edgeIndex) => edges[edgeIndex]).filter(Boolean);
+  if (remaining.length === 0) return [];
+  const firstEdge = remaining.shift();
+  const points = [firstEdge.start, firstEdge.end];
+
+  while (remaining.length > 0) {
+    let matchedIndex = -1;
+    let appendPoint = null;
+    let prependPoint = null;
+    const head = points[0];
+    const tail = points[points.length - 1];
+
+    for (let index = 0; index < remaining.length; index++) {
+      const edge = remaining[index];
+      if (_pointsCoincident(edge.start, tail)) { matchedIndex = index; appendPoint = edge.end; break; }
+      if (_pointsCoincident(edge.end, tail)) { matchedIndex = index; appendPoint = edge.start; break; }
+      if (_pointsCoincident(edge.end, head)) { matchedIndex = index; prependPoint = edge.start; break; }
+      if (_pointsCoincident(edge.start, head)) { matchedIndex = index; prependPoint = edge.end; break; }
+    }
+
+    if (matchedIndex < 0) break;
+    remaining.splice(matchedIndex, 1);
+    if (appendPoint) points.push(appendPoint);
+    else if (prependPoint) points.unshift(prependPoint);
+  }
+
+  return points;
+}
+
+function _pointsCoincident(a, b) {
+  return !!a && !!b && _distanceSq(a, b) < 1e-10;
+}
+
+function _edgeSelectionKey(a, b) {
+  const format = (value) => (Math.abs(value) < 1e-12 ? 0 : value).toFixed(6);
+  const first = `${format(a.x)},${format(a.y)},${format(a.z)}`;
+  const second = `${format(b.x)},${format(b.y)},${format(b.z)}`;
+  return first < second ? `${first}|${second}` : `${second}|${first}`;
 }
 
 function _reverseFaceGeometry(vertices, edgeCurves) {

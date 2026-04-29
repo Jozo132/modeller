@@ -89,7 +89,8 @@ export function tryBuildNativeExtrude({ loops, plane, extrusionVector, refDir, t
 
   const edgeSegments = opts.edgeSegments ?? globalTessConfig.edgeSegments;
   const surfaceSegments = opts.surfaceSegments ?? globalTessConfig.surfaceSegments;
-  const mesh = _tessellateHandleToGeometry(w, mem, handle, edgeSegments, surfaceSegments, sourceFeatureId);
+  const faceMetadata = opts.faceMetadata || _faceMetadataFromTopoBody(topoBody);
+  const mesh = _tessellateHandleToGeometry(w, mem, handle, edgeSegments, surfaceSegments, sourceFeatureId, faceMetadata);
   if (!mesh) {
     w.handleRelease(handle);
     return null;
@@ -126,7 +127,7 @@ function _flattenLoops(loops) {
   return new Float64Array(out);
 }
 
-function _tessellateHandleToGeometry(w, mem, handle, edgeSegments, surfaceSegments, sourceFeatureId) {
+function _tessellateHandleToGeometry(w, mem, handle, edgeSegments, surfaceSegments, sourceFeatureId, faceMetadata = null) {
   const nTris = w.tessBuildHandleFaces(handle, edgeSegments, surfaceSegments);
   if (nTris < 0) return null;
   if (nTris === 0) return { vertices: [], faces: [], edges: [] };
@@ -137,6 +138,7 @@ function _tessellateHandleToGeometry(w, mem, handle, edgeSegments, surfaceSegmen
   const norms = new Float64Array(buffer, w.getTessOutNormalsPtr() >>> 0, nVerts * 3).slice();
   const indices = new Uint32Array(buffer, w.getTessOutIndicesPtr() >>> 0, nTris * 3).slice();
   const faceMap = new Uint32Array(buffer, w.getTessOutFaceMapPtr() >>> 0, nTris).slice();
+  const faceStart = typeof w.handleGetFaceStart === 'function' ? (w.handleGetFaceStart(handle) >>> 0) : 0;
 
   const vertices = [];
   for (let i = 0; i < nVerts; i++) vertices.push(_readVec3(verts, i));
@@ -150,20 +152,46 @@ function _tessellateHandleToGeometry(w, mem, handle, edgeSegments, surfaceSegmen
     const ny = (norms[i0 * 3 + 1] + norms[i1 * 3 + 1] + norms[i2 * 3 + 1]) / 3;
     const nz = (norms[i0 * 3 + 2] + norms[i1 * 3 + 2] + norms[i2 * 3 + 2]) / 3;
     const nl = Math.hypot(nx, ny, nz) || 1;
+    const nativeFaceId = faceMap[t];
+    const faceOrdinal = nativeFaceId >= faceStart ? nativeFaceId - faceStart : nativeFaceId;
+    const meta = faceMetadata?.[faceOrdinal] || null;
+    const topoFaceId = meta?.topoFaceId ?? nativeFaceId;
     faces.push({
       vertices: [_readVec3(verts, i0), _readVec3(verts, i1), _readVec3(verts, i2)],
       normal: _cleanVec3({ x: nx / nl, y: ny / nl, z: nz / nl }),
       vertexNormals: [_readVec3(norms, i0), _readVec3(norms, i1), _readVec3(norms, i2)],
-      faceGroup: faceMap[t],
-      topoFaceId: faceMap[t],
-      faceType: 'native-extrude',
-      isCurved: false,
-      surfaceInfo: null,
-      shared: sourceFeatureId ? { sourceFeatureId } : null,
+      faceGroup: topoFaceId,
+      topoFaceId,
+      faceType: meta?.faceType || 'native-extrude',
+      isCurved: !!meta?.isCurved,
+      surfaceInfo: meta?.surfaceInfo || null,
+      surfaceType: meta?.surfaceType || null,
+      fusedGroupId: meta?.fusedGroupId ?? null,
+      shared: meta?.shared || (sourceFeatureId ? { sourceFeatureId } : null),
     });
   }
 
   return { vertices, faces, edges: [] };
+}
+
+function _faceMetadataFromTopoBody(topoBody) {
+  if (!topoBody || typeof topoBody.faces !== 'function') return null;
+  const faces = topoBody.faces();
+  if (!Array.isArray(faces) || faces.length === 0) return null;
+  return faces.map((face) => {
+    const surfaceType = face.surfaceType || null;
+    const surfaceInfoType = face.surfaceInfo?.type || null;
+    const isCurved = !!((surfaceType && surfaceType !== 'plane') || (surfaceInfoType && surfaceInfoType !== 'plane'));
+    return {
+      topoFaceId: face.id,
+      surfaceType,
+      faceType: isCurved ? `curved-${surfaceType || 'surface'}` : 'planar',
+      isCurved,
+      surfaceInfo: face.surfaceInfo || null,
+      fusedGroupId: face.fusedGroupId || null,
+      shared: face.shared ? { ...face.shared } : null,
+    };
+  });
 }
 
 function _readVec3(buffer, index) {
