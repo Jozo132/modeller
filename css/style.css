@@ -2176,6 +2176,35 @@ body.motion-active #view-3d {
   border-color: var(--accent);
 }
 
+.parameter-selection-field {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.parameter-selection-field:hover {
+  border-color: var(--accent);
+}
+
+.parameter-selection-field.active {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.parameter-selection-field-value {
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.parameter-selection-field-hint {
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.3;
+}
+
 select.parameter-input {
   appearance: auto;
   cursor: pointer;

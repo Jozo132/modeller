@@ -111,7 +111,8 @@ class App {
     this._recorder = new InteractionRecorder(); // interaction recorder for workflow debugging
     this._extrudeMode = null; // active extrude mode state {isCut, sketchFeatureId, distance, direction, symmetric, operation}
     this._chamferMode = null; // active chamfer mode state {edgeKeys[], distance, editingFeatureId}
-    this._filletMode = null;  // active fillet mode state {edgeKeys[], radius, segments, editingFeatureId}
+    this._filletMode = null;  // active fillet mode state {edgeKeys[], radius, editingFeatureId, panelMode}
+    this._activeFeatureSelectionTarget = null; // active inline selection field {featureId, fieldId, selectionType, acceptedTypes, maxSelections, stateKey}
     this._dxfExportPanel = null;  // DXF export sidebar panel instance
     this._awaitingSketchPlane = false; // true when waiting for user to pick a plane/face for sketch
     this._draggingExtrudeHandle = false;
@@ -1333,6 +1334,11 @@ class App {
       if (this._workspaceMode === 'part' && this._renderer3d) {
         // Scene manager active: suppress all part picking interactions
         if (this._sceneManagerOpen) return;
+        if (!this._sketchingOnPlane && !this._extrudeMode && this._activeFeatureSelectionTarget) {
+          if (this._handleActiveFeatureSelectionClick(e)) {
+            return;
+          }
+        }
         // Edge/face picking for chamfer/fillet mode
         if ((this._chamferMode || this._filletMode) && this._renderer3d._edgeSelectionMode) {
           const edgeHit = this._renderer3d.pickEdge(e.clientX, e.clientY);
@@ -2928,6 +2934,696 @@ class App {
     return 'Default axis';
   }
 
+  _getTessellationDrivenCurveSegments() {
+    const parsed = Math.round(Number(globalTessConfig.curveSegments));
+    if (!Number.isFinite(parsed)) {
+      return 8;
+    }
+    return Math.max(2, parsed);
+  }
+
+  _getPartFeatureById(featureId) {
+    if (!featureId || !this._partManager) {
+      return null;
+    }
+    return this._partManager.getFeatures().find((feature) => feature.id === featureId) || null;
+  }
+
+  _getPreferredRevolveAxisSegmentId(sketchFeature, currentAxisSegmentId = null) {
+    if (!sketchFeature || typeof sketchFeature.getRevolveAxisCandidates !== 'function') {
+      return null;
+    }
+
+    const candidates = sketchFeature.getRevolveAxisCandidates();
+    if (candidates.length === 0) {
+      return null;
+    }
+
+    const preserved = currentAxisSegmentId != null
+      ? candidates.find((candidate) => candidate.segmentId === currentAxisSegmentId)
+      : null;
+    return preserved ? preserved.segmentId : candidates[0].segmentId;
+  }
+
+  _getRevolveAxisOptions(sketchFeature, currentAxisSegmentId = null) {
+    if (!sketchFeature || typeof sketchFeature.getRevolveAxisCandidates !== 'function') {
+      return [{ value: '', label: 'Default axis' }];
+    }
+
+    const candidates = sketchFeature.getRevolveAxisCandidates();
+    if (candidates.length === 0) {
+      return [{ value: '', label: 'Default axis' }];
+    }
+
+    const options = candidates.map((candidate) => ({
+      value: String(candidate.segmentId),
+      label: `Construction line #${candidate.segmentId}`,
+    }));
+
+    if (currentAxisSegmentId != null && !options.some((option) => option.value === String(currentAxisSegmentId))) {
+      options.unshift({
+        value: String(currentAxisSegmentId),
+        label: `Construction line #${currentAxisSegmentId} (missing)`,
+      });
+    }
+
+    return options;
+  }
+
+  _refreshFeaturePanels(feature) {
+    if (this._parametersPanel) {
+      this._parametersPanel.showFeature(feature);
+    }
+    this._showLeftFeatureParams(feature);
+  }
+
+  _getSelectedSidebarFeatureId() {
+    const activeFeature = this._partManager && typeof this._partManager.getActiveFeature === 'function'
+      ? this._partManager.getActiveFeature()
+      : null;
+    return (this._featurePanel && this._featurePanel.selectedFeatureId)
+      || (activeFeature ? activeFeature.id : null)
+      || (this._renderer3d ? this._renderer3d._selectedFeatureId : null)
+      || null;
+  }
+
+  _getSelectedSidebarFeature() {
+    return this._getPartFeatureById(this._getSelectedSidebarFeatureId());
+  }
+
+  _getInlineFeatureEditMode(featureId) {
+    if (!featureId) {
+      return null;
+    }
+    if (this._chamferMode && this._chamferMode.panelMode === 'inline' && this._chamferMode.editingFeatureId === featureId) {
+      return { kind: 'chamfer', mode: this._chamferMode };
+    }
+    if (this._filletMode && this._filletMode.panelMode === 'inline' && this._filletMode.editingFeatureId === featureId) {
+      return { kind: 'fillet', mode: this._filletMode };
+    }
+    return null;
+  }
+
+  _getCurrentInlineFeatureEditFeature() {
+    const selectedFeature = this._getSelectedSidebarFeature();
+    if (selectedFeature && this._getInlineFeatureEditMode(selectedFeature.id)) {
+      return selectedFeature;
+    }
+    const inlineFeatureId = (this._chamferMode && this._chamferMode.panelMode === 'inline' && this._chamferMode.editingFeatureId)
+      || (this._filletMode && this._filletMode.panelMode === 'inline' && this._filletMode.editingFeatureId)
+      || null;
+    return inlineFeatureId ? this._getPartFeatureById(inlineFeatureId) : null;
+  }
+
+  _hasStandaloneFeatureEditMode() {
+    return !!(
+      this._extrudeMode
+      || (this._chamferMode && this._chamferMode.panelMode !== 'inline')
+      || (this._filletMode && this._filletMode.panelMode !== 'inline')
+    );
+  }
+
+  _isFeatureSelectionTargetActive(featureId, fieldId) {
+    return !!this._activeFeatureSelectionTarget
+      && this._activeFeatureSelectionTarget.featureId === featureId
+      && this._activeFeatureSelectionTarget.fieldId === fieldId;
+  }
+
+  _getFeatureSelectionModeGeometry(featureId) {
+    const part = this._partManager ? this._partManager.getPart() : null;
+    if (!part) {
+      return null;
+    }
+    const modeInfo = this._getInlineFeatureEditMode(featureId);
+    if (modeInfo && modeInfo.mode && modeInfo.mode.editingFeatureId) {
+      const baseResult = part.getGeometryBeforeFeature(modeInfo.mode.editingFeatureId);
+      return baseResult && baseResult.geometry ? baseResult.geometry : null;
+    }
+    const finalResult = part.getFinalGeometry ? part.getFinalGeometry() : null;
+    return finalResult && finalResult.geometry ? finalResult.geometry : null;
+  }
+
+  _describeFeatureSelectionRules(target) {
+    const typeLabels = {
+      edge: 'edges',
+      face: 'faces',
+    };
+    const acceptedTypes = Array.isArray(target.acceptedTypes) && target.acceptedTypes.length > 0
+      ? target.acceptedTypes
+      : [target.selectionType];
+    const typesLabel = acceptedTypes
+      .map((type) => typeLabels[type] || `${type}s`)
+      .join(' or ');
+    const limitLabel = target.maxSelections === 1 ? '1 max' : 'many';
+    return `Pick ${typesLabel} • ${limitLabel}`;
+  }
+
+  _getCurrentFaceSelectionItems() {
+    const items = [];
+    for (const [faceKey, faceHit] of this._selectedFaces) {
+      const faceIndex = faceHit && faceHit.faceIndex != null ? faceHit.faceIndex : faceKey;
+      items.push({
+        icon: '🔲',
+        label: `Face ${faceIndex}`,
+        type: 'face',
+        onHover: () => {
+          if (this._renderer3d) {
+            this._renderer3d.setHoveredFace(faceIndex);
+            this._scheduleRender();
+          }
+        },
+        onLeave: () => {
+          if (this._renderer3d) {
+            this._renderer3d.setHoveredFace(-1);
+            this._scheduleRender();
+          }
+        },
+        onRemove: () => {
+          this._selectedFaces.delete(faceKey);
+          if (this._renderer3d) {
+            this._renderer3d.removeFaceSelection(faceIndex);
+          }
+          this._syncActiveFeatureSelectionDraft();
+          this._refreshSelectionUI();
+          this._scheduleRender();
+        },
+      });
+    }
+    return items;
+  }
+
+  _getCurrentEdgeSelectionItems() {
+    const items = [];
+    const faceEdgeIndices = new Set();
+    if (this._selectedFacesForEdges && this._selectedFacesForEdges.size > 0) {
+      for (const [faceIdx, edgeIndices] of this._selectedFacesForEdges) {
+        for (const edgeIndex of edgeIndices) {
+          faceEdgeIndices.add(edgeIndex);
+        }
+        items.push({
+          icon: '🔲',
+          label: `Face ${faceIdx}`,
+          type: 'face-edges',
+          onHover: () => {
+            if (this._renderer3d) {
+              this._renderer3d.setHoveredFace(faceIdx);
+              this._scheduleRender();
+            }
+          },
+          onLeave: () => {
+            if (this._renderer3d) {
+              this._renderer3d.setHoveredFace(-1);
+              this._scheduleRender();
+            }
+          },
+          onRemove: () => {
+            if (this._renderer3d) {
+              for (const edgeIndex of edgeIndices) {
+                this._renderer3d._selectedEdgeIndices.delete(edgeIndex);
+              }
+            }
+            this._selectedFacesForEdges.delete(faceIdx);
+            this._syncActiveFeatureSelectionDraft();
+            this._refreshSelectionUI();
+            this._scheduleRender();
+          },
+        });
+      }
+    }
+
+    const edgeEntries = this._getSelectedPathEntries();
+    for (const entry of edgeEntries) {
+      if (entry.edgeIndices.every((edgeIndex) => faceEdgeIndices.has(edgeIndex))) {
+        continue;
+      }
+      items.push({
+        icon: '🔗',
+        label: entry.label,
+        type: 'edge',
+        onHover: () => {
+          if (this._renderer3d && entry.edgeIndices.length > 0) {
+            this._renderer3d.setHoveredEdge(entry.edgeIndices[0]);
+            this._scheduleRender();
+          }
+        },
+        onLeave: () => {
+          if (this._renderer3d) {
+            this._renderer3d.setHoveredEdge(-1);
+            this._scheduleRender();
+          }
+        },
+        onRemove: () => {
+          if (this._renderer3d) {
+            for (const edgeIndex of entry.edgeIndices) {
+              this._renderer3d._selectedEdgeIndices.delete(edgeIndex);
+            }
+          }
+          this._syncActiveFeatureSelectionDraft();
+          this._refreshSelectionUI();
+          this._scheduleRender();
+        },
+      });
+    }
+
+    return items;
+  }
+
+  _getSelectionItemsForTarget(target) {
+    if (!target) {
+      return [];
+    }
+    if (target.selectionType === 'face') {
+      return this._getCurrentFaceSelectionItems();
+    }
+    if (target.selectionType === 'edge') {
+      return this._getCurrentEdgeSelectionItems();
+    }
+    return [];
+  }
+
+  _describeFeatureSelectionSummary(target) {
+    const items = this._getSelectionItemsForTarget(target);
+    if (items.length === 0) {
+      return target.emptyLabel || `Click to choose ${target.label.toLowerCase()}`;
+    }
+    if (target.selectionType === 'face') {
+      return `${items.length} face${items.length === 1 ? '' : 's'} selected`;
+    }
+    if (items.length === 1) {
+      return items[0].type === 'face-edges' ? '1 face selected' : '1 edge selected';
+    }
+    return `${items.length} selections`;
+  }
+
+  _buildSelectionItemsBlock(items, options = {}) {
+    const {
+      label = 'Selection',
+      emptyText = 'Nothing selected',
+      clearButtonText = 'Clear All',
+      onClearAll = null,
+    } = options;
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'edge-selection-list';
+
+    const labelRow = document.createElement('div');
+    labelRow.className = 'parameter-row';
+    labelRow.innerHTML = `<label class="parameter-label">${label}</label><span class="parameter-value">${items.length} item${items.length !== 1 ? 's' : ''}</span>`;
+    wrapper.appendChild(labelRow);
+
+    if (items.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'edge-selection-empty';
+      empty.textContent = emptyText;
+      wrapper.appendChild(empty);
+      return wrapper;
+    }
+
+    const list = document.createElement('div');
+    list.className = 'edge-selection-items';
+    for (const item of items) {
+      const el = document.createElement('div');
+      el.className = 'edge-selection-item';
+
+      const iconSpan = document.createElement('span');
+      iconSpan.style.cssText = 'opacity:0.6;flex-shrink:0';
+      if (item.iconHtml) {
+        iconSpan.classList.add('node-tree-icon');
+        iconSpan.innerHTML = item.iconHtml;
+      } else {
+        iconSpan.textContent = item.icon;
+      }
+
+      const itemLabel = document.createElement('span');
+      itemLabel.className = 'edge-selection-label';
+      itemLabel.textContent = item.label;
+      itemLabel.addEventListener('mouseenter', item.onHover);
+      itemLabel.addEventListener('mouseleave', item.onLeave);
+
+      const removeBtn = document.createElement('button');
+      removeBtn.className = 'edge-selection-remove';
+      removeBtn.textContent = '×';
+      removeBtn.title = `Remove ${item.label}`;
+      removeBtn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        item.onRemove();
+      });
+
+      el.appendChild(iconSpan);
+      el.appendChild(itemLabel);
+      el.appendChild(removeBtn);
+      list.appendChild(el);
+    }
+    wrapper.appendChild(list);
+
+    if (typeof onClearAll === 'function') {
+      const clearBtn = document.createElement('button');
+      clearBtn.className = 'edge-selection-clear';
+      clearBtn.textContent = clearButtonText;
+      clearBtn.addEventListener('click', onClearAll);
+      wrapper.appendChild(clearBtn);
+    }
+
+    return wrapper;
+  }
+
+  _buildInlineSelectionField(target, options = {}) {
+    const {
+      label = target.label,
+      summaryText = this._describeFeatureSelectionSummary(target),
+      showSelectionList = false,
+      helperText = this._describeFeatureSelectionRules(target),
+      onActivate = null,
+    } = options;
+    const isActive = this._isFeatureSelectionTargetActive(target.featureId, target.fieldId);
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'parameter-row';
+
+    const labelEl = document.createElement('label');
+    labelEl.className = 'parameter-label';
+    labelEl.textContent = label;
+    wrapper.appendChild(labelEl);
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'parameter-input parameter-selection-field';
+    if (isActive) {
+      button.classList.add('active');
+    }
+    button.addEventListener('click', () => {
+      if (typeof onActivate === 'function') {
+        onActivate();
+        return;
+      }
+      this._activateFeatureSelectionTarget(target);
+    });
+
+    const valueEl = document.createElement('span');
+    valueEl.className = 'parameter-selection-field-value';
+    valueEl.textContent = summaryText;
+    button.appendChild(valueEl);
+
+    const hintEl = document.createElement('span');
+    hintEl.className = 'parameter-selection-field-hint';
+    hintEl.textContent = isActive
+      ? 'Picking in the viewport. Click another field to switch targets.'
+      : helperText;
+    button.appendChild(hintEl);
+
+    wrapper.appendChild(button);
+
+    if (showSelectionList) {
+      wrapper.appendChild(this._buildSelectionItemsBlock(this._getSelectionItemsForTarget(target), {
+        label: 'Selection',
+        emptyText: 'Nothing selected',
+        clearButtonText: 'Clear Selection',
+        onClearAll: () => this._clearSelectionForTarget(target),
+      }));
+    }
+
+    return wrapper;
+  }
+
+  _buildFeatureEditActionRow(onAccept, onCancel) {
+    const btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex;gap:8px;margin-top:12px;padding:0 4px';
+
+    const acceptBtn = document.createElement('button');
+    acceptBtn.type = 'button';
+    acceptBtn.textContent = 'Accept';
+    acceptBtn.className = 'param-btn accept';
+    acceptBtn.style.cssText = 'flex:1;padding:6px;background:#4caf50;color:#fff;border:none;border-radius:4px;cursor:pointer';
+    acceptBtn.addEventListener('click', onAccept);
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.className = 'param-btn cancel';
+    cancelBtn.style.cssText = 'flex:1;padding:6px;background:#f44336;color:#fff;border:none;border-radius:4px;cursor:pointer';
+    cancelBtn.addEventListener('click', onCancel);
+
+    btnRow.appendChild(acceptBtn);
+    btnRow.appendChild(cancelBtn);
+    return btnRow;
+  }
+
+  _activateFeatureSelectionTarget(target) {
+    if (!target || !this._renderer3d) {
+      return;
+    }
+
+    const sameTarget = this._isFeatureSelectionTargetActive(target.featureId, target.fieldId);
+    this._activeFeatureSelectionTarget = { ...target };
+
+    this._renderer3d.setHoveredEdge(-1);
+    this._renderer3d.setHoveredFace(-1);
+    this._renderer3d.setEdgeSelectionMode(target.selectionType === 'edge');
+    if (target.selectionType === 'edge') {
+      this._renderer3d.selectFace(-1);
+    }
+
+    if (!sameTarget) {
+      this._restoreFeatureSelectionDraft(target);
+    }
+
+    const feature = this._getPartFeatureById(target.featureId);
+    if (feature) {
+      this._showLeftFeatureParams(feature);
+    }
+    this.setStatus(`${target.label}: ${this._describeFeatureSelectionRules(target)}.`);
+    this._scheduleRender();
+  }
+
+  _clearActiveFeatureSelectionTarget() {
+    this._activeFeatureSelectionTarget = null;
+    if (!this._renderer3d) {
+      return;
+    }
+    this._renderer3d.setEdgeSelectionMode(false);
+    this._renderer3d.setHoveredEdge(-1);
+    this._renderer3d.setHoveredFace(-1);
+  }
+
+  _restoreFeatureSelectionDraft(target) {
+    if (!target || !this._renderer3d) {
+      return;
+    }
+
+    const modeInfo = this._getInlineFeatureEditMode(target.featureId);
+    const feature = this._getPartFeatureById(target.featureId);
+    if (target.selectionType === 'edge') {
+      const draftKeys = modeInfo && Array.isArray(modeInfo.mode[target.stateKey])
+        ? modeInfo.mode[target.stateKey]
+        : (feature && Array.isArray(feature.edgeKeys) ? feature.edgeKeys : []);
+      this._renderer3d.clearEdgeSelection();
+      this._selectedFacesForEdges = new Map();
+      if (draftKeys.length > 0) {
+        this._renderer3d.selectEdgesByKeys(draftKeys);
+      }
+      return;
+    }
+
+    if (target.selectionType === 'face') {
+      const draftFaceIndices = modeInfo && Array.isArray(modeInfo.mode[target.stateKey])
+        ? modeInfo.mode[target.stateKey]
+        : (feature && Array.isArray(feature[target.stateKey]) ? feature[target.stateKey] : []);
+      const geometry = this._getFeatureSelectionModeGeometry(target.featureId);
+      this._selectedFaces.clear();
+      this._renderer3d.clearFaceSelection();
+      for (const faceIndex of draftFaceIndices) {
+        const face = geometry && Array.isArray(geometry.faces) ? geometry.faces[faceIndex] : null;
+        this._selectedFaces.set(faceIndex, { faceIndex, face });
+        this._renderer3d.addFaceSelection(faceIndex);
+      }
+    }
+  }
+
+  _syncActiveFeatureSelectionDraft() {
+    const target = this._activeFeatureSelectionTarget;
+    if (!target) {
+      return;
+    }
+
+    const modeInfo = this._getInlineFeatureEditMode(target.featureId);
+    if (!modeInfo || !target.stateKey) {
+      return;
+    }
+
+    if (target.selectionType === 'edge') {
+      modeInfo.mode[target.stateKey] = this._renderer3d ? this._renderer3d.getSelectedEdgeKeys() : [];
+      return;
+    }
+
+    if (target.selectionType === 'face') {
+      modeInfo.mode[target.stateKey] = [...this._selectedFaces.keys()];
+    }
+  }
+
+  _clearSelectionForTarget(target) {
+    if (!target || !this._renderer3d) {
+      return;
+    }
+
+    if (target.selectionType === 'edge') {
+      this._renderer3d.clearEdgeSelection();
+      this._selectedFacesForEdges = new Map();
+    } else if (target.selectionType === 'face') {
+      this._selectedFaces.clear();
+      this._renderer3d.clearFaceSelection();
+    }
+
+    this._syncActiveFeatureSelectionDraft();
+    this._refreshSelectionUI();
+    this._scheduleRender();
+  }
+
+  _handleActiveFeatureSelectionClick(e) {
+    const target = this._activeFeatureSelectionTarget;
+    if (!target || !this._renderer3d) {
+      return false;
+    }
+    if (target.selectionType === 'edge') {
+      return this._handleFeatureEdgeSelectionClick(target, e);
+    }
+    if (target.selectionType === 'face') {
+      return this._handleFeatureFaceSelectionClick(target, e);
+    }
+    return false;
+  }
+
+  _handleFeatureEdgeSelectionClick(target, e) {
+    const singleSelection = target.maxSelections === 1;
+    const edgeHit = this._renderer3d.pickEdge(e.clientX, e.clientY);
+    if (edgeHit) {
+      if (singleSelection) {
+        const alreadySelected = this._renderer3d._selectedEdgeIndices.size === 1
+          && this._renderer3d._selectedEdgeIndices.has(edgeHit.edgeIndex)
+          && (!this._selectedFacesForEdges || this._selectedFacesForEdges.size === 0);
+        this._renderer3d.clearEdgeSelection();
+        this._selectedFacesForEdges = new Map();
+        if (!(e.ctrlKey && alreadySelected)) {
+          this._renderer3d.addEdgeSelection(edgeHit.edgeIndex);
+        }
+      } else if (e.shiftKey) {
+        this._renderer3d.addEdgeSelection(edgeHit.edgeIndex);
+      } else if (e.ctrlKey) {
+        this._renderer3d.toggleEdgeSelection(edgeHit.edgeIndex);
+      } else {
+        this._renderer3d.clearEdgeSelection();
+        this._selectedFacesForEdges = new Map();
+        this._renderer3d.addEdgeSelection(edgeHit.edgeIndex);
+      }
+      this._onEdgeSelectionChanged();
+      this._scheduleRender();
+      this._updateNodeTree();
+      this._updateOperationButtons();
+      return true;
+    }
+
+    const allowFaceSelection = Array.isArray(target.acceptedTypes) && target.acceptedTypes.includes('face');
+    if (allowFaceSelection) {
+      const faceHit = this._renderer3d.pickFace(e.clientX, e.clientY);
+      if (faceHit) {
+        const faceIdx = faceHit.faceIndex;
+        const faceEdges = this._renderer3d.getEdgeIndicesForFace(faceIdx);
+        if (singleSelection) {
+          const alreadySelected = this._selectedFacesForEdges && this._selectedFacesForEdges.has(faceIdx) && this._selectedFacesForEdges.size === 1;
+          this._renderer3d.clearEdgeSelection();
+          this._selectedFacesForEdges = new Map();
+          if (!(e.ctrlKey && alreadySelected)) {
+            this._renderer3d.selectEdgesForFace(faceIdx);
+            this._selectedFacesForEdges.set(faceIdx, faceEdges);
+          }
+        } else {
+          if (!e.shiftKey && !e.ctrlKey) {
+            this._renderer3d.clearEdgeSelection();
+            this._selectedFacesForEdges = new Map();
+          }
+          if (e.ctrlKey) {
+            if (this._selectedFacesForEdges && this._selectedFacesForEdges.has(faceIdx)) {
+              for (const edgeIndex of faceEdges) {
+                this._renderer3d.removeEdgeSelection(edgeIndex);
+              }
+              this._selectedFacesForEdges.delete(faceIdx);
+            } else {
+              this._renderer3d.selectEdgesForFace(faceIdx);
+              this._selectedFacesForEdges.set(faceIdx, faceEdges);
+            }
+          } else {
+            this._renderer3d.selectEdgesForFace(faceIdx);
+            this._selectedFacesForEdges.set(faceIdx, faceEdges);
+          }
+        }
+        this._onEdgeSelectionChanged();
+        this._scheduleRender();
+        this._updateNodeTree();
+        this._updateOperationButtons();
+        return true;
+      }
+    }
+
+    if (!e.shiftKey && !e.ctrlKey) {
+      this._renderer3d.clearEdgeSelection();
+      this._selectedFacesForEdges = new Map();
+      this._onEdgeSelectionChanged();
+      this._scheduleRender();
+    }
+    this._updateNodeTree();
+    this._updateOperationButtons();
+    return true;
+  }
+
+  _handleFeatureFaceSelectionClick(target, e) {
+    const faceHit = this._renderer3d.pickFace(e.clientX, e.clientY);
+    const singleSelection = target.maxSelections === 1;
+    if (faceHit) {
+      if (singleSelection) {
+        const alreadySelected = this._selectedFaces.size === 1 && this._selectedFaces.has(faceHit.faceIndex);
+        this._selectedFaces.clear();
+        this._renderer3d.clearFaceSelection();
+        if (!(e.ctrlKey && alreadySelected)) {
+          this._selectedFaces.set(faceHit.faceIndex, faceHit);
+          this._renderer3d.addFaceSelection(faceHit.faceIndex);
+        }
+      } else if (e.shiftKey) {
+        this._selectedFaces.set(faceHit.faceIndex, faceHit);
+        this._renderer3d.addFaceSelection(faceHit.faceIndex);
+      } else if (e.ctrlKey) {
+        if (this._selectedFaces.has(faceHit.faceIndex)) {
+          this._selectedFaces.delete(faceHit.faceIndex);
+          this._renderer3d.removeFaceSelection(faceHit.faceIndex);
+        } else {
+          this._selectedFaces.set(faceHit.faceIndex, faceHit);
+          this._renderer3d.addFaceSelection(faceHit.faceIndex);
+        }
+      } else {
+        this._selectedFaces.clear();
+        this._renderer3d.clearFaceSelection();
+        this._selectedFaces.set(faceHit.faceIndex, faceHit);
+        this._renderer3d.addFaceSelection(faceHit.faceIndex);
+      }
+
+      this._syncActiveFeatureSelectionDraft();
+      this._refreshSelectionUI();
+      this._scheduleRender();
+      this._updateNodeTree();
+      this._updateOperationButtons();
+      return true;
+    }
+
+    if (!e.shiftKey && !e.ctrlKey) {
+      this._selectedFaces.clear();
+      this._renderer3d.clearFaceSelection();
+      this._syncActiveFeatureSelectionDraft();
+      this._refreshSelectionUI();
+      this._scheduleRender();
+    }
+    this._updateNodeTree();
+    this._updateOperationButtons();
+    return true;
+  }
+
   /** Start sketch on face using an explicit plane definition (for command replay). */
   _startSketchOnFaceWithPlane(planeDef) {
     if (this._workspaceMode !== 'part') return;
@@ -3205,12 +3901,15 @@ class App {
     if (!container) return;
     const headerEl = document.querySelector('#left-feature-params > h3');
     const { enterEditMode = false } = options;
-    // Don't overwrite UI when in extrude/chamfer/fillet mode
-    if (this._extrudeMode || this._chamferMode || this._filletMode) return;
+    // Don't overwrite UI when a standalone edit mode owns the sidebar.
+    if (this._hasStandaloneFeatureEditMode()) return;
     // When DXF export panel is active, refresh it instead of overwriting
     if (this._dxfExportPanel && !feature) {
       this._dxfExportPanel.refresh();
       return;
+    }
+    if (!feature) {
+      feature = this._getCurrentInlineFeatureEditFeature();
     }
     if (!feature) {
       if (headerEl) headerEl.innerHTML = 'Feature Properties';
@@ -3263,18 +3962,69 @@ class App {
       const angleDeg = (feature.angle * 180 / Math.PI).toFixed(1);
       container.appendChild(this._createParamRow('Angle (°)', 'number', angleDeg, (v) => {
         const rad = parseFloat(v) * Math.PI / 180;
-        this._partManager.modifyFeature(feature.id, (f) => f.setAngle(rad));
+        this._partManager.modifyFeature(feature.id, (f) => {
+          f.setAngle(rad);
+          if (Object.prototype.hasOwnProperty.call(f, 'segments')) {
+            f.segments = this._getTessellationDrivenCurveSegments();
+          }
+        });
         if (this._parametersPanel && this._parametersPanel.onParameterChange) this._parametersPanel.onParameterChange(feature.id, 'angle', rad);
       }));
-      container.appendChild(this._createParamRow('Segments', 'number', feature.segments, (v) => {
-        const parsed = parseInt(v);
-        this._partManager.modifyFeature(feature.id, (f) => { f.segments = parsed; });
-        if (this._parametersPanel && this._parametersPanel.onParameterChange) this._parametersPanel.onParameterChange(feature.id, 'segments', parsed);
-      }));
-      const axisRow = document.createElement('div');
-      axisRow.className = 'parameter-row';
-      axisRow.innerHTML = `<label class="parameter-label">Axis</label><span class="parameter-value">${this._describeRevolveAxis(feature)}</span>`;
-      container.appendChild(axisRow);
+
+      const sketches = this._partManager ? this._partManager.getFeatures().filter((candidate) => candidate.type === 'sketch') : [];
+      const sketchOptions = sketches.map((sketch) => ({ value: sketch.id, label: sketch.name }));
+      if (sketchOptions.length === 0) {
+        sketchOptions.push({ value: '', label: '(no sketches)' });
+      }
+      const sketchFeature = this._getPartFeatureById(feature.sketchFeatureId);
+
+      container.appendChild(this._createParamRow('Sketch', 'select', feature.sketchFeatureId || '', (v) => {
+        const nextSketch = this._getPartFeatureById(v);
+        const nextAxisSegmentId = this._getPreferredRevolveAxisSegmentId(nextSketch, feature.axisSegmentId);
+        this._partManager.modifyFeature(feature.id, (f) => {
+          if (typeof f.setSketchFeature === 'function') {
+            f.setSketchFeature(v || null);
+          } else {
+            f.sketchFeatureId = v || null;
+          }
+          if (typeof f.setAxisSegmentId === 'function') {
+            f.setAxisSegmentId(nextAxisSegmentId);
+          } else {
+            f.axisSegmentId = nextAxisSegmentId;
+          }
+          if (Object.prototype.hasOwnProperty.call(f, 'segments')) {
+            f.segments = this._getTessellationDrivenCurveSegments();
+          }
+        });
+        if (this._parametersPanel && this._parametersPanel.onParameterChange) this._parametersPanel.onParameterChange(feature.id, 'sketchFeatureId', v || null);
+        this._refreshFeaturePanels(feature);
+      }, sketchOptions));
+
+      if (feature.axisSource === 'manual') {
+        const axisRow = document.createElement('div');
+        axisRow.className = 'parameter-row';
+        axisRow.innerHTML = `<label class="parameter-label">Axis</label><span class="parameter-value">${this._describeRevolveAxis(feature)}</span>`;
+        container.appendChild(axisRow);
+      } else {
+        const axisOptions = this._getRevolveAxisOptions(sketchFeature, feature.axisSegmentId);
+        const axisValue = feature.axisSegmentId != null ? String(feature.axisSegmentId) : axisOptions[0].value;
+        container.appendChild(this._createParamRow('Axis', 'select', axisValue, (v) => {
+          const parsed = v === '' ? null : Number(v);
+          const nextAxisSegmentId = Number.isNaN(parsed) ? null : parsed;
+          this._partManager.modifyFeature(feature.id, (f) => {
+            if (typeof f.setAxisSegmentId === 'function') {
+              f.setAxisSegmentId(nextAxisSegmentId);
+            } else {
+              f.axisSegmentId = nextAxisSegmentId;
+            }
+            if (Object.prototype.hasOwnProperty.call(f, 'segments')) {
+              f.segments = this._getTessellationDrivenCurveSegments();
+            }
+          });
+          if (this._parametersPanel && this._parametersPanel.onParameterChange) this._parametersPanel.onParameterChange(feature.id, 'axisSegmentId', nextAxisSegmentId);
+          this._refreshFeaturePanels(feature);
+        }, axisOptions));
+      }
     } else if (feature.type === 'sketch') {
       const info = document.createElement('div');
       info.className = 'parameter-info';
@@ -3284,48 +4034,96 @@ class App {
       `;
       container.appendChild(info);
     } else if (feature.type === 'chamfer') {
-      container.appendChild(this._createParamRow('Distance', 'number', feature.distance, (v) => {
+      const chamferEditMode = this._getInlineFeatureEditMode(feature.id);
+      const chamferTarget = {
+        featureId: feature.id,
+        fieldId: 'edges',
+        label: 'Edges',
+        selectionType: 'edge',
+        acceptedTypes: ['edge', 'face'],
+        maxSelections: null,
+        stateKey: 'edgeKeys',
+      };
+
+      container.appendChild(this._createParamRow('Distance', 'number', chamferEditMode ? chamferEditMode.mode.distance : feature.distance, (v) => {
         const parsed = parseFloat(v);
         if (!isNaN(parsed) && parsed > 0) {
-          this._partManager.modifyFeature(feature.id, (f) => { f.distance = parsed; });
-          this._update3DView();
+          if (chamferEditMode) {
+            chamferEditMode.mode.distance = parsed;
+            this._updateChamferPreview();
+          } else {
+            this._partManager.modifyFeature(feature.id, (f) => { f.distance = parsed; });
+            this._update3DView();
+          }
         }
       }));
-      const edgeRow = document.createElement('div');
-      edgeRow.className = 'parameter-row';
-      edgeRow.innerHTML = `<label class="parameter-label">Edges</label><span class="parameter-value">${feature.edgeKeys.length}</span>`;
-      container.appendChild(edgeRow);
-      // Edit Edges button
-      const editEdgeBtn = document.createElement('button');
-      editEdgeBtn.textContent = 'Edit Edges';
-      editEdgeBtn.style.cssText = 'width:100%;padding:6px;margin-top:8px;background:#2196f3;color:#fff;border:none;border-radius:4px;cursor:pointer';
-      editEdgeBtn.addEventListener('click', () => this._editChamferEdges(feature));
-      container.appendChild(editEdgeBtn);
+      container.appendChild(this._buildInlineSelectionField(chamferTarget, {
+        summaryText: chamferEditMode
+          ? this._describeFeatureSelectionSummary(chamferTarget)
+          : (Array.isArray(feature.edgeKeys) && feature.edgeKeys.length > 0
+            ? `${feature.edgeKeys.length} edge${feature.edgeKeys.length === 1 ? '' : 's'} selected`
+            : 'Click to choose edges'),
+        showSelectionList: !!chamferEditMode,
+        helperText: 'Click to pick edges or faces in the viewport',
+        onActivate: () => this._editChamferEdges(feature),
+      }));
+      if (chamferEditMode) {
+        container.appendChild(this._buildFeatureEditActionRow(
+          () => this._acceptChamfer(),
+          () => this._cancelChamfer()
+        ));
+      }
     } else if (feature.type === 'fillet') {
-      container.appendChild(this._createParamRow('Radius', 'number', feature.radius, (v) => {
+      const filletEditMode = this._getInlineFeatureEditMode(feature.id);
+      const filletTarget = {
+        featureId: feature.id,
+        fieldId: 'edges',
+        label: 'Edges',
+        selectionType: 'edge',
+        acceptedTypes: ['edge', 'face'],
+        maxSelections: null,
+        stateKey: 'edgeKeys',
+      };
+
+      container.appendChild(this._createParamRow('Radius', 'number', filletEditMode ? filletEditMode.mode.radius : feature.radius, (v) => {
         const parsed = parseFloat(v);
         if (!isNaN(parsed) && parsed > 0) {
-          this._partManager.modifyFeature(feature.id, (f) => { f.radius = parsed; });
-          this._update3DView();
+          if (filletEditMode) {
+            filletEditMode.mode.radius = parsed;
+            this._updateFilletPreview();
+          } else {
+            this._partManager.modifyFeature(feature.id, (f) => {
+              if (typeof f.setRadius === 'function') {
+                f.setRadius(parsed);
+              } else {
+                f.radius = parsed;
+              }
+              if (typeof f.setSegments === 'function') {
+                f.setSegments(this._getTessellationDrivenCurveSegments());
+              } else if (Object.prototype.hasOwnProperty.call(f, 'segments')) {
+                f.segments = this._getTessellationDrivenCurveSegments();
+              }
+            });
+            this._update3DView();
+          }
         }
       }));
-      container.appendChild(this._createParamRow('Segments', 'number', feature.segments, (v) => {
-        const parsed = parseInt(v, 10);
-        if (!isNaN(parsed) && parsed >= 2) {
-          this._partManager.modifyFeature(feature.id, (f) => { f.segments = parsed; });
-          this._update3DView();
-        }
+      container.appendChild(this._buildInlineSelectionField(filletTarget, {
+        summaryText: filletEditMode
+          ? this._describeFeatureSelectionSummary(filletTarget)
+          : (Array.isArray(feature.edgeKeys) && feature.edgeKeys.length > 0
+            ? `${feature.edgeKeys.length} edge${feature.edgeKeys.length === 1 ? '' : 's'} selected`
+            : 'Click to choose edges'),
+        showSelectionList: !!filletEditMode,
+        helperText: 'Click to pick edges or faces in the viewport',
+        onActivate: () => this._editFilletEdges(feature),
       }));
-      const edgeRow = document.createElement('div');
-      edgeRow.className = 'parameter-row';
-      edgeRow.innerHTML = `<label class="parameter-label">Edges</label><span class="parameter-value">${feature.edgeKeys.length}</span>`;
-      container.appendChild(edgeRow);
-      // Edit Edges button
-      const editEdgeBtn = document.createElement('button');
-      editEdgeBtn.textContent = 'Edit Edges';
-      editEdgeBtn.style.cssText = 'width:100%;padding:6px;margin-top:8px;background:#2196f3;color:#fff;border:none;border-radius:4px;cursor:pointer';
-      editEdgeBtn.addEventListener('click', () => this._editFilletEdges(feature));
-      container.appendChild(editEdgeBtn);
+      if (filletEditMode) {
+        container.appendChild(this._buildFeatureEditActionRow(
+          () => this._acceptFillet(),
+          () => this._cancelFillet()
+        ));
+      }
     }
 
     // Feature steps (children)
@@ -3407,6 +4205,37 @@ class App {
       input.addEventListener('change', (e) => onChange(e.target.value));
     }
     div.appendChild(input);
+    return div;
+  }
+
+  _createSelectionFieldRow(label, value, onActivate, options = {}) {
+    const { hint = 'Click to pick in the viewport' } = options;
+    const div = document.createElement('div');
+    div.className = 'parameter-row';
+
+    const lbl = document.createElement('label');
+    lbl.className = 'parameter-label';
+    lbl.textContent = label;
+    div.appendChild(lbl);
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'parameter-input parameter-selection-field';
+    button.addEventListener('click', onActivate);
+
+    const valueEl = document.createElement('span');
+    valueEl.className = 'parameter-selection-field-value';
+    valueEl.textContent = value;
+    button.appendChild(valueEl);
+
+    if (hint) {
+      const hintEl = document.createElement('span');
+      hintEl.className = 'parameter-selection-field-hint';
+      hintEl.textContent = hint;
+      button.appendChild(hintEl);
+    }
+
+    div.appendChild(button);
     return div;
   }
 
@@ -9073,6 +9902,7 @@ class App {
       edgeKeys: [],
       distance: 1,
       editingFeatureId: null,
+      panelMode: 'standalone',
     };
     this._selectedFacesForEdges = new Map(); // faceIndex → edgeIndices[]
 
@@ -9143,6 +9973,8 @@ class App {
   _acceptChamfer() {
     if (!this._chamferMode) return;
     const cm = this._chamferMode;
+    const isInline = cm.panelMode === 'inline';
+    const editedFeatureId = cm.editingFeatureId || null;
 
     const edgeKeys = this._renderer3d ? this._renderer3d.getSelectedEdgeKeys() : [];
     if (edgeKeys.length === 0) {
@@ -9162,11 +9994,21 @@ class App {
       }
       this._recorder.chamferCreated(edgeKeys, cm.distance);
       this._exitChamferMode();
-      this._deselectAll();
+      if (!isInline) {
+        this._deselectAll();
+      }
       this._featurePanel.update();
       this._updateNodeTree();
       this._update3DView();
       this._updateOperationButtons();
+      if (isInline && editedFeatureId) {
+        const editedFeature = this._getPartFeatureById(editedFeatureId);
+        if (editedFeature) {
+          if (this._featurePanel) this._featurePanel.selectFeature(editedFeature.id);
+          if (this._renderer3d) this._renderer3d.setSelectedFeature(editedFeature.id);
+          this._showLeftFeatureParams(editedFeature);
+        }
+      }
       this.setStatus(`Chamfer: ${cm.distance} units on ${edgeKeys.length} edge(s)`);
     } catch (err) {
       this.setStatus(`Chamfer failed: ${err.message}`);
@@ -9174,24 +10016,40 @@ class App {
   }
 
   _cancelChamfer() {
+    const inlineFeature = this._chamferMode && this._chamferMode.panelMode === 'inline'
+      ? this._getPartFeatureById(this._chamferMode.editingFeatureId)
+      : null;
     this._exitChamferMode();
     this._update3DView();
     this._updateOperationButtons();
+    if (inlineFeature) {
+      if (this._featurePanel) this._featurePanel.selectFeature(inlineFeature.id);
+      if (this._renderer3d) this._renderer3d.setSelectedFeature(inlineFeature.id);
+      this._showLeftFeatureParams(inlineFeature);
+      this.setStatus('Chamfer edit cancelled.');
+      return;
+    }
     this.setStatus('Chamfer cancelled.');
   }
 
   _exitChamferMode() {
     if (!this._chamferMode) return;
+    const isInline = this._chamferMode.panelMode === 'inline';
     if (this._renderer3d) {
       this._renderer3d.setEdgeSelectionMode(false);
+      this._renderer3d.clearEdgeSelection();
       this._renderer3d.clearGhostPreview();
       this._renderer3d.setHoveredEdge(-1);
       this._renderer3d.setHoveredFace(-1);
     }
+    this._selectedFacesForEdges = new Map();
+    this._clearActiveFeatureSelectionTarget();
     const btnChamfer = document.getElementById('btn-chamfer');
     if (btnChamfer) btnChamfer.classList.remove('active');
     this._chamferMode = null;
-    this._showLeftFeatureParams(null);
+    if (!isInline) {
+      this._showLeftFeatureParams(null);
+    }
     this._scheduleRender();
   }
 
@@ -9209,8 +10067,8 @@ class App {
     this._filletMode = {
       edgeKeys: [],
       radius: 1,
-      segments: 8,
       editingFeatureId: null,
+      panelMode: 'standalone',
     };
     this._selectedFacesForEdges = new Map(); // faceIndex → edgeIndices[]
 
@@ -9257,15 +10115,6 @@ class App {
       }
     }));
 
-    // Segments
-    container.appendChild(this._createParamRow('Segments', 'number', fm.segments, (v) => {
-      const parsed = parseInt(v, 10);
-      if (!isNaN(parsed) && parsed >= 2 && parsed <= 32) {
-        fm.segments = parsed;
-        this._updateFilletPreview();
-      }
-    }));
-
     // Accept / Cancel
     const btnRow = document.createElement('div');
     btnRow.style.cssText = 'display:flex;gap:8px;margin-top:12px;padding:0 4px';
@@ -9290,6 +10139,8 @@ class App {
   _acceptFillet() {
     if (!this._filletMode) return;
     const fm = this._filletMode;
+    const isInline = fm.panelMode === 'inline';
+    const editedFeatureId = fm.editingFeatureId || null;
 
     const edgeKeys = this._renderer3d ? this._renderer3d.getSelectedEdgeKeys() : [];
     if (edgeKeys.length === 0) {
@@ -9298,23 +10149,42 @@ class App {
     }
 
     try {
+      const segments = this._getTessellationDrivenCurveSegments();
       if (fm.editingFeatureId) {
         // Update existing feature
         this._partManager.modifyFeature(fm.editingFeatureId, (f) => {
-          f.radius = fm.radius;
-          f.segments = fm.segments;
+          if (typeof f.setRadius === 'function') {
+            f.setRadius(fm.radius);
+          } else {
+            f.radius = fm.radius;
+          }
+          if (typeof f.setSegments === 'function') {
+            f.setSegments(segments);
+          } else {
+            f.segments = segments;
+          }
           f.edgeKeys = edgeKeys;
         });
       } else {
-        this._partManager.fillet(edgeKeys, fm.radius, { segments: fm.segments });
+        this._partManager.fillet(edgeKeys, fm.radius, { segments });
       }
-      this._recorder.filletCreated(edgeKeys, fm.radius, fm.segments);
+      this._recorder.filletCreated(edgeKeys, fm.radius, segments);
       this._exitFilletMode();
-      this._deselectAll();
+      if (!isInline) {
+        this._deselectAll();
+      }
       this._featurePanel.update();
       this._updateNodeTree();
       this._update3DView();
       this._updateOperationButtons();
+      if (isInline && editedFeatureId) {
+        const editedFeature = this._getPartFeatureById(editedFeatureId);
+        if (editedFeature) {
+          if (this._featurePanel) this._featurePanel.selectFeature(editedFeature.id);
+          if (this._renderer3d) this._renderer3d.setSelectedFeature(editedFeature.id);
+          this._showLeftFeatureParams(editedFeature);
+        }
+      }
       this.setStatus(`Fillet: radius ${fm.radius} on ${edgeKeys.length} edge(s)`);
     } catch (err) {
       this.setStatus(`Fillet failed: ${err.message}`);
@@ -9322,24 +10192,40 @@ class App {
   }
 
   _cancelFillet() {
+    const inlineFeature = this._filletMode && this._filletMode.panelMode === 'inline'
+      ? this._getPartFeatureById(this._filletMode.editingFeatureId)
+      : null;
     this._exitFilletMode();
     this._update3DView();
     this._updateOperationButtons();
+    if (inlineFeature) {
+      if (this._featurePanel) this._featurePanel.selectFeature(inlineFeature.id);
+      if (this._renderer3d) this._renderer3d.setSelectedFeature(inlineFeature.id);
+      this._showLeftFeatureParams(inlineFeature);
+      this.setStatus('Fillet edit cancelled.');
+      return;
+    }
     this.setStatus('Fillet cancelled.');
   }
 
   _exitFilletMode() {
     if (!this._filletMode) return;
+    const isInline = this._filletMode.panelMode === 'inline';
     if (this._renderer3d) {
       this._renderer3d.setEdgeSelectionMode(false);
+      this._renderer3d.clearEdgeSelection();
       this._renderer3d.clearGhostPreview();
       this._renderer3d.setHoveredEdge(-1);
       this._renderer3d.setHoveredFace(-1);
     }
+    this._selectedFacesForEdges = new Map();
+    this._clearActiveFeatureSelectionTarget();
     const btnFillet = document.getElementById('btn-fillet');
     if (btnFillet) btnFillet.classList.remove('active');
     this._filletMode = null;
-    this._showLeftFeatureParams(null);
+    if (!isInline) {
+      this._showLeftFeatureParams(null);
+    }
     this._scheduleRender();
   }
 
@@ -9498,7 +10384,9 @@ class App {
    * Routes to the correct UI builder depending on the current mode.
    */
   _refreshSelectionUI() {
-    if (this._chamferMode) this._showChamferUI();
+    const inlineFeature = this._getCurrentInlineFeatureEditFeature();
+    if (inlineFeature) this._showLeftFeatureParams(inlineFeature);
+    else if (this._chamferMode) this._showChamferUI();
     else if (this._filletMode) this._showFilletUI();
     else this._showLeftFeatureParams(null);
     this._updateOperationButtons();
@@ -9550,6 +10438,7 @@ class App {
 
   /** Called when edge selection changes (click toggle) — refresh UI. */
   _onEdgeSelectionChanged() {
+    this._syncActiveFeatureSelectionDraft();
     this._refreshSelectionUI();
   }
 
@@ -9614,7 +10503,7 @@ class App {
 
     try {
       const resolvedKeys = expandPathEdgeKeys(baseResult.geometry, edgeKeys);
-      const preview = applyFillet(baseResult.geometry, resolvedKeys, fm.radius, fm.segments);
+      const preview = applyFillet(baseResult.geometry, resolvedKeys, fm.radius, this._getTessellationDrivenCurveSegments());
       this._renderer3d.setGhostPreview(preview);
       this._scheduleRender();
     } catch (_) {
@@ -9628,9 +10517,13 @@ class App {
 
   /** Enter edge editing mode for an existing chamfer feature. */
   _editChamferEdges(feature) {
-    if (this._extrudeMode || this._chamferMode || this._filletMode) return;
+    if (this._extrudeMode || this._filletMode) return;
 
-    // Need to show geometry BEFORE this feature so edges can be selected
+    const alreadyInlineEditing = this._chamferMode
+      && this._chamferMode.panelMode === 'inline'
+      && this._chamferMode.editingFeatureId === feature.id;
+    if (this._chamferMode && !alreadyInlineEditing) return;
+
     const part = this._partManager.getPart();
     if (!part) return;
     const baseResult = part.getGeometryBeforeFeature(feature.id);
@@ -9639,35 +10532,47 @@ class App {
       return;
     }
 
-    this._chamferMode = {
-      edgeKeys: [...feature.edgeKeys],
-      distance: feature.distance,
-      editingFeatureId: feature.id,
-    };
-    this._selectedFacesForEdges = new Map();
+    if (!alreadyInlineEditing) {
+      this._chamferMode = {
+        edgeKeys: [...feature.edgeKeys],
+        distance: feature.distance,
+        editingFeatureId: feature.id,
+        panelMode: 'inline',
+      };
+      this._selectedFacesForEdges = new Map();
 
-    if (this._renderer3d) {
-      // Display the base geometry (before chamfer) so edges are visible
-      this._renderer3d.renderPreviewGeometry(baseResult.geometry);
-      this._renderer3d.setEdgeSelectionMode(true);
-      this._renderer3d.selectFace(-1);
-      // Pre-select the feature's existing edges
-      this._renderer3d.selectEdgesByKeys(feature.edgeKeys);
+      if (this._renderer3d) {
+        this._renderer3d.renderPreviewGeometry(baseResult.geometry);
+      }
     }
     this._selectedFaces.clear();
 
     const btnChamfer = document.getElementById('btn-chamfer');
     if (btnChamfer) btnChamfer.classList.add('active');
 
-    this._showChamferUI();
+    this._activateFeatureSelectionTarget({
+      featureId: feature.id,
+      fieldId: 'edges',
+      label: 'Edges',
+      selectionType: 'edge',
+      acceptedTypes: ['edge', 'face'],
+      maxSelections: null,
+      stateKey: 'edgeKeys',
+    });
+    this._updateChamferPreview();
     this._updateOperationButtons();
     this._scheduleRender();
-    this.setStatus('Edit Chamfer: Modify edge selection and distance, then Accept.');
+    this.setStatus('Edit Chamfer: Pick edges or faces in the viewport, then Accept or Cancel.');
   }
 
   /** Enter edge editing mode for an existing fillet feature. */
   _editFilletEdges(feature) {
-    if (this._extrudeMode || this._chamferMode || this._filletMode) return;
+    if (this._extrudeMode || this._chamferMode) return;
+
+    const alreadyInlineEditing = this._filletMode
+      && this._filletMode.panelMode === 'inline'
+      && this._filletMode.editingFeatureId === feature.id;
+    if (this._filletMode && !alreadyInlineEditing) return;
 
     const part = this._partManager.getPart();
     if (!part) return;
@@ -9677,29 +10582,37 @@ class App {
       return;
     }
 
-    this._filletMode = {
-      edgeKeys: [...feature.edgeKeys],
-      radius: feature.radius,
-      segments: feature.segments || 8,
-      editingFeatureId: feature.id,
-    };
-    this._selectedFacesForEdges = new Map();
+    if (!alreadyInlineEditing) {
+      this._filletMode = {
+        edgeKeys: [...feature.edgeKeys],
+        radius: feature.radius,
+        editingFeatureId: feature.id,
+        panelMode: 'inline',
+      };
+      this._selectedFacesForEdges = new Map();
 
-    if (this._renderer3d) {
-      this._renderer3d.renderPreviewGeometry(baseResult.geometry);
-      this._renderer3d.setEdgeSelectionMode(true);
-      this._renderer3d.selectFace(-1);
-      this._renderer3d.selectEdgesByKeys(feature.edgeKeys);
+      if (this._renderer3d) {
+        this._renderer3d.renderPreviewGeometry(baseResult.geometry);
+      }
     }
     this._selectedFaces.clear();
 
     const btnFillet = document.getElementById('btn-fillet');
     if (btnFillet) btnFillet.classList.add('active');
 
-    this._showFilletUI();
+    this._activateFeatureSelectionTarget({
+      featureId: feature.id,
+      fieldId: 'edges',
+      label: 'Edges',
+      selectionType: 'edge',
+      acceptedTypes: ['edge', 'face'],
+      maxSelections: null,
+      stateKey: 'edgeKeys',
+    });
+    this._updateFilletPreview();
     this._updateOperationButtons();
     this._scheduleRender();
-    this.setStatus('Edit Fillet: Modify edge selection, radius and segments, then Accept.');
+    this.setStatus('Edit Fillet: Pick edges or faces in the viewport, then Accept or Cancel.');
   }
 
   // =========================================================================

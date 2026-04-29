@@ -518,6 +518,10 @@ export class Part {
     }
     
     const revolveFeature = new RevolveFeature(this._nextTypeName('revolve', 'Revolve'), sketchId, angle);
+    const tessSegments = Math.round(Number(globalTessConfig.curveSegments));
+    if (Number.isFinite(tessSegments)) {
+      revolveFeature.segments = Math.max(2, tessSegments);
+    }
     
     if (!options.operation) {
       const existingSolid = this.featureTree.getLastSolidResult();

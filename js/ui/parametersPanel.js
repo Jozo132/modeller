@@ -1,5 +1,6 @@
 // ui/parametersPanel.js - Feature parameters editing panel
 import { getFeatureIconSVG } from './featureIcons.js';
+import { globalTessConfig } from '../cad/TessellationConfig.js';
 
 /**
  * ParametersPanel - Displays and edits feature parameters
@@ -136,25 +137,75 @@ export class ParametersPanel {
       const radians = parseFloat(value) * Math.PI / 180;
       this.partManager.modifyFeature(feature.id, (f) => {
         f.setAngle(radians);
+        if (Object.prototype.hasOwnProperty.call(f, 'segments')) {
+          f.segments = globalTessConfig.curveSegments;
+        }
       });
       if (this.onParameterChange) this.onParameterChange(feature.id, 'angle', radians);
     });
     this.contentElement.appendChild(angleDiv);
 
-    // Segments
-    const segmentsDiv = this.createParameter('Segments', 'number', feature.segments, (value) => {
-      const parsed = parseInt(value);
-      this.partManager.modifyFeature(feature.id, (f) => {
-        f.segments = parsed;
-      });
-      if (this.onParameterChange) this.onParameterChange(feature.id, 'segments', parsed);
-    });
-    this.contentElement.appendChild(segmentsDiv);
+    const sketches = this.partManager.getFeatures().filter((candidate) => candidate.type === 'sketch');
+    const sketchOptions = sketches.map((sketch) => ({ value: sketch.id, label: sketch.name }));
+    if (sketchOptions.length === 0) {
+      sketchOptions.push({ value: '', label: '(no sketches)' });
+    }
 
-    const axisInfo = document.createElement('div');
-    axisInfo.className = 'parameter-info';
-    axisInfo.innerHTML = `<p><strong>Axis:</strong> ${describeRevolveAxis(feature)}</p>`;
-    this.contentElement.appendChild(axisInfo);
+    const sketchDiv = this.createParameter('Sketch', 'select', feature.sketchFeatureId || '', (value) => {
+      const nextSketch = sketches.find((candidate) => candidate.id === value) || null;
+      const nextAxisSegmentId = getPreferredRevolveAxisSegmentId(nextSketch, feature.axisSegmentId);
+      this.partManager.modifyFeature(feature.id, (f) => {
+        if (typeof f.setSketchFeature === 'function') {
+          f.setSketchFeature(value || null);
+        } else {
+          f.sketchFeatureId = value || null;
+        }
+        if (typeof f.setAxisSegmentId === 'function') {
+          f.setAxisSegmentId(nextAxisSegmentId);
+        } else {
+          f.axisSegmentId = nextAxisSegmentId;
+        }
+        if (Object.prototype.hasOwnProperty.call(f, 'segments')) {
+          f.segments = globalTessConfig.curveSegments;
+        }
+      });
+      if (this.onParameterChange) this.onParameterChange(feature.id, 'sketchFeatureId', value || null);
+      this.showFeature(feature);
+    }, sketchOptions);
+    this.contentElement.appendChild(sketchDiv);
+
+    if (feature.axisSource === 'manual') {
+      const axisInfo = document.createElement('div');
+      axisInfo.className = 'parameter-info';
+      axisInfo.innerHTML = `<p><strong>Axis:</strong> ${describeRevolveAxis(feature)}</p>`;
+      this.contentElement.appendChild(axisInfo);
+    } else {
+      const sketchFeature = sketches.find((candidate) => candidate.id === feature.sketchFeatureId) || null;
+      const axisOptions = getRevolveAxisOptions(sketchFeature, feature.axisSegmentId);
+      const axisDiv = this.createParameter(
+        'Axis',
+        'select',
+        feature.axisSegmentId != null ? String(feature.axisSegmentId) : axisOptions[0].value,
+        (value) => {
+          const parsed = value === '' ? null : Number(value);
+          const nextAxisSegmentId = Number.isNaN(parsed) ? null : parsed;
+          this.partManager.modifyFeature(feature.id, (f) => {
+            if (typeof f.setAxisSegmentId === 'function') {
+              f.setAxisSegmentId(nextAxisSegmentId);
+            } else {
+              f.axisSegmentId = nextAxisSegmentId;
+            }
+            if (Object.prototype.hasOwnProperty.call(f, 'segments')) {
+              f.segments = globalTessConfig.curveSegments;
+            }
+          });
+          if (this.onParameterChange) this.onParameterChange(feature.id, 'axisSegmentId', nextAxisSegmentId);
+          this.showFeature(feature);
+        },
+        axisOptions
+      );
+      this.contentElement.appendChild(axisDiv);
+    }
   }
 
   /**
@@ -254,4 +305,45 @@ function describeRevolveAxis(feature) {
     return 'Manual axis';
   }
   return 'Default axis';
+}
+
+function getPreferredRevolveAxisSegmentId(sketchFeature, currentAxisSegmentId = null) {
+  if (!sketchFeature || typeof sketchFeature.getRevolveAxisCandidates !== 'function') {
+    return null;
+  }
+
+  const candidates = sketchFeature.getRevolveAxisCandidates();
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  const preserved = currentAxisSegmentId != null
+    ? candidates.find((candidate) => candidate.segmentId === currentAxisSegmentId)
+    : null;
+  return preserved ? preserved.segmentId : candidates[0].segmentId;
+}
+
+function getRevolveAxisOptions(sketchFeature, currentAxisSegmentId = null) {
+  if (!sketchFeature || typeof sketchFeature.getRevolveAxisCandidates !== 'function') {
+    return [{ value: '', label: 'Default axis' }];
+  }
+
+  const candidates = sketchFeature.getRevolveAxisCandidates();
+  if (candidates.length === 0) {
+    return [{ value: '', label: 'Default axis' }];
+  }
+
+  const options = candidates.map((candidate) => ({
+    value: String(candidate.segmentId),
+    label: `Construction line #${candidate.segmentId}`,
+  }));
+
+  if (currentAxisSegmentId != null && !options.some((option) => option.value === String(currentAxisSegmentId))) {
+    options.unshift({
+      value: String(currentAxisSegmentId),
+      label: `Construction line #${currentAxisSegmentId} (missing)`,
+    });
+  }
+
+  return options;
 }
