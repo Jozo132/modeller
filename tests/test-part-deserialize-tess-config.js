@@ -141,7 +141,7 @@ check('deserialize tessellation override wins over serialized model quality', ()
   assert.equal(feature?._cachedMesh?.surfaceSegments, override.surfaceSegments);
 });
 
-check('Unnamed-Body.cmod checkpoint restore replays STEP import instead of CBREP fast restore', () => {
+check('Unnamed-Body.cmod checkpoint restore fast-restores STEP import from CBREP', () => {
   const serialized = serializedUnnamedBodyWithCheckpoint();
   assert.ok(serialized.featureTree?.checkpoints, 'test fixture should include a serialized CBREP checkpoint');
 
@@ -157,8 +157,11 @@ check('Unnamed-Body.cmod checkpoint restore replays STEP import instead of CBREP
   const result = restored.featureTree.getFinalResult();
   const feature = restored.featureTree.features.find((candidate) => candidate.type === 'step-import');
 
-  assert.equal(result?._restoredFromCheckpoint, undefined, 'STEP imports should opt out of direct CBREP fast restore');
-  assert.equal(feature?._cachedMesh?.curveSegments, serialized.tessellationConfig.curveSegments);
+  assert.equal(result?._restoredFromCheckpoint, true, 'STEP imports should fast-restore from CBREP checkpoints');
+  assert.ok(result?.geometry?.topoBody, 'fast-restored STEP result should preserve geometry.topoBody');
+  assert.ok(result?.geometry?.faces?.length > 0, 'fast-restored STEP result should have display faces');
+  assert.equal(result?.irHash, serialized.featureTree.checkpoints[feature.id].hash);
+  assert.equal(feature?._cachedMesh, null, 'fast restore should not rebuild the STEP parser mesh cache');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

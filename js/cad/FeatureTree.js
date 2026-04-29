@@ -55,6 +55,10 @@ export class FeatureTree {
     // render dirty-rect propagation) read result.allFacesDirty /
     // result.invalidatedFaceIds and then call clearDirtyFaces(featureId).
     this._dirtyFaces = new DirtyFaceTracker();
+
+    // Optional dependency bundle for rebuilding display results from CBREP
+    // checkpoints without replaying expensive feature operations.
+    this._fastRestoreDeps = null;
   }
 
   // -----------------------------------------------------------------------
@@ -77,6 +81,23 @@ export class FeatureTree {
    */
   setResidencyManager(mgr) {
     this._residencyManager = mgr;
+  }
+
+  /**
+   * Attach synchronous restore dependencies used by rollback/checkpoint paths.
+   * @param {{ readCbrep: Function, tessellateBody: Function, computeFeatureEdges: Function, calculateMeshVolume: Function, calculateBoundingBox: Function }|null} deps
+   */
+  setFastRestoreDeps(deps) {
+    this._fastRestoreDeps = this._hasValidFastRestoreDeps(deps) ? deps : null;
+  }
+
+  _hasValidFastRestoreDeps(deps) {
+    return !!deps &&
+      typeof deps.readCbrep === 'function' &&
+      typeof deps.tessellateBody === 'function' &&
+      typeof deps.computeFeatureEdges === 'function' &&
+      typeof deps.calculateMeshVolume === 'function' &&
+      typeof deps.calculateBoundingBox === 'function';
   }
 
   /**
@@ -237,11 +258,7 @@ export class FeatureTree {
    */
   tryFastRestoreFromCheckpoints(checkpoints, deps) {
     if (!checkpoints || typeof checkpoints !== 'object') return false;
-    if (!deps || typeof deps.readCbrep !== 'function' ||
-        typeof deps.tessellateBody !== 'function' ||
-        typeof deps.computeFeatureEdges !== 'function' ||
-        typeof deps.calculateMeshVolume !== 'function' ||
-        typeof deps.calculateBoundingBox !== 'function') {
+    if (!this._hasValidFastRestoreDeps(deps)) {
       return false;
     }
 
@@ -251,14 +268,9 @@ export class FeatureTree {
     for (const feature of this.features) {
       if (feature.suppressed) continue;
       if (feature.type === 'sketch') continue;
-      // Per-feature opt-out: some features (e.g. STEP import) produce
-      // geometry through a specialized pipeline whose JS-side CBREP
-      // roundtrip is known-lossy — the tessellator picks a different face-
-      // triangulation strategy when fed the restored TopoBody, producing
-      // visually corrupt output (loops no longer close in UV, surfaceInfo
-      // loses analytic-surface axes, etc.). Those features expose
-      // `canFastRestoreFromCbrep() === false` and force a full replay so
-      // their execute() path rebuilds the mesh authoritatively.
+      // Per-feature opt-out: feature types whose geometry pipeline is known
+      // to be lossy through CBREP can force a full replay by exposing
+      // `canFastRestoreFromCbrep() === false`.
       if (typeof feature.canFastRestoreFromCbrep === 'function' &&
           feature.canFastRestoreFromCbrep() === false) {
         return false;
@@ -306,32 +318,7 @@ export class FeatureTree {
         }
         if (!buffer) throw new Error(`empty payload for ${feature.id}`);
 
-        const topoBody = deps.readCbrep(buffer);
-        const mesh = deps.tessellateBody(topoBody, {
-          validate: false,
-          fallbackOnInvalidWasm: true,
-        });
-        if (!mesh || !mesh.faces || mesh.faces.length === 0) {
-          throw new Error(`empty mesh from CBREP for ${feature.id}`);
-        }
-
-        const edgeInfo = deps.computeFeatureEdges(mesh.faces);
-        if (edgeInfo) {
-          mesh.edges = edgeInfo.edges ?? mesh.edges ?? [];
-          mesh.paths = edgeInfo.paths ?? mesh.paths ?? [];
-          mesh.visualEdges = edgeInfo.visualEdges ?? mesh.visualEdges ?? [];
-        }
-
-        const result = {
-          type: 'solid',
-          geometry: mesh,
-          solid: { geometry: mesh, topoBody },
-          volume: deps.calculateMeshVolume(mesh),
-          boundingBox: deps.calculateBoundingBox(mesh),
-          cbrepBuffer: buffer,
-          irHash: entry.hash ?? null,
-          _restoredFromCheckpoint: true,
-        };
+        const result = this._buildSolidResultFromCbrep(feature.id, buffer, entry.hash ?? null, deps);
         feature.result = result;
         feature.error = null;
         if (feature._irHash == null && entry.hash != null) {
@@ -454,6 +441,69 @@ export class FeatureTree {
       result._cbrepCheckpointError = err?.message || String(err);
       return false;
     }
+  }
+
+  _buildSolidResultFromCbrep(featureId, buffer, irHash, deps) {
+    if (!this._hasValidFastRestoreDeps(deps)) {
+      throw new Error('missing CBREP restore dependencies');
+    }
+
+    const topoBody = deps.readCbrep(buffer);
+    const mesh = deps.tessellateBody(topoBody, {
+      validate: false,
+      fallbackOnInvalidWasm: true,
+    });
+    if (!mesh || !mesh.faces || mesh.faces.length === 0) {
+      throw new Error(`empty mesh from CBREP for ${featureId}`);
+    }
+    mesh.topoBody = topoBody;
+
+    const edgeInfo = deps.computeFeatureEdges(mesh.faces);
+    if (edgeInfo) {
+      mesh.edges = edgeInfo.edges ?? mesh.edges ?? [];
+      mesh.paths = edgeInfo.paths ?? mesh.paths ?? [];
+      mesh.visualEdges = edgeInfo.visualEdges ?? mesh.visualEdges ?? [];
+    }
+
+    return {
+      type: 'solid',
+      geometry: mesh,
+      solid: { geometry: mesh, topoBody },
+      body: topoBody,
+      volume: deps.calculateMeshVolume(mesh),
+      boundingBox: deps.calculateBoundingBox(mesh),
+      cbrepBuffer: buffer,
+      irHash,
+      _restoredFromCheckpoint: true,
+    };
+  }
+
+  _restoreSolidResultFromCheckpoint(featureId, deps = this._fastRestoreDeps) {
+    if (!this._hasValidFastRestoreDeps(deps)) return false;
+    const feature = this.featureMap.get(featureId);
+    const oldResult = this.results[featureId];
+    if (!feature || !oldResult || oldResult.type !== 'solid' || !oldResult.cbrepBuffer) return false;
+    if (typeof feature.canFastRestoreFromCbrep === 'function' && feature.canFastRestoreFromCbrep() === false) {
+      return false;
+    }
+
+    let nextResult;
+    try {
+      nextResult = this._buildSolidResultFromCbrep(featureId, oldResult.cbrepBuffer, oldResult.irHash ?? null, deps);
+    } catch (err) {
+      oldResult._cbrepRestoreError = err?.message || String(err);
+      return false;
+    }
+
+    this._releaseResultHandle(oldResult, featureId);
+    feature.result = nextResult;
+    feature.error = null;
+    if (feature._irHash == null && nextResult.irHash != null) {
+      feature._irHash = nextResult.irHash;
+    }
+    this._stampSolidResult(featureId, nextResult);
+    this.results[featureId] = nextResult;
+    return true;
   }
 
   /**
@@ -752,11 +802,13 @@ export class FeatureTree {
    * but their existing result payloads are preserved so dragging the rollback
    * handle forward can be instant when inputs have not changed.
    * @param {number} activeFeatureCount
-   * @returns {{replayed:boolean}}
+   * @param {Object|null} [deps]
+   * @returns {{replayed:boolean, restored:number}}
    */
-  applyRollbackSuppression(activeFeatureCount) {
+  applyRollbackSuppression(activeFeatureCount, deps = this._fastRestoreDeps) {
     const pos = Math.max(0, Math.min(this.features.length, Number.isFinite(activeFeatureCount) ? activeFeatureCount : this.features.length));
     let needsReplay = false;
+    let restored = 0;
 
     for (let i = 0; i < this.features.length; i++) {
       const feature = this.features[i];
@@ -779,9 +831,17 @@ export class FeatureTree {
 
     if (needsReplay) {
       this.executeAll();
-      return { replayed: true };
+      return { replayed: true, restored };
     }
-    return { replayed: false };
+
+    for (let i = 0; i < pos; i++) {
+      const feature = this.features[i];
+      if (feature.type === 'sketch') continue;
+      if (this._restoreSolidResultFromCheckpoint(feature.id, deps)) {
+        restored++;
+      }
+    }
+    return { replayed: false, restored };
   }
 
   /**
@@ -1096,6 +1156,9 @@ export class FeatureTree {
     }
     if (Object.prototype.hasOwnProperty.call(options, 'residencyManager')) {
       tree.setResidencyManager(options.residencyManager ?? null);
+    }
+    if (Object.prototype.hasOwnProperty.call(options, 'fastRestoreDeps')) {
+      tree.setFastRestoreDeps(options.fastRestoreDeps ?? null);
     }
 
     if (!data || !data.features) return tree;

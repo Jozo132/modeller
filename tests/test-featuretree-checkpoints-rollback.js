@@ -1,11 +1,29 @@
 import './_watchdog.mjs';
 
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
+import { parseCMOD } from '../js/cmod.js';
 import { Part } from '../js/cad/Part.js';
 import { Sketch } from '../js/cad/Sketch.js';
 import { Feature } from '../js/cad/Feature.js';
 import { FeatureTree } from '../js/cad/FeatureTree.js';
+import { tessellateBody } from '../js/cad/Tessellation.js';
+import { computeFeatureEdges } from '../js/cad/EdgeAnalysis.js';
+import { calculateMeshVolume, calculateBoundingBox, countInvertedFaces } from '../js/cad/toolkit/MeshAnalysis.js';
+import { detectBoundaryEdges, detectDegenerateFaces } from '../js/cad/MeshValidator.js';
+import {
+  TopoVertex, TopoEdge, TopoCoEdge, TopoLoop, TopoFace, TopoShell, TopoBody,
+  SurfaceType,
+} from '../js/cad/BRepTopology.js';
+import { NurbsCurve } from '../js/cad/NurbsCurve.js';
+import { NurbsSurface } from '../js/cad/NurbsSurface.js';
+import { readCbrep, setTopoDeps } from '../packages/ir/reader.js';
+
+setTopoDeps({
+  TopoVertex, TopoEdge, TopoCoEdge, TopoLoop, TopoFace, TopoShell, TopoBody,
+  NurbsCurve, NurbsSurface, SurfaceType,
+});
 
 let passed = 0;
 let failed = 0;
@@ -28,6 +46,28 @@ function makeRectSketch() {
   sketch.addSegment(10, 10, 0, 10);
   sketch.addSegment(0, 10, 0, 0);
   return sketch;
+}
+
+function fastRestoreDeps() {
+  return {
+    readCbrep,
+    tessellateBody,
+    computeFeatureEdges,
+    calculateMeshVolume,
+    calculateBoundingBox,
+  };
+}
+
+function loadSamplePart(fileName) {
+  const raw = readFileSync(new URL(`./samples/${fileName}`, import.meta.url), 'utf8');
+  return Part.deserialize(parseCMOD(raw).data.part, { fastRestoreDeps: fastRestoreDeps() });
+}
+
+function assertValidMesh(geometry, label) {
+  assert.ok(geometry?.faces?.length > 0, `${label} should have display faces`);
+  assert.equal(detectBoundaryEdges(geometry.faces).count, 0, `${label} should not have boundary edges`);
+  assert.equal(detectDegenerateFaces(geometry.faces).count, 0, `${label} should not have degenerate faces`);
+  assert.equal(countInvertedFaces(geometry), 0, `${label} should not have inverted faces`);
 }
 
 class DummySolidFeature extends Feature {
@@ -98,6 +138,38 @@ test('rollback suppression reuses cached results without replaying', () => {
   assert.equal(first.suppressed, false);
   assert.equal(second.suppressed, false);
   assert.equal(third.suppressed, false);
+});
+
+test('puzzle rollback restores historic extrude body from CBREP after forward drag', () => {
+  const part = loadSamplePart('puzzle-extrude-cc.cmod');
+  const tree = part.featureTree;
+  const extrude = tree.features.find((feature) => feature.type === 'extrude');
+  assert.ok(extrude, 'sample should contain an extrude feature');
+  assert.ok(tree.results[extrude.id]?.cbrepBuffer, 'extrude should have a rollback CBREP checkpoint');
+
+  const firstRollback = tree.applyRollbackSuppression(2);
+  assert.equal(firstRollback.replayed, false, 'initial rollback should not replay the feature tree');
+  assert.ok(firstRollback.restored >= 1, 'initial rollback should restore at least one solid checkpoint');
+
+  const firstResult = tree.results[extrude.id];
+  assert.equal(firstResult?._restoredFromCheckpoint, true, 'rolled-back extrude should be rebuilt from CBREP');
+  assertValidMesh(firstResult.geometry, 'first rolled-back extrude');
+  const firstFaceCount = firstResult.geometry.faces.length;
+  const firstTopoFaceCount = firstResult.geometry.topoBody.faces().length;
+
+  const rollForward = tree.applyRollbackSuppression(3);
+  assert.equal(rollForward.replayed, false, 'rolling forward should reuse available results');
+
+  const secondRollback = tree.applyRollbackSuppression(2);
+  assert.equal(secondRollback.replayed, false, 'second rollback should not replay the feature tree');
+  assert.ok(secondRollback.restored >= 1, 'second rollback should restore from checkpoint again');
+
+  const secondResult = tree.results[extrude.id];
+  assert.equal(secondResult?._restoredFromCheckpoint, true, 'second rolled-back extrude should be rebuilt from CBREP');
+  assert.notEqual(secondResult.geometry, firstResult.geometry, 'second rollback should rebuild a clean mesh object');
+  assert.equal(secondResult.geometry.faces.length, firstFaceCount, 'restored rollback mesh face count should be stable');
+  assert.equal(secondResult.geometry.topoBody.faces().length, firstTopoFaceCount, 'restored rollback topology face count should be stable');
+  assertValidMesh(secondResult.geometry, 'second rolled-back extrude');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

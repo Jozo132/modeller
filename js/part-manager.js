@@ -350,6 +350,9 @@ export class PartManager {
   _wirePart(part) {
     if (!part || typeof part.setWasmHandleSubsystem !== 'function') return;
     part.setWasmHandleSubsystem(this._handleRegistry, this._residencyManager);
+    if (part.featureTree && typeof part.featureTree.setFastRestoreDeps === 'function') {
+      part.featureTree.setFastRestoreDeps(FAST_RESTORE_DEPS);
+    }
   }
 
   _resetWasmSubsystemState() {

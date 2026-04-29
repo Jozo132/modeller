@@ -2,10 +2,8 @@ import './_watchdog.mjs';
 // tests/test-fast-restore-opt-out.js
 // Regression — features exposing `canFastRestoreFromCbrep() === false` force
 // FeatureTree.tryFastRestoreFromCheckpoints to bail out and fall through to
-// the full executeAll replay. This is the protection against corrupted
-// restored geometry for STEP imports (the JS-side CBREP roundtrip is
-// known-lossy for analytic-surface metadata; see StepImportFeature
-// canFastRestoreFromCbrep() docblock).
+// the full executeAll replay. The hook remains available for future feature
+// types whose CBREP roundtrip is known to be lossy.
 
 import assert from 'node:assert/strict';
 import { FeatureTree } from '../js/cad/FeatureTree.js';
@@ -35,7 +33,7 @@ const fakeDeps = {
   calculateBoundingBox: () => ({ min: { x: 0, y: 0, z: 0 }, max: { x: 1, y: 1, z: 1 } }),
 };
 
-console.log('Fast-restore opt-out (STEP import protection)\n');
+console.log('Fast-restore opt-out\n');
 
 check('opts-out feature forces tryFastRestoreFromCheckpoints to return false', () => {
   const tree = new FeatureTree();
