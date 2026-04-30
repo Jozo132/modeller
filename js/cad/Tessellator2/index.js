@@ -25,6 +25,7 @@ import {
   materializeFaceMesh,
   shouldReuseIncrementalCache,
 } from './IncrementalTessellation.js';
+import { circumCenter3D } from '../toolkit/Vec3Utils.js';
 
 // ── Shadow tessellation disagreement log ────────────────────────────
 /** @type {Array<Object>} */
@@ -165,6 +166,7 @@ export function robustTessellateBody(body, opts = {}) {
 
   // Stage 3: Stitch face meshes into a single body mesh
   const result = stitcher.stitch(faceMeshes);
+  result.faces = _repairClosedMeshWinding(result.faces);
   result.edges = edgeResults;
 
   const removedFaceKeys = [...previousFaceKeys].filter((key) => !currentFaceKeys.has(key)).sort();
@@ -201,6 +203,318 @@ export function robustTessellateBody(body, opts = {}) {
 }
 
 /**
+ * Tessellate an exact rolling fillet face from its rail samples.
+ *
+ * The generic NURBS CDT path can fold when a rolling face has a long
+ * rail-boundary polyline near a tangent endpoint.  The face descriptor already
+ * carries matched rail points and ball centers, so tessellate it as a structured
+ * strip: rows follow the selected rail and columns follow each cross-section
+ * radius arc.
+ *
+ * @param {import('../BRepTopology.js').TopoFace} face
+ * @param {number} surfSegs
+ * @returns {{ vertices: Array, faces: Array }|null}
+ * @private
+ */
+function _tessellateRollingFilletFace(face, edgeSampler, edgeSegs, surfSegs) {
+  const shared = face && face.shared;
+  let rail0 = shared && shared._rollingRail0;
+  let rail1 = shared && shared._rollingRail1;
+  let centers = shared && shared._rollingCenters;
+  if (!shared?.isRollingFillet || !Array.isArray(rail0) || !Array.isArray(rail1) || !Array.isArray(centers)) return null;
+  if (rail0.length !== rail1.length || rail0.length !== centers.length || rail0.length < 2) return null;
+
+  const loopPoints = face.outerLoop?.points?.() || [];
+  if (loopPoints.length > 0) {
+    const snapToLoopPoint = (point) => {
+      let best = null;
+      for (const candidate of loopPoints) {
+        const dist = _dist3(point, candidate);
+        if (!best || dist < best.dist) best = { point: candidate, dist };
+      }
+      return best && best.dist <= 1e-6 ? best.point : point;
+    };
+    rail0 = rail0.map(snapToLoopPoint);
+    rail1 = rail1.map(snapToLoopPoint);
+  }
+
+  const samePoint = (a, b, tolerance = 1e-6) => _dist3(a, b) <= tolerance;
+  const sampleBoundary = (a, b) => {
+    for (const coedge of face.outerLoop?.coedges || []) {
+      const edge = coedge.edge;
+      if (!edge?.startVertex?.point || !edge?.endVertex?.point) continue;
+      const start = edge.startVertex.point;
+      const end = edge.endVertex.point;
+      const matchesForward = samePoint(start, a) && samePoint(end, b);
+      const matchesReverse = samePoint(start, b) && samePoint(end, a);
+      if (!matchesForward && !matchesReverse) continue;
+      const samples = edgeSampler.sampleEdge(edge, edgeSegs).map((point) => ({ ...point }));
+      if (samples.length < 2) return null;
+      if (_dist3(samples[0], a) > _dist3(samples[samples.length - 1], a)) samples.reverse();
+      samples[0] = { ...a };
+      samples[samples.length - 1] = { ...b };
+      return samples;
+    }
+    return null;
+  };
+
+  const initialLastIndex = rail0.length - 1;
+  const rail0Boundary = sampleBoundary(rail0[0], rail0[initialLastIndex]);
+  const rail1Boundary = sampleBoundary(rail1[0], rail1[initialLastIndex]);
+  if (rail0Boundary && rail1Boundary) {
+    const sourceRail0 = rail0.map((point) => ({ ...point }));
+    const sourceRail1 = rail1.map((point) => ({ ...point }));
+    const sourceCenters = centers.map((point) => ({ ...point }));
+    const rowCount = Math.max(rail0Boundary.length, rail1Boundary.length, 2);
+    rail0 = rail0Boundary.length === rowCount
+      ? rail0Boundary.map((point) => ({ ...point }))
+      : _resamplePolylineByCount(rail0Boundary, rowCount);
+    rail1 = rail1Boundary.length === rowCount
+      ? rail1Boundary.map((point) => ({ ...point }))
+      : _resamplePolylineByCount(rail1Boundary, rowCount);
+    centers = rowCount === sourceCenters.length
+      ? sourceCenters.map((point) => ({ ...point }))
+      : rail0.map((point, index) => {
+        const t0 = _polylineFractionForPoint(sourceRail0, point);
+        const t1 = _polylineFractionForPoint(sourceRail1, rail1[index]);
+        const t = Number.isFinite(t0) && Number.isFinite(t1) ? (t0 + t1) * 0.5 : index / Math.max(rowCount - 1, 1);
+        return _samplePolylineAtFraction(sourceCenters, t);
+      });
+  }
+
+  const startSamples = sampleBoundary(rail0[0], rail1[0]) || [{ ...rail0[0] }, { ...rail1[0] }];
+  const lastIndex = rail0.length - 1;
+  const endSamples = sampleBoundary(rail0[lastIndex], rail1[lastIndex]) || [{ ...rail0[lastIndex] }, { ...rail1[lastIndex] }];
+  const interiorSampleCount = Math.max(startSamples.length, endSamples.length, 2);
+  const tValues = [];
+  for (let i = 0; i < interiorSampleCount; i++) {
+    tValues.push(interiorSampleCount === 1 ? 0 : i / (interiorSampleCount - 1));
+  }
+
+  const sampleCrossSection = (a, b, center, values) => {
+    const row = [];
+    const va = { x: a.x - center.x, y: a.y - center.y, z: a.z - center.z };
+    const vb = { x: b.x - center.x, y: b.y - center.y, z: b.z - center.z };
+    const ra = Math.sqrt(va.x * va.x + va.y * va.y + va.z * va.z);
+    const rb = Math.sqrt(vb.x * vb.x + vb.y * vb.y + vb.z * vb.z);
+    const radius = Math.max(ra, rb);
+    const na = _normalize(va);
+    const nb = _normalize(vb);
+    let dot = na.x * nb.x + na.y * nb.y + na.z * nb.z;
+    dot = Math.max(-1, Math.min(1, dot));
+    const angle = Math.acos(dot);
+    for (const t of values) {
+      let point;
+      if (radius > 1e-12 && angle > 1e-8 && angle < Math.PI - 1e-8) {
+        const sinAngle = Math.sin(angle);
+        const w0 = Math.sin((1 - t) * angle) / sinAngle;
+        const w1 = Math.sin(t * angle) / sinAngle;
+        const dir = _normalize({
+          x: na.x * w0 + nb.x * w1,
+          y: na.y * w0 + nb.y * w1,
+          z: na.z * w0 + nb.z * w1,
+        });
+        point = {
+          x: center.x + dir.x * radius,
+          y: center.y + dir.y * radius,
+          z: center.z + dir.z * radius,
+        };
+      } else {
+        point = {
+          x: a.x + (b.x - a.x) * t,
+          y: a.y + (b.y - a.y) * t,
+          z: a.z + (b.z - a.z) * t,
+        };
+      }
+      if (t <= 1e-12) point = { ...a };
+      else if (1 - t <= 1e-12) point = { ...b };
+      row.push(point);
+    }
+    return row;
+  };
+
+  const rows = [];
+  for (let i = 0; i < rail0.length; i++) {
+    const a = rail0[i];
+    const b = rail1[i];
+    const center = centers[i];
+    if (!a || !b || !center) return null;
+    let row;
+    if (i === 0 && startSamples.length > 2) row = startSamples.map((point) => ({ ...point }));
+    else if (i === lastIndex && endSamples.length > 2) row = endSamples.map((point) => ({ ...point }));
+    else if ((i === 0 && interiorSampleCount === 2) || (i === lastIndex && interiorSampleCount === 2)) row = [{ ...a }, { ...b }];
+    else if (i === lastIndex && endSamples.length === 2) row = [{ ...a }, { ...b }];
+    else if (i === 0 && startSamples.length === 2) row = [{ ...a }, { ...b }];
+    else row = sampleCrossSection(a, b, center, tValues);
+    rows.push(row);
+  }
+
+  const meshFaces = [];
+  const vertices = [];
+  for (const row of rows) vertices.push(...row.map((point) => ({ ...point })));
+
+  const addTriangle = (a, b, c) => {
+    if (_triangleArea3(a, b, c) < 1e-12) return;
+    const oriented = _orientTriangleToFace(face, a, b, c);
+    const centroid = {
+      x: (oriented[0].x + oriented[1].x + oriented[2].x) / 3,
+      y: (oriented[0].y + oriented[1].y + oriented[2].y) / 3,
+      z: (oriented[0].z + oriented[1].z + oriented[2].z) / 3,
+    };
+    meshFaces.push({
+      vertices: oriented.map((point) => ({ ...point })),
+      normal: _faceOutwardNormal(face, centroid),
+    });
+  };
+
+  const addBand = (rowA, rowB) => {
+    if (rowA.length === rowB.length) {
+      for (let j = 0; j < rowA.length - 1; j++) {
+        const p00 = rowA[j];
+        const p01 = rowA[j + 1];
+        const p10 = rowB[j];
+        const p11 = rowB[j + 1];
+        addTriangle(p00, p10, p11);
+        addTriangle(p00, p11, p01);
+      }
+      return;
+    }
+    if (rowA.length > 2 && rowB.length === 2) {
+      for (let j = 0; j < rowA.length - 1; j++) addTriangle(rowB[0], rowA[j], rowA[j + 1]);
+      addTriangle(rowB[0], rowA[rowA.length - 1], rowB[1]);
+      return;
+    }
+    if (rowA.length === 2 && rowB.length > 2) {
+      addTriangle(rowA[0], rowA[1], rowB[rowB.length - 1]);
+      for (let j = rowB.length - 1; j > 0; j--) addTriangle(rowA[0], rowB[j], rowB[j - 1]);
+      return;
+    }
+    const count = Math.min(rowA.length, rowB.length);
+    for (let j = 0; j < count - 1; j++) {
+      addTriangle(rowA[j], rowB[j], rowB[j + 1]);
+      addTriangle(rowA[j], rowB[j + 1], rowA[j + 1]);
+    }
+  };
+
+  for (let i = 0; i < rows.length - 1; i++) addBand(rows[i], rows[i + 1]);
+
+  return { vertices, faces: meshFaces };
+}
+
+function _repairClosedMeshWinding(faces) {
+  if (!Array.isArray(faces) || faces.length === 0) return faces;
+  const edgeMap = new Map();
+  for (let faceIndex = 0; faceIndex < faces.length; faceIndex++) {
+    const verts = faces[faceIndex]?.vertices || [];
+    if (verts.length !== 3) return faces;
+    for (let i = 0; i < 3; i++) {
+      const a = verts[i];
+      const b = verts[(i + 1) % 3];
+      const ka = _meshVertexKey(a);
+      const kb = _meshVertexKey(b);
+      const key = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+      const forward = ka < kb;
+      if (!edgeMap.has(key)) edgeMap.set(key, []);
+      edgeMap.get(key).push({ faceIndex, forward });
+    }
+  }
+
+  let windingErrors = 0;
+  for (const owners of edgeMap.values()) {
+    if (owners.length !== 2) return faces;
+    if (owners[0].forward === owners[1].forward) windingErrors++;
+  }
+  if (windingErrors === 0) return faces;
+
+  const adjacency = Array.from({ length: faces.length }, () => []);
+  for (const owners of edgeMap.values()) {
+    const [a, b] = owners;
+    const sameDirection = a.forward === b.forward;
+    adjacency[a.faceIndex].push({ to: b.faceIndex, sameDirection });
+    adjacency[b.faceIndex].push({ to: a.faceIndex, sameDirection });
+  }
+
+  const flip = new Array(faces.length).fill(null);
+  for (let seed = 0; seed < faces.length; seed++) {
+    if (flip[seed] != null) continue;
+    flip[seed] = false;
+    const stack = [seed];
+    while (stack.length > 0) {
+      const current = stack.pop();
+      for (const edge of adjacency[current]) {
+        const shouldFlip = flip[current] !== edge.sameDirection;
+        if (flip[edge.to] == null) {
+          flip[edge.to] = shouldFlip;
+          stack.push(edge.to);
+        }
+      }
+    }
+  }
+
+  return faces.map((face, faceIndex) => {
+    if (!flip[faceIndex]) return face;
+    const vertices = [face.vertices[0], face.vertices[2], face.vertices[1]];
+    const vertexNormals = Array.isArray(face.vertexNormals) && face.vertexNormals.length === 3
+      ? [face.vertexNormals[0], face.vertexNormals[2], face.vertexNormals[1]]
+      : face.vertexNormals;
+    return { ...face, vertices, vertexNormals };
+  });
+}
+
+function _meshVertexKey(vertex) {
+  return `${Number(vertex.x).toFixed(5)},${Number(vertex.y).toFixed(5)},${Number(vertex.z).toFixed(5)}`;
+}
+
+function _recoverFilletCylinderSurfaceInfo(face) {
+  const surface = face && face.surface;
+  if (!surface || face.surfaceInfo || face.surfaceType === 'plane') return null;
+  if (!face.shared?.isFillet || face.shared?.isRollingFillet) return null;
+  if (surface.degreeU !== 1 || surface.degreeV !== 2 || surface.numRowsU !== 2 || surface.numColsV < 3) return null;
+  if (typeof surface.evaluate !== 'function') return null;
+
+  const row0Start = surface.evaluate(surface.uMin ?? 0, surface.vMin ?? 0);
+  const row0Mid = surface.evaluate(surface.uMin ?? 0, ((surface.vMin ?? 0) + (surface.vMax ?? 1)) * 0.5);
+  const row0End = surface.evaluate(surface.uMin ?? 0, surface.vMax ?? 1);
+  const row1Start = surface.evaluate(surface.uMax ?? 1, surface.vMin ?? 0);
+  const row1Mid = surface.evaluate(surface.uMax ?? 1, ((surface.vMin ?? 0) + (surface.vMax ?? 1)) * 0.5);
+  const row1End = surface.evaluate(surface.uMax ?? 1, surface.vMax ?? 1);
+  const center0 = circumCenter3D(row0Start, row0Mid, row0End);
+  const center1 = circumCenter3D(row1Start, row1Mid, row1End);
+  if (!center0 || !center1) return null;
+
+  const axisVec = { x: center1.x - center0.x, y: center1.y - center0.y, z: center1.z - center0.z };
+  const axisLen = Math.sqrt(axisVec.x * axisVec.x + axisVec.y * axisVec.y + axisVec.z * axisVec.z);
+  if (axisLen < 1e-8) return null;
+  const axis = { x: axisVec.x / axisLen, y: axisVec.y / axisLen, z: axisVec.z / axisLen };
+
+  const radialStart = { x: row0Start.x - center0.x, y: row0Start.y - center0.y, z: row0Start.z - center0.z };
+  const radius = Math.sqrt(radialStart.x * radialStart.x + radialStart.y * radialStart.y + radialStart.z * radialStart.z);
+  if (!Number.isFinite(radius) || radius < 1e-8) return null;
+  const sharedRadius = Number(face.shared?.radius);
+  if (Number.isFinite(sharedRadius) && sharedRadius > 0.75) return null;
+  const xDir = _normalize(radialStart);
+  let yDir = _normalize({
+    x: axis.y * xDir.z - axis.z * xDir.y,
+    y: axis.z * xDir.x - axis.x * xDir.z,
+    z: axis.x * xDir.y - axis.y * xDir.x,
+  });
+  const radialEnd = _normalize({ x: row0End.x - center0.x, y: row0End.y - center0.y, z: row0End.z - center0.z });
+  if (radialEnd.x * yDir.x + radialEnd.y * yDir.y + radialEnd.z * yDir.z < 0) {
+    yDir = { x: -yDir.x, y: -yDir.y, z: -yDir.z };
+  }
+
+  return {
+    type: 'cylinder',
+    recoveredFilletCylinder: true,
+    origin: center0,
+    axis,
+    xDir,
+    yDir,
+    radius,
+  };
+}
+
+/**
  * Triangulate a single face using shared edge boundary samples.
  *
  * @param {import('../BRepTopology.js').TopoFace} face
@@ -233,6 +547,9 @@ function _triangulateFace(face, edgeSampler, triangulator, surfSegs, edgeSegs) {
   const selfLoopRingMesh = _tessellateSelfLoopRingFace(face, edgeSampler, edgeSegs, surfSegs);
   if (selfLoopRingMesh) return selfLoopRingMesh;
 
+  const rollingFilletMesh = _tessellateRollingFilletFace(face, edgeSampler, edgeSegs, surfSegs);
+  if (rollingFilletMesh) return rollingFilletMesh;
+
   // Collect boundary points from coedge samples
   const outerPts = _collectLoopPoints(face.outerLoop, edgeSampler, edgeSegs);
 
@@ -255,6 +572,13 @@ function _triangulateFace(face, edgeSampler, triangulator, surfSegs, edgeSegs) {
     || analyticType === 'torus';
   if (hasAnalyticSurface && face.surfaceType !== 'plane') {
     return triangulator.triangulateAnalyticSurface(face, outerPts, holePts, surfSegs);
+  }
+
+  const recoveredCylinderInfo = _recoverFilletCylinderSurfaceInfo(face);
+  if (recoveredCylinderInfo) {
+    const analyticFace = Object.create(face);
+    analyticFace.surfaceInfo = recoveredCylinderInfo;
+    return triangulator.triangulateAnalyticSurface(analyticFace, outerPts, holePts, surfSegs);
   }
 
   // Full-circle cylinder faces have self-loop arc edges whose boundary
@@ -1907,6 +2231,86 @@ function _orientTriangleToFace(face, a, b, c) {
 
 function _dist3(a, b) {
   return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2);
+}
+
+function _resamplePolylineByCount(points, count) {
+  if (!Array.isArray(points) || points.length === 0 || count <= 0) return [];
+  if (points.length === 1 || count === 1) return [{ ...points[0] }];
+  const cumulative = [0];
+  for (let i = 1; i < points.length; i++) {
+    cumulative.push(cumulative[i - 1] + _dist3(points[i - 1], points[i]));
+  }
+  const total = cumulative[cumulative.length - 1];
+  if (total <= 1e-12) return Array.from({ length: count }, () => ({ ...points[0] }));
+
+  const result = [];
+  let segment = 0;
+  for (let i = 0; i < count; i++) {
+    const target = (i / (count - 1)) * total;
+    while (segment < cumulative.length - 2 && cumulative[segment + 1] < target) segment++;
+    const span = cumulative[segment + 1] - cumulative[segment];
+    const t = span > 1e-12 ? (target - cumulative[segment]) / span : 0;
+    const a = points[segment];
+    const b = points[segment + 1];
+    result.push({
+      x: a.x + (b.x - a.x) * t,
+      y: a.y + (b.y - a.y) * t,
+      z: a.z + (b.z - a.z) * t,
+    });
+  }
+  result[0] = { ...points[0] };
+  result[result.length - 1] = { ...points[points.length - 1] };
+  return result;
+}
+
+function _samplePolylineAtFraction(points, fraction) {
+  if (!Array.isArray(points) || points.length === 0) return null;
+  if (points.length === 1) return { ...points[0] };
+  const t = Math.max(0, Math.min(1, Number.isFinite(fraction) ? fraction : 0));
+  const cumulative = [0];
+  for (let i = 1; i < points.length; i++) cumulative.push(cumulative[i - 1] + _dist3(points[i - 1], points[i]));
+  const total = cumulative[cumulative.length - 1];
+  if (total <= 1e-12) return { ...points[0] };
+  const target = t * total;
+  let segment = 0;
+  while (segment < cumulative.length - 2 && cumulative[segment + 1] < target) segment++;
+  const span = cumulative[segment + 1] - cumulative[segment];
+  const localT = span > 1e-12 ? (target - cumulative[segment]) / span : 0;
+  const a = points[segment];
+  const b = points[segment + 1];
+  return {
+    x: a.x + (b.x - a.x) * localT,
+    y: a.y + (b.y - a.y) * localT,
+    z: a.z + (b.z - a.z) * localT,
+  };
+}
+
+function _polylineFractionForPoint(points, point) {
+  if (!Array.isArray(points) || points.length < 2 || !point) return 0;
+  const cumulative = [0];
+  for (let i = 1; i < points.length; i++) cumulative.push(cumulative[i - 1] + _dist3(points[i - 1], points[i]));
+  const total = cumulative[cumulative.length - 1];
+  if (total <= 1e-12) return 0;
+
+  let bestDistance = Infinity;
+  let bestLength = 0;
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = points[i];
+    const b = points[i + 1];
+    const ab = { x: b.x - a.x, y: b.y - a.y, z: b.z - a.z };
+    const ap = { x: point.x - a.x, y: point.y - a.y, z: point.z - a.z };
+    const denom = ab.x * ab.x + ab.y * ab.y + ab.z * ab.z;
+    const t = denom > 1e-12
+      ? Math.max(0, Math.min(1, (ap.x * ab.x + ap.y * ab.y + ap.z * ab.z) / denom))
+      : 0;
+    const projected = { x: a.x + ab.x * t, y: a.y + ab.y * t, z: a.z + ab.z * t };
+    const distance = _dist3(projected, point);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestLength = cumulative[i] + Math.sqrt(denom) * t;
+    }
+  }
+  return bestLength / total;
 }
 
 function _triangleArea3(a, b, c) {

@@ -30,6 +30,8 @@ export const GEOM_LINE: u8 = 7;
 export const GEOM_CIRCLE: u8 = 8;
 export const GEOM_ELLIPSE: u8 = 9;
 export const GEOM_NURBS_CURVE: u8 = 10;
+export const GEOM_ROLLING_FILLET: u8 = 11;
+export const GEOM_BOUNDARY_FAN: u8 = 12;
 
 // ---------- orientation ----------
 

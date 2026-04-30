@@ -1,0 +1,368 @@
+diff --git a/js/cad/BRepChamfer.js b/js/cad/BRepChamfer.js
+index 8d4f314..bef5680 100644
+--- a/js/cad/BRepChamfer.js
++++ b/js/cad/BRepChamfer.js
+@@ -1049,6 +1049,99 @@ function _rebuildOffsetCurve(off) {
+   }
+ }
+ 
++// -----------------------------------------------------------------------
++// Cylinder-plane intersection helpers (used by fillet-junction surgery
++// to extend chamfer offsets that land inside a previous fillet's cylinder
++// onto the cylinder ∩ chamfer-plane arc — see _computeFilletJunctions).
++// Mirrors BRepFillet._computeFilletChamferArcSamples / _curveFromSampledPoints.
++// -----------------------------------------------------------------------
++
++function _curveFromSamples(points) {
++  if (!points || points.length < 2) return null;
++  if (points.length === 2) return NurbsCurve.createLine(points[0], points[1]);
++  return NurbsCurve.createPolyline(points);
++}
++
++/**
++ * Sample points along the cylinder ∩ plane arc between startPt and endPt.
++ * Both startPt and endPt must lie on the cylinder (within tol) AND on the
++ * plane (within tol). Returns null if axis is parallel to plane or the
++ * angular sweep is degenerate. Uses analytic ellipse parameterization:
++ *   P(θ) = cylCenter + axisDir · t(θ) + ex · r·cos θ + ey · r·sin θ
++ *   t(θ) = -(K + r·cos θ · A + r·sin θ · B) / C
++ * where K = (cylCenter - planePoint)·n, A = ex·n, B = ey·n, C = axisDir·n.
++ */
++function _computeCylPlaneArcSamples(
++  cylCenter, axisDir, radius, ex, ey,
++  planePoint, planeNormal, startPt, endPt, segments = 12,
++) {
++  const C = vec3Dot(axisDir, planeNormal);
++  if (Math.abs(C) < 1e-9) return null;
++  const K = vec3Dot(vec3Sub(cylCenter, planePoint), planeNormal);
++  const A = vec3Dot(ex, planeNormal);
++  const B = vec3Dot(ey, planeNormal);
++
++  const at = (theta) => {
++    const ct = Math.cos(theta), st = Math.sin(theta);
++    const t = -(K + radius * ct * A + radius * st * B) / C;
++    return vec3Add(
++      vec3Add(cylCenter, vec3Scale(axisDir, t)),
++      vec3Add(vec3Scale(ex, radius * ct), vec3Scale(ey, radius * st)),
++    );
++  };
++  const thetaOf = (pt) => {
++    const rel = vec3Sub(pt, cylCenter);
++    return Math.atan2(vec3Dot(rel, ey), vec3Dot(rel, ex));
++  };
++
++  const t0 = thetaOf(startPt);
++  const t1 = thetaOf(endPt);
++  let dt = t1 - t0;
++  while (dt > Math.PI) dt -= 2 * Math.PI;
++  while (dt < -Math.PI) dt += 2 * Math.PI;
++  if (Math.abs(dt) < 1e-6) return null;
++
++  const out = [];
++  for (let i = 0; i <= segments; i++) {
++    out.push(at(t0 + dt * (i / segments)));
++  }
++  out[0] = { ...startPt };
++  out[out.length - 1] = { ...endPt };
++  return out;
++}
++
++/**
++ * Intersect line P0 + t·dir with cylinder (axisP, axisDir, radius).
++ * Returns the +t solution (tMin if both > 0; first positive if one).
++ * Returns null if discriminant < 0 or no positive root.
++ */
++function _intersectLineCylinder(P0, dir, axisP, axisDir, radius) {
++  // (P0 + t·dir - axisP) - ((P0+t·dir - axisP)·axisDir) · axisDir
++  // squared length = radius²
++  const W = vec3Sub(P0, axisP);
++  const wAx = vec3Dot(W, axisDir);
++  const dAx = vec3Dot(dir, axisDir);
++  // Perpendicular components
++  const wp = vec3Sub(W, vec3Scale(axisDir, wAx));
++  const dp = vec3Sub(dir, vec3Scale(axisDir, dAx));
++  const a = vec3Dot(dp, dp);
++  const b = 2 * vec3Dot(wp, dp);
++  const c = vec3Dot(wp, wp) - radius * radius;
++  if (Math.abs(a) < 1e-12) return null;
++  const disc = b * b - 4 * a * c;
++  if (disc < 0) return null;
++  const sq = Math.sqrt(disc);
++  const t1 = (-b - sq) / (2 * a);
++  const t2 = (-b + sq) / (2 * a);
++  // Pick the smallest positive root (extension forward)
++  let t;
++  if (t1 > 1e-9 && t2 > 1e-9) t = Math.min(t1, t2);
++  else if (t1 > 1e-9) t = t1;
++  else if (t2 > 1e-9) t = t2;
++  else return null;
++  return vec3Add(P0, vec3Scale(dir, t));
++}
++
+ function _debugBRepChamfer(...args) {
+   if (typeof process === 'undefined' || !process?.env?.DEBUG_BREP_CHAMFER) return;
+   console.log('[applyBRepChamfer]', ...args);
+@@ -1383,6 +1476,192 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
+     }
+   }
+ 
++  // -----------------------------------------------------------------------
++  // Step 2.75: Fillet-junction surgery
++  // -----------------------------------------------------------------------
++  // When a chamfer-edge endpoint coincides with a vertex of a previous
++  // fillet's rail (face carrying _exactAxis*/_exactRadius metadata), the
++  // raw chamfer offsets land INSIDE the cylinder (or on its axis) — they
++  // are not on the cylinder surface.  Subsequent face-rebuild then emits
++  // a chamfer face whose connector edge between off0.endPt and off1.endPt
++  // is a straight 3D chord that doesn't lie on the fillet face's surface,
++  // while the fillet face's gap-fill emits a UV-interpolated polyline
++  // through the same endpoints — two different curves, dedup fails,
++  // buildTopoBody reports open boundary edges and the chamfer aborts.
++  //
++  // Geometric truth: the chamfer must extend each offset along the planar
++  // face it lies on until it meets the cylinder, and the chamfer face's
++  // connector must be the cylinder ∩ chamfer-plane arc.  Both the chamfer
++  // face AND the fillet face share that arc as a common boundary.
++  //
++  // Algorithm at each chamfer-edge endpoint vertex V:
++  //   1. Find a face attached at V carrying _exactAxis* metadata that is
++  //      not ci.face0 or ci.face1 — the prior fillet face.
++  //   2. For each offset (off0 on face0, off1 on face1):
++  //        - if |offEndPt - axis| < radius: extend offEndPt along the
++  //          offset's direction (away from offStartPt) until it hits the
++  //          cylinder surface.  Update offEndPt and rebuild the curve.
++  //        - if |offEndPt - axis| ≈ radius: leave as-is (already on cyl).
++  //   3. Compute cylinder ∩ chamfer-plane arc between the two corrected
++  //      endpoints; store keyed by unordered (ext0Pt, ext1Pt) pair.
++  //   4. Step 3 gap-fill and Step 4 chamfer-face emit consult this map
++  //      and use the arc curve instead of UV-interp / straight-line.
++  //
++  // After offEndPt extension, resolveEndpoint's existing logic naturally
++  // lifts the previously-collapsing fillet rail-cap edges to the new
++  // extended position, where they become zero-length and are dropped by
++  // the activeEdges filter — closing the loop without any extra surgery
++  // on the planar neighbour faces.
++  // -----------------------------------------------------------------------
++  const _dbgFJ = (typeof process !== 'undefined' && process.env && process.env.DEBUG_FCJ_CHAM === '1');
++  const _logFJ = (...a) => { if (_dbgFJ) console.log('[FCJ-CHAM]', ...a); };
++  const _pairKey = (a, b) => {
++    const ka = _vkey(a), kb = _vkey(b);
++    return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
++  };
++  const junctionArcByPair = new Map(); // unordered pairKey → { samples, curve }
++
++  const _findFilletAtVertex = (V, excludeFaces) => {
++    const vk = _vkey(V);
++    for (const shell of topoBody.shells) {
++      for (const face of shell.faces) {
++        if (excludeFaces.includes(face)) continue;
++        const sh = face.shared;
++        if (!sh || !sh._exactAxisStart || !sh._exactAxisEnd || !sh._exactRadius) continue;
++        if (!face.outerLoop) continue;
++        const has = face.outerLoop.coedges.some(ce => {
++          const sv = ce.edge.startVertex.point;
++          const ev = ce.edge.endVertex.point;
++          return _vkey(sv) === vk || _vkey(ev) === vk;
++        });
++        if (has) return { face, axisStart: sh._exactAxisStart, axisEnd: sh._exactAxisEnd, radius: sh._exactRadius };
++      }
++    }
++    return null;
++  };
++
++  for (const ci of chamferInfos) {
++    const teSp = ci.topoEdge.startVertex.point;
++    const teEp = ci.topoEdge.endVertex.point;
++
++    // Helper: find which end of an offset coincides with vertex V.
++    // Returns { isStart, get(): pt, set(pt): void } or null if no match.
++    const _offEndAtVertex = (off, V) => {
++      const ds = vec3Len(vec3Sub(off.startPt, V));
++      const de = vec3Len(vec3Sub(off.endPt, V));
++      // _offsetEdgeOnSurface may extend offsets past the original edge end
++      // when the planar face's boundary continues past the chamfer edge
++      // (e.g. across a fillet rail-cap), so the offset endpoint won't be
++      // exactly at V.  We match the closer end and accept any distance —
++      // the cylinder containment check below filters out spurious hits.
++      const isStart = ds < de;
++      return {
++        isStart,
++        get: () => isStart ? off.startPt : off.endPt,
++        set: (pt) => { if (isStart) off.startPt = pt; else off.endPt = pt; },
++        other: () => isStart ? off.endPt : off.startPt,
++        dist: Math.min(ds, de),
++      };
++    };
++
++    for (const V of [teSp, teEp]) {
++    for (const V of [teSp, teEp]) {
++      const fi = _findFilletAtVertex(V, [ci.face0, ci.face1]);
++      if (!fi) continue;
++
++      const e0 = _offEndAtVertex(ci.off0, V);
++      const e1 = _offEndAtVertex(ci.off1, V);
++
++      // Note: shared._exactAxisStart/End is the ORIGINAL FILLETED EDGE,
++      // not the cylinder axis.  The cylinder axis is parallel but offset
++      // by `r * inward_bisector` from the original edge.  Derive the
++      // cylinder centerline from a cap-arc on the fillet face's loop:
++      // a cap arc lies in a plane perpendicular to the axis, so its
++      // circumscribed circle's center is the cylinder axis at that slice.
++      const cylAxisDir = vec3Normalize(vec3Sub(fi.axisEnd, fi.axisStart));
++      let cylAxisStart = null;
++      for (const ce of fi.face.outerLoop.coedges) {
++        const curve = ce.edge.curve;
++        if (!curve || !curve.controlPoints || curve.controlPoints.length < 3) continue;
++        const cps = curve.controlPoints;
++        const a = cps[0], b = cps[Math.floor(cps.length / 2)], c = cps[cps.length - 1];
++        const aAx = vec3Dot(vec3Sub(a, fi.axisStart), cylAxisDir);
++        const bAx = vec3Dot(vec3Sub(b, fi.axisStart), cylAxisDir);
++        const cAx = vec3Dot(vec3Sub(c, fi.axisStart), cylAxisDir);
++        const axRange = Math.max(aAx, bAx, cAx) - Math.min(aAx, bAx, cAx);
++        if (axRange > 1e-3) continue;
++        const cc = circumCenter3D(a, b, c);
++        if (!cc) continue;
++        const tOff = vec3Dot(vec3Sub(cc, fi.axisStart), cylAxisDir);
++        cylAxisStart = vec3Sub(cc, vec3Scale(cylAxisDir, tOff));
++        break;
++      }
++      if (!cylAxisStart) continue;
++
++      const distFromAxis = (P) => {
++        const t = vec3Dot(vec3Sub(P, cylAxisStart), cylAxisDir);
++        const onAxis = vec3Add(cylAxisStart, vec3Scale(cylAxisDir, t));
++        return vec3Len(vec3Sub(P, onAxis));
++      };
++
++      const r0 = distFromAxis(e0.get());
++      const r1 = distFromAxis(e1.get());
++      const tol = Math.max(1e-3, fi.radius * 0.02);
++      if (r0 > fi.radius + tol || r1 > fi.radius + tol) continue;
++
++      let ext0Pt = e0.get();
++      let ext1Pt = e1.get();
++      if (r0 < fi.radius - tol) {
++        const dir0 = vec3Normalize(vec3Sub(e0.get(), e0.other()));
++        const hit = _intersectLineCylinder(e0.get(), dir0, cylAxisStart, cylAxisDir, fi.radius);
++        if (!hit) continue;
++        ext0Pt = hit;
++      }
++      if (r1 < fi.radius - tol) {
++        const dir1 = vec3Normalize(vec3Sub(e1.get(), e1.other()));
++        const hit = _intersectLineCylinder(e1.get(), dir1, cylAxisStart, cylAxisDir, fi.radius);
++        if (!hit) continue;
++        ext1Pt = hit;
++      }
++
++      // Compute chamfer plane from the three "non-extended" corners of
++      // the chamfer face quad (using the offset endpoints at the OPPOSITE
++      // end of the chamfer edge plus the current end's offsets).
++      const oppV = (V === teSp) ? teEp : teSp;
++      const oppE0 = _offEndAtVertex(ci.off0, oppV).get();
++      let pn = vec3Cross(vec3Sub(e0.get(), oppE0), vec3Sub(e1.get(), oppE0));
++      const pnLen = vec3Len(pn);
++      if (pnLen < 1e-9) continue;
++      pn = vec3Scale(pn, 1 / pnLen);
++      if (Math.abs(vec3Dot(cylAxisDir, pn)) < 1e-6) continue;
++
++      const along = vec3Dot(vec3Sub(ext0Pt, cylAxisStart), cylAxisDir);
++      const cylCenter = vec3Add(cylAxisStart, vec3Scale(cylAxisDir, along));
++      const ex0Vec = vec3Sub(ext0Pt, cylCenter);
++      const exLen = vec3Len(ex0Vec);
++      if (exLen < 1e-9) continue;
++      const ex = vec3Scale(ex0Vec, 1 / exLen);
++      const ey = vec3Cross(cylAxisDir, ex);
++
++      const samples = _computeCylPlaneArcSamples(
++        cylCenter, cylAxisDir, fi.radius, ex, ey,
++        oppE0, pn, ext0Pt, ext1Pt, 8,
++      );
++      if (!samples || samples.length < 3) continue;
++      const arcCurve = _curveFromSamples(samples);
++      if (!arcCurve) continue;
++
++      e0.set(ext0Pt);
++      e1.set(ext1Pt);
++      _rebuildOffsetCurve(ci.off0);
++      _rebuildOffsetCurve(ci.off1);
++
++      junctionArcByPair.set(_pairKey(ext0Pt, ext1Pt), { samples, curve: arcCurve });
++      _logFJ(`junction at V=${_vkey(V)}: ext0=${_vkey(ext0Pt)} ext1=${_vkey(ext1Pt)}`);
++    }
++  }
++  if (junctionArcByPair.size > 0) _logFJ(`built ${junctionArcByPair.size} fillet-junction arc(s)`);
++
+   // Step 3: Build face descriptors for new TopoBody
+   const faceDescs = [];
+ 
+@@ -1517,15 +1796,27 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
+         // Check if there's a gap between this edge's endpoint and next edge's start
+         if (vec3Len(vec3Sub(current.end, next.start)) > 1e-8) {
+           finalVerts.push(current.end);
+-          // For non-planar faces (e.g. a cylindrical fillet face whose
+-          // boundary gap results from a tangent-chamfer collapse), a
+-          // straight 3-D chord between two points on the surface does not
+-          // lie on the surface.  Sample the gap curve on the surface by
+-          // linearly interpolating UVs and evaluating, so downstream
+-          // triangulation gets a boundary that actually lies on the face.
++          // Prefer a precomputed cylinder ∩ chamfer-plane arc when this
++          // gap matches one identified by the fillet-junction surgery
++          // pass.  This guarantees the fillet face's gap-fill curve is
++          // identical to the chamfer face's connector curve so that
++          // buildTopoBody can dedupe the seam.
++          const stored = junctionArcByPair.get(_pairKey(current.end, next.start));
+           let gapCurve;
+-          if (face.surface && face.surfaceType !== SurfaceType.PLANE &&
++          if (stored) {
++            const startK = _vkey(stored.samples[0]);
++            const curK = _vkey(current.end);
++            gapCurve = startK === curK
++              ? stored.curve.clone()
++              : stored.curve.reversed();
++          } else if (face.surface && face.surfaceType !== SurfaceType.PLANE &&
+               typeof face.surface.closestPointUV === 'function') {
++            // For non-planar faces (e.g. a cylindrical fillet face whose
++            // boundary gap results from a tangent-chamfer collapse), a
++            // straight 3-D chord between two points on the surface does not
++            // lie on the surface.  Sample the gap curve on the surface by
++            // linearly interpolating UVs and evaluating, so downstream
++            // triangulation gets a boundary that actually lies on the face.
+             const uvA = face.surface.closestPointUV(current.end);
+             const uvB = face.surface.closestPointUV(next.start, 16, uvA);
+             const N = 8;
+@@ -1579,11 +1870,21 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
+       : SurfaceType.PLANE;
+ 
+     let verts = [off0.startPt, off0.endPt, off1.endPt, off1.startPt];
++    // If a chamfer-edge endpoint sits at a previous fillet's vertex, use
++    // the precomputed cylinder ∩ chamfer-plane arc as the connector edge
++    // so the chamfer face's seam matches the fillet face's gap-fill.
++    const _connector = (a, b) => {
++      const stored = junctionArcByPair.get(_pairKey(a, b));
++      if (!stored) return NurbsCurve.createLine(a, b);
++      const startK = _vkey(stored.samples[0]);
++      const aK = _vkey(a);
++      return startK === aK ? stored.curve.clone() : stored.curve.reversed();
++    };
+     let curves = [
+       off0.curve,
+-      NurbsCurve.createLine(off0.endPt, off1.endPt),
++      _connector(off0.endPt, off1.endPt),
+       off1.curve.reversed(),
+-      NurbsCurve.createLine(off1.startPt, off0.startPt),
++      _connector(off1.startPt, off0.startPt),
+     ];
+ 
+     // Verify the chamfer face vertex winding produces an outward-pointing
+@@ -1617,9 +1918,9 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
+       if (lnx * outX + lny * outY + lnz * outZ < 0) {
+         verts = [off0.startPt, off1.startPt, off1.endPt, off0.endPt];
+         curves = [
+-          NurbsCurve.createLine(off0.startPt, off1.startPt),
++          _connector(off0.startPt, off1.startPt),
+           off1.curve,
+-          NurbsCurve.createLine(off1.endPt, off0.endPt),
++          _connector(off1.endPt, off0.endPt),
+           off0.curve.reversed(),
+         ];
+       }

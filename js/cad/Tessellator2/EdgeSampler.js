@@ -16,6 +16,14 @@ function isSimpleLineCurve(curve) {
     && curve.controlPoints.length === 2;
 }
 
+function shouldPreserveControlPointSamples(curve) {
+  return !!curve
+    && curve._preserveControlPointSamples === true
+    && curve.degree === 1
+    && Array.isArray(curve.controlPoints)
+    && curve.controlPoints.length > 2;
+}
+
 function _dist3D(a, b) {
   return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2);
 }
@@ -57,12 +65,25 @@ export class EdgeSampler {
 
     this._misses++;
     let points;
-    if (isSimpleLineCurve(edge.curve)) {
+    if (shouldPreserveControlPointSamples(edge.curve)) {
+      points = edge.curve.controlPoints.map((point) => ({ x: point.x, y: point.y, z: point.z }));
+    } else if (isSimpleLineCurve(edge.curve)) {
       points = this._sampleLinear(edge.startVertex.point, edge.endVertex.point, 1);
     } else if (edge.curve) {
       points = this._sampleCurve(edge.curve, segments, edge.startVertex.point, edge.endVertex.point);
     } else {
       points = this._sampleLinear(edge.startVertex.point, edge.endVertex.point, segments);
+    }
+
+    if (points.length > 0 && edge.startVertex?.point) {
+      points[0].x = edge.startVertex.point.x;
+      points[0].y = edge.startVertex.point.y;
+      points[0].z = edge.startVertex.point.z;
+    }
+    if (points.length > 1 && edge.endVertex?.point) {
+      points[points.length - 1].x = edge.endVertex.point.x;
+      points[points.length - 1].y = edge.endVertex.point.y;
+      points[points.length - 1].z = edge.endVertex.point.z;
     }
 
     // Tag shared boundary samples so removeCollinearPoints preserves the

@@ -174,5 +174,72 @@ export function tessellateBodyWasm(body, opts = {}) {
         }
     }
 
+    _repairTriangleWinding(outFaces);
+
     return { vertices: outVertices, faces: outFaces };
+}
+
+function _repairTriangleWinding(faces) {
+    const edgeMap = new Map();
+    faces.forEach((face, faceIndex) => {
+        const verts = face.vertices || [];
+        for (let i = 0; i < verts.length; i++) {
+            const a = verts[i];
+            const b = verts[(i + 1) % verts.length];
+            const ka = _windingVertexKey(a);
+            const kb = _windingVertexKey(b);
+            const key = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+            const fwd = ka < kb;
+            const entry = { faceIndex, fwd };
+            if (!edgeMap.has(key)) edgeMap.set(key, []);
+            edgeMap.get(key).push(entry);
+        }
+    });
+
+    const adjacency = Array.from({ length: faces.length }, () => []);
+    for (const entries of edgeMap.values()) {
+        if (entries.length !== 2) continue;
+        const a = entries[0];
+        const b = entries[1];
+        adjacency[a.faceIndex].push({ to: b.faceIndex, fromFwd: a.fwd, toFwd: b.fwd });
+        adjacency[b.faceIndex].push({ to: a.faceIndex, fromFwd: b.fwd, toFwd: a.fwd });
+    }
+
+    const assigned = new Array(faces.length).fill(false);
+    const flip = new Array(faces.length).fill(false);
+    for (let start = 0; start < faces.length; start++) {
+        if (assigned[start]) continue;
+        assigned[start] = true;
+        const queue = [start];
+        for (let qi = 0; qi < queue.length; qi++) {
+            const current = queue[qi];
+            for (const edge of adjacency[current]) {
+                const wanted = (!(edge.fromFwd !== flip[current])) !== edge.toFwd;
+                if (!assigned[edge.to]) {
+                    assigned[edge.to] = true;
+                    flip[edge.to] = wanted;
+                    queue.push(edge.to);
+                }
+            }
+        }
+    }
+
+    for (let i = 0; i < faces.length; i++) {
+        if (!flip[i]) continue;
+        const face = faces[i];
+        if (face.vertices?.length === 3) {
+            [face.vertices[1], face.vertices[2]] = [face.vertices[2], face.vertices[1]];
+        }
+        if (face.vertexNormals?.length === 3) {
+            [face.vertexNormals[1], face.vertexNormals[2]] = [face.vertexNormals[2], face.vertexNormals[1]];
+        }
+        if (face.normal) {
+            face.normal = { x: -face.normal.x, y: -face.normal.y, z: -face.normal.z };
+        }
+    }
+}
+
+function _windingVertexKey(v) {
+    const fmt = (value) => (+value.toFixed(6) || 0).toFixed(6);
+    return `${fmt(v.x)},${fmt(v.y)},${fmt(v.z)}`;
 }

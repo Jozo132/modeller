@@ -214,7 +214,7 @@ async function instantiate(module, imports = {}) {
     earClipTriangulate(coords, nVerts, outTris) {
       // assembly/tessellation/earClipTriangulate(~lib/typedarray/Float64Array, i32, ~lib/typedarray/Uint32Array) => i32
       coords = __retain(__lowerTypedArray(Float64Array, 8, 3, coords) || __notnull());
-      outTris = __lowerTypedArray(Uint32Array, 34, 2, outTris) || __notnull();
+      outTris = __lowerTypedArray(Uint32Array, 35, 2, outTris) || __notnull();
       try {
         return exports.earClipTriangulate(coords, nVerts, outTris);
       } finally {
@@ -244,7 +244,7 @@ async function instantiate(module, imports = {}) {
     computeMeshVolume(verts, faces, nTris) {
       // assembly/tessellation/computeMeshVolume(~lib/typedarray/Float64Array, ~lib/typedarray/Uint32Array, i32) => f64
       verts = __retain(__lowerTypedArray(Float64Array, 8, 3, verts) || __notnull());
-      faces = __lowerTypedArray(Uint32Array, 34, 2, faces) || __notnull();
+      faces = __lowerTypedArray(Uint32Array, 35, 2, faces) || __notnull();
       try {
         return exports.computeMeshVolume(verts, faces, nTris);
       } finally {
@@ -574,6 +574,14 @@ async function instantiate(module, imports = {}) {
     torusStore(cx, cy, cz, ax, ay, az, rx, ry, rz, majorRadius, minorRadius) {
       // assembly/kernel/geometry/torusStore(f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64) => u32
       return exports.torusStore(cx, cy, cz, ax, ay, az, rx, ry, rz, majorRadius, minorRadius) >>> 0;
+    },
+    rollingFilletStoreFromStaging(rowCount, startCount, endCount) {
+      // assembly/kernel/geometry/rollingFilletStoreFromStaging(u32, u32, u32) => u32
+      return exports.rollingFilletStoreFromStaging(rowCount, startCount, endCount) >>> 0;
+    },
+    boundaryFanStoreFromStaging(pointCount) {
+      // assembly/kernel/geometry/boundaryFanStoreFromStaging(u32) => u32
+      return exports.boundaryFanStoreFromStaging(pointCount) >>> 0;
     },
     getGeomPoolPtr() {
       // assembly/kernel/geometry/getGeomPoolPtr() => usize
@@ -1170,6 +1178,8 @@ export const {
   GEOM_CIRCLE,
   GEOM_ELLIPSE,
   GEOM_NURBS_CURVE,
+  GEOM_ROLLING_FILLET,
+  GEOM_BOUNDARY_FAN,
   ORIENT_FORWARD,
   ORIENT_REVERSED,
   vertexAdd,
@@ -1228,6 +1238,8 @@ export const {
   sphereStore,
   coneStore,
   torusStore,
+  rollingFilletStoreFromStaging,
+  boundaryFanStoreFromStaging,
   geomPoolRead,
   getGeomPoolPtr,
   geomPoolUsed,

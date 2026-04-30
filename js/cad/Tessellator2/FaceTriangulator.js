@@ -295,7 +295,7 @@ function sameUvPoint(a, b) {
 
 function splitSkippedBoundaryMeshEdges(faces, loops3D) {
   let current = faces;
-  for (let pass = 0; pass < 4; pass++) {
+  for (let pass = 0; pass < 64; pass++) {
     const split = findSkippedBoundaryMeshEdge(current, loops3D);
     if (!split) break;
 
@@ -1191,11 +1191,12 @@ export class FaceTriangulator {
     const sameSense = face.sameSense !== false;
     const periodicSurface = surface.periodicU || surface.periodicV;
 
-    let outer3D = removeCollinearPoints([...boundaryPts3D]);
+    const preserveRecoveredFilletBoundary = face.surfaceInfo?.recoveredFilletCylinder === true;
+    let outer3D = preserveRecoveredFilletBoundary ? [...boundaryPts3D] : removeCollinearPoints([...boundaryPts3D]);
     if (outer3D.length < 3) return { vertices: [], faces: [] };
 
     let holeLoops3D = holePts3D
-      .map(loop => removeCollinearPoints([...loop]))
+      .map(loop => preserveRecoveredFilletBoundary ? [...loop] : removeCollinearPoints([...loop]))
       .filter(loop => loop.length >= 3);
 
     const selfLoopRingMesh = periodicSurface
@@ -1306,7 +1307,7 @@ export class FaceTriangulator {
     const preferBoundaryOnlyPeriodicCdt = periodicSurface
       && surface.type === 'cylinder'
       && holeUvs.length === 0
-      && isBoundaryOnlyCylinderStripFace(face);
+      && (isBoundaryOnlyCylinderStripFace(face) || face.surfaceInfo?.recoveredFilletCylinder);
     const gridRes = surface.type === 'torus'
       ? Math.max(4, Math.ceil(surfaceSegments / 2))
       : periodicSurface
@@ -1502,7 +1503,7 @@ export class FaceTriangulator {
     const maxPasses = surface.type === 'torus'
       ? Math.min(surfaceSegments, 3)
       : surface.type === 'cylinder'
-        ? Math.min(surfaceSegments, 2)
+        ? (face.surfaceInfo?.recoveredFilletCylinder ? 0 : Math.min(surfaceSegments, 2))
       : periodicSurface
         ? Math.min(surfaceSegments, 3)
         : Math.min(surfaceSegments, 4);

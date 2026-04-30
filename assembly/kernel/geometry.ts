@@ -242,6 +242,55 @@ export function torusStore(
   return offset;
 }
 
+/**
+ * Store a rolling fillet descriptor from the staging buffer.
+ *
+ * Layout at returned offset:
+ *   [0]                row count
+ *   [1]                start cap sample count
+ *   [2]                end cap sample count
+ *   [3..]              rail0 points (x,y,z triples)
+ *   [...+rows*3]       rail1 points (x,y,z triples)
+ *   [...+rows*3]       rolling centers (x,y,z triples)
+ *   [...+rows*3]       start cap samples (x,y,z triples)
+ *   [...+start*3]      end cap samples (x,y,z triples)
+ */
+export function rollingFilletStoreFromStaging(rowCount: u32, startCount: u32, endCount: u32): u32 {
+  if (rowCount < 2) return 0xFFFFFFFF;
+  if (startCount < 2 || endCount < 2) return 0xFFFFFFFF;
+  const totalData: u32 = rowCount * 9 + startCount * 3 + endCount * 3;
+  if (totalData > STAGING_CAPACITY) return 0xFFFFFFFF;
+  const offset = poolReserve(3 + totalData);
+  if (offset == 0xFFFFFFFF) return offset;
+
+  let p = offset;
+  unchecked(pool[p++] = <f64>rowCount);
+  unchecked(pool[p++] = <f64>startCount);
+  unchecked(pool[p++] = <f64>endCount);
+  for (let i: u32 = 0; i < totalData; i++) {
+    unchecked(pool[p++] = unchecked(staging[i]));
+  }
+
+  return offset;
+}
+
+/** Store an exact boundary loop for a native boundary-preserving fan face. */
+export function boundaryFanStoreFromStaging(pointCount: u32): u32 {
+  if (pointCount < 3) return 0xFFFFFFFF;
+  const totalData: u32 = pointCount * 3;
+  if (totalData > STAGING_CAPACITY) return 0xFFFFFFFF;
+  const offset = poolReserve(1 + totalData);
+  if (offset == 0xFFFFFFFF) return offset;
+
+  let p = offset;
+  unchecked(pool[p++] = <f64>pointCount);
+  for (let i: u32 = 0; i < totalData; i++) {
+    unchecked(pool[p++] = unchecked(staging[i]));
+  }
+
+  return offset;
+}
+
 // ---------- pool accessors ----------
 
 /** Read a f64 from the pool at a given offset. */

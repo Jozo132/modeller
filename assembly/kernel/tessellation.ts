@@ -32,7 +32,7 @@ import {
   vertexGetX, vertexGetY, vertexGetZ,
   GEOM_PLANE, GEOM_CYLINDER, GEOM_CONE, GEOM_SPHERE, GEOM_TORUS,
   GEOM_LINE,
-  GEOM_NURBS_SURFACE, GEOM_NURBS_CURVE, GEOM_CIRCLE,
+  GEOM_NURBS_SURFACE, GEOM_NURBS_CURVE, GEOM_CIRCLE, GEOM_ROLLING_FILLET, GEOM_BOUNDARY_FAN,
   ORIENT_REVERSED,
 } from './topology';
 
@@ -246,6 +246,8 @@ function _tessBuildOneFace(faceId: u32, segsU: i32, segsV: i32): i32 {
   if (geomType == GEOM_CONE) return _tessConeFace(faceId, segsU, segsV);
   if (geomType == GEOM_SPHERE) return _tessSphereFace(faceId, segsU, segsV);
   if (geomType == GEOM_TORUS) return _tessTorusFace(faceId, segsU, segsV);
+  if (geomType == GEOM_ROLLING_FILLET) return _tessRollingFilletFace(faceId);
+  if (geomType == GEOM_BOUNDARY_FAN) return _tessBoundaryFanFace(faceId);
   if (geomType == GEOM_NURBS_SURFACE) return _tessNurbsFace(faceId, segsU, segsV);
 
   return 0;
@@ -747,6 +749,36 @@ function _emitTri(i0: u32, i1: u32, i2: u32, faceId: u32): i32 {
   return 0;
 }
 
+function _triangleAreaByIds(i0: u32, i1: u32, i2: u32): f64 {
+  const o0 = i0 * 3;
+  const o1 = i1 * 3;
+  const o2 = i2 * 3;
+  const ax = unchecked(tessOutVerts[o0]);
+  const ay = unchecked(tessOutVerts[o0 + 1]);
+  const az = unchecked(tessOutVerts[o0 + 2]);
+  const bx = unchecked(tessOutVerts[o1]);
+  const by = unchecked(tessOutVerts[o1 + 1]);
+  const bz = unchecked(tessOutVerts[o1 + 2]);
+  const cx = unchecked(tessOutVerts[o2]);
+  const cy = unchecked(tessOutVerts[o2 + 1]);
+  const cz = unchecked(tessOutVerts[o2 + 2]);
+  const abx = bx - ax;
+  const aby = by - ay;
+  const abz = bz - az;
+  const acx = cx - ax;
+  const acy = cy - ay;
+  const acz = cz - az;
+  const nx = aby * acz - abz * acy;
+  const ny = abz * acx - abx * acz;
+  const nz = abx * acy - aby * acx;
+  return 0.5 * Math.sqrt(nx * nx + ny * ny + nz * nz);
+}
+
+function _emitTriSkipDegenerate(i0: u32, i1: u32, i2: u32, faceId: u32): i32 {
+  if (_triangleAreaByIds(i0, i1, i2) < 1e-12) return 0;
+  return _emitTri(i0, i1, i2, faceId);
+}
+
 // ─── Planar face tessellation ────────────────────────────────────────
 
 const INVALID_ID: u32 = 0xFFFFFFFF;
@@ -1059,6 +1091,438 @@ function _emitTriTowardVertexNormals(i0: u32, i1: u32, i2: u32, faceId: u32): i3
   const nz = unchecked(tessOutNormals[a + 2]) + unchecked(tessOutNormals[b + 2]) + unchecked(tessOutNormals[c + 2]);
   if (nx * nx + ny * ny + nz * nz < 1e-14) return _emitTri(i0, i1, i2, faceId);
   return _emitPlaneTriOriented(i0, i1, i2, nx, ny, nz, faceId);
+}
+
+const ROLLING_MAX_ROWS: i32 = 512;
+const ROLLING_MAX_COLS: i32 = 129;
+const rollingRowStarts = new StaticArray<u32>(ROLLING_MAX_ROWS);
+const rollingRowCounts = new StaticArray<i32>(ROLLING_MAX_ROWS);
+
+function _rollingPoint(off: u32, base: i32, idx: i32, component: i32): f64 {
+  return geomPoolRead(off + 3 + <u32>(base + idx * 3 + component));
+}
+
+function _rollingRailBase(nRows: i32, rail: i32): i32 {
+  if (rail == 0) return 0;
+  if (rail == 1) return nRows * 3;
+  return nRows * 6;
+}
+
+function _rollingStartBase(nRows: i32): i32 {
+  return nRows * 9;
+}
+
+function _rollingEndBase(nRows: i32, startCount: i32): i32 {
+  return nRows * 9 + startCount * 3;
+}
+
+function _emitRollingPoint(x: f64, y: f64, z: f64, cx: f64, cy: f64, cz: f64): u32 {
+  let nx = x - cx;
+  let ny = y - cy;
+  let nz = z - cz;
+  const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+  if (len > 1e-12) {
+    nx /= len;
+    ny /= len;
+    nz /= len;
+  } else {
+    nx = 0.0;
+    ny = 0.0;
+    nz = 1.0;
+  }
+  return _emitVert(x, y, z, nx, ny, nz);
+}
+
+function _emitRollingStoredPoint(off: u32, base: i32, idx: i32, cx: f64, cy: f64, cz: f64): u32 {
+  return _emitRollingPoint(
+    _rollingPoint(off, base, idx, 0),
+    _rollingPoint(off, base, idx, 1),
+    _rollingPoint(off, base, idx, 2),
+    cx, cy, cz,
+  );
+}
+
+function _emitRollingCrossSectionPoint(off: u32, row: i32, nRows: i32, t: f64): u32 {
+  const rail0Base = _rollingRailBase(nRows, 0);
+  const rail1Base = _rollingRailBase(nRows, 1);
+  const centerBase = _rollingRailBase(nRows, 2);
+  const ax = _rollingPoint(off, rail0Base, row, 0);
+  const ay = _rollingPoint(off, rail0Base, row, 1);
+  const az = _rollingPoint(off, rail0Base, row, 2);
+  const bx = _rollingPoint(off, rail1Base, row, 0);
+  const by = _rollingPoint(off, rail1Base, row, 1);
+  const bz = _rollingPoint(off, rail1Base, row, 2);
+  const cx = _rollingPoint(off, centerBase, row, 0);
+  const cy = _rollingPoint(off, centerBase, row, 1);
+  const cz = _rollingPoint(off, centerBase, row, 2);
+
+  if (t <= 1e-12) return _emitRollingPoint(ax, ay, az, cx, cy, cz);
+  if (1.0 - t <= 1e-12) return _emitRollingPoint(bx, by, bz, cx, cy, cz);
+
+  let vax = ax - cx;
+  let vay = ay - cy;
+  let vaz = az - cz;
+  let vbx = bx - cx;
+  let vby = by - cy;
+  let vbz = bz - cz;
+  const ra = Math.sqrt(vax * vax + vay * vay + vaz * vaz);
+  const rb = Math.sqrt(vbx * vbx + vby * vby + vbz * vbz);
+  const radius = ra > rb ? ra : rb;
+  if (ra > 1e-12) { vax /= ra; vay /= ra; vaz /= ra; }
+  if (rb > 1e-12) { vbx /= rb; vby /= rb; vbz /= rb; }
+  let dot = vax * vbx + vay * vby + vaz * vbz;
+  if (dot < -1.0) dot = -1.0;
+  if (dot > 1.0) dot = 1.0;
+  const angle = Math.acos(dot);
+  if (radius > 1e-12 && angle > 1e-8 && angle < Math.PI - 1e-8) {
+    const sinAngle = Math.sin(angle);
+    const w0 = Math.sin((1.0 - t) * angle) / sinAngle;
+    const w1 = Math.sin(t * angle) / sinAngle;
+    let dx = vax * w0 + vbx * w1;
+    let dy = vay * w0 + vby * w1;
+    let dz = vaz * w0 + vbz * w1;
+    const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (len > 1e-12) {
+      dx /= len;
+      dy /= len;
+      dz /= len;
+      return _emitRollingPoint(cx + dx * radius, cy + dy * radius, cz + dz * radius, cx, cy, cz);
+    }
+  }
+
+  return _emitRollingPoint(
+    ax + (bx - ax) * t,
+    ay + (by - ay) * t,
+    az + (bz - az) * t,
+    cx, cy, cz,
+  );
+}
+
+function _emitRollingRow(off: u32, row: i32, nRows: i32, startCount: i32, endCount: i32, interiorCount: i32): i32 {
+  const centerBase = _rollingRailBase(nRows, 2);
+  const cx = _rollingPoint(off, centerBase, row, 0);
+  const cy = _rollingPoint(off, centerBase, row, 1);
+  const cz = _rollingPoint(off, centerBase, row, 2);
+
+  let count = interiorCount;
+  let sampleBase = -1;
+  if (row == 0 && startCount > 2) {
+    count = startCount;
+    sampleBase = _rollingStartBase(nRows);
+  } else if (row == nRows - 1 && endCount > 2) {
+    count = endCount;
+    sampleBase = _rollingEndBase(nRows, startCount);
+  } else if (row == 0 && startCount == 2) {
+    count = 2;
+  } else if (row == nRows - 1 && endCount == 2) {
+    count = 2;
+  }
+
+  if (count < 2 || count > ROLLING_MAX_COLS) return -1;
+  unchecked(rollingRowStarts[row] = outVertCount);
+  unchecked(rollingRowCounts[row] = count);
+
+  if (sampleBase >= 0) {
+    for (let i: i32 = 0; i < count; i++) {
+      if (_emitRollingStoredPoint(off, sampleBase, i, cx, cy, cz) == INVALID_ID) return -1;
+    }
+    return count;
+  }
+
+  for (let i: i32 = 0; i < count; i++) {
+    const t = count == 1 ? 0.0 : <f64>i / <f64>(count - 1);
+    if (_emitRollingCrossSectionPoint(off, row, nRows, t) == INVALID_ID) return -1;
+  }
+  return count;
+}
+
+function _rollingRowId(row: i32, col: i32): u32 {
+  return unchecked(rollingRowStarts[row]) + <u32>col;
+}
+
+function _emitRollingBand(rowA: i32, rowB: i32, faceId: u32): i32 {
+  const countA = unchecked(rollingRowCounts[rowA]);
+  const countB = unchecked(rollingRowCounts[rowB]);
+  const startTriCount = outTriCount;
+  if (countA == countB) {
+    for (let j: i32 = 0; j < countA - 1; j++) {
+      const p00 = _rollingRowId(rowA, j);
+      const p01 = _rollingRowId(rowA, j + 1);
+      const p10 = _rollingRowId(rowB, j);
+      const p11 = _rollingRowId(rowB, j + 1);
+      if (_emitTriSkipDegenerate(p00, p10, p11, faceId) < 0) return -1;
+      if (_emitTriSkipDegenerate(p00, p11, p01, faceId) < 0) return -1;
+    }
+    return <i32>(outTriCount - startTriCount);
+  }
+  if (countA > 2 && countB == 2) {
+    const b0 = _rollingRowId(rowB, 0);
+    const b1 = _rollingRowId(rowB, 1);
+    for (let j: i32 = 0; j < countA - 1; j++) {
+      if (_emitTriSkipDegenerate(b0, _rollingRowId(rowA, j), _rollingRowId(rowA, j + 1), faceId) < 0) return -1;
+    }
+    if (_emitTriSkipDegenerate(b0, _rollingRowId(rowA, countA - 1), b1, faceId) < 0) return -1;
+    return <i32>(outTriCount - startTriCount);
+  }
+  if (countA == 2 && countB > 2) {
+    const a0 = _rollingRowId(rowA, 0);
+    const a1 = _rollingRowId(rowA, 1);
+    if (_emitTriSkipDegenerate(a0, a1, _rollingRowId(rowB, countB - 1), faceId) < 0) return -1;
+    for (let j: i32 = countB - 1; j > 0; j--) {
+      if (_emitTriSkipDegenerate(a0, _rollingRowId(rowB, j), _rollingRowId(rowB, j - 1), faceId) < 0) return -1;
+    }
+    return <i32>(outTriCount - startTriCount);
+  }
+
+  const count = countA < countB ? countA : countB;
+  for (let j: i32 = 0; j < count - 1; j++) {
+    if (_emitTriSkipDegenerate(_rollingRowId(rowA, j), _rollingRowId(rowB, j), _rollingRowId(rowB, j + 1), faceId) < 0) return -1;
+    if (_emitTriSkipDegenerate(_rollingRowId(rowA, j), _rollingRowId(rowB, j + 1), _rollingRowId(rowA, j + 1), faceId) < 0) return -1;
+  }
+  return <i32>(outTriCount - startTriCount);
+}
+
+function _tessRollingFilletFace(faceId: u32): i32 {
+  const off = faceGetGeomOffset(faceId);
+  const nRows = <i32>geomPoolRead(off);
+  const startCount = <i32>geomPoolRead(off + 1);
+  const endCount = <i32>geomPoolRead(off + 2);
+  if (nRows < 2 || nRows > ROLLING_MAX_ROWS) return -2;
+  if (startCount < 2 || endCount < 2 || startCount > ROLLING_MAX_COLS || endCount > ROLLING_MAX_COLS) return -2;
+  const interiorCount = startCount > endCount ? startCount : endCount;
+  if (outVertCount + <u32>(nRows * interiorCount) > MAX_OUT_VERTS) return -1;
+
+  const startTriCount = outTriCount;
+
+  for (let i: i32 = 0; i < nRows; i++) {
+    if (_emitRollingRow(off, i, nRows, startCount, endCount, interiorCount) < 0) return -1;
+  }
+  for (let i: i32 = 0; i < nRows - 1; i++) {
+    if (_emitRollingBand(i, i + 1, faceId) < 0) return -1;
+  }
+
+  return <i32>(outTriCount - startTriCount);
+}
+
+function _boundaryFanPoint(off: u32, idx: i32, component: i32): f64 {
+  return geomPoolRead(off + 1 + <u32>(idx * 3 + component));
+}
+
+function _setProjectionFrameFromBoundaryFan(off: u32, nPts: i32): bool {
+  if (nPts < 3) return false;
+  _planeOx = _boundaryFanPoint(off, 0, 0);
+  _planeOy = _boundaryFanPoint(off, 0, 1);
+  _planeOz = _boundaryFanPoint(off, 0, 2);
+
+  let nx: f64 = 0.0;
+  let ny: f64 = 0.0;
+  let nz: f64 = 0.0;
+  for (let i: i32 = 0; i < nPts; i++) {
+    const j = i == nPts - 1 ? 0 : i + 1;
+    const x0 = _boundaryFanPoint(off, i, 0);
+    const y0 = _boundaryFanPoint(off, i, 1);
+    const z0 = _boundaryFanPoint(off, i, 2);
+    const x1 = _boundaryFanPoint(off, j, 0);
+    const y1 = _boundaryFanPoint(off, j, 1);
+    const z1 = _boundaryFanPoint(off, j, 2);
+    nx += (y0 - y1) * (z0 + z1);
+    ny += (z0 - z1) * (x0 + x1);
+    nz += (x0 - x1) * (y0 + y1);
+  }
+
+  let nLen = Math.sqrt(nx * nx + ny * ny + nz * nz);
+  if (nLen < 1e-12) {
+    const x0 = _boundaryFanPoint(off, 0, 0);
+    const y0 = _boundaryFanPoint(off, 0, 1);
+    const z0 = _boundaryFanPoint(off, 0, 2);
+    const x1 = _boundaryFanPoint(off, 1, 0);
+    const y1 = _boundaryFanPoint(off, 1, 1);
+    const z1 = _boundaryFanPoint(off, 1, 2);
+    for (let i: i32 = 2; i < nPts; i++) {
+      const ax = x1 - x0;
+      const ay = y1 - y0;
+      const az = z1 - z0;
+      const bx = _boundaryFanPoint(off, i, 0) - x0;
+      const by = _boundaryFanPoint(off, i, 1) - y0;
+      const bz = _boundaryFanPoint(off, i, 2) - z0;
+      nx = ay * bz - az * by;
+      ny = az * bx - ax * bz;
+      nz = ax * by - ay * bx;
+      nLen = Math.sqrt(nx * nx + ny * ny + nz * nz);
+      if (nLen >= 1e-12) break;
+    }
+  }
+  if (nLen < 1e-12) return false;
+  nx /= nLen;
+  ny /= nLen;
+  nz /= nLen;
+  _planeNx = nx;
+  _planeNy = ny;
+  _planeNz = nz;
+
+  let rx: f64 = 0.0;
+  let ry: f64 = 0.0;
+  let rz: f64 = 0.0;
+  for (let i: i32 = 0; i < nPts; i++) {
+    const j = i == nPts - 1 ? 0 : i + 1;
+    rx = _boundaryFanPoint(off, j, 0) - _boundaryFanPoint(off, i, 0);
+    ry = _boundaryFanPoint(off, j, 1) - _boundaryFanPoint(off, i, 1);
+    rz = _boundaryFanPoint(off, j, 2) - _boundaryFanPoint(off, i, 2);
+    const dot = rx * nx + ry * ny + rz * nz;
+    rx -= dot * nx;
+    ry -= dot * ny;
+    rz -= dot * nz;
+    if (Math.sqrt(rx * rx + ry * ry + rz * rz) > 1e-12) break;
+  }
+
+  let rLen = Math.sqrt(rx * rx + ry * ry + rz * rz);
+  if (rLen < 1e-12) {
+    if (Math.abs(nx) <= Math.abs(ny) && Math.abs(nx) <= Math.abs(nz)) { rx = 1.0; ry = 0.0; rz = 0.0; }
+    else if (Math.abs(ny) <= Math.abs(nz)) { rx = 0.0; ry = 1.0; rz = 0.0; }
+    else { rx = 0.0; ry = 0.0; rz = 1.0; }
+    const dot = rx * nx + ry * ny + rz * nz;
+    rx -= dot * nx;
+    ry -= dot * ny;
+    rz -= dot * nz;
+    rLen = Math.sqrt(rx * rx + ry * ry + rz * rz);
+  }
+  if (rLen < 1e-12) return false;
+  _planeRx = rx / rLen;
+  _planeRy = ry / rLen;
+  _planeRz = rz / rLen;
+
+  _planeYx = ny * _planeRz - nz * _planeRy;
+  _planeYy = nz * _planeRx - nx * _planeRz;
+  _planeYz = nx * _planeRy - ny * _planeRx;
+  const yLen = Math.sqrt(_planeYx * _planeYx + _planeYy * _planeYy + _planeYz * _planeYz);
+  if (yLen <= 1e-12) return false;
+  _planeYx /= yLen;
+  _planeYy /= yLen;
+  _planeYz /= yLen;
+  return true;
+}
+
+function _tessBoundaryFanEarClippedFace(faceId: u32, off: u32, nPts: i32): i32 {
+  if (nPts < 3 || <u32>nPts > MAX_PLANAR_PTS) return -2;
+  if (!_setProjectionFrameFromBoundaryFan(off, nPts)) return -2;
+  _planarPointCount = 0;
+  _planarLoopCount = 0;
+  _planarPathCount = 0;
+  for (let i: i32 = 0; i < nPts; i++) {
+    if (!_planarAppendPoint(
+      _boundaryFanPoint(off, i, 0),
+      _boundaryFanPoint(off, i, 1),
+      _boundaryFanPoint(off, i, 2),
+      0,
+    )) return -2;
+  }
+  if (_planarPointCount < 3) return -2;
+  unchecked(_planarLoopStart[0] = 0);
+  unchecked(_planarLoopEnd[0] = _planarPointCount);
+  _planarLoopCount = 1;
+  if (!_planarBuildBridgedPath()) return -2;
+  if (!_buildTrimBaseTrianglesFromPath()) return -2;
+
+  let nx = _planeNx;
+  let ny = _planeNy;
+  let nz = _planeNz;
+  if (faceGetOrient(faceId) == ORIENT_REVERSED) {
+    nx = -nx;
+    ny = -ny;
+    nz = -nz;
+  }
+
+  const startTriCount = outTriCount;
+  for (let i: u32 = 0; i < _planarPointCount; i++) {
+    const id = _emitVert(
+      unchecked(_planarX[i]),
+      unchecked(_planarY[i]),
+      unchecked(_planarZ[i]),
+      nx, ny, nz,
+    );
+    if (id == INVALID_ID) return -1;
+    unchecked(_planarOutVert[i] = id);
+  }
+  for (let i: u32 = 0; i < _trimTriCount; i++) {
+    const a = unchecked(_planarOutVert[unchecked(_trimTriA[i])]);
+    const b = unchecked(_planarOutVert[unchecked(_trimTriB[i])]);
+    const c = unchecked(_planarOutVert[unchecked(_trimTriC[i])]);
+    if (_emitPlaneTriOriented(a, b, c, nx, ny, nz, faceId) < 0) return -1;
+  }
+  return <i32>(outTriCount - startTriCount);
+}
+
+function _tessBoundaryFanFace(faceId: u32): i32 {
+  const off = faceGetGeomOffset(faceId);
+  const nPts = <i32>geomPoolRead(off);
+  if (nPts < 3) return -2;
+  const clipped = _tessBoundaryFanEarClippedFace(faceId, off, nPts);
+  if (clipped >= 0) return clipped;
+  if (outVertCount + <u32>(nPts + 1) > MAX_OUT_VERTS) return -1;
+
+  let cx: f64 = 0.0;
+  let cy: f64 = 0.0;
+  let cz: f64 = 0.0;
+  let nx: f64 = 0.0;
+  let ny: f64 = 0.0;
+  let nz: f64 = 0.0;
+
+  for (let i: i32 = 0; i < nPts; i++) {
+    const j = i == nPts - 1 ? 0 : i + 1;
+    const x0 = _boundaryFanPoint(off, i, 0);
+    const y0 = _boundaryFanPoint(off, i, 1);
+    const z0 = _boundaryFanPoint(off, i, 2);
+    const x1 = _boundaryFanPoint(off, j, 0);
+    const y1 = _boundaryFanPoint(off, j, 1);
+    const z1 = _boundaryFanPoint(off, j, 2);
+    cx += x0;
+    cy += y0;
+    cz += z0;
+    nx += (y0 - y1) * (z0 + z1);
+    ny += (z0 - z1) * (x0 + x1);
+    nz += (x0 - x1) * (y0 + y1);
+  }
+
+  const invCount = 1.0 / <f64>nPts;
+  cx *= invCount;
+  cy *= invCount;
+  cz *= invCount;
+  let len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+  if (len > 1e-12) {
+    nx /= len;
+    ny /= len;
+    nz /= len;
+  } else {
+    nx = 0.0;
+    ny = 0.0;
+    nz = 1.0;
+  }
+  if (faceGetOrient(faceId) == ORIENT_REVERSED) {
+    nx = -nx;
+    ny = -ny;
+    nz = -nz;
+  }
+
+  const startTriCount = outTriCount;
+  const centerId = _emitVert(cx, cy, cz, nx, ny, nz);
+  if (centerId == INVALID_ID) return -1;
+  const firstBoundaryId = outVertCount;
+  for (let i: i32 = 0; i < nPts; i++) {
+    if (_emitVert(
+      _boundaryFanPoint(off, i, 0),
+      _boundaryFanPoint(off, i, 1),
+      _boundaryFanPoint(off, i, 2),
+      nx, ny, nz,
+    ) == INVALID_ID) return -1;
+  }
+
+  for (let i: i32 = 0; i < nPts; i++) {
+    const a = firstBoundaryId + <u32>i;
+    const b = firstBoundaryId + <u32>(i == nPts - 1 ? 0 : i + 1);
+    if (_emitPlaneTriOriented(centerId, a, b, nx, ny, nz, faceId) < 0) return -1;
+  }
+
+  return <i32>(outTriCount - startTriCount);
 }
 
 function _calibrateRuledStripNormalSign(

@@ -437,7 +437,7 @@ export {
   // topology: B-Rep entities
   MAX_VERTICES, MAX_EDGES, MAX_COEDGES, MAX_LOOPS, MAX_FACES, MAX_SHELLS,
   GEOM_NONE, GEOM_PLANE, GEOM_CYLINDER, GEOM_CONE, GEOM_SPHERE, GEOM_TORUS,
-  GEOM_NURBS_SURFACE, GEOM_LINE, GEOM_CIRCLE, GEOM_ELLIPSE, GEOM_NURBS_CURVE,
+  GEOM_NURBS_SURFACE, GEOM_LINE, GEOM_CIRCLE, GEOM_ELLIPSE, GEOM_NURBS_CURVE, GEOM_ROLLING_FILLET, GEOM_BOUNDARY_FAN,
   ORIENT_FORWARD, ORIENT_REVERSED,
   vertexAdd, vertexGetX, vertexGetY, vertexGetZ, vertexGetCount,
   edgeAdd, edgeGetStartVertex, edgeGetEndVertex, edgeGetGeomType, edgeGetGeomOffset, edgeGetCount,
@@ -453,6 +453,7 @@ export {
   // geometry: NURBS + analytic
   nurbsSurfaceStore, nurbsCurveStore,
   circleStore, planeStore, cylinderStore, sphereStore, coneStore, torusStore,
+  rollingFilletStoreFromStaging, boundaryFanStoreFromStaging,
   geomPoolRead, getGeomPoolPtr, geomPoolUsed, geomPoolReset, geomPoolSetUsed,
   geomStagingPtr, geomStagingCapacity,
   nurbsSurfaceStoreFromStaging, nurbsCurveStoreFromStaging,

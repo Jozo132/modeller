@@ -239,22 +239,56 @@ function _findFaceEdgeDirectionSign(face, edgeA, edgeB) {
   return 0;
 }
 
-function _faceInteriorOffsetDir(face, edgeA, edgeB, edgeDir) {
+function _faceNormalAtEdge(face, edgeA, edgeB) {
+  const fallback = face && face.normal ? vec3Normalize(face.normal) : { x: 0, y: 0, z: 1 };
+  if (!face || !face.surface || face.surfaceType === SurfaceType.PLANE) return fallback;
+
+  const mid = vec3Scale(vec3Add(edgeA, edgeB), 0.5);
+  try {
+    let uv = null;
+    if (typeof face.surface.closestPointUV === 'function') {
+      uv = face.surface.closestPointUV(mid);
+    }
+    const u = uv ? uv.u : ((face.surface.uMin + face.surface.uMax) * 0.5);
+    const v = uv ? uv.v : ((face.surface.vMin + face.surface.vMax) * 0.5);
+    if (typeof face.surface.normal === 'function') {
+      let normal = vec3Normalize(face.surface.normal(u, v));
+      if (face.sameSense === false) normal = vec3Scale(normal, -1);
+      if (vec3Len(normal) > 1e-10) return normal;
+    }
+  } catch (_error) {
+    // Fall through to the polygon normal.
+  }
+  return fallback;
+}
+
+function _faceInteriorOffsetDir(face, edgeA, edgeB, edgeDir, normalOverride = null) {
   const sign = _findFaceEdgeDirectionSign(face, edgeA, edgeB);
   if (sign === 0) return null;
-  const normal = vec3Normalize(face.normal);
+  const normal = vec3Normalize(normalOverride || face.normal);
   return sign > 0
     ? vec3Normalize(vec3Cross(normal, edgeDir))
     : vec3Normalize(vec3Cross(edgeDir, normal));
 }
 
-function _computeOffsetDirs(face0, face1, edgeA, edgeB) {
-  const n0 = vec3Normalize(face0.normal);
-  const n1 = vec3Normalize(face1.normal);
-  const edgeDir = vec3Normalize(vec3Sub(edgeB, edgeA));
+function _computeOffsetDirs(face0, face1, edgeA, edgeB, edgeDirOverride = null) {
+  const fallbackN0 = vec3Normalize(face0.normal);
+  const fallbackN1 = vec3Normalize(face1.normal);
+  let n0 = _faceNormalAtEdge(face0, edgeA, edgeB);
+  let n1 = _faceNormalAtEdge(face1, edgeA, edgeB);
+  const localDot = Math.abs(vec3Dot(n0, n1));
+  const fallbackDot = Math.abs(vec3Dot(fallbackN0, fallbackN1));
+  if (localDot > 0.995 && fallbackDot < 0.995) {
+    n0 = fallbackN0;
+    n1 = fallbackN1;
+  }
+  const overrideLen = edgeDirOverride ? vec3Len(edgeDirOverride) : 0;
+  const edgeDir = overrideLen > 1e-10
+    ? vec3Normalize(edgeDirOverride)
+    : vec3Normalize(vec3Sub(edgeB, edgeA));
 
-  const boundaryDir0 = _faceInteriorOffsetDir(face0, edgeA, edgeB, edgeDir);
-  const boundaryDir1 = _faceInteriorOffsetDir(face1, edgeA, edgeB, edgeDir);
+  const boundaryDir0 = _faceInteriorOffsetDir(face0, edgeA, edgeB, edgeDir, n0);
+  const boundaryDir1 = _faceInteriorOffsetDir(face1, edgeA, edgeB, edgeDir, n1);
   const offsDir0 = boundaryDir0 || vec3Normalize(vec3Cross(n0, edgeDir));
   const offsDir1 = boundaryDir1 || vec3Normalize(vec3Cross(edgeDir, n1));
 
@@ -1538,6 +1572,8 @@ function _extractFeatureFacesFromTopoBody(geometry, edgeSegments = 8) {
         isFillet: !!(topoFace.shared && topoFace.shared.isFillet),
         isCorner: !!(topoFace.shared && topoFace.shared.isCorner),
         surfaceType: topoFace.surfaceType,
+        surface: topoFace.surface || null,
+        sameSense: topoFace.sameSense,
         faceGroup: topoFace.id,
         topoFaceId: topoFace.id,
         topoFaceStableHash: topoFace.stableHash || null,

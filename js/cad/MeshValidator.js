@@ -38,6 +38,7 @@ export function detectSelfIntersections(faces, opts = {}) {
         if (sameGroupOnly && fa.faceGroup !== fb.faceGroup) continue;
         if (sameTopoFaceOnly && fa.topoFaceId !== undefined && fb.topoFaceId !== undefined && fa.topoFaceId !== fb.topoFaceId) continue;
         if (_sharesVertexOrEdge(fa.vertices, fb.vertices)) continue;
+        if (!sameTopoFaceOnly && _nearSharedTopoBoundary(fa, fb)) continue;
         if (_trianglesIntersect(fa.vertices, fb.vertices)) pairs.push([i, j]);
       }
     }
@@ -128,6 +129,7 @@ export function detectSelfIntersections(faces, opts = {}) {
         if (aai[4] < aaj[1] || aaj[4] < aai[1]) continue;
         if (aai[5] < aaj[2] || aaj[5] < aai[2]) continue;
         if (_sharesVertexOrEdge(fa.vertices, fb.vertices)) continue;
+        if (!sameTopoFaceOnly && _nearSharedTopoBoundary(fa, fb)) continue;
         if (_trianglesIntersect(fa.vertices, fb.vertices)) pairs.push([i, j]);
       }
     }
@@ -252,6 +254,7 @@ export function validateMesh(faces) {
 // -----------------------------------------------------------------------
 
 const _EPS = 1e-10;
+const _ADJACENT_BOUNDARY_EPS = 6e-3;
 
 function _cross(a, b) {
   return { x: a.y * b.z - a.z * b.y, y: a.z * b.x - a.x * b.z, z: a.x * b.y - a.y * b.x };
@@ -260,6 +263,8 @@ function _cross(a, b) {
 function _dot(a, b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 
 function _sub(a, b) { return { x: a.x - b.x, y: a.y - b.y, z: a.z - b.z }; }
+
+function _len(v) { return Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z); }
 
 function _triangleArea(a, b, c) {
   const ab = _sub(b, a);
@@ -275,6 +280,43 @@ function _sharesVertexOrEdge(va, vb) {
       if (Math.abs(a.x - b.x) < _EPS && Math.abs(a.y - b.y) < _EPS && Math.abs(a.z - b.z) < _EPS) {
         return true;
       }
+    }
+  }
+  return false;
+}
+
+function _pointSegmentDistance(p, a, b) {
+  const ab = _sub(b, a);
+  const lenSq = _dot(ab, ab);
+  let t = 0;
+  if (lenSq > _EPS) t = _dot(_sub(p, a), ab) / lenSq;
+  if (t < 0) t = 0;
+  else if (t > 1) t = 1;
+  return _len(_sub(p, {
+    x: a.x + ab.x * t,
+    y: a.y + ab.y * t,
+    z: a.z + ab.z * t,
+  }));
+}
+
+function _segmentsNearlyTouch(a0, a1, b0, b1, tolerance) {
+  return _pointSegmentDistance(a0, b0, b1) <= tolerance ||
+    _pointSegmentDistance(a1, b0, b1) <= tolerance ||
+    _pointSegmentDistance(b0, a0, a1) <= tolerance ||
+    _pointSegmentDistance(b1, a0, a1) <= tolerance;
+}
+
+function _nearSharedTopoBoundary(fa, fb) {
+  if (fa.topoFaceId === undefined || fb.topoFaceId === undefined || fa.topoFaceId === fb.topoFaceId) return false;
+  const va = fa.vertices;
+  const vb = fb.vertices;
+  for (let i = 0; i < 3; i++) {
+    const a0 = va[i];
+    const a1 = va[(i + 1) % 3];
+    for (let j = 0; j < 3; j++) {
+      const b0 = vb[j];
+      const b1 = vb[(j + 1) % 3];
+      if (_segmentsNearlyTouch(a0, a1, b0, b1, _ADJACENT_BOUNDARY_EPS)) return true;
     }
   }
   return false;

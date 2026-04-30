@@ -135,7 +135,7 @@ function _clipTrimToNeighborEdge(face, vertex, offsDir, tangentDist, defaultPt, 
   return adaptedPt;
 }
 
-function _precomputeFilletEdge(faces, edgeKey, radius, segments, exactAdjacencyByKey = null) {
+function _precomputeFilletEdge(faces, edgeKey, radius, segments, exactAdjacencyByKey = null, options = null) {
   const adj = (exactAdjacencyByKey && exactAdjacencyByKey.get(edgeKey)) || _findAdjacentFaces(faces, edgeKey);
   if (adj.length < 2) return null;
 
@@ -148,7 +148,11 @@ function _precomputeFilletEdge(faces, edgeKey, radius, segments, exactAdjacencyB
   const face0Keys = _collectFaceEdgeKeys(face0);
   const face1Keys = _collectFaceEdgeKeys(face1);
 
-  const { offsDir0, offsDir1, isConcave } = _computeOffsetDirs(face0, face1, edgeA, edgeB);
+  let edgeDirOverride = options && options.edgeDirOverride ? _vec3Normalize(options.edgeDirOverride) : null;
+  if (edgeDirOverride && _vec3Dot(edgeDirOverride, _vec3Sub(edgeB, edgeA)) < 0) {
+    edgeDirOverride = _vec3Scale(edgeDirOverride, -1);
+  }
+  const { offsDir0, offsDir1, isConcave } = _computeOffsetDirs(face0, face1, edgeA, edgeB, edgeDirOverride);
 
   const alpha = Math.acos(Math.max(-1, Math.min(1, _vec3Dot(offsDir0, offsDir1))));
   if (alpha < 1e-6) return null;
@@ -157,22 +161,37 @@ function _precomputeFilletEdge(faces, edgeKey, radius, segments, exactAdjacencyB
   const centerDist = radius / Math.sin(alpha / 2);
   const sweep = Math.PI - alpha;
   const bisector = _vec3Normalize(_vec3Add(offsDir0, offsDir1));
-  const edgeDir = _vec3Normalize(_vec3Sub(edgeB, edgeA));
+  const edgeDir = edgeDirOverride || _vec3Normalize(_vec3Sub(edgeB, edgeA));
 
   // Standard perpendicular offsets (correct for 90° corners)
-  const t0a_raw = _vec3Add(edgeA, _vec3Scale(offsDir0, tangentDist));
-  const t0b_raw = _vec3Add(edgeB, _vec3Scale(offsDir0, tangentDist));
-  const t1a_raw = _vec3Add(edgeA, _vec3Scale(offsDir1, tangentDist));
-  const t1b_raw = _vec3Add(edgeB, _vec3Scale(offsDir1, tangentDist));
+  const projectTrimsToFaces = !!(options && options.projectTrimsToFaces);
+  let t0a_raw = _vec3Add(edgeA, _vec3Scale(offsDir0, tangentDist));
+  let t0b_raw = _vec3Add(edgeB, _vec3Scale(offsDir0, tangentDist));
+  let t1a_raw = _vec3Add(edgeA, _vec3Scale(offsDir1, tangentDist));
+  let t1b_raw = _vec3Add(edgeB, _vec3Scale(offsDir1, tangentDist));
+  if (projectTrimsToFaces) {
+    t0a_raw = _projectPointToFeatureFaceSurface(face0, t0a_raw);
+    t0b_raw = _projectPointToFeatureFaceSurface(face0, t0b_raw);
+    t1a_raw = _projectPointToFeatureFaceSurface(face1, t1a_raw);
+    t1b_raw = _projectPointToFeatureFaceSurface(face1, t1b_raw);
+  }
 
   // Clip trim points to neighboring face edges for correct corner geometry.
   // At non-90° corners, the simple perpendicular offset may not lie on the
   // non-adjacent face's plane.  Clipping ensures the trim point is on the
   // face boundary edge shared with the non-adjacent face.
-  const t0a = _clipTrimToNeighborEdge(face0, edgeA, offsDir0, tangentDist, t0a_raw, _vec3Scale(edgeDir, -1));
-  const t0b = _clipTrimToNeighborEdge(face0, edgeB, offsDir0, tangentDist, t0b_raw, edgeDir);
-  const t1a = _clipTrimToNeighborEdge(face1, edgeA, offsDir1, tangentDist, t1a_raw, _vec3Scale(edgeDir, -1));
-  const t1b = _clipTrimToNeighborEdge(face1, edgeB, offsDir1, tangentDist, t1b_raw, edgeDir);
+  const disableTrimClipA = !!(options && (options.disableTrimClip || options.disableTrimClipA));
+  const disableTrimClipB = !!(options && (options.disableTrimClip || options.disableTrimClipB));
+  let t0a = disableTrimClipA ? t0a_raw : _clipTrimToNeighborEdge(face0, edgeA, offsDir0, tangentDist, t0a_raw, _vec3Scale(edgeDir, -1));
+  let t0b = disableTrimClipB ? t0b_raw : _clipTrimToNeighborEdge(face0, edgeB, offsDir0, tangentDist, t0b_raw, edgeDir);
+  let t1a = disableTrimClipA ? t1a_raw : _clipTrimToNeighborEdge(face1, edgeA, offsDir1, tangentDist, t1a_raw, _vec3Scale(edgeDir, -1));
+  let t1b = disableTrimClipB ? t1b_raw : _clipTrimToNeighborEdge(face1, edgeB, offsDir1, tangentDist, t1b_raw, edgeDir);
+  if (projectTrimsToFaces) {
+    t0a = _projectPointToFeatureFaceSurface(face0, t0a);
+    t0b = _projectPointToFeatureFaceSurface(face0, t0b);
+    t1a = _projectPointToFeatureFaceSurface(face1, t1a);
+    t1b = _projectPointToFeatureFaceSurface(face1, t1b);
+  }
 
   function computeArc(vertex, trimPt0, trimPt1) {
     const center = _vec3Add(vertex, _vec3Scale(bisector, centerDist));
@@ -643,6 +662,11 @@ function _curveFromSampledPoints(points) {
   return NurbsCurve.createPolyline(points);
 }
 
+function _preserveControlPointSamples(curve) {
+  if (curve) curve._preserveControlPointSamples = true;
+  return curve;
+}
+
 function _projectTerminalFilletCapsOntoAdjacentFaces(topoBody, faces, edgeDataList, vertexEdgeMap, radius, segments) {
   if (!topoBody || !Array.isArray(faces) || !Array.isArray(edgeDataList)) return;
   const topoFaceById = buildTopoFaceById(topoBody);
@@ -864,11 +888,187 @@ function _buildExactFilletBoundaryCurve(data, points, side, isSharedTrim) {
   return _curveFromSampledPoints(points);
 }
 
+function _filletSharedData(data) {
+  const {
+    _exactAxisStart: _oldAxisStart,
+    _exactAxisEnd: _oldAxisEnd,
+    _exactRadius: _oldExactRadius,
+    isFillet: _oldIsFillet,
+    isFilletFace: _oldIsFilletFace,
+    ...inherited
+  } = data.shared || {};
+  const sharedData = {
+    ...inherited,
+    isFillet: true,
+  };
+  if (data._exactAxisStart) sharedData._exactAxisStart = { ...data._exactAxisStart };
+  if (data._exactAxisEnd) sharedData._exactAxisEnd = { ...data._exactAxisEnd };
+  if (data._exactRadius) sharedData._exactRadius = data._exactRadius;
+  if (Array.isArray(data._rollingRail0) && Array.isArray(data._rollingRail1) && Array.isArray(data._rollingCenters)) {
+    sharedData.isRollingFillet = true;
+    sharedData._rollingRail0 = data._rollingRail0.map((point) => ({ ...point }));
+    sharedData._rollingRail1 = data._rollingRail1.map((point) => ({ ...point }));
+    sharedData._rollingCenters = data._rollingCenters.map((point) => ({ ...point }));
+    if (Array.isArray(data._rollingRail0Spans)) sharedData._rollingRail0Spans = data._rollingRail0Spans.map((span) => ({ ...span }));
+    if (Array.isArray(data._rollingRail1Spans)) sharedData._rollingRail1Spans = data._rollingRail1Spans.map((span) => ({ ...span }));
+    if (Array.isArray(data._rollingSections)) sharedData._rollingSections = data._rollingSections.map((section) => ({ ...section }));
+  }
+  return sharedData;
+}
+
+function _normalizeRollingSectionSpans(sections, railLength) {
+  const last = railLength - 1;
+  if (!Array.isArray(sections) || sections.length === 0 || last < 1) return [];
+  const normalized = [];
+  for (const section of sections) {
+    const startIndex = Math.max(0, Math.min(last, section.startIndex | 0));
+    const endIndex = Math.max(0, Math.min(last, section.endIndex | 0));
+    if (endIndex <= startIndex) continue;
+    normalized.push({ ...section, startIndex, endIndex });
+  }
+  normalized.sort((a, b) => a.startIndex - b.startIndex || a.endIndex - b.endIndex);
+  return normalized;
+}
+
+function _splitRollingSpansAtSectionBreaks(spans, sections, railLength) {
+  const normalizedSpans = _normalizeRollingRailSpans(spans, railLength);
+  const normalizedSections = _normalizeRollingSectionSpans(sections, railLength);
+  if (normalizedSections.length === 0) return normalizedSpans;
+
+  const breaks = new Set([0, Math.max(0, railLength - 1)]);
+  for (const section of normalizedSections) {
+    breaks.add(section.startIndex);
+    breaks.add(section.endIndex);
+  }
+  const sortedBreaks = [...breaks].sort((a, b) => a - b);
+  const result = [];
+  for (const span of normalizedSpans) {
+    let startIndex = span.startIndex;
+    for (const breakIndex of sortedBreaks) {
+      if (breakIndex <= startIndex || breakIndex >= span.endIndex) continue;
+      result.push({ ...span, startIndex, endIndex: breakIndex });
+      startIndex = breakIndex;
+    }
+    if (span.endIndex > startIndex) result.push({ ...span, startIndex, endIndex: span.endIndex });
+  }
+  return result.length > 0 ? result : normalizedSpans;
+}
+
+function _normalizeRollingRailSpans(spans, railLength) {
+  const last = railLength - 1;
+  if (!Array.isArray(spans) || spans.length === 0 || last < 1) {
+    return last >= 1 ? [{ startIndex: 0, endIndex: last }] : [];
+  }
+  const normalized = [];
+  for (const span of spans) {
+    const startIndex = Math.max(0, Math.min(last, span.startIndex | 0));
+    const endIndex = Math.max(0, Math.min(last, span.endIndex | 0));
+    if (endIndex <= startIndex) continue;
+    normalized.push({ ...span, startIndex, endIndex });
+  }
+  return normalized.length > 0 ? normalized : [{ startIndex: 0, endIndex: last }];
+}
+
+function _rollingRailSpanCurve(rail, span, reverse = false) {
+  if (!Array.isArray(rail) || !span) return null;
+  const startIndex = Math.max(0, Math.min(rail.length - 1, span.startIndex | 0));
+  const endIndex = Math.max(0, Math.min(rail.length - 1, span.endIndex | 0));
+  if (endIndex <= startIndex) return null;
+  const points = rail.slice(startIndex, endIndex + 1).map((point) => ({ ...point }));
+  if (reverse) points.reverse();
+  const curve = _curveFromSampledPoints(points);
+  if (curve) _preserveControlPointSamples(curve);
+  return curve;
+}
+
+function _forEachRollingRailSpanCurve(data, visitor) {
+  if (!data || typeof visitor !== 'function') return;
+  const rail0 = data._rollingRail0;
+  const rail1 = data._rollingRail1;
+  if (!Array.isArray(rail0) || !Array.isArray(rail1)) return;
+  const rail0Spans = _splitRollingSpansAtSectionBreaks(data._rollingRail0Spans, data._rollingSections, rail0.length);
+  const rail1Spans = _splitRollingSpansAtSectionBreaks(data._rollingRail1Spans, data._rollingSections, rail1.length);
+  for (const span of rail0Spans) {
+    const curve = _rollingRailSpanCurve(rail0, span, false);
+    if (curve) visitor(curve, span, 0);
+  }
+  for (const span of rail1Spans) {
+    const curve = _rollingRailSpanCurve(rail1, span, false);
+    if (curve) visitor(curve, span, 1);
+  }
+}
+
+function _buildExactRollingFilletFaceDesc(data) {
+  const surface = data && data._exactSurface ? data._exactSurface : null;
+  const rail0 = data && data._rollingRail0;
+  const rail1 = data && data._rollingRail1;
+  const arcA = data && data.arcA;
+  const arcB = data && data.arcB;
+  if (!surface || !Array.isArray(rail0) || !Array.isArray(rail1) || rail0.length !== rail1.length || rail0.length < 3) return null;
+  if (!arcA || !arcB || arcA.length < 2 || arcB.length < 2) return null;
+
+  const rail0Spans = _splitRollingSpansAtSectionBreaks(data._rollingRail0Spans, data._rollingSections, rail0.length);
+  const rail1Spans = _splitRollingSpansAtSectionBreaks(data._rollingRail1Spans, data._rollingSections, rail1.length);
+  const startArcCurve = _buildExactFilletBoundaryCurve(data, arcA, 'A', false);
+  const endArc = _buildExactFilletBoundaryCurve(data, arcB, 'B', false);
+
+  const vertices = [];
+  const edgeCurves = [];
+  const pushEdge = (start, curve, end) => {
+    if (!start || !end || _dist3(start, end) < 1e-9) return;
+    vertices.push({ ...start });
+    edgeCurves.push(curve || NurbsCurve.createLine(start, end));
+  };
+
+  pushEdge(rail0[0], startArcCurve, rail1[0]);
+  for (const span of rail1Spans) {
+    pushEdge(rail1[span.startIndex], _rollingRailSpanCurve(rail1, span, false), rail1[span.endIndex]);
+  }
+  pushEdge(rail1[rail1.length - 1], endArc ? endArc.reversed() : null, rail0[rail0.length - 1]);
+  for (let i = rail0Spans.length - 1; i >= 0; i--) {
+    const span = rail0Spans[i];
+    pushEdge(rail0[span.endIndex], _rollingRailSpanCurve(rail0, span, true), rail0[span.startIndex]);
+  }
+  if (vertices.length < 4 || edgeCurves.length !== vertices.length) return null;
+
+  let outwardNormal = _computePolygonNormal(vertices);
+  const surfaceNormal = surface.normal(
+    (surface.uMin + surface.uMax) * 0.5,
+    (surface.vMin + surface.vMax) * 0.5,
+  );
+  if (outwardNormal && surfaceNormal && _vec3Dot(outwardNormal, surfaceNormal) < 0) {
+    const originalCurves = edgeCurves.slice();
+    const n = vertices.length;
+    vertices.reverse();
+    edgeCurves.length = 0;
+    for (let i = 0; i < n; i++) {
+      const originalIndex = i < n - 1 ? n - 2 - i : n - 1;
+      edgeCurves.push(originalCurves[originalIndex].reversed());
+    }
+    outwardNormal = _computePolygonNormal(vertices);
+  }
+  const sameSense = !(surfaceNormal && outwardNormal)
+    ? true
+    : _vec3Dot(outwardNormal, surfaceNormal) >= 0;
+
+  return {
+    surface,
+    surfaceType: SurfaceType.BSPLINE,
+    vertices,
+    edgeCurves,
+    sameSense,
+    shared: _filletSharedData(data),
+  };
+}
+
 // -----------------------------------------------------------------------
 // Exact fillet face descriptors
 // -----------------------------------------------------------------------
 
 function _buildExactFilletFaceDesc(data) {
+  const rollingDesc = _buildExactRollingFilletFaceDesc(data);
+  if (rollingDesc) return rollingDesc;
+
   const surface = data && data._exactSurface ? data._exactSurface : null;
   const trimA = data && (data.sharedTrimA || data.arcA);
   const trimB = data && (data.sharedTrimB || data.arcB);
@@ -974,23 +1174,13 @@ function _buildExactFilletFaceDesc(data) {
     ? true
     : _vec3Dot(outwardNormal, surfaceNormal) >= 0;
 
-  // Build shared metadata including cylinder axis/radius for fillet-fillet intersection detection
-  const sharedData = {
-    ...(data.shared || {}),
-    isFillet: true,
-  };
-  // Preserve cylinder metadata for sequential fillet operations
-  if (data._exactAxisStart) sharedData._exactAxisStart = { ...data._exactAxisStart };
-  if (data._exactAxisEnd) sharedData._exactAxisEnd = { ...data._exactAxisEnd };
-  if (data._exactRadius) sharedData._exactRadius = data._exactRadius;
-
   return {
     surface,
     surfaceType: SurfaceType.BSPLINE,
     vertices,
     edgeCurves,
     sameSense,
-    shared: sharedData,
+    shared: _filletSharedData(data),
   };
 }
 
@@ -1421,6 +1611,151 @@ function _buildOriginalFaceDesc(topoFace, vertexReplacements = null) {
   };
 }
 
+function _rollingTrimForSourceFace(source, faceIndex, atA) {
+  if (!source) return null;
+  if (source.fi0 === faceIndex) return atA ? source.p0a : source.p0b;
+  if (source.fi1 === faceIndex) return atA ? source.p1a : source.p1b;
+  return null;
+}
+
+function _rollingSourceForOrientedCoedge(source, faceIndex, start, end) {
+  if (!source || (source.fi0 !== faceIndex && source.fi1 !== faceIndex)) return null;
+  const startKey = _edgeVKey(start);
+  const endKey = _edgeVKey(end);
+  const edgeAKey = _edgeVKey(source.edgeA);
+  const edgeBKey = _edgeVKey(source.edgeB);
+  if (startKey === edgeAKey && endKey === edgeBKey) {
+    return {
+      source,
+      start: _rollingTrimForSourceFace(source, faceIndex, true),
+      end: _rollingTrimForSourceFace(source, faceIndex, false),
+    };
+  }
+  if (startKey === edgeBKey && endKey === edgeAKey) {
+    return {
+      source,
+      start: _rollingTrimForSourceFace(source, faceIndex, false),
+      end: _rollingTrimForSourceFace(source, faceIndex, true),
+    };
+  }
+  return null;
+}
+
+function _buildRollingAdjacentPlanarFaceDesc(face, faceIndex, topoFace, edgeDataList) {
+  if (!face || !topoFace || !topoFace.outerLoop || topoFace.surfaceType !== SurfaceType.PLANE) return null;
+  const rollingData = (edgeDataList || []).find((data) => data && Array.isArray(data._trimSourceData) && Array.isArray(data._rollingRail0));
+  if (!rollingData) return null;
+  const sources = rollingData._trimSourceData.filter((source) => source && (source.fi0 === faceIndex || source.fi1 === faceIndex));
+  if (sources.length === 0) return null;
+
+  const coedges = topoFace.outerLoop.coedges || [];
+  if (coedges.length < 3) return null;
+  const edges = [];
+  let consumed = 0;
+  for (const coedge of coedges) {
+    const start = coedge.sameSense !== false ? coedge.edge.startVertex.point : coedge.edge.endVertex.point;
+    const end = coedge.sameSense !== false ? coedge.edge.endVertex.point : coedge.edge.startVertex.point;
+    const match = sources.map((source) => _rollingSourceForOrientedCoedge(source, faceIndex, start, end)).find(Boolean) || null;
+    if (match && match.start && match.end && _dist3(match.start, match.end) > 1e-9) consumed++;
+    edges.push({ start, end, curve: coedge.edge.curve || null, match });
+  }
+  if (consumed === 0) return null;
+
+  const vertices = [];
+  const edgeCurves = [];
+  const edgeCount = edges.length;
+  for (let i = 0; i < edgeCount; i++) {
+    const edge = edges[i];
+    const previous = edges[(i - 1 + edgeCount) % edgeCount];
+    const next = edges[(i + 1) % edgeCount];
+
+    let start = edge.start;
+    let end = edge.end;
+    let curve = edge.curve;
+    if (edge.match && edge.match.start && edge.match.end) {
+      start = edge.match.start;
+      end = edge.match.end;
+      curve = NurbsCurve.createLine(start, end);
+    } else {
+      if (previous.match && previous.match.end && _edgeVKey(previous.end) === _edgeVKey(edge.start)) start = previous.match.end;
+      if (next.match && next.match.start && _edgeVKey(next.start) === _edgeVKey(edge.end)) end = next.match.start;
+      if (_edgeVKey(start) !== _edgeVKey(edge.start) || _edgeVKey(end) !== _edgeVKey(edge.end)) {
+        curve = NurbsCurve.createLine(start, end);
+      } else if (curve && coedgeCurveNeedsReverse(edges[i], coedges[i])) {
+        curve = curve.reversed();
+      }
+    }
+
+    if (!start || !end || _dist3(start, end) < 1e-9) continue;
+    vertices.push({ ...start });
+    edgeCurves.push(curve || NurbsCurve.createLine(start, end));
+  }
+
+  if (vertices.length < 3 || vertices.length !== edgeCurves.length) return null;
+  return {
+    surface: topoFace.surface || null,
+    surfaceType: SurfaceType.PLANE,
+    surfaceInfo: topoFace.surfaceInfo ? { ...topoFace.surfaceInfo } : null,
+    fusedGroupId: topoFace.fusedGroupId || null,
+    vertices,
+    edgeCurves,
+    sameSense: topoFace.sameSense,
+    shared: face.shared ? { ...face.shared } : (topoFace.shared ? { ...topoFace.shared } : null),
+    stableHash: topoFace.stableHash || face.stableHash || null,
+  };
+}
+
+function coedgeCurveNeedsReverse(edgeEntry, coedge) {
+  if (!edgeEntry || !coedge || !coedge.edge || !coedge.edge.curve || typeof coedge.edge.curve.reversed !== 'function') return false;
+  return coedge.sameSense === false;
+}
+
+function _distancePointToSegment(point, start, end) {
+  const segment = _vec3Sub(end, start);
+  const lengthSq = _vec3Dot(segment, segment);
+  if (lengthSq < 1e-20) return _dist3(point, start);
+  const t = Math.max(0, Math.min(1, _vec3Dot(_vec3Sub(point, start), segment) / lengthSq));
+  const closest = {
+    x: start.x + segment.x * t,
+    y: start.y + segment.y * t,
+    z: start.z + segment.z * t,
+  };
+  return _dist3(point, closest);
+}
+
+function _distancePointToCurveSamples(point, curve) {
+  if (!curve || !Array.isArray(curve.controlPoints) || curve.controlPoints.length < 2) return Infinity;
+  let samples = null;
+  if (curve.degree === 1 && curve.controlPoints.length > 2) {
+    samples = curve.controlPoints;
+  } else if (typeof curve.evaluate === 'function') {
+    const uMin = Number.isFinite(curve.uMin) ? curve.uMin : 0;
+    const uMax = Number.isFinite(curve.uMax) ? curve.uMax : 1;
+    samples = [];
+    for (let i = 0; i <= 32; i++) {
+      const t = i / 32;
+      samples.push(curve.evaluate(uMin + (uMax - uMin) * t));
+    }
+  } else {
+    samples = curve.controlPoints;
+  }
+  let best = Infinity;
+  for (let i = 0; i < samples.length - 1; i++) {
+    best = Math.min(best, _distancePointToSegment(point, samples[i], samples[i + 1]));
+  }
+  return best;
+}
+
+function _runVerticesFollowCurve(vertices, start, runLen, curve, tol = 1e-4) {
+  if (!Array.isArray(vertices) || !curve) return false;
+  const n = vertices.length;
+  for (let j = 1; j < runLen; j++) {
+    const vertex = vertices[(start + j) % n];
+    if (_distancePointToCurveSamples(vertex, curve) > tol) return false;
+  }
+  return true;
+}
+
 // -----------------------------------------------------------------------
 // Cross-face arc curve coordination
 // -----------------------------------------------------------------------
@@ -1454,6 +1789,18 @@ function _replaceEdgesWithArcCurves(faceDescs, edgeDataList, faces, origTopoFace
   // (Reversed curves evaluate differently at parameter 0.5 for polylines
   // whose knot range isn't [0,1], causing false negatives.)
   const arcCurveLookup = new Map();
+  const rollingRailEdgeKeys = new Set();
+
+  const registerCurve = (curve, options = null) => {
+    if (!curve || !Array.isArray(curve.controlPoints) || curve.controlPoints.length < 2) return;
+    if (curve.degree === 1 && curve.controlPoints.length <= 2) return;
+    const sk = _edgeVKey(curve.controlPoints[0]);
+    const ek = _edgeVKey(curve.controlPoints[curve.controlPoints.length - 1]);
+    if (sk === ek) return;
+    const unordered = sk < ek ? `${sk}|${ek}` : `${ek}|${sk}`;
+    if (!arcCurveLookup.has(unordered)) arcCurveLookup.set(unordered, curve);
+    if (options?.rollingRail) rollingRailEdgeKeys.add(unordered);
+  };
 
   for (const data of edgeDataList) {
     // Check if either adjacent face is non-planar (e.g. previous fillet surface)
@@ -1463,24 +1810,16 @@ function _replaceEdgesWithArcCurves(faceDescs, edgeDataList, faces, origTopoFace
     const orig1 = face1?.topoFaceId !== undefined ? origTopoFaces.get(face1.topoFaceId) : null;
     const hasNonPlanar = (orig0 && orig0.surfaceType !== 'plane') ||
                           (orig1 && orig1.surfaceType !== 'plane');
-    if (hasNonPlanar) continue;
+    const isRollingData = !!(Array.isArray(data._rollingRail0) && Array.isArray(data._rollingRail1));
+    if (hasNonPlanar && !isRollingData) continue;
 
     // Add non-shared arc cross-section curves
-    if (!data.sharedTrimA && data.arcA && data.arcA.length >= 2 && data._exactArcCurveA) {
-      const k1 = _edgeVKey(data.arcA[0]);
-      const k2 = _edgeVKey(data.arcA[data.arcA.length - 1]);
-      if (k1 !== k2) {
-        const unordered = k1 < k2 ? `${k1}|${k2}` : `${k2}|${k1}`;
-        arcCurveLookup.set(unordered, data._exactArcCurveA);
-      }
-    }
-    if (!data.sharedTrimB && data.arcB && data.arcB.length >= 2 && data._exactArcCurveB) {
-      const k1 = _edgeVKey(data.arcB[0]);
-      const k2 = _edgeVKey(data.arcB[data.arcB.length - 1]);
-      if (k1 !== k2) {
-        const unordered = k1 < k2 ? `${k1}|${k2}` : `${k2}|${k1}`;
-        arcCurveLookup.set(unordered, data._exactArcCurveB);
-      }
+    if (!data.sharedTrimA) registerCurve(data._exactArcCurveA);
+    if (!data.sharedTrimB) registerCurve(data._exactArcCurveB);
+    if (isRollingData) {
+      registerCurve(data._exactRail0Curve, { rollingRail: true });
+      registerCurve(data._exactRail1Curve, { rollingRail: true });
+      _forEachRollingRailSpanCurve(data, (curve) => registerCurve(curve, { rollingRail: true }));
     }
   }
 
@@ -1504,16 +1843,7 @@ function _replaceEdgesWithArcCurves(faceDescs, edgeDataList, faces, origTopoFace
         if (!e.curve) continue;
         // Include degree-1 polyline arcs (>2 control points) and
         // higher-degree NURBS curves (arcs from cylinders, cones, etc.)
-        const cps = e.curve.controlPoints;
-        if (!cps || cps.length < 2) continue;
-        if (e.curve.degree === 1 && cps.length <= 2) continue; // skip simple lines
-        const sk = _edgeVKey(e.startVertex.point);
-        const ek = _edgeVKey(e.endVertex.point);
-        if (sk === ek) continue;
-        const unordered = sk < ek ? `${sk}|${ek}` : `${ek}|${sk}`;
-        if (!arcCurveLookup.has(unordered)) {
-          arcCurveLookup.set(unordered, e.curve);
-        }
+        registerCurve(e.curve);
       }
     }
   }
@@ -1547,7 +1877,7 @@ function _replaceEdgesWithArcCurves(faceDescs, edgeDataList, faces, origTopoFace
       }
     }
     for (const [k, count] of counts) {
-      if (count >= 2) nonPlanarEdgeKeys.add(k);
+      if (count >= 2 && !rollingRailEdgeKeys.has(k)) nonPlanarEdgeKeys.add(k);
     }
   }
 
@@ -1579,6 +1909,7 @@ function _replaceEdgesWithArcCurves(faceDescs, edgeDataList, faces, origTopoFace
       if (arcCurve && !nonPlanarEdgeKeys.has(unordered)) {
         const arcStart = _edgeVKey(arcCurve.controlPoints[0]);
         desc.edgeCurves[i] = arcStart === k1 ? arcCurve.clone() : arcCurve.reversed();
+        if (arcCurve._preserveControlPointSamples) _preserveControlPointSamples(desc.edgeCurves[i]);
       }
     }
 
@@ -1616,10 +1947,12 @@ function _replaceEdgesWithArcCurves(faceDescs, edgeDataList, faces, origTopoFace
           const unordered = fk < lk ? `${fk}|${lk}` : `${lk}|${fk}`;
           const arcCurve = arcCurveLookup.get(unordered);
           if (!arcCurve || nonPlanarEdgeKeys.has(unordered)) continue;
+          if (!_runVerticesFollowCurve(desc.vertices, start, runLen, arcCurve)) continue;
 
           // Found a match — consolidate: remove intermediate vertices and edges
           const arcStart = _edgeVKey(arcCurve.controlPoints[0]);
           const replacement = arcStart === fk ? arcCurve.clone() : arcCurve.reversed();
+          if (arcCurve._preserveControlPointSamples) _preserveControlPointSamples(replacement);
 
           // Build new arrays without the intermediate vertices
           const newVerts = [];
@@ -1881,6 +2214,7 @@ function _extendTrimsAtPreviousFilletJunctions(trimmedFaces, edgeDataList, faces
   }
 
   for (const data of edgeDataList) {
+    if (data._rollingRail0) continue;
     const tangentDist = _vec3Len(_vec3Sub(data.p0a, data.edgeA));
     if (!tangentDist || tangentDist < 1e-10) continue;
 
@@ -1996,21 +2330,23 @@ function _extendTrimsAtPreviousFilletJunctions(trimmedFaces, edgeDataList, faces
 function _computeFilletChamferArcSamples(
   cylCenter, axisDir, radius, ex, ey,
   planePoint, planeNormal,
-  startPt, endPt, segments = 12,
+  startPt, endPt, segments = 12, preferLongSweep = false,
 ) {
-  const wasmSamples = sampleCylinderPlaneArcWasmReady({
-    cylCenter,
-    axisDir,
-    radius,
-    ex,
-    ey,
-    planePoint,
-    planeNormal,
-    startPt,
-    endPt,
-    segments,
-  });
-  if (wasmSamples) return wasmSamples;
+  if (!preferLongSweep) {
+    const wasmSamples = sampleCylinderPlaneArcWasmReady({
+      cylCenter,
+      axisDir,
+      radius,
+      ex,
+      ey,
+      planePoint,
+      planeNormal,
+      startPt,
+      endPt,
+      segments,
+    });
+    if (wasmSamples) return wasmSamples;
+  }
 
   const C = _vec3Dot(axisDir, planeNormal);
   if (Math.abs(C) < 1e-9) return null; // axis parallel to plane
@@ -2038,6 +2374,7 @@ function _computeFilletChamferArcSamples(
   let dt = t1 - t0;
   while (dt > Math.PI) dt -= 2 * Math.PI;
   while (dt < -Math.PI) dt += 2 * Math.PI;
+  if (preferLongSweep) dt = dt >= 0 ? dt - 2 * Math.PI : dt + 2 * Math.PI;
   if (Math.abs(dt) < 1e-6) return null;
 
   const out = [];
@@ -2197,8 +2534,10 @@ function _extendTrimsAtPreviousChamferJunctions(
           : null;
         const otherPlanePt = (otherFace.vertices && otherFace.vertices[0]) || null;
         if (!otherNormal || !otherPlanePt) continue;
+        const otherFaceBoundaryKeys = new Set((otherFace.vertices || []).map((point) => _edgeVKey(point)));
         const onOtherPlane = (p) =>
           Math.abs(_vec3Dot(_vec3Sub(p, otherPlanePt), otherNormal)) < tol;
+        const onOtherBoundary = (p) => otherFaceBoundaryKeys.has(_edgeVKey(p));
 
         let evIdx = -1;
         for (let i = 0; i < chamferVerts.length; i++) {
@@ -2209,19 +2548,52 @@ function _extendTrimsAtPreviousChamferJunctions(
         const prev = chamferVerts[(evIdx - 1 + m) % m];
         const next = chamferVerts[(evIdx + 1) % m];
         let corner = null;
-        if (_edgeVKey(prev) !== evk && onOtherPlane(prev)) corner = prev;
-        else if (_edgeVKey(next) !== evk && onOtherPlane(next)) corner = next;
+        let cornerIndex = -1;
+        if (_edgeVKey(prev) !== evk && (onOtherPlane(prev) || onOtherBoundary(prev))) {
+          corner = prev;
+          cornerIndex = (evIdx - 1 + m) % m;
+        } else if (_edgeVKey(next) !== evk && (onOtherPlane(next) || onOtherBoundary(next))) {
+          corner = next;
+          cornerIndex = (evIdx + 1) % m;
+        }
         if (!corner) { log('  no corner found'); continue; }
+        if (!onOtherPlane(corner) && onOtherBoundary(corner) && cornerIndex >= 0) {
+          const walkDir = cornerIndex === (evIdx - 1 + m) % m ? -1 : 1;
+          let terminalIndex = cornerIndex;
+          for (let step = 0; step < m - 1; step++) {
+            const nextIndex = (terminalIndex + walkDir + m) % m;
+            if (nextIndex === evIdx) break;
+            const nextPoint = chamferVerts[nextIndex];
+            if (!onOtherBoundary(nextPoint)) break;
+            terminalIndex = nextIndex;
+          }
+          corner = chamferVerts[terminalIndex];
+          cornerIndex = terminalIndex;
+        }
         const cornerKey = _edgeVKey(corner);
         log(`  inPlane=${inPlaneKey} offPlane=${offPlaneKey} corner=${cornerKey}`);
 
         // Compute arc samples from inPlane to corner on cylinder ∩ plane
         const segments = 8;
-        const arc = _computeFilletChamferArcSamples(
+        let arc = _computeFilletChamferArcSamples(
           cylCenter, edgeDir, radius, ex, ey,
           planePoint, planeNormal,
           inPlane, corner, segments,
         );
+        const arcPenalty = (samples) => {
+          if (!Array.isArray(samples) || samples.length < 2) return Infinity;
+          let penalty = 0;
+          for (const sample of samples) {
+            if (!pointInTopoFaceDomain(topoFace, sample, Math.max(1e-4, radius * 1e-3))) penalty++;
+          }
+          return penalty;
+        };
+        const alternateArc = _computeFilletChamferArcSamples(
+          cylCenter, edgeDir, radius, ex, ey,
+          planePoint, planeNormal,
+          inPlane, corner, segments, true,
+        );
+        if (arcPenalty(alternateArc) < arcPenalty(arc)) arc = alternateArc;
         if (!arc || arc.length < 3) continue;
 
         // ── (a) Surgery on the chamfer face's trimmed loop ──
@@ -2244,25 +2616,72 @@ function _extendTrimsAtPreviousChamferJunctions(
         // i.e. offPlane is adjacent to inPlane, and corner is 2 vertices
         // away from offPlane (one step past inPlane).
         let chamferInsertion = null;
-        let removeIdx = -1;
+        let insertArcAfterInPlane = false;
+        let removeIndices = [];
+        const collectForwardSpanToCorner = () => {
+          const indices = [];
+          let idx = offIdx;
+          for (let step = 0; step < cn; step++) {
+            if (_edgeVKey(cv[idx]) === cornerKey) return indices;
+            indices.push(idx);
+            idx = (idx + 1) % cn;
+          }
+          return null;
+        };
+        const collectReverseSpanToCorner = () => {
+          const indices = [];
+          let idx = offIdx;
+          for (let step = 0; step < cn; step++) {
+            if (_edgeVKey(cv[idx]) === cornerKey) return indices;
+            indices.push(idx);
+            idx = (idx - 1 + cn) % cn;
+          }
+          return null;
+        };
         if (nK === inPlaneKey) {
           const nnK = _edgeVKey(cv[(offIdx + 2) % cn]);
           if (nnK === cornerKey) {
             // forward: replace [off] with nothing, then insert arc-interior
             // between inPlane (now at offIdx after splice) and corner.
-            removeIdx = offIdx;
+            removeIndices = [offIdx];
             chamferInsertion = arc.slice(1, -1).map(p => ({ ...p }));
+            insertArcAfterInPlane = true;
           }
         } else if (pK === inPlaneKey) {
-          const ppK = _edgeVKey(cv[(offIdx - 2 + cn) % cn]);
-          if (ppK === cornerKey) {
+          if (nK === cornerKey) {
+            removeIndices = [offIdx];
+            chamferInsertion = arc.slice(1, -1).map(p => ({ ...p }));
+            insertArcAfterInPlane = true;
+          } else {
+            const ppK = _edgeVKey(cv[(offIdx - 2 + cn) % cn]);
+            if (ppK === cornerKey) {
             // reverse: traversal order is [corner, inPlane, offPlane],
             // so arc-interior must be reversed.
-            removeIdx = offIdx;
+              removeIndices = [offIdx];
+              chamferInsertion = arc.slice(1, -1).reverse().map(p => ({ ...p }));
+              insertArcAfterInPlane = false;
+            } else {
+              const span = collectForwardSpanToCorner();
+              if (span && span.length > 0) {
+                removeIndices = span;
+                chamferInsertion = arc.slice(1, -1).map(p => ({ ...p }));
+                insertArcAfterInPlane = true;
+              }
+            }
+          }
+        } else if (pK === cornerKey && nK === inPlaneKey) {
+          removeIndices = [offIdx];
+          chamferInsertion = arc.slice(1, -1).reverse().map(p => ({ ...p }));
+          insertArcAfterInPlane = false;
+        } else if (nK === inPlaneKey) {
+          const span = collectReverseSpanToCorner();
+          if (span && span.length > 0) {
+            removeIndices = span;
             chamferInsertion = arc.slice(1, -1).reverse().map(p => ({ ...p }));
+            insertArcAfterInPlane = false;
           }
         }
-        if (removeIdx < 0 || !chamferInsertion) {
+        if (removeIndices.length === 0 || !chamferInsertion) {
           log(`  chamfer loop neighbours: prev=${pK} next=${nK} (need inPlane+corner)`);
           continue;
         }
@@ -2278,7 +2697,30 @@ function _extendTrimsAtPreviousChamferJunctions(
           v => _edgeVKey(v) === offPlaneKey,
         );
         if (otherOffIdx < 0) { log('  otherOffIdx<0'); continue; }
-        if (otherTrim.vertices.length - 1 < 3) continue;
+        const otherCornerIdx = otherTrim.vertices.findIndex(
+          v => _edgeVKey(v) === cornerKey,
+        );
+        const otherRemoveIndices = [];
+        if (otherCornerIdx >= 0) {
+          const walk = (dir) => {
+            const indices = [];
+            let idx = (otherCornerIdx + dir + otherTrim.vertices.length) % otherTrim.vertices.length;
+            for (let step = 0; step < otherTrim.vertices.length; step++) {
+              indices.push(idx);
+              if (idx === otherOffIdx) return indices;
+              idx = (idx + dir + otherTrim.vertices.length) % otherTrim.vertices.length;
+            }
+            return null;
+          };
+          const forward = walk(1);
+          const reverse = walk(-1);
+          const chosen = forward && reverse
+            ? (forward.length <= reverse.length ? forward : reverse)
+            : (forward || reverse);
+          if (chosen) otherRemoveIndices.push(...chosen);
+        }
+        if (otherRemoveIndices.length === 0) otherRemoveIndices.push(otherOffIdx);
+        if (otherTrim.vertices.length - otherRemoveIndices.length < 3) continue;
         log(`  applying surgery: chamfer.id=${topoFace.id} other.id=${otherFace.topoFaceId}`);
 
         // ── (c) Update edgeData so the fillet face uses the corner ──
@@ -2298,32 +2740,52 @@ function _extendTrimsAtPreviousChamferJunctions(
         // After removing off the loop reads:
         //         forward = [..., other, in, corner, ...] — insert arc[1..-1] AFTER in
         //         reverse = [..., corner, in, other, ...] — insert arc[1..-1] reversed BEFORE in
-        const _isForward = chamferInsertion === null
-          ? false
-          : (nK === inPlaneKey);
         chamferTrim.vertices = (() => {
-          const newVerts = cv.slice();
-          newVerts.splice(removeIdx, 1);
+          const removeSet = new Set(removeIndices);
+          const newVerts = cv.filter((_, index) => !removeSet.has(index));
           const inIdxNew = newVerts.findIndex(v => _edgeVKey(v) === inPlaneKey);
           if (inIdxNew >= 0) {
-            const insertAt = _isForward ? inIdxNew + 1 : inIdxNew;
+            const insertAt = insertArcAfterInPlane ? inIdxNew + 1 : inIdxNew;
             newVerts.splice(insertAt, 0, ...chamferInsertion);
           }
           return newVerts;
         })();
         otherTrim.vertices = (() => {
-          const newVerts = otherTrim.vertices.slice();
-          newVerts.splice(otherOffIdx, 1);
-          return newVerts;
+          const removeSet = new Set(otherRemoveIndices);
+          return otherTrim.vertices.filter((_, index) => !removeSet.has(index));
         })();
+        const updateRollingEndpoint = (atA) => {
+          if (!Array.isArray(data._rollingRail0) || !Array.isArray(data._rollingRail1)) return;
+          const index = atA ? 0 : data._rollingRail0.length - 1;
+          if (index < 0 || index >= data._rollingRail0.length || index >= data._rollingRail1.length) return;
+          if (isInP0) data._rollingRail1[index] = { ...corner };
+          else data._rollingRail0[index] = { ...corner };
+          if (Array.isArray(data._rollingCenters) && data._rollingCenters[index]) {
+            const referenceIndex = atA ? index + 1 : index - 1;
+            const referenceCenter = data._rollingCenters[referenceIndex] || cylCenter;
+            const fittedCenter = _fitRollingCenterToRadius(
+              data._rollingRail0[index],
+              data._rollingRail1[index],
+              radius,
+              referenceCenter,
+            );
+            data._rollingCenters[index] = fittedCenter || { ...cylCenter };
+          }
+        };
         if (isA) {
           if (isInP0) data.p1a = { ...corner }; else data.p0a = { ...corner };
           data.arcA = arcForCap;
+          data._exactArcCurveA = _curveFromSampledPoints(arcForCap);
+          data._useArcCurveA = true;
           data._chamferArcAtA = true;
+          updateRollingEndpoint(true);
         } else {
           if (isInP0) data.p1b = { ...corner }; else data.p0b = { ...corner };
           data.arcB = arcForCap;
+          data._exactArcCurveB = _curveFromSampledPoints(arcForCap);
+          data._useArcCurveB = true;
           data._chamferArcAtB = true;
+          updateRollingEndpoint(false);
         }
       }
     }
@@ -2682,10 +3144,15 @@ function _buildExactFilletTopoBody(faces, edgeDataList, origTopoBody = null) {
   // Build set of face indices that are adjacent to fillet edges (already trimmed in mesh)
   const filletAdjacentFaceIds = new Set();
   for (const data of edgeDataList) {
-    const face0 = faces[data.fi0];
-    const face1 = faces[data.fi1];
-    if (face0 && face0.topoFaceId !== undefined) filletAdjacentFaceIds.add(face0.topoFaceId);
-    if (face1 && face1.topoFaceId !== undefined) filletAdjacentFaceIds.add(face1.topoFaceId);
+    const trimSources = Array.isArray(data._trimSourceData) && data._trimSourceData.length > 0
+      ? data._trimSourceData
+      : [data];
+    for (const source of trimSources) {
+      const face0 = faces[source.fi0];
+      const face1 = faces[source.fi1];
+      if (face0 && face0.topoFaceId !== undefined) filletAdjacentFaceIds.add(face0.topoFaceId);
+      if (face1 && face1.topoFaceId !== undefined) filletAdjacentFaceIds.add(face1.topoFaceId);
+    }
   }
 
   // Also consider faces with junction curves as adjacent —
@@ -2699,8 +3166,13 @@ function _buildExactFilletTopoBody(faces, edgeDataList, origTopoBody = null) {
   // Build a set of face indices that are adjacent to current fillet edges
   const filletAdjacentIndices = new Set();
   for (const data of edgeDataList) {
-    filletAdjacentIndices.add(data.fi0);
-    filletAdjacentIndices.add(data.fi1);
+    const trimSources = Array.isArray(data._trimSourceData) && data._trimSourceData.length > 0
+      ? data._trimSourceData
+      : [data];
+    for (const source of trimSources) {
+      filletAdjacentIndices.add(source.fi0);
+      filletAdjacentIndices.add(source.fi1);
+    }
   }
 
   const faceDescs = [];
@@ -2714,6 +3186,14 @@ function _buildExactFilletTopoBody(faces, edgeDataList, origTopoBody = null) {
     const origFace = topoFaceId !== undefined ? origTopoFaces.get(topoFaceId) : null;
     const isNonPlanar = origFace && origFace.surfaceType !== 'plane';
     const isNotAdjacent = topoFaceId !== undefined && !filletAdjacentFaceIds.has(topoFaceId);
+
+    if (origFace && !isNonPlanar && filletAdjacentIndices.has(fi)) {
+      const rollingPlanarDesc = _buildRollingAdjacentPlanarFaceDesc(face, fi, origFace, edgeDataList);
+      if (rollingPlanarDesc) {
+        faceDescs.push(rollingPlanarDesc);
+        continue;
+      }
+    }
 
     if (origFace && isNonPlanar) {
       if (isNotAdjacent) {
@@ -2916,6 +3396,157 @@ function _clonePoint(point) {
 function _isNonLinearTopoEdge(topoEdge) {
   const curve = topoEdge && topoEdge.curve;
   return !!(curve && !(curve.degree === 1 && Array.isArray(curve.controlPoints) && curve.controlPoints.length === 2));
+}
+
+function _parseEdgeKeyPoints(edgeKey) {
+  if (!edgeKey || typeof edgeKey !== 'string') return null;
+  const sep = edgeKey.indexOf('|');
+  if (sep < 0) return null;
+  const parsePoint = (text) => {
+    const coords = text.split(',').map(Number);
+    if (coords.length !== 3 || coords.some(Number.isNaN)) return null;
+    return { x: coords[0], y: coords[1], z: coords[2] };
+  };
+  const a = parsePoint(edgeKey.slice(0, sep));
+  const b = parsePoint(edgeKey.slice(sep + 1));
+  return a && b ? { a, b } : null;
+}
+
+function _selectionCoversTopoEdgeSpan(topoEdge, edgeKeys, tol = 0.08) {
+  if (!topoEdge || !Array.isArray(edgeKeys) || edgeKeys.length === 0) return false;
+  const start = topoEdge.startVertex && topoEdge.startVertex.point;
+  const end = topoEdge.endVertex && topoEdge.endVertex.point;
+  if (!start || !end) return false;
+
+  let nearStart = Infinity;
+  let nearEnd = Infinity;
+  for (const key of edgeKeys) {
+    const parsed = _parseEdgeKeyPoints(key);
+    if (!parsed) continue;
+    for (const point of [parsed.a, parsed.b]) {
+      nearStart = Math.min(nearStart, _dist3(point, start));
+      nearEnd = Math.min(nearEnd, _dist3(point, end));
+    }
+  }
+  return nearStart <= tol && nearEnd <= tol;
+}
+
+function _topoEdgeDirectionFromVertex(edge, vertex) {
+  if (!edge || !vertex) return null;
+  if (edge.startVertex === vertex) return _vec3Normalize(_vec3Sub(edge.endVertex.point, edge.startVertex.point));
+  if (edge.endVertex === vertex) return _vec3Normalize(_vec3Sub(edge.startVertex.point, edge.endVertex.point));
+  return null;
+}
+
+function _topoEdgeOtherVertex(edge, vertex) {
+  if (!edge || !vertex) return null;
+  if (edge.startVertex === vertex) return edge.endVertex;
+  if (edge.endVertex === vertex) return edge.startVertex;
+  return null;
+}
+
+function _topoEdgeFaceIds(edge) {
+  const ids = new Set();
+  for (const coedge of edge?.coedges || []) {
+    if (coedge.face?.id != null) ids.add(coedge.face.id);
+  }
+  return ids;
+}
+
+function _topoEdgesShareFace(edgeA, edgeB) {
+  const ids = _topoEdgeFaceIds(edgeA);
+  for (const id of _topoEdgeFaceIds(edgeB)) {
+    if (ids.has(id)) return true;
+  }
+  return false;
+}
+
+function _isLinearTopoEdge(edge) {
+  const curve = edge && edge.curve;
+  return !!(curve && curve.degree === 1 && Array.isArray(curve.controlPoints) && curve.controlPoints.length === 2);
+}
+
+function _expandTangentChainFromEndpoint(topoBody, seedEdge, seedVertex, seedDir, dotThreshold = 0.92) {
+  if (!topoBody || !seedEdge || !seedVertex || !seedDir) return [];
+  const allEdges = [...topoBody.edges()];
+  const chain = [];
+  let previousEdge = seedEdge;
+  let currentVertex = seedVertex;
+  let currentDir = seedDir;
+  const used = new Set([seedEdge.id]);
+
+  for (let step = 0; step < 48; step++) {
+    let best = null;
+    for (const candidate of allEdges) {
+      if (!candidate || used.has(candidate.id)) continue;
+      if (candidate.startVertex !== currentVertex && candidate.endVertex !== currentVertex) continue;
+      if (!_isLinearTopoEdge(candidate)) continue;
+      if (!_topoEdgesShareFace(previousEdge, candidate)) continue;
+      const dir = _topoEdgeDirectionFromVertex(candidate, currentVertex);
+      if (!dir) continue;
+      const score = _vec3Dot(dir, currentDir);
+      if (score < dotThreshold) continue;
+      if (!best || score > best.score) {
+        best = { edge: candidate, dir, score };
+      }
+    }
+    if (!best) break;
+    const nextVertex = _topoEdgeOtherVertex(best.edge, currentVertex);
+    if (!nextVertex) break;
+    chain.push({ edge: best.edge, from: currentVertex, to: nextVertex });
+    used.add(best.edge.id);
+    previousEdge = best.edge;
+    currentVertex = nextVertex;
+    currentDir = best.dir;
+  }
+
+  return chain;
+}
+
+function _resolveFullSpanRollingTopoEdgeSelection(topoBody, edgeKeys, segments, edgeSampleSegments) {
+  const selectedEdges = _selectedTopoEdgesForFilletKeys(topoBody, edgeKeys, segments);
+  if (selectedEdges.length !== 1 || !_isNonLinearTopoEdge(selectedEdges[0])) return null;
+
+  const topoEdge = selectedEdges[0];
+  if (!_selectionCoversTopoEdgeSpan(topoEdge, edgeKeys)) return null;
+
+  const rollingSampleSegments = Math.max(segments * 4, 32);
+  const samples = _sampleExactEdgePoints(topoEdge, Math.min(edgeSampleSegments, rollingSampleSegments));
+  if (!Array.isArray(samples) || samples.length < 3) return null;
+
+  const startVertex = topoEdge.startVertex;
+  const endVertex = topoEdge.endVertex;
+  const startDir = _vec3Normalize(_vec3Sub(samples[0], samples[1]));
+  const endDir = _vec3Normalize(_vec3Sub(samples[samples.length - 1], samples[samples.length - 2]));
+  const startChain = _expandTangentChainFromEndpoint(topoBody, topoEdge, startVertex, startDir, 0.965);
+  const endChain = _expandTangentChainFromEndpoint(topoBody, topoEdge, endVertex, endDir, 0.965);
+  _debugBRepFillet('rolling-selection', {
+    edgeId: topoEdge.id,
+    samples: samples.length,
+    startChain: startChain.map((entry) => entry.edge.id),
+    endChain: endChain.map((entry) => entry.edge.id),
+  });
+
+  const orderedSamples = [];
+  const segmentRefs = [];
+  for (let i = startChain.length - 1; i >= 0; i--) {
+    orderedSamples.push(_clonePoint(startChain[i].to.point));
+    segmentRefs.push({ topoEdgeId: startChain[i].edge.id, direction: 'reverse-chain' });
+  }
+  orderedSamples.push(...samples.map(_clonePoint));
+  for (let i = 0; i < samples.length - 1; i++) {
+    segmentRefs.push({ topoEdgeId: topoEdge.id, direction: 'selected' });
+  }
+  for (const entry of endChain) {
+    orderedSamples.push(_clonePoint(entry.to.point));
+    segmentRefs.push({ topoEdgeId: entry.edge.id, direction: 'forward-chain' });
+  }
+
+  const segmentKeys = [];
+  for (let i = 0; i < orderedSamples.length - 1; i++) {
+    segmentKeys.push(_edgeKeyFromVerts(orderedSamples[i], orderedSamples[i + 1]));
+  }
+  return { topoEdge, samples: orderedSamples, segmentKeys, segmentRefs, startChain, endChain };
 }
 
 function _topoLoopDesc(loop) {
@@ -3175,6 +3806,7 @@ function _finalizePlaneCylinderArcFillet(geometry, newTopoBody, segments = 8) {
       dirtyFaceIds: geometry && !geometry.allFacesDirty && Array.isArray(geometry.invalidatedFaceIds)
         ? geometry.invalidatedFaceIds
         : null,
+      fallbackOnInvalidWasm: true,
     });
   } catch (error) {
     _debugBRepFillet('plane-cylinder-arc-tessellate-failed', error?.message || String(error));
@@ -3411,6 +4043,439 @@ function _resolveFilletEdgeKeysToExactTopoEdges(topoBody, edgeKeys, segments = 8
   ];
 }
 
+function _pointFinite(point) {
+  return !!point && Number.isFinite(point.x) && Number.isFinite(point.y) && Number.isFinite(point.z);
+}
+
+function _averagePoints(points) {
+  const valid = points.filter(_pointFinite);
+  if (valid.length === 0) return null;
+  const sum = valid.reduce((acc, point) => ({
+    x: acc.x + point.x,
+    y: acc.y + point.y,
+    z: acc.z + point.z,
+  }), { x: 0, y: 0, z: 0 });
+  return _vec3Scale(sum, 1 / valid.length);
+}
+
+function _centerFromFilletArc(arc, fallbackData, fallbackVertex) {
+  if (Array.isArray(arc) && arc.length >= 3) {
+    const center = _circumCenter3D(arc[0], arc[Math.floor(arc.length / 2)], arc[arc.length - 1]);
+    if (_pointFinite(center)) return center;
+  }
+
+  if (fallbackData && fallbackVertex) {
+    const { offsDir0, offsDir1 } = _computeOffsetDirs(
+      fallbackData._face0,
+      fallbackData._face1,
+      fallbackData.edgeA,
+      fallbackData.edgeB,
+    );
+    const alpha = Math.acos(Math.max(-1, Math.min(1, _vec3Dot(offsDir0, offsDir1))));
+    const centerDist = alpha > 1e-6 ? fallbackData.radius / Math.sin(alpha / 2) : fallbackData.radius;
+    const bisector = _vec3Normalize(_vec3Add(offsDir0, offsDir1));
+    if (_vec3Len(bisector) > 1e-10) return _vec3Add(fallbackVertex, _vec3Scale(bisector, centerDist));
+  }
+
+  return null;
+}
+
+function _fitRollingCenterToRadius(rail0, rail1, radius, referenceCenter) {
+  if (!_pointFinite(rail0) || !_pointFinite(rail1) || !Number.isFinite(radius) || radius <= 0) return null;
+  const chord = _vec3Sub(rail1, rail0);
+  const chordLen = _vec3Len(chord);
+  if (chordLen < 1e-12 || chordLen > radius * 2 + 1e-6) return null;
+  const mid = _vec3Scale(_vec3Add(rail0, rail1), 0.5);
+  const chordDir = _vec3Scale(chord, 1 / chordLen);
+  let refDir = referenceCenter && _pointFinite(referenceCenter)
+    ? _vec3Sub(referenceCenter, mid)
+    : null;
+  if (refDir) {
+    refDir = _vec3Sub(refDir, _vec3Scale(chordDir, _vec3Dot(refDir, chordDir)));
+  }
+  if (!refDir || _vec3Len(refDir) < 1e-10) {
+    const fallbackAxis = Math.abs(chordDir.z) < 0.9 ? { x: 0, y: 0, z: 1 } : { x: 0, y: 1, z: 0 };
+    refDir = _vec3Cross(chordDir, fallbackAxis);
+  }
+  const normal = _vec3Normalize(refDir);
+  if (_vec3Len(normal) < 1e-10) return null;
+  const halfChord = chordLen * 0.5;
+  const height = Math.sqrt(Math.max(0, radius * radius - halfChord * halfChord));
+  return _vec3Add(mid, _vec3Scale(normal, height));
+}
+
+function _repairRollingEndpointCenter(endpoint, referenceEndpoint, radius) {
+  if (!endpoint || !referenceEndpoint || !_pointFinite(endpoint.p0) || !_pointFinite(endpoint.p1)) return;
+  const center = endpoint.center;
+  const r0 = center && _pointFinite(center) ? _vec3Len(_vec3Sub(endpoint.p0, center)) : Infinity;
+  const r1 = center && _pointFinite(center) ? _vec3Len(_vec3Sub(endpoint.p1, center)) : Infinity;
+  const tolerance = Math.max(1e-4, radius * 1e-3);
+  if (Math.abs(r0 - radius) <= tolerance && Math.abs(r1 - radius) <= tolerance) return;
+  const fitted = _fitRollingCenterToRadius(endpoint.p0, endpoint.p1, radius, referenceEndpoint.center);
+  if (fitted) endpoint.center = fitted;
+}
+
+function _orientedSegmentEndpoint(data, samples, sampleIndex, atEnd) {
+  const sampleA = samples[sampleIndex];
+  const sampleB = samples[sampleIndex + 1];
+  const forwardScore = _dist3(data.edgeA, sampleA) + _dist3(data.edgeB, sampleB);
+  const reverseScore = _dist3(data.edgeA, sampleB) + _dist3(data.edgeB, sampleA);
+  const forward = forwardScore <= reverseScore;
+  const isEdgeA = atEnd ? !forward : forward;
+  const point = isEdgeA ? data.edgeA : data.edgeB;
+  const p0 = isEdgeA ? data.p0a : data.p0b;
+  const p1 = isEdgeA ? data.p1a : data.p1b;
+  const arc = isEdgeA ? data.arcA : data.arcB;
+  return { data, isEdgeA, point, p0, p1, arc };
+}
+
+function _setSegmentEndpointTrim(endpoint, p0, p1) {
+  if (!endpoint || !endpoint.data || !p0 || !p1) return;
+  if (endpoint.isEdgeA) {
+    endpoint.data.p0a = { ...p0 };
+    endpoint.data.p1a = { ...p1 };
+  } else {
+    endpoint.data.p0b = { ...p0 };
+    endpoint.data.p1b = { ...p1 };
+  }
+}
+
+function _isPlanarFeatureFace(face) {
+  return !!face && (!face.surfaceType || face.surfaceType === SurfaceType.PLANE || face.surfaceType === 'plane');
+}
+
+function _projectPointToFeatureFacePlane(face, point) {
+  if (!_isPlanarFeatureFace(face) || !point || !face.normal || !Array.isArray(face.vertices) || face.vertices.length === 0) return point;
+  const normal = _vec3Normalize(face.normal);
+  if (_vec3Len(normal) < 1e-10) return point;
+  const planePoint = face.vertices[0];
+  const distance = _vec3Dot(_vec3Sub(point, planePoint), normal);
+  return _vec3Sub(point, _vec3Scale(normal, distance));
+}
+
+function _projectPointToFeatureFaceSurface(face, point) {
+  if (!face || !point) return point;
+  if (_isPlanarFeatureFace(face)) return _projectPointToFeatureFacePlane(face, point);
+  const surface = face.surface;
+  if (!surface || typeof surface.closestPointUV !== 'function' || typeof surface.evaluate !== 'function') return point;
+  try {
+    const uv = surface.closestPointUV(point);
+    if (!uv || !Number.isFinite(uv.u) || !Number.isFinite(uv.v)) return point;
+    const projected = surface.evaluate(uv.u, uv.v);
+    return projected && _pointFinite(projected) ? projected : point;
+  } catch (_error) {
+    return point;
+  }
+}
+
+function _projectRollingEndpointRailToPlanarOwners(endpoint, side, faces) {
+  if (!endpoint || !Array.isArray(endpoint.setters)) return null;
+  let point = side === 0 ? endpoint.p0 : endpoint.p1;
+  if (!point) return null;
+  for (const setter of endpoint.setters) {
+    const data = setter && setter.data;
+    if (!data) continue;
+    const faceIndex = side === 0 ? data.fi0 : data.fi1;
+    const face = faces && faces[faceIndex];
+    if (!_isPlanarFeatureFace(face)) continue;
+    point = _projectPointToFeatureFacePlane(face, point);
+  }
+  return point;
+}
+
+function _findSampleSegmentIndexForData(data, samples) {
+  const mid = _vec3Scale(_vec3Add(data.edgeA, data.edgeB), 0.5);
+  let best = null;
+  for (let i = 0; i < samples.length - 1; i++) {
+    const sampleMid = _vec3Scale(_vec3Add(samples[i], samples[i + 1]), 0.5);
+    const dist = _dist3(mid, sampleMid);
+    if (!best || dist < best.dist) best = { index: i, dist };
+  }
+  return best;
+}
+
+function _buildRollingRailOwnershipSpans(indexed, side) {
+  if (!Array.isArray(indexed) || indexed.length === 0) return [];
+  const faceKey = (entry) => side === 0 ? entry.data.fi0 : entry.data.fi1;
+  const spans = [];
+  let startIndex = 0;
+  let currentFaceIndex = faceKey(indexed[0]);
+  for (let i = 1; i < indexed.length; i++) {
+    const nextFaceIndex = faceKey(indexed[i]);
+    if (nextFaceIndex === currentFaceIndex) continue;
+    spans.push({ startIndex, endIndex: i, faceIndex: currentFaceIndex });
+    startIndex = i;
+    currentFaceIndex = nextFaceIndex;
+  }
+  spans.push({ startIndex, endIndex: indexed.length, faceIndex: currentFaceIndex });
+  return spans;
+}
+
+function _rollingPrimitiveSectionKey(indexedEntry, segmentRef) {
+  const data = indexedEntry && indexedEntry.data;
+  const topoEdgeId = segmentRef && segmentRef.topoEdgeId != null ? segmentRef.topoEdgeId : 'unknown';
+  const fi0 = data ? data.fi0 : 'unknown';
+  const fi1 = data ? data.fi1 : 'unknown';
+  return `${topoEdgeId}|${fi0}|${fi1}`;
+}
+
+function _buildRollingPrimitiveSections(indexed, rollingSelection, endpoints) {
+  if (!Array.isArray(indexed) || indexed.length === 0) return [];
+  const segmentRefs = Array.isArray(rollingSelection?.segmentRefs) && rollingSelection.segmentRefs.length === indexed.length
+    ? rollingSelection.segmentRefs
+    : indexed.map((entry) => ({ topoEdgeId: entry.data?.topoEdgeId ?? null, direction: 'unknown' }));
+
+  const ranges = [];
+  let startIndex = 0;
+  let currentKey = _rollingPrimitiveSectionKey(indexed[0], segmentRefs[0]);
+  for (let i = 1; i < indexed.length; i++) {
+    const nextKey = _rollingPrimitiveSectionKey(indexed[i], segmentRefs[i]);
+    if (nextKey === currentKey) continue;
+    ranges.push({ startIndex, endIndex: i });
+    startIndex = i;
+    currentKey = nextKey;
+  }
+  ranges.push({ startIndex, endIndex: indexed.length });
+
+  return ranges.map((range, sectionIndex) => {
+    const first = indexed[range.startIndex]?.data;
+    const ref = segmentRefs[range.startIndex] || {};
+    const startEndpoint = endpoints && endpoints[range.startIndex];
+    const endEndpoint = endpoints && endpoints[range.endIndex];
+    return {
+      sectionIndex,
+      startIndex: range.startIndex,
+      endIndex: range.endIndex,
+      sourceStartIndex: range.startIndex,
+      sourceEndIndex: range.endIndex - 1,
+      topoEdgeId: ref.topoEdgeId ?? null,
+      direction: ref.direction || null,
+      face0: first?.fi0 ?? null,
+      face1: first?.fi1 ?? null,
+      previousSectionIndex: sectionIndex > 0 ? sectionIndex - 1 : null,
+      nextSectionIndex: sectionIndex + 1 < ranges.length ? sectionIndex + 1 : null,
+      startJoinIndex: range.startIndex,
+      endJoinIndex: range.endIndex,
+      startRail0: startEndpoint?.p0 ? { ...startEndpoint.p0 } : null,
+      startRail1: startEndpoint?.p1 ? { ...startEndpoint.p1 } : null,
+      endRail0: endEndpoint?.p0 ? { ...endEndpoint.p0 } : null,
+      endRail1: endEndpoint?.p1 ? { ...endEndpoint.p1 } : null,
+    };
+  });
+}
+
+function _reversePointArray(points) {
+  return Array.isArray(points) ? [...points].reverse().map((point) => ({ ...point })) : points;
+}
+
+function _swapRollingSourceSides(data) {
+  if (!data) return;
+  [data.fi0, data.fi1] = [data.fi1, data.fi0];
+  [data.face0Keys, data.face1Keys] = [data.face1Keys, data.face0Keys];
+  [data.p0a, data.p1a] = [data.p1a, data.p0a];
+  [data.p0b, data.p1b] = [data.p1b, data.p0b];
+  data.arcA = _reversePointArray(data.arcA);
+  data.arcB = _reversePointArray(data.arcB);
+  if (data._exactArcCurveA && typeof data._exactArcCurveA.reversed === 'function') data._exactArcCurveA = data._exactArcCurveA.reversed();
+  if (data._exactArcCurveB && typeof data._exactArcCurveB.reversed === 'function') data._exactArcCurveB = data._exactArcCurveB.reversed();
+  if (data._face0 || data._face1) [data._face0, data._face1] = [data._face1, data._face0];
+  data.shared = data._face0?.shared ? { ...data._face0.shared } : data.shared;
+}
+
+function _rollingDataSideForFace(data, faceIndex) {
+  if (!data) return -1;
+  if (data.fi0 === faceIndex) return 0;
+  if (data.fi1 === faceIndex) return 1;
+  return -1;
+}
+
+function _orientRollingSourceSides(indexed) {
+  if (!Array.isArray(indexed) || indexed.length < 2) return;
+  for (let i = 1; i < indexed.length; i++) {
+    const previous = indexed[i - 1].data;
+    const current = indexed[i].data;
+    const sharedFaces = [previous.fi0, previous.fi1].filter((faceIndex) => faceIndex === current.fi0 || faceIndex === current.fi1);
+    if (sharedFaces.length === 1) {
+      const faceIndex = sharedFaces[0];
+      const previousSide = _rollingDataSideForFace(previous, faceIndex);
+      const currentSide = _rollingDataSideForFace(current, faceIndex);
+      if (previousSide >= 0 && currentSide >= 0 && previousSide !== currentSide) _swapRollingSourceSides(current);
+      continue;
+    }
+
+    const prevEnd = _orientedSegmentEndpoint(previous, [previous.edgeA, previous.edgeB], 0, true);
+    const curStart = _orientedSegmentEndpoint(current, [current.edgeA, current.edgeB], 0, false);
+    const direct = _dist3(prevEnd.p0, curStart.p0) + _dist3(prevEnd.p1, curStart.p1);
+    const swapped = _dist3(prevEnd.p0, curStart.p1) + _dist3(prevEnd.p1, curStart.p0);
+    if (swapped + 1e-8 < direct) _swapRollingSourceSides(current);
+  }
+}
+
+function _mergeRollingTopoEdgeFilletData(edgeDataList, rollingSelection, faces) {
+  if (!rollingSelection || !Array.isArray(edgeDataList) || edgeDataList.length < 2) return edgeDataList;
+  const samples = rollingSelection.samples;
+  if (!Array.isArray(samples) || samples.length < 3) return edgeDataList;
+
+  const indexed = [];
+  const seenIndices = new Set();
+  for (const data of edgeDataList) {
+    const match = _findSampleSegmentIndexForData(data, samples);
+    if (!match || match.dist > 0.08 || seenIndices.has(match.index)) {
+      _debugBRepFillet('rolling-merge-failed', {
+        reason: !match ? 'no-match' : (match.dist > 0.08 ? 'far-match' : 'duplicate-index'),
+        dist: match?.dist,
+        index: match?.index,
+        edgeData: edgeDataList.length,
+        samples: samples.length,
+      });
+      return edgeDataList;
+    }
+    seenIndices.add(match.index);
+    data._face0 = faces[data.fi0];
+    data._face1 = faces[data.fi1];
+    indexed.push({ data, index: match.index });
+  }
+  indexed.sort((a, b) => a.index - b.index);
+
+  for (let i = 0; i < indexed.length; i++) {
+    if (indexed[i].index !== i) {
+      _debugBRepFillet('rolling-merge-failed', {
+        reason: 'non-contiguous-index',
+        expected: i,
+        actual: indexed[i].index,
+        edgeData: edgeDataList.length,
+        samples: samples.length,
+      });
+      return edgeDataList;
+    }
+  }
+  if (indexed.length !== samples.length - 1) {
+    _debugBRepFillet('rolling-merge-failed', {
+      reason: 'missing-segments',
+      indexed: indexed.length,
+      needed: samples.length - 1,
+      edgeData: edgeDataList.length,
+      samples: samples.length,
+    });
+    return edgeDataList;
+  }
+
+  _orientRollingSourceSides(indexed);
+
+  const first = indexed[0].data;
+  const last = indexed[indexed.length - 1].data;
+  const endpoints = [];
+  const firstStart = _orientedSegmentEndpoint(indexed[0].data, samples, indexed[0].index, false);
+  endpoints.push({
+    point: firstStart.point,
+    p0: { ...firstStart.p0 },
+    p1: { ...firstStart.p1 },
+    center: _centerFromFilletArc(firstStart.arc, indexed[0].data, firstStart.point),
+    arc: firstStart.arc,
+    setters: [firstStart],
+  });
+
+  for (let i = 0; i < indexed.length - 1; i++) {
+    const prevEnd = _orientedSegmentEndpoint(indexed[i].data, samples, indexed[i].index, true);
+    const nextStart = _orientedSegmentEndpoint(indexed[i + 1].data, samples, indexed[i + 1].index, false);
+    const p0 = _averagePoints([prevEnd.p0, nextStart.p0]);
+    const p1 = _averagePoints([prevEnd.p1, nextStart.p1]);
+    const center = _averagePoints([
+      _centerFromFilletArc(prevEnd.arc, indexed[i].data, prevEnd.point),
+      _centerFromFilletArc(nextStart.arc, indexed[i + 1].data, nextStart.point),
+    ]);
+    if (!p0 || !p1 || !center) {
+      _debugBRepFillet('rolling-merge-failed', { reason: 'interior-endpoint-center', index: i });
+      return edgeDataList;
+    }
+    endpoints.push({
+      point: prevEnd.point,
+      p0,
+      p1,
+      center,
+      arc: null,
+      setters: [prevEnd, nextStart],
+    });
+  }
+
+  const lastEnd = _orientedSegmentEndpoint(indexed[indexed.length - 1].data, samples, indexed[indexed.length - 1].index, true);
+  endpoints.push({
+    point: lastEnd.point,
+    p0: { ...lastEnd.p0 },
+    p1: { ...lastEnd.p1 },
+    center: _centerFromFilletArc(lastEnd.arc, indexed[indexed.length - 1].data, lastEnd.point),
+    arc: lastEnd.arc,
+    setters: [lastEnd],
+  });
+
+  for (const endpoint of endpoints) {
+    const projectedP0 = _projectRollingEndpointRailToPlanarOwners(endpoint, 0, faces);
+    const projectedP1 = _projectRollingEndpointRailToPlanarOwners(endpoint, 1, faces);
+    if (projectedP0) endpoint.p0 = { ...projectedP0 };
+    if (projectedP1) endpoint.p1 = { ...projectedP1 };
+  }
+
+  if (endpoints.length >= 2) {
+    for (let i = 0; i < endpoints.length; i++) {
+      const references = [];
+      if (i > 0 && endpoints[i - 1].center) references.push(endpoints[i - 1].center);
+      if (i + 1 < endpoints.length && endpoints[i + 1].center) references.push(endpoints[i + 1].center);
+      const referenceCenter = _averagePoints(references) || endpoints[i].center;
+      _repairRollingEndpointCenter(endpoints[i], { center: referenceCenter }, first.radius);
+    }
+  }
+
+  for (const endpoint of endpoints) {
+    if (!endpoint.center) {
+      _debugBRepFillet('rolling-merge-failed', { reason: 'terminal-center' });
+      return edgeDataList;
+    }
+    for (const setter of endpoint.setters) {
+      _setSegmentEndpointTrim(setter, endpoint.p0, endpoint.p1);
+    }
+  }
+
+  const rollingSections = _buildRollingPrimitiveSections(indexed, rollingSelection, endpoints);
+
+  const merged = {
+    ...first,
+    edgeKey: _edgeKeyFromVerts(endpoints[0].point, endpoints[endpoints.length - 1].point),
+    edgeA: { ...endpoints[0].point },
+    edgeB: { ...endpoints[endpoints.length - 1].point },
+    p0a: { ...endpoints[0].p0 },
+    p1a: { ...endpoints[0].p1 },
+    p0b: { ...endpoints[endpoints.length - 1].p0 },
+    p1b: { ...endpoints[endpoints.length - 1].p1 },
+    arcA: firstStart.arc,
+    arcB: lastEnd.arc,
+    _exactArcCurveA: _curveFromSampledPoints(firstStart.arc),
+    _exactArcCurveB: _curveFromSampledPoints(lastEnd.arc),
+    _rollingRail0: endpoints.map((endpoint) => ({ ...endpoint.p0 })),
+    _rollingRail1: endpoints.map((endpoint) => ({ ...endpoint.p1 })),
+    _rollingCenters: endpoints.map((endpoint) => ({ ...endpoint.center })),
+    _rollingRail0Spans: _buildRollingRailOwnershipSpans(indexed, 0),
+    _rollingRail1Spans: _buildRollingRailOwnershipSpans(indexed, 1),
+    _rollingSections: rollingSections,
+    _trimSourceData: indexed.map((entry) => entry.data),
+    _brepSideEdges: false,
+  };
+
+  delete merged._exactAxisStart;
+  delete merged._exactAxisEnd;
+  delete merged._face0;
+  delete merged._face1;
+  if (last.face0Keys) merged.face0Keys = last.face0Keys;
+  if (last.face1Keys) merged.face1Keys = last.face1Keys;
+  _debugBRepFillet('rolling-merge-success', {
+    railPoints: endpoints.length,
+    sourceSegments: indexed.length,
+    sections: rollingSections.map((section) => ({ start: section.startIndex, end: section.endIndex, edge: section.topoEdgeId, faces: [section.face0, section.face1] })),
+    startChain: rollingSelection.startChain?.map((entry) => entry.edge.id) || [],
+    endChain: rollingSelection.endChain?.map((entry) => entry.edge.id) || [],
+  });
+  return [merged];
+}
+
 /**
  * Apply B-Rep fillet (rolling-ball blend) to a TopoBody.
  *
@@ -3449,18 +4514,49 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
   const exactAdjacencyByKey = _buildExactEdgeAdjacencyLookupFromTopoBody(topoBody, faces, edgeSampleSegments);
 
   // Step 2: Precompute fillet data for each edge
-  const exactEdgeKeys = _resolveFilletEdgeKeysToExactTopoEdges(topoBody, edgeKeys, segments);
+  const rollingSelection = _resolveFullSpanRollingTopoEdgeSelection(topoBody, edgeKeys, segments, edgeSampleSegments);
+  const exactEdgeKeys = rollingSelection
+    ? rollingSelection.segmentKeys
+    : _resolveFilletEdgeKeysToExactTopoEdges(topoBody, edgeKeys, segments);
   const uniqueKeys = exactEdgeKeys.length > 0 ? exactEdgeKeys : [...new Set(edgeKeys)];
-  const edgeDataList = [];
+  let edgeDataList = [];
   const seenExactEdges = new Set();
-  for (const key of uniqueKeys) {
-    const data = _precomputeFilletEdge(faces, key, radius, segments, exactAdjacencyByKey);
+  for (let keyIndex = 0; keyIndex < uniqueKeys.length; keyIndex++) {
+    const key = uniqueKeys[keyIndex];
+    let edgeDirOverride = null;
+    if (rollingSelection && Array.isArray(rollingSelection.samples)) {
+      const tangentStart = rollingSelection.samples[Math.max(0, keyIndex - 1)];
+      const tangentEnd = rollingSelection.samples[Math.min(rollingSelection.samples.length - 1, keyIndex + 2)];
+      if (tangentStart && tangentEnd && _dist3(tangentStart, tangentEnd) > 1e-9) {
+        edgeDirOverride = _vec3Normalize(_vec3Sub(tangentEnd, tangentStart));
+      }
+    }
+    const rollingPrecomputeOptions = rollingSelection
+      ? {
+        disableTrimClipA: keyIndex > 0,
+        disableTrimClipB: keyIndex < uniqueKeys.length - 1,
+        edgeDirOverride,
+        // Rolling tangent chains keep the exact circular cross-section. Projecting
+        // every intermediate trim to owner surfaces can stretch the two rails
+        // beyond a constant-radius ball on prior fillet/NURBS faces.
+        projectTrimsToFaces: false,
+      }
+      : null;
+    const data = _precomputeFilletEdge(
+      faces,
+      key,
+      radius,
+      segments,
+      exactAdjacencyByKey,
+      rollingPrecomputeOptions,
+    );
     if (!data) continue;
     const exactKey = `${_edgeKeyFromVerts(data.edgeA, data.edgeB)}|${Math.min(data.fi0, data.fi1)}:${Math.max(data.fi0, data.fi1)}`;
     if (seenExactEdges.has(exactKey)) continue;
     seenExactEdges.add(exactKey);
     edgeDataList.push(data);
   }
+  edgeDataList = _mergeRollingTopoEdgeFilletData(edgeDataList, rollingSelection, faces);
   if (edgeDataList.length === 0) {
     _debugBRepFillet('no-precomputed-edges', { edgeKeys: uniqueKeys.length });
     return null;
@@ -3483,8 +4579,13 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
   // Create a set of face indices that are adjacent to fillet edges
   const filletFaceIndices = new Set();
   for (const data of edgeDataList) {
-    filletFaceIndices.add(data.fi0);
-    filletFaceIndices.add(data.fi1);
+    const trimSources = Array.isArray(data._trimSourceData) && data._trimSourceData.length > 0
+      ? data._trimSourceData
+      : [data];
+    for (const source of trimSources) {
+      filletFaceIndices.add(source.fi0);
+      filletFaceIndices.add(source.fi1);
+    }
   }
 
   // Trim each face: for faces adjacent to filleted edges, replace edge
@@ -3495,23 +4596,33 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
   // Build a lookup: vertexKey+faceIndex → trim data for direct face adjacency
   const vertexTrimLookup = new Map(); // "fi|vertexKey" → { data, isEdgeA, isFace0 }
   for (const data of edgeDataList) {
-    const vkA = _edgeVKey(data.edgeA);
-    const vkB = _edgeVKey(data.edgeB);
-    vertexTrimLookup.set(`${data.fi0}|${vkA}`, { data, isEdgeA: true, isFace0: true });
-    vertexTrimLookup.set(`${data.fi0}|${vkB}`, { data, isEdgeA: false, isFace0: true });
-    vertexTrimLookup.set(`${data.fi1}|${vkA}`, { data, isEdgeA: true, isFace0: false });
-    vertexTrimLookup.set(`${data.fi1}|${vkB}`, { data, isEdgeA: false, isFace0: false });
+    const trimSources = Array.isArray(data._trimSourceData) && data._trimSourceData.length > 0
+      ? data._trimSourceData
+      : [data];
+    for (const source of trimSources) {
+      const vkA = _edgeVKey(source.edgeA);
+      const vkB = _edgeVKey(source.edgeB);
+      vertexTrimLookup.set(`${source.fi0}|${vkA}`, { data: source, isEdgeA: true, isFace0: true });
+      vertexTrimLookup.set(`${source.fi0}|${vkB}`, { data: source, isEdgeA: false, isFace0: true });
+      vertexTrimLookup.set(`${source.fi1}|${vkA}`, { data: source, isEdgeA: true, isFace0: false });
+      vertexTrimLookup.set(`${source.fi1}|${vkB}`, { data: source, isEdgeA: false, isFace0: false });
+    }
   }
 
   // Build vertex-key → all fillet data touching that vertex (for non-adjacent faces)
   const vertexFilletMap = new Map(); // vertexKey → [{data, isEdgeA}]
   for (const data of edgeDataList) {
-    const vkA = _edgeVKey(data.edgeA);
-    const vkB = _edgeVKey(data.edgeB);
-    if (!vertexFilletMap.has(vkA)) vertexFilletMap.set(vkA, []);
-    vertexFilletMap.get(vkA).push({ data, isEdgeA: true });
-    if (!vertexFilletMap.has(vkB)) vertexFilletMap.set(vkB, []);
-    vertexFilletMap.get(vkB).push({ data, isEdgeA: false });
+    const trimSources = Array.isArray(data._trimSourceData) && data._trimSourceData.length > 0
+      ? data._trimSourceData
+      : [data];
+    for (const source of trimSources) {
+      const vkA = _edgeVKey(source.edgeA);
+      const vkB = _edgeVKey(source.edgeB);
+      if (!vertexFilletMap.has(vkA)) vertexFilletMap.set(vkA, []);
+      vertexFilletMap.get(vkA).push({ data: source, isEdgeA: true });
+      if (!vertexFilletMap.has(vkB)) vertexFilletMap.set(vkB, []);
+      vertexFilletMap.get(vkB).push({ data: source, isEdgeA: false });
+    }
   }
 
   const trimmedFaces = [];
@@ -3581,17 +4692,19 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
           // original adjacent edges on the correct sides of the split.
           // The first inserted point should stay on the prev->vertex edge,
           // and the second should stay on the vertex->next edge.
-          const dirPrevEdge = _vec3Normalize(_vec3Sub(v, vPrev));
-          const dirNextEdge = _vec3Normalize(_vec3Sub(vNext, v));
+          const distanceToLine = (point, a, b) => {
+            const ab = _vec3Sub(b, a);
+            const len = _vec3Len(ab);
+            if (len < 1e-10) return _dist3(point, a);
+            return _vec3Len(_vec3Cross(_vec3Sub(point, a), ab)) / len;
+          };
           const scoreOrder = (first, second) => {
-            const firstDir = _vec3Normalize(_vec3Sub(first, vPrev));
-            const secondDir = _vec3Normalize(_vec3Sub(vNext, second));
-            return _vec3Dot(firstDir, dirPrevEdge) + _vec3Dot(secondDir, dirNextEdge);
+            return distanceToLine(first, vPrev, v) + distanceToLine(second, v, vNext);
           };
 
           const score01 = scoreOrder(trimPts[0], trimPts[1]);
           const score10 = scoreOrder(trimPts[1], trimPts[0]);
-          if (score01 >= score10) {
+          if (score01 <= score10) {
             newVerts.push({ ...trimPts[0] }, { ...trimPts[1] });
           } else {
             newVerts.push({ ...trimPts[1] }, { ...trimPts[0] });
@@ -3681,6 +4794,7 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
   _extendTrimsAtPreviousFilletJunctions(
     trimmedFaces, edgeDataList, faces, topoBody, radius,
   );
+  _debugBRepFillet('after-previous-fillet-junctions', { trimmedFaces: trimmedFaces.length, edgeData: edgeDataList.length });
 
   // Step 4c: Where the new fillet meets a previous CHAMFER face, replace
   // the linear stitch (which left the chamfer face non-planar) with the
@@ -3689,6 +4803,7 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
   _extendTrimsAtPreviousChamferJunctions(
     trimmedFaces, edgeDataList, faces, topoBody, radius,
   );
+  _debugBRepFillet('after-previous-chamfer-junctions', { trimmedFaces: trimmedFaces.length, edgeData: edgeDataList.length });
 
   // Step 5: Build exact NURBS fillet surfaces for each edge data
   for (const data of edgeDataList) {
@@ -3696,6 +4811,34 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
     const arcA = data.sharedTrimA || data.arcA;
     const arcB = data.sharedTrimB || data.arcB;
     if (!arcA || !arcB || arcA.length < 2 || arcB.length < 2) continue;
+
+    if (Array.isArray(data._rollingRail0) && Array.isArray(data._rollingRail1) && Array.isArray(data._rollingCenters)) {
+      if (data._rollingRail0.length === data._rollingRail1.length &&
+          data._rollingRail0.length === data._rollingCenters.length &&
+          data._rollingRail0.length >= 3) {
+        try {
+          const edgeDir = _vec3Normalize(_vec3Sub(data.edgeB, data.edgeA));
+          const surface = NurbsSurface.createFilletSurface(
+            data._rollingRail0,
+            data._rollingRail1,
+            data._rollingCenters,
+            radius,
+            edgeDir,
+          );
+          data._exactSurface = surface;
+          data._exactRadius = radius;
+          data._exactRail0Curve = _curveFromSampledPoints(data._rollingRail0);
+          data._exactRail1Curve = _curveFromSampledPoints(data._rollingRail1);
+          _preserveControlPointSamples(data._exactRail0Curve);
+          _preserveControlPointSamples(data._exactRail1Curve);
+          if (!data._exactArcCurveA) data._exactArcCurveA = _curveFromSampledPoints(arcA);
+          if (!data._exactArcCurveB) data._exactArcCurveB = _curveFromSampledPoints(arcB);
+          continue;
+        } catch (e) {
+          _debugBRepFillet('create-rolling-fillet-surface-failed', e?.message || String(e));
+        }
+      }
+    }
 
     // The fillet surface is a cylinder ruled between arcA and arcB.
     // createFilletSurface expects:
@@ -3757,6 +4900,7 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
       // Continue without exact surface — will fall back to polyline/planar
     }
   }
+  _debugBRepFillet('after-surface-build', { edgeData: edgeDataList.length });
 
   // Step 6: Generate spherical corner patch faces for 3-edge vertices.
   // At vertices where 3 fillet edges meet, the three fillet strips each
@@ -3840,12 +4984,14 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
 
   // _buildExactFilletTopoBody expects trimmed faces and edgeDataList
   const newTopoBody = _buildExactFilletTopoBody(trimmedFaces, edgeDataList, topoBody);
+  _debugBRepFillet('after-build-topobody', { hasBody: !!newTopoBody });
   if (!newTopoBody) {
     _debugBRepFillet('build-topobody-failed');
     return null;
   }
 
   const topoBoundaryEdges = countTopoBodyBoundaryEdges(newTopoBody);
+  _debugBRepFillet('after-topo-boundary-check', { topoBoundaryEdges });
   if (topoBoundaryEdges !== 0) {
     _debugBRepFillet('topo-boundary-edges', { topoBoundaryEdges });
     // For fillet, boundary edges are common due to complex corner geometry
@@ -3864,13 +5010,16 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
     const inputDirty = geometry && !geometry.allFacesDirty && Array.isArray(geometry.invalidatedFaceIds) && geometry.invalidatedFaceIds.length > 0
       ? geometry.invalidatedFaceIds
       : null;
+    _debugBRepFillet('before-tessellate', { faces: newTopoBody.faces().length });
     mesh = tessellateBody(newTopoBody, {
       validate: false,
       incrementalCache: geometry && geometry._incrementalTessellationCache
         ? geometry._incrementalTessellationCache
         : null,
       dirtyFaceIds: inputDirty,
+      fallbackOnInvalidWasm: true,
     });
+    _debugBRepFillet('after-tessellate', { triangles: mesh?.faces?.length || 0 });
   } catch (error) {
     _debugBRepFillet('tessellate-failed', error?.message || String(error));
     return null;

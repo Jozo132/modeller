@@ -970,6 +970,16 @@ export declare const GEOM_NURBS_CURVE: {
   /** @type `u8` */
   get value(): number
 };
+/** assembly/kernel/topology/GEOM_ROLLING_FILLET */
+export declare const GEOM_ROLLING_FILLET: {
+  /** @type `u8` */
+  get value(): number
+};
+/** assembly/kernel/topology/GEOM_BOUNDARY_FAN */
+export declare const GEOM_BOUNDARY_FAN: {
+  /** @type `u8` */
+  get value(): number
+};
 /** assembly/kernel/topology/ORIENT_FORWARD */
 export declare const ORIENT_FORWARD: {
   /** @type `u8` */
@@ -1379,6 +1389,20 @@ export declare function coneStore(ox: number, oy: number, oz: number, ax: number
  * @returns `u32`
  */
 export declare function torusStore(cx: number, cy: number, cz: number, ax: number, ay: number, az: number, rx: number, ry: number, rz: number, majorRadius: number, minorRadius: number): number;
+/**
+ * assembly/kernel/geometry/rollingFilletStoreFromStaging
+ * @param rowCount `u32`
+ * @param startCount `u32`
+ * @param endCount `u32`
+ * @returns `u32`
+ */
+export declare function rollingFilletStoreFromStaging(rowCount: number, startCount: number, endCount: number): number;
+/**
+ * assembly/kernel/geometry/boundaryFanStoreFromStaging
+ * @param pointCount `u32`
+ * @returns `u32`
+ */
+export declare function boundaryFanStoreFromStaging(pointCount: number): number;
 /**
  * assembly/kernel/geometry/geomPoolRead
  * @param offset `u32`

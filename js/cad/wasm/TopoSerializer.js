@@ -52,6 +52,8 @@ function _kernelConstants(w) {
     GEOM_LINE: _num(w.GEOM_LINE, 7),
     GEOM_CIRCLE: _num(w.GEOM_CIRCLE, 8),
     GEOM_NURBS_CURVE: _num(w.GEOM_NURBS_CURVE, 10),
+    GEOM_ROLLING_FILLET: _num(w.GEOM_ROLLING_FILLET, 11),
+    GEOM_BOUNDARY_FAN: _num(w.GEOM_BOUNDARY_FAN, 12),
     ORIENT_FORWARD: _num(w.ORIENT_FORWARD, 0),
     ORIENT_REVERSED: _num(w.ORIENT_REVERSED, 1),
   };
@@ -327,6 +329,19 @@ function _storeFaceGeometry(face, ctx) {
   const { w, K } = ctx;
   const fallback = { geomType: K.GEOM_NONE, geomOffset: 0 };
   if (!face) return fallback;
+
+  const rollingGeom = _storeRollingFilletGeometry(face, ctx);
+  if (rollingGeom) return rollingGeom;
+
+  const boundaryFanGeom = _storeExactFilletBoundaryFanGeometry(face, ctx);
+  if (boundaryFanGeom) return boundaryFanGeom;
+
+  const trimmedPlaneFanGeom = _storeTrimmedPlaneBoundaryFanGeometry(face, ctx);
+  if (trimmedPlaneFanGeom) return trimmedPlaneFanGeom;
+
+  const exactFilletCylinderGeom = _storeExactFilletCylinderGeometry(face, ctx);
+  if (exactFilletCylinderGeom) return exactFilletCylinderGeom;
+
   const si = (face.surfaceInfo)
     || (face.surface ? (face.surface.surfaceInfo || face.surface._analyticParams) : null);
 
@@ -456,6 +471,297 @@ function _storeFaceGeometry(face, ctx) {
   }
 
   return fallback;
+}
+
+function _storeRollingFilletGeometry(face, ctx) {
+  const { w, K, mem } = ctx;
+  const shared = face?.shared;
+  if (!shared?.isRollingFillet) return null;
+  if (typeof w.rollingFilletStoreFromStaging !== 'function' || typeof w.geomStagingPtr !== 'function' || !mem) return null;
+
+  const rail0 = shared._rollingRail0;
+  const rail1 = shared._rollingRail1;
+  const centers = shared._rollingCenters;
+  if (!Array.isArray(rail0) || !Array.isArray(rail1) || !Array.isArray(centers)) return null;
+  if (rail0.length !== rail1.length || rail0.length !== centers.length || rail0.length < 2) return null;
+
+  const capacity = typeof w.geomStagingCapacity === 'function' ? (w.geomStagingCapacity() >>> 0) : 8192;
+  const rowCount = Math.min(rail0.length, Math.floor(capacity / 9));
+  if (rowCount < 2) return null;
+
+  const loopPoints = _rollingLoopPoints(face);
+  const snapPoint = (point) => _snapRollingPointToLoop(point, loopPoints);
+  const startSamples = _sampleBoundaryBetween(face, rail0[0], rail1[0]) || [snapPoint(rail0[0]), snapPoint(rail1[0])];
+  const endSamples = _sampleBoundaryBetween(face, rail0[rowCount - 1], rail1[rowCount - 1])
+    || [snapPoint(rail0[rowCount - 1]), snapPoint(rail1[rowCount - 1])];
+  const totalSlots = rowCount * 9 + startSamples.length * 3 + endSamples.length * 3;
+  if (totalSlots > capacity) return null;
+
+  const stagingPtr = w.geomStagingPtr() >>> 0;
+  const view = new Float64Array(mem.buffer, stagingPtr, totalSlots);
+  let i = 0;
+  for (let k = 0; k < rowCount; k++) {
+    const point = snapPoint(rail0[k]);
+    view[i++] = point.x; view[i++] = point.y; view[i++] = point.z;
+  }
+  for (let k = 0; k < rowCount; k++) {
+    const point = snapPoint(rail1[k]);
+    view[i++] = point.x; view[i++] = point.y; view[i++] = point.z;
+  }
+  for (let k = 0; k < rowCount; k++) {
+    const point = centers[k];
+    view[i++] = point.x; view[i++] = point.y; view[i++] = point.z;
+  }
+  for (const point of startSamples) {
+    view[i++] = point.x; view[i++] = point.y; view[i++] = point.z;
+  }
+  for (const point of endSamples) {
+    view[i++] = point.x; view[i++] = point.y; view[i++] = point.z;
+  }
+
+  const offset = w.rollingFilletStoreFromStaging(rowCount, startSamples.length, endSamples.length) >>> 0;
+  if (offset === 0xFFFFFFFF) return null;
+  return { geomType: K.GEOM_ROLLING_FILLET, geomOffset: offset };
+}
+
+function _storeExactFilletBoundaryFanGeometry(face, ctx) {
+  const { w, K, mem } = ctx;
+  const shared = face?.shared;
+  if (!shared?.isFillet || shared.isRollingFillet) return null;
+  if (!_sharesEdgeWithRollingFillet(face)) return null;
+  if (face.surfaceType === SurfaceType.CYLINDER) return null;
+  if (typeof w.boundaryFanStoreFromStaging !== 'function' || typeof w.geomStagingPtr !== 'function' || !mem) return null;
+
+  const points = _sampleLoopPointsForWasm(face);
+  if (points.length < 64) return null;
+  if (points.length < 3) return null;
+  const capacity = typeof w.geomStagingCapacity === 'function' ? (w.geomStagingCapacity() >>> 0) : 8192;
+  const pointCount = Math.min(points.length, Math.floor(capacity / 3));
+  if (pointCount < 3) return null;
+
+  const stagingPtr = w.geomStagingPtr() >>> 0;
+  const view = new Float64Array(mem.buffer, stagingPtr, pointCount * 3);
+  let i = 0;
+  for (let k = 0; k < pointCount; k++) {
+    const point = points[k];
+    view[i++] = point.x; view[i++] = point.y; view[i++] = point.z;
+  }
+
+  const offset = w.boundaryFanStoreFromStaging(pointCount) >>> 0;
+  if (offset === 0xFFFFFFFF) return null;
+  return { geomType: K.GEOM_BOUNDARY_FAN, geomOffset: offset };
+}
+
+function _storeTrimmedPlaneBoundaryFanGeometry(face, ctx) {
+  if (face?.surfaceType !== SurfaceType.PLANE) return null;
+  if ((face.innerLoops?.length || 0) > 0) return null;
+  if (!_sharesEdgeWithRollingFillet(face)) return null;
+  let hasSampledTrim = false;
+  for (const ce of face?.outerLoop?.coedges || []) {
+    const curve = ce.edge?.curve;
+    if (curve && !_isSimpleLineCurve(curve)) {
+      hasSampledTrim = true;
+      break;
+    }
+  }
+  return hasSampledTrim ? _storeBoundaryFanGeometry(face, ctx) : null;
+}
+
+function _storeBoundaryFanGeometry(face, ctx) {
+  const { w, K, mem } = ctx;
+  if (typeof w.boundaryFanStoreFromStaging !== 'function' || typeof w.geomStagingPtr !== 'function' || !mem) return null;
+
+  const points = _sampleLoopPointsForWasm(face);
+  if (points.length < 3) return null;
+  const capacity = typeof w.geomStagingCapacity === 'function' ? (w.geomStagingCapacity() >>> 0) : 8192;
+  const pointCount = Math.min(points.length, Math.floor(capacity / 3));
+  if (pointCount < 3) return null;
+
+  const stagingPtr = w.geomStagingPtr() >>> 0;
+  const view = new Float64Array(mem.buffer, stagingPtr, pointCount * 3);
+  let i = 0;
+  for (let k = 0; k < pointCount; k++) {
+    const point = points[k];
+    view[i++] = point.x; view[i++] = point.y; view[i++] = point.z;
+  }
+
+  const offset = w.boundaryFanStoreFromStaging(pointCount) >>> 0;
+  if (offset === 0xFFFFFFFF) return null;
+  return { geomType: K.GEOM_BOUNDARY_FAN, geomOffset: offset };
+}
+
+function _storeExactFilletCylinderGeometry(face, ctx) {
+  const { w, K } = ctx;
+  const shared = face?.shared;
+  if (!shared?.isFillet || shared.isRollingFillet) return null;
+  if (!shared._exactAxisStart || !shared._exactAxisEnd || shared._exactRadius == null) return null;
+
+  const axisStart = shared._exactAxisStart;
+  const axisEnd = shared._exactAxisEnd;
+  const axis = vec3Normalize(vec3Sub(axisEnd, axisStart));
+  if (vec3Len(axis) < 0.5) return null;
+
+  let refDir = null;
+  const points = _rollingLoopPoints(face);
+  for (const point of points) {
+    const delta = vec3Sub(point, axisStart);
+    const axial = vec3Dot(delta, axis);
+    const radial = vec3Sub(delta, vec3Scale(axis, axial));
+    if (vec3Len(radial) > 1e-8) {
+      refDir = vec3Normalize(radial);
+      break;
+    }
+  }
+  if (!refDir) refDir = _computeRefDir(axis);
+
+  return {
+    geomType: K.GEOM_CYLINDER,
+    geomOffset: w.cylinderStore(
+      axisStart.x, axisStart.y, axisStart.z,
+      axis.x, axis.y, axis.z,
+      refDir.x, refDir.y, refDir.z,
+      shared._exactRadius,
+    ),
+  };
+}
+
+function _rollingLoopPoints(face) {
+  if (typeof face?.outerLoop?.points === 'function') return face.outerLoop.points() || [];
+  const points = [];
+  for (const ce of face?.outerLoop?.coedges || []) {
+    const edge = ce.edge;
+    const vertex = ce.sameSense ? edge?.startVertex : edge?.endVertex;
+    const point = vertex?.point || vertex;
+    if (point) points.push(point);
+  }
+  return points;
+}
+
+function _sharesEdgeWithRollingFillet(face) {
+  const loops = typeof face?.allLoops === 'function'
+    ? face.allLoops()
+    : [face?.outerLoop, ...(face?.innerLoops || [])];
+  for (const loop of loops || []) {
+    for (const coedge of loop?.coedges || []) {
+      for (const owner of coedge.edge?.coedges || []) {
+        if (owner.face !== face && owner.face?.shared?.isRollingFillet) return true;
+      }
+    }
+  }
+  return false;
+}
+
+function _sampleLoopPointsForWasm(face, segments = 32) {
+  const coedges = face?.outerLoop?.coedges || [];
+  const points = [];
+  for (const ce of coedges) {
+    const edgeSamples = _sampleEdgePoints(ce.edge, segments);
+    if (!edgeSamples.length) continue;
+    const samples = ce.sameSense ? edgeSamples : [...edgeSamples].reverse();
+    for (const point of samples) {
+      const prev = points[points.length - 1];
+      if (prev && _distPoint(prev, point) <= 1e-9) continue;
+      points.push(point);
+    }
+  }
+  if (points.length > 1 && _distPoint(points[0], points[points.length - 1]) <= 1e-9) points.pop();
+  return points;
+}
+
+function _sampleBoundaryBetween(face, a, b, segments = 32) {
+  if (!a || !b) return null;
+  for (const coedge of face?.outerLoop?.coedges || []) {
+    const edge = coedge.edge;
+    const start = edge?.startVertex?.point;
+    const end = edge?.endVertex?.point;
+    if (!start || !end) continue;
+    const matchesForward = _distPoint(start, a) <= 1e-6 && _distPoint(end, b) <= 1e-6;
+    const matchesReverse = _distPoint(start, b) <= 1e-6 && _distPoint(end, a) <= 1e-6;
+    if (!matchesForward && !matchesReverse) continue;
+    const samples = _sampleEdgePoints(edge, segments).map((point) => ({ ...point }));
+    if (samples.length < 2) return null;
+    if (_distPoint(samples[0], a) > _distPoint(samples[samples.length - 1], a)) samples.reverse();
+    samples[0] = { ...a };
+    samples[samples.length - 1] = { ...b };
+    return samples;
+  }
+  return null;
+}
+
+function _sampleEdgePoints(edge, segments = 32) {
+  const start = edge?.startVertex?.point;
+  const end = edge?.endVertex?.point;
+  if (!start || !end) return [];
+  const curve = edge.curve;
+  if (!curve || _isSimpleLineCurve(curve) || typeof curve.evaluate !== 'function') {
+    return [{ ...start }, { ...end }];
+  }
+  if (curve._preserveControlPointSamples === true && curve.degree === 1 && Array.isArray(curve.controlPoints) && curve.controlPoints.length > 2) {
+    const samples = curve.controlPoints.map((point) => ({ x: point.x, y: point.y, z: point.z }));
+    samples[0] = { ...start };
+    samples[samples.length - 1] = { ...end };
+    return samples;
+  }
+  const uMin = curve.uMin ?? curve.knots?.[0];
+  const uMax = curve.uMax ?? curve.knots?.[curve.knots.length - 1];
+  if (!Number.isFinite(uMin) || !Number.isFinite(uMax) || Math.abs(uMax - uMin) < 1e-12) {
+    return [{ ...start }, { ...end }];
+  }
+  const count = Math.max(1, segments | 0);
+  const denseCount = Math.max(count, count * 4);
+  const dense = [];
+  for (let i = 0; i <= denseCount; i++) dense.push(curve.evaluate(uMin + (uMax - uMin) * (i / denseCount)));
+  const samples = _resamplePolyline(dense, count);
+  if (samples.length > 0) samples[0] = { ...start };
+  if (samples.length > 1) samples[samples.length - 1] = { ...end };
+  return samples;
+}
+
+function _resamplePolyline(points, segments) {
+  if (!Array.isArray(points) || points.length <= 2) return points || [];
+  const cumulative = [0];
+  for (let i = 1; i < points.length; i++) cumulative.push(cumulative[i - 1] + _distPoint(points[i - 1], points[i]));
+  const total = cumulative[cumulative.length - 1];
+  if (total < 1e-12) return points.slice(0, segments + 1);
+
+  const out = [];
+  let src = 1;
+  for (let i = 0; i <= segments; i++) {
+    const target = (i / segments) * total;
+    while (src < cumulative.length - 1 && cumulative[src] < target) src++;
+    const prevLen = cumulative[src - 1];
+    const nextLen = cumulative[src];
+    const span = nextLen - prevLen;
+    const t = span > 1e-14 ? (target - prevLen) / span : 0;
+    const a = points[src - 1];
+    const b = points[src];
+    out.push({
+      x: a.x + (b.x - a.x) * t,
+      y: a.y + (b.y - a.y) * t,
+      z: a.z + (b.z - a.z) * t,
+    });
+  }
+  return out;
+}
+
+function _distPoint(a, b) {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  const dz = a.z - b.z;
+  return Math.sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+function _snapRollingPointToLoop(point, loopPoints) {
+  if (!point || !loopPoints?.length) return point;
+  let best = null;
+  for (const candidate of loopPoints) {
+    const dx = point.x - candidate.x;
+    const dy = point.y - candidate.y;
+    const dz = point.z - candidate.z;
+    const dist2 = dx * dx + dy * dy + dz * dz;
+    if (!best || dist2 < best.dist2) best = { point: candidate, dist2 };
+  }
+  return best && best.dist2 <= 1e-12 ? best.point : point;
 }
 
 function _faceOrientForWasm(face, geomType, K) {

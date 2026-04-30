@@ -24,6 +24,15 @@
     ]
   },
   {
+    "file": "box-fillet-2-s-1.cmod",
+    "label": "Box Fillet 2 S 1",
+    "featureTypes": [
+      "sketch",
+      "extrude",
+      "fillet"
+    ]
+  },
+  {
     "file": "box-fillet-2-s.cmod",
     "label": "Box Fillet 2 S",
     "featureTypes": [

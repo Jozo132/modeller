@@ -26,7 +26,7 @@ export class FilletFeature extends Feature {
   }
 
   getCbrepCacheVersion() {
-    return 'fillet-exact-brep-v2-plane-cylinder-caps';
+    return 'fillet-exact-brep-v3-rolling-curved-chains';
   }
 
   execute(context) {
