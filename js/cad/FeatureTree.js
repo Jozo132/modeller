@@ -474,9 +474,12 @@ export class FeatureTree {
     }
 
     const topoBody = deps.readCbrep(buffer);
+    const requireWasmTessellation = typeof topoBody.faces === 'function'
+      && topoBody.faces().some((face) => face.shared?.isRollingFillet || face.shared?.isPlaneCylinderArcFillet);
     const mesh = deps.tessellateBody(topoBody, {
       validate: false,
-      fallbackOnInvalidWasm: true,
+      requireWasm: requireWasmTessellation,
+      fallbackOnInvalidWasm: !requireWasmTessellation,
     });
     if (!mesh || !mesh.faces || mesh.faces.length === 0) {
       throw new Error(`empty mesh from CBREP for ${featureId}`);

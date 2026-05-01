@@ -10,6 +10,8 @@
 import assert from 'node:assert/strict';
 import { LodManager } from '../js/render/lod-manager.js';
 import { GpuTessPipeline } from '../js/render/gpu-tess-pipeline.js';
+import { SceneRenderer } from '../js/render/scene-renderer.js';
+import { globalTessConfig } from '../js/cad/TessellationConfig.js';
 
 let passed = 0;
 let failed = 0;
@@ -123,6 +125,42 @@ check('constructor is callable without init', () => {
   const pipe = new GpuTessPipeline();
   assert.ok(pipe);
   // Pipeline starts un-ready; init(null) must not throw.
+});
+
+console.log('SceneRenderer — static tessellation density');
+
+check('camera movement does not emit LoD retessellation or change selected quality', () => {
+  const cfgBefore = globalTessConfig.serialize();
+  const fakeWasm = {
+    init() {},
+    setCameraMode() {},
+    setCameraUp() {},
+    setGridVisible() {},
+    setGridSize() {},
+    setAxesVisible() {},
+    setAxesSize() {},
+    clearEntities() {},
+    resetEntityModelMatrix() {},
+    setCameraPosition() {},
+    setCameraTarget() {},
+    render() {},
+    getCommandBufferPtr: () => 0,
+    getCommandBufferLen: () => 0,
+  };
+  const renderer = new SceneRenderer({
+    canvas: { width: 800, height: 600 },
+    executor: { resize() {}, execute() {}, setViewDir() {} },
+    wasmModule: fakeWasm,
+  });
+  renderer.init();
+  const events = [];
+  renderer.lodManager.onRetessellate = (u, v) => events.push([u, v]);
+  renderer.setOrbitState({ radius: 10 });
+  renderer.renderFrame();
+  renderer.setOrbitState({ radius: 1000 });
+  renderer.renderFrame();
+  assert.deepEqual(events, [], 'camera movement must not retessellate dynamically');
+  assert.deepEqual(globalTessConfig.serialize(), cfgBefore, 'selected tessellation preset should stay static');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

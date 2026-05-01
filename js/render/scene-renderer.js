@@ -8,7 +8,6 @@ import {
 } from './part-render-core.js';
 import { LodManager } from './lod-manager.js';
 import { GpuTessPipeline } from './gpu-tess-pipeline.js';
-import { globalTessConfig } from '../cad/TessellationConfig.js';
 
 export class SceneRenderer {
   constructor(options) {
@@ -41,11 +40,9 @@ export class SceneRenderer {
     this._invisibleEdgesVisible = false;
     this._meshTriangleOverlayMode = 'off';
 
-    // LoD-driven re-tessellation
+    // Static tessellation density. Keep the manager for compatibility, but
+    // do not update it from camera movement or retessellate automatically.
     this._lodManager = new LodManager();
-    this._lodManager.onRetessellate = (segsU, segsV) => {
-      this._onLodChanged(segsU, segsV);
-    };
     this._currentPart = null;
 
     // WebGPU NURBS tessellation pipeline (optional, null if unavailable)
@@ -233,22 +230,6 @@ export class SceneRenderer {
     if (len > 1e-8) {
       this.executor.setViewDir(dx / len, dy / len, dz / len);
     }
-    // Update LoD based on camera distance
-    this._lodManager.update(this._orbitRadius);
-  }
-
-  /**
-   * Called by LodManager when the LoD band changes.
-   * Updates globalTessConfig and re-tessellates the current part.
-   */
-  _onLodChanged(segsU, segsV) {
-    if (!this._currentPart) return;
-    // Update the global tessellation config so the next tessellation uses new density
-    globalTessConfig.surfaceSegments = segsV;
-    globalTessConfig.edgeSegments = segsU;
-    globalTessConfig.curveSegments = segsU;
-    // Re-render part with updated tessellation density
-    this.renderPart(this._currentPart);
   }
 
   _buildMeshFromGeometry(geometry) {

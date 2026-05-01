@@ -8,6 +8,7 @@ import { applyBRepChamfer } from '../js/cad/BRepChamfer.js';
 import { resetFeatureIds } from '../js/cad/Feature.js';
 import { resetTopoIds } from '../js/cad/BRepTopology.js';
 import { tessellateBody } from '../js/cad/Tessellation.js';
+import { globalTessConfig } from '../js/cad/TessellationConfig.js';
 import { detectBoundaryEdges, detectDegenerateFaces, detectSelfIntersections } from '../js/cad/MeshValidator.js';
 import { countTopoBodyBoundaryEdges, measureMeshTopology } from '../js/cad/toolkit/TopologyUtils.js';
 import { EdgeSampler } from '../js/cad/Tessellator2/EdgeSampler.js';
@@ -105,10 +106,20 @@ function validateExactChamfer(part, edgeSelector, distance) {
   assert.strictEqual(tess.nonManifoldEdges ?? 0, 0, 'Tessellation should have no non-manifold edges');
 }
 
-function loadSamplePart(filename) {
+function loadSamplePart(filename, options = {}) {
   const parsed = parseCMOD(readFileSync(`tests/samples/${filename}`, 'utf8'));
   assert.ok(parsed.ok, `Expected ${filename} to parse`);
-  return Part.deserialize(parsed.data.part);
+  return Part.deserialize(parsed.data.part, options);
+}
+
+function withTessPreset(preset, callback) {
+  const previous = globalTessConfig.serialize();
+  try {
+    globalTessConfig.applyPreset(preset);
+    return callback(globalTessConfig.serialize());
+  } finally {
+    Object.assign(globalTessConfig, previous);
+  }
 }
 
 function hasPointNear(points, x, y, z, tolerance = 0.025) {
@@ -121,6 +132,24 @@ function hasPointNear(points, x, y, z, tolerance = 0.025) {
 
 function distance3(first, second) {
   return Math.hypot(first.x - second.x, first.y - second.y, first.z - second.z);
+}
+
+function triangleArea3(triangle) {
+  const [a, b, c] = triangle.vertices;
+  const ab = { x: b.x - a.x, y: b.y - a.y, z: b.z - a.z };
+  const ac = { x: c.x - a.x, y: c.y - a.y, z: c.z - a.z };
+  return 0.5 * Math.hypot(
+    ab.y * ac.z - ab.z * ac.y,
+    ab.z * ac.x - ab.x * ac.z,
+    ab.x * ac.y - ab.y * ac.x,
+  );
+}
+
+function triangleQuality(triangle) {
+  const [a, b, c] = triangle.vertices;
+  const longest = Math.max(distance3(a, b), distance3(b, c), distance3(c, a));
+  const area = triangleArea3(triangle);
+  return area > 1e-14 ? longest / Math.sqrt(area) : Infinity;
 }
 
 function sampleTopoFaceEdges(face, segments = 16) {
@@ -483,6 +512,7 @@ test('Concave top-face chamfer offsets toward local material side', () => {
 
 test('puzzle-extrude-ff fillets replay visual arc keys and project terminal caps', () => {
   const part = loadSamplePart('puzzle-extrude-ff.cmod');
+  part.featureTree.executeAll();
   const firstFillet = part.featureTree.features.find((feature) => feature.id === 'feature_50');
   const secondFillet = part.featureTree.features.find((feature) => feature.id === 'feature_51');
   assert.ok(firstFillet, 'Expected first fillet feature in ff sample');
@@ -534,6 +564,36 @@ test('puzzle-extrude-ff fillets replay visual arc keys and project terminal caps
   const filletFaces = finalGeometry.topoBody.faces().filter((face) => face.shared?.isFillet);
   assert.ok(filletFaces.length >= 2, `Expected both fillet operations to add exact faces, got ${filletFaces.length}`);
   assert.ok(filletFaces.some((face) => face.surfaceType === 'torus' && face.shared?.isPlaneCylinderArcFillet), 'Second fillet should use the exact toroidal plane-cylinder arc path');
+  const exactFilletCylinderFace = filletFaces.find((face) =>
+    Math.abs((face.shared?._exactRadius || 0) - 1) < 1e-9 &&
+    face.surface?.degreeU === 1 &&
+    face.surface?.degreeV === 2 &&
+    face.surface?.numRowsU === 2 &&
+    face.surface?.numColsV === 3
+  );
+  assert.ok(exactFilletCylinderFace, 'Final ff sample should retain the first exact fillet-cylinder face after the second fillet');
+  const exactFilletCylinderTriangles = finalGeometry.faces.filter((triangle) => triangle.topoFaceId === exactFilletCylinderFace.id);
+  const maxExactFilletCylinderQuality = Math.max(...exactFilletCylinderTriangles.map(triangleQuality).filter(Number.isFinite));
+  assert.ok(
+    exactFilletCylinderTriangles.length <= 128,
+    `First fillet cylinder should stay on the structured strip path after the second fillet, got ${exactFilletCylinderTriangles.length} triangles`,
+  );
+  assert.ok(
+    maxExactFilletCylinderQuality < 40,
+    `First fillet cylinder should not fall back to skinny boundary triangulation, max quality ${maxExactFilletCylinderQuality}`,
+  );
+  const directWasmMesh = tessellateBodyWasm(finalGeometry.topoBody, { surfaceSegments: 16, edgeSegments: 64 });
+  assert.ok(directWasmMesh?.faces?.length > 0, 'Direct WASM tessellation should produce the final ff mesh');
+  const wasmExactFilletCylinderTriangles = directWasmMesh.faces.filter((triangle) => triangle.topoFaceId === exactFilletCylinderFace.id);
+  const maxWasmExactFilletCylinderQuality = Math.max(...wasmExactFilletCylinderTriangles.map(triangleQuality).filter(Number.isFinite));
+  assert.ok(
+    wasmExactFilletCylinderTriangles.length <= 128,
+    `WASM first fillet cylinder should stay on the structured strip path after the second fillet, got ${wasmExactFilletCylinderTriangles.length} triangles`,
+  );
+  assert.ok(
+    maxWasmExactFilletCylinderQuality < 40,
+    `WASM first fillet cylinder should not fall back to skinny boundary triangulation, max quality ${maxWasmExactFilletCylinderQuality}`,
+  );
 
   const finalTopFace = finalGeometry.topoBody.faces().find((face) =>
     face.surfaceType === 'plane' &&
@@ -562,11 +622,13 @@ test('puzzle-extrude-ff fillets replay visual arc keys and project terminal caps
   assert.strictEqual(detectDegenerateFaces(finalGeometry.faces).count, 0, 'Final ff mesh should have no degenerate triangles');
 });
 
-test('box-fillet-2-s-1 curved tangent fillet rebuilds as one primitive-sectioned rolling face', () => {
-  const part = loadSamplePart('box-fillet-2-s-1.cmod');
+test('box-fillet-2-s-1 curved tangent fillet rebuilds as one primitive-sectioned rolling face', () => withTessPreset('normal', (tessellationConfigOverride) => {
+  const part = loadSamplePart('box-fillet-2-s-1.cmod', { tessellationConfigOverride });
+  part.featureTree.executeAll();
   const fillet = part.featureTree.features.find((feature) => feature.id === 'feature_94');
   assert.ok(fillet, 'Expected third fillet feature in box-fillet sample');
   assert.ok(!fillet.error, `Third fillet should execute without error: ${fillet.error?.message || ''}`);
+  assert.strictEqual(fillet.result?.geometry?._tessellator, 'wasm', 'Third fillet should stay on the WASM tessellation path');
 
   const geometry = part.getFinalGeometry().geometry;
   assert.ok(geometry?.topoBody, 'Final box-fillet sample should keep exact topology');
@@ -592,8 +654,8 @@ test('box-fillet-2-s-1 curved tangent fillet rebuilds as one primitive-sectioned
   }
   assert.strictEqual(
     rollingFace.outerLoop?.coedges?.length || 0,
-    rollingSections.length * 2 + 2,
-    'Rolling face boundary should expose the primitive-section rail splits plus terminal cap curves',
+    rollingSections.length * 2 + 1,
+    'Small rolling blend should expose rail splits plus only the non-planar terminal cap curve',
   );
   const rail0 = rollingFace.shared?._rollingRail0 || [];
   const rail1 = rollingFace.shared?._rollingRail1 || [];
@@ -606,30 +668,34 @@ test('box-fillet-2-s-1 curved tangent fillet rebuilds as one primitive-sectioned
     Math.abs(distance3(rail1[index], centers[index]) - 0.3),
   ), 0);
   assert.ok(maxRadiusError < 5e-4, `Rolling rails should stay on the constant-radius ball, max error ${maxRadiusError}`);
+  const longCurvedSection = rollingSections.find((section) => section.endIndex - section.startIndex > 16);
+  assert.ok(longCurvedSection, 'Rolling tangent chain should keep a long curved primitive section');
+  const minCurvedRailChord = rail0
+    .slice(longCurvedSection.startIndex, longCurvedSection.endIndex)
+    .reduce((minChord, railPoint0, offset) => Math.min(
+      minChord,
+      distance3(railPoint0, rail1[longCurvedSection.startIndex + offset]),
+    ), Infinity);
+  assert.ok(minCurvedRailChord >= 0.22, `Rolling section should not collapse into a narrow strip, min chord ${minCurvedRailChord}`);
+  assert.ok(
+    distance3(rail0[rail0.length - 1], rail1[rail1.length - 1]) < 1e-8,
+    'Smaller rolling blend should terminate at the existing larger-fillet corner vertex',
+  );
   const topFace = geometry.topoBody.faces().find((face) => {
     const points = face.outerLoop?.points?.() || [];
     return face.surfaceType === 'plane'
       && points.length > 0
       && points.every((point) => Math.abs(point.z - 10) < 1e-6)
-      && hasPointNear(points, 9.25884, 1, 10, 0.02)
-      && hasPointNear(points, 9.5, 1.34106, 10, 0.02);
+      && hasPointNear(points, 9.5, 1, 10, 0.02);
   });
-  assert.ok(topFace, 'Top face should contain the rolling cap trim endpoints');
+  assert.ok(topFace, 'Top face should preserve the larger-fillet corner vertex');
   const topCapCoedge = topFace.outerLoop.coedges.find((coedge) => {
     const edge = coedge.edge;
     const start = coedge.sameSense === false ? edge.endVertex.point : edge.startVertex.point;
     const end = coedge.sameSense === false ? edge.startVertex.point : edge.endVertex.point;
-    return hasPointNear([start], 9.25884, 1, 10, 0.02) && hasPointNear([end], 9.5, 1.34106, 10, 0.02);
+    return hasPointNear([start], 9.2, 1, 10, 0.02) && hasPointNear([end], 9.5, 1.3, 10, 0.02);
   });
-  assert.ok(topCapCoedge, 'Top face should expose a dedicated corner-radius cap edge');
-  assert.ok(
-    (topCapCoedge.edge.curve?.controlPoints?.length || 0) > 2,
-    'Top face cap should be a curved radius trim, not a straight chamfer chord',
-  );
-  assert.ok(
-    rollingFace.outerLoop.coedges.some((coedge) => coedge.edge === topCapCoedge.edge),
-    'Rolling face should start from the same corner-radius cap edge used by the top face',
-  );
+  assert.ok(!topCapCoedge, 'Small rolling blend should not cut a dedicated radius arc into the top face');
   const rollingBoundaryPoints = sampleTopoFaceEdges(rollingFace, 32);
   assert.ok(
     hasPointNear(rollingBoundaryPoints, 9.7, 0, 9, 0.02) && hasPointNear(rollingBoundaryPoints, 10, 0.3, 0, 0.02),
@@ -671,7 +737,7 @@ test('box-fillet-2-s-1 curved tangent fillet rebuilds as one primitive-sectioned
     0,
     'Native WASM rolling tangent mesh should not overlap adjacent exact faces',
   );
-});
+}));
 
 test('puzzle-extrude-cc2 concave arc chamfer surface tessellates in native WASM', () => {
   const part = loadSamplePart('puzzle-extrude-cc2.cmod');

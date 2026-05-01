@@ -596,6 +596,19 @@ function _storeExactFilletCylinderGeometry(face, ctx) {
   if (!shared?.isFillet || shared.isRollingFillet) return null;
   if (!shared._exactAxisStart || !shared._exactAxisEnd || shared._exactRadius == null) return null;
 
+  const recovered = _recoverExactFilletCylinderFromSurface(face);
+  if (recovered) {
+    return {
+      geomType: K.GEOM_CYLINDER,
+      geomOffset: w.cylinderStore(
+        recovered.origin.x, recovered.origin.y, recovered.origin.z,
+        recovered.axis.x, recovered.axis.y, recovered.axis.z,
+        recovered.refDir.x, recovered.refDir.y, recovered.refDir.z,
+        recovered.radius,
+      ),
+    };
+  }
+
   const axisStart = shared._exactAxisStart;
   const axisEnd = shared._exactAxisEnd;
   const axis = vec3Normalize(vec3Sub(axisEnd, axisStart));
@@ -623,6 +636,42 @@ function _storeExactFilletCylinderGeometry(face, ctx) {
       shared._exactRadius,
     ),
   };
+}
+
+function _recoverExactFilletCylinderFromSurface(face) {
+  const surface = face?.surface;
+  if (!surface || typeof surface.evaluate !== 'function') return null;
+  if (surface.degreeU !== 1 || surface.degreeV !== 2 || surface.numRowsU !== 2 || surface.numColsV < 3) return null;
+
+  const u0 = surface.uMin ?? 0;
+  const u1 = surface.uMax ?? 1;
+  const v0 = surface.vMin ?? 0;
+  const v1 = surface.vMax ?? 1;
+  const vm = (v0 + v1) * 0.5;
+  const row0Start = surface.evaluate(u0, v0);
+  const row0Mid = surface.evaluate(u0, vm);
+  const row0End = surface.evaluate(u0, v1);
+  const row1Start = surface.evaluate(u1, v0);
+  const row1Mid = surface.evaluate(u1, vm);
+  const row1End = surface.evaluate(u1, v1);
+  const center0 = circumCenter3D(row0Start, row0Mid, row0End);
+  const center1 = circumCenter3D(row1Start, row1Mid, row1End);
+  if (!center0 || !center1) return null;
+
+  const axisVector = vec3Sub(center1, center0);
+  const axisLength = vec3Len(axisVector);
+  if (!Number.isFinite(axisLength) || axisLength < 1e-8) return null;
+  const axis = vec3Scale(axisVector, 1 / axisLength);
+  const radial = vec3Sub(row0Start, center0);
+  const radius = vec3Len(radial);
+  if (!Number.isFinite(radius) || radius < 1e-8) return null;
+  const sharedRadius = Number(face.shared?._exactRadius);
+  if (Number.isFinite(sharedRadius) && sharedRadius > 0 && Math.abs(radius - sharedRadius) > Math.max(1e-5, sharedRadius * 1e-3)) {
+    return null;
+  }
+  const refDir = vec3Normalize(radial);
+  if (vec3Len(refDir) < 0.5) return null;
+  return { origin: center0, axis, refDir, radius };
 }
 
 function _rollingLoopPoints(face) {

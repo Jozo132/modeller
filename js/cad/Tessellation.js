@@ -577,8 +577,9 @@ export function tessellateBody(body, opts = {}) {
   // MeshValidator would dominate runtime. Default is true so callers that
   // just want "a mesh" still get a sanity check.
   const validate = opts.validate !== false;
+  const requireWasm = opts.requireWasm === true || opts.throwOnJsFallback === true;
 
-  if (opts.incrementalCache) {
+  if (opts.incrementalCache && !requireWasm && opts.preferWasm !== true) {
     const incrementalResult = robustTessellateBody(body, { ...opts, validate });
     if (incrementalResult.faces.length > 0) {
       incrementalResult._tessellator = 'js-incremental';
@@ -592,7 +593,15 @@ export function tessellateBody(body, opts = {}) {
   const wasmResult = tessellateBodyWasm(body, opts);
   if (wasmResult && wasmResult.faces.length > 0) {
     const invalidFeaturePlanarTrims = meshHasInvalidFeaturePlanarTrims(body, wasmResult);
-    if (invalidFeaturePlanarTrims || (opts.fallbackOnInvalidWasm && meshNeedsRobustFallback(body, wasmResult))) {
+    const invalidWasmMesh = (requireWasm || opts.fallbackOnInvalidWasm)
+      ? meshNeedsRobustFallback(body, wasmResult)
+      : false;
+    if (invalidFeaturePlanarTrims || ((requireWasm || opts.fallbackOnInvalidWasm) && invalidWasmMesh)) {
+      if (requireWasm) {
+        throw new Error(
+          `[BRep-only] tessellateBody: WASM tessellation rejected (${invalidFeaturePlanarTrims ? 'invalid planar trim' : 'mesh quality'}); JS robust fallback is disabled.`
+        );
+      }
       const robustFallbackOpts = invalidFeaturePlanarTrims
         ? {
             ...opts,
@@ -615,6 +624,9 @@ export function tessellateBody(body, opts = {}) {
 
   // WASM module not loaded or returned empty — use JS Tessellator2 as
   // a cold-start fallback only (WASM init is async, first call may miss).
+  if (requireWasm) {
+    throw new Error('[BRep-only] tessellateBody: WASM tessellation produced no mesh; JS robust fallback is disabled.');
+  }
   const result = robustTessellateBody(body, { ...opts, validate });
   if (result.faces.length > 0) {
     result._tessellator = 'js-cold-start-fallback';

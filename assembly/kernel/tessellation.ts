@@ -3614,6 +3614,9 @@ function _tessCylinderFace(faceId: u32, segsU: i32, segsV: i32): i32 {
   const ruledQuad = _tessRuledCircleQuadFace(faceId, reversed, segsU,
     1, ox, oy, oz, ax, ay, az, rx, ry, rz, bx, by, bz, radius, 0.0, 0.0, 0.0);
   if (ruledQuad != -2) return ruledQuad;
+  const filletStrip = _tessCylinderCurvedBoundaryStripFace(faceId, reversed, segsU,
+    ox, oy, oz, ax, ay, az, rx, ry, rz, bx, by, bz, radius);
+  if (filletStrip != -2) return filletStrip;
   const analyticRuledQuad = _tessAnalyticRuledBoundaryQuadFace(faceId, reversed, segsU,
     1, ox, oy, oz, ax, ay, az, rx, ry, rz, bx, by, bz, radius, 0.0, 0.0, 0.0);
   if (analyticRuledQuad != -2) return analyticRuledQuad;
@@ -3634,6 +3637,122 @@ function _tessCylinderFace(faceId: u32, segsU: i32, segsV: i32): i32 {
 
   return _tessTrimmedParametricGrid(faceId, reversed, cylSegsU, segsV,
     1, ox, oy, oz, ax, ay, az, rx, ry, rz, bx, by, bz, radius, 0.0, 0.0, 0.0);
+}
+
+function _tessCylinderCurvedBoundaryStripFace(
+  faceId: u32, reversed: bool, segsU: i32,
+  ox: f64, oy: f64, oz: f64,
+  ax: f64, ay: f64, az: f64,
+  rx: f64, ry: f64, rz: f64,
+  bx: f64, by: f64, bz: f64,
+  radius: f64,
+): i32 {
+  if (faceGetLoopCount(faceId) != 1) return -2;
+  const loopId = faceGetFirstLoop(faceId);
+  const ce0 = loopGetFirstCoedge(loopId);
+  const ce1 = coedgeGetNext(ce0);
+  const ce2 = coedgeGetNext(ce1);
+  const ce3 = coedgeGetNext(ce2);
+  if (coedgeGetNext(ce3) != ce0) return -2;
+
+  const ceIds = new StaticArray<u32>(4);
+  unchecked(ceIds[0] = ce0);
+  unchecked(ceIds[1] = ce1);
+  unchecked(ceIds[2] = ce2);
+  unchecked(ceIds[3] = ce3);
+
+  let curvedAIdx: i32 = -1;
+  let curvedBIdx: i32 = -1;
+  let lineCount: i32 = 0;
+  let curvedCount: i32 = 0;
+  for (let i: i32 = 0; i < 4; i++) {
+    const eid = coedgeGetEdge(unchecked(ceIds[i]));
+    if (edgeGetStartVertex(eid) == edgeGetEndVertex(eid)) return -2;
+    const isLine = edgeGetGeomType(eid) == GEOM_LINE;
+    if (isLine) {
+      lineCount++;
+    } else {
+      if (curvedAIdx < 0) curvedAIdx = i;
+      else curvedBIdx = i;
+      curvedCount++;
+    }
+  }
+  if (lineCount != 2 || curvedCount != 2) return -2;
+  if (curvedAIdx < 0 || curvedBIdx < 0) return -2;
+  if (((curvedBIdx - curvedAIdx + 4) & 3) != 2) return -2;
+
+  let su = segsU > 0 ? segsU : DEFAULT_SEGS;
+  if (su < 32) su = 32;
+  const edgeA = coedgeGetEdge(unchecked(ceIds[curvedAIdx]));
+  const edgeB = coedgeGetEdge(unchecked(ceIds[curvedBIdx]));
+  const minA = _edgeRowMinSegments(edgeGetGeomType(edgeA));
+  const minB = _edgeRowMinSegments(edgeGetGeomType(edgeB));
+  if (su < minA) su = minA;
+  if (su < minB) su = minB;
+  if (su + 1 > RULED_QUAD_MAX_SAMPLES) su = RULED_QUAD_MAX_SAMPLES - 1;
+
+  if (!_sampleCoedgeRow(edgeA, coedgeGetOrient(unchecked(ceIds[curvedAIdx])), su, ruledQuadRowA)) return -2;
+  if (!_sampleCoedgeRow(edgeB, coedgeGetOrient(unchecked(ceIds[curvedBIdx])), su, ruledQuadRowB)) return -2;
+
+  const end = su * 3;
+  const directDx0 = unchecked(ruledQuadRowA[0]) - unchecked(ruledQuadRowB[0]);
+  const directDy0 = unchecked(ruledQuadRowA[1]) - unchecked(ruledQuadRowB[1]);
+  const directDz0 = unchecked(ruledQuadRowA[2]) - unchecked(ruledQuadRowB[2]);
+  const directDx1 = unchecked(ruledQuadRowA[end]) - unchecked(ruledQuadRowB[end]);
+  const directDy1 = unchecked(ruledQuadRowA[end + 1]) - unchecked(ruledQuadRowB[end + 1]);
+  const directDz1 = unchecked(ruledQuadRowA[end + 2]) - unchecked(ruledQuadRowB[end + 2]);
+  const reverseDx0 = unchecked(ruledQuadRowA[0]) - unchecked(ruledQuadRowB[end]);
+  const reverseDy0 = unchecked(ruledQuadRowA[1]) - unchecked(ruledQuadRowB[end + 1]);
+  const reverseDz0 = unchecked(ruledQuadRowA[2]) - unchecked(ruledQuadRowB[end + 2]);
+  const reverseDx1 = unchecked(ruledQuadRowA[end]) - unchecked(ruledQuadRowB[0]);
+  const reverseDy1 = unchecked(ruledQuadRowA[end + 1]) - unchecked(ruledQuadRowB[1]);
+  const reverseDz1 = unchecked(ruledQuadRowA[end + 2]) - unchecked(ruledQuadRowB[2]);
+  const reverseB = reverseDx0 * reverseDx0 + reverseDy0 * reverseDy0 + reverseDz0 * reverseDz0
+    + reverseDx1 * reverseDx1 + reverseDy1 * reverseDy1 + reverseDz1 * reverseDz1
+    < directDx0 * directDx0 + directDy0 * directDy0 + directDz0 * directDz0
+      + directDx1 * directDx1 + directDy1 * directDy1 + directDz1 * directDz1;
+  if (reverseB) _reverseRuledRow(ruledQuadRowB, su);
+
+  const baseA = outVertCount;
+  for (let i: i32 = 0; i <= su; i++) {
+    const p = i * 3;
+    _projectPoint(unchecked(ruledQuadRowA[p]), unchecked(ruledQuadRowA[p + 1]), unchecked(ruledQuadRowA[p + 2]));
+    _evalSurface(1, _projU, _projV,
+      ox, oy, oz, ax, ay, az, rx, ry, rz, bx, by, bz,
+      radius, 0.0, 0.0, 0.0);
+    let nx = _surfNX, ny = _surfNY, nz = _surfNZ;
+    if (reversed) { nx = -nx; ny = -ny; nz = -nz; }
+    if (_ruledRowEmit(ruledQuadRowA, i, nx, ny, nz) == INVALID_ID) return -1;
+  }
+
+  const baseB = outVertCount;
+  for (let i: i32 = 0; i <= su; i++) {
+    const p = i * 3;
+    _projectPoint(unchecked(ruledQuadRowB[p]), unchecked(ruledQuadRowB[p + 1]), unchecked(ruledQuadRowB[p + 2]));
+    _evalSurface(1, _projU, _projV,
+      ox, oy, oz, ax, ay, az, rx, ry, rz, bx, by, bz,
+      radius, 0.0, 0.0, 0.0);
+    let nx = _surfNX, ny = _surfNY, nz = _surfNZ;
+    if (reversed) { nx = -nx; ny = -ny; nz = -nz; }
+    if (_ruledRowEmit(ruledQuadRowB, i, nx, ny, nz) == INVALID_ID) return -1;
+  }
+
+  let triCount: i32 = 0;
+  for (let i: i32 = 0; i < su; i++) {
+    const a0 = baseA + <u32>i;
+    const a1 = baseA + <u32>(i + 1);
+    const b0 = baseB + <u32>i;
+    const b1 = baseB + <u32>(i + 1);
+    if (_emitAnalyticTriOriented(a0, a1, b0, faceId, reversed,
+      1, ox, oy, oz, ax, ay, az, rx, ry, rz, bx, by, bz,
+      radius, 0.0, 0.0, 0.0) < 0) return -1;
+    if (_emitAnalyticTriOriented(b0, a1, b1, faceId, reversed,
+      1, ox, oy, oz, ax, ay, az, rx, ry, rz, bx, by, bz,
+      radius, 0.0, 0.0, 0.0) < 0) return -1;
+    triCount += 2;
+  }
+
+  return triCount;
 }
 
 // ─── Cone face tessellation ──────────────────────────────────────────

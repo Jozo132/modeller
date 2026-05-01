@@ -3800,13 +3800,15 @@ function _finalizePlaneCylinderArcFillet(geometry, newTopoBody, segments = 8) {
       validate: false,
       edgeSegments: Math.max(segments * 4, 32),
       surfaceSegments: Math.max(segments * 4, 32),
+      preferWasm: true,
+      requireWasm: true,
       incrementalCache: geometry && geometry._incrementalTessellationCache
         ? geometry._incrementalTessellationCache
         : null,
       dirtyFaceIds: geometry && !geometry.allFacesDirty && Array.isArray(geometry.invalidatedFaceIds)
         ? geometry.invalidatedFaceIds
         : null,
-      fallbackOnInvalidWasm: true,
+      fallbackOnInvalidWasm: false,
     });
   } catch (error) {
     _debugBRepFillet('plane-cylinder-arc-tessellate-failed', error?.message || String(error));
@@ -3837,6 +3839,7 @@ function _finalizePlaneCylinderArcFillet(geometry, newTopoBody, segments = 8) {
     visualEdges: edgeResult.visualEdges,
     topoBody: newTopoBody,
     brep: { faces: brepFaces },
+    _tessellator: mesh._tessellator || null,
     incrementalTessellation: mesh.incrementalTessellation || null,
     _incrementalTessellationCache: mesh._incrementalTessellationCache || null,
   };
@@ -4106,6 +4109,14 @@ function _fitRollingCenterToRadius(rail0, rail1, radius, referenceCenter) {
 
 function _repairRollingEndpointCenter(endpoint, referenceEndpoint, radius) {
   if (!endpoint || !referenceEndpoint || !_pointFinite(endpoint.p0) || !_pointFinite(endpoint.p1)) return;
+  if (_dist3(endpoint.p0, endpoint.p1) < 1e-10) {
+    const referenceCenter = referenceEndpoint.center;
+    if (_pointFinite(referenceCenter)) {
+      const direction = _vec3Normalize(_vec3Sub(referenceCenter, endpoint.p0));
+      if (_vec3Len(direction) > 1e-10) endpoint.center = _vec3Add(endpoint.p0, _vec3Scale(direction, radius));
+    }
+    return;
+  }
   const center = endpoint.center;
   const r0 = center && _pointFinite(center) ? _vec3Len(_vec3Sub(endpoint.p0, center)) : Infinity;
   const r1 = center && _pointFinite(center) ? _vec3Len(_vec3Sub(endpoint.p1, center)) : Infinity;
@@ -4113,6 +4124,65 @@ function _repairRollingEndpointCenter(endpoint, referenceEndpoint, radius) {
   if (Math.abs(r0 - radius) <= tolerance && Math.abs(r1 - radius) <= tolerance) return;
   const fitted = _fitRollingCenterToRadius(endpoint.p0, endpoint.p1, radius, referenceEndpoint.center);
   if (fitted) endpoint.center = fitted;
+}
+
+function _rollingEndpointChord(endpoint) {
+  if (!endpoint || !_pointFinite(endpoint.p0) || !_pointFinite(endpoint.p1)) return 0;
+  return _vec3Len(_vec3Sub(endpoint.p1, endpoint.p0));
+}
+
+function _expandRollingEndpointChord(endpoint, radius, targetChord) {
+  if (!endpoint || !_pointFinite(endpoint.p0) || !_pointFinite(endpoint.p1) || !_pointFinite(endpoint.center)) return false;
+  if (!Number.isFinite(radius) || radius <= 0 || !Number.isFinite(targetChord) || targetChord <= 0) return false;
+  const currentChord = _rollingEndpointChord(endpoint);
+  const clampedTarget = Math.min(targetChord, radius * 1.998);
+  if (currentChord >= clampedTarget * 0.985) return false;
+
+  const v0 = _vec3Sub(endpoint.p0, endpoint.center);
+  const v1 = _vec3Sub(endpoint.p1, endpoint.center);
+  const r0 = _vec3Len(v0);
+  const r1 = _vec3Len(v1);
+  if (r0 < radius * 0.25 || r1 < radius * 0.25) return false;
+  const u0 = _vec3Scale(v0, 1 / r0);
+  const u1 = _vec3Scale(v1, 1 / r1);
+  let midDir = _vec3Add(u0, u1);
+  if (_vec3Len(midDir) < 1e-10) return false;
+  midDir = _vec3Normalize(midDir);
+  let spreadDir = _vec3Sub(u1, u0);
+  spreadDir = _vec3Sub(spreadDir, _vec3Scale(midDir, _vec3Dot(spreadDir, midDir)));
+  if (_vec3Len(spreadDir) < 1e-10) return false;
+  spreadDir = _vec3Normalize(spreadDir);
+
+  const halfAngle = Math.asin(Math.max(0, Math.min(0.999, clampedTarget / (2 * radius))));
+  const midScale = Math.cos(halfAngle);
+  const spreadScale = Math.sin(halfAngle);
+  const next0 = _vec3Normalize(_vec3Sub(_vec3Scale(midDir, midScale), _vec3Scale(spreadDir, spreadScale)));
+  const next1 = _vec3Normalize(_vec3Add(_vec3Scale(midDir, midScale), _vec3Scale(spreadDir, spreadScale)));
+  const candidate0 = _vec3Add(endpoint.center, _vec3Scale(next0, radius));
+  const candidate1 = _vec3Add(endpoint.center, _vec3Scale(next1, radius));
+  const sameOrder = _dist3(candidate0, endpoint.p0) + _dist3(candidate1, endpoint.p1)
+    <= _dist3(candidate0, endpoint.p1) + _dist3(candidate1, endpoint.p0);
+  endpoint.p0 = sameOrder ? candidate0 : candidate1;
+  endpoint.p1 = sameOrder ? candidate1 : candidate0;
+  return true;
+}
+
+function _stabilizeRollingFilletSectionWidths(endpoints, sections, faces, radius) {
+  if (!Array.isArray(endpoints) || endpoints.length < 3 || !Array.isArray(sections)) return;
+  for (const section of sections) {
+    const face0 = faces && faces[section.face0];
+    const face1 = faces && faces[section.face1];
+    if (!face0?.isFillet || !face1?.isFillet) continue;
+    const start = Math.max(0, Math.min(endpoints.length - 1, section.startIndex | 0));
+    const end = Math.max(start + 1, Math.min(endpoints.length - 1, section.endIndex | 0));
+    const startChord = _rollingEndpointChord(endpoints[start]);
+    const endChord = _rollingEndpointChord(endpoints[end]);
+    const targetChord = Math.min(radius * 0.75, Math.max(startChord, endChord));
+    if (!Number.isFinite(targetChord) || targetChord <= radius * 0.5) continue;
+    for (let i = start + 1; i < end; i++) {
+      _expandRollingEndpointChord(endpoints[i], radius, targetChord);
+    }
+  }
 }
 
 function _orientedSegmentEndpoint(data, samples, sampleIndex, atEnd) {
@@ -4137,6 +4207,20 @@ function _setSegmentEndpointTrim(endpoint, p0, p1) {
   } else {
     endpoint.data.p0b = { ...p0 };
     endpoint.data.p1b = { ...p1 };
+  }
+}
+
+function _setSegmentEndpointArc(endpoint, arc) {
+  if (!endpoint || !endpoint.data || !Array.isArray(arc) || arc.length < 2) return;
+  const curve = _curveFromSampledPoints(arc);
+  if (endpoint.isEdgeA) {
+    endpoint.data.arcA = arc.map((point) => ({ ...point }));
+    endpoint.data._exactArcCurveA = curve;
+    endpoint.data._useArcCurveA = true;
+  } else {
+    endpoint.data.arcB = arc.map((point) => ({ ...point }));
+    endpoint.data._exactArcCurveB = curve;
+    endpoint.data._useArcCurveB = true;
   }
 }
 
@@ -4181,6 +4265,167 @@ function _projectRollingEndpointRailToPlanarOwners(endpoint, side, faces) {
     point = _projectPointToFeatureFacePlane(face, point);
   }
   return point;
+}
+
+function _edgeDirectionAwayFromPoint(edge, point, tol = 1e-5) {
+  if (!edge || !point) return null;
+  if (_dist3(edge.startVertex.point, point) <= tol) {
+    const dir = _vec3Normalize(_vec3Sub(edge.endVertex.point, point));
+    return _vec3Len(dir) > 1e-10 ? dir : null;
+  }
+  if (_dist3(edge.endVertex.point, point) <= tol) {
+    const dir = _vec3Normalize(_vec3Sub(edge.startVertex.point, point));
+    return _vec3Len(dir) > 1e-10 ? dir : null;
+  }
+  return null;
+}
+
+function _edgeHasFace(edge, face) {
+  if (!edge || !face) return false;
+  return (edge.coedges || []).some((coedge) => coedge.face === face);
+}
+
+function _capFaceDirectionSharedWithSupport(capFace, supportFace, vertexPoint) {
+  if (!capFace || !supportFace || !vertexPoint) return null;
+  for (const coedge of capFace.outerLoop?.coedges || []) {
+    const edge = coedge.edge;
+    if (!_edgeHasFace(edge, supportFace)) continue;
+    const dir = _edgeDirectionAwayFromPoint(edge, vertexPoint);
+    if (dir) return dir;
+  }
+  return null;
+}
+
+function _supportFilletRadius(face) {
+  const shared = face && face.shared;
+  if (!shared || !shared.isFillet) return null;
+  const radius = Number.isFinite(shared._exactRadius) ? shared._exactRadius : shared.radius;
+  return Number.isFinite(radius) && radius > 0 ? radius : null;
+}
+
+function _smallRollingBlendTerminatesAtExistingCorner(support0, support1, radius) {
+  const radius0 = _supportFilletRadius(support0);
+  const radius1 = _supportFilletRadius(support1);
+  if (!Number.isFinite(radius0) || !Number.isFinite(radius1)) return false;
+  const limitingRadius = Math.min(radius0, radius1);
+  return radius <= limitingRadius + Math.max(1e-6, limitingRadius * 1e-6);
+}
+
+function _rollingCornerTerminalCap(endpoint) {
+  const point = endpoint && endpoint.point;
+  if (!_pointFinite(point)) return null;
+  return {
+    p0: { ...point },
+    p1: { ...point },
+    arc: [{ ...point }, { ...point }],
+    pointTerminal: true,
+  };
+}
+
+function _pruneSingleUseDegenerateCoedges(topoBody, tolerance = 1e-9) {
+  if (!topoBody || typeof topoBody.faces !== 'function') return 0;
+  let removed = 0;
+  for (const face of topoBody.faces()) {
+    for (const loop of face.allLoops ? face.allLoops() : [face.outerLoop, ...(face.innerLoops || [])]) {
+      if (!loop || !Array.isArray(loop.coedges) || loop.coedges.length <= 3) continue;
+      const removeSet = new Set();
+      for (const coedge of loop.coedges) {
+        const edge = coedge && coedge.edge;
+        const isDegenerate = edge && _dist3(edge.startVertex.point, edge.endVertex.point) <= tolerance;
+        if (isDegenerate && (edge.coedges || []).length <= 1) {
+          removeSet.add(coedge);
+        }
+      }
+      if (removeSet.size === 0 || loop.coedges.length - removeSet.size < 3) continue;
+      loop.coedges = loop.coedges.filter((coedge) => !removeSet.has(coedge));
+      for (const coedge of removeSet) {
+        const edge = coedge.edge;
+        edge.coedges = (edge.coedges || []).filter((candidate) => candidate !== coedge);
+        coedge.loop = null;
+        coedge.face = null;
+        removed++;
+      }
+    }
+  }
+  return removed;
+}
+
+function _simplePlanarRollingTerminalCap(topoBody, faces, endpoint, radius, segments) {
+  const setter = endpoint?.setters?.[0];
+  const data = setter?.data;
+  if (!topoBody || !data || !endpoint?.point || !Number.isFinite(radius) || radius <= 0) return null;
+
+  let selectedEdge = findTopoEdgeByEndpoints(topoBody, data.edgeA, data.edgeB);
+  if (!selectedEdge && setter.topoEdgeId != null && typeof topoBody.edges === 'function') {
+    selectedEdge = [...topoBody.edges()].find((edge) => edge.id === setter.topoEdgeId) || null;
+  }
+  if (!selectedEdge) return null;
+  const topoFaceById = buildTopoFaceById(topoBody);
+  const support0 = faces?.[data.fi0]?.topoFaceId != null ? topoFaceById.get(faces[data.fi0].topoFaceId) : null;
+  const support1 = faces?.[data.fi1]?.topoFaceId != null ? topoFaceById.get(faces[data.fi1].topoFaceId) : null;
+  if (!support0 || !support1) return null;
+
+  if (_smallRollingBlendTerminatesAtExistingCorner(support0, support1, radius)) {
+    return _rollingCornerTerminalCap(endpoint);
+  }
+
+  const capFace = findTerminalCapFace(topoBody, selectedEdge, support0, support1, endpoint.point);
+  const capPlane = topoFacePlane(capFace);
+  if (!capFace || !capPlane) return null;
+
+  const dir0 = _capFaceDirectionSharedWithSupport(capFace, support0, endpoint.point);
+  const dir1 = _capFaceDirectionSharedWithSupport(capFace, support1, endpoint.point);
+  if (!dir0 || !dir1) return null;
+
+  const dot = Math.max(-1, Math.min(1, _vec3Dot(dir0, dir1)));
+  const theta = Math.acos(dot);
+  if (theta < 1e-5 || Math.abs(Math.PI - theta) < 1e-5) return null;
+
+  const tangentDist = radius / Math.tan(theta / 2);
+  if (!Number.isFinite(tangentDist) || tangentDist <= 1e-9) return null;
+  const p0 = _vec3Add(endpoint.point, _vec3Scale(dir0, tangentDist));
+  const p1 = _vec3Add(endpoint.point, _vec3Scale(dir1, tangentDist));
+  if (!pointInTopoFaceDomain(capFace, p0, 1e-4) || !pointInTopoFaceDomain(capFace, p1, 1e-4)) return null;
+
+  const bisector = _vec3Normalize(_vec3Add(dir0, dir1));
+  if (_vec3Len(bisector) < 1e-10) return null;
+  const capCenter = _vec3Add(endpoint.point, _vec3Scale(bisector, radius / Math.sin(theta / 2)));
+  const startVec = _vec3Normalize(_vec3Sub(p0, capCenter));
+  const endVec = _vec3Normalize(_vec3Sub(p1, capCenter));
+  if (_vec3Len(startVec) < 1e-10 || _vec3Len(endVec) < 1e-10) return null;
+
+  let capNormal = _vec3Normalize(capPlane.n);
+  if (_vec3Len(capNormal) < 1e-10) return null;
+  let yAxis = _vec3Normalize(_vec3Cross(capNormal, startVec));
+  if (_vec3Len(yAxis) < 1e-10) {
+    capNormal = _vec3Scale(capNormal, -1);
+    yAxis = _vec3Normalize(_vec3Cross(capNormal, startVec));
+  }
+  if (_vec3Len(yAxis) < 1e-10) return null;
+
+  let sweep = Math.atan2(_vec3Dot(endVec, yAxis), _vec3Dot(endVec, startVec));
+  const midVec = _vec3Normalize(_vec3Add(
+    _vec3Scale(startVec, Math.cos(sweep * 0.5)),
+    _vec3Scale(yAxis, Math.sin(sweep * 0.5)),
+  ));
+  const cornerVec = _vec3Normalize(_vec3Sub(endpoint.point, capCenter));
+  if (_vec3Len(cornerVec) > 1e-10 && _vec3Dot(midVec, cornerVec) < 0) {
+    sweep = sweep >= 0 ? sweep - 2 * Math.PI : sweep + 2 * Math.PI;
+  }
+  if (!Number.isFinite(sweep) || Math.abs(sweep) < 1e-6 || Math.abs(sweep) > Math.PI + 1e-4) return null;
+
+  let arc;
+  try {
+    arc = NurbsCurve.createArc(capCenter, radius, startVec, yAxis, 0, sweep)
+      .tessellate(Math.max(2, segments | 0))
+      .map((point) => ({ x: point.x, y: point.y, z: point.z }));
+  } catch (_error) {
+    return null;
+  }
+  if (!Array.isArray(arc) || arc.length < 2) return null;
+  arc[0] = { ...p0 };
+  arc[arc.length - 1] = { ...p1 };
+  return { p0, p1, arc };
 }
 
 function _findSampleSegmentIndexForData(data, samples) {
@@ -4311,10 +4556,13 @@ function _orientRollingSourceSides(indexed) {
   }
 }
 
-function _mergeRollingTopoEdgeFilletData(edgeDataList, rollingSelection, faces) {
+function _mergeRollingTopoEdgeFilletData(edgeDataList, rollingSelection, faces, topoBody = null) {
   if (!rollingSelection || !Array.isArray(edgeDataList) || edgeDataList.length < 2) return edgeDataList;
   const samples = rollingSelection.samples;
   if (!Array.isArray(samples) || samples.length < 3) return edgeDataList;
+  const segmentRefs = Array.isArray(rollingSelection.segmentRefs) && rollingSelection.segmentRefs.length === samples.length - 1
+    ? rollingSelection.segmentRefs
+    : [];
 
   const indexed = [];
   const seenIndices = new Set();
@@ -4366,6 +4614,7 @@ function _mergeRollingTopoEdgeFilletData(edgeDataList, rollingSelection, faces) 
   const last = indexed[indexed.length - 1].data;
   const endpoints = [];
   const firstStart = _orientedSegmentEndpoint(indexed[0].data, samples, indexed[0].index, false);
+  firstStart.topoEdgeId = segmentRefs[indexed[0].index]?.topoEdgeId ?? null;
   endpoints.push({
     point: firstStart.point,
     p0: { ...firstStart.p0 },
@@ -4378,6 +4627,8 @@ function _mergeRollingTopoEdgeFilletData(edgeDataList, rollingSelection, faces) 
   for (let i = 0; i < indexed.length - 1; i++) {
     const prevEnd = _orientedSegmentEndpoint(indexed[i].data, samples, indexed[i].index, true);
     const nextStart = _orientedSegmentEndpoint(indexed[i + 1].data, samples, indexed[i + 1].index, false);
+    prevEnd.topoEdgeId = segmentRefs[indexed[i].index]?.topoEdgeId ?? null;
+    nextStart.topoEdgeId = segmentRefs[indexed[i + 1].index]?.topoEdgeId ?? null;
     const p0 = _averagePoints([prevEnd.p0, nextStart.p0]);
     const p1 = _averagePoints([prevEnd.p1, nextStart.p1]);
     const center = _averagePoints([
@@ -4399,6 +4650,7 @@ function _mergeRollingTopoEdgeFilletData(edgeDataList, rollingSelection, faces) 
   }
 
   const lastEnd = _orientedSegmentEndpoint(indexed[indexed.length - 1].data, samples, indexed[indexed.length - 1].index, true);
+  lastEnd.topoEdgeId = segmentRefs[indexed[indexed.length - 1].index]?.topoEdgeId ?? null;
   endpoints.push({
     point: lastEnd.point,
     p0: { ...lastEnd.p0 },
@@ -4415,6 +4667,21 @@ function _mergeRollingTopoEdgeFilletData(edgeDataList, rollingSelection, faces) 
     if (projectedP1) endpoint.p1 = { ...projectedP1 };
   }
 
+  const capSegments = Math.max(2, (firstStart.arc?.length || lastEnd.arc?.length || 9) - 1);
+  const startCap = _simplePlanarRollingTerminalCap(topoBody, faces, endpoints[0], first.radius, capSegments);
+  if (startCap) {
+    endpoints[0].p0 = { ...startCap.p0 };
+    endpoints[0].p1 = { ...startCap.p1 };
+    endpoints[0].arc = startCap.arc.map((point) => ({ ...point }));
+  }
+  const terminalIndex = endpoints.length - 1;
+  const endCap = _simplePlanarRollingTerminalCap(topoBody, faces, endpoints[terminalIndex], first.radius, capSegments);
+  if (endCap) {
+    endpoints[terminalIndex].p0 = { ...endCap.p0 };
+    endpoints[terminalIndex].p1 = { ...endCap.p1 };
+    endpoints[terminalIndex].arc = endCap.arc.map((point) => ({ ...point }));
+  }
+
   if (endpoints.length >= 2) {
     for (let i = 0; i < endpoints.length; i++) {
       const references = [];
@@ -4425,6 +4692,9 @@ function _mergeRollingTopoEdgeFilletData(edgeDataList, rollingSelection, faces) 
     }
   }
 
+  const rollingSections = _buildRollingPrimitiveSections(indexed, rollingSelection, endpoints);
+  _stabilizeRollingFilletSectionWidths(endpoints, rollingSections, faces, first.radius);
+
   for (const endpoint of endpoints) {
     if (!endpoint.center) {
       _debugBRepFillet('rolling-merge-failed', { reason: 'terminal-center' });
@@ -4432,10 +4702,12 @@ function _mergeRollingTopoEdgeFilletData(edgeDataList, rollingSelection, faces) 
     }
     for (const setter of endpoint.setters) {
       _setSegmentEndpointTrim(setter, endpoint.p0, endpoint.p1);
+      if (endpoint.arc && !endpoint.pointTerminal) _setSegmentEndpointArc(setter, endpoint.arc);
     }
   }
 
-  const rollingSections = _buildRollingPrimitiveSections(indexed, rollingSelection, endpoints);
+  const startArc = endpoints[0].arc || firstStart.arc;
+  const endArc = endpoints[endpoints.length - 1].arc || lastEnd.arc;
 
   const merged = {
     ...first,
@@ -4446,10 +4718,10 @@ function _mergeRollingTopoEdgeFilletData(edgeDataList, rollingSelection, faces) 
     p1a: { ...endpoints[0].p1 },
     p0b: { ...endpoints[endpoints.length - 1].p0 },
     p1b: { ...endpoints[endpoints.length - 1].p1 },
-    arcA: firstStart.arc,
-    arcB: lastEnd.arc,
-    _exactArcCurveA: _curveFromSampledPoints(firstStart.arc),
-    _exactArcCurveB: _curveFromSampledPoints(lastEnd.arc),
+    arcA: startArc,
+    arcB: endArc,
+    _exactArcCurveA: _curveFromSampledPoints(startArc),
+    _exactArcCurveB: _curveFromSampledPoints(endArc),
     _rollingRail0: endpoints.map((endpoint) => ({ ...endpoint.p0 })),
     _rollingRail1: endpoints.map((endpoint) => ({ ...endpoint.p1 })),
     _rollingCenters: endpoints.map((endpoint) => ({ ...endpoint.center })),
@@ -4536,9 +4808,6 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
         disableTrimClipA: keyIndex > 0,
         disableTrimClipB: keyIndex < uniqueKeys.length - 1,
         edgeDirOverride,
-        // Rolling tangent chains keep the exact circular cross-section. Projecting
-        // every intermediate trim to owner surfaces can stretch the two rails
-        // beyond a constant-radius ball on prior fillet/NURBS faces.
         projectTrimsToFaces: false,
       }
       : null;
@@ -4556,7 +4825,7 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
     seenExactEdges.add(exactKey);
     edgeDataList.push(data);
   }
-  edgeDataList = _mergeRollingTopoEdgeFilletData(edgeDataList, rollingSelection, faces);
+  edgeDataList = _mergeRollingTopoEdgeFilletData(edgeDataList, rollingSelection, faces, topoBody);
   if (edgeDataList.length === 0) {
     _debugBRepFillet('no-precomputed-edges', { edgeKeys: uniqueKeys.length });
     return null;
@@ -4989,6 +5258,8 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
     _debugBRepFillet('build-topobody-failed');
     return null;
   }
+  const prunedDegenerateCoedges = _pruneSingleUseDegenerateCoedges(newTopoBody);
+  if (prunedDegenerateCoedges > 0) _debugBRepFillet('pruned-degenerate-coedges', { prunedDegenerateCoedges });
 
   const topoBoundaryEdges = countTopoBodyBoundaryEdges(newTopoBody);
   _debugBRepFillet('after-topo-boundary-check', { topoBoundaryEdges });
@@ -5010,14 +5281,21 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
     const inputDirty = geometry && !geometry.allFacesDirty && Array.isArray(geometry.invalidatedFaceIds) && geometry.invalidatedFaceIds.length > 0
       ? geometry.invalidatedFaceIds
       : null;
+    const requireWasmTessellation = edgeDataList.some((edgeData) => edgeData && Array.isArray(edgeData._rollingRail0));
+    const stableEdgeSegments = Math.max(segments, 32);
+    const stableSurfaceSegments = Math.max(Math.ceil(segments / 2), 16);
     _debugBRepFillet('before-tessellate', { faces: newTopoBody.faces().length });
     mesh = tessellateBody(newTopoBody, {
       validate: false,
+      edgeSegments: stableEdgeSegments,
+      surfaceSegments: stableSurfaceSegments,
+      preferWasm: true,
+      requireWasm: requireWasmTessellation,
       incrementalCache: geometry && geometry._incrementalTessellationCache
         ? geometry._incrementalTessellationCache
         : null,
       dirtyFaceIds: inputDirty,
-      fallbackOnInvalidWasm: true,
+      fallbackOnInvalidWasm: !requireWasmTessellation,
     });
     _debugBRepFillet('after-tessellate', { triangles: mesh?.faces?.length || 0 });
   } catch (error) {
@@ -5098,6 +5376,7 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
     visualEdges: edgeResult.visualEdges,
     topoBody: newTopoBody,
     brep,
+    _tessellator: mesh._tessellator || null,
     incrementalTessellation: mesh.incrementalTessellation || null,
     _incrementalTessellationCache: mesh._incrementalTessellationCache || null,
   };

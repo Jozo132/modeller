@@ -278,17 +278,11 @@ export class WasmRenderer {
     // Callback for camera change events (used by interaction recorder)
     this.onCameraInteraction = null; // (type: 'orbit_start'|'pan_start'|'orbit_end'|'zoom', state) => void
 
-    // H14/H15: dynamic level-of-detail dispatch for 3D mode. The LodManager
-    // watches orbit radius each frame and fires `onRetessellate(segsU, segsV)`
-    // when the band changes. The retessellation callback is opt-in — consumers
-    // (PartManager / main.js) wire it via `onLodChange(cb)` so this renderer
-    // can be constructed without a live feature tree in unit tests.
+    // Static tessellation density: camera movement must not retessellate or
+    // mutate meshes. The quality dropdown owns the selected segment counts.
+    // Keep a LodManager instance for API compatibility, but do not drive it
+    // from the render loop.
     this._lodManager = new LodManager();
-    this._lodManager.onRetessellate = (segsU, segsV) => {
-      if (typeof this.onLodChangeCallback === 'function') {
-        try { this.onLodChangeCallback(segsU, segsV); } catch (_) { /* swallow */ }
-      }
-    };
     this.onLodChangeCallback = null;
 
     // H14/H15: optional WebGPU/WebGL2-backed tessellation pipeline. Created
@@ -397,13 +391,6 @@ export class WasmRenderer {
       this._orbitDirty = false;
     }
 
-    // H14/H15: LoD dispatch in 3D mode. update() returns true when the band
-    // changes, which fires onRetessellate via the pipe set up in the
-    // constructor. No-op when no consumer subscribed via onLodChange.
-    if (this.mode === '3d') {
-      this._lodManager.update(this._orbitRadius);
-    }
-
     wasm.render();
     const ptr = wasm.getCommandBufferPtr();
     const len = wasm.getCommandBufferLen();
@@ -424,7 +411,7 @@ export class WasmRenderer {
   }
 
   // -----------------------------------------------------------------------
-  // H14/H15: public API for GPU tessellation pipeline + LoD dispatch
+  // Public API for GPU tessellation pipeline and legacy LoD access.
   // -----------------------------------------------------------------------
 
   /**
@@ -453,9 +440,8 @@ export class WasmRenderer {
   }
 
   /**
-   * Subscribe to LoD band changes. The callback receives the new
-   * tessellation density as (segsU, segsV). Consumers are responsible for
-   * triggering the actual re-tessellation of the active feature tree.
+  * Legacy no-op. Tessellation density is static at the user's selected
+  * quality preset; camera-distance LoD retessellation is disabled.
    *
    * Passing null removes the subscription.
    *

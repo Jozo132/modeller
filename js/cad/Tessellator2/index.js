@@ -401,6 +401,175 @@ function _tessellateRollingFilletFace(face, edgeSampler, edgeSegs, surfSegs) {
   return { vertices, faces: meshFaces };
 }
 
+function _tessellateExactFilletCylinderFace(face, edgeSampler, edgeSegs) {
+  const shared = face?.shared;
+  if (!shared?.isFillet || shared.isRollingFillet) return null;
+  if (!shared._exactAxisStart || !shared._exactAxisEnd || !Number.isFinite(shared._exactRadius)) return null;
+  if ((face.innerLoops?.length || 0) !== 0) return null;
+  const coedges = face.outerLoop?.coedges || [];
+  if (coedges.length !== 4 || face.surfaceType === 'plane') return null;
+
+  const surface = face.surface;
+  if (!surface || surface.degreeU !== 1 || surface.degreeV !== 2 || surface.numRowsU !== 2 || surface.numColsV < 3) {
+    return null;
+  }
+
+  const axisStart = shared._exactAxisStart;
+  const axisEnd = shared._exactAxisEnd;
+  const axisVector = {
+    x: axisEnd.x - axisStart.x,
+    y: axisEnd.y - axisStart.y,
+    z: axisEnd.z - axisStart.z,
+  };
+  const axisLength = Math.hypot(axisVector.x, axisVector.y, axisVector.z);
+  if (axisLength < 1e-9) return null;
+  const axisDir = {
+    x: axisVector.x / axisLength,
+    y: axisVector.y / axisLength,
+    z: axisVector.z / axisLength,
+  };
+
+  const entries = coedges.map((coedge, index) => {
+    const samples = edgeSampler.sampleCoEdge(coedge, edgeSegs).map((point) => ({ ...point }));
+    if (samples.length < 2) return null;
+    const start = samples[0];
+    const end = samples[samples.length - 1];
+    const axialSpan = Math.abs(_axisCoordinate(end, axisStart, axisDir) - _axisCoordinate(start, axisStart, axisDir));
+    return { index, samples, axialSpan, length: _polylineLength3(samples) };
+  });
+  if (entries.some((entry) => !entry)) return null;
+
+  const sortedByAxialSpan = [...entries].sort((a, b) => a.axialSpan - b.axialSpan || a.length - b.length);
+  const capIndices = new Set(sortedByAxialSpan.slice(0, 2).map((entry) => entry.index));
+  let capStartIndex = -1;
+  for (const index of capIndices) {
+    if (capIndices.has((index + 2) % 4)) {
+      capStartIndex = index;
+      break;
+    }
+  }
+  if (capStartIndex < 0) return null;
+
+  const capStart = entries[capStartIndex];
+  const railRight = entries[(capStartIndex + 1) % 4];
+  const capEnd = entries[(capStartIndex + 2) % 4];
+  const railLeftBackward = entries[(capStartIndex + 3) % 4];
+  if (!capStart || !railRight || !capEnd || !railLeftBackward) return null;
+
+  const capRow0 = capStart.samples;
+  const capRowN = [...capEnd.samples].reverse();
+  const railLeft = [...railLeftBackward.samples].reverse();
+  const railRightSamples = railRight.samples;
+  if (capRow0.length !== capRowN.length || capRow0.length < 2) return null;
+  if (railLeft.length !== railRightSamples.length || railLeft.length < 2) return null;
+
+  const rowCount = railLeft.length;
+  const columnCount = capRow0.length;
+  const columnFractions = Array.from({ length: columnCount }, (_, index) => (
+    columnCount === 1 ? 0 : index / (columnCount - 1)
+  ));
+  const rows = [];
+  for (let rowIndex = 0; rowIndex < rowCount; rowIndex++) {
+    if (rowIndex === 0) {
+      rows.push(capRow0.map((point) => ({ ...point })));
+      continue;
+    }
+    if (rowIndex === rowCount - 1) {
+      rows.push(capRowN.map((point) => ({ ...point })));
+      continue;
+    }
+
+    const left = railLeft[rowIndex];
+    const right = railRightSamples[rowIndex];
+    const center = _filletCylinderCenterAtRails(axisStart, axisDir, left, right);
+    rows.push(columnFractions.map((fraction) => (
+      _sampleCylinderArcBetweenRails(left, right, center, shared._exactRadius, fraction)
+    )));
+  }
+
+  const vertices = rows.flat().map((point) => ({ ...point }));
+  const faces = [];
+  const pushTriangle = (a, b, c) => {
+    const oriented = _orientTriangleToFace(face, a, b, c);
+    if (_triangleArea3(oriented[0], oriented[1], oriented[2]) < 1e-12) return;
+    const centroid = {
+      x: (oriented[0].x + oriented[1].x + oriented[2].x) / 3,
+      y: (oriented[0].y + oriented[1].y + oriented[2].y) / 3,
+      z: (oriented[0].z + oriented[1].z + oriented[2].z) / 3,
+    };
+    faces.push({
+      vertices: oriented.map((point) => ({ ...point })),
+      normal: _faceOutwardNormal(face, centroid),
+      vertexNormals: oriented.map((point) => _faceOutwardNormal(face, point)),
+    });
+  };
+
+  for (let rowIndex = 0; rowIndex < rowCount - 1; rowIndex++) {
+    const rowA = rows[rowIndex];
+    const rowB = rows[rowIndex + 1];
+    for (let columnIndex = 0; columnIndex < columnCount - 1; columnIndex++) {
+      const p00 = rowA[columnIndex];
+      const p01 = rowA[columnIndex + 1];
+      const p10 = rowB[columnIndex];
+      const p11 = rowB[columnIndex + 1];
+      pushTriangle(p00, p10, p11);
+      pushTriangle(p00, p11, p01);
+    }
+  }
+
+  return faces.length > 0 ? { vertices, faces } : null;
+}
+
+function _axisCoordinate(point, axisStart, axisDir) {
+  return (point.x - axisStart.x) * axisDir.x
+    + (point.y - axisStart.y) * axisDir.y
+    + (point.z - axisStart.z) * axisDir.z;
+}
+
+function _filletCylinderCenterAtRails(axisStart, axisDir, left, right) {
+  const t = (_axisCoordinate(left, axisStart, axisDir) + _axisCoordinate(right, axisStart, axisDir)) * 0.5;
+  return {
+    x: axisStart.x + axisDir.x * t,
+    y: axisStart.y + axisDir.y * t,
+    z: axisStart.z + axisDir.z * t,
+  };
+}
+
+function _sampleCylinderArcBetweenRails(left, right, center, radius, fraction) {
+  if (fraction <= 1e-12) return { ...left };
+  if (1 - fraction <= 1e-12) return { ...right };
+  const va = _normalize({ x: left.x - center.x, y: left.y - center.y, z: left.z - center.z });
+  const vb = _normalize({ x: right.x - center.x, y: right.y - center.y, z: right.z - center.z });
+  const dot = Math.max(-1, Math.min(1, va.x * vb.x + va.y * vb.y + va.z * vb.z));
+  const angle = Math.acos(dot);
+  if (angle <= 1e-8 || angle >= Math.PI - 1e-8) {
+    return {
+      x: left.x + (right.x - left.x) * fraction,
+      y: left.y + (right.y - left.y) * fraction,
+      z: left.z + (right.z - left.z) * fraction,
+    };
+  }
+  const sinAngle = Math.sin(angle);
+  const wa = Math.sin((1 - fraction) * angle) / sinAngle;
+  const wb = Math.sin(fraction * angle) / sinAngle;
+  const dir = _normalize({
+    x: va.x * wa + vb.x * wb,
+    y: va.y * wa + vb.y * wb,
+    z: va.z * wa + vb.z * wb,
+  });
+  return {
+    x: center.x + dir.x * radius,
+    y: center.y + dir.y * radius,
+    z: center.z + dir.z * radius,
+  };
+}
+
+function _polylineLength3(points) {
+  let length = 0;
+  for (let i = 1; i < points.length; i++) length += _dist3(points[i - 1], points[i]);
+  return length;
+}
+
 function _repairClosedMeshWinding(faces) {
   if (!Array.isArray(faces) || faces.length === 0) return faces;
   const edgeMap = new Map();
@@ -537,6 +706,9 @@ function _triangulateFace(face, edgeSampler, triangulator, surfSegs, edgeSegs) {
 
   const ruledQuadMesh = _tessellateAnalyticRuledQuadFace(face, edgeSampler, edgeSegs);
   if (ruledQuadMesh) return ruledQuadMesh;
+
+  const exactFilletCylinderMesh = _tessellateExactFilletCylinderFace(face, edgeSampler, edgeSegs);
+  if (exactFilletCylinderMesh) return exactFilletCylinderMesh;
 
   const periodicStripMesh = _tessellatePeriodicStripFace(face, edgeSampler, edgeSegs, surfSegs);
   if (periodicStripMesh) return periodicStripMesh;
