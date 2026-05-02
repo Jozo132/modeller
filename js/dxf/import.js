@@ -62,6 +62,7 @@ function extractEntities(pairs) {
     if (pair.code === 2 && pair.value === 'ENTITIES') { inEntities = true; continue; }
     if (pair.code === 0 && pair.value === 'ENDSEC' && inEntities) { 
       if (current) entities.push(current);
+      current = null;
       inEntities = false; 
       continue; 
     }
@@ -105,6 +106,7 @@ function extractLayers(pairs) {
     if (pair.code === 2 && pair.value === 'LAYER') { inLayerTable = true; continue; }
     if (pair.code === 0 && pair.value === 'ENDTAB') { 
       if (current) layers.push(current);
+      current = null;
       inLayerTable = false; 
       continue; 
     }

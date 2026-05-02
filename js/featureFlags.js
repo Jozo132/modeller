@@ -60,6 +60,12 @@ const FLAG_DEFS = [
     description: 'Use the Tessellator2 robust tessellation pipeline.',
   },
   {
+    name: 'CAD_REQUIRE_WASM_TESSELLATION',
+    type: 'boolean',
+    defaultValue: false,
+    description: 'Disallow JS tessellation fallbacks and require the native WASM tessellator.',
+  },
+  {
     name: 'CAD_ALLOW_DISCRETE_FALLBACK',
     type: 'boolean',
     defaultValue: false,

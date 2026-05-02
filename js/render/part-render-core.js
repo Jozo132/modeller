@@ -347,6 +347,7 @@ export function buildMeshRenderData(geometry) {
   const meshFaces = faces.map((face, idx) => ({
     index: idx,
     faceGroup: face.faceGroup != null ? face.faceGroup : idx,
+    topoFaceId: face.topoFaceId != null ? face.topoFaceId : null,
     faceType: face.faceType || 'unknown',
     isCurved: !!face.isCurved,
     isInverted: isInvertedFace(face),

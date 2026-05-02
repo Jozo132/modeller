@@ -1,5 +1,6 @@
 // js/svg/export.js — Export sketch geometry as SVG with native bezier/spline support
 import { state } from '../state.js';
+import { NurbsCurve } from '../cad/NurbsCurve.js';
 import { info, debug } from '../logger.js';
 
 /**
@@ -60,13 +61,8 @@ export function exportSVG() {
         break;
       }
       case 'spline': {
-        // Export B-spline by tessellating to polyline (SVG has no native B-spline)
-        const pts = ent.tessellate2D(64);
-        if (pts.length < 2) break;
-        let d = `M ${pts[0].x} ${-pts[0].y}`;
-        for (let i = 1; i < pts.length; i++) {
-          d += ` L ${pts[i].x} ${-pts[i].y}`;
-        }
+        const d = splineToSvgPathData(ent);
+        if (!d) throw new Error('SVG export requires exact spline decomposition');
         paths.push(`<path d="${d}" stroke="black" stroke-width="0.5" fill="none"/>`);
         break;
       }
@@ -133,4 +129,70 @@ export function downloadSVG(filename = 'sketch.svg') {
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
   info('SVG file downloaded', { filename });
+}
+
+function splineToSvgPathData(entity) {
+  if (!entity || typeof entity._knotVector !== 'function' || !Array.isArray(entity.points) || entity.points.length < 2) {
+    return '';
+  }
+  const { knots, degree } = entity._knotVector();
+  const curve = new NurbsCurve(
+    degree,
+    entity.points.map((point) => ({ x: point.x, y: point.y, z: 0 })),
+    knots,
+  );
+  const spans = decomposeToBezierSpans(curve);
+  if (spans.length === 0) return '';
+  const firstPoint = spans[0].controlPoints?.[0];
+  if (!firstPoint) return '';
+
+  let d = `M ${firstPoint.x} ${-firstPoint.y}`;
+  for (const span of spans) {
+    if (span.weights?.some((weight) => Math.abs((weight ?? 1) - 1) > 1e-9)) {
+      return '';
+    }
+    const cps = span.controlPoints || [];
+    if (span.degree === 1 && cps.length === 2) {
+      d += ` L ${cps[1].x} ${-cps[1].y}`;
+    } else if (span.degree === 2 && cps.length === 3) {
+      d += ` Q ${cps[1].x} ${-cps[1].y} ${cps[2].x} ${-cps[2].y}`;
+    } else if (span.degree === 3 && cps.length === 4) {
+      d += ` C ${cps[1].x} ${-cps[1].y} ${cps[2].x} ${-cps[2].y} ${cps[3].x} ${-cps[3].y}`;
+    } else {
+      return '';
+    }
+  }
+  return d;
+}
+
+function decomposeToBezierSpans(curve) {
+  const splitKnots = uniqueInteriorKnots(curve);
+  let spans = [curve.clone()];
+  for (const knot of splitKnots) {
+    const nextSpans = [];
+    for (const span of spans) {
+      if (knot <= span.uMin + 1e-9 || knot >= span.uMax - 1e-9) {
+        nextSpans.push(span);
+        continue;
+      }
+      const split = span.splitAt(knot);
+      if (!split) {
+        nextSpans.push(span);
+        continue;
+      }
+      nextSpans.push(split[0], split[1]);
+    }
+    spans = nextSpans;
+  }
+  return spans;
+}
+
+function uniqueInteriorKnots(curve) {
+  const knots = [];
+  for (let i = curve.degree + 1; i < curve.controlPoints.length; i++) {
+    const knot = curve.knots[i];
+    if (knot <= curve.uMin + 1e-9 || knot >= curve.uMax - 1e-9) continue;
+    if (knots.length === 0 || Math.abs(knots[knots.length - 1] - knot) > 1e-9) knots.push(knot);
+  }
+  return knots;
 }

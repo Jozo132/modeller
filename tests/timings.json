@@ -56,6 +56,8 @@
     "test-native-extrude.js": 0.534,
     "test-ssx-nurbs-refine.js": 0.533,
     "test-step-topology-wasm.js": 0.53,
+    "test-wasm-tessellation-policy.js": 0.524,
+    "test-dxf-svg-export.js": 0.507,
     "test-wasm-tessellation.js": 0.494,
     "test-intersections-wasm-cylinder-cylinder.js": 0.488,
     "test-classify-point-triangles.js": 0.487,

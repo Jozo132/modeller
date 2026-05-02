@@ -11,6 +11,7 @@
 import { robustTessellateBody } from './Tessellator2/index.js';
 import { tessellateBodyWasm, ensureWasmReady } from './StepImportWasm.js';
 import { globalTessConfig } from './TessellationConfig.js';
+import { getFlag } from '../featureFlags.js';
 
 // Fire-and-forget WASM init so that tessellateBodyWasm() works synchronously
 // by the time tessellateBody() is first called.  Safe to call multiple times.
@@ -586,7 +587,9 @@ export function tessellateBody(body, opts = {}) {
   // MeshValidator would dominate runtime. Default is true so callers that
   // just want "a mesh" still get a sanity check.
   const validate = opts.validate !== false;
-  const requireWasm = opts.requireWasm === true || opts.throwOnJsFallback === true;
+  const requireWasm = opts.requireWasm === true
+    || opts.throwOnJsFallback === true
+    || getFlag('CAD_REQUIRE_WASM_TESSELLATION') === true;
 
   if (opts.incrementalCache && !requireWasm && opts.preferWasm !== true) {
     const incrementalResult = robustTessellateBody(body, { ...opts, validate });

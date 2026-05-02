@@ -5,9 +5,10 @@ import { projectFacesToEdges, exportFacesDXF } from '../dxf/export.js';
  * On Export, opens a full-screen 2D preview with zoom/pan, Download & Exit.
  */
 export class DxfExportPanel {
-  constructor({ getSelectedFaces, getRenderer, onExit, setStatus, buildSelectionList }) {
+  constructor({ getSelectedFaces, getRenderer, getExactTopoBody, onExit, setStatus, buildSelectionList }) {
     this._getSelectedFaces = getSelectedFaces;
     this._getRenderer = getRenderer;
+    this._getExactTopoBody = getExactTopoBody;
     this._onExit = onExit;
     this._setStatus = setStatus;
     this._buildSelectionList = buildSelectionList;
@@ -91,14 +92,18 @@ export class DxfExportPanel {
       return;
     }
 
-    const proj = projectFacesToEdges(faces);
-    this._cachedProjection = proj ? { ...proj, faces } : null;
+    const topoBody = this._getExactTopoBody?.() || null;
+    const proj = projectFacesToEdges(faces, undefined, { topoBody });
+    this._cachedProjection = proj ? { ...proj, faces, topoBody } : null;
 
     if (proj) {
-      this._statsEl.textContent = `${proj.edges.length} edges · ${proj.bounds.width.toFixed(2)} × ${proj.bounds.height.toFixed(2)}`;
+      const curveCount = proj.curves ? proj.curves.length : proj.edges.length;
+      this._statsEl.textContent = `${curveCount} curves · ${proj.bounds.width.toFixed(2)} × ${proj.bounds.height.toFixed(2)}`;
       this._drawMiniPreview(proj);
     } else {
-      this._statsEl.textContent = 'Projection failed';
+      this._statsEl.textContent = topoBody
+        ? 'Exact boundary projection failed'
+        : 'Exact B-Rep topology required for face DXF export';
       this._clearPreview();
     }
   }
@@ -177,6 +182,7 @@ export class DxfExportPanel {
     }
 
     const { edges, bounds, faces } = this._cachedProjection;
+    const curveCount = this._cachedProjection.curves ? this._cachedProjection.curves.length : edges.length;
 
     // Build overlay DOM
     const overlay = document.createElement('div');
@@ -193,7 +199,7 @@ export class DxfExportPanel {
 
     const titleSpan = document.createElement('span');
     titleSpan.className = 'dxf-preview-title';
-    titleSpan.textContent = `DXF Preview — ${edges.length} edges`;
+    titleSpan.textContent = `DXF Preview — ${curveCount} curves`;
 
     const dlBtn = document.createElement('button');
     dlBtn.className = 'dxf-preview-btn download';
@@ -373,7 +379,8 @@ export class DxfExportPanel {
   }
 
   _downloadDXF(faces) {
-    const content = exportFacesDXF(faces);
+    const topoBody = this._getExactTopoBody?.() || null;
+    const content = exportFacesDXF(faces, undefined, { topoBody });
     if (!content) { this._setStatus?.('Export produced empty output'); return; }
     const blob = new Blob([content], { type: 'application/dxf' });
     const url = URL.createObjectURL(blob);

@@ -1,5 +1,6 @@
 // js/dxf/export.js — DXF R12/R2000 writer
 import { state } from '../state.js';
+import { NurbsCurve } from '../cad/NurbsCurve.js';
 import { info, debug, error } from '../logger.js';
 
 /**
@@ -127,37 +128,21 @@ function writeEntity(w, entity) {
     }
 
     case 'spline': {
-      // DXF SPLINE entity: export as cubic B-spline with clamped uniform knots
       const pts = entity.points;
-      if (!pts || pts.length < 2) break;
-      const n = pts.length;
-      const degree = Math.min(3, n - 1);
-      const knotCount = n + degree + 1;
-      w(0, 'SPLINE');
-      w(8, entity.layer);
-      if (entity.color) w(62, colorToAci(entity.color));
-      w(70, 8);      // flag: planar
-      w(71, degree);  // degree
-      w(72, knotCount); // number of knots
-      w(73, n);       // number of control points
-      // Knot vector (clamped uniform)
-      for (let i = 0; i < knotCount; i++) {
-        let kv;
-        if (i <= degree) kv = 0;
-        else if (i >= knotCount - degree - 1) kv = 1;
-        else kv = (i - degree) / (n - degree);
-        w(40, kv);
-      }
-      // Control points
-      for (const cp of pts) {
-        w(10, cp.x); w(20, cp.y); w(30, 0);
-      }
+      if (!pts || pts.length < 2 || typeof entity._knotVector !== 'function') break;
+      const { knots, degree } = entity._knotVector();
+      writeDxfSpline(w, {
+        degree,
+        knots,
+        controlPoints: pts.map((cp) => ({ x: cp.x, y: cp.y, z: 0 })),
+        weights: pts.map(() => 1),
+      }, entity.layer, entity.color);
       break;
     }
 
     case 'bezier': {
-      // DXF doesn't have a native bezier entity; export each segment as a SPLINE
-      // by converting bezier control points into cubic SPLINE control points.
+      // DXF doesn't have a native bezier entity; export each span as an exact
+      // clamped SPLINE rather than collapsing quadratic spans to lines.
       for (let si = 0; si < entity.segmentCount; si++) {
         const v0 = entity.vertices[si];
         const v1 = entity.vertices[si + 1];
@@ -165,22 +150,33 @@ function writeEntity(w, entity) {
         const ho = v0.handleOut;
         const hi = v1.handleIn;
         if (ho && hi) {
-          // Full cubic: 4 control points
           const c1x = p0.x + ho.dx, c1y = p0.y + ho.dy;
           const c2x = p3.x + hi.dx, c2y = p3.y + hi.dy;
-          w(0, 'SPLINE');
-          w(8, entity.layer);
-          if (entity.color) w(62, colorToAci(entity.color));
-          w(70, 8); w(71, 3); w(72, 8); w(73, 4);
-          // Bezier knot vector: [0,0,0,0,1,1,1,1]
-          w(40, 0); w(40, 0); w(40, 0); w(40, 0);
-          w(40, 1); w(40, 1); w(40, 1); w(40, 1);
-          w(10, p0.x); w(20, p0.y); w(30, 0);
-          w(10, c1x); w(20, c1y); w(30, 0);
-          w(10, c2x); w(20, c2y); w(30, 0);
-          w(10, p3.x); w(20, p3.y); w(30, 0);
+          writeDxfSpline(w, {
+            degree: 3,
+            knots: [0, 0, 0, 0, 1, 1, 1, 1],
+            controlPoints: [
+              { x: p0.x, y: p0.y, z: 0 },
+              { x: c1x, y: c1y, z: 0 },
+              { x: c2x, y: c2y, z: 0 },
+              { x: p3.x, y: p3.y, z: 0 },
+            ],
+            weights: [1, 1, 1, 1],
+          }, entity.layer, entity.color);
+        } else if (ho || hi) {
+          const cx = ho ? p0.x + ho.dx : p3.x + hi.dx;
+          const cy = ho ? p0.y + ho.dy : p3.y + hi.dy;
+          writeDxfSpline(w, {
+            degree: 2,
+            knots: [0, 0, 0, 1, 1, 1],
+            controlPoints: [
+              { x: p0.x, y: p0.y, z: 0 },
+              { x: cx, y: cy, z: 0 },
+              { x: p3.x, y: p3.y, z: 0 },
+            ],
+            weights: [1, 1, 1],
+          }, entity.layer, entity.color);
         } else {
-          // Linear fallback — export as LINE
           w(0, 'LINE');
           w(8, entity.layer);
           if (entity.color) w(62, colorToAci(entity.color));
@@ -190,6 +186,46 @@ function writeEntity(w, entity) {
       }
       break;
     }
+  }
+}
+
+function writeDxfSpline(w, spline, layer = '0', color = null) {
+  const degree = spline?.degree;
+  const knots = spline?.knots || [];
+  const controlPoints = spline?.controlPoints || [];
+  const weights = spline?.weights || controlPoints.map(() => 1);
+  if (!Number.isFinite(degree) || degree < 1 || controlPoints.length < degree + 1 || knots.length !== controlPoints.length + degree + 1) {
+    return;
+  }
+  const rational = weights.some((weight) => Math.abs((weight ?? 1) - 1) > 1e-9);
+  w(0, 'SPLINE');
+  w(8, layer);
+  if (color) w(62, colorToAci(color));
+  w(70, 8 | (rational ? 4 : 0));
+  w(71, degree);
+  w(72, knots.length);
+  w(73, controlPoints.length);
+  w(74, 0);
+  for (const knot of knots) w(40, knot);
+  if (rational) {
+    for (const weight of weights) w(41, weight ?? 1);
+  }
+  for (const cp of controlPoints) {
+    w(10, cp.x); w(20, cp.y); w(30, cp.z ?? 0);
+  }
+}
+
+function writeDxfPolyline(w, polyline, layer = '0', color = null) {
+  const points = polyline?.points || [];
+  if (points.length < 2) return;
+  w(0, 'LWPOLYLINE');
+  w(8, layer);
+  if (color) w(62, colorToAci(color));
+  w(90, points.length);
+  w(70, polyline.closed ? 1 : 0);
+  for (const point of points) {
+    w(10, point.x);
+    w(20, point.y);
   }
 }
 
@@ -292,7 +328,7 @@ function edgeKey(x1, y1, x2, y2, precision = 6) {
  * @param {Object} [planeOverride] - Optional {origin, normal, xAxis, yAxis}
  * @returns {{edges: Array<{x1,y1,x2,y2}>, bounds: {minX,minY,maxX,maxY,width,height}}|null}
  */
-export function projectFacesToEdges(faces, planeOverride) {
+export function projectFacesToEdges(faces, planeOverride, options = {}) {
   if (!faces || faces.length === 0) return null;
   const refFace = faces[0];
   const plane = planeOverride || (() => {
@@ -303,6 +339,12 @@ export function projectFacesToEdges(faces, planeOverride) {
     return buildProjectionPlane(refFace.normal, { x: ox, y: oy, z: oz });
   })();
   if (!plane) return null;
+  const exactProjection = options.topoBody
+    ? buildProjectedBoundaryEntities(faces, options.topoBody, plane)
+    : null;
+  if (exactProjection) return exactProjection;
+  if (options.topoBody) return null;
+
   const edgeSet = new Map();
   for (const face of faces) {
     const verts = face.vertices || [];
@@ -316,12 +358,8 @@ export function projectFacesToEdges(faces, planeOverride) {
     }
   }
   const edges = [...edgeSet.values()];
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (const e of edges) {
-    minX = Math.min(minX, e.x1, e.x2); minY = Math.min(minY, e.y1, e.y2);
-    maxX = Math.max(maxX, e.x1, e.x2); maxY = Math.max(maxY, e.y1, e.y2);
-  }
-  return { edges, bounds: { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY } };
+  const bounds = boundsFromSegments(edges);
+  return { edges, curves: edges.map((edge) => ({ type: 'line', ...edge })), bounds };
 }
 
 /**
@@ -335,7 +373,7 @@ export function projectFacesToEdges(faces, planeOverride) {
  *   uses the first face's normal and centroid as the projection plane.
  * @returns {string} DXF content string
  */
-export function exportFacesDXF(faces, planeOverride) {
+export function exportFacesDXF(faces, planeOverride, options = {}) {
   if (!faces || faces.length === 0) {
     error('exportFacesDXF: no faces provided');
     return '';
@@ -358,28 +396,15 @@ export function exportFacesDXF(faces, planeOverride) {
     return '';
   }
 
-  // Collect unique projected line segments from each face
-  const edgeSet = new Map(); // key → {x1, y1, x2, y2}
-
-  for (const face of faces) {
-    const verts = face.vertices || [];
-    if (verts.length < 2) continue;
-
-    // Project each vertex to 2D
-    const pts2d = verts.map(v => projectTo2D(v, plane));
-
-    // Walk the boundary edges of this face polygon
-    for (let i = 0; i < pts2d.length; i++) {
-      const a = pts2d[i];
-      const b = pts2d[(i + 1) % pts2d.length];
-      const key = edgeKey(a.x, a.y, b.x, b.y);
-      if (!edgeSet.has(key)) {
-        edgeSet.set(key, { x1: a.x, y1: a.y, x2: b.x, y2: b.y });
-      }
-    }
+  const projected = options.topoBody
+    ? buildProjectedBoundaryEntities(faces, options.topoBody, plane)
+    : null;
+  if (!projected || !projected.curves || projected.curves.length === 0) {
+    error('exportFacesDXF: exact boundary projection unavailable');
+    return '';
   }
 
-  info('DXF face export: projected edges', { unique: edgeSet.size });
+  info('DXF face export: projected curves', { curves: projected.curves.length, sampledEdges: projected.edges.length });
 
   // Build DXF string
   const lines = [];
@@ -403,17 +428,35 @@ export function exportFacesDXF(faces, planeOverride) {
 
   // Entities
   w(0, 'SECTION'); w(2, 'ENTITIES');
-  for (const seg of edgeSet.values()) {
-    w(0, 'LINE');
-    w(8, '0');
-    w(10, seg.x1); w(20, seg.y1); w(30, 0);
-    w(11, seg.x2); w(21, seg.y2); w(31, 0);
+  for (const entity of projected.curves) {
+    if (entity.type === 'line') {
+      w(0, 'LINE');
+      w(8, '0');
+      w(10, entity.x1); w(20, entity.y1); w(30, 0);
+      w(11, entity.x2); w(21, entity.y2); w(31, 0);
+    } else if (entity.type === 'circle') {
+      w(0, 'CIRCLE');
+      w(8, '0');
+      w(10, entity.cx); w(20, entity.cy); w(30, 0);
+      w(40, entity.radius);
+    } else if (entity.type === 'arc') {
+      w(0, 'ARC');
+      w(8, '0');
+      w(10, entity.cx); w(20, entity.cy); w(30, 0);
+      w(40, entity.radius);
+      w(50, normalizeAngleRadians(entity.startAngle) * 180 / Math.PI);
+      w(51, normalizeAngleRadians(entity.endAngle) * 180 / Math.PI);
+    } else if (entity.type === 'polyline') {
+      writeDxfPolyline(w, entity, '0', null);
+    } else if (entity.type === 'spline') {
+      writeDxfSpline(w, entity, '0', null);
+    }
   }
   w(0, 'ENDSEC');
   w(0, 'EOF');
 
   const out = lines.join('\r\n');
-  debug('DXF face export complete', { bytes: out.length, edges: edgeSet.size });
+  debug('DXF face export complete', { bytes: out.length, curves: projected.curves.length, previewEdges: projected.edges.length });
   return out;
 }
 
@@ -423,9 +466,9 @@ export function exportFacesDXF(faces, planeOverride) {
  * @param {Object} [planeOverride] - Optional plane definition
  * @param {string} [filename='faces.dxf']
  */
-export function downloadFacesDXF(faces, planeOverride, filename = 'faces.dxf') {
+export function downloadFacesDXF(faces, planeOverride, filename = 'faces.dxf', options = {}) {
   try {
-    const content = exportFacesDXF(faces, planeOverride);
+    const content = exportFacesDXF(faces, planeOverride, options);
     if (!content) { error('DXF face export produced empty output'); return; }
     const blob = new Blob([content], { type: 'application/dxf' });
     const url = URL.createObjectURL(blob);
@@ -438,4 +481,300 @@ export function downloadFacesDXF(faces, planeOverride, filename = 'faces.dxf') {
   } catch (err) {
     error('DXF face download failed', err);
   }
+}
+
+function buildProjectedBoundaryEntities(meshFaces, topoBody, plane) {
+  const topoFaces = collectSelectedTopoFaces(meshFaces, topoBody);
+  if (topoFaces.length === 0) return null;
+
+  const selectedFaceIds = new Set(topoFaces.map((face) => face.id));
+  const edgeUseCount = new Map();
+  for (const face of topoFaces) {
+    for (const loop of face.allLoops()) {
+      for (const coedge of loop.coedges) {
+        edgeUseCount.set(coedge.edge.id, (edgeUseCount.get(coedge.edge.id) || 0) + 1);
+      }
+    }
+  }
+
+  const curves = [];
+  for (const face of topoFaces) {
+    for (const loop of face.allLoops()) {
+      for (const coedge of loop.coedges) {
+        if (edgeUseCount.get(coedge.edge.id) !== 1) continue;
+        const curve = orientedCoedgeCurve(coedge);
+        const projected = projectCurveEntity(curve, plane);
+        if (projected) curves.push(projected);
+      }
+    }
+  }
+  if (curves.length === 0) return null;
+  return summarizeProjectedCurves(curves);
+}
+
+function collectSelectedTopoFaces(meshFaces, topoBody) {
+  if (!topoBody || typeof topoBody.faces !== 'function') return [];
+  const faceById = new Map(topoBody.faces().map((face) => [face.id, face]));
+  const topoFaceIds = new Set();
+  for (const meshFace of meshFaces || []) {
+    if (meshFace?.topoFaceId != null) topoFaceIds.add(meshFace.topoFaceId);
+  }
+  const faces = [];
+  for (const topoFaceId of topoFaceIds) {
+    const face = faceById.get(topoFaceId);
+    if (face) faces.push(face);
+  }
+  return faces;
+}
+
+function orientedCoedgeCurve(coedge) {
+  const curve = coedge?.edge?.curve;
+  if (curve) {
+    return coedge.sameSense === false && typeof curve.reversed === 'function'
+      ? curve.reversed()
+      : curve.clone ? curve.clone() : curve;
+  }
+  const start = coedge?.startVertex?.()?.point;
+  const end = coedge?.endVertex?.()?.point;
+  return start && end ? NurbsCurve.createLine(start, end) : null;
+}
+
+function projectCurveEntity(curve, plane) {
+  if (!curve || !Array.isArray(curve.controlPoints) || curve.controlPoints.length < 2) return null;
+  const circular = tryProjectCircularEntity(curve, plane);
+  if (circular) return circular;
+
+  const controlPoints = curve.controlPoints.map((point) => {
+    const projected = projectTo2D(point, plane);
+    return { x: projected.x, y: projected.y, z: 0 };
+  });
+  if (curve.degree === 1 && controlPoints.length === 2) {
+    return {
+      type: 'line',
+      x1: controlPoints[0].x,
+      y1: controlPoints[0].y,
+      x2: controlPoints[1].x,
+      y2: controlPoints[1].y,
+    };
+  }
+  if (curve.degree === 1) {
+    return {
+      type: 'polyline',
+      points: controlPoints.map(({ x, y }) => ({ x, y })),
+      closed: false,
+    };
+  }
+  return {
+    type: 'spline',
+    degree: curve.degree,
+    controlPoints,
+    knots: [...curve.knots],
+    weights: [...(curve.weights || controlPoints.map(() => 1))],
+  };
+}
+
+function tryProjectCircularEntity(curve, plane) {
+  const weights = Array.isArray(curve?.weights) ? curve.weights : [];
+  const hasRationalWeights = weights.some((weight) => Math.abs((weight ?? 1) - 1) > 1e-9);
+  if (curve?.degree !== 2 || !hasRationalWeights || typeof curve.evaluate !== 'function') return null;
+
+  const uMin = Number(curve.uMin);
+  const uMax = Number(curve.uMax);
+  const domain = uMax - uMin;
+  if (!Number.isFinite(domain) || domain <= 1e-9) return null;
+
+  const startPoint = projectTo2D(curve.evaluate(uMin), plane);
+  const endPoint = projectTo2D(curve.evaluate(uMax), plane);
+  const closed = Math.hypot(startPoint.x - endPoint.x, startPoint.y - endPoint.y) <= 1e-6;
+
+  const seedParams = closed
+    ? [uMin, uMin + domain / 3, uMin + (2 * domain) / 3]
+    : [uMin, uMin + domain / 2, uMax];
+  const seedPoints = seedParams.map((u) => projectTo2D(curve.evaluate(u), plane));
+  const circle = circleFromThreePoints2D(seedPoints[0], seedPoints[1], seedPoints[2]);
+  if (!circle || !Number.isFinite(circle.radius) || circle.radius <= 1e-9) return null;
+
+  const validationSamples = closed ? 12 : 9;
+  const radiusTolerance = Math.max(1e-6, circle.radius * 1e-5);
+  for (let index = 0; index <= validationSamples; index++) {
+    const u = uMin + (domain * index) / validationSamples;
+    const point = projectTo2D(curve.evaluate(u), plane);
+    const radius = Math.hypot(point.x - circle.cx, point.y - circle.cy);
+    if (Math.abs(radius - circle.radius) > radiusTolerance) return null;
+  }
+
+  if (closed) {
+    return {
+      type: 'circle',
+      cx: circle.cx,
+      cy: circle.cy,
+      radius: circle.radius,
+    };
+  }
+
+  const startAngle = normalizeAngleRadians(Math.atan2(startPoint.y - circle.cy, startPoint.x - circle.cx));
+  const endAngle = normalizeAngleRadians(Math.atan2(endPoint.y - circle.cy, endPoint.x - circle.cx));
+  const midPoint = projectTo2D(curve.evaluate(uMin + domain / 2), plane);
+  const midAngle = normalizeAngleRadians(Math.atan2(midPoint.y - circle.cy, midPoint.x - circle.cx));
+
+  if (angleOnCounterClockwiseArc(startAngle, endAngle, midAngle)) {
+    return { type: 'arc', cx: circle.cx, cy: circle.cy, radius: circle.radius, startAngle, endAngle };
+  }
+  if (angleOnCounterClockwiseArc(endAngle, startAngle, midAngle)) {
+    return { type: 'arc', cx: circle.cx, cy: circle.cy, radius: circle.radius, startAngle: endAngle, endAngle: startAngle };
+  }
+  return null;
+}
+
+function circleFromThreePoints2D(first, second, third) {
+  const ax = first.x;
+  const ay = first.y;
+  const bx = second.x;
+  const by = second.y;
+  const cx = third.x;
+  const cy = third.y;
+  const d = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by));
+  if (Math.abs(d) <= 1e-12) return null;
+
+  const ax2ay2 = ax * ax + ay * ay;
+  const bx2by2 = bx * bx + by * by;
+  const cx2cy2 = cx * cx + cy * cy;
+  const centerX = (ax2ay2 * (by - cy) + bx2by2 * (cy - ay) + cx2cy2 * (ay - by)) / d;
+  const centerY = (ax2ay2 * (cx - bx) + bx2by2 * (ax - cx) + cx2cy2 * (bx - ax)) / d;
+  return {
+    cx: centerX,
+    cy: centerY,
+    radius: Math.hypot(ax - centerX, ay - centerY),
+  };
+}
+
+function normalizeAngleRadians(angle) {
+  const fullTurn = Math.PI * 2;
+  let normalized = angle % fullTurn;
+  if (normalized < 0) normalized += fullTurn;
+  return normalized;
+}
+
+function angleOnCounterClockwiseArc(startAngle, endAngle, probeAngle, tolerance = 1e-8) {
+  const fullTurn = Math.PI * 2;
+  const start = normalizeAngleRadians(startAngle);
+  const end = normalizeAngleRadians(endAngle);
+  const probe = normalizeAngleRadians(probeAngle);
+  const span = (end - start + fullTurn) % fullTurn;
+  const probeOffset = (probe - start + fullTurn) % fullTurn;
+  return probeOffset >= -tolerance && probeOffset <= span + tolerance;
+}
+
+function summarizeProjectedCurves(curves) {
+  const edges = [];
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+
+  for (const curve of curves) {
+    const points = sampleProjectedCurve(curve);
+    if (points.length === 0) continue;
+    for (const point of points) {
+      minX = Math.min(minX, point.x);
+      minY = Math.min(minY, point.y);
+      maxX = Math.max(maxX, point.x);
+      maxY = Math.max(maxY, point.y);
+    }
+    for (let i = 1; i < points.length; i++) {
+      edges.push({
+        x1: points[i - 1].x,
+        y1: points[i - 1].y,
+        x2: points[i].x,
+        y2: points[i].y,
+      });
+    }
+  }
+
+  return {
+    curves,
+    edges,
+    bounds: {
+      minX,
+      minY,
+      maxX,
+      maxY,
+      width: maxX - minX,
+      height: maxY - minY,
+    },
+  };
+}
+
+function sampleProjectedCurve(curve) {
+  if (curve.type === 'line') {
+    return [
+      { x: curve.x1, y: curve.y1 },
+      { x: curve.x2, y: curve.y2 },
+    ];
+  }
+  if (curve.type === 'circle') {
+    const segments = 96;
+    const points = [];
+    for (let index = 0; index <= segments; index++) {
+      const angle = (Math.PI * 2 * index) / segments;
+      points.push({
+        x: curve.cx + Math.cos(angle) * curve.radius,
+        y: curve.cy + Math.sin(angle) * curve.radius,
+      });
+    }
+    return points;
+  }
+  if (curve.type === 'arc') {
+    const startAngle = normalizeAngleRadians(curve.startAngle);
+    const endAngle = normalizeAngleRadians(curve.endAngle);
+    const fullTurn = Math.PI * 2;
+    const sweep = (endAngle - startAngle + fullTurn) % fullTurn;
+    const segments = Math.max(24, Math.ceil((sweep || fullTurn) / (Math.PI / 24)));
+    const points = [];
+    for (let index = 0; index <= segments; index++) {
+      const angle = startAngle + ((sweep || fullTurn) * index) / segments;
+      points.push({
+        x: curve.cx + Math.cos(angle) * curve.radius,
+        y: curve.cy + Math.sin(angle) * curve.radius,
+      });
+    }
+    return points;
+  }
+  if (curve.type === 'polyline') {
+    return curve.points || [];
+  }
+  if (curve.type !== 'spline') return [];
+
+  const spline = new NurbsCurve(curve.degree, curve.controlPoints, curve.knots, curve.weights);
+  const spanCount = countCurveSpans(spline);
+  const segments = Math.max(spanCount * 24, 24);
+  const points = [];
+  for (let i = 0; i <= segments; i++) {
+    const u = spline.uMin + ((spline.uMax - spline.uMin) * i) / segments;
+    const point = spline.evaluate(u);
+    points.push({ x: point.x, y: point.y });
+  }
+  return points;
+}
+
+function countCurveSpans(curve) {
+  let spans = 0;
+  for (let i = curve.degree; i < curve.controlPoints.length; i++) {
+    if (curve.knots[i + 1] - curve.knots[i] > 1e-9) spans++;
+  }
+  return Math.max(spans, 1);
+}
+
+function boundsFromSegments(edges) {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const edge of edges) {
+    minX = Math.min(minX, edge.x1, edge.x2);
+    minY = Math.min(minY, edge.y1, edge.y2);
+    maxX = Math.max(maxX, edge.x1, edge.x2);
+    maxY = Math.max(maxY, edge.y1, edge.y2);
+  }
+  return { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY };
 }

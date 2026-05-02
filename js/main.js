@@ -37,6 +37,7 @@ import {
 } from './cad/Constraint.js';
 import { union } from './cad/Operations.js';
 import { motionAnalysis } from './motion.js';
+import { setFlag } from './featureFlags.js';
 import {
   SelectTool, LineTool, RectangleTool, CircleTool,
   ArcTool, PolylineTool, SplineTool, BezierTool, TextTool, DimensionTool,
@@ -126,6 +127,14 @@ class App {
     this._sceneManagerOpen = false;
     this._recordingBarVisible = localStorage.getItem(RECORDING_BAR_VISIBLE_KEY) === 'true';
     this._commandBarVisible = localStorage.getItem(COMMAND_BAR_VISIBLE_KEY) === 'true';
+    this._restoreUsedReplayFallback = (part) => {
+      const tree = part?.featureTree;
+      if (!tree?.results || !Array.isArray(tree.features)) return false;
+      return tree.features.some((feature) => {
+        const result = tree.results[feature.id];
+        return result?.type === 'solid' && !!result.cbrepBuffer && !result._restoredFromCheckpoint;
+      });
+    };
 
     /** Returns true when any feature-editing mode is active (sketch, extrude, chamfer, fillet) */
     this._isEditingFeature = () => !!(this._sketchingOnPlane || this._extrudeMode || this._chamferMode || this._filletMode);
@@ -291,6 +300,10 @@ class App {
               finalCbrepPayload: loaded.finalCbrepPayload,
               finalCbrepHash: loaded.finalCbrepHash,
             });
+            if (this._restoreUsedReplayFallback(this._partManager.getPart())) {
+              info('Browser restore replayed solid features; persisting refreshed checkpoints for faster subsequent reloads');
+              debouncedSave();
+            }
             this._enterWorkspace('part');
             if (loaded.sessionState) {
               this._restoreSessionState(loaded.sessionState, loaded.orbit);
@@ -7278,6 +7291,16 @@ class App {
     this._dxfExportPanel = new DxfExportPanel({
       getSelectedFaces: () => this._selectedFaces,
       getRenderer: () => this._renderer3d,
+      getExactTopoBody: () => {
+        const part = this._partManager.getPart();
+        const finalGeo = part?.getFinalGeometry?.();
+        return finalGeo?.body
+          || finalGeo?.topoBody
+          || finalGeo?.solid?.topoBody
+          || finalGeo?.solid?.body
+          || finalGeo?.geometry?.topoBody
+          || null;
+      },
       onExit: () => this._closeDxfExportPanel(),
       setStatus: (msg) => this.setStatus(msg),
       buildSelectionList: () => this._buildSelectionList(),
@@ -7433,7 +7456,6 @@ class App {
         container.appendChild(div);
       });
     }
-    
     if (features.length === 0) return;
 
     // Build a set of feature IDs that are consumed as children of other features
@@ -11220,10 +11242,14 @@ class App {
 
 // Bootstrap — ensure WASM is ready before the app starts restoring saved
 // projects (which triggers tessellation).
+setFlag('CAD_REQUIRE_WASM_TESSELLATION', true);
 const wasmReady = Promise.all([
   wasmTessellation.init()
     .then(() => console.log('[WASM] tessellation module loaded'))
-    .catch(() => console.warn('[WASM] tessellation module unavailable — using JS fallback')),
+    .catch((err) => {
+      console.error('[WASM] tessellation module unavailable — browser restore requires native tessellation');
+      throw err;
+    }),
   GeometryEvaluator.initWasm()
     .then(ok => ok
       ? console.log('[WASM] geometry evaluator loaded')
