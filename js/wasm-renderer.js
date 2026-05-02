@@ -13,6 +13,8 @@ import {
 import { renderBaseMeshOverlay } from './render/mesh-overlay-renderer.js';
 import { LodManager } from './render/lod-manager.js';
 import { GpuTessPipeline } from './render/gpu-tess-pipeline.js';
+import { SketchFeature } from './cad/SketchFeature.js';
+import { constrainedTriangulate } from './cad/Tessellator2/CDT.js';
 
 function _projectPolygon2D(verts, normal) {
   const an = {
@@ -307,6 +309,7 @@ export class WasmRenderer {
     // Part data stored for 3D render
     this._partNodes = [];
     this._partBounds = null;
+    this._renderedPart = null;
 
     // Pre-built mesh data for direct WebGL rendering (bypasses WASM scene nodes)
     this._meshTriangles = null;  // Float32Array: interleaved [x,y,z,nx,ny,nz, ...]
@@ -972,14 +975,16 @@ export class WasmRenderer {
   }
 
   /**
-   * Pick a sketch feature at the given screen coordinates using ray-line distance testing.
-   * Tests against all sketch wireframe segments built by _buildSketchWireframes().
+   * Pick a sketch feature at the given screen coordinates using sketch wireframes
+   * first and sketch face triangles as a fallback.
    * @param {number} screenX - Screen X coordinate
    * @param {number} screenY - Screen Y coordinate
    * @returns {{featureId: string}|null}
    */
   pickSketch(screenX, screenY) {
-    if (!this._sketchPickSegments || this._sketchPickSegments.length === 0) return null;
+    const hasSegments = !!(this._sketchPickSegments && this._sketchPickSegments.length > 0);
+    const hasTriangles = !!(this._sketchPickTriangles && this._sketchPickTriangles.length > 0);
+    if (!hasSegments && !hasTriangles) return null;
 
     const mvp = this._computeMVP();
     if (!mvp) return null;
@@ -1012,13 +1017,15 @@ export class WasmRenderer {
     let closestFeatureId = null;
     let closestWorldPt = null;
 
-    for (const entry of this._sketchPickSegments) {
-      for (const seg of entry.segments) {
-        const result = this._rayLineClosest(origin, dir, seg.a, seg.b);
-        if (result.dist < closestDist) {
-          closestDist = result.dist;
-          closestFeatureId = entry.featureId;
-          closestWorldPt = result.point;
+    if (hasSegments) {
+      for (const entry of this._sketchPickSegments) {
+        for (const seg of entry.segments) {
+          const result = this._rayLineClosest(origin, dir, seg.a, seg.b);
+          if (result.dist < closestDist) {
+            closestDist = result.dist;
+            closestFeatureId = entry.featureId;
+            closestWorldPt = result.point;
+          }
         }
       }
     }
@@ -1037,6 +1044,24 @@ export class WasmRenderer {
         }
       }
     }
+
+    if (hasTriangles) {
+      let closestTriangleT = Infinity;
+      let closestTriangleFeatureId = null;
+      for (const entry of this._sketchPickTriangles) {
+        for (const tri of entry.triangles) {
+          const t = this._rayTriangleIntersect(origin, dir, tri[0], tri[1], tri[2]);
+          if (t != null && t < closestTriangleT) {
+            closestTriangleT = t;
+            closestTriangleFeatureId = entry.featureId;
+          }
+        }
+      }
+      if (closestTriangleFeatureId !== null) {
+        return { featureId: closestTriangleFeatureId };
+      }
+    }
+
     return null;
   }
 
@@ -1524,6 +1549,9 @@ export class WasmRenderer {
    */
   setSelectedFeature(featureId) {
     this._selectedFeatureId = featureId || null;
+    if (this._renderedPart) {
+      this._buildSketchWireframes(this._renderedPart);
+    }
   }
 
   /**
@@ -2581,70 +2609,13 @@ export class WasmRenderer {
     // Use even-odd fill rule so that overlapping/nested loops correctly subtract holes.
     const PROFILE_FILL = 'rgba(100,180,255,0.10)';
 
-    if (scene.circles) {
-      scene.circles.forEach((circ) => {
-        if (!circ.visible || circ.construction || !isLayerVisible(circ.layer)) return;
-        const c = sketchPtToScreen(circ.center.x, circ.center.y);
-        const edgePt = sketchPtToScreen(circ.center.x + circ.radius, circ.center.y);
-        const r = Math.abs(edgePt.x - c.x);
-        ctx.beginPath();
-        ctx.arc(c.x, c.y, r, 0, Math.PI * 2);
-        ctx.fillStyle = PROFILE_FILL;
-        ctx.fill('evenodd');
-      });
-    }
-
-    const closedLoops = _findClosedLoops(scene);
-    // Build all closed loop sub-paths into a single compound path so that
+    const visibleProfiles = extractRenderableSketchProfiles(scene, isLayerVisible);
+    // Build all valid profiles into a single compound path so that
     // nested loops (holes) are correctly subtracted via the even-odd rule.
-    if (closedLoops.length > 0) {
+    if (visibleProfiles.length > 0) {
       ctx.beginPath();
-      for (const loop of closedLoops) {
-        if (loop.edges.some(e => e.layer != null && !isLayerVisible(e.layer))) continue;
-        // Self-closing curves (single edge where points are already tessellated)
-        if (loop.edges.length === 1 && (loop.edges[0].type === 'spline' || loop.edges[0].type === 'bezier') && loop.points.length >= 3) {
-          const fp = sketchPtToScreen(loop.points[0].x, loop.points[0].y);
-          ctx.moveTo(fp.x, fp.y);
-          for (let j = 1; j < loop.points.length; j++) {
-            const sp = sketchPtToScreen(loop.points[j].x, loop.points[j].y);
-            ctx.lineTo(sp.x, sp.y);
-          }
-          ctx.closePath();
-          continue;
-        }
-        const fp = sketchPtToScreen(loop.points[0].x, loop.points[0].y);
-        ctx.moveTo(fp.x, fp.y);
-        for (let i = 0; i < loop.edges.length; i++) {
-          const edge = loop.edges[i];
-          const nextPt = loop.points[(i + 1) % loop.points.length];
-          if (edge.type === 'segment') {
-            const np = sketchPtToScreen(nextPt.x, nextPt.y);
-            ctx.lineTo(np.x, np.y);
-          } else if (edge.type === 'arc') {
-            const c = sketchPtToScreen(edge.center.x, edge.center.y);
-            const edgePt = sketchPtToScreen(edge.center.x + edge.radius, edge.center.y);
-            const r = Math.abs(edgePt.x - c.x);
-            const curPt = loop.points[i];
-            const sp = edge.startPt;
-            const isForward = Math.hypot(curPt.x - sp.x, curPt.y - sp.y) < 1e-4;
-            if (isForward) {
-              ctx.arc(c.x, c.y, r, -edge.startAngle, -edge.endAngle, true);
-            } else {
-              ctx.arc(c.x, c.y, r, -edge.endAngle, -edge.startAngle, false);
-            }
-          } else if (edge.type === 'spline' || edge.type === 'bezier') {
-            // Tessellate spline/bezier edge along the path
-            const curPt = loop.points[i];
-            const isForward = edge.p1 === curPt;
-            const pts = edge.tessellate2D(16);
-            if (!isForward) pts.reverse();
-            for (let j = 1; j < pts.length; j++) {
-              const sp = sketchPtToScreen(pts[j].x, pts[j].y);
-              ctx.lineTo(sp.x, sp.y);
-            }
-          }
-        }
-        ctx.closePath();
+      for (const profile of visibleProfiles) {
+        _appendPolylineProfilePath(ctx, profile, (point) => sketchPtToScreen(point.x, point.y));
       }
       ctx.fillStyle = PROFILE_FILL;
       ctx.fill('evenodd');
@@ -2725,6 +2696,7 @@ export class WasmRenderer {
   renderPart(part) {
     this.clearPartGeometry();
     if (!part || !this._ready) return;
+    this._renderedPart = part;
 
     // Update origin plane visibility in WASM
     if (this.wasm && this.wasm.setOriginPlanesVisible) {
@@ -3008,6 +2980,7 @@ export class WasmRenderer {
     this._sketchFaceTriangles = null;
     this._sketchFaceTriangleCount = 0;
     this._sketchPickSegments = []; // per-feature line segments for picking
+    this._sketchPickTriangles = []; // per-feature face triangles for picking
 
     const sketches = part.getSketches();
     if (!sketches || sketches.length === 0) return;
@@ -3039,6 +3012,7 @@ export class WasmRenderer {
 
       const lines = isSelected ? selectedLines : (isActive ? activeLines : inactiveLines);
       const featureSegments = []; // collect world-space line segments for this feature
+      const featureTriangles = []; // collect world-space triangles for this feature
 
       // Compute plane normal for z-offset (prevents z-fighting with face geometry).
       // Offset wireframes slightly along the normal so they render on top of the face.
@@ -3150,71 +3124,26 @@ export class WasmRenderer {
       // Build triangulated face fill for closed profiles (extrudable faces)
       // so they are visually painted in feature mode just like in sketch mode.
       if (!isActive || !this._sketchPlane) {
-        const loops = _findClosedLoops(sketch.scene || sketch);
-        for (const loop of loops) {
-          // Build 2D polygon from loop points (with arc/spline tessellation)
-          const poly2D = [];
+        const profiles = extractRenderableSketchProfiles(sketch.scene || sketch);
+        for (const tri of triangulateSketchProfileFill(profiles)) {
+          const a2 = tri[0];
+          const b2 = tri[1];
+          const c2 = tri[2];
+          const a = toWorld(a2.x, a2.y);
+          const b = toWorld(b2.x, b2.y);
+          const c = toWorld(c2.x, c2.y);
+          faceVerts.push(a.x, a.y, a.z, nx, ny, nz);
+          faceVerts.push(b.x, b.y, b.z, nx, ny, nz);
+          faceVerts.push(c.x, c.y, c.z, nx, ny, nz);
+          featureTriangles.push([a, b, c]);
+        }
+      }
 
-          // Self-closing curves: points are already tessellated
-          if (loop.edges.length === 1 && (loop.edges[0].type === 'spline' || loop.edges[0].type === 'bezier') && loop.points.length >= 3) {
-            for (const pt of loop.points) poly2D.push({ x: pt.x, y: pt.y });
-          } else {
-          for (let li = 0; li < loop.points.length; li++) {
-            const edge = loop.edges[li];
-            const curPt = loop.points[li];
-            if (edge.type === 'arc') {
-              const numSegs = 16;
-              let startA = edge.startAngle || 0;
-              let endA = edge.endAngle || Math.PI;
-              let sweep = endA - startA;
-              if (sweep < 0) sweep += Math.PI * 2;
-              const sp = edge.startPt;
-              const isForward = Math.hypot(curPt.x - sp.x, curPt.y - sp.y) < 1e-4;
-              for (let ai = 0; ai < numSegs; ai++) {
-                const t = isForward ? ai / numSegs : (numSegs - ai) / numSegs;
-                const a = startA + t * sweep;
-                poly2D.push({ x: edge.center.x + Math.cos(a) * edge.radius, y: edge.center.y + Math.sin(a) * edge.radius });
-              }
-            } else if ((edge.type === 'spline' || edge.type === 'bezier') && edge.tessellate2D) {
-              const pts = edge.tessellate2D(16);
-              const isForward = edge.p1 === curPt;
-              if (!isForward) pts.reverse();
-              for (let si = 0; si < pts.length - 1; si++) poly2D.push(pts[si]);
-            } else {
-              poly2D.push({ x: curPt.x, y: curPt.y });
-            }
-          }
-          }
-          if (poly2D.length < 3) continue;
-          // Ear-clipping triangulation of the 2D polygon
-          const tris = _earClipTriangulate(poly2D);
-          for (const tri of tris) {
-            const a = toWorld(tri[0].x, tri[0].y);
-            const b = toWorld(tri[1].x, tri[1].y);
-            const c = toWorld(tri[2].x, tri[2].y);
-            faceVerts.push(a.x, a.y, a.z, nx, ny, nz);
-            faceVerts.push(b.x, b.y, b.z, nx, ny, nz);
-            faceVerts.push(c.x, c.y, c.z, nx, ny, nz);
-          }
-        }
-        // Also handle full circles as face fills
-        if (sketch.circles) {
-          for (const circle of sketch.circles) {
-            if (!circle.visible || circle.construction || !circle.center) continue;
-            const numSegs = 32;
-            const cx = circle.center.x, cy = circle.center.y, r = circle.radius;
-            const cw = toWorld(cx, cy);
-            for (let ci = 0; ci < numSegs; ci++) {
-              const a1 = (ci / numSegs) * Math.PI * 2;
-              const a2 = ((ci + 1) / numSegs) * Math.PI * 2;
-              const p1 = toWorld(cx + Math.cos(a1) * r, cy + Math.sin(a1) * r);
-              const p2 = toWorld(cx + Math.cos(a2) * r, cy + Math.sin(a2) * r);
-              faceVerts.push(cw.x, cw.y, cw.z, nx, ny, nz);
-              faceVerts.push(p1.x, p1.y, p1.z, nx, ny, nz);
-              faceVerts.push(p2.x, p2.y, p2.z, nx, ny, nz);
-            }
-          }
-        }
+      if (featureTriangles.length > 0) {
+        this._sketchPickTriangles.push({
+          featureId: sketchFeature.id,
+          triangles: featureTriangles,
+        });
       }
     }
 
@@ -3766,6 +3695,9 @@ export class WasmRenderer {
     this._sketchSelectedEdgeVertexCount = 0;
     this._sketchFaceTriangles = null;
     this._sketchFaceTriangleCount = 0;
+    this._sketchPickSegments = [];
+    this._sketchPickTriangles = [];
+    this._renderedPart = null;
     this._activeSceneEdges = null;
     this._activeSceneEdgeVertexCount = 0;
     this._selectedFaceIndices.clear();
@@ -4398,6 +4330,94 @@ function _findClosedLoops(scene) {
   }
 
   return loops;
+}
+
+export function extractRenderableSketchProfiles(sketch, isLayerVisible = null) {
+  if (!sketch) return [];
+  const source = typeof isLayerVisible === 'function'
+    ? {
+        ...sketch,
+        segments: (sketch.segments || []).filter((entity) => entity?.layer == null || isLayerVisible(entity.layer)),
+        circles: (sketch.circles || []).filter((entity) => entity?.layer == null || isLayerVisible(entity.layer)),
+        arcs: (sketch.arcs || []).filter((entity) => entity?.layer == null || isLayerVisible(entity.layer)),
+        splines: (sketch.splines || []).filter((entity) => entity?.layer == null || isLayerVisible(entity.layer)),
+        beziers: (sketch.beziers || []).filter((entity) => entity?.layer == null || isLayerVisible(entity.layer)),
+      }
+    : sketch;
+  const feature = Object.create(SketchFeature.prototype);
+  feature.sketch = source;
+  return feature.extractProfiles();
+}
+
+function _appendPolylineProfilePath(ctx, profile, projectPoint) {
+  const points = Array.isArray(profile?.points) ? profile.points : [];
+  if (points.length < 3) return;
+  const first = projectPoint(points[0]);
+  ctx.moveTo(first.x, first.y);
+  for (let i = 1; i < points.length; i++) {
+    const point = projectPoint(points[i]);
+    ctx.lineTo(point.x, point.y);
+  }
+  ctx.closePath();
+}
+
+function _groupSketchProfiles(profiles) {
+  const groups = [];
+  for (let i = 0; i < profiles.length; i++) {
+    const profile = profiles[i];
+    if (profile?.isHole) continue;
+    const holes = [];
+    for (const holeIndex of profile?.holes || []) {
+      const hole = profiles[holeIndex];
+      if (hole) holes.push(hole);
+    }
+    groups.push({ outer: profile, holes });
+  }
+  return groups;
+}
+
+export function triangulateSketchProfileFill(profiles) {
+  const triangles = [];
+  for (const group of _groupSketchProfiles(profiles)) {
+    const outer = _normalizeProfileRing(group.outer.points, false);
+    const holes = group.holes
+      .map((hole) => _normalizeProfileRing(hole.points, true))
+      .filter((ring) => ring.length >= 3);
+    if (outer.length < 3) continue;
+    const triIndices = constrainedTriangulate(outer, holes);
+    const triPoints = [
+      ...outer,
+      ...holes.flat(),
+    ];
+    for (const [ia, ib, ic] of triIndices) {
+      const a = triPoints[ia];
+      const b = triPoints[ib];
+      const c = triPoints[ic];
+      if (a && b && c) triangles.push([a, b, c]);
+    }
+  }
+  return triangles;
+}
+
+function _normalizeProfileRing(points, clockwise) {
+  const ring = Array.isArray(points)
+    ? points.map((point) => ({ x: point.x, y: point.y }))
+    : [];
+  if (ring.length < 3) return [];
+  if (_signedArea2D(ring) === 0) return [];
+  const isClockwise = _signedArea2D(ring) < 0;
+  if (isClockwise !== clockwise) ring.reverse();
+  return ring;
+}
+
+function _signedArea2D(points) {
+  let area = 0;
+  for (let i = 0; i < points.length; i++) {
+    const current = points[i];
+    const next = points[(i + 1) % points.length];
+    area += current.x * next.y - next.x * current.y;
+  }
+  return area * 0.5;
 }
 
 /**
