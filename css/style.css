@@ -392,6 +392,10 @@ html, body {
   font-size: 12px;
 }
 
+.prop-row.prop-row-stepper {
+  align-items: stretch;
+}
+
 .prop-row label {
   color: var(--text-secondary);
 }
@@ -404,6 +408,115 @@ html, body {
   border-radius: 2px;
   padding: 2px 4px;
   font-size: 12px;
+}
+
+.image-props-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.image-props-header {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.image-props-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.image-props-subtitle {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.image-props-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.image-props-tabs {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  gap: 4px;
+  justify-content: center;
+}
+
+.image-props-tab {
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.image-props-tab:hover {
+  background: rgba(255,255,255,0.06);
+  color: var(--text-primary);
+}
+
+.image-props-tab.active {
+  color: var(--text-primary);
+  border-color: var(--accent);
+  background: rgba(0,120,212,0.15);
+}
+
+.image-props-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.image-props-note {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(255,255,255,0.03);
+}
+
+.image-props-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.image-props-actions .app-modal-btn {
+  flex: 1 1 140px;
+}
+
+.image-stepper {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.image-stepper input {
+  width: 56px;
+  text-align: center;
+}
+
+.image-stepper-btn {
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.image-stepper-btn:hover {
+  background: rgba(255,255,255,0.08);
 }
 
 /* Layers */
@@ -1092,6 +1205,15 @@ html, body {
 
 .app-modal-btn:hover {
   background: rgba(255,255,255,0.08);
+}
+
+.app-modal-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.app-modal-btn:disabled:hover {
+  background: transparent;
 }
 
 .app-modal-btn.primary {

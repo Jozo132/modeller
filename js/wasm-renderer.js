@@ -181,6 +181,101 @@ function _drawFaceHighlightOverlay(gl, exec, mvp, highlightVerts, color) {
   gl.cullFace(gl.BACK);
 }
 
+function _lerpPoint(a, b, t) {
+  return {
+    x: a.x + (b.x - a.x) * t,
+    y: a.y + (b.y - a.y) * t,
+  };
+}
+
+function _bilinearQuadPoint(quad, u, v) {
+  const bl = quad[0];
+  const br = quad[1];
+  const tr = quad[2];
+  const tl = quad[3];
+  const bottom = _lerpPoint(bl, br, u);
+  const top = _lerpPoint(tl, tr, u);
+  return _lerpPoint(bottom, top, v);
+}
+
+function _sourceQuadToPixels(sourceQuad, width, height) {
+  return sourceQuad.map((point) => ({
+    x: (point.u || 0) * width,
+    y: (1 - (point.v || 0)) * height,
+  }));
+}
+
+function _triangleDeterminant(a, b, c) {
+  return a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y);
+}
+
+function _quadArea(quad) {
+  let area = 0;
+  for (let i = 0; i < quad.length; i++) {
+    const a = quad[i];
+    const b = quad[(i + 1) % quad.length];
+    area += a.x * b.y - b.x * a.y;
+  }
+  return Math.abs(area) * 0.5;
+}
+
+function _transformSourceTriangleToDest(ctx, source, srcTri, dstTri) {
+  const denom = _triangleDeterminant(srcTri[0], srcTri[1], srcTri[2]);
+  if (Math.abs(denom) < 1e-6) return;
+
+  const a = (dstTri[0].x * (srcTri[1].y - srcTri[2].y) + dstTri[1].x * (srcTri[2].y - srcTri[0].y) + dstTri[2].x * (srcTri[0].y - srcTri[1].y)) / denom;
+  const b = (dstTri[0].y * (srcTri[1].y - srcTri[2].y) + dstTri[1].y * (srcTri[2].y - srcTri[0].y) + dstTri[2].y * (srcTri[0].y - srcTri[1].y)) / denom;
+  const c = (dstTri[0].x * (srcTri[2].x - srcTri[1].x) + dstTri[1].x * (srcTri[0].x - srcTri[2].x) + dstTri[2].x * (srcTri[1].x - srcTri[0].x)) / denom;
+  const d = (dstTri[0].y * (srcTri[2].x - srcTri[1].x) + dstTri[1].y * (srcTri[0].x - srcTri[2].x) + dstTri[2].y * (srcTri[1].x - srcTri[0].x)) / denom;
+  const e = (dstTri[0].x * (srcTri[1].x * srcTri[2].y - srcTri[2].x * srcTri[1].y)
+    + dstTri[1].x * (srcTri[2].x * srcTri[0].y - srcTri[0].x * srcTri[2].y)
+    + dstTri[2].x * (srcTri[0].x * srcTri[1].y - srcTri[1].x * srcTri[0].y)) / denom;
+  const f = (dstTri[0].y * (srcTri[1].x * srcTri[2].y - srcTri[2].x * srcTri[1].y)
+    + dstTri[1].y * (srcTri[2].x * srcTri[0].y - srcTri[0].x * srcTri[2].y)
+    + dstTri[2].y * (srcTri[0].x * srcTri[1].y - srcTri[1].x * srcTri[0].y)) / denom;
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(dstTri[0].x, dstTri[0].y);
+  ctx.lineTo(dstTri[1].x, dstTri[1].y);
+  ctx.lineTo(dstTri[2].x, dstTri[2].y);
+  ctx.closePath();
+  ctx.clip();
+  ctx.transform(a, b, c, d, e, f);
+  ctx.drawImage(source, 0, 0);
+  ctx.restore();
+}
+
+function _buildSourceGuideGrid(sourceQuad, cellsX = 3, cellsY = 3) {
+  const guides = [];
+  const normalizedCellsX = Math.max(1, Math.round(cellsX || 3));
+  const normalizedCellsY = Math.max(1, Math.round(cellsY || 3));
+  for (let i = 1; i < normalizedCellsY; i++) {
+    const t = i / normalizedCellsY;
+    const left = _lerpPoint(sourceQuad[0], sourceQuad[3], t);
+    const right = _lerpPoint(sourceQuad[1], sourceQuad[2], t);
+    guides.push([left, right]);
+  }
+  for (let i = 1; i < normalizedCellsX; i++) {
+    const t = i / normalizedCellsX;
+    const bottom = _lerpPoint(sourceQuad[0], sourceQuad[1], t);
+    const top = _lerpPoint(sourceQuad[3], sourceQuad[2], t);
+    guides.push([bottom, top]);
+  }
+  return guides;
+}
+
+function _isIdentitySourceQuad(sourceQuad) {
+  const base = [
+    { u: 0, v: 0 },
+    { u: 1, v: 0 },
+    { u: 1, v: 1 },
+    { u: 0, v: 1 },
+  ];
+  return base.every((point, index) => Math.abs((sourceQuad[index]?.u ?? 0) - point.u) <= 1e-9
+    && Math.abs((sourceQuad[index]?.v ?? 0) - point.v) <= 1e-9);
+}
+
 /**
  * WasmRenderer — WASM-backed renderer for 2D and 3D views.
  *
@@ -238,6 +333,8 @@ export class WasmRenderer {
     // CSS pixel dimensions (used for coordinate mapping)
     this._cssWidth = width;
     this._cssHeight = height;
+    this._last2DScene = null;
+    this._last2DOverlays = null;
 
     // Compatibility shim: renderer.domElement
     this.renderer = { domElement: this.canvas };
@@ -332,6 +429,8 @@ export class WasmRenderer {
     this._sketchEdgeVertexCount = 0;
     this._sketchInactiveEdges = null;     // Float32Array: inactive sketch edges (grey)
     this._sketchInactiveEdgeVertexCount = 0;
+    this._partSketchImages = [];
+    this._imageResources = new Map();
 
     // Selected faces in 3D mode (multi-select)
     this._selectedFaceIndices = new Set();
@@ -408,6 +507,10 @@ export class WasmRenderer {
     // Render Part mesh directly via WebGL (after WASM pass)
     if (this.mode === '3d' || this._sketchPlane) {
       this._renderMeshOverlay();
+    }
+
+    if (this.mode === '3d' && !this._sketchPlane) {
+      this._renderPartSketchImagesOverlay();
     }
 
     if (this.onPostRender) this.onPostRender();
@@ -1816,6 +1919,8 @@ export class WasmRenderer {
    */
   render2DScene(scene, overlays = {}) {
     if (!scene || !this._ready) return;
+    this._last2DScene = scene;
+    this._last2DOverlays = overlays;
 
     const wasm = this.wasm;
     wasm.clearEntities();
@@ -2153,6 +2258,13 @@ export class WasmRenderer {
     const sketchPtToScreen = in3DSketch
       ? (lx, ly) => this.sketchToScreen(lx, ly) || { x: 0, y: 0 }
       : (lx, ly) => ({ x: worldToScreenX(lx), y: worldToScreenY(ly) });
+
+    this._renderSceneImageOverlay(ctx, scene, {
+      isLayerVisible,
+      sketchPtToScreen,
+      selectedEntityIds: new Set((scene.images || []).filter((image) => image.selected).map((image) => image.id)),
+      hoverEntity,
+    });
 
     // --- Dimensions (text overlay) ---
     if (allDimensionsVisible && scene.dimensions) {
@@ -2728,6 +2840,336 @@ export class WasmRenderer {
     this._buildSketchWireframes(part);
   }
 
+  _getImageResource(dataUrl) {
+    if (!dataUrl) return null;
+    let entry = this._imageResources.get(dataUrl);
+    if (entry) return entry;
+    const image = new Image();
+    entry = {
+      image,
+      ready: false,
+      failed: false,
+      processed: new Map(),
+      expanded: new Map(),
+    };
+    image.onload = () => {
+      entry.ready = true;
+      entry.failed = false;
+      entry.processed.clear();
+      entry.expanded.clear();
+      if (this._last2DScene) {
+        this.render2DScene(this._last2DScene, this._last2DOverlays || {});
+      }
+    };
+    image.onerror = () => {
+      entry.ready = false;
+      entry.failed = true;
+      entry.processed.clear();
+      entry.expanded.clear();
+    };
+    image.src = dataUrl;
+    this._imageResources.set(dataUrl, entry);
+    return entry;
+  }
+
+  _getAdjustedImageKey(primitive) {
+    return [
+      primitive.brightness || 0,
+      primitive.contrast || 0,
+      primitive.gamma || 1,
+      primitive.quantization || 0,
+    ].join('|');
+  }
+
+  _getAdjustedImageSource(primitive) {
+    const entry = this._getImageResource(primitive.dataUrl);
+    if (!entry || !entry.ready || !entry.image.naturalWidth || !entry.image.naturalHeight) return null;
+
+    const key = this._getAdjustedImageKey(primitive);
+
+    if (key === '0|0|1|0') return entry.image;
+    if (entry.processed.has(key)) return entry.processed.get(key);
+
+    const canvas = document.createElement('canvas');
+    canvas.width = entry.image.naturalWidth;
+    canvas.height = entry.image.naturalHeight;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(entry.image, 0, 0);
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const data = imageData.data;
+    const brightness = Math.max(-1, Math.min(1, primitive.brightness || 0)) * 255;
+    const contrastFactor = Math.max(0, 1 + (primitive.contrast || 0));
+    const gamma = Math.max(0.01, primitive.gamma || 1);
+    const quantLevels = primitive.quantization && primitive.quantization > 1 ? primitive.quantization : 0;
+    const quantScale = quantLevels > 1 ? 255 / (quantLevels - 1) : 0;
+
+    for (let i = 0; i < data.length; i += 4) {
+      for (let c = 0; c < 3; c++) {
+        let value = data[i + c] + brightness;
+        value = ((value - 127.5) * contrastFactor) + 127.5;
+        value = 255 * Math.pow(Math.max(0, Math.min(1, value / 255)), 1 / gamma);
+        if (quantLevels > 1) {
+          value = Math.round(value / quantScale) * quantScale;
+        }
+        data[i + c] = Math.max(0, Math.min(255, value));
+      }
+    }
+
+    ctx.putImageData(imageData, 0, 0);
+    entry.processed.set(key, canvas);
+    return canvas;
+  }
+
+  _resolvePerspectiveSource(primitive, source, sourceQuad) {
+    if (!primitive || !source || !Array.isArray(sourceQuad) || sourceQuad.length !== 4) {
+      return { source, normalizedQuad: sourceQuad };
+    }
+
+    const bounds = typeof primitive.getSourceQuadBounds === 'function'
+      ? primitive.getSourceQuadBounds(sourceQuad)
+      : {
+        minU: Math.min(...sourceQuad.map((point) => point.u || 0)),
+        maxU: Math.max(...sourceQuad.map((point) => point.u || 0)),
+        minV: Math.min(...sourceQuad.map((point) => point.v || 0)),
+        maxV: Math.max(...sourceQuad.map((point) => point.v || 0)),
+        spanU: Math.max(1e-9, Math.max(...sourceQuad.map((point) => point.u || 0)) - Math.min(...sourceQuad.map((point) => point.u || 0))),
+        spanV: Math.max(1e-9, Math.max(...sourceQuad.map((point) => point.v || 0)) - Math.min(...sourceQuad.map((point) => point.v || 0))),
+      };
+    const needsExpansion = bounds.minU < -1e-9 || bounds.maxU > 1 + 1e-9 || bounds.minV < -1e-9 || bounds.maxV > 1 + 1e-9;
+    if (!needsExpansion) {
+      return { source, normalizedQuad: sourceQuad };
+    }
+
+    const entry = this._getImageResource(primitive.dataUrl);
+    if (!entry) {
+      return { source, normalizedQuad: sourceQuad };
+    }
+
+    const cacheKey = [
+      this._getAdjustedImageKey(primitive),
+      bounds.minU.toFixed(6),
+      bounds.maxU.toFixed(6),
+      bounds.minV.toFixed(6),
+      bounds.maxV.toFixed(6),
+    ].join('|');
+    if (entry.expanded.has(cacheKey)) {
+      return entry.expanded.get(cacheKey);
+    }
+
+    const sourceWidth = source.width || source.naturalWidth || 1;
+    const sourceHeight = source.height || source.naturalHeight || 1;
+    const spanU = Math.max(1e-9, bounds.spanU);
+    const spanV = Math.max(1e-9, bounds.spanV);
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.ceil(sourceWidth * spanU));
+    canvas.height = Math.max(1, Math.ceil(sourceHeight * spanV));
+    const expandedCtx = canvas.getContext('2d');
+    const pixelsPerUnitU = canvas.width / spanU;
+    const pixelsPerUnitV = canvas.height / spanV;
+    const drawX = -bounds.minU * pixelsPerUnitU;
+    const drawY = (bounds.maxV - 1) * pixelsPerUnitV;
+    const drawWidth = pixelsPerUnitU;
+    const drawHeight = pixelsPerUnitV;
+    expandedCtx.drawImage(source, drawX, drawY, drawWidth, drawHeight);
+
+    const normalizedQuad = typeof primitive.normalizeSourceQuadToBounds === 'function'
+      ? primitive.normalizeSourceQuadToBounds(sourceQuad, bounds)
+      : sourceQuad;
+    const result = { source: canvas, normalizedQuad };
+    entry.expanded.set(cacheKey, result);
+    return result;
+  }
+
+  _drawSketchImageOverlay(ctx, primitive, projectPoint, options = {}) {
+    const source = this._getAdjustedImageSource(primitive);
+    if (!source) return false;
+
+    const destQuadWorld = primitive.getWorldQuad();
+    const destQuadScreen = destQuadWorld.map((point) => projectPoint(point.x, point.y));
+    if (destQuadScreen.some((point) => !point || !Number.isFinite(point.x) || !Number.isFinite(point.y))) {
+      return false;
+    }
+
+    const renderSourceQuad = typeof primitive.getRenderSourceQuad === 'function'
+      ? primitive.getRenderSourceQuad()
+      : primitive.sourceQuad;
+    const guideSourceQuad = typeof primitive.getPerspectiveGuideQuad === 'function'
+      ? primitive.getPerspectiveGuideQuad()
+      : primitive.sourceQuad;
+    const resolvedSource = this._resolvePerspectiveSource(primitive, source, renderSourceQuad);
+    const renderSource = resolvedSource.source;
+    const normalizedRenderSourceQuad = resolvedSource.normalizedQuad;
+    const sourceQuadPixels = _sourceQuadToPixels(normalizedRenderSourceQuad, renderSource.width || renderSource.naturalWidth, renderSource.height || renderSource.naturalHeight);
+    const useWarp = primitive.rotation || primitive.scaleX !== 1 || primitive.scaleY !== 1 || !_isIdentitySourceQuad(renderSourceQuad);
+
+    ctx.save();
+    ctx.globalAlpha = Math.max(0.05, Math.min(1, primitive.opacity || 0.8));
+    if (!useWarp) {
+      const minX = Math.min(...destQuadScreen.map((point) => point.x));
+      const maxX = Math.max(...destQuadScreen.map((point) => point.x));
+      const minY = Math.min(...destQuadScreen.map((point) => point.y));
+      const maxY = Math.max(...destQuadScreen.map((point) => point.y));
+      ctx.drawImage(renderSource, minX, minY, maxX - minX, maxY - minY);
+    } else {
+      const subdivisions = primitive.perspectiveEnabled ? 10 : 4;
+      for (let iy = 0; iy < subdivisions; iy++) {
+        const v0 = iy / subdivisions;
+        const v1 = (iy + 1) / subdivisions;
+        for (let ix = 0; ix < subdivisions; ix++) {
+          const u0 = ix / subdivisions;
+          const u1 = (ix + 1) / subdivisions;
+          const src00 = _bilinearQuadPoint(sourceQuadPixels, u0, v0);
+          const src10 = _bilinearQuadPoint(sourceQuadPixels, u1, v0);
+          const src11 = _bilinearQuadPoint(sourceQuadPixels, u1, v1);
+          const src01 = _bilinearQuadPoint(sourceQuadPixels, u0, v1);
+          const dst00 = _bilinearQuadPoint(destQuadScreen, u0, v0);
+          const dst10 = _bilinearQuadPoint(destQuadScreen, u1, v0);
+          const dst11 = _bilinearQuadPoint(destQuadScreen, u1, v1);
+          const dst01 = _bilinearQuadPoint(destQuadScreen, u0, v1);
+          _transformSourceTriangleToDest(ctx, renderSource, [src00, src10, src11], [dst00, dst10, dst11]);
+          _transformSourceTriangleToDest(ctx, renderSource, [src00, src11, src01], [dst00, dst11, dst01]);
+        }
+      }
+    }
+    ctx.restore();
+
+    if (options.drawOutline) {
+      ctx.save();
+      ctx.strokeStyle = options.outlineColor || '#00bfff';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(destQuadScreen[0].x, destQuadScreen[0].y);
+      for (let i = 1; i < destQuadScreen.length; i++) {
+        ctx.lineTo(destQuadScreen[i].x, destQuadScreen[i].y);
+      }
+      ctx.closePath();
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    if (options.drawPerspectiveGuides) {
+      const handlePoints = guideSourceQuad.map((point) => _bilinearQuadPoint(destQuadScreen, point.u, point.v));
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255, 196, 64, 0.9)';
+      ctx.fillStyle = 'rgba(255, 196, 64, 0.95)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(handlePoints[0].x, handlePoints[0].y);
+      for (let i = 1; i < handlePoints.length; i++) ctx.lineTo(handlePoints[i].x, handlePoints[i].y);
+      ctx.closePath();
+      ctx.stroke();
+      for (const [a, b] of _buildSourceGuideGrid(handlePoints, primitive.gridCellsX || 3, primitive.gridCellsY || 3)) {
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+      }
+      for (const point of handlePoints) {
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, 4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    return true;
+  }
+
+  _renderSceneImageOverlay(ctx, scene, options = {}) {
+    if (!ctx || !scene?.images || scene.images.length === 0) return;
+    const isLayerVisible = options.isLayerVisible || (() => true);
+    const selectedIds = options.selectedEntityIds || new Set();
+    const hoverEntity = options.hoverEntity || null;
+    for (const image of scene.images) {
+      if (!image.visible || !isLayerVisible(image.layer)) continue;
+      this._drawSketchImageOverlay(ctx, image, options.sketchPtToScreen, {
+        drawOutline: selectedIds.has(image.id) || hoverEntity?.id === image.id,
+        outlineColor: selectedIds.has(image.id) ? '#00bfff' : '#7fd8ff',
+        drawPerspectiveGuides: typeof image.isPerspectiveEditing === 'function' && image.isPerspectiveEditing(),
+      });
+    }
+  }
+
+  _renderPartSketchImagesOverlay() {
+    const ctx = this.overlayCtx;
+    if (!ctx) return;
+    const width = this._cssWidth || this.container.clientWidth;
+    const height = this._cssHeight || this.container.clientHeight;
+    ctx.clearRect(0, 0, width, height);
+    if (!this._partSketchImages || this._partSketchImages.length === 0) return;
+
+    const projectPoint = (wx, wy, wz) => this.worldToScreen(wx, wy, wz);
+    for (const descriptor of this._partSketchImages) {
+      const { image, plane, selected } = descriptor;
+      const localQuad = image.getWorldQuad();
+      const worldQuad = localQuad.map((point) => ({
+        x: plane.origin.x + point.x * plane.xAxis.x + point.y * plane.yAxis.x,
+        y: plane.origin.y + point.x * plane.xAxis.y + point.y * plane.yAxis.y,
+        z: plane.origin.z + point.x * plane.xAxis.z + point.y * plane.yAxis.z,
+      }));
+      const temp = {
+        ...image,
+        getWorldQuad: () => worldQuad.map((point) => ({ x: point.x, y: point.y, z: point.z })),
+      };
+      this._drawPartSketchImageOverlay(ctx, temp, projectPoint, selected);
+    }
+  }
+
+  _drawPartSketchImageOverlay(ctx, image, projectPoint, selected) {
+    const source = this._getAdjustedImageSource(image);
+    if (!source) return false;
+
+    const destQuadWorld = image.getWorldQuad();
+    const destQuadScreen = destQuadWorld.map((point) => projectPoint(point.x, point.y, point.z));
+    if (destQuadScreen.some((point) => !point || !Number.isFinite(point.x) || !Number.isFinite(point.y))) {
+      return false;
+    }
+
+    const renderSourceQuad = typeof image.getRenderSourceQuad === 'function'
+      ? image.getRenderSourceQuad()
+      : image.sourceQuad;
+    const resolvedSource = this._resolvePerspectiveSource(image, source, renderSourceQuad);
+    const renderSource = resolvedSource.source;
+    const normalizedRenderSourceQuad = resolvedSource.normalizedQuad;
+    const sourceQuadPixels = _sourceQuadToPixels(normalizedRenderSourceQuad, renderSource.width || renderSource.naturalWidth, renderSource.height || renderSource.naturalHeight);
+    ctx.save();
+    ctx.globalAlpha = Math.max(0.05, Math.min(0.65, image.opacity || 0.8));
+    const subdivisions = image.perspectiveEnabled ? 10 : 4;
+    for (let iy = 0; iy < subdivisions; iy++) {
+      const v0 = iy / subdivisions;
+      const v1 = (iy + 1) / subdivisions;
+      for (let ix = 0; ix < subdivisions; ix++) {
+        const u0 = ix / subdivisions;
+        const u1 = (ix + 1) / subdivisions;
+        const src00 = _bilinearQuadPoint(sourceQuadPixels, u0, v0);
+        const src10 = _bilinearQuadPoint(sourceQuadPixels, u1, v0);
+        const src11 = _bilinearQuadPoint(sourceQuadPixels, u1, v1);
+        const src01 = _bilinearQuadPoint(sourceQuadPixels, u0, v1);
+        const dst00 = _bilinearQuadPoint(destQuadScreen, u0, v0);
+        const dst10 = _bilinearQuadPoint(destQuadScreen, u1, v0);
+        const dst11 = _bilinearQuadPoint(destQuadScreen, u1, v1);
+        const dst01 = _bilinearQuadPoint(destQuadScreen, u0, v1);
+        _transformSourceTriangleToDest(ctx, renderSource, [src00, src10, src11], [dst00, dst10, dst11]);
+        _transformSourceTriangleToDest(ctx, renderSource, [src00, src11, src01], [dst00, dst11, dst01]);
+      }
+    }
+    ctx.restore();
+
+    if (selected) {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(0, 191, 255, 0.9)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(destQuadScreen[0].x, destQuadScreen[0].y);
+      for (let i = 1; i < destQuadScreen.length; i++) ctx.lineTo(destQuadScreen[i].x, destQuadScreen[i].y);
+      ctx.closePath();
+      ctx.stroke();
+      ctx.restore();
+    }
+    return true;
+  }
+
   setDiagnosticBackfaceHatchEnabled(enabled) {
     this._diagnosticBackfaceHatchEnabled = !!enabled;
   }
@@ -2981,6 +3423,7 @@ export class WasmRenderer {
     this._sketchFaceTriangleCount = 0;
     this._sketchPickSegments = []; // per-feature line segments for picking
     this._sketchPickTriangles = []; // per-feature face triangles for picking
+    this._partSketchImages = [];
 
     const sketches = part.getSketches();
     if (!sketches || sketches.length === 0) return;
@@ -3009,6 +3452,19 @@ export class WasmRenderer {
       const sketch = sketchFeature.sketch;
       const plane = sketchFeature.plane;
       if (!sketch || !plane) continue;
+
+      if (sketch.images && sketch.images.length > 0) {
+        for (const image of sketch.images) {
+          if (!image.visible) continue;
+          if (!isSelected && !image.pinnedBackground) continue;
+          this._partSketchImages.push({
+            featureId: sketchFeature.id,
+            image,
+            plane,
+            selected: isSelected,
+          });
+        }
+      }
 
       const lines = isSelected ? selectedLines : (isActive ? activeLines : inactiveLines);
       const featureSegments = []; // collect world-space line segments for this feature
@@ -3697,6 +4153,7 @@ export class WasmRenderer {
     this._sketchFaceTriangleCount = 0;
     this._sketchPickSegments = [];
     this._sketchPickTriangles = [];
+    this._partSketchImages = [];
     this._renderedPart = null;
     this._activeSceneEdges = null;
     this._activeSceneEdgeVertexCount = 0;

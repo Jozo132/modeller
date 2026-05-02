@@ -69,6 +69,7 @@ class AppState {
       case 'circle':    if (!this.scene.circles.includes(entity)) this.scene.circles.push(entity); break;
       case 'arc':       if (!this.scene.arcs.includes(entity)) this.scene.arcs.push(entity); break;
       case 'spline':    if (!this.scene.splines.includes(entity)) this.scene.splines.push(entity); break;
+      case 'image':     if (!this.scene.images.includes(entity)) this.scene.images.push(entity); break;
       case 'text':      if (!this.scene.texts.includes(entity)) this.scene.texts.push(entity); break;
       case 'dimension': if (!this.scene.dimensions.includes(entity)) this.scene.dimensions.push(entity); break;
       case 'point':     if (!this.scene.points.includes(entity)) this.scene.points.push(entity); break;

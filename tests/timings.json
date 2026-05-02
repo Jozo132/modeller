@@ -63,6 +63,7 @@
     "test-classify-point-triangles.js": 0.487,
     "test-topo-serializer.js": 0.487,
     "test-stable-hash.js": 0.481,
+    "test-sketch-image-perspective.js": 0.468,
     "test-feature-revision.js": 0.443,
     "test-intersections-wasm-plane-plane.js": 0.436,
     "test-intersections-wasm-preload.js": 0.426,

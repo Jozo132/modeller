@@ -71,6 +71,11 @@ export class Sketch {
     return this.scene.addBezier(vertexDescs, options);
   }
 
+  addImage(dataUrl, x, y, width, height, options) {
+    this.modified = new Date();
+    return this.scene.addImage(dataUrl, x, y, width, height, options);
+  }
+
   // Constraint management
   addConstraint(c) {
     this.modified = new Date();
@@ -169,6 +174,7 @@ export class Sketch {
   get circles() { return this.scene.circles; }
   get splines() { return this.scene.splines; }
   get beziers() { return this.scene.beziers; }
+  get images() { return this.scene.images; }
   get constraints() { return this.scene.constraints; }
   get texts() { return this.scene.texts; }
   get dimensions() { return this.scene.dimensions; }

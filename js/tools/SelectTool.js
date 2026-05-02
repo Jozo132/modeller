@@ -39,6 +39,7 @@ export class SelectTool extends BaseTool {
     // Shape drag state
     this._dragShape = null;       // shape being dragged (segment / circle / arc)
     this._dragShapePts = [];      // non-fixed points of that shape
+    this._dragImageHandle = null; // { image, index }
 
     // Dimension drag state (repositioning the offset)
     this._dragDimension = null;   // DimensionPrimitive being dragged
@@ -64,6 +65,7 @@ export class SelectTool extends BaseTool {
     this._dragPoint = null;
     this._dragShape = null;
     this._dragShapePts = [];
+    this._dragImageHandle = null;
     this._dragDimension = null;
     this._snapCandidates = [];
     this._lineSnapCandidates = [];
@@ -105,6 +107,37 @@ export class SelectTool extends BaseTool {
     const shape = this._findClosestEntity(wx, wy, PICK_PX);
     if (shape) return { kind: 'shape', target: shape };
     return null;
+  }
+
+  _findSelectedImageHandle(wx, wy, pixelTolerance = PICK_PT_PX) {
+    const worldTol = pixelTolerance / this._effectiveZoom();
+    let best = null;
+    let bestDist = Infinity;
+    for (const entity of state.selectedEntities) {
+      if (!entity || entity.type !== 'image' || typeof entity.isPerspectiveEditing !== 'function' || !entity.isPerspectiveEditing() || typeof entity.getSourceHandlePoints !== 'function') continue;
+      const handles = entity.getSourceHandlePoints();
+      for (let index = 0; index < handles.length; index++) {
+        const handle = handles[index];
+        const dist = Math.hypot(handle.x - wx, handle.y - wy);
+        if (dist <= worldTol && dist < bestDist) {
+          bestDist = dist;
+          best = { image: entity, index };
+        }
+      }
+    }
+    return best;
+  }
+
+  _getPerspectiveEditingImage() {
+    return (state.scene?.images || []).find((entity) => entity && typeof entity.isPerspectiveEditing === 'function' && entity.isPerspectiveEditing()) || null;
+  }
+
+  _ensurePerspectiveEditingImageSelected(image) {
+    if (!image) return;
+    for (const entity of [...state.selectedEntities]) {
+      if (entity !== image) state.deselect(entity);
+    }
+    if (!image.selected) state.select(image);
   }
 
   // ------------------------------------------------------------------
@@ -278,8 +311,15 @@ export class SelectTool extends BaseTool {
 
   onClick(wx, wy, event) {
     // If we just finished a drag, suppress the click
-    if (this._dragPoint || this._dragShape || this._dragDimension) return;
+    if (this._dragPoint || this._dragShape || this._dragDimension || this._dragImageHandle) return;
     if (this._isDragging) return;
+
+    const perspectiveImage = this._getPerspectiveEditingImage();
+    if (perspectiveImage) {
+      this._ensurePerspectiveEditingImageSelected(perspectiveImage);
+      this.setStatus('Finish the active perspective edit first. Apply or Cancel it in Properties.');
+      return;
+    }
 
     const hit = this._hitTest(wx, wy);
 
@@ -299,6 +339,26 @@ export class SelectTool extends BaseTool {
 
   onMouseDown(wx, wy, sx, sy, event) {
     if (event.button !== 0) return;
+
+    const imageHandle = this._findSelectedImageHandle(wx, wy, PICK_PT_PX);
+    if (imageHandle) {
+      this._dragImageHandle = imageHandle;
+      this._dragPoint = null;
+      this._dragShape = null;
+      this._dragShapePts = [];
+      this._dragDimension = null;
+      this._dragTookSnapshot = false;
+      this._isDragging = false;
+      this._dragStart = { wx, wy, sx, sy };
+      return;
+    }
+
+    const perspectiveImage = this._getPerspectiveEditingImage();
+    if (perspectiveImage) {
+      this._ensurePerspectiveEditingImageSelected(perspectiveImage);
+      this.setStatus('Finish the active perspective edit first. Apply or Cancel it in Properties.');
+      return;
+    }
 
     // 1. Point takes priority
     const pt = this._findClosestPoint(wx, wy, PICK_PT_PX);
@@ -333,14 +393,16 @@ export class SelectTool extends BaseTool {
       return;
     }
 
-    // 3. Shape drag (segment / circle / arc)
+    // 3. Shape drag (segment / circle / arc / image)
     const shape = entity;
     if (shape && !_isFullyConstrained(shape)) {
       const movable = _shapePoints(shape).filter(p => !p.fixed);
-      if (movable.length > 0) {
+      const canTranslateDirectly = shape.type === 'image' && typeof shape.translate === 'function';
+      if (movable.length > 0 || canTranslateDirectly) {
         this._dragShape = shape;
         this._dragShapePts = movable;
         this._dragPoint = null;
+        this._dragImageHandle = null;
         this._dragTookSnapshot = false;
         this._isDragging = false;
         this._dragStart = { wx, wy, sx, sy };
@@ -354,10 +416,27 @@ export class SelectTool extends BaseTool {
     this._dragPoint = null;
     this._dragShape = null;
     this._dragShapePts = [];
+    this._dragImageHandle = null;
     this._dragDimension = null;
   }
 
   onMouseMove(wx, wy, sx, sy) {
+    // ---- Image handle drag in progress ----
+    if (this._dragImageHandle && this._dragStart) {
+      const dx = sx - this._dragStart.sx;
+      const dy = sy - this._dragStart.sy;
+      if (!this._isDragging && (Math.abs(dx) > DRAG_THRESHOLD || Math.abs(dy) > DRAG_THRESHOLD)) {
+        this._isDragging = true;
+      }
+      if (this._isDragging) {
+        const { image, index } = this._dragImageHandle;
+        const uv = image.worldToNormalized(wx, wy);
+        image.setPerspectiveDraftPoint(index, uv.u, uv.v);
+        state.emit('change');
+      }
+      return;
+    }
+
     // ---- Vertex drag in progress ----
     if (this._dragPoint && this._dragStart) {
       const dx = sx - this._dragStart.sx;
@@ -422,36 +501,41 @@ export class SelectTool extends BaseTool {
       if (this._isDragging) {
         const wdx = wx - this._dragStart.wx;
         const wdy = wy - this._dragStart.wy;
-        const savedFixed = this._dragShapePts.map(p => p.fixed);
-        for (const p of this._dragShapePts) {
-          p.x += wdx;
-          p.y += wdy;
-          p.fixed = true;
-        }
-        // Update reference so delta is cumulative
-        this._dragStart.wx = wx;
-        this._dragStart.wy = wy;
-        const result = state.scene.solve();
-        for (let i = 0; i < this._dragShapePts.length; i++) {
-          this._dragShapePts[i].fixed = savedFixed[i];
-        }
+        if (this._dragShapePts.length > 0) {
+          const savedFixed = this._dragShapePts.map(p => p.fixed);
+          for (const p of this._dragShapePts) {
+            p.x += wdx;
+            p.y += wdy;
+            p.fixed = true;
+          }
+          // Update reference so delta is cumulative
+          this._dragStart.wx = wx;
+          this._dragStart.wy = wy;
+          const result = state.scene.solve();
+          for (let i = 0; i < this._dragShapePts.length; i++) {
+            this._dragShapePts[i].fixed = savedFixed[i];
+          }
 
-        // If the solver didn't converge (shape dragged beyond
-        // constraint limits), re-solve with points unfixed so
-        // constraints pull them back to the nearest valid positions.
-        if (!result.converged) {
-          state.scene.solve();
-        }
+          if (!result.converged) {
+            state.scene.solve();
+          }
 
-        // Snap-to-coincidence detection for all movable points of the shape
-        if (state.autoCoincidence) {
-          this._snapCandidates = this._findSnapCandidates(this._dragShapePts);
-          this._lineSnapCandidates = this._findLineSnapCandidates(this._dragShapePts);
+          if (state.autoCoincidence) {
+            this._snapCandidates = this._findSnapCandidates(this._dragShapePts);
+            this._lineSnapCandidates = this._findLineSnapCandidates(this._dragShapePts);
+          } else {
+            this._snapCandidates = [];
+            this._lineSnapCandidates = [];
+          }
+          this._alignmentGuides = this._findAlignmentGuides(this._dragShapePts);
         } else {
+          this._dragShape.translate(wdx, wdy);
+          this._dragStart.wx = wx;
+          this._dragStart.wy = wy;
           this._snapCandidates = [];
           this._lineSnapCandidates = [];
+          this._alignmentGuides = [];
         }
-        this._alignmentGuides = this._findAlignmentGuides(this._dragShapePts);
 
         state.emit('change');
       }
@@ -481,6 +565,18 @@ export class SelectTool extends BaseTool {
   }
 
   onMouseUp(wx, wy, event) {
+    // ---- Finish image handle drag ----
+    if (this._dragImageHandle) {
+      if (this._isDragging) {
+        state.emit('change');
+      }
+      this._dragImageHandle = null;
+      this._isDragging = false;
+      this._dragStart = null;
+      this._dragTookSnapshot = false;
+      return;
+    }
+
     // ---- Finish vertex drag ----
     if (this._dragPoint) {
       if (this._isDragging) {
@@ -520,15 +616,15 @@ export class SelectTool extends BaseTool {
     // ---- Finish shape drag ----
     if (this._dragShape) {
       if (this._isDragging) {
-        // Recompute snap candidates at the current positions to guard
-        // against stale data from deferred mouse processing.
-        if (state.autoCoincidence) {
-          this._snapCandidates = this._findSnapCandidates(this._dragShapePts);
-          this._lineSnapCandidates = this._findLineSnapCandidates(this._dragShapePts);
+        if (this._dragShapePts.length > 0) {
+          if (state.autoCoincidence) {
+            this._snapCandidates = this._findSnapCandidates(this._dragShapePts);
+            this._lineSnapCandidates = this._findLineSnapCandidates(this._dragShapePts);
+          }
+          this._applySnapCandidates();
+          this._applyLineSnapCandidates();
+          state.scene.solve();
         }
-        this._applySnapCandidates();
-        this._applyLineSnapCandidates();
-        state.scene.solve();
         state.emit('change');
       }
       this._dragShape = null;
@@ -583,6 +679,7 @@ export class SelectTool extends BaseTool {
     this._dragPoint = null;
     this._dragShape = null;
     this._dragShapePts = [];
+    this._dragImageHandle = null;
     this._dragDimension = null;
     this._snapCandidates = [];
     this._lineSnapCandidates = [];

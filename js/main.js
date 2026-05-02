@@ -68,6 +68,21 @@ const RECORDING_BAR_VISIBLE_KEY = 'cad-modeller-recording-bar-visible';
 const COMMAND_BAR_VISIBLE_KEY = 'cad-modeller-command-bar-visible';
 const TESS_QUALITY_STORAGE_KEY = 'cad-modeller-tessellation-quality-preset';
 const TESS_QUALITY_PRESETS = new Set(['draft', 'normal', 'fine', 'ultra']);
+const IMAGE_PROPERTY_SECTIONS = [
+  { key: 'overview', label: 'Overview' },
+  { key: 'transform', label: 'Transform' },
+  { key: 'appearance', label: 'Appearance' },
+  { key: 'perspective', label: 'Perspective' },
+];
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
 function readPersistedTessellationPreset() {
   try {
@@ -123,6 +138,7 @@ class App {
     this._invisibleEdgesVisible = this._loadInvisibleEdgesVisible();
     this._meshTriangleOverlayMode = this._loadMeshTriangleOverlayMode();
     this._normalColorShadingEnabled = this._loadNormalColorShading();
+    this._imagePropertySections = new Map();
     this._scenes = []; // named camera presets for repeatable renders
     this._sceneManagerOpen = false;
     this._recordingBarVisible = localStorage.getItem(RECORDING_BAR_VISIBLE_KEY) === 'true';
@@ -751,6 +767,10 @@ class App {
   setActiveTool(name) {
     // Block tool changes during motion playback (except select)
     if (motionAnalysis.isRunning && name !== 'select') return;
+    if (this._isPerspectiveEditLocked() && name !== 'select') {
+      this._blockPerspectiveEditModeChange();
+      return;
+    }
     // Block drawing/editing tools when not in sketch-on-plane mode
     // (user must enter a sketch on a plane first to use drawing tools)
     if (this._workspaceMode === 'part' && !this._sketchingOnPlane && name !== 'select') {
@@ -765,6 +785,30 @@ class App {
     this._recorder.toolActivated(name);
     this._updateToolbarHighlight(name);
     this._scheduleRender();
+  }
+
+  _getPerspectiveEditingImage() {
+    return (state.scene?.images || []).find((image) => image && typeof image.isPerspectiveEditing === 'function' && image.isPerspectiveEditing()) || null;
+  }
+
+  _isPerspectiveEditLocked() {
+    return !!this._getPerspectiveEditingImage();
+  }
+
+  _blockPerspectiveEditModeChange() {
+    this.setStatus('Finish the active perspective edit first. Apply or Cancel it in Properties.');
+  }
+
+  _updatePerspectiveEditModeLockUi() {
+    const locked = this._isPerspectiveEditLocked();
+    document.body.classList.toggle('perspective-edit-lock', locked);
+    document.querySelectorAll('#toolbar button[data-tool]').forEach((button) => {
+      button.disabled = locked && button.dataset.tool !== 'select';
+    });
+    const exitSketchButton = document.getElementById('btn-exit-sketch');
+    if (exitSketchButton) {
+      exitSketchButton.disabled = locked;
+    }
   }
 
   _updateToolbarHighlight(name) {
@@ -2001,6 +2045,7 @@ class App {
           case 'import-step': this._importSTEPFile(); break;
           case 'export-step': this._exportSTEPFile(); break;
           case 'import-dxf': this._importDXFToSketch(); break;
+          case 'import-image': this._importImageToSketch(); break;
           case 'export-dxf': this._exportDXFFromFaces(); break;
           case 'export-stl': this._exportSTLFile(); break;
           case 'import-svg': this._importSVGToSketch(); break;
@@ -3729,12 +3774,14 @@ class App {
   _bindStateEvents() {
     state.on('change', () => {
       this._sceneVersion += 1;
+      this._updatePerspectiveEditModeLockUi();
       this._scheduleRender();
       this._rebuildLeftPanel();
       debouncedSave();
     });
     state.on('selection:change', (sel) => {
       this._sceneVersion += 1;
+      this._updatePerspectiveEditModeLockUi();
       this._updatePropertiesPanel(sel);
       this._rebuildLeftPanel();
       this._scheduleRender();
@@ -3756,12 +3803,23 @@ class App {
   // --- Properties panel ---
   _updatePropertiesPanel(selection) {
     const panel = document.getElementById('properties-content');
+    if (!panel) return;
+    const perspectiveEditingImage = this._getPerspectiveEditingImage();
+    if (perspectiveEditingImage && (!selection || selection.length !== 1 || selection[0] !== perspectiveEditingImage)) {
+      selection = [perspectiveEditingImage];
+    }
     if (!selection || selection.length === 0) {
       panel.innerHTML = '<p class="hint">Select an entity to view properties</p>';
       return;
     }
     if (selection.length === 1) {
       const e = selection[0];
+      if (e.type === 'image') {
+        panel.innerHTML = this._renderImagePropertiesPanel(e);
+        this._bindImagePropertyControls(panel, e);
+        this._scheduleRender();
+        return;
+      }
       const typeName = e.type.charAt(0).toUpperCase() + e.type.slice(1);
       let html = `<div class="prop-row"><label>Type</label><span>${typeName}</span></div>`;
       html += `<div class="prop-row"><label>Layer</label><span>${e.layer}</span></div>`;
@@ -3828,6 +3886,276 @@ class App {
       panel.innerHTML = `<p class="hint">${selection.length} entities selected</p>`;
     }
     this._scheduleRender();
+  }
+
+  _getImagePropertySection(image) {
+    const key = image ? this._imagePropertySections.get(image.id) : null;
+    return IMAGE_PROPERTY_SECTIONS.some((section) => section.key === key) ? key : IMAGE_PROPERTY_SECTIONS[0].key;
+  }
+
+  _setImagePropertySection(image, key) {
+    if (!image) return;
+    if (!IMAGE_PROPERTY_SECTIONS.some((section) => section.key === key)) return;
+    this._imagePropertySections.set(image.id, key);
+  }
+
+  _renderImagePropertiesPanel(image) {
+    const sectionKey = this._getImagePropertySection(image);
+    const currentIndex = Math.max(0, IMAGE_PROPERTY_SECTIONS.findIndex((section) => section.key === sectionKey));
+    const currentSection = IMAGE_PROPERTY_SECTIONS[currentIndex] || IMAGE_PROPERTY_SECTIONS[0];
+    const pixels = image.naturalWidth && image.naturalHeight
+      ? `${image.naturalWidth} × ${image.naturalHeight}`
+      : 'Unknown';
+    const displayedSize = `${Math.abs(image.width * image.scaleX).toFixed(2)} × ${Math.abs(image.height * image.scaleY).toFixed(2)}`;
+    const isPerspectiveEditing = typeof image.isPerspectiveEditing === 'function' && image.isPerspectiveEditing();
+    const hasAppliedPerspective = typeof image.hasAppliedPerspectiveCorrection === 'function'
+      ? image.hasAppliedPerspectiveCorrection()
+      : !!image.perspectiveEnabled;
+    const perspectiveStatus = isPerspectiveEditing
+      ? 'Draft edit active'
+      : (hasAppliedPerspective ? 'Applied correction' : 'Original projection');
+    const sectionButtons = IMAGE_PROPERTY_SECTIONS.map((section) => {
+      const activeClass = section.key === currentSection.key ? ' active' : '';
+      return `<button type="button" class="image-props-tab${activeClass}" data-image-section="${section.key}">${section.label}</button>`;
+    }).join('');
+
+    return `
+      <div class="image-props-panel">
+        <div class="image-props-header">
+          <div class="image-props-title">${escapeHtml(image.name || 'Reference Image')}</div>
+          <div class="image-props-subtitle">${currentSection.label} ${currentIndex + 1}/${IMAGE_PROPERTY_SECTIONS.length}${isPerspectiveEditing ? ' · draft handles live in sketch' : ''}</div>
+        </div>
+        <div class="image-props-nav">
+          <button type="button" class="app-modal-btn" data-image-nav="prev" ${currentIndex === 0 ? 'disabled' : ''}>Back</button>
+          <div class="image-props-tabs">${sectionButtons}</div>
+          <button type="button" class="app-modal-btn" data-image-nav="next" ${currentIndex === IMAGE_PROPERTY_SECTIONS.length - 1 ? 'disabled' : ''}>Next</button>
+        </div>
+        <div class="image-props-summary">
+          <div class="prop-row"><label>ID</label><span>${image.id}</span></div>
+          <div class="prop-row"><label>Layer</label><span>${escapeHtml(image.layer || 'default')}</span></div>
+          <div class="prop-row"><label>Pixels</label><span>${pixels}</span></div>
+          <div class="prop-row"><label>Displayed Size</label><span>${displayedSize}</span></div>
+          <div class="prop-row"><label>Perspective</label><span>${perspectiveStatus}</span></div>
+        </div>
+        <hr/>
+        ${this._renderImagePropertySectionContent(image, currentSection.key, { perspectiveStatus, isPerspectiveEditing, hasAppliedPerspective })}
+      </div>
+    `;
+  }
+
+  _renderImagePropertySectionContent(image, sectionKey, context) {
+    if (sectionKey === 'overview') {
+      return `
+        <div class="prop-row"><label>Name</label><input id="prop-image-name" type="text" value="${escapeHtml(image.name || '')}" /></div>
+        <div class="prop-row"><label>Base Width</label><span>${image.width.toFixed(2)}</span></div>
+        <div class="prop-row"><label>Base Height</label><span>${image.height.toFixed(2)}</span></div>
+        <div class="prop-row"><label>Rotation</label><span>${image.rotation.toFixed(1)}°</span></div>
+        <div class="prop-row"><label>Pin Background</label><input id="prop-image-pinned" type="checkbox" ${image.pinnedBackground ? 'checked' : ''} /></div>
+      `;
+    }
+
+    if (sectionKey === 'transform') {
+      return `
+        <div class="prop-row"><label>X</label><input id="prop-image-x" type="number" step="0.1" value="${image.x}" /></div>
+        <div class="prop-row"><label>Y</label><input id="prop-image-y" type="number" step="0.1" value="${image.y}" /></div>
+        <div class="prop-row"><label>Rotation</label><input id="prop-image-rotation" type="number" step="1" value="${image.rotation}" /></div>
+        <div class="prop-row"><label>Scale X</label><input id="prop-image-scale-x" type="number" min="0.01" step="0.05" value="${image.scaleX}" /></div>
+        <div class="prop-row"><label>Scale Y</label><input id="prop-image-scale-y" type="number" min="0.01" step="0.05" value="${image.scaleY}" /></div>
+      `;
+    }
+
+    if (sectionKey === 'appearance') {
+      return `
+        <div class="prop-row"><label>Opacity</label><input id="prop-image-opacity" type="number" min="0.05" max="1" step="0.05" value="${image.opacity}" /></div>
+        <div class="prop-row"><label>Brightness</label><input id="prop-image-brightness" type="number" min="-1" max="1" step="0.05" value="${image.brightness}" /></div>
+        <div class="prop-row"><label>Contrast</label><input id="prop-image-contrast" type="number" min="-0.95" max="2" step="0.05" value="${image.contrast}" /></div>
+        <div class="prop-row"><label>Gamma</label><input id="prop-image-gamma" type="number" min="0.1" max="4" step="0.05" value="${image.gamma}" /></div>
+        <div class="prop-row"><label>Quantize</label><input id="prop-image-quantization" type="number" min="0" max="64" step="1" value="${image.quantization}" /></div>
+      `;
+    }
+
+    const startLabel = context.isPerspectiveEditing
+      ? 'Editing In Sketch'
+      : (context.hasAppliedPerspective ? 'Edit Applied Perspective' : 'Start Perspective Edit');
+    const gridCellsX = Math.max(1, Math.round(image.gridCellsX || 3));
+    const gridCellsY = Math.max(1, Math.round(image.gridCellsY || 3));
+
+    return `
+      <div class="image-props-note">Drag the four gold handles in the sketch to place the source grid. The image stays on its original projection until you press Apply. Apply scales the corrected image to the grid width and height below, then anchors its bottom-left corner at the sketch origin.</div>
+      <div class="prop-row"><label>Status</label><span>${context.perspectiveStatus}</span></div>
+      <div class="prop-row"><label>Grid Width</label><input id="prop-image-grid-width" type="number" min="0.01" step="0.1" value="${image.gridWidth || image.width}" /></div>
+      <div class="prop-row"><label>Grid Height</label><input id="prop-image-grid-height" type="number" min="0.01" step="0.1" value="${image.gridHeight || image.height}" /></div>
+      <div class="prop-row prop-row-stepper"><label>Cells Wide</label><div class="image-stepper"><button type="button" class="image-stepper-btn" data-image-stepper="grid-cells-x:-1">-</button><input id="prop-image-grid-cells-x" type="number" min="1" step="1" value="${gridCellsX}" /><button type="button" class="image-stepper-btn" data-image-stepper="grid-cells-x:1">+</button></div></div>
+      <div class="prop-row prop-row-stepper"><label>Cells High</label><div class="image-stepper"><button type="button" class="image-stepper-btn" data-image-stepper="grid-cells-y:-1">-</button><input id="prop-image-grid-cells-y" type="number" min="1" step="1" value="${gridCellsY}" /><button type="button" class="image-stepper-btn" data-image-stepper="grid-cells-y:1">+</button></div></div>
+      <div class="image-props-actions">
+        <button id="prop-image-start-perspective" type="button" class="app-modal-btn" ${context.isPerspectiveEditing ? 'disabled' : ''}>${startLabel}</button>
+        <button id="prop-image-apply-perspective" type="button" class="app-modal-btn primary" ${context.isPerspectiveEditing ? '' : 'disabled'}>Apply Perspective</button>
+      </div>
+      <div class="image-props-actions">
+        <button id="prop-image-cancel-perspective" type="button" class="app-modal-btn" ${context.isPerspectiveEditing ? '' : 'disabled'}>Cancel Edit</button>
+        <button id="prop-image-reset-perspective" type="button" class="app-modal-btn" ${context.isPerspectiveEditing || context.hasAppliedPerspective ? '' : 'disabled'}>Reset Applied Perspective</button>
+      </div>
+      <div class="image-props-actions">
+        <button id="prop-image-rectify" type="button" class="app-modal-btn">Rectify To Grid @ Origin</button>
+      </div>
+    `;
+  }
+
+  _bindImagePropertyControls(panel, image) {
+    const refreshPanel = () => this._updatePropertiesPanel([image]);
+    const commit = (mutate, refresh = true) => {
+      takeSnapshot();
+      mutate();
+      state.emit('change');
+      this._scheduleRender();
+      if (refresh) refreshPanel();
+    };
+    const bindNumber = (selector, apply) => {
+      const input = panel.querySelector(selector);
+      if (!input) return;
+      input.addEventListener('change', () => {
+        const value = parseFloat(input.value);
+        if (!Number.isFinite(value)) return;
+        commit(() => apply(value));
+      });
+    };
+    const bindInteger = (selector, apply) => {
+      const input = panel.querySelector(selector);
+      if (!input) return;
+      input.addEventListener('change', () => {
+        const value = parseInt(input.value, 10);
+        if (!Number.isFinite(value)) return;
+        commit(() => apply(value));
+      });
+    };
+
+    const nameInput = panel.querySelector('#prop-image-name');
+    if (nameInput) {
+      nameInput.addEventListener('change', () => {
+        commit(() => {
+          image.name = nameInput.value.trim() || 'Reference Image';
+        });
+      });
+    }
+
+    panel.querySelectorAll('[data-image-section]').forEach((button) => {
+      button.addEventListener('click', () => {
+        this._setImagePropertySection(image, button.dataset.imageSection);
+        refreshPanel();
+      });
+    });
+
+    panel.querySelectorAll('[data-image-nav]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const direction = button.dataset.imageNav === 'next' ? 1 : -1;
+        const currentIndex = Math.max(0, IMAGE_PROPERTY_SECTIONS.findIndex((section) => section.key === this._getImagePropertySection(image)));
+        const nextIndex = Math.max(0, Math.min(IMAGE_PROPERTY_SECTIONS.length - 1, currentIndex + direction));
+        if (nextIndex === currentIndex) return;
+        this._setImagePropertySection(image, IMAGE_PROPERTY_SECTIONS[nextIndex].key);
+        refreshPanel();
+      });
+    });
+
+    bindNumber('#prop-image-x', (value) => { image.x = value; });
+    bindNumber('#prop-image-y', (value) => { image.y = value; });
+    bindNumber('#prop-image-rotation', (value) => { image.rotation = value; });
+    bindNumber('#prop-image-scale-x', (value) => { image.scaleX = Math.max(0.01, value); });
+    bindNumber('#prop-image-scale-y', (value) => { image.scaleY = Math.max(0.01, value); });
+    bindNumber('#prop-image-opacity', (value) => { image.opacity = Math.max(0.05, Math.min(1, value)); });
+    bindNumber('#prop-image-brightness', (value) => { image.brightness = Math.max(-1, Math.min(1, value)); });
+    bindNumber('#prop-image-contrast', (value) => { image.contrast = Math.max(-0.95, Math.min(2, value)); });
+    bindNumber('#prop-image-gamma', (value) => { image.gamma = Math.max(0.1, Math.min(4, value)); });
+    bindNumber('#prop-image-quantization', (value) => { image.quantization = Math.max(0, Math.round(value)); });
+    bindNumber('#prop-image-grid-width', (value) => { image.gridWidth = Math.max(0.01, value); });
+    bindNumber('#prop-image-grid-height', (value) => { image.gridHeight = Math.max(0.01, value); });
+    bindInteger('#prop-image-grid-cells-x', (value) => { image.gridCellsX = Math.max(1, Math.round(value)); });
+    bindInteger('#prop-image-grid-cells-y', (value) => { image.gridCellsY = Math.max(1, Math.round(value)); });
+
+    panel.querySelectorAll('[data-image-stepper]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const [field, deltaToken] = String(button.dataset.imageStepper || '').split(':');
+        const delta = parseInt(deltaToken, 10);
+        if (!Number.isFinite(delta)) return;
+        commit(() => {
+          if (field === 'grid-cells-x') image.gridCellsX = Math.max(1, Math.round((image.gridCellsX || 3) + delta));
+          if (field === 'grid-cells-y') image.gridCellsY = Math.max(1, Math.round((image.gridCellsY || 3) + delta));
+        });
+      });
+    });
+
+    const pinnedInput = panel.querySelector('#prop-image-pinned');
+    if (pinnedInput) {
+      pinnedInput.addEventListener('change', () => {
+        commit(() => {
+          image.pinnedBackground = pinnedInput.checked;
+        });
+      });
+    }
+
+    const startPerspectiveBtn = panel.querySelector('#prop-image-start-perspective');
+    if (startPerspectiveBtn) {
+      startPerspectiveBtn.addEventListener('click', () => {
+        if (this.activeTool?.name !== 'select') {
+          this.setActiveTool('select');
+        }
+        image.beginPerspectiveEdit();
+        this._setImagePropertySection(image, 'perspective');
+        state.emit('change');
+        this._scheduleRender();
+        this.setStatus('Perspective edit active. Drag the grid handles, then Apply or Cancel.');
+        refreshPanel();
+      });
+    }
+
+    const applyPerspectiveBtn = panel.querySelector('#prop-image-apply-perspective');
+    if (applyPerspectiveBtn) {
+      applyPerspectiveBtn.addEventListener('click', () => {
+        commit(() => {
+          image.applyPerspectiveEdit({
+            targetWidth: image.gridWidth,
+            targetHeight: image.gridHeight,
+            moveToOrigin: true,
+            placeOnGrid: true,
+          });
+        });
+        this.setStatus('Perspective correction applied and aligned to the sketch origin.');
+      });
+    }
+
+    const cancelPerspectiveBtn = panel.querySelector('#prop-image-cancel-perspective');
+    if (cancelPerspectiveBtn) {
+      cancelPerspectiveBtn.addEventListener('click', () => {
+        image.cancelPerspectiveEdit();
+        state.emit('change');
+        this._scheduleRender();
+        this.setStatus('Perspective edit canceled.');
+        refreshPanel();
+      });
+    }
+
+    const rectifyBtn = panel.querySelector('#prop-image-rectify');
+    if (rectifyBtn) {
+      rectifyBtn.addEventListener('click', () => {
+        commit(() => {
+          image.resetPerspectiveCorrection();
+          image.applyGridFrame({
+            width: image.gridWidth,
+            height: image.gridHeight,
+            moveToOrigin: true,
+          });
+        });
+        this.setStatus('Image reset to the grid frame at the sketch origin.');
+      });
+    }
+
+    const resetPerspectiveBtn = panel.querySelector('#prop-image-reset-perspective');
+    if (resetPerspectiveBtn) {
+      resetPerspectiveBtn.addEventListener('click', () => {
+        commit(() => {
+          image.resetPerspectiveCorrection();
+        });
+      });
+    }
   }
 
   // --- Left panel (Primitives & Constraints) ---
@@ -7229,34 +7557,38 @@ class App {
   }
 
   _exportSTEPFile() {
-    if (this._workspaceMode !== 'part') {
-      this.setStatus('Enter Part Design mode first');
-      return;
-    }
-    const part = this._partManager.getPart();
+    const part = this._partManager?.getPart?.();
     if (!part) {
-      this.setStatus('No part to export');
+      this.setStatus('No part available to export');
       return;
     }
-    // Try to get the exact topology body for STEP export
-    const finalGeo = part.getFinalGeometry();
-    const body = finalGeo?.topoBody || finalGeo?.solid?.topoBody;
+
+    const finalGeo = part.getFinalGeometry?.();
+    const body = finalGeo?.body
+      || finalGeo?.topoBody
+      || finalGeo?.solid?.topoBody
+      || finalGeo?.solid?.body
+      || finalGeo?.geometry?.topoBody
+      || null;
     if (!body) {
-      this.setStatus('No exact B-Rep topology available for STEP export');
+      this.setStatus('No exact body available for STEP export');
       return;
     }
+
     try {
+      const name = part?.name || 'part';
       const { stepString, timings } = exportSTEPDetailed(body, {
-        filename: part.name || 'part',
+        filename: name,
+        resultGrade: finalGeo?.resultGrade || finalGeo?.geometry?.resultGrade || body?.resultGrade,
+        _isFallback: !!(finalGeo?._isFallback || finalGeo?.geometry?._isFallback || body?._isFallback),
       });
-      const blob = new Blob([stepString], { type: 'application/step' });
+      const blob = new Blob([stepString], { type: 'model/step' });
       const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = (part.name || 'part') + '.step';
-      a.click();
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${name}.step`;
+      link.click();
       URL.revokeObjectURL(url);
-      if (timings) info('STEP export timings', timings);
       this.setStatus(`STEP file exported${this._formatStepExportTimingSuffix(timings)}`);
     } catch (err) {
       error('STEP export failed:', err);
@@ -7279,7 +7611,6 @@ class App {
     downloadSTL(mesh.triangles, mesh.vertexCount, { filename: name + '.stl', name });
     this.setStatus('STL file exported');
   }
-
   _exportDXFFromFaces() {
     if (!this._renderer3d) { this.setStatus('3D renderer not available'); return; }
 
@@ -7343,6 +7674,55 @@ class App {
     this.viewport.fitEntities(state.entities);
     this._scheduleRender();
     this.setStatus(`Imported ${count} entities from ${filename} (scale ${scale})`);
+  }
+
+  async _importImageToSketch() {
+    if (!this._sketchingOnPlane) {
+      this.setStatus('Start a sketch first before importing images');
+      return;
+    }
+
+    const file = await new Promise((resolve) => {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'image/*';
+      input.addEventListener('change', () => resolve(input.files && input.files[0] ? input.files[0] : null), { once: true });
+      input.click();
+    });
+    if (!file) return;
+
+    const imageData = await this._readImageFile(file);
+    await this._addImageToCurrentSketch(imageData);
+  }
+
+  async _addImageToCurrentSketch(imageData) {
+    const { filename, naturalWidth, naturalHeight, dataUrl, mimeType } = imageData;
+    const defaultWidth = Math.max(10, Math.min(200, naturalWidth || 100));
+    const widthStr = await showPrompt({
+      title: 'Import Image to Current Sketch',
+      message: `File: ${filename}\nResolution: ${naturalWidth} × ${naturalHeight}\n\nWidth in sketch units:`,
+      defaultValue: String(defaultWidth),
+    });
+    if (widthStr === null || widthStr === undefined) return;
+
+    const width = Math.max(0.01, parseFloat(widthStr) || defaultWidth);
+    const aspect = naturalWidth > 0 && naturalHeight > 0 ? naturalHeight / naturalWidth : 1;
+    const height = Math.max(0.01, width * aspect);
+
+    takeSnapshot();
+    state.scene.addImage(dataUrl, 0, 0, width, height, {
+      name: filename,
+      mimeType,
+      naturalWidth,
+      naturalHeight,
+      opacity: 0.55,
+      gridWidth: width,
+      gridHeight: height,
+    });
+    this.viewport.fitEntities(state.entities);
+    state.emit('change');
+    this._scheduleRender();
+    this.setStatus(`Imported image ${filename} into the current sketch`);
   }
 
   _getFeatureTreeStatus(feature) {
@@ -7907,6 +8287,10 @@ class App {
   }
 
   _enterWorkspace(mode) {
+    if (this._isPerspectiveEditLocked() && mode !== this._workspaceMode) {
+      this._blockPerspectiveEditModeChange();
+      return;
+    }
     this._workspaceMode = mode;
     this._hideQuickStart();
 
@@ -7998,6 +8382,10 @@ class App {
     if (!btn) return;
     btn.addEventListener('click', async () => {
       if (!this._sketchingOnPlane) return;
+      if (this._isPerspectiveEditLocked()) {
+        this._blockPerspectiveEditModeChange();
+        return;
+      }
 
       const hasEntities = state.entities.length > 0;
       if (hasEntities) {
@@ -8047,6 +8435,10 @@ class App {
    */
   _discardSketchOnPlane() {
     if (!this._sketchingOnPlane) return;
+    if (this._isPerspectiveEditLocked()) {
+      this._blockPerspectiveEditModeChange();
+      return;
+    }
 
     // Clear the active sketch on the part
     const part = this._partManager.getPart();
@@ -9193,6 +9585,10 @@ class App {
 
   async _finishSketchOnPlane() {
     if (!this._sketchingOnPlane) return;
+    if (this._isPerspectiveEditLocked()) {
+      this._blockPerspectiveEditModeChange();
+      return;
+    }
 
     // Clear the active sketch on the part
     const part = this._partManager.getPart();
@@ -9285,6 +9681,10 @@ class App {
    */
   async _editExistingSketch(sketchFeature) {
     if (this._sketchingOnPlane) return;
+    if (this._isPerspectiveEditLocked()) {
+      this._blockPerspectiveEditModeChange();
+      return;
+    }
     if (!sketchFeature || sketchFeature.type !== 'sketch') return;
 
     const sketch = sketchFeature.sketch;
@@ -10667,6 +11067,9 @@ class App {
     } else if (name.endsWith('.svg')) {
       info('Dropped SVG file', { name: file.name, size: file.size });
       await this._handleDroppedSVG(file);
+    } else if (file.type.startsWith('image/') || /(\.png|\.jpg|\.jpeg|\.gif|\.webp|\.bmp)$/i.test(name)) {
+      info('Dropped image file', { name: file.name, size: file.size });
+      await this._handleDroppedImage(file);
     } else if (name.endsWith('.step') || name.endsWith('.stp')) {
       info('Dropped STEP file', { name: file.name, size: file.size });
       await this._handleDroppedSTEP(file);
@@ -10674,8 +11077,44 @@ class App {
       info('Dropped CMOD file', { name: file.name, size: file.size });
       await this._handleDroppedCMOD(file);
     } else {
-      this.setStatus(`Unsupported file type: ${file.name}. Supported formats: SVG, DXF, STEP, CMOD.`);
+      this.setStatus(`Unsupported file type: ${file.name}. Supported formats: SVG, DXF, images, STEP, CMOD.`);
     }
+  }
+
+  async _readImageFile(file) {
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(reader.error || new Error('Failed to read image file'));
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.readAsDataURL(file);
+    });
+
+    const metadata = await new Promise((resolve, reject) => {
+      const image = new Image();
+      image.onerror = () => reject(new Error(`Failed to decode image: ${file.name}`));
+      image.onload = () => resolve({
+        naturalWidth: image.naturalWidth || 0,
+        naturalHeight: image.naturalHeight || 0,
+      });
+      image.src = dataUrl;
+    });
+
+    return {
+      dataUrl,
+      filename: file.name,
+      mimeType: file.type || 'image/png',
+      naturalWidth: metadata.naturalWidth,
+      naturalHeight: metadata.naturalHeight,
+    };
+  }
+
+  async _handleDroppedImage(file) {
+    if (!this._sketchingOnPlane) {
+      this.setStatus('Start or edit a sketch before importing images');
+      return;
+    }
+    const imageData = await this._readImageFile(file);
+    await this._addImageToCurrentSketch(imageData);
   }
 
   // ---------------------------------------------------------------------------

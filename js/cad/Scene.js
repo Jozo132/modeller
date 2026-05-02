@@ -7,6 +7,7 @@ import { PSpline } from './SplinePrimitive.js';
 import { PBezier } from './BezierPrimitive.js';
 import { TextPrimitive } from './TextPrimitive.js';
 import { DimensionPrimitive } from './DimensionPrimitive.js';
+import { ImagePrimitive } from './ImagePrimitive.js';
 import { solve } from './Solver.js';
 import { resetPrimitiveIds, peekNextPrimitiveId } from './Primitive.js';
 import { resetConstraintIds, serializeVariables, deserializeVariables, clearVariables } from './Constraint.js';
@@ -33,6 +34,7 @@ export class Scene {
     this.constraints = [];  // Constraint[]
     this.texts = [];        // TextPrimitive[] (pass-through, non-constraint)
     this.dimensions = [];   // DimensionPrimitive[] (pass-through)
+    this.images = [];       // ImagePrimitive[] (sketch-local reference images)
 
     // Reference entities — always present, not serialized, constrainable
     this._initReferenceEntities();
@@ -182,6 +184,14 @@ export class Scene {
     return bez;
   }
 
+  addImage(dataUrl, x, y, width, height, options = {}) {
+    const image = new ImagePrimitive(dataUrl, x, y, width, height, options);
+    image.layer = options.layer || '0';
+    image.color = options.color || null;
+    this.images.push(image);
+    return image;
+  }
+
   // -----------------------------------------------------------------------
   // Constraint management
   // -----------------------------------------------------------------------
@@ -288,6 +298,9 @@ export class Scene {
         // Also remove from constraints if it was acting as one
         this.constraints = this.constraints.filter(c => c !== prim);
         break;
+      case 'image':
+        this.images = this.images.filter(i => i !== prim);
+        break;
     }
   }
 
@@ -327,6 +340,7 @@ export class Scene {
     yield* this.arcs;
     yield* this.splines;
     yield* this.beziers;
+    yield* this.images;
     yield* this.texts;
     yield* this.dimensions;
   }
@@ -334,7 +348,7 @@ export class Scene {
   /** Fast count of drawable shapes (avoids array allocation). */
   entityCount() {
     return this.segments.length + this.circles.length + this.arcs.length +
-      this.splines.length + this.beziers.length + this.texts.length + this.dimensions.length;
+      this.splines.length + this.beziers.length + this.images.length + this.texts.length + this.dimensions.length;
   }
 
   /** All primitives including bare points. */
@@ -345,6 +359,7 @@ export class Scene {
     yield* this.arcs;
     yield* this.splines;
     yield* this.beziers;
+    yield* this.images;
     yield* this.texts;
     yield* this.dimensions;
   }
@@ -451,6 +466,7 @@ export class Scene {
     this.constraints = [];
     this.texts = [];
     this.dimensions = [];
+    this.images = [];
     resetPrimitiveIds();
     resetConstraintIds();
     clearVariables();
@@ -470,6 +486,7 @@ export class Scene {
       beziers: this.beziers.map(b => b.serialize()),
       // Exclude dimension-type constraints — they are serialized via dimensions[]
       constraints: this.constraints.filter(c => c.type !== 'dimension').map(c => c.serialize()),
+      images: this.images.map(i => i.serialize()),
       texts: this.texts.map(t => t.serialize()),
       dimensions: this.dimensions.map(d => d.serialize()),
       variables: serializeVariables(),
@@ -594,7 +611,40 @@ export class Scene {
       if (d.id > maxPrimId) maxPrimId = d.id;
     }
 
-    // 7. Rebuild texts
+    // 7. Rebuild images
+    for (const d of (data.images || [])) {
+      const image = new ImagePrimitive(d.dataUrl, d.x, d.y, d.width, d.height, {
+        name: d.name,
+        mimeType: d.mimeType,
+        naturalWidth: d.naturalWidth,
+        naturalHeight: d.naturalHeight,
+        rotation: d.rotation,
+        scaleX: d.scaleX,
+        scaleY: d.scaleY,
+        opacity: d.opacity,
+        brightness: d.brightness,
+        contrast: d.contrast,
+        gamma: d.gamma,
+        quantization: d.quantization,
+        pinnedBackground: d.pinnedBackground,
+        perspectiveEnabled: d.perspectiveEnabled,
+        gridWidth: d.gridWidth,
+        gridHeight: d.gridHeight,
+        gridCellsX: d.gridCellsX,
+        gridCellsY: d.gridCellsY,
+        quad: d.quad,
+        sourceQuad: d.sourceQuad,
+      });
+      image.id = d.id;
+      image.layer = d.layer || '0';
+      image.color = d.color || null;
+      if (d.lineWidth != null) image.lineWidth = d.lineWidth;
+      scene.images.push(image);
+      shapeMap.set(d.id, image);
+      if (d.id > maxPrimId) maxPrimId = d.id;
+    }
+
+    // 8. Rebuild texts
     for (const d of (data.texts || [])) {
       const t = new TextPrimitive(d.x, d.y, d.text, d.height);
       t.id = d.id;
@@ -605,7 +655,7 @@ export class Scene {
       if (d.id > maxPrimId) maxPrimId = d.id;
     }
 
-    // 7. Rebuild dimensions
+    // 9. Rebuild dimensions
     for (const d of (data.dimensions || [])) {
       const dm = new DimensionPrimitive(d.x1, d.y1, d.x2, d.y2, d.offset, {
         dimType: d.dimType,
@@ -643,7 +693,7 @@ export class Scene {
       if (d.id > maxPrimId) maxPrimId = d.id;
     }
 
-    // 8. Rebuild constraints
+    // 10. Rebuild constraints
     let maxCId = 0;
     for (const d of (data.constraints || [])) {
       const c = Scene._deserializeConstraint(d, ptMap, shapeMap);
@@ -656,10 +706,10 @@ export class Scene {
       }
     }
 
-    // 9. Restore named variables
+    // 11. Restore named variables
     deserializeVariables(data.variables);
 
-    // 10. Reset counters so new primitives get unique IDs
+    // 12. Reset counters so new primitives get unique IDs
     resetPrimitiveIds(maxPrimId + 1);
     resetConstraintIds(maxCId + 1);
 
