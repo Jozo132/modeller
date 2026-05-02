@@ -33,6 +33,7 @@ import {
   GEOM_PLANE, GEOM_CYLINDER, GEOM_CONE, GEOM_SPHERE, GEOM_TORUS,
   GEOM_LINE,
   GEOM_NURBS_SURFACE, GEOM_NURBS_CURVE, GEOM_CIRCLE, GEOM_ROLLING_FILLET, GEOM_BOUNDARY_FAN,
+  MAX_FACES,
   ORIENT_REVERSED,
 } from './topology';
 
@@ -67,6 +68,7 @@ const tessOutVerts = new StaticArray<f64>(MAX_OUT_VERTS * 3);
 const tessOutNormals = new StaticArray<f64>(MAX_OUT_VERTS * 3);
 const tessOutIndices = new StaticArray<u32>(MAX_OUT_TRIS * 3);
 const tessOutFaceMap = new StaticArray<u32>(MAX_OUT_TRIS);
+const _tessValidationFaceUse = new StaticArray<u32>(MAX_FACES);
 
 let outVertCount: u32 = 0;
 let outTriCount: u32 = 0;
@@ -126,6 +128,20 @@ let _trimNextCount: u32 = 0;
 let _trimMidCount: u32 = 0;
 let _trimOriginalPointCount: u32 = 0;
 let _trimDidSplit: bool = false;
+let _trimSkippedTriIndex: u32 = 0;
+let _trimSkippedEdgeA: u32 = 0;
+let _trimSkippedEdgeB: u32 = 0;
+let _trimSkippedEdgeC: u32 = 0;
+let _trimSkippedLoopNo: u32 = 0;
+let _trimSkippedStartOffset: u32 = 0;
+let _trimSkippedSteps: u32 = 0;
+let _trimSkippedForward: bool = true;
+
+let _tessValidationBoundaryEdges: u32 = 0;
+let _tessValidationNonManifoldEdges: u32 = 0;
+let _tessValidationDegenerateTris: u32 = 0;
+let _tessValidationMissingFaces: u32 = 0;
+let _tessValidationFaceCount: u32 = 0;
 
 let _planeOx: f64 = 0, _planeOy: f64 = 0, _planeOz: f64 = 0;
 let _planeRx: f64 = 1, _planeRy: f64 = 0, _planeRz: f64 = 0;
@@ -271,6 +287,89 @@ export function getTessOutIndicesPtr(): usize { return changetype<usize>(tessOut
 export function getTessOutFaceMapPtr(): usize { return changetype<usize>(tessOutFaceMap); }
 export function getTessOutVertCount(): u32 { return outVertCount; }
 export function getTessOutTriCount(): u32 { return outTriCount; }
+export function getTessValidationBoundaryEdges(): u32 { return _tessValidationBoundaryEdges; }
+export function getTessValidationNonManifoldEdges(): u32 { return _tessValidationNonManifoldEdges; }
+export function getTessValidationDegenerateTris(): u32 { return _tessValidationDegenerateTris; }
+export function getTessValidationMissingFaces(): u32 { return _tessValidationMissingFaces; }
+export function getTessValidationFaceCount(): u32 { return _tessValidationFaceCount; }
+
+export function tessValidateOutput(): u32 {
+  _tessValidationBoundaryEdges = 0;
+  _tessValidationNonManifoldEdges = 0;
+  _tessValidationDegenerateTris = 0;
+  _tessValidationMissingFaces = 0;
+  _tessValidationFaceCount = faceGetCount();
+  for (let face: u32 = 0; face < _tessValidationFaceCount; face++) unchecked(_tessValidationFaceUse[face] = 0);
+  const edgeUse = new Map<u64,u32>();
+
+  for (let tri: u32 = 0; tri < outTriCount; tri++) {
+    const i0 = unchecked(tessOutIndices[tri * 3]);
+    const i1 = unchecked(tessOutIndices[tri * 3 + 1]);
+    const i2 = unchecked(tessOutIndices[tri * 3 + 2]);
+    if (_triangleAreaByIds(i0, i1, i2) < 1e-12) _tessValidationDegenerateTris++;
+    const faceId = unchecked(tessOutFaceMap[tri]);
+    if (faceId < _tessValidationFaceCount) unchecked(_tessValidationFaceUse[faceId] = unchecked(_tessValidationFaceUse[faceId]) + 1);
+    _validationCountEdge(edgeUse, i0, i1);
+    _validationCountEdge(edgeUse, i1, i2);
+    _validationCountEdge(edgeUse, i2, i0);
+  }
+
+  for (let face: u32 = 0; face < _tessValidationFaceCount; face++) {
+    if (unchecked(_tessValidationFaceUse[face]) == 0) _tessValidationMissingFaces++;
+  }
+
+  const keys = edgeUse.keys();
+  for (let i = 0; i < keys.length; i++) {
+    const count = edgeUse.get(keys[i]);
+    if (count == 1) _tessValidationBoundaryEdges++;
+    else if (count > 2) _tessValidationNonManifoldEdges++;
+  }
+  return _tessValidationBoundaryEdges + _tessValidationNonManifoldEdges + _tessValidationDegenerateTris + _tessValidationMissingFaces;
+}
+
+function _validationCountEdge(edgeUse: Map<u64,u32>, a: u32, b: u32): void {
+  const key = _validationEdgeKey(a, b);
+  const prev = edgeUse.has(key) ? edgeUse.get(key) : 0;
+  edgeUse.set(key, prev + 1);
+}
+
+function _validationEdgeKey(a: u32, b: u32): u64 {
+  const ka = _validationVertexKey(a);
+  const kb = _validationVertexKey(b);
+  const lo = ka < kb ? ka : kb;
+  const hi = ka < kb ? kb : ka;
+  return _mix64(lo ^ _rotl64(hi, 1) ^ 0x9e3779b97f4a7c15);
+}
+
+function _validationVertexKey(index: u32): u64 {
+  const base = index * 3;
+  const qx = _quantizeValidationCoord(unchecked(tessOutVerts[base]));
+  const qy = _quantizeValidationCoord(unchecked(tessOutVerts[base + 1]));
+  const qz = _quantizeValidationCoord(unchecked(tessOutVerts[base + 2]));
+  return _mix64(<u64>qx)
+    ^ _rotl64(_mix64(<u64>qy), 21)
+    ^ _rotl64(_mix64(<u64>qz), 42);
+}
+
+function _quantizeValidationCoord(value: f64): i64 {
+  const cleaned = Math.abs(value) < 0.5e-6 ? 0.0 : value;
+  return <i64>Math.round(cleaned * 1000000.0);
+}
+
+function _rotl64(value: u64, shift: i32): u64 {
+  const s = shift & 63;
+  return s == 0 ? value : ((value << s) | (value >> (64 - s)));
+}
+
+function _mix64(value: u64): u64 {
+  let x = value;
+  x ^= x >> 33;
+  x *= 0xff51afd7ed558ccd;
+  x ^= x >> 33;
+  x *= 0xc4ceb9fe1a85ec53;
+  x ^= x >> 33;
+  return x;
+}
 
 // ─── Typed accessors for intra-kernel consumers (e.g. ops.classifyPointVsTriangles) ──
 
@@ -2023,9 +2122,11 @@ function _tessTorusFourCircleFace(
 
   let su = segsU > 0 ? segsU : DEFAULT_SEGS;
   let sv = segsV > 0 ? segsV : DEFAULT_SEGS;
-  if (su < 16) su = 16;
-  if (sv < 8) sv = 8;
+  if (su < 32) su = 32;
   if (su + 1 > RULED_QUAD_MAX_SAMPLES) su = RULED_QUAD_MAX_SAMPLES - 1;
+  if (sv < 32) sv = 32;
+  if (sv < su) sv = su;
+  if (sv + 1 > RULED_QUAD_MAX_SAMPLES) sv = RULED_QUAD_MAX_SAMPLES - 1;
 
   if (!_sampleCircleCoedgeRow(coedgeGetEdge(ce0), coedgeGetOrient(ce0), 8, ruledQuadRowA)) return -2;
   _measureProjectedRow(ruledQuadRowA, 8);
@@ -2404,7 +2505,8 @@ function _planarAppendNurbsCoedge(edgeId: u32, orient: u8, segsU: i32, loopStart
     return _planarAppendVertex(startV, loopStart) && _planarAppendVertex(endV, loopStart);
   }
   let segs = segsU;
-  if (segs < 8) segs = 8;
+  if (_crvDeg == 1 && _crvNCtrl == 2) segs = 1;
+  else if (segs < 32) segs = 32;
   if (segs > 192) segs = 192;
   const startV = orient == ORIENT_REVERSED ? edgeGetEndVertex(edgeId) : edgeGetStartVertex(edgeId);
   const endV = orient == ORIENT_REVERSED ? edgeGetStartVertex(edgeId) : edgeGetEndVertex(edgeId);
@@ -2708,6 +2810,112 @@ function _trimCopyNextToBase(): void {
   }
 }
 
+function _planarLoopOffsetForPointOrInvalid(loopNo: u32, pointId: u32): i32 {
+  const start = unchecked(_planarLoopStart[loopNo]);
+  const end = unchecked(_planarLoopEnd[loopNo]);
+  for (let i: u32 = start; i < end; i++) {
+    if (i == pointId) return <i32>(i - start);
+  }
+  return -1;
+}
+
+function _trimPathPoint(loopNo: u32, startOffset: u32, step: u32, forward: bool): u32 {
+  const start = unchecked(_planarLoopStart[loopNo]);
+  const end = unchecked(_planarLoopEnd[loopNo]);
+  const n = end - start;
+  const offset = forward
+    ? (startOffset + step) % n
+    : (startOffset + n - (step % n)) % n;
+  return start + offset;
+}
+
+function _trimSkippedBoundaryChainOnLoop(a: u32, b: u32, loopNo: u32): bool {
+  const start = unchecked(_planarLoopStart[loopNo]);
+  const end = unchecked(_planarLoopEnd[loopNo]);
+  const n = end - start;
+  if (n < 3) return false;
+  const ai = _planarLoopOffsetForPointOrInvalid(loopNo, a);
+  const bi = _planarLoopOffsetForPointOrInvalid(loopNo, b);
+  if (ai < 0 || bi < 0 || ai == bi) return false;
+
+  const au = <u32>ai;
+  const bu = <u32>bi;
+  const forwardSteps = (bu + n - au) % n;
+  const backwardSteps = (au + n - bu) % n;
+  const forward = forwardSteps <= backwardSteps;
+  const steps = forward ? forwardSteps : backwardSteps;
+  if (steps <= 1 || steps >= n - 1) return false;
+
+  _trimSkippedLoopNo = loopNo;
+  _trimSkippedStartOffset = au;
+  _trimSkippedSteps = steps;
+  _trimSkippedForward = forward;
+  return true;
+}
+
+function _trimFindSkippedBoundaryChain(edgeUse: Map<u64,u32>): bool {
+  for (let ti: u32 = 0; ti < _trimTriCount; ti++) {
+    const a = unchecked(_trimTriA[ti]);
+    const b = unchecked(_trimTriB[ti]);
+    const c = unchecked(_trimTriC[ti]);
+    for (let edgeNo: u32 = 0; edgeNo < 3; edgeNo++) {
+      let e0 = a;
+      let e1 = b;
+      let opp = c;
+      if (edgeNo == 1) { e0 = b; e1 = c; opp = a; }
+      else if (edgeNo == 2) { e0 = c; e1 = a; opp = b; }
+      const key = _trimEdgeKey(e0, e1);
+      if (!edgeUse.has(key) || edgeUse.get(key) != 1) continue;
+      for (let loopNo: u32 = 0; loopNo < _planarLoopCount; loopNo++) {
+        if (!_trimSkippedBoundaryChainOnLoop(e0, e1, loopNo)) continue;
+        _trimSkippedTriIndex = ti;
+        _trimSkippedEdgeA = e0;
+        _trimSkippedEdgeB = e1;
+        _trimSkippedEdgeC = opp;
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function _trimSplitSkippedBoundaryChainOnce(): bool {
+  _trimNextCount = 0;
+  for (let ti: u32 = 0; ti < _trimTriCount; ti++) {
+    if (ti != _trimSkippedTriIndex) {
+      if (!_trimAddNextTri(unchecked(_trimTriA[ti]), unchecked(_trimTriB[ti]), unchecked(_trimTriC[ti]))) return false;
+      continue;
+    }
+    for (let step: u32 = 0; step < _trimSkippedSteps; step++) {
+      const p0 = _trimPathPoint(_trimSkippedLoopNo, _trimSkippedStartOffset, step, _trimSkippedForward);
+      const p1 = _trimPathPoint(_trimSkippedLoopNo, _trimSkippedStartOffset, step + 1, _trimSkippedForward);
+      if (p0 == p1 || p0 == _trimSkippedEdgeC || p1 == _trimSkippedEdgeC) continue;
+      if (!_trimAddNextTri(p0, p1, _trimSkippedEdgeC)) return false;
+    }
+  }
+  _trimCopyNextToBase();
+  return true;
+}
+
+function _trimSplitSkippedBoundaryChains(): bool {
+  let maxPasses = _planarPointCount;
+  if (maxPasses > 1024) maxPasses = 1024;
+  for (let pass: u32 = 0; pass < maxPasses; pass++) {
+    const edgeUse = new Map<u64,u32>();
+    for (let i: u32 = 0; i < _trimTriCount; i++) {
+      const a = unchecked(_trimTriA[i]);
+      const b = unchecked(_trimTriB[i]);
+      const c = unchecked(_trimTriC[i]);
+      _trimCountEdge(edgeUse, a, b);
+      _trimCountEdge(edgeUse, b, c);
+      _trimCountEdge(edgeUse, c, a);
+    }
+    if (!_trimFindSkippedBoundaryChain(edgeUse)) return true;
+    if (!_trimSplitSkippedBoundaryChainOnce()) return false;
+  }
+  return true;
+}
+
 function _buildTrimBaseTrianglesFromPath(): bool {
   _trimTriCount = 0;
   let remCount = _planarPathCount;
@@ -2760,11 +2968,12 @@ function _buildTrimBaseTrianglesFromPath(): bool {
   }
 
   if (remCount != 3) return false;
-  return _trimAddBaseTri(
+  if (!_trimAddBaseTri(
     unchecked(_planarRemaining[0]),
     unchecked(_planarRemaining[1]),
     unchecked(_planarRemaining[2]),
-  );
+  )) return false;
+  return _trimSplitSkippedBoundaryChains();
 }
 
 function _trimEdgeMatch(a: u32, b: u32, c: u32, d: u32): bool {
@@ -3321,7 +3530,7 @@ function _paramAppendNurbsCoedge(edgeId: u32, orient: u8, segsU: i32, loopStart:
   if (!_loadCurve(edgeGetGeomOffset(edgeId))) return _paramAppendLineCoedge(edgeId, orient, loopStart);
   let segs = segsU;
   if (_crvDeg == 1 && _crvNCtrl == 2) segs = 1;
-  else if (segs < 16) segs = 16;
+  else if (segs < 32) segs = 32;
   if (segs > 192) segs = 192;
 
   const startV = orient == ORIENT_REVERSED ? edgeGetEndVertex(edgeId) : edgeGetStartVertex(edgeId);
@@ -4312,7 +4521,7 @@ function _nurbsAppendNurbsCoedge(
 
   let segs = segsU;
   if (_crvDeg == 1 && _crvNCtrl == 2) segs = 1;
-  else if (segs < 16) segs = 16;
+  else if (segs < 32) segs = 32;
   if (segs > 128) segs = 128;
 
   const startV = orient == ORIENT_REVERSED ? edgeGetEndVertex(edgeId) : edgeGetStartVertex(edgeId);

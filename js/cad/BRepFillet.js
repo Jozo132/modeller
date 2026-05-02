@@ -236,28 +236,18 @@ function _precomputeFilletEdge(faces, edgeKey, radius, segments, exactAdjacencyB
       if (capArc && capArc.length >= 2) return capArc;
     }
 
-    // Use NURBS arc tessellation to match EdgeSampler's parameterization.
-    // This ensures polygon arc boundaries align exactly with NURBS edge samples.
-    let arcPoints;
-    try {
-      const nurbsArc = NurbsCurve.createArc(center, radius, e0, e1, 0, sweep);
-      const tessPoints = nurbsArc.tessellate(segments);
-      arcPoints = tessPoints.map(p => ({ x: p.x, y: p.y, z: p.z }));
-    } catch (e) {
-      // Fallback to simple theta-based sampling if NURBS fails
-      const cosSweep = Math.cos(sweep);
-      const sinSweep = Math.sin(sweep);
-      const perp = sinSweep > 1e-10
-        ? _vec3Scale(_vec3Sub(_vec3Normalize(_vec3Sub(stdPt1, center)), _vec3Scale(e0, cosSweep)), 1 / sinSweep)
-        : e1;
-      arcPoints = [];
-      for (let s = 0; s <= segments; s++) {
-        const theta = (s / segments) * sweep;
-        arcPoints.push(_vec3Add(center, _vec3Add(
-          _vec3Scale(e0, radius * Math.cos(theta)),
-          _vec3Scale(perp, radius * Math.sin(theta))
-        )));
-      }
+    const cosSweep = Math.cos(sweep);
+    const sinSweep = Math.sin(sweep);
+    const perp = sinSweep > 1e-10
+      ? _vec3Scale(_vec3Sub(_vec3Normalize(_vec3Sub(stdPt1, center)), _vec3Scale(e0, cosSweep)), 1 / sinSweep)
+      : e1;
+    const arcPoints = [];
+    for (let segmentIndex = 0; segmentIndex <= segments; segmentIndex++) {
+      const theta = (segmentIndex / segments) * sweep;
+      arcPoints.push(_vec3Add(center, _vec3Add(
+        _vec3Scale(e0, radius * Math.cos(theta)),
+        _vec3Scale(perp, radius * Math.sin(theta))
+      )));
     }
 
     // Fallback only: if cylinder-plane intersection failed, preserve the
@@ -627,30 +617,30 @@ function _recomputeCornerArcs(edgeDataList, vertexEdgeMap, cornerTrimEndpoints, 
       const e1 = rawE1Len > 1e-10
         ? _vec3Scale(rawE1, 1 / rawE1Len)
         : _vec3Normalize(_vec3Cross(edgeDir, e0));
-      const sweep = d._sweep || Math.PI / 2;
+      const sweep = Math.atan2(rawE1Len, t1proj) || d._sweep || Math.PI / 2;
 
       let newArc;
+      let exactArcCurve = null;
       try {
-        const nurbsArc = NurbsCurve.createArc(arcCenter, d.radius, e0, e1, 0, sweep);
-        newArc = nurbsArc.tessellate(segments).map(p => ({ x: p.x, y: p.y, z: p.z }));
+        exactArcCurve = NurbsCurve.createArc(arcCenter, d.radius, e0, e1, 0, sweep);
       } catch (_) {
-        // Fallback: simple theta-based
-        newArc = [];
-        for (let s = 0; s <= segments; s++) {
-          const theta = (s / segments) * sweep;
-          newArc.push(_vec3Add(arcCenter, _vec3Add(
-            _vec3Scale(e0, d.radius * Math.cos(theta)),
-            _vec3Scale(e1, d.radius * Math.sin(theta))
-          )));
-        }
+        exactArcCurve = null;
+      }
+      newArc = [];
+      for (let segmentIndex = 0; segmentIndex <= segments; segmentIndex++) {
+        const theta = (segmentIndex / segments) * sweep;
+        newArc.push(_vec3Add(arcCenter, _vec3Add(
+          _vec3Scale(e0, d.radius * Math.cos(theta)),
+          _vec3Scale(e1, d.radius * Math.sin(theta))
+        )));
       }
 
       if (isA) {
         d.arcA = newArc;
-        d._exactArcCurveA = _curveFromSampledPoints(newArc);
+        d._exactArcCurveA = exactArcCurve || _curveFromSampledPoints(newArc);
       } else {
         d.arcB = newArc;
-        d._exactArcCurveB = _curveFromSampledPoints(newArc);
+        d._exactArcCurveB = exactArcCurve || _curveFromSampledPoints(newArc);
       }
     }
   }
@@ -1288,11 +1278,15 @@ function _buildExactTrihedronFaceDesc(cornerGroup) {
     let matched = null;
     for (const ac of arcCurves) {
       if (ac.startVK === vAk && ac.endVK === vBk) {
-        matched = _curveFromSampledPoints(ac.points);
+        matched = ac.curve && typeof ac.curve.clone === 'function'
+          ? ac.curve.clone()
+          : _curveFromSampledPoints(ac.points);
         break;
       } else if (ac.startVK === vBk && ac.endVK === vAk) {
         const reversed = [...ac.points].reverse();
-        matched = _curveFromSampledPoints(reversed);
+        matched = ac.curve && typeof ac.curve.reversed === 'function'
+          ? ac.curve.reversed()
+          : _curveFromSampledPoints(reversed);
         break;
       }
     }
@@ -4296,32 +4290,6 @@ function _capFaceDirectionSharedWithSupport(capFace, supportFace, vertexPoint) {
   return null;
 }
 
-function _supportFilletRadius(face) {
-  const shared = face && face.shared;
-  if (!shared || !shared.isFillet) return null;
-  const radius = Number.isFinite(shared._exactRadius) ? shared._exactRadius : shared.radius;
-  return Number.isFinite(radius) && radius > 0 ? radius : null;
-}
-
-function _smallRollingBlendTerminatesAtExistingCorner(support0, support1, radius) {
-  const radius0 = _supportFilletRadius(support0);
-  const radius1 = _supportFilletRadius(support1);
-  if (!Number.isFinite(radius0) || !Number.isFinite(radius1)) return false;
-  const limitingRadius = Math.min(radius0, radius1);
-  return radius <= limitingRadius + Math.max(1e-6, limitingRadius * 1e-6);
-}
-
-function _rollingCornerTerminalCap(endpoint) {
-  const point = endpoint && endpoint.point;
-  if (!_pointFinite(point)) return null;
-  return {
-    p0: { ...point },
-    p1: { ...point },
-    arc: [{ ...point }, { ...point }],
-    pointTerminal: true,
-  };
-}
-
 function _pruneSingleUseDegenerateCoedges(topoBody, tolerance = 1e-9) {
   if (!topoBody || typeof topoBody.faces !== 'function') return 0;
   let removed = 0;
@@ -4364,10 +4332,6 @@ function _simplePlanarRollingTerminalCap(topoBody, faces, endpoint, radius, segm
   const support0 = faces?.[data.fi0]?.topoFaceId != null ? topoFaceById.get(faces[data.fi0].topoFaceId) : null;
   const support1 = faces?.[data.fi1]?.topoFaceId != null ? topoFaceById.get(faces[data.fi1].topoFaceId) : null;
   if (!support0 || !support1) return null;
-
-  if (_smallRollingBlendTerminatesAtExistingCorner(support0, support1, radius)) {
-    return _rollingCornerTerminalCap(endpoint);
-  }
 
   const capFace = findTerminalCapFace(topoBody, selectedEdge, support0, support1, endpoint.point);
   const capPlane = topoFacePlane(capFace);
@@ -4414,13 +4378,14 @@ function _simplePlanarRollingTerminalCap(topoBody, faces, endpoint, radius, segm
   }
   if (!Number.isFinite(sweep) || Math.abs(sweep) < 1e-6 || Math.abs(sweep) > Math.PI + 1e-4) return null;
 
-  let arc;
-  try {
-    arc = NurbsCurve.createArc(capCenter, radius, startVec, yAxis, 0, sweep)
-      .tessellate(Math.max(2, segments | 0))
-      .map((point) => ({ x: point.x, y: point.y, z: point.z }));
-  } catch (_error) {
-    return null;
+  const arc = [];
+  const sampleCount = Math.max(2, segments | 0);
+  for (let segmentIndex = 0; segmentIndex <= sampleCount; segmentIndex++) {
+    const theta = (segmentIndex / sampleCount) * sweep;
+    arc.push(_vec3Add(capCenter, _vec3Add(
+      _vec3Scale(startVec, radius * Math.cos(theta)),
+      _vec3Scale(yAxis, radius * Math.sin(theta)),
+    )));
   }
   if (!Array.isArray(arc) || arc.length < 2) return null;
   arc[0] = { ...p0 };
@@ -5192,15 +5157,21 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
     // Collect the arc polylines at this vertex from each edge.
     // These arcs form the boundary curves shared between the fillet
     // strip faces and the spherical corner patch.
-    const arcCurves = []; // [{startVK, endVK, points}]
+    const arcCurves = []; // [{startVK, endVK, points, curve}]
     for (const di of cornerEdgeIndices) {
       const d = edgeDataList[di];
       const isA = _edgeVKey(d.edgeA) === vk;
       const arc = isA ? d.arcA : d.arcB;
       if (!arc || arc.length < 2) continue;
+      const exactCurve = isA ? d._exactArcCurveA : d._exactArcCurveB;
       const startVK = _edgeVKey(arc[0]);
       const endVK = _edgeVKey(arc[arc.length - 1]);
-      arcCurves.push({ startVK, endVK, points: arc });
+      arcCurves.push({
+        startVK,
+        endVK,
+        points: arc,
+        curve: exactCurve && typeof exactCurve.clone === 'function' ? exactCurve.clone() : null,
+      });
     }
 
     // Order the three vertices so the resulting face normal points

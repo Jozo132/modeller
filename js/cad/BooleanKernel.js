@@ -26,7 +26,10 @@ import { buildBody } from './ShellBuilder.js';
 import { tessellateBody } from './Tessellation.js';
 import { mergeCoplanarFaces, removeCollinearEdgeVertices } from './CoplanarMerge.js';
 import { DEFAULT_TOLERANCE, Tolerance } from './Tolerance.js';
-import { SurfaceType, TopoFace, TopoLoop, TopoCoEdge, TopoEdge, TopoVertex } from './BRepTopology.js';
+import {
+  SurfaceType, TopoFace, TopoLoop, TopoCoEdge, TopoEdge, TopoVertex,
+  buildTopoBody, deriveEdgeAndVertexHashes,
+} from './BRepTopology.js';
 import { NurbsSurface } from './NurbsSurface.js';
 import { NurbsCurve } from './NurbsCurve.js';
 import { constrainedTriangulate } from './Tessellator2/CDT.js';
@@ -182,6 +185,9 @@ function _exactBooleanOpInner(bodyA, bodyB, operation, tol) {
     const planar = _exactPlanarBoolean(bodyA, bodyB, operation, tol);
     if (planar) return { ...planar, diagnostics: planar.diagnostics || {} };
   }
+
+  const contactUnion = _tryCoplanarContactUnion(bodyA, bodyB, operation, tol);
+  if (contactUnion) return contactUnion;
 
   // Step 1-2: Intersect candidate face pairs and compute intersection curves
   const intersections = intersectBodies(bodyA, bodyB, tol);
@@ -345,6 +351,253 @@ function _exactPlanarBoolean(bodyA, bodyB, operation, tol) {
   const mesh = tessellateBody(resultBody, { validate: false });
   diagnostics.hashes = _computeBodyHashes(bodyA, bodyB, resultBody);
   return { body: resultBody, mesh, diagnostics };
+}
+
+function _tryCoplanarContactUnion(bodyA, bodyB, operation, tol) {
+  if (operation !== 'union') return null;
+  return _tryAttachCoplanarContactUnion(bodyA, bodyB, tol)
+    || _tryAttachCoplanarContactUnion(bodyB, bodyA, tol);
+}
+
+function _tryAttachCoplanarContactUnion(supportBody, attachBody, tol) {
+  if (!supportBody || !attachBody) return null;
+  if (!Array.isArray(supportBody.shells) || !Array.isArray(attachBody.shells)) return null;
+  if (supportBody.shells.length !== 1 || attachBody.shells.length !== 1) return null;
+
+  const contact = _findCoplanarContactPair(supportBody, attachBody, tol);
+  if (!contact) return null;
+
+  const contactLoop = _loopToFaceDesc(contact.attachFace.outerLoop);
+  if (!contactLoop) return null;
+
+  const faceDescs = [];
+  for (const face of supportBody.faces()) {
+    if (face === contact.supportFace) {
+      const desc = _faceToBuildDesc(face);
+      if (!desc) return null;
+      desc.innerLoops = [...(desc.innerLoops || []), contactLoop];
+      faceDescs.push(desc);
+    } else {
+      const desc = _faceToBuildDesc(face);
+      if (!desc) return null;
+      faceDescs.push(desc);
+    }
+  }
+
+  for (const face of attachBody.faces()) {
+    if (face === contact.attachFace) continue;
+    const desc = _faceToBuildDesc(face);
+    if (!desc) return null;
+    faceDescs.push(desc);
+  }
+
+  try {
+    const resultBody = buildTopoBody(faceDescs, tol);
+    deriveEdgeAndVertexHashes(resultBody);
+    mergeCoplanarFaces(resultBody, tol);
+    removeCollinearEdgeVertices(resultBody, tol);
+
+    const finalBodyValidation = validateFinalBody(resultBody, tol);
+    const invariantValidation = validateBooleanResult(resultBody, {
+      operation: 'union',
+      tolerance: tol,
+      expectClosed: true,
+    });
+    if (!finalBodyValidation.isValid || !invariantValidation.isValid) return null;
+
+    const diagnostics = {
+      intersectionValidation: { valid: true, count: 0, diagnostics: [] },
+      fragmentValidationA: { valid: true, count: 0, diagnostics: [] },
+      fragmentValidationB: { valid: true, count: 0, diagnostics: [] },
+      healingA: { healed: false, actionCount: 0, actions: [] },
+      healingB: { healed: false, actionCount: 0, actions: [] },
+      coplanarContactUnion: {
+        supportFaceId: contact.supportFace.id,
+        attachFaceId: contact.attachFace.id,
+      },
+      finalBodyValidation: finalBodyValidation.toJSON(),
+      invariantValidation: invariantValidation.toJSON(),
+      hashes: _computeBodyHashes(supportBody, attachBody, resultBody),
+    };
+    const mesh = tessellateBody(resultBody, { validate: false });
+    return { body: resultBody, mesh, diagnostics };
+  } catch (_) {
+    return null;
+  }
+}
+
+function _findCoplanarContactPair(supportBody, attachBody, tol) {
+  const supportFaces = supportBody.faces();
+  const attachFaces = attachBody.faces();
+  for (const supportFace of supportFaces) {
+    if (supportFace.surfaceType !== SurfaceType.PLANE || !supportFace.outerLoop) continue;
+    const supportNormal = _fragmentFaceNormal(supportFace);
+    if (_vecLen(supportNormal) <= 1e-10) continue;
+
+    for (const attachFace of attachFaces) {
+      if (attachFace.surfaceType !== SurfaceType.PLANE || !attachFace.outerLoop) continue;
+      const attachNormal = _fragmentFaceNormal(attachFace);
+      if (_dot(supportNormal, attachNormal) > -0.999) continue;
+      if (!_facesSharePlane(supportFace, attachFace, supportNormal, tol)) continue;
+      if (!_attachBodyOnOuterSide(attachBody, supportFace, supportNormal, tol)) continue;
+      if (!_loopStrictlyInsideFace(attachFace.outerLoop, supportFace, supportNormal, tol)) continue;
+      return { supportFace, attachFace };
+    }
+  }
+  return null;
+}
+
+function _facesSharePlane(supportFace, attachFace, normal, tol) {
+  const supportPoint = supportFace.outerLoop?.points()?.[0];
+  const attachPoint = attachFace.outerLoop?.points()?.[0];
+  if (!supportPoint || !attachPoint) return false;
+  const planeTol = Math.max(tol.pointCoincidence * 20, 1e-6);
+  return Math.abs(_dot(_sub(attachPoint, supportPoint), normal)) <= planeTol;
+}
+
+function _attachBodyOnOuterSide(attachBody, supportFace, normal, tol) {
+  const supportPoint = supportFace.outerLoop?.points()?.[0];
+  if (!supportPoint) return false;
+  const planeTol = Math.max(tol.pointCoincidence * 20, 1e-6);
+  let hasExteriorVolume = false;
+  for (const vertex of attachBody.vertices()) {
+    const distance = _dot(_sub(vertex.point, supportPoint), normal);
+    if (distance < -planeTol) return false;
+    if (distance > planeTol) hasExteriorVolume = true;
+  }
+  return hasExteriorVolume;
+}
+
+function _loopStrictlyInsideFace(loop, face, normal, tol) {
+  const supportPoint = face.outerLoop?.points()?.[0];
+  const outerPts = face.outerLoop?.points() || [];
+  if (!supportPoint || outerPts.length < 3) return false;
+  const margin = Math.max(tol.pointCoincidence * 50, 1e-5);
+  const samples = _sampleLoopPoints(loop);
+  if (samples.length === 0) return false;
+
+  for (const point of samples) {
+    if (Math.abs(_dot(_sub(point, supportPoint), normal)) > margin) return false;
+    if (_pointToLoopDistance(point, face.outerLoop) <= margin) return false;
+    if (!_pointInPolygon3D(point, outerPts, normal)) return false;
+    for (const innerLoop of face.innerLoops || []) {
+      if (_pointToLoopDistance(point, innerLoop) <= margin) return false;
+      if (_pointInPolygon3D(point, innerLoop.points(), normal)) return false;
+    }
+  }
+  return true;
+}
+
+function _sampleLoopPoints(loop) {
+  const samples = [];
+  for (const coedge of loop.coedges || []) {
+    samples.push({ ...coedge.startVertex().point });
+    for (const fraction of [0.25, 0.5, 0.75]) {
+      const point = _coedgePointAtFraction(coedge, fraction);
+      if (point) samples.push(point);
+    }
+  }
+  return samples;
+}
+
+function _pointToLoopDistance(point, loop) {
+  const points = loop?.points?.() || [];
+  if (points.length < 2) return Infinity;
+  let best = Infinity;
+  for (let index = 0; index < points.length; index++) {
+    const start = points[index];
+    const end = points[(index + 1) % points.length];
+    const distance = _pointToSegmentDistance(point, start, end);
+    if (distance < best) best = distance;
+  }
+  return best;
+}
+
+function _pointToSegmentDistance(point, start, end) {
+  const segment = _sub(end, start);
+  const lengthSq = _dot(segment, segment);
+  if (lengthSq <= 1e-20) return Math.sqrt(_dot(_sub(point, start), _sub(point, start)));
+  const rawT = _dot(_sub(point, start), segment) / lengthSq;
+  const t = Math.max(0, Math.min(1, rawT));
+  const closest = {
+    x: start.x + segment.x * t,
+    y: start.y + segment.y * t,
+    z: start.z + segment.z * t,
+  };
+  return Math.sqrt(_dot(_sub(point, closest), _sub(point, closest)));
+}
+
+function _faceToBuildDesc(face) {
+  const outer = _loopToFaceDesc(face.outerLoop);
+  if (!outer) return null;
+  return {
+    surface: face.surface && typeof face.surface.clone === 'function' ? face.surface.clone() : face.surface,
+    surfaceType: face.surfaceType,
+    surfaceInfo: _clonePlainObject(face.surfaceInfo),
+    fusedGroupId: face.fusedGroupId || null,
+    vertices: outer.vertices,
+    edgeCurves: outer.edgeCurves,
+    innerLoops: (face.innerLoops || []).map((innerLoop) => _loopToFaceDesc(innerLoop)).filter(Boolean),
+    shared: face.shared ? { ...face.shared } : null,
+    sameSense: face.sameSense,
+    stableHash: face.stableHash || null,
+  };
+}
+
+function _loopToFaceDesc(loop) {
+  if (!loop || !Array.isArray(loop.coedges) || loop.coedges.length < 3) return null;
+  const vertices = [];
+  const edgeCurves = [];
+  for (const coedge of loop.coedges) {
+    const start = coedge.startVertex()?.point;
+    const end = coedge.endVertex()?.point;
+    if (!start || !end) return null;
+    vertices.push({ ...start });
+    edgeCurves.push(_curveForCoedge(coedge, start, end));
+  }
+  return { vertices, edgeCurves };
+}
+
+function _curveForCoedge(coedge, start, end) {
+  const curve = coedge.edge?.curve || null;
+  if (curve) {
+    if (coedge.sameSense === false && typeof curve.reversed === 'function') return curve.reversed();
+    if (coedge.sameSense !== false && typeof curve.clone === 'function') return curve.clone();
+  }
+  return NurbsCurve.createLine(start, end);
+}
+
+function _coedgePointAtFraction(coedge, fraction) {
+  const curve = coedge.edge?.curve;
+  if (curve && typeof curve.evaluate === 'function') {
+    try {
+      const uMin = Number.isFinite(curve.uMin) ? curve.uMin : 0;
+      const uMax = Number.isFinite(curve.uMax) ? curve.uMax : 1;
+      const localT = coedge.sameSense === false ? 1 - fraction : fraction;
+      const value = curve.evaluate(uMin + (uMax - uMin) * localT);
+      if (value?.p) return { ...value.p };
+      if (Number.isFinite(value?.x) && Number.isFinite(value?.y) && Number.isFinite(value?.z)) return { ...value };
+    } catch (_) {
+      // Fall back to endpoint interpolation below.
+    }
+  }
+  const start = coedge.startVertex()?.point;
+  const end = coedge.endVertex()?.point;
+  if (!start || !end) return null;
+  return {
+    x: start.x + (end.x - start.x) * fraction,
+    y: start.y + (end.y - start.y) * fraction,
+    z: start.z + (end.z - start.z) * fraction,
+  };
+}
+
+function _clonePlainObject(value) {
+  if (value == null) return null;
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch (_) {
+    return { ...value };
+  }
 }
 
 /**

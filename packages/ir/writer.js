@@ -51,6 +51,14 @@
 //   uint32   count
 //   per info: uint8 typeId, float64 originX/Y/Z, uint8 hasAxis, float64 axisX/Y/Z (if hasAxis),
 //             float64 radius, float64 semiAngle, float64 majorR, float64 minorR
+//
+// CURVE_METADATA section:
+//   uint32   count
+//   per metadata: uint32 curveIdx, uint32 flags
+//
+// FACE_METADATA section:
+//   uint32   count
+//   per metadata: uint32 faceIdx, uint32 jsonByteLength, uint8[jsonByteLength] stable JSON
 
 import {
   CBREP_MAGIC, CBREP_VERSION,
@@ -68,6 +76,7 @@ export function writeCbrep(canon) {
   // ── Phase 1: compute section sizes ──
 
   const sections = [];
+  const textEncoder = new TextEncoder();
 
   // Vertices: 4 + count * 32
   const vertSize = 4 + canon.vertices.length * 32;
@@ -135,6 +144,21 @@ export function writeCbrep(canon) {
       }
     }
     sections.push({ type: SectionType.SURF_INFOS, size: siSize });
+  }
+
+  const curveMetadataEntries = canon.curveMetadata || [];
+  if (curveMetadataEntries.length > 0) {
+    sections.push({ type: SectionType.CURVE_METADATA, size: 4 + curveMetadataEntries.length * 8 });
+  }
+
+  const faceMetadataEntries = (canon.faceMetadata || []).map((entry) => ({
+    faceIdx: entry.faceIdx,
+    bytes: textEncoder.encode(stableStringify(entry.shared || {})),
+  })).filter((entry) => entry.bytes.length > 0);
+  if (faceMetadataEntries.length > 0) {
+    let metaSize = 4;
+    for (const entry of faceMetadataEntries) metaSize += 4 + 4 + entry.bytes.length;
+    sections.push({ type: SectionType.FACE_METADATA, size: metaSize });
   }
 
   // ── Phase 2: compute offsets ──
@@ -312,5 +336,36 @@ export function writeCbrep(canon) {
     }
   }
 
+  // CURVE_METADATA (if present)
+  if (curveMetadataEntries.length > 0) {
+    const curveMetaSecIdx = sections.findIndex(s => s.type === SectionType.CURVE_METADATA);
+    pos = sections[curveMetaSecIdx].offset;
+    dv.setUint32(pos, curveMetadataEntries.length, true); pos += 4;
+    for (const entry of curveMetadataEntries) {
+      dv.setUint32(pos, entry.curveIdx, true); pos += 4;
+      dv.setUint32(pos, entry.flags, true); pos += 4;
+    }
+  }
+
+  // FACE_METADATA (if present)
+  if (faceMetadataEntries.length > 0) {
+    const metaSecIdx = sections.findIndex(s => s.type === SectionType.FACE_METADATA);
+    pos = sections[metaSecIdx].offset;
+    dv.setUint32(pos, faceMetadataEntries.length, true); pos += 4;
+    for (const entry of faceMetadataEntries) {
+      dv.setUint32(pos, entry.faceIdx, true); pos += 4;
+      dv.setUint32(pos, entry.bytes.length, true); pos += 4;
+      new Uint8Array(buf, pos, entry.bytes.length).set(entry.bytes);
+      pos += entry.bytes.length;
+    }
+  }
+
   return buf;
+}
+
+function stableStringify(value) {
+  if (value == null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  const keys = Object.keys(value).sort();
+  return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`;
 }

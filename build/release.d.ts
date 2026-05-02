@@ -1695,6 +1695,36 @@ export declare function getTessOutVertCount(): number;
  */
 export declare function getTessOutTriCount(): number;
 /**
+ * assembly/kernel/tessellation/tessValidateOutput
+ * @returns `u32`
+ */
+export declare function tessValidateOutput(): number;
+/**
+ * assembly/kernel/tessellation/getTessValidationBoundaryEdges
+ * @returns `u32`
+ */
+export declare function getTessValidationBoundaryEdges(): number;
+/**
+ * assembly/kernel/tessellation/getTessValidationNonManifoldEdges
+ * @returns `u32`
+ */
+export declare function getTessValidationNonManifoldEdges(): number;
+/**
+ * assembly/kernel/tessellation/getTessValidationDegenerateTris
+ * @returns `u32`
+ */
+export declare function getTessValidationDegenerateTris(): number;
+/**
+ * assembly/kernel/tessellation/getTessValidationMissingFaces
+ * @returns `u32`
+ */
+export declare function getTessValidationMissingFaces(): number;
+/**
+ * assembly/kernel/tessellation/getTessValidationFaceCount
+ * @returns `u32`
+ */
+export declare function getTessValidationFaceCount(): number;
+/**
  * assembly/kernel/tessellation/getEdgeSamplePtsPtr
  * @returns `usize`
  */

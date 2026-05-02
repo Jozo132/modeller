@@ -80,6 +80,9 @@ export {
   tessBuildAllFaces, tessBuildHandleFaces, tessBuildFace, tessReset,
   getTessOutVertsPtr, getTessOutNormalsPtr, getTessOutIndicesPtr, getTessOutFaceMapPtr,
   getTessOutVertCount, getTessOutTriCount,
+  tessValidateOutput,
+  getTessValidationBoundaryEdges, getTessValidationNonManifoldEdges, getTessValidationDegenerateTris,
+  getTessValidationMissingFaces, getTessValidationFaceCount,
   getEdgeSamplePtsPtr, getEdgeSampleCount, getEdgeSampleStart
 } from './tessellation';
 

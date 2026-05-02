@@ -1022,6 +1022,56 @@ test('box-fillet-3.cmod (single multi-edge fillet) produces valid mesh', () => {
   assertRawWasmClosed(geom.topoBody, 'box-fillet-3');
 });
 
+test('box-fillet-3.cmod accepts exact top-face add extrusion', () => {
+  const part = loadCMOD('box-fillet-3.cmod');
+  assert.ok(part, 'Should load box-fillet-3.cmod');
+  const baseGeom = getFinalGeometry(part);
+  assert.ok(baseGeom?.topoBody, 'Should have base topoBody');
+
+  let topFace = null;
+  let topZ = -Infinity;
+  for (const face of baseGeom.topoBody.faces()) {
+    if (face.surfaceType !== 'plane') continue;
+    const normal = _topoFaceNormal(face);
+    if (normal.z < 0.99) continue;
+    const bounds = _faceBounds(face.outerLoop.points());
+    if (bounds.maxZ > topZ) {
+      topZ = bounds.maxZ;
+      topFace = face;
+    }
+  }
+  assert.ok(topFace, 'Should find the top planar face');
+
+  const bounds = _faceBounds(topFace.outerLoop.points());
+  const plane = {
+    origin: {
+      x: (bounds.minX + bounds.maxX) * 0.5,
+      y: (bounds.minY + bounds.maxY) * 0.5,
+      z: topZ,
+    },
+    normal: { x: 0, y: 0, z: 1 },
+    xAxis: { x: 1, y: 0, z: 0 },
+    yAxis: { x: 0, y: 1, z: 0 },
+  };
+  const sketch = new Sketch();
+  sketch.addSegment(-1, -1, 1, -1);
+  sketch.addSegment(1, -1, 1, 1);
+  sketch.addSegment(1, 1, -1, 1);
+  sketch.addSegment(-1, 1, -1, -1);
+
+  const sketchFeature = part.addSketch(sketch, plane);
+  const extrudeFeature = part.extrude(sketchFeature.id, 2, { operation: 'add' });
+  const extrudeResult = part.featureTree.results[extrudeFeature.id];
+  assert.ok(extrudeResult && !extrudeResult.error,
+    `Top-face add extrusion should execute exactly (${extrudeResult?.error || 'missing result'})`);
+
+  const geom = getFinalGeometry(part);
+  validateGeometry(geom, 'box-fillet-3 top-face add extrusion');
+  assert.strictEqual(countTopoBodyBoundaryEdges(geom.topoBody), 0,
+    'box-fillet-3 top-face add extrusion should keep exact topology closed');
+  assertRawWasmClosed(geom.topoBody, 'box-fillet-3 top-face add extrusion');
+});
+
 test('custom-part-1.cmod (non-axis-aligned fillet + chamfer) produces valid mesh', () => {
   const part = loadCMOD('custom-part-1.cmod');
   if (!part) return; // skip if file not present

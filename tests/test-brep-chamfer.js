@@ -6,7 +6,10 @@ import { Sketch } from '../js/cad/Sketch.js';
 import { parseCMOD } from '../js/cmod.js';
 import { applyBRepChamfer } from '../js/cad/BRepChamfer.js';
 import { resetFeatureIds } from '../js/cad/Feature.js';
-import { resetTopoIds } from '../js/cad/BRepTopology.js';
+import {
+  TopoVertex, TopoEdge, TopoCoEdge, TopoLoop, TopoFace, TopoShell, TopoBody,
+  SurfaceType, resetTopoIds,
+} from '../js/cad/BRepTopology.js';
 import { tessellateBody } from '../js/cad/Tessellation.js';
 import { globalTessConfig } from '../js/cad/TessellationConfig.js';
 import { detectBoundaryEdges, detectDegenerateFaces, detectSelfIntersections } from '../js/cad/MeshValidator.js';
@@ -14,10 +17,27 @@ import { countTopoBodyBoundaryEdges, measureMeshTopology } from '../js/cad/toolk
 import { EdgeSampler } from '../js/cad/Tessellator2/EdgeSampler.js';
 import { ensureWasmReady, tessellateBodyWasm } from '../js/cad/StepImportWasm.js';
 import { preloadWasmGeometryOps, sampleCylinderPlaneArcWasmReady } from '../js/cad/WasmGeometryOps.js';
+import { computeFeatureEdges } from '../js/cad/EdgeAnalysis.js';
+import { calculateMeshVolume, calculateBoundingBox } from '../js/cad/toolkit/MeshAnalysis.js';
+import { NurbsCurve } from '../js/cad/NurbsCurve.js';
+import { NurbsSurface } from '../js/cad/NurbsSurface.js';
+import { readCbrep, setTopoDeps } from '../packages/ir/reader.js';
 import { formatTimingSuffix, startTiming } from './test-timing.js';
 
 await ensureWasmReady().catch(() => null);
 await preloadWasmGeometryOps().catch(() => null);
+setTopoDeps({
+  TopoVertex, TopoEdge, TopoCoEdge, TopoLoop, TopoFace, TopoShell, TopoBody,
+  NurbsCurve, NurbsSurface, SurfaceType,
+});
+
+const fastRestoreDeps = {
+  readCbrep,
+  tessellateBody,
+  computeFeatureEdges,
+  calculateMeshVolume,
+  calculateBoundingBox,
+};
 
 let passed = 0;
 let failed = 0;
@@ -237,8 +257,19 @@ function countRoundedBoundaryEdges(meshFaces) {
   return boundaryEdges;
 }
 
+function assertNativeWasmValidationClean(mesh, label) {
+  const validation = mesh?._wasmValidation;
+  assert.ok(validation?.coordinateHash, `${label} should include native WASM coordinate-hash validation`);
+  assert.strictEqual(validation.boundaryEdges, 0, `${label} native validation should report no boundary edges`);
+  assert.strictEqual(validation.nonManifoldEdges, 0, `${label} native validation should report no non-manifold edges`);
+  assert.strictEqual(validation.degenerateTris, 0, `${label} native validation should report no degenerate triangles`);
+  assert.strictEqual(validation.missingFaces, 0, `${label} native validation should report complete face coverage`);
+  assert.ok(validation.faceCount > 0, `${label} native validation should report a face count`);
+}
+
 function assertNativeWasmFeatureNormalsFollowSurface(topoBody, mesh) {
   assert.ok(mesh && mesh.faces && mesh.faces.length > 0, 'Expected native WASM tessellation output');
+  assertNativeWasmValidationClean(mesh, 'Native WASM cc3 mesh');
   assert.strictEqual(detectBoundaryEdges(mesh.faces).count, 0, 'Native WASM cc3 mesh should not expose boundary holes');
   assert.strictEqual(countRoundedBoundaryEdges(mesh.faces), 0, 'Native WASM cc3 mesh should not trip app rounded-edge hole detection');
 
@@ -279,6 +310,7 @@ function assertNativeWasmFeatureNormalsFollowSurface(topoBody, mesh) {
 
 function assertNativeWasmChamferSurfaceTessellated(topoBody, mesh, surfaceType) {
   assert.ok(mesh && mesh.faces && mesh.faces.length > 0, 'Expected native WASM tessellation output');
+  assertNativeWasmValidationClean(mesh, `${surfaceType} chamfer mesh`);
   assert.strictEqual(detectBoundaryEdges(mesh.faces).count, 0, `${surfaceType} chamfer mesh should match neighboring boundary samples`);
   const chamferFace = topoBody.faces().find((face) =>
     face.surfaceType === surfaceType &&
@@ -584,6 +616,7 @@ test('puzzle-extrude-ff fillets replay visual arc keys and project terminal caps
   );
   const directWasmMesh = tessellateBodyWasm(finalGeometry.topoBody, { surfaceSegments: 16, edgeSegments: 64 });
   assert.ok(directWasmMesh?.faces?.length > 0, 'Direct WASM tessellation should produce the final ff mesh');
+  assertNativeWasmValidationClean(directWasmMesh, 'Direct WASM ff mesh');
   const wasmExactFilletCylinderTriangles = directWasmMesh.faces.filter((triangle) => triangle.topoFaceId === exactFilletCylinderFace.id);
   const maxWasmExactFilletCylinderQuality = Math.max(...wasmExactFilletCylinderTriangles.map(triangleQuality).filter(Number.isFinite));
   assert.ok(
@@ -654,8 +687,8 @@ test('box-fillet-2-s-1 curved tangent fillet rebuilds as one primitive-sectioned
   }
   assert.strictEqual(
     rollingFace.outerLoop?.coedges?.length || 0,
-    rollingSections.length * 2 + 1,
-    'Small rolling blend should expose rail splits plus only the non-planar terminal cap curve',
+    rollingSections.length * 2 + 2,
+    'Small rolling blend should expose rail splits plus real start/end terminal cap curves',
   );
   const rail0 = rollingFace.shared?._rollingRail0 || [];
   const rail1 = rollingFace.shared?._rollingRail1 || [];
@@ -677,25 +710,32 @@ test('box-fillet-2-s-1 curved tangent fillet rebuilds as one primitive-sectioned
       distance3(railPoint0, rail1[longCurvedSection.startIndex + offset]),
     ), Infinity);
   assert.ok(minCurvedRailChord >= 0.22, `Rolling section should not collapse into a narrow strip, min chord ${minCurvedRailChord}`);
+  const minRailChord = rail0.reduce((minChord, railPoint0, index) => Math.min(
+    minChord,
+    distance3(railPoint0, rail1[index]),
+  ), Infinity);
+  assert.ok(minRailChord >= 0.22, `Rolling rail stations should remain non-degenerate, min chord ${minRailChord}`);
   assert.ok(
-    distance3(rail0[rail0.length - 1], rail1[rail1.length - 1]) < 1e-8,
-    'Smaller rolling blend should terminate at the existing larger-fillet corner vertex',
+    hasPointNear([rail0[rail0.length - 1]], 9.2, 1, 10, 0.02) &&
+      hasPointNear([rail1[rail1.length - 1]], 9.5, 1.3, 10, 0.02),
+    'Smaller rolling blend should finish on a tangent terminal cap instead of collapsing to the larger-fillet corner vertex',
   );
   const topFace = geometry.topoBody.faces().find((face) => {
     const points = face.outerLoop?.points?.() || [];
     return face.surfaceType === 'plane'
       && points.length > 0
       && points.every((point) => Math.abs(point.z - 10) < 1e-6)
-      && hasPointNear(points, 9.5, 1, 10, 0.02);
+      && hasPointNear(points, 9.2, 1, 10, 0.02)
+      && hasPointNear(points, 9.5, 1.3, 10, 0.02);
   });
-  assert.ok(topFace, 'Top face should preserve the larger-fillet corner vertex');
+  assert.ok(topFace, 'Top face should be trimmed by the non-degenerate terminal cap');
   const topCapCoedge = topFace.outerLoop.coedges.find((coedge) => {
     const edge = coedge.edge;
     const start = coedge.sameSense === false ? edge.endVertex.point : edge.startVertex.point;
     const end = coedge.sameSense === false ? edge.startVertex.point : edge.endVertex.point;
     return hasPointNear([start], 9.2, 1, 10, 0.02) && hasPointNear([end], 9.5, 1.3, 10, 0.02);
   });
-  assert.ok(!topCapCoedge, 'Small rolling blend should not cut a dedicated radius arc into the top face');
+  assert.ok(topCapCoedge, 'Small rolling blend should cut a dedicated tangent terminal cap into the top face');
   const rollingBoundaryPoints = sampleTopoFaceEdges(rollingFace, 32);
   assert.ok(
     hasPointNear(rollingBoundaryPoints, 9.7, 0, 9, 0.02) && hasPointNear(rollingBoundaryPoints, 10, 0.3, 0, 0.02),
@@ -721,6 +761,7 @@ test('box-fillet-2-s-1 curved tangent fillet rebuilds as one primitive-sectioned
 
   const rawWasmMesh = tessellateBodyWasm(geometry.topoBody, { edgeSegments: 32, surfaceSegments: 32 });
   assert.ok(rawWasmMesh?.faces?.length > 0, 'Native WASM should tessellate the rolling tangent fillet body directly');
+  assertNativeWasmValidationClean(rawWasmMesh, 'Native WASM rolling tangent mesh');
   const rawWasmTopology = measureMeshTopology(rawWasmMesh.faces);
   assert.strictEqual(rawWasmTopology.boundaryEdges, 0, 'Native WASM rolling tangent mesh should have no boundary edges');
   assert.strictEqual(rawWasmTopology.nonManifoldEdges, 0, 'Native WASM rolling tangent mesh should have no non-manifold edges');
@@ -737,6 +778,23 @@ test('box-fillet-2-s-1 curved tangent fillet rebuilds as one primitive-sectioned
     0,
     'Native WASM rolling tangent mesh should not overlap adjacent exact faces',
   );
+
+  const serialized = part.serialize();
+  const restoredPart = Part.deserialize(serialized, { tessellationConfigOverride, fastRestoreDeps });
+  const restoredFeature = restoredPart.featureTree.results.feature_94;
+  assert.strictEqual(restoredFeature?._restoredFromCheckpoint, true, 'Refresh should restore the final fillet from CBREP instead of replaying it');
+  const restoredGeometry = restoredPart.getFinalGeometry().geometry;
+  assert.strictEqual(restoredGeometry?._tessellator, 'wasm', 'Restored final fillet should stay on the native WASM tessellation path');
+  assert.strictEqual(restoredGeometry.faces.length, geometry.faces.length, 'Restored final fillet should match replay triangle count');
+  const restoredRollingFace = restoredGeometry.topoBody.faces().find((face) => face.shared?.isRollingFillet);
+  assert.ok(restoredRollingFace, 'Restored CBREP should preserve rolling fillet face metadata');
+  assert.strictEqual(restoredRollingFace.shared._rollingSections?.length || 0, rollingSections.length, 'Restored rolling face should preserve primitive section metadata');
+  assert.strictEqual(restoredRollingFace.shared._rollingRail0?.length || 0, rail0.length, 'Restored rolling face should preserve rail samples');
+  const restoredMeshTopology = measureMeshTopology(restoredGeometry.faces);
+  assert.strictEqual(restoredMeshTopology.boundaryEdges, 0, 'Restored rolling tangent mesh should have no boundary edges');
+  assert.strictEqual(restoredMeshTopology.nonManifoldEdges, 0, 'Restored rolling tangent mesh should have no non-manifold edges');
+  const restoredRawWasmMesh = tessellateBodyWasm(restoredGeometry.topoBody, { edgeSegments: 32, surfaceSegments: 32 });
+  assertNativeWasmValidationClean(restoredRawWasmMesh, 'Restored native WASM rolling tangent mesh');
 }));
 
 test('puzzle-extrude-cc2 concave arc chamfer surface tessellates in native WASM', () => {

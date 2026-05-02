@@ -1,7 +1,7 @@
 {
     "test-cbrep-tess-roundtrip.js": 24.075,
+    "test-brep-chamfer.js": 16.466,
     "test-part-deserialize-tess-config.js": 14.766,
-    "test-brep-chamfer.js": 12.601,
     "test-tess-dihedral-sweep.js": 12.023,
     "test-multi-body-chamfer-fillet.js": 10.206,
     "test-step-import-nist.js": 9.761,

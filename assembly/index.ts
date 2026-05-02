@@ -475,6 +475,9 @@ export {
   tessBuildAllFaces, tessBuildHandleFaces, tessBuildFace, tessReset,
   getTessOutVertsPtr, getTessOutNormalsPtr, getTessOutIndicesPtr, getTessOutFaceMapPtr,
   getTessOutVertCount, getTessOutTriCount,
+  tessValidateOutput,
+  getTessValidationBoundaryEdges, getTessValidationNonManifoldEdges, getTessValidationDegenerateTris,
+  getTessValidationMissingFaces, getTessValidationFaceCount,
   getEdgeSamplePtsPtr, getEdgeSampleCount, getEdgeSampleStart,
   // ops: topology-driven boolean classification
   CLASSIFY_OUTSIDE, CLASSIFY_INSIDE, CLASSIFY_ON_BOUNDARY, CLASSIFY_UNKNOWN,

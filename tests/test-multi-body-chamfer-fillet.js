@@ -699,6 +699,12 @@ test('box-fillet-3: spherical corner has NURBS surface on sphere', () => {
   assert.strictEqual(sphereFace.surface.degreeV, 2, 'Degree V should be 2');
   assert.strictEqual(sphereFace.surface.numRowsU, 3, 'Should have 3x3 control points');
 
+  const topoSphereFace = after.geometry.topoBody.faces().find(f => f.surfaceType === 'sphere');
+  assert.ok(topoSphereFace, 'Should have a spherical topo face');
+  const trimDegrees = topoSphereFace.outerLoop.coedges.map(ce => ce.edge.curve?.degree);
+  assert.deepStrictEqual(trimDegrees, [2, 2, 2],
+    `Spherical corner trims should be exact degree-2 arcs, got ${trimDegrees.join(',')}`);
+
   // Evaluate the surface at several parameter values and check points lie
   // on (or very near) the sphere defined by center + radius.
   const center = sphereFace.sphereCenter;

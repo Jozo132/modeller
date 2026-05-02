@@ -8,7 +8,7 @@ import {
   CBREP_MAGIC, CBREP_VERSION,
   SectionType, HEADER_SIZE, SECTION_ENTRY_SIZE, NULL_IDX,
   SurfTypeStr, SurfInfoTypeStr,
-  CbrepError, FeatureFlag,
+  CbrepError, FeatureFlag, CurveMetadataFlag,
 } from './schema.js';
 
 /**
@@ -54,14 +54,16 @@ export function readCbrepCanon(buf) {
   const curves = _readCurves(dv, sectionMap);
   const surfaces = _readSurfaces(dv, sectionMap);
   const surfaceInfos = _readSurfInfos(dv, sectionMap, featureFlags);
+  const curveMetadata = _readCurveMetadata(dv, sectionMap);
   const vertices = _readVertices(dv, sectionMap);
   const edges = _readEdges(dv, sectionMap);
   const coedges = _readCoEdges(dv, sectionMap);
   const loops = _readLoops(dv, sectionMap);
   const faces = _readFaces(dv, sectionMap);
   const shells = _readShells(dv, sectionMap);
+  const faceMetadata = _readFaceMetadata(dv, sectionMap);
 
-  return { vertices, edges, coedges, loops, faces, shells, curves, surfaces, surfaceInfos, featureFlags };
+  return { vertices, edges, coedges, loops, faces, shells, curves, surfaces, surfaceInfos, curveMetadata, faceMetadata, featureFlags };
 }
 
 /**
@@ -83,9 +85,14 @@ export function readCbrep(buf, deps = null) {
   } = deps || _getTopoDeps();
 
   // Reconstruct NurbsCurves
-  const nurbsCurves = canon.curves.map(c =>
-    new NurbsCurve(c.degree, c.controlPoints, c.knots, c.weights)
-  );
+  const curveMetadataByIdx = new Map((canon.curveMetadata || []).map((entry) => [entry.curveIdx, entry.flags | 0]));
+  const nurbsCurves = canon.curves.map((c, curveIdx) => {
+    const curve = new NurbsCurve(c.degree, c.controlPoints, c.knots, c.weights);
+    if ((curveMetadataByIdx.get(curveIdx) & CurveMetadataFlag.PRESERVE_CONTROL_POINT_SAMPLES) !== 0) {
+      curve._preserveControlPointSamples = true;
+    }
+    return curve;
+  });
 
   // Reconstruct NurbsSurfaces
   const nurbsSurfaces = canon.surfaces.map(s =>
@@ -120,8 +127,10 @@ export function readCbrep(buf, deps = null) {
     return new TopoLoop(ces);
   });
 
+  const faceMetadataByIdx = new Map((canon.faceMetadata || []).map((entry) => [entry.faceIdx, entry.shared]));
+
   // Reconstruct faces
-  const topoFaces = canon.faces.map(f => {
+  const topoFaces = canon.faces.map((f, faceIdx) => {
     const surfTypeStr = SurfTypeStr[f.surfaceTypeId] || 'unknown';
     const surface = f.surfaceIdx >= 0 ? nurbsSurfaces[f.surfaceIdx] : null;
     const face = new TopoFace(surface, surfTypeStr, f.sameSense);
@@ -163,6 +172,11 @@ export function readCbrep(buf, deps = null) {
       if (si.semiAngle) face.surfaceInfo.semiAngle = si.semiAngle;
       if (si.majorR) face.surfaceInfo.majorR = si.majorR;
       if (si.minorR) face.surfaceInfo.minorR = si.minorR;
+    }
+
+    const shared = faceMetadataByIdx.get(faceIdx);
+    if (shared && typeof shared === 'object') {
+      face.shared = _clonePlainObject(shared);
     }
 
     return face;
@@ -444,4 +458,52 @@ function _readSurfInfos(dv, sectionMap, featureFlags = 0) {
     arr.push({ typeId, origin: { x: ox, y: oy, z: oz }, axis, xDir, radius, semiAngle, majorR, minorR });
   }
   return arr;
+}
+
+function _readCurveMetadata(dv, sectionMap) {
+  const sec = sectionMap.get(SectionType.CURVE_METADATA);
+  if (!sec) return [];
+  let pos = sec.offset;
+  const count = dv.getUint32(pos, true); pos += 4;
+  const arr = [];
+  for (let i = 0; i < count; i++) {
+    const curveIdx = dv.getUint32(pos, true); pos += 4;
+    const flags = dv.getUint32(pos, true); pos += 4;
+    arr.push({ curveIdx, flags });
+  }
+  return arr;
+}
+
+function _readFaceMetadata(dv, sectionMap) {
+  const sec = sectionMap.get(SectionType.FACE_METADATA);
+  if (!sec) return [];
+  const decoder = new TextDecoder();
+  let pos = sec.offset;
+  const count = dv.getUint32(pos, true); pos += 4;
+  const arr = [];
+  for (let i = 0; i < count; i++) {
+    const faceIdx = dv.getUint32(pos, true); pos += 4;
+    const byteLength = dv.getUint32(pos, true); pos += 4;
+    if (pos + byteLength > sec.offset + sec.length) {
+      throw new CbrepError('face metadata section overruns its declared length');
+    }
+    const json = decoder.decode(new Uint8Array(dv.buffer, dv.byteOffset + pos, byteLength));
+    pos += byteLength;
+    let shared;
+    try {
+      shared = JSON.parse(json);
+    } catch (error) {
+      throw new CbrepError(`invalid face metadata JSON: ${error.message}`);
+    }
+    arr.push({ faceIdx, shared });
+  }
+  return arr;
+}
+
+function _clonePlainObject(value) {
+  if (Array.isArray(value)) return value.map(_clonePlainObject);
+  if (!value || typeof value !== 'object') return value;
+  const out = {};
+  for (const [key, child] of Object.entries(value)) out[key] = _clonePlainObject(child);
+  return out;
 }

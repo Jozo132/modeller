@@ -41,10 +41,16 @@ export const CBREP_VERSION = 0;
 //   analytic surface's parametric orientation (which edge is u=0), and the
 //   STEP-import tessellator cannot reproduce the live mesh from a restored
 //   body. Readers that don't know this flag must ignore the extra bytes.
+//   HAS_CURVE_METADATA — optional CURVE_METADATA section preserves sampling
+//   semantics for curves that must be emitted through their control points.
+//   HAS_FACE_METADATA — optional FACE_METADATA section preserves exact-CAD
+//   face hints such as fillet radii and rolling fillet rail descriptors.
 export const FeatureFlag = Object.freeze({
   NONE: 0,
   HAS_SURFACE_INFOS: 1 << 0,
   HAS_SURFACE_INFOS_V2: 1 << 1,
+  HAS_FACE_METADATA: 1 << 2,
+  HAS_CURVE_METADATA: 1 << 3,
 });
 
 // Section type identifiers
@@ -58,6 +64,12 @@ export const SectionType = Object.freeze({
   CURVES:     0x0007,
   SURFACES:   0x0008,
   SURF_INFOS: 0x0009,
+  FACE_METADATA: 0x000A,
+  CURVE_METADATA: 0x000B,
+});
+
+export const CurveMetadataFlag = Object.freeze({
+  PRESERVE_CONTROL_POINT_SAMPLES: 1 << 0,
 });
 
 // Surface type enum → uint8 (matches SurfaceType in BRepTopology.js)

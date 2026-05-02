@@ -729,6 +729,30 @@ async function instantiate(module, imports = {}) {
       // assembly/kernel/tessellation/getTessOutTriCount() => u32
       return exports.getTessOutTriCount() >>> 0;
     },
+    tessValidateOutput() {
+      // assembly/kernel/tessellation/tessValidateOutput() => u32
+      return exports.tessValidateOutput() >>> 0;
+    },
+    getTessValidationBoundaryEdges() {
+      // assembly/kernel/tessellation/getTessValidationBoundaryEdges() => u32
+      return exports.getTessValidationBoundaryEdges() >>> 0;
+    },
+    getTessValidationNonManifoldEdges() {
+      // assembly/kernel/tessellation/getTessValidationNonManifoldEdges() => u32
+      return exports.getTessValidationNonManifoldEdges() >>> 0;
+    },
+    getTessValidationDegenerateTris() {
+      // assembly/kernel/tessellation/getTessValidationDegenerateTris() => u32
+      return exports.getTessValidationDegenerateTris() >>> 0;
+    },
+    getTessValidationMissingFaces() {
+      // assembly/kernel/tessellation/getTessValidationMissingFaces() => u32
+      return exports.getTessValidationMissingFaces() >>> 0;
+    },
+    getTessValidationFaceCount() {
+      // assembly/kernel/tessellation/getTessValidationFaceCount() => u32
+      return exports.getTessValidationFaceCount() >>> 0;
+    },
     getEdgeSamplePtsPtr() {
       // assembly/kernel/tessellation/getEdgeSamplePtsPtr() => usize
       return exports.getEdgeSamplePtsPtr() >>> 0;
@@ -1288,6 +1312,12 @@ export const {
   getTessOutFaceMapPtr,
   getTessOutVertCount,
   getTessOutTriCount,
+  tessValidateOutput,
+  getTessValidationBoundaryEdges,
+  getTessValidationNonManifoldEdges,
+  getTessValidationDegenerateTris,
+  getTessValidationMissingFaces,
+  getTessValidationFaceCount,
   getEdgeSamplePtsPtr,
   getEdgeSampleCount,
   getEdgeSampleStart,

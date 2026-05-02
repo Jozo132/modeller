@@ -22,6 +22,15 @@ function meshNeedsRobustFallback(body, mesh) {
   const topoFaces = body.faces();
   if (topoFaces.length === 0) return false;
 
+  const wasmValidation = mesh._wasmValidation;
+  if (wasmValidation?.coordinateHash && wasmValidation.faceCount === topoFaces.length) {
+    if ((wasmValidation.missingFaces || 0) !== 0) return true;
+    const closedShell = Array.isArray(body.shells) && body.shells.some((shell) => shell?.closed === true);
+    if (!closedShell) return false;
+    return (wasmValidation.boundaryEdges || 0) !== 0
+      || (wasmValidation.nonManifoldEdges || 0) !== 0;
+  }
+
   const coveredFaceIds = new Set();
   for (const face of mesh.faces) {
     if (typeof face?.topoFaceId === 'number') coveredFaceIds.add(face.topoFaceId);

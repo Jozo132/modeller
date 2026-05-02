@@ -13,7 +13,7 @@
 //      reference identity, indexed in first-visit order
 //   5. Orientation (sameSense) preserved as-is
 
-import { SurfTypeId, SurfInfoTypeId, FeatureFlag } from './schema.js';
+import { SurfTypeId, SurfInfoTypeId, FeatureFlag, CurveMetadataFlag } from './schema.js';
 
 /**
  * Snap near-zero floats to exactly 0, matching STEP import behavior.
@@ -43,8 +43,10 @@ export function snapPoint(p) {
  *   coedges: Array<{edgeIdx:number,sameSense:boolean,pCurveIdx:number}>,
  *   loops: Array<{coedgeIndices:number[]}>,
  *   faces: Array<{surfaceTypeId:number,surfaceIdx:number,sameSense:boolean,outerLoopIdx:number,innerLoopIndices:number[],surfaceInfoIdx:number,tolerance:number}>,
+ *   faceMetadata: Array<{faceIdx:number,shared:object}>,
  *   shells: Array<{closed:boolean,faceIndices:number[]}>,
  *   curves: Array<{degree:number,controlPoints:Array<{x:number,y:number,z:number}>,knots:number[],weights:number[]}>,
+ *   curveMetadata: Array<{curveIdx:number,flags:number}>,
  *   surfaces: Array<{degreeU:number,degreeV:number,numRowsU:number,numColsV:number,controlPoints:Array<{x:number,y:number,z:number}>,knotsU:number[],knotsV:number[],weights:number[]}>,
  *   surfaceInfos: Array<{typeId:number,origin:{x:number,y:number,z:number},axis:{x:number,y:number,z:number}|null,radius:number,semiAngle:number,majorR:number,minorR:number}>,
  *   featureFlags: number,
@@ -67,8 +69,10 @@ export function canonicalize(body) {
   const faces = [];
   const shells = [];
   const curves = [];
+  const curveMetadataByIdx = new Map();
   const surfaces = [];
   const surfaceInfos = [];
+  const faceMetadata = [];
 
   let featureFlags = FeatureFlag.NONE;
 
@@ -85,7 +89,14 @@ export function canonicalize(body) {
 
   function internCurve(c) {
     if (!c) return -1;
-    if (curveMap.has(c)) return curveMap.get(c);
+    if (curveMap.has(c)) {
+      const idx = curveMap.get(c);
+      if (c._preserveControlPointSamples === true) {
+        curveMetadataByIdx.set(idx, (curveMetadataByIdx.get(idx) || 0) | CurveMetadataFlag.PRESERVE_CONTROL_POINT_SAMPLES);
+        featureFlags |= FeatureFlag.HAS_CURVE_METADATA;
+      }
+      return idx;
+    }
     const idx = curves.length;
     curveMap.set(c, idx);
     curves.push({
@@ -94,6 +105,10 @@ export function canonicalize(body) {
       knots: c.knots.map(k => snapFloat(k)),
       weights: [...c.weights],
     });
+    if (c._preserveControlPointSamples === true) {
+      curveMetadataByIdx.set(idx, CurveMetadataFlag.PRESERVE_CONTROL_POINT_SAMPLES);
+      featureFlags |= FeatureFlag.HAS_CURVE_METADATA;
+    }
     return idx;
   }
 
@@ -135,6 +150,39 @@ export function canonicalize(body) {
       minorR: info.minorR ?? 0,
     });
     return idx;
+  }
+
+  function cloneMetadataValue(value) {
+    if (value == null) return value;
+    if (typeof value === 'number') return Number.isFinite(value) ? snapFloat(value) : null;
+    if (typeof value === 'string' || typeof value === 'boolean') return value;
+    if (Array.isArray(value)) return value.map(cloneMetadataValue);
+    if (typeof value === 'object') {
+      const out = {};
+      for (const key of Object.keys(value).sort()) {
+        const cloned = cloneMetadataValue(value[key]);
+        if (cloned !== undefined) out[key] = cloned;
+      }
+      return out;
+    }
+    return undefined;
+  }
+
+  function cloneFaceSharedMetadata(shared) {
+    if (!shared || typeof shared !== 'object') return null;
+    const keys = [
+      'sourceFeatureId', 'isFillet', 'isRollingFillet',
+      '_exactAxisStart', '_exactAxisEnd', '_exactRadius',
+      '_rollingRail0', '_rollingRail1', '_rollingCenters',
+      '_rollingRail0Spans', '_rollingRail1Spans', '_rollingSections',
+    ];
+    const out = {};
+    for (const key of keys) {
+      if (!Object.prototype.hasOwnProperty.call(shared, key)) continue;
+      const cloned = cloneMetadataValue(shared[key]);
+      if (cloned !== undefined) out[key] = cloned;
+    }
+    return Object.keys(out).length > 0 ? out : null;
   }
 
   function internEdge(e) {
@@ -205,11 +253,21 @@ export function canonicalize(body) {
         tolerance: face.tolerance || 0,
       };
 
+      const shared = cloneFaceSharedMetadata(face.shared);
+      if (shared) {
+        faceMetadata.push({ faceIdx: fIdx, shared });
+        featureFlags |= FeatureFlag.HAS_FACE_METADATA;
+      }
+
       faceIndices.push(fIdx);
     }
 
     shells.push({ closed: shell.closed || false, faceIndices });
   }
+
+  const curveMetadata = [...curveMetadataByIdx.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([curveIdx, flags]) => ({ curveIdx, flags }));
 
   return {
     vertices,
@@ -219,8 +277,10 @@ export function canonicalize(body) {
     faces,
     shells,
     curves,
+    curveMetadata,
     surfaces,
     surfaceInfos,
+    faceMetadata,
     featureFlags,
   };
 }

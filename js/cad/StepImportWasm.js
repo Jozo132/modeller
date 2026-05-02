@@ -111,6 +111,19 @@ export function tessellateBodyWasm(body, opts = {}) {
     if (nTris < 0) return null;
     if (nTris === 0) return { vertices: [], faces: [] };
 
+    let wasmValidation = null;
+    if (typeof w.tessValidateOutput === 'function') {
+        w.tessValidateOutput();
+        wasmValidation = {
+            boundaryEdges: typeof w.getTessValidationBoundaryEdges === 'function' ? w.getTessValidationBoundaryEdges() >>> 0 : 0,
+            nonManifoldEdges: typeof w.getTessValidationNonManifoldEdges === 'function' ? w.getTessValidationNonManifoldEdges() >>> 0 : 0,
+            degenerateTris: typeof w.getTessValidationDegenerateTris === 'function' ? w.getTessValidationDegenerateTris() >>> 0 : 0,
+            missingFaces: typeof w.getTessValidationMissingFaces === 'function' ? w.getTessValidationMissingFaces() >>> 0 : 0,
+            faceCount: typeof w.getTessValidationFaceCount === 'function' ? w.getTessValidationFaceCount() >>> 0 : wasmFaceCount,
+            coordinateHash: true,
+        };
+    }
+
     const nVerts = w.getTessOutVertCount() >>> 0;
     const buf = wasmMem.buffer;
     const vertsPtr = w.getTessOutVertsPtr() >>> 0;
@@ -176,7 +189,9 @@ export function tessellateBodyWasm(body, opts = {}) {
 
     _repairTriangleWinding(outFaces);
 
-    return { vertices: outVertices, faces: outFaces };
+    const result = { vertices: outVertices, faces: outFaces };
+    if (wasmValidation) result._wasmValidation = wasmValidation;
+    return result;
 }
 
 function _repairTriangleWinding(faces) {
