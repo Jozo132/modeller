@@ -2,6 +2,7 @@ import './_watchdog.mjs';
 import assert from 'assert';
 import { Part } from '../js/cad/Part.js';
 import { Sketch } from '../js/cad/Sketch.js';
+import { Scene } from '../js/cad/index.js';
 import { robustTessellateBody } from '../js/cad/Tessellator2/index.js';
 import { applyBRepChamfer } from '../js/cad/BRepChamfer.js';
 import { edgeKeyFromVerts } from '../js/cad/toolkit/Vec3Utils.js';
@@ -12,6 +13,7 @@ import {
   setCbrepPersistStoreFactory,
   setPartManagerForPersist,
 } from '../js/persist.js';
+import { state } from '../js/state.js';
 import { formatTimingSuffix, startTiming } from './test-timing.js';
 
 let passed = 0;
@@ -51,6 +53,36 @@ async function withMockLocalStorage(fn) {
     },
     setItem(key, value) {
       storage.set(key, String(value));
+    },
+    removeItem(key) {
+      storage.delete(key);
+    },
+  };
+
+  try {
+    return await fn(storage);
+  } finally {
+    if (original === undefined) {
+      delete globalThis.localStorage;
+    } else {
+      globalThis.localStorage = original;
+    }
+  }
+}
+
+async function withQuotaLimitedLocalStorage(maxValueLength, fn) {
+  const original = globalThis.localStorage;
+  const storage = new Map();
+  globalThis.localStorage = {
+    getItem(key) {
+      return storage.has(key) ? storage.get(key) : null;
+    },
+    setItem(key, value) {
+      const text = String(value);
+      if (text.length > maxValueLength) {
+        throw new Error(`quota exceeded: ${text.length} > ${maxValueLength}`);
+      }
+      storage.set(key, text);
     },
     removeItem(key) {
       storage.delete(key);
@@ -199,6 +231,45 @@ await test('browser persistence stores final exact snapshot behind an external m
       clearSavedProject();
       setCbrepPersistStoreFactory(null);
       setPartManagerForPersist(null);
+    }
+  });
+});
+
+await test('browser persistence keeps large image payloads out of quota-limited localStorage', async () => {
+  await withQuotaLimitedLocalStorage(4096, async () => {
+    const externalStore = new Map();
+    const originalScene = state.scene;
+    setCbrepPersistStoreFactory(() => ({
+      async get(key) {
+        return externalStore.has(key) ? externalStore.get(key) : null;
+      },
+      async put(key, value) {
+        externalStore.set(key, value);
+      },
+      async delete(key) {
+        externalStore.delete(key);
+        return true;
+      },
+    }));
+
+    state.scene = new Scene();
+    const dataUrl = `data:image/png;base64,${'A'.repeat(12000)}`;
+    state.scene.addImage(dataUrl, 0, 0, 100, 50, { name: 'Quota Test' });
+
+    try {
+      await saveProject();
+      const raw = JSON.parse(localStorage.getItem('cad-modeller-project'));
+      const loaded = await loadProject();
+
+      assert.ok(raw.scene.images[0].dataUrlManifest, 'expected an external image manifest in localStorage');
+      assert.ok(!raw.scene.images[0].dataUrl, 'expected image payload to stay out of localStorage');
+      assert.ok(loaded && loaded.ok, 'expected loadProject to restore the saved image payload');
+      assert.strictEqual(state.scene.images.length, 1);
+      assert.strictEqual(state.scene.images[0].dataUrl, dataUrl);
+    } finally {
+      clearSavedProject();
+      setCbrepPersistStoreFactory(null);
+      state.scene = originalScene;
     }
   });
 });

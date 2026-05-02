@@ -633,6 +633,8 @@ export class Scene {
         gridCellsX: d.gridCellsX,
         gridCellsY: d.gridCellsY,
         quad: d.quad,
+        perspectiveEditQuad: d.perspectiveEditQuad,
+        perspectiveOutputQuad: d.perspectiveOutputQuad,
         sourceQuad: d.sourceQuad,
       });
       image.id = d.id;

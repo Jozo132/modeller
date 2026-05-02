@@ -2,6 +2,7 @@ import './_watchdog.mjs';
 import assert from 'node:assert';
 
 import { ImagePrimitive, Scene } from '../js/cad/index.js';
+import { buildProjectiveGridGuides } from '../js/render/projective-quad.js';
 import { state } from '../js/state.js';
 import { SelectTool } from '../js/tools/SelectTool.js';
 
@@ -180,6 +181,147 @@ test('source quad bounds normalize correctly for expanded perspective sampling',
     { u: 1, v: 1 },
     { u: 0.125, v: 0.8148148148148149 },
   ]);
+});
+
+test('projective perspective guides compress farther grid rows', () => {
+  const guides = buildProjectiveGridGuides([
+    { x: 0, y: 0 },
+    { x: 12, y: 0 },
+    { x: 8, y: 6 },
+    { x: 3, y: 8 },
+  ], 4, 4);
+  const horizontalGuides = guides.slice(0, 3);
+  assert.strictEqual(horizontalGuides.length, 3);
+  const lengths = horizontalGuides.map(([a, b]) => Math.hypot(b.x - a.x, b.y - a.y));
+  assert.ok(lengths[0] > lengths[1], 'expected middle row to be shorter than the near row');
+  assert.ok(lengths[1] > lengths[2], 'expected far row to be shorter than the middle row');
+});
+
+test('applied perspective keeps the full image visible outside the corrected grid', () => {
+  const image = new ImagePrimitive('data:image/png;base64,HHHH', 0, 0, 100, 50, {
+    perspectiveEnabled: true,
+    gridWidth: 200,
+    gridHeight: 100,
+  });
+
+  image.beginPerspectiveEdit();
+  image.setPerspectiveDraftPoint(0, 0.2, 0.1);
+  image.setPerspectiveDraftPoint(1, 0.8, 0.15);
+  image.setPerspectiveDraftPoint(2, 0.72, 0.88);
+  image.setPerspectiveDraftPoint(3, 0.24, 0.84);
+  image.applyPerspectiveEdit({
+    targetWidth: image.gridWidth,
+    targetHeight: image.gridHeight,
+    moveToOrigin: true,
+    placeOnGrid: true,
+  });
+
+  assert.deepStrictEqual(image.getRenderSourceQuad(), ImagePrimitive.fullSourceQuad());
+  const displayQuad = image.getWorldQuad();
+  const xs = displayQuad.map((point) => point.x);
+  const ys = displayQuad.map((point) => point.y);
+  assert.ok(Math.min(...xs) < 0 || Math.max(...xs) > image.gridWidth,
+    'expected corrected output to extend horizontally beyond the grid frame');
+  assert.ok(Math.min(...ys) < 0 || Math.max(...ys) > image.gridHeight,
+    'expected corrected output to extend vertically beyond the grid frame');
+  assert.deepStrictEqual(image.getLocalQuad(), [
+    { x: 0, y: 0 },
+    { x: 200, y: 0 },
+    { x: 200, y: 100 },
+    { x: 0, y: 100 },
+  ]);
+});
+
+test('re-editing applied perspective restores the pre-apply image ratio and guide mapping', () => {
+  const image = new ImagePrimitive('data:image/png;base64,IIII', 0, 0, 100, 50, {
+    perspectiveEnabled: true,
+    gridWidth: 200,
+    gridHeight: 100,
+  });
+
+  image.beginPerspectiveEdit();
+  image.setPerspectiveDraftPoint(0, 0.2, 0.1);
+  image.setPerspectiveDraftPoint(1, 0.8, 0.15);
+  image.setPerspectiveDraftPoint(2, 0.72, 0.88);
+  image.setPerspectiveDraftPoint(3, 0.24, 0.84);
+  image.applyPerspectiveEdit({
+    targetWidth: image.gridWidth,
+    targetHeight: image.gridHeight,
+    moveToOrigin: true,
+    placeOnGrid: true,
+  });
+
+  image.beginPerspectiveEdit();
+
+  const editQuad = image.getWorldQuad();
+  assert.deepStrictEqual(editQuad, [
+    { x: 0, y: 0 },
+    { x: 100, y: 0 },
+    { x: 100, y: 50 },
+    { x: 0, y: 50 },
+  ]);
+
+  const handlePoints = image.getSourceHandlePoints();
+  assertApproxEqual(handlePoints[0].x, 20);
+  assertApproxEqual(handlePoints[0].y, 5);
+  assertApproxEqual(handlePoints[1].x, 80);
+  assertApproxEqual(handlePoints[1].y, 7.5);
+
+  const normalized = image.worldToNormalized(80, 7.5);
+  assertApproxEqual(normalized.u, 0.8);
+  assertApproxEqual(normalized.v, 0.15);
+});
+
+test('select tool escape cancels an image drag and restores its position', () => {
+  state.scene = new Scene();
+  state.selectedEntities = [];
+  const image = state.scene.addImage('data:image/png;base64,JJJJ', 10, 20, 100, 50, {});
+  state.select(image);
+
+  const app = {
+    renderer: { previewEntities: [], hoverEntity: null },
+    viewport: { zoom: 10 },
+    _sketchingOnPlane: false,
+    _renderer3d: null,
+    _scheduleRender() {},
+    setStatus() {},
+  };
+  const tool = new SelectTool(app);
+
+  tool.onMouseDown(15, 25, 100, 100, { button: 0 });
+  tool.onMouseMove(45, 55, 140, 140);
+  const handled = tool.onKeyDown({ key: 'Escape', preventDefault() {} });
+
+  assert.strictEqual(handled, true);
+  assert.strictEqual(state.scene.images[0].x, 10);
+  assert.strictEqual(state.scene.images[0].y, 20);
+});
+
+test('select tool escape cancels a shape drag and restores its endpoints', () => {
+  state.scene = new Scene();
+  state.selectedEntities = [];
+  const segment = state.scene.addSegment(0, 0, 10, 0);
+  state.select(segment);
+
+  const app = {
+    renderer: { previewEntities: [], hoverEntity: null },
+    viewport: { zoom: 10 },
+    _sketchingOnPlane: false,
+    _renderer3d: null,
+    _scheduleRender() {},
+    setStatus() {},
+  };
+  const tool = new SelectTool(app);
+
+  tool.onMouseDown(5, 0, 100, 100, { button: 0 });
+  tool.onMouseMove(20, 15, 140, 140);
+  const handled = tool.onKeyDown({ key: 'Escape', preventDefault() {} });
+
+  assert.strictEqual(handled, true);
+  assert.strictEqual(state.scene.segments[0].p1.x, 0);
+  assert.strictEqual(state.scene.segments[0].p1.y, 0);
+  assert.strictEqual(state.scene.segments[0].p2.x, 10);
+  assert.strictEqual(state.scene.segments[0].p2.y, 0);
 });
 
 test('select tool keeps the editing image selected until perspective edit is finished', () => {

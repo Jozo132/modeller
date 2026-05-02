@@ -18,7 +18,9 @@ function _rebuildSnapGrid() {
     if (!entity.visible) continue;
     if (!state.isLayerVisible(entity.layer)) continue;
     const snaps = entity.getSnapPoints();
+    if (!Array.isArray(snaps)) continue;
     for (const snap of snaps) {
+      if (!snap || !Number.isFinite(snap.x) || !Number.isFinite(snap.y)) continue;
       const cx = Math.floor(snap.x / _SNAP_CELL);
       const cy = Math.floor(snap.y / _SNAP_CELL);
       const key = `${cx},${cy}`;
@@ -70,6 +72,7 @@ export function findSnap(sx, sy, viewport) {
       const snaps = _snapGrid.get(`${cx},${cy}`);
       if (!snaps) continue;
       for (const snap of snaps) {
+        if (!snap || !Number.isFinite(snap.x) || !Number.isFinite(snap.y)) continue;
         // Quick world-space rejection before expensive screen transform
         const dx = snap.x - world.x;
         const dy = snap.y - world.y;

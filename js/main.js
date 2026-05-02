@@ -2340,8 +2340,9 @@ class App {
         return;
       }
 
-      // Forward to tool first
-      this.activeTool.onKeyDown(e);
+      // Forward to tool first; tools may consume keys like Escape for local cancel.
+      const toolHandled = this.activeTool.onKeyDown(e);
+      if (toolHandled === true || e.defaultPrevented) return;
 
       // Shortcuts
       if (e.ctrlKey) {

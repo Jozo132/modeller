@@ -13,6 +13,7 @@ import {
 import { renderBaseMeshOverlay } from './render/mesh-overlay-renderer.js';
 import { LodManager } from './render/lod-manager.js';
 import { GpuTessPipeline } from './render/gpu-tess-pipeline.js';
+import { buildProjectiveGridGuides } from './render/projective-quad.js';
 import { SketchFeature } from './cad/SketchFeature.js';
 import { constrainedTriangulate } from './cad/Tessellator2/CDT.js';
 
@@ -244,25 +245,6 @@ function _transformSourceTriangleToDest(ctx, source, srcTri, dstTri) {
   ctx.transform(a, b, c, d, e, f);
   ctx.drawImage(source, 0, 0);
   ctx.restore();
-}
-
-function _buildSourceGuideGrid(sourceQuad, cellsX = 3, cellsY = 3) {
-  const guides = [];
-  const normalizedCellsX = Math.max(1, Math.round(cellsX || 3));
-  const normalizedCellsY = Math.max(1, Math.round(cellsY || 3));
-  for (let i = 1; i < normalizedCellsY; i++) {
-    const t = i / normalizedCellsY;
-    const left = _lerpPoint(sourceQuad[0], sourceQuad[3], t);
-    const right = _lerpPoint(sourceQuad[1], sourceQuad[2], t);
-    guides.push([left, right]);
-  }
-  for (let i = 1; i < normalizedCellsX; i++) {
-    const t = i / normalizedCellsX;
-    const bottom = _lerpPoint(sourceQuad[0], sourceQuad[1], t);
-    const top = _lerpPoint(sourceQuad[3], sourceQuad[2], t);
-    guides.push([bottom, top]);
-  }
-  return guides;
 }
 
 function _isIdentitySourceQuad(sourceQuad) {
@@ -3000,7 +2982,12 @@ export class WasmRenderer {
     const renderSource = resolvedSource.source;
     const normalizedRenderSourceQuad = resolvedSource.normalizedQuad;
     const sourceQuadPixels = _sourceQuadToPixels(normalizedRenderSourceQuad, renderSource.width || renderSource.naturalWidth, renderSource.height || renderSource.naturalHeight);
-    const useWarp = primitive.rotation || primitive.scaleX !== 1 || primitive.scaleY !== 1 || !_isIdentitySourceQuad(renderSourceQuad);
+    const hasAppliedPerspectiveOutput = !!(primitive.perspectiveOutputQuad && !(typeof primitive.isPerspectiveEditing === 'function' && primitive.isPerspectiveEditing()));
+    const useWarp = hasAppliedPerspectiveOutput
+      || primitive.rotation
+      || primitive.scaleX !== 1
+      || primitive.scaleY !== 1
+      || !_isIdentitySourceQuad(renderSourceQuad);
 
     ctx.save();
     ctx.globalAlpha = Math.max(0.05, Math.min(1, primitive.opacity || 0.8));
@@ -3059,7 +3046,7 @@ export class WasmRenderer {
       for (let i = 1; i < handlePoints.length; i++) ctx.lineTo(handlePoints[i].x, handlePoints[i].y);
       ctx.closePath();
       ctx.stroke();
-      for (const [a, b] of _buildSourceGuideGrid(handlePoints, primitive.gridCellsX || 3, primitive.gridCellsY || 3)) {
+      for (const [a, b] of buildProjectiveGridGuides(handlePoints, primitive.gridCellsX || 3, primitive.gridCellsY || 3)) {
         ctx.beginPath();
         ctx.moveTo(a.x, a.y);
         ctx.lineTo(b.x, b.y);

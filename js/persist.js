@@ -8,6 +8,9 @@ const PROJECT_SCHEMA_VERSION = 4;
 const FINAL_CBREP_CONTAINER_VERSION = 1;
 const FINAL_CBREP_CONTAINER_KIND = 'final-cbrep-snapshot';
 const FINAL_CBREP_IDB_KEY = `${STORAGE_KEY}:final-cbrep`;
+const PROJECT_IMAGE_CONTAINER_VERSION = 1;
+const PROJECT_IMAGE_CONTAINER_KIND = 'project-image';
+const PROJECT_IMAGE_IDB_KEY_PREFIX = `${STORAGE_KEY}:image`;
 const SAVE_DEBOUNCE_MS = 500;
 
 let _saveTimer = null;
@@ -83,6 +86,180 @@ function _makeFinalCbrepManifest(storage, hash = null) {
     compression: 'none',
     hash: hash || null,
   };
+}
+
+function _hashProjectImagePayload(text) {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < text.length; index++) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `${(hash >>> 0).toString(16).padStart(8, '0')}-${text.length.toString(16)}`;
+}
+
+function _makeProjectImageManifest(key, hash) {
+  return {
+    version: PROJECT_IMAGE_CONTAINER_VERSION,
+    kind: PROJECT_IMAGE_CONTAINER_KIND,
+    storage: 'idb',
+    key,
+    encoding: 'utf8',
+    hash,
+  };
+}
+
+async function _persistProjectImagePayload(dataUrl) {
+  if (!dataUrl || (!_cbrepStoreFactory && typeof indexedDB === 'undefined')) {
+    return null;
+  }
+
+  const hash = _hashProjectImagePayload(dataUrl);
+  const key = `${PROJECT_IMAGE_IDB_KEY_PREFIX}:${hash}`;
+  try {
+    const store = await _getCbrepStore();
+    const container = {
+      version: PROJECT_IMAGE_CONTAINER_VERSION,
+      kind: PROJECT_IMAGE_CONTAINER_KIND,
+      encoding: 'utf8',
+      hash,
+      payload: dataUrl,
+      savedAt: Date.now(),
+    };
+    await store.put(key, _toArrayBuffer(_utf8Encode(JSON.stringify(container))));
+    return _makeProjectImageManifest(key, hash);
+  } catch (err) {
+    warn('Failed to persist project image to IndexedDB; keeping inline snapshot', err?.message || String(err));
+    return null;
+  }
+}
+
+async function _loadProjectImagePayload(manifest) {
+  if (!manifest || manifest.storage !== 'idb' || !manifest.key) {
+    return null;
+  }
+
+  try {
+    const store = await _getCbrepStore();
+    const raw = await store.get(manifest.key);
+    if (!raw) {
+      return null;
+    }
+
+    const container = JSON.parse(_utf8Decode(raw));
+    if (container.version !== PROJECT_IMAGE_CONTAINER_VERSION || container.kind !== PROJECT_IMAGE_CONTAINER_KIND) {
+      warn('Ignoring unsupported project image container version from IndexedDB', `${container.kind || 'unknown'}@${container.version ?? 'unknown'}`);
+      return null;
+    }
+    if (manifest.hash && container.hash && manifest.hash !== container.hash) {
+      warn('Ignoring mismatched project image payload from IndexedDB', `${manifest.hash} !== ${container.hash}`);
+      return null;
+    }
+
+    return typeof container.payload === 'string' ? container.payload : null;
+  } catch (err) {
+    warn('Failed to restore project image from IndexedDB', err?.message || String(err));
+    return null;
+  }
+}
+
+async function _deletePersistedProjectImage(manifest) {
+  if (!manifest || manifest.storage !== 'idb' || !manifest.key) {
+    return;
+  }
+  try {
+    const store = await _getCbrepStore();
+    await store.delete(manifest.key);
+  } catch {
+    // Best-effort cleanup only.
+  }
+}
+
+function _collectProjectImageManifests(node, manifests = []) {
+  if (!node || typeof node !== 'object') {
+    return manifests;
+  }
+  if (Array.isArray(node)) {
+    for (const value of node) {
+      _collectProjectImageManifests(value, manifests);
+    }
+    return manifests;
+  }
+
+  if (node.type === 'image' && node.dataUrlManifest?.storage === 'idb' && node.dataUrlManifest?.key) {
+    manifests.push(node.dataUrlManifest);
+  }
+
+  for (const value of Object.values(node)) {
+    _collectProjectImageManifests(value, manifests);
+  }
+  return manifests;
+}
+
+async function _externalizeProjectImagePayloads(node) {
+  const activeKeys = new Set();
+  const persistedByHash = new Map();
+
+  async function visit(value) {
+    if (!value || typeof value !== 'object') {
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const entry of value) {
+        await visit(entry);
+      }
+      return;
+    }
+
+    if (value.type === 'image' && typeof value.dataUrl === 'string' && value.dataUrl.length > 0) {
+      const hash = _hashProjectImagePayload(value.dataUrl);
+      let manifest = persistedByHash.get(hash);
+      if (!manifest) {
+        manifest = await _persistProjectImagePayload(value.dataUrl);
+        if (manifest) {
+          persistedByHash.set(hash, manifest);
+        }
+      }
+      if (manifest) {
+        value.dataUrlManifest = manifest;
+        delete value.dataUrl;
+        activeKeys.add(manifest.key);
+      }
+    }
+
+    for (const entry of Object.values(value)) {
+      await visit(entry);
+    }
+  }
+
+  await visit(node);
+  return activeKeys;
+}
+
+async function _hydrateProjectImagePayloads(node) {
+  async function visit(value) {
+    if (!value || typeof value !== 'object') {
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const entry of value) {
+        await visit(entry);
+      }
+      return;
+    }
+
+    if (value.type === 'image' && !value.dataUrl && value.dataUrlManifest) {
+      const payload = await _loadProjectImagePayload(value.dataUrlManifest);
+      if (payload) {
+        value.dataUrl = payload;
+      }
+    }
+
+    for (const entry of Object.values(value)) {
+      await visit(entry);
+    }
+  }
+
+  await visit(node);
 }
 
 async function _persistFinalCbrepPayload(payload, hash) {
@@ -234,6 +411,8 @@ function projectToJSON() {
 async function projectFromJSON(data) {
   if (!data || data.version == null) return { ok: false, hasViewport: false };
 
+  await _hydrateProjectImagePayloads(data);
+
   // Backward compatible: v2 projects lack part/orbit/workspaceMode fields,
   // which will be null in the returned object. The caller handles this gracefully.
 
@@ -292,6 +471,7 @@ export async function saveProject() {
   try {
     const previous = _readStoredProjectRecord();
     const previousManifest = previous?.finalCbrepContainer || null;
+    const previousImageManifests = _collectProjectImageManifests(previous);
     const json = projectToJSON();
     const payload = json.part?._finalCbrepPayload || null;
     const hash = json.part?._finalCbrepHash || null;
@@ -318,7 +498,15 @@ export async function saveProject() {
       await _deletePersistedFinalCbrep(previousManifest);
     }
 
+    const activeImageKeys = await _externalizeProjectImagePayloads(json);
+
     localStorage.setItem(STORAGE_KEY, JSON.stringify(json));
+
+    for (const manifest of previousImageManifests) {
+      if (!activeImageKeys.has(manifest.key)) {
+        await _deletePersistedProjectImage(manifest);
+      }
+    }
   } catch (err) {
     warn('Failed to save project to localStorage', err.message);
   }
@@ -362,6 +550,9 @@ export function clearSavedProject() {
   localStorage.removeItem(STORAGE_KEY);
   if (previous?.finalCbrepContainer) {
     void _deletePersistedFinalCbrep(previous.finalCbrepContainer);
+  }
+  for (const manifest of _collectProjectImageManifests(previous)) {
+    void _deletePersistedProjectImage(manifest);
   }
   info('Saved project cleared from browser storage');
 }

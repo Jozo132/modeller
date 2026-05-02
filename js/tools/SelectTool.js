@@ -2,6 +2,7 @@
 import { BaseTool } from './BaseTool.js';
 import { state } from '../state.js';
 import { takeSnapshot } from '../history.js';
+import { Scene } from '../cad/index.js';
 import { union } from '../cad/Operations.js';
 import { OnLine } from '../cad/Constraint.js';
 
@@ -52,6 +53,7 @@ export class SelectTool extends BaseTool {
 
     // Alignment guide state (visual only, no constraints)
     this._alignmentGuides = [];   // [{axis:'h'|'v', dragPt, matchPt, value}, ...]
+    this._dragCancelState = null;
   }
 
   activate() {
@@ -70,7 +72,86 @@ export class SelectTool extends BaseTool {
     this._snapCandidates = [];
     this._lineSnapCandidates = [];
     this._alignmentGuides = [];
+    this._dragCancelState = null;
     super.deactivate();
+  }
+
+  _captureSceneDragState() {
+    if (this._dragCancelState) return;
+    this._dragCancelState = {
+      kind: 'scene',
+      sceneData: state.scene.serialize(),
+      selectedEntityIds: state.selectedEntities.map((entity) => entity.id),
+    };
+  }
+
+  _captureImageHandleDragState(image) {
+    if (this._dragCancelState) return;
+    this._dragCancelState = {
+      kind: 'image-handle',
+      image,
+      draftQuad: typeof image.getPerspectiveGuideQuad === 'function'
+        ? image.getPerspectiveGuideQuad().map((point) => ({ u: point.u, v: point.v }))
+        : null,
+    };
+  }
+
+  _resetDragState() {
+    this._dragPoint = null;
+    this._dragShape = null;
+    this._dragShapePts = [];
+    this._dragImageHandle = null;
+    this._dragDimension = null;
+    this._snapCandidates = [];
+    this._lineSnapCandidates = [];
+    this._alignmentGuides = [];
+    this._isDragging = false;
+    this._dragStart = null;
+    this._selectionBox = null;
+    this._dragTookSnapshot = false;
+    this._dragCancelState = null;
+  }
+
+  _restoreSceneDragState(snapshot) {
+    state.scene = Scene.deserialize(snapshot.sceneData);
+    const selectedIds = new Set(snapshot.selectedEntityIds || []);
+    state.selectedEntities = [];
+    for (const entity of state.entities) {
+      entity.selected = selectedIds.has(entity.id);
+      if (entity.selected) state.selectedEntities.push(entity);
+    }
+    state.emit('selection:change', state.selectedEntities);
+  }
+
+  _restoreImageHandleDragState(snapshot) {
+    if (!snapshot.image || !Array.isArray(snapshot.draftQuad)) return;
+    if (typeof snapshot.image.beginPerspectiveEdit === 'function' && !snapshot.image.isPerspectiveEditing()) {
+      snapshot.image.beginPerspectiveEdit();
+    }
+    if (typeof snapshot.image.setPerspectiveDraftPoint !== 'function') return;
+    snapshot.draftQuad.forEach((point, index) => {
+      snapshot.image.setPerspectiveDraftPoint(index, point.u, point.v);
+    });
+  }
+
+  _cancelActiveDrag() {
+    const hadDragGesture = !!(this._dragStart || this._selectionBox || this._dragPoint || this._dragShape || this._dragDimension || this._dragImageHandle || this._isDragging);
+    const cancelState = this._dragCancelState;
+    if (cancelState?.kind === 'scene') {
+      this._restoreSceneDragState(cancelState);
+    } else if (cancelState?.kind === 'image-handle') {
+      this._restoreImageHandleDragState(cancelState);
+    }
+
+    this.app.renderer.hoverEntity = null;
+    this._resetDragState();
+
+    if (hadDragGesture) {
+      state.emit('change');
+      this.setStatus('Move canceled.');
+      if (typeof this.app._scheduleRender === 'function') this.app._scheduleRender();
+    }
+    return hadDragGesture;
   }
 
   // ------------------------------------------------------------------
@@ -350,6 +431,7 @@ export class SelectTool extends BaseTool {
       this._dragTookSnapshot = false;
       this._isDragging = false;
       this._dragStart = { wx, wy, sx, sy };
+      this._dragCancelState = null;
       return;
     }
 
@@ -377,6 +459,7 @@ export class SelectTool extends BaseTool {
       this._dragTookSnapshot = false;
       this._isDragging = false;
       this._dragStart = { wx, wy, sx, sy };
+      this._dragCancelState = null;
       return;
     }
 
@@ -390,6 +473,7 @@ export class SelectTool extends BaseTool {
       this._dragTookSnapshot = false;
       this._isDragging = false;
       this._dragStart = { wx, wy, sx, sy };
+      this._dragCancelState = null;
       return;
     }
 
@@ -406,6 +490,7 @@ export class SelectTool extends BaseTool {
         this._dragTookSnapshot = false;
         this._isDragging = false;
         this._dragStart = { wx, wy, sx, sy };
+        this._dragCancelState = null;
         return;
       }
     }
@@ -418,6 +503,7 @@ export class SelectTool extends BaseTool {
     this._dragShapePts = [];
     this._dragImageHandle = null;
     this._dragDimension = null;
+    this._dragCancelState = null;
   }
 
   onMouseMove(wx, wy, sx, sy) {
@@ -427,6 +513,7 @@ export class SelectTool extends BaseTool {
       const dy = sy - this._dragStart.sy;
       if (!this._isDragging && (Math.abs(dx) > DRAG_THRESHOLD || Math.abs(dy) > DRAG_THRESHOLD)) {
         this._isDragging = true;
+        this._captureImageHandleDragState(this._dragImageHandle.image);
       }
       if (this._isDragging) {
         const { image, index } = this._dragImageHandle;
@@ -443,6 +530,7 @@ export class SelectTool extends BaseTool {
       const dy = sy - this._dragStart.sy;
       if (!this._isDragging && (Math.abs(dx) > DRAG_THRESHOLD || Math.abs(dy) > DRAG_THRESHOLD)) {
         this._isDragging = true;
+        this._captureSceneDragState();
         if (!this._dragTookSnapshot) { takeSnapshot(); this._dragTookSnapshot = true; }
       }
       if (this._isDragging) {
@@ -481,6 +569,7 @@ export class SelectTool extends BaseTool {
       const dy = sy - this._dragStart.sy;
       if (!this._isDragging && (Math.abs(dx) > DRAG_THRESHOLD || Math.abs(dy) > DRAG_THRESHOLD)) {
         this._isDragging = true;
+        this._captureSceneDragState();
         if (!this._dragTookSnapshot) { takeSnapshot(); this._dragTookSnapshot = true; }
       }
       if (this._isDragging) {
@@ -496,6 +585,7 @@ export class SelectTool extends BaseTool {
       const dy = sy - this._dragStart.sy;
       if (!this._isDragging && (Math.abs(dx) > DRAG_THRESHOLD || Math.abs(dy) > DRAG_THRESHOLD)) {
         this._isDragging = true;
+        this._captureSceneDragState();
         if (!this._dragTookSnapshot) { takeSnapshot(); this._dragTookSnapshot = true; }
       }
       if (this._isDragging) {
@@ -574,6 +664,7 @@ export class SelectTool extends BaseTool {
       this._isDragging = false;
       this._dragStart = null;
       this._dragTookSnapshot = false;
+      this._dragCancelState = null;
       return;
     }
 
@@ -598,6 +689,7 @@ export class SelectTool extends BaseTool {
       this._isDragging = false;
       this._dragStart = null;
       this._dragTookSnapshot = false;
+      this._dragCancelState = null;
       return;
     }
 
@@ -610,6 +702,7 @@ export class SelectTool extends BaseTool {
       this._isDragging = false;
       this._dragStart = null;
       this._dragTookSnapshot = false;
+      this._dragCancelState = null;
       return;
     }
 
@@ -635,6 +728,7 @@ export class SelectTool extends BaseTool {
       this._isDragging = false;
       this._dragStart = null;
       this._dragTookSnapshot = false;
+      this._dragCancelState = null;
       return;
     }
 
@@ -669,6 +763,7 @@ export class SelectTool extends BaseTool {
     this._dragStart = null;
     this._isDragging = false;
     this._selectionBox = null;
+    this._dragCancelState = null;
 
     // Refresh hover
     const hit = this._hitTest(wx, wy);
@@ -676,19 +771,16 @@ export class SelectTool extends BaseTool {
   }
 
   onCancel() {
-    this._dragPoint = null;
-    this._dragShape = null;
-    this._dragShapePts = [];
-    this._dragImageHandle = null;
-    this._dragDimension = null;
-    this._snapCandidates = [];
-    this._lineSnapCandidates = [];
-    this._alignmentGuides = [];
-    this._isDragging = false;
-    this._dragStart = null;
-    this._selectionBox = null;
-    this._dragTookSnapshot = false;
+    if (this._cancelActiveDrag()) return;
     super.onCancel();
+  }
+
+  onKeyDown(event) {
+    if (event.key === 'Escape' && this._cancelActiveDrag()) {
+      event.preventDefault();
+      return true;
+    }
+    return false;
   }
 
   /** Compute new offset for a dimension based on world mouse position. */
