@@ -15,6 +15,7 @@ const ALIGN_TOL_PX = 5;   // pixel tolerance for alignment guide detection
 function _shapePoints(shape) {
   if (shape.type === 'segment') return [shape.p1, shape.p2];
   if (shape.type === 'circle' || shape.type === 'arc') return [shape.center];
+  if (shape.type === 'group') return [];
   return [];
 }
 
@@ -116,7 +117,7 @@ export class SelectTool extends BaseTool {
     state.scene = Scene.deserialize(snapshot.sceneData);
     const selectedIds = new Set(snapshot.selectedEntityIds || []);
     state.selectedEntities = [];
-    for (const entity of state.entities) {
+    for (const entity of [...state.entities, ...(state.scene.groups || [])]) {
       entity.selected = selectedIds.has(entity.id);
       if (entity.selected) state.selectedEntities.push(entity);
     }
@@ -160,8 +161,17 @@ export class SelectTool extends BaseTool {
 
   /** Find closest point (vertex) near screen position */
   _findClosestPoint(wx, wy, pixelTolerance = PICK_PT_PX) {
+    if (this.app?._activeGroupEditId == null) {
+      const shape = this._findClosestEntity(wx, wy, pixelTolerance);
+      if (shape && state.scene.groupForPrimitive(shape, this.app?._activeGroupEditId)) return null;
+    }
     const worldTol = pixelTolerance / this._effectiveZoom();
-    return state.scene.findClosestPoint(wx, wy, worldTol);
+    const point = state.scene.findClosestPoint(wx, wy, worldTol);
+    if (this.app?._activeGroupEditId != null && point) {
+      const owners = state.scene.shapesUsingPoint(point);
+      if (owners.length > 0 && !owners.some((shape) => state.scene.isPrimitiveInGroup(shape, this.app._activeGroupEditId))) return null;
+    }
+    return point;
   }
 
   /** Find closest shape (segment/circle/arc/text/dim) near screen position */
@@ -172,11 +182,15 @@ export class SelectTool extends BaseTool {
 
     for (const entity of state.entities) {
       if (!entity.visible || !state.isLayerVisible(entity.layer)) continue;
+      if (this.app?._activeGroupEditId != null && !state.scene.isPrimitiveInGroup(entity, this.app._activeGroupEditId)) continue;
       const d = entity.distanceTo(wx, wy);
       if (d <= worldTolerance && d < minDist) {
         minDist = d;
         hit = entity;
       }
+    }
+    if (hit && this.app?._activeGroupEditId == null) {
+      return state.scene.groupForPrimitive(hit, null) || hit;
     }
     return hit;
   }
@@ -481,7 +495,7 @@ export class SelectTool extends BaseTool {
     const shape = entity;
     if (shape && !_isFullyConstrained(shape)) {
       const movable = _shapePoints(shape).filter(p => !p.fixed);
-      const canTranslateDirectly = shape.type === 'image' && typeof shape.translate === 'function';
+      const canTranslateDirectly = (shape.type === 'image' || shape.type === 'group') && typeof shape.translate === 'function';
       if (movable.length > 0 || canTranslateDirectly) {
         this._dragShape = shape;
         this._dragShapePts = movable;

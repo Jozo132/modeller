@@ -8,6 +8,7 @@ import { PBezier } from './BezierPrimitive.js';
 import { TextPrimitive } from './TextPrimitive.js';
 import { DimensionPrimitive } from './DimensionPrimitive.js';
 import { ImagePrimitive } from './ImagePrimitive.js';
+import { GroupPrimitive } from './GroupPrimitive.js';
 import { solve } from './Solver.js';
 import { resetPrimitiveIds, peekNextPrimitiveId } from './Primitive.js';
 import { resetConstraintIds, serializeVariables, deserializeVariables, clearVariables } from './Constraint.js';
@@ -35,6 +36,7 @@ export class Scene {
     this.texts = [];        // TextPrimitive[] (pass-through, non-constraint)
     this.dimensions = [];   // DimensionPrimitive[] (pass-through)
     this.images = [];       // ImagePrimitive[] (sketch-local reference images)
+    this.groups = [];       // GroupPrimitive[] (hierarchical primitive groups)
 
     // Reference entities — always present, not serialized, constrainable
     this._initReferenceEntities();
@@ -192,6 +194,16 @@ export class Scene {
     return image;
   }
 
+  addGroup(children, options = {}) {
+    const childIds = (children || []).map((child) => typeof child === 'number' ? child : child?.id).filter(Number.isFinite);
+    const group = new GroupPrimitive(childIds, options);
+    group.layer = options.layer || '0';
+    group.color = options.color || null;
+    group.setResolver((id) => this.primitiveById(id));
+    this.groups.push(group);
+    return group;
+  }
+
   // -----------------------------------------------------------------------
   // Constraint management
   // -----------------------------------------------------------------------
@@ -301,6 +313,15 @@ export class Scene {
       case 'image':
         this.images = this.images.filter(i => i !== prim);
         break;
+      case 'group':
+        this.groups = this.groups.filter(g => g !== prim);
+        break;
+    }
+    if (prim?.id != null) {
+      for (const group of this.groups) {
+        group.childIds = group.childIds.filter((id) => id !== prim.id);
+      }
+      this.groups = this.groups.filter((group) => group.childIds.length > 0);
     }
   }
 
@@ -345,6 +366,11 @@ export class Scene {
     yield* this.dimensions;
   }
 
+  /** Groups are selectable containers but are not drawn as geometry. */
+  *selectableGroups() {
+    yield* this.groups;
+  }
+
   /** Fast count of drawable shapes (avoids array allocation). */
   entityCount() {
     return this.segments.length + this.circles.length + this.arcs.length +
@@ -362,6 +388,7 @@ export class Scene {
     yield* this.images;
     yield* this.texts;
     yield* this.dimensions;
+    yield* this.groups;
   }
 
   // -----------------------------------------------------------------------
@@ -409,6 +436,30 @@ export class Scene {
     for (const spl of this.splines) if (spl.points.includes(pt)) out.push(spl);
     for (const bez of this.beziers) if (bez.points.includes(pt)) out.push(bez);
     return out;
+  }
+
+  primitiveById(id) {
+    if (id == null) return null;
+    for (const prim of this.allPrimitives()) {
+      if (prim.id === id) return prim;
+    }
+    return null;
+  }
+
+  groupForPrimitive(prim, activeGroupId = null) {
+    if (!prim || prim.type === 'group') return null;
+    const groups = [...this.groups].reverse();
+    for (const group of groups) {
+      if (!group.containsId(prim.id)) continue;
+      if (activeGroupId != null && group.id === activeGroupId) return null;
+      return group;
+    }
+    return null;
+  }
+
+  isPrimitiveInGroup(prim, groupId) {
+    const group = this.groups.find((candidate) => candidate.id === groupId);
+    return !!(group && prim && group.containsId(prim.id));
   }
 
   /** Get constraints involving a specific primitive. */
@@ -467,6 +518,7 @@ export class Scene {
     this.texts = [];
     this.dimensions = [];
     this.images = [];
+    this.groups = [];
     resetPrimitiveIds();
     resetConstraintIds();
     clearVariables();
@@ -489,6 +541,7 @@ export class Scene {
       images: this.images.map(i => i.serialize()),
       texts: this.texts.map(t => t.serialize()),
       dimensions: this.dimensions.map(d => d.serialize()),
+      groups: this.groups.map(g => g.serialize()),
       variables: serializeVariables(),
     };
   }
@@ -697,7 +750,24 @@ export class Scene {
       if (d.id > maxPrimId) maxPrimId = d.id;
     }
 
-    // 10. Rebuild constraints
+    // 10. Rebuild primitive groups
+    for (const d of (data.groups || [])) {
+      const group = new GroupPrimitive(d.childIds || [], {
+        name: d.name,
+        immutable: d.immutable,
+        sourceGroupId: d.sourceGroupId,
+        expanded: d.expanded,
+      });
+      group.id = d.id;
+      group.layer = d.layer || '0';
+      group.color = d.color || null;
+      group.setResolver((id) => scene.primitiveById(id));
+      scene.groups.push(group);
+      shapeMap.set(d.id, group);
+      if (d.id > maxPrimId) maxPrimId = d.id;
+    }
+
+    // 11. Rebuild constraints
     let maxCId = 0;
     for (const d of (data.constraints || [])) {
       const c = Scene._deserializeConstraint(d, ptMap, shapeMap);
@@ -710,10 +780,10 @@ export class Scene {
       }
     }
 
-    // 11. Restore named variables
+    // 12. Restore named variables
     deserializeVariables(data.variables);
 
-    // 12. Reset counters so new primitives get unique IDs
+    // 13. Reset counters so new primitives get unique IDs
     resetPrimitiveIds(maxPrimId + 1);
     resetConstraintIds(maxCId + 1);
 

@@ -69,6 +69,32 @@ export class CopyTool extends BaseTool {
         state.scene.dimensions.push(dp);
         break;
       }
+      case 'group': {
+        const copied = [];
+        for (const child of e.getChildren()) {
+          switch (child.type) {
+            case 'segment':
+              copied.push(state.scene.addSegment(child.x1 + dx, child.y1 + dy, child.x2 + dx, child.y2 + dy, { merge: true, layer: child.layer }));
+              break;
+            case 'circle':
+              copied.push(state.scene.addCircle(child.cx + dx, child.cy + dy, child.radius, { merge: true, layer: child.layer }));
+              break;
+            case 'arc':
+              copied.push(state.scene.addArc(child.cx + dx, child.cy + dy, child.radius, child.startAngle, child.endAngle, { merge: true, layer: child.layer }));
+              break;
+            case 'spline':
+              copied.push(state.scene.addSpline(child.points.map((point) => ({ x: point.x + dx, y: point.y + dy })), { merge: true, layer: child.layer }));
+              break;
+          }
+        }
+        state.scene.addGroup(copied, {
+          name: e.name,
+          immutable: e.immutable,
+          sourceGroupId: e.sourceGroupId || e.id,
+          layer,
+        });
+        break;
+      }
     }
   }
 
@@ -96,6 +122,8 @@ export class CopyTool extends BaseTool {
         return new PCircle(new PPoint(e.cx + dx, e.cy + dy), e.radius);
       case 'arc':
         return new PArc(new PPoint(e.cx + dx, e.cy + dy), e.radius, e.startAngle, e.endAngle);
+      case 'group':
+        return null;
       default:
         return null;
     }

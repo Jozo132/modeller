@@ -83,19 +83,29 @@ export class TraceImageTool extends BaseTool {
     }
 
     takeSnapshot();
+    const created = [];
     for (const segment of segmentsToCreate) {
-      state.scene.addSegment(segment.start.x, segment.start.y, segment.end.x, segment.end.y, {
+      created.push(state.scene.addSegment(segment.start.x, segment.start.y, segment.end.x, segment.end.y, {
         merge: true,
         layer,
         construction: false,
-      });
+      }));
     }
     for (const spline of splinesToCreate) {
-      state.scene.addSpline(spline, {
+      created.push(state.scene.addSpline(spline, {
         merge: true,
         layer,
         construction: false,
+      }));
+    }
+    if (created.length > 0) {
+      const group = state.scene.addGroup(created, {
+        name: `Trace ${image.name || image.id || ''}`.trim(),
+        immutable: true,
+        layer,
       });
+      state.clearSelection();
+      state.select(group);
     }
 
     state.scene.solve();

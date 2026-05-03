@@ -73,6 +73,12 @@ class AppState {
       case 'text':      if (!this.scene.texts.includes(entity)) this.scene.texts.push(entity); break;
       case 'dimension': if (!this.scene.dimensions.includes(entity)) this.scene.dimensions.push(entity); break;
       case 'point':     if (!this.scene.points.includes(entity)) this.scene.points.push(entity); break;
+      case 'group':
+        if (!this.scene.groups.includes(entity)) {
+          if (typeof entity.setResolver === 'function') entity.setResolver((id) => this.scene.primitiveById(id));
+          this.scene.groups.push(entity);
+        }
+        break;
     }
     this.emit('entity:add', entity);
     this.emit('change');

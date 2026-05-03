@@ -7,6 +7,7 @@ export { PCircle } from './CirclePrimitive.js';
 export { PSpline } from './SplinePrimitive.js';
 export { PBezier } from './BezierPrimitive.js';
 export { ImagePrimitive } from './ImagePrimitive.js';
+export { GroupPrimitive } from './GroupPrimitive.js';
 export { TextPrimitive } from './TextPrimitive.js';
 export { DimensionPrimitive, detectDimensionType, detectAllDimensionTypes, DIM_TYPES, DISPLAY_MODES } from './DimensionPrimitive.js';
 export { Scene } from './Scene.js';

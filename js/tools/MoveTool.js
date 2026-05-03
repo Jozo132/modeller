@@ -36,6 +36,10 @@ export class MoveTool extends BaseTool {
       // Collect unique points to avoid moving shared points twice
       const movedPts = new Set();
       for (const e of state.selectedEntities) {
+        if (e.type === 'group') {
+          e.translate(dx, dy);
+          continue;
+        }
         if (e.type === 'segment') {
           if (!movedPts.has(e.p1)) { e.p1.x += dx; e.p1.y += dy; movedPts.add(e.p1); }
           if (!movedPts.has(e.p2)) { e.p2.x += dx; e.p2.y += dy; movedPts.add(e.p2); }
@@ -78,6 +82,8 @@ export class MoveTool extends BaseTool {
         return new PCircle(new PPoint(e.cx + dx, e.cy + dy), e.radius);
       case 'arc':
         return new PArc(new PPoint(e.cx + dx, e.cy + dy), e.radius, e.startAngle, e.endAngle);
+      case 'group':
+        return null;
       default:
         return null;
     }

@@ -668,13 +668,14 @@ export function addSVGToScene(items, { offsetX = 0, offsetY = 0, scale = 1, cent
   const shiftY = centerOnOrigin ? -bounds.cy : 0;
 
   let count = 0;
+  const created = [];
   for (const item of items) {
     if (item.type === 'line') {
       const x1 = (item.x1 + shiftX) * scale + offsetX;
       const y1 = (item.y1 + shiftY) * scale + offsetY;
       const x2 = (item.x2 + shiftX) * scale + offsetX;
       const y2 = (item.y2 + shiftY) * scale + offsetY;
-      state.scene.addSegment(x1, y1, x2, y2, { merge: true });
+      created.push(state.scene.addSegment(x1, y1, x2, y2, { merge: true }));
       count++;
     } else if (item.type === 'cubicBezier') {
       const x0 = (item.x0 + shiftX) * scale + offsetX;
@@ -685,10 +686,10 @@ export function addSVGToScene(items, { offsetX = 0, offsetY = 0, scale = 1, cent
       const cp2y = (item.cp2y + shiftY) * scale + offsetY;
       const x = (item.x + shiftX) * scale + offsetX;
       const y = (item.y + shiftY) * scale + offsetY;
-      state.scene.addBezier([
+      created.push(state.scene.addBezier([
         { x: x0, y: y0, handleOut: { dx: cp1x - x0, dy: cp1y - y0 }, tangent: true },
         { x: x, y: y, handleIn: { dx: cp2x - x, dy: cp2y - y }, tangent: true },
-      ], { merge: true });
+      ], { merge: true }));
       count++;
     } else if (item.type === 'quadBezier') {
       const x0 = (item.x0 + shiftX) * scale + offsetX;
@@ -697,12 +698,17 @@ export function addSVGToScene(items, { offsetX = 0, offsetY = 0, scale = 1, cent
       const cpy = (item.cpy + shiftY) * scale + offsetY;
       const x = (item.x + shiftX) * scale + offsetX;
       const y = (item.y + shiftY) * scale + offsetY;
-      state.scene.addBezier([
+      created.push(state.scene.addBezier([
         { x: x0, y: y0, handleOut: { dx: cpx - x0, dy: cpy - y0 }, tangent: false },
         { x: x, y: y, tangent: false },
-      ], { merge: true });
+      ], { merge: true }));
       count++;
     }
+  }
+  if (created.length > 0) {
+    const group = state.scene.addGroup(created, { name: 'SVG Import', immutable: true });
+    state.clearSelection();
+    state.select(group);
   }
 
   info('SVG geometry added to sketch', { count, offsetX, offsetY, scale });

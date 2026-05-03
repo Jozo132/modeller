@@ -129,6 +129,7 @@ class App {
     this._savedOrbitState = null; // saved camera state before entering sketch mode
     this._expandedFolders = new Set(); // track expanded feature tree folders
     this._editingSketchFeatureId = null; // ID of sketch being edited (null = creating new)
+    this._activeGroupEditId = null; // GroupPrimitive id whose internals are currently editable
     this._recorder = new InteractionRecorder(); // interaction recorder for workflow debugging
     this._extrudeMode = null; // active extrude mode state {isCut, sketchFeatureId, distance, direction, symmetric, operation}
     this._chamferMode = null; // active chamfer mode state {edgeKeys[], distance, editingFeatureId}
@@ -868,10 +869,84 @@ class App {
   // --- Context Menu ---
   _deleteSelection() {
     for (const e of [...state.selectedEntities]) {
+      if (e?.type === 'group') {
+        for (const child of e.getChildren()) state.removeEntity(child);
+      }
       state.removeEntity(e);
     }
     state.clearSelection();
     this._scheduleRender();
+  }
+
+  _groupSelection(options = {}) {
+    const selected = state.selectedEntities.filter((entity) => entity && entity.type !== 'point' && entity.type !== 'dimension');
+    if (selected.length === 0) {
+      this.setStatus('Group: Select primitives to group.');
+      return null;
+    }
+    takeSnapshot();
+    const group = state.scene.addGroup(selected, {
+      name: options.name || `Group ${state.scene.groups.length + 1}`,
+      immutable: options.immutable === true,
+      layer: state.activeLayer,
+    });
+    state.clearSelection();
+    state.select(group);
+    state.emit('change');
+    this._scheduleRender();
+    this.setStatus(`${group.name}: grouped ${selected.length} primitive${selected.length === 1 ? '' : 's'}.`);
+    return group;
+  }
+
+  _ungroupSelection() {
+    const groups = state.selectedEntities.filter((entity) => entity?.type === 'group');
+    if (groups.length === 0) {
+      this.setStatus('Ungroup: Select a group first.');
+      return false;
+    }
+    takeSnapshot();
+    const nextSelection = [];
+    for (const group of groups) {
+      for (const child of group.getChildren()) nextSelection.push(child);
+      state.scene.removePrimitive(group);
+    }
+    state.clearSelection();
+    for (const child of nextSelection) {
+      if (child && !child.selected) state.select(child);
+    }
+    if (this._activeGroupEditId && groups.some((group) => group.id === this._activeGroupEditId)) {
+      this._activeGroupEditId = null;
+    }
+    state.emit('change');
+    this._scheduleRender();
+    this.setStatus(`Ungrouped ${groups.length} group${groups.length === 1 ? '' : 's'}.`);
+    return true;
+  }
+
+  _toggleGroupSelection() {
+    const onlyGroups = state.selectedEntities.length > 0 && state.selectedEntities.every((entity) => entity?.type === 'group');
+    if (onlyGroups) return this._ungroupSelection();
+    return !!this._groupSelection();
+  }
+
+  _enterGroupEdit(group) {
+    if (!group || group.type !== 'group') return;
+    this._activeGroupEditId = group.id;
+    state.clearSelection();
+    for (const child of group.getChildren()) state.select(child);
+    this.setStatus(`Editing ${group.name || `Group #${group.id}`}. Parent siblings are locked.`);
+    this._scheduleRender();
+  }
+
+  _exitGroupEdit() {
+    if (this._activeGroupEditId == null) return false;
+    const group = state.scene.groups.find((candidate) => candidate.id === this._activeGroupEditId);
+    this._activeGroupEditId = null;
+    state.clearSelection();
+    if (group) state.select(group);
+    this.setStatus(group ? `Exited ${group.name || `Group #${group.id}`}.` : 'Exited group edit.');
+    this._scheduleRender();
+    return true;
   }
 
   _showContextMenu(x, y, entity) {
@@ -2394,6 +2469,7 @@ class App {
               });
             break;
           case 'd': e.preventDefault(); this.setActiveTool('copy'); break;
+          case 'g': e.preventDefault(); this._toggleGroupSelection(); break;
           case '8': e.preventDefault(); this._orientToNormalView(); break;
           case 'a':
             e.preventDefault();
@@ -2411,6 +2487,7 @@ class App {
             this._cancelAwaitSketchPlane();
             break;
           }
+          if (this._exitGroupEdit()) break;
 
           // Check if anything is currently selected
           const hadSelection =
@@ -2468,9 +2545,7 @@ class App {
         case 'Backspace':
           if (state.selectedEntities.length > 0) {
             takeSnapshot();
-            for (const ent of [...state.selectedEntities]) state.removeEntity(ent);
-            state.clearSelection();
-            this._scheduleRender();
+            this._deleteSelection();
           }
           break;
         case 'l': case 'L': this.setActiveTool('line'); break;
@@ -4960,10 +5035,11 @@ class App {
   _primIcon(prim) {
     if (typeof prim === 'string') {
       // Fallback for plain type string
-      const icons = { segment: '╱', circle: '○', arc: '◠', point: '·', text: 'T', dimension: '↔' };
+      const icons = { segment: '╱', circle: '○', arc: '◠', point: '·', text: 'T', dimension: '↔', group: '📁' };
       return icons[prim] || '?';
     }
     const type = prim.type;
+    if (type === 'group') return '📁';
     const color = prim.construction ? '#90EE90' : '#ccc';
     const w = prim.lineWidth || 1;
     const sw = Math.min(Math.max(w, 0.5), 3); // clamp for icon display
@@ -5156,13 +5232,82 @@ class App {
     list.innerHTML = '';
     const scene = state.scene;
     const allShapes = [...scene.shapes()].filter(s => s.type !== 'dimension');
+    const groups = [...(scene.groups || [])];
+    const groupedIds = new Set(groups.flatMap((group) => group.childIds || []));
 
-    if (allShapes.length === 0) {
+    if (allShapes.length === 0 && groups.length === 0) {
       list.innerHTML = '<p class="hint">No primitives</p>';
       return;
     }
 
+    const appendGroupRow = (group) => {
+      const row = document.createElement('div');
+      row.className = 'lp-item lp-group';
+      row.dataset.primId = group.id;
+      row.dataset.primType = 'group';
+      if (group.selected) row.classList.add('selected');
+      const childCount = group.childIds.length;
+      row.innerHTML = `<span class="lp-icon">${group.expanded ? '▾' : '▸'} 📁</span><span class="lp-label">${escapeHtml(group.name || `Group #${group.id}`)} <span style="opacity:0.5">(${childCount})</span></span>`;
+      row.addEventListener('click', (e) => {
+        if (e.target.closest('.lp-icon')) {
+          group.expanded = !group.expanded;
+          this._rebuildPrimitivesList();
+          return;
+        }
+        if (!e.shiftKey) state.clearSelection();
+        if (group.selected && e.shiftKey) state.deselect(group);
+        else state.select(group);
+        this._scheduleRender();
+      });
+      row.addEventListener('dblclick', (e) => {
+        e.preventDefault();
+        this._enterGroupEdit(group);
+      });
+      row.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!group.selected) {
+          state.clearSelection();
+          state.select(group);
+          this._scheduleRender();
+        }
+        showContextMenu(e.clientX, e.clientY, [
+          { type: 'item', label: 'Edit Group', icon: '📂', action: () => this._enterGroupEdit(group) },
+          { type: 'item', label: 'Ungroup', icon: '⇱', shortcut: 'Ctrl+G', action: () => this._ungroupSelection() },
+          { type: 'separator' },
+          { type: 'item', label: 'Delete', icon: '🗑', shortcut: 'Del', action: () => { takeSnapshot(); this._deleteSelection(); } },
+        ]);
+      });
+      list.appendChild(row);
+
+      if (group.expanded) {
+        for (const child of group.getChildren()) {
+          const childRow = document.createElement('div');
+          childRow.className = 'lp-item lp-group-child';
+          childRow.dataset.primId = child.id;
+          childRow.dataset.primType = child.type;
+          if (child.selected) childRow.classList.add('selected');
+          childRow.innerHTML = `<span class="lp-icon">└</span><span class="lp-label">${child.type.charAt(0).toUpperCase() + child.type.slice(1)} #${child.id}</span>`;
+          childRow.addEventListener('click', (e) => {
+            if (this._activeGroupEditId !== group.id) {
+              if (!e.shiftKey) state.clearSelection();
+              state.select(group);
+            } else {
+              if (!e.shiftKey) state.clearSelection();
+              if (child.selected && e.shiftKey) state.deselect(child);
+              else state.select(child);
+            }
+            this._scheduleRender();
+          });
+          list.appendChild(childRow);
+        }
+      }
+    };
+
+    for (const group of groups) appendGroupRow(group);
+
     for (const prim of allShapes) {
+      if (groupedIds.has(prim.id) && this._activeGroupEditId !== (scene.groupForPrimitive(prim)?.id ?? null)) continue;
       const row = document.createElement('div');
       row.className = 'lp-item';
       row.dataset.primId = prim.id;
@@ -6105,7 +6250,7 @@ class App {
     }
 
     // Build a shapes map for quick lookup by id
-    const shapesArr = [...scene.shapes()];
+    const shapesArr = [...scene.shapes(), ...(scene.groups || [])];
     const shapesById = new Map();
     for (const s of shapesArr) shapesById.set(s.id, s);
 

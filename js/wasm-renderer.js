@@ -564,26 +564,71 @@ export class WasmRenderer {
 
   /* ---------- 3D orbit controls ---------- */
 
+  _isSketchNavigationMode() {
+    return this.mode === '3d' && !!this._sketchPlaneDef;
+  }
+
+  _translateOrbitTargetInSketchPlane(dx, dy) {
+    const pd = this._sketchPlaneDef;
+    if (!pd) return;
+    this._orbitTarget.x += dx * pd.xAxis.x + dy * pd.yAxis.x;
+    this._orbitTarget.y += dx * pd.xAxis.y + dy * pd.yAxis.y;
+    this._orbitTarget.z += dx * pd.xAxis.z + dy * pd.yAxis.z;
+    this._orbitDirty = true;
+  }
+
+  _panSketchViewBetweenScreenPoints(fromX, fromY, toX, toY) {
+    const pd = this._sketchPlaneDef;
+    if (!pd) return false;
+    const before = this.rayToPlane(fromX, fromY, pd);
+    const after = this.rayToPlane(toX, toY, pd);
+    if (!before || !after) return false;
+    this._translateOrbitTargetInSketchPlane(before.x - after.x, before.y - after.y);
+    return true;
+  }
+
+  _zoomSketchViewAt(screenX, screenY, factor) {
+    const pd = this._sketchPlaneDef;
+    if (!pd) return false;
+    const before = this.rayToPlane(screenX, screenY, pd);
+    this._orbitRadius = Math.max(10, Math.min(5000, this._orbitRadius * factor));
+    this._orbitDirty = true;
+    this._applyOrbitCamera();
+    const after = this.rayToPlane(screenX, screenY, pd);
+    if (before && after) {
+      this._translateOrbitTargetInSketchPlane(before.x - after.x, before.y - after.y);
+      this._applyOrbitCamera();
+    }
+    return true;
+  }
+
   _bind3DControls() {
     const canvas = this.canvas;
 
     canvas.addEventListener('mousedown', (e) => {
       if (this.mode !== '3d') return;
+      const sketchNavigation = this._isSketchNavigationMode();
       // Left button = orbit (when allowed), Middle button = orbit, Right button = pan
       const allowLeftOrbit = this._leftClickOrbitEnabled
         && (!this.shouldAllowLeftClickOrbit || this.shouldAllowLeftClickOrbit());
-      if (e.button === 0 && allowLeftOrbit) {
+      if (e.button === 0 && allowLeftOrbit && (!sketchNavigation || e.shiftKey)) {
         e.preventDefault();
         this._isDragging = true;
         this._isPanning3D = false;
         this._leftClickOrbiting = true;
         if (this.onCameraInteraction) this.onCameraInteraction('orbit_start', this.getOrbitState());
-      } else if (e.button === 1) {
+      } else if (e.button === 1 && (!sketchNavigation || e.shiftKey)) {
         e.preventDefault();
         this._isDragging = true;
         this._isPanning3D = false;
         this._leftClickOrbiting = false;
         if (this.onCameraInteraction) this.onCameraInteraction('orbit_start', this.getOrbitState());
+      } else if (e.button === 1 && sketchNavigation) {
+        e.preventDefault();
+        this._isPanning3D = true;
+        this._isDragging = false;
+        this._leftClickOrbiting = false;
+        if (this.onCameraInteraction) this.onCameraInteraction('pan_start', this.getOrbitState());
       } else if (e.button === 2) {
         e.preventDefault();
         this._isPanning3D = true;
@@ -598,6 +643,8 @@ export class WasmRenderer {
       if (this.mode !== '3d') return;
       const dx = e.clientX - this._lastMouseX;
       const dy = e.clientY - this._lastMouseY;
+      const previousX = this._lastMouseX;
+      const previousY = this._lastMouseY;
       this._lastMouseX = e.clientX;
       this._lastMouseY = e.clientY;
 
@@ -609,6 +656,10 @@ export class WasmRenderer {
         this._orbitPhi = Math.max(0.05, Math.min(Math.PI - 0.05, this._orbitPhi));
         this._orbitDirty = true;
       } else if (this._isPanning3D) {
+        if (this._isSketchNavigationMode() && !e.shiftKey) {
+          this._panSketchViewBetweenScreenPoints(previousX, previousY, e.clientX, e.clientY);
+          return;
+        }
         // Pan: move target in the camera's local right/up plane
         const panSpeed = this._orbitRadius * 0.001;
         const theta = this._orbitTheta;
@@ -647,6 +698,12 @@ export class WasmRenderer {
       if (this.mode !== '3d') return;
       e.preventDefault();
       const factor = e.deltaY > 0 ? 1.1 : 0.9;
+      if (this._isSketchNavigationMode() && !e.shiftKey) {
+        const rect = canvas.getBoundingClientRect();
+        this._zoomSketchViewAt(e.clientX - rect.left, e.clientY - rect.top, factor);
+        if (this.onCameraInteraction) this.onCameraInteraction('zoom', this.getOrbitState());
+        return;
+      }
       this._orbitRadius *= factor;
       this._orbitRadius = Math.max(10, Math.min(5000, this._orbitRadius));
       this._orbitDirty = true;

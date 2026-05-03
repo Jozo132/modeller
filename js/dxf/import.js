@@ -14,11 +14,14 @@ export function importDXF(dxfContent) {
   debug('DXF parsed', { pairs: pairs.length, entities: entities.length });
 
   let imported = 0;
+  const created = [];
   for (const ent of entities) {
     try {
       const prim = createEntity(ent);
       if (prim) {
-        imported += 1;
+        const prims = Array.isArray(prim) ? prim : [prim];
+        imported += prims.length;
+        created.push(...prims);
       }
     } catch (err) {
       error('Failed to import entity', { type: ent?.type, err });
@@ -29,6 +32,9 @@ export function importDXF(dxfContent) {
   const layerSection = extractLayers(pairs);
   for (const layer of layerSection) {
     state.addLayer(layer.name, layer.color);
+  }
+  if (created.length > 0) {
+    state.scene.addGroup(created, { name: 'DXF Import', immutable: true });
   }
   info('DXF import completed', { imported, layers: layerSection.length });
 }
@@ -171,13 +177,13 @@ function createEntity(ent) {
       }
       const closed = (parseInt(p[70], 10) & 1) === 1;
       const count = closed ? points.length : points.length - 1;
-      let firstSeg = null;
+      const segments = [];
       for (let i = 0; i < count; i++) {
         const a = points[i], b = points[(i + 1) % points.length];
         const seg = state.scene.addSegment(a.x, a.y, b.x, b.y, { merge: true, layer });
-        if (!firstSeg) firstSeg = seg;
+        segments.push(seg);
       }
-      return firstSeg;
+      return segments;
     }
 
     case 'POLYLINE': {
@@ -429,30 +435,31 @@ export function addDXFToScene(items, { offsetX = 0, offsetY = 0, scale = 1, cent
   const shiftY = centerOnOrigin ? -bounds.cy : 0;
 
   let count = 0;
+  const created = [];
   for (const item of items) {
     if (item.type === 'line') {
       const x1 = (item.x1 + shiftX) * scale + offsetX;
       const y1 = (item.y1 + shiftY) * scale + offsetY;
       const x2 = (item.x2 + shiftX) * scale + offsetX;
       const y2 = (item.y2 + shiftY) * scale + offsetY;
-      state.scene.addSegment(x1, y1, x2, y2, { merge: true });
+      created.push(state.scene.addSegment(x1, y1, x2, y2, { merge: true }));
       count++;
     } else if (item.type === 'circle') {
       const cx = (item.cx + shiftX) * scale + offsetX;
       const cy = (item.cy + shiftY) * scale + offsetY;
-      state.scene.addCircle(cx, cy, item.radius * scale, { merge: true });
+      created.push(state.scene.addCircle(cx, cy, item.radius * scale, { merge: true }));
       count++;
     } else if (item.type === 'arc') {
       const cx = (item.cx + shiftX) * scale + offsetX;
       const cy = (item.cy + shiftY) * scale + offsetY;
-      state.scene.addArc(cx, cy, item.radius * scale, item.startAngle, item.endAngle, { merge: true });
+      created.push(state.scene.addArc(cx, cy, item.radius * scale, item.startAngle, item.endAngle, { merge: true }));
       count++;
     } else if (item.type === 'spline') {
       const pts = item.controlPoints.map(pt => ({
         x: (pt.x + shiftX) * scale + offsetX,
         y: (pt.y + shiftY) * scale + offsetY,
       }));
-      state.scene.addSpline(pts, { merge: true });
+      created.push(state.scene.addSpline(pts, { merge: true }));
       count++;
     } else if (item.type === 'bezier') {
       const verts = item.vertices.map(v => ({
@@ -462,9 +469,14 @@ export function addDXFToScene(items, { offsetX = 0, offsetY = 0, scale = 1, cent
         handleOut: v.handleOut ? { dx: v.handleOut.dx * scale, dy: v.handleOut.dy * scale } : null,
         tangent: v.tangent,
       }));
-      state.scene.addBezier(verts, { merge: true });
+      created.push(state.scene.addBezier(verts, { merge: true }));
       count++;
     }
+  }
+  if (created.length > 0) {
+    const group = state.scene.addGroup(created, { name: 'DXF Import', immutable: true });
+    state.clearSelection();
+    state.select(group);
   }
 
   info('DXF geometry added to sketch', { count, offsetX, offsetY, scale });
