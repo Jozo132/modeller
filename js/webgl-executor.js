@@ -367,6 +367,8 @@ export class WebGLExecutor {
 
     if (options.depthFunc === 'greater') {
       this.setDepthFunc(gl.GREATER);
+    } else if (options.depthFunc === 'less') {
+      this.setDepthFunc(gl.LESS);
     } else if (options.depthFunc === 'always') {
       this.setDepthFunc(gl.ALWAYS);
     } else {

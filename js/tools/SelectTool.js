@@ -163,7 +163,7 @@ export class SelectTool extends BaseTool {
   _findClosestPoint(wx, wy, pixelTolerance = PICK_PT_PX) {
     if (this.app?._activeGroupEditId == null) {
       const shape = this._findClosestEntity(wx, wy, pixelTolerance);
-      if (shape && state.scene.groupForPrimitive(shape, this.app?._activeGroupEditId)) return null;
+      if (shape?.type === 'group' || (shape && state.scene.groupForPrimitive(shape, this.app?._activeGroupEditId))) return null;
     }
     const worldTol = pixelTolerance / this._effectiveZoom();
     const point = state.scene.findClosestPoint(wx, wy, worldTol);
@@ -760,19 +760,26 @@ export class SelectTool extends BaseTool {
 
       if (!event.shiftKey) state.clearSelection();
 
+      const selectedGroups = new Set();
       for (const entity of state.entities) {
         if (!entity.visible || !state.isLayerVisible(entity.layer)) continue;
+        const parentGroup = this.app?._activeGroupEditId == null
+          ? state.scene.groupForPrimitive(entity, null)
+          : null;
         const b = entity.getBounds();
         if (isWindow) {
           if (b.minX >= minX && b.maxX <= maxX && b.minY >= minY && b.maxY <= maxY) {
-            state.select(entity);
+            if (parentGroup) selectedGroups.add(parentGroup);
+            else state.select(entity);
           }
         } else {
           if (b.maxX >= minX && b.minX <= maxX && b.maxY >= minY && b.minY <= maxY) {
-            state.select(entity);
+            if (parentGroup) selectedGroups.add(parentGroup);
+            else state.select(entity);
           }
         }
       }
+      for (const group of selectedGroups) state.select(group);
     }
     this._dragStart = null;
     this._isDragging = false;

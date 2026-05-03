@@ -150,6 +150,8 @@ class App {
     this._invisibleEdgesVisible = this._loadInvisibleEdgesVisible();
     this._meshTriangleOverlayMode = this._loadMeshTriangleOverlayMode();
     this._normalColorShadingEnabled = this._loadNormalColorShading();
+    this._partGridVisible = true;
+    this._partOriginAxisVisible = true;
     this._imagePropertySections = new Map();
     this._scenes = []; // named camera presets for repeatable renders
     this._sceneManagerOpen = false;
@@ -453,6 +455,7 @@ class App {
       this._renderRequested = false;
 
       this._syncViewportSize();
+      this._applyReferenceVisibility();
       try {
         // Unified rendering: always render both 2D sketch entities and 3D part geometry together
         if (this._sketchingOnPlane || state.entities.length > 0) {
@@ -867,8 +870,22 @@ class App {
   }
 
   // --- Context Menu ---
+  _selectionAsGroupBoundaries() {
+    const result = [];
+    const seen = new Set();
+    for (const entity of state.selectedEntities) {
+      if (!entity) continue;
+      const parentGroup = entity.type !== 'group' ? state.scene.groupForPrimitive(entity, null) : null;
+      const target = parentGroup && this._activeGroupEditId !== parentGroup.id ? parentGroup : entity;
+      if (seen.has(target.id)) continue;
+      seen.add(target.id);
+      result.push(target);
+    }
+    return result;
+  }
+
   _deleteSelection() {
-    for (const e of [...state.selectedEntities]) {
+    for (const e of this._selectionAsGroupBoundaries()) {
       if (e?.type === 'group') {
         for (const child of e.getChildren()) state.removeEntity(child);
       }
@@ -879,7 +896,23 @@ class App {
   }
 
   _groupSelection(options = {}) {
-    const selected = state.selectedEntities.filter((entity) => entity && entity.type !== 'point' && entity.type !== 'dimension');
+    const selected = [];
+    const seen = new Set();
+    for (const entity of state.selectedEntities) {
+      if (!entity || entity.type === 'point' || entity.type === 'dimension') continue;
+      const parentGroup = entity.type !== 'group' ? state.scene.groupForPrimitive(entity, null) : null;
+      if (parentGroup && this._activeGroupEditId !== parentGroup.id) {
+        if (!seen.has(parentGroup.id)) {
+          seen.add(parentGroup.id);
+          selected.push(parentGroup);
+        }
+        continue;
+      }
+      if (!seen.has(entity.id)) {
+        seen.add(entity.id);
+        selected.push(entity);
+      }
+    }
     if (selected.length === 0) {
       this.setStatus('Group: Select primitives to group.');
       return null;
@@ -2290,7 +2323,10 @@ class App {
     document.getElementById('btn-delete').addEventListener('click', () => {
       if (state.selectedEntities.length > 0) {
         takeSnapshot();
-        for (const e of [...state.selectedEntities]) {
+        for (const e of this._selectionAsGroupBoundaries()) {
+          if (e?.type === 'group') {
+            for (const child of e.getChildren()) state.removeEntity(child);
+          }
           state.removeEntity(e);
         }
         state.clearSelection();
@@ -4068,6 +4104,7 @@ class App {
     if (sectionKey === 'overview') {
       return `
         <div class="prop-row"><label>Name</label><input id="prop-image-name" type="text" value="${escapeHtml(image.name || '')}" /></div>
+        <div class="prop-row"><label>Visible</label><input id="prop-image-visible" type="checkbox" ${image.visible !== false ? 'checked' : ''} /></div>
         <div class="prop-row"><label>Base Width</label><span>${image.width.toFixed(2)}</span></div>
         <div class="prop-row"><label>Base Height</label><span>${image.height.toFixed(2)}</span></div>
         <div class="prop-row"><label>Rotation</label><span>${image.rotation.toFixed(1)}°</span></div>
@@ -4481,6 +4518,14 @@ class App {
     });
 
     const pinnedInput = panel.querySelector('#prop-image-pinned');
+    const visibleInput = panel.querySelector('#prop-image-visible');
+    if (visibleInput) {
+      visibleInput.addEventListener('change', () => {
+        commit(() => {
+          image.visible = visibleInput.checked;
+        });
+      });
+    }
     if (pinnedInput) {
       pinnedInput.addEventListener('change', () => {
         commit(() => {
@@ -5035,7 +5080,7 @@ class App {
   _primIcon(prim) {
     if (typeof prim === 'string') {
       // Fallback for plain type string
-      const icons = { segment: '╱', circle: '○', arc: '◠', point: '·', text: 'T', dimension: '↔', group: '📁' };
+      const icons = { segment: '╱', circle: '○', arc: '◠', point: '·', text: 'T', dimension: '↔', group: '📁', image: '▧' };
       return icons[prim] || '?';
     }
     const type = prim.type;
@@ -5059,7 +5104,10 @@ class App {
     if (type === 'arc') {
       return `<svg width="14" height="14" viewBox="0 0 14 14" style="display:block"><path d="M 2 10 A 6 6 0 0 1 12 10" fill="none" stroke="${color}" stroke-width="${sw}"${dash}/></svg>`;
     }
-    const fallback = { point: '·', text: 'T', dimension: '↔' };
+    if (type === 'image') {
+      return `<svg width="14" height="14" viewBox="0 0 14 14" style="display:block"><rect x="1.5" y="2" width="11" height="10" rx="1" fill="none" stroke="#9CDCFE" stroke-width="1.2"/><circle cx="10" cy="4.5" r="1" fill="#9CDCFE"/><path d="M2.5 10.5 L5.2 7.6 L7.1 9.5 L8.4 8.2 L11.5 10.8" fill="none" stroke="#9CDCFE" stroke-width="1.1" stroke-linejoin="round"/></svg>`;
+    }
+    const fallback = { point: '·', text: 'T', dimension: '↔', image: '▧' };
     return fallback[type] || '?';
   }
 
@@ -5287,7 +5335,7 @@ class App {
           childRow.dataset.primId = child.id;
           childRow.dataset.primType = child.type;
           if (child.selected) childRow.classList.add('selected');
-          childRow.innerHTML = `<span class="lp-icon">└</span><span class="lp-label">${child.type.charAt(0).toUpperCase() + child.type.slice(1)} #${child.id}</span>`;
+          childRow.innerHTML = `<span class="lp-icon">${this._primIcon(child)}</span><span class="lp-label">${child.type.charAt(0).toUpperCase() + child.type.slice(1)} #${child.id}</span>`;
           childRow.addEventListener('click', (e) => {
             if (this._activeGroupEditId !== group.id) {
               if (!e.shiftKey) state.clearSelection();
@@ -7481,6 +7529,17 @@ class App {
     return !!(originPlanes && originPlanes[planeName] && originPlanes[planeName].visible);
   }
 
+  _applyReferenceVisibility() {
+    if (!this._renderer3d) return;
+    if (this._workspaceMode === 'part') {
+      this._renderer3d.setGridVisible(this._partGridVisible);
+      this._renderer3d.setAxesVisible(this._partOriginAxisVisible);
+      return;
+    }
+    this._renderer3d.setGridVisible(state.gridVisible);
+    this._renderer3d.setAxesVisible(true);
+  }
+
   _serializeSessionState() {
     return {
       sketchingOnPlane: this._sketchingOnPlane,
@@ -7491,6 +7550,8 @@ class App {
       savedOrbitState: this._savedOrbitState,
       expandedFolders: Array.from(this._expandedFolders || []),
       rollbackIndex: this._rollbackIndex,
+      partGridVisible: this._partGridVisible,
+      partOriginAxisVisible: this._partOriginAxisVisible,
     };
   }
 
@@ -7501,6 +7562,13 @@ class App {
     if (typeof sessionState.rollbackIndex === 'number') {
       this._rollbackIndex = sessionState.rollbackIndex;
     }
+    if (typeof sessionState.partGridVisible === 'boolean') {
+      this._partGridVisible = sessionState.partGridVisible;
+    }
+    if (typeof sessionState.partOriginAxisVisible === 'boolean') {
+      this._partOriginAxisVisible = sessionState.partOriginAxisVisible;
+    }
+    this._applyReferenceVisibility();
 
     if (!sessionState.sketchingOnPlane) return;
 
@@ -8318,6 +8386,48 @@ class App {
     // Update origin plane rows (predefined in index.html) with visibility toggles
     const part = this._partManager.getPart();
     if (part) {
+      const gridRow = document.getElementById('node-tree-grid');
+      if (gridRow) {
+        let eyeEl = gridRow.querySelector('.node-tree-eye');
+        if (!eyeEl) {
+          eyeEl = document.createElement('span');
+          eyeEl.className = 'node-tree-eye';
+          const iconEl = gridRow.querySelector('.node-tree-icon');
+          if (iconEl) gridRow.insertBefore(eyeEl, iconEl);
+          else gridRow.insertBefore(eyeEl, gridRow.firstChild);
+        }
+        eyeEl.textContent = this._partGridVisible ? '👁' : '—';
+        eyeEl.title = 'Toggle XY grid visibility';
+        eyeEl.onclick = (e) => {
+          e.stopPropagation();
+          this._partGridVisible = !this._partGridVisible;
+          this._applyReferenceVisibility();
+          this._updateNodeTree();
+          this._scheduleRender();
+        };
+      }
+
+      const originAxisRow = document.getElementById('node-tree-origin-axis');
+      if (originAxisRow) {
+        let eyeEl = originAxisRow.querySelector('.node-tree-eye');
+        if (!eyeEl) {
+          eyeEl = document.createElement('span');
+          eyeEl.className = 'node-tree-eye';
+          const iconEl = originAxisRow.querySelector('.node-tree-icon');
+          if (iconEl) originAxisRow.insertBefore(eyeEl, iconEl);
+          else originAxisRow.insertBefore(eyeEl, originAxisRow.firstChild);
+        }
+        eyeEl.textContent = this._partOriginAxisVisible ? '👁' : '—';
+        eyeEl.title = 'Toggle origin axis visibility';
+        eyeEl.onclick = (e) => {
+          e.stopPropagation();
+          this._partOriginAxisVisible = !this._partOriginAxisVisible;
+          this._applyReferenceVisibility();
+          this._updateNodeTree();
+          this._scheduleRender();
+        };
+      }
+
       const originPlanes = part.getOriginPlanes();
       ['XY', 'XZ', 'YZ'].forEach((planeName) => {
         const planeState = originPlanes[planeName];
@@ -8553,6 +8663,47 @@ class App {
       return div;
     };
 
+    const buildSketchImageRow = (feature, image, imageIndex) => {
+      const div = document.createElement('div');
+      div.className = 'node-tree-feature node-tree-child-feature';
+      const imageName = image.name && String(image.name).trim() ? image.name : `Image ${imageIndex + 1}`;
+      const eyeIcon = image.visible !== false ? '👁' : '—';
+      div.innerHTML = `<span class="node-tree-eye" title="Toggle image visibility">${eyeIcon}</span><span class="node-tree-icon">🖼</span><span class="node-tree-label">${imageName}</span>`;
+
+      const eyeEl = div.querySelector('.node-tree-eye');
+      if (eyeEl) {
+        eyeEl.addEventListener('click', (e) => {
+          e.stopPropagation();
+          image.visible = image.visible === false;
+          if (feature.sketch && feature.sketch.images) {
+            const idx = feature.sketch.images.findIndex((candidate) => candidate && candidate.id === image.id);
+            if (idx >= 0) {
+              feature.sketch.images[idx].visible = image.visible;
+            }
+          }
+          this._updateNodeTree();
+          this._update3DView();
+          this._scheduleRender();
+          debouncedSave();
+        });
+      }
+
+      div.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (this._featurePanel) {
+          this._featurePanel.selectFeature(feature.id);
+        }
+        if (this._renderer3d) {
+          this._renderer3d.setSelectedFeature(feature.id);
+        }
+        this._updateNodeTree();
+        this._update3DView();
+        this._scheduleRender();
+      });
+
+      return div;
+    };
+
     // Track the flat visual index to place the rollback bar correctly
     let flatIndex = 0;
     const allRows = []; // {element, flatIdx}
@@ -8562,7 +8713,10 @@ class App {
       if (consumedIds.has(feature.id)) return;
 
       const featureIndex = features.indexOf(feature);
-      const hasChildren = feature.children && feature.children.length > 0;
+      const sketchImages = feature.type === 'sketch' && feature.sketch && Array.isArray(feature.sketch.images)
+        ? feature.sketch.images
+        : [];
+      const hasChildren = (feature.children && feature.children.length > 0) || sketchImages.length > 0;
 
       if (hasChildren) {
         // Create a collapsible folder wrapper
@@ -8601,6 +8755,10 @@ class App {
             if (childFeature) {
               childContainer.appendChild(buildFeatureRow(childFeature, true, features.indexOf(childFeature)));
             }
+          });
+          sketchImages.forEach((image, imageIndex) => {
+            if (!image) return;
+            childContainer.appendChild(buildSketchImageRow(feature, image, imageIndex));
           });
           wrapper.appendChild(childContainer);
         }
@@ -10215,11 +10373,9 @@ class App {
     this.setActiveTool('select');
     this._update3DView();
     this._updateOperationButtons();
-    // Select the sketch feature so the user can immediately add features to it
-    if (this._lastSketchFeatureId && this._featurePanel) {
-      this._featurePanel.selectFeature(this._lastSketchFeatureId);
-      if (this._renderer3d) this._renderer3d._selectedFeatureId = this._lastSketchFeatureId;
-    }
+    // Exit sketch in a neutral selection state.
+    if (this._featurePanel) this._featurePanel.selectFeature(null);
+    if (this._renderer3d) this._renderer3d.setSelectedFeature(null);
     this.setStatus('Returned to Part Design mode.');
     this._recorder.sketchFinished(this._lastSketchFeatureId, 0);
     info('Finished sketch-on-plane, returned to Part Design mode');

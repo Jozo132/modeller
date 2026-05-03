@@ -569,6 +569,7 @@ export class ImagePrimitive extends Primitive {
       rotation: this.rotation,
       scaleX: this.scaleX,
       scaleY: this.scaleY,
+      visible: this.visible !== false,
       opacity: this.opacity,
       brightness: this.brightness,
       contrast: this.contrast,

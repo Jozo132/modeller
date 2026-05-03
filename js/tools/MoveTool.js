@@ -35,7 +35,7 @@ export class MoveTool extends BaseTool {
       takeSnapshot();
       // Collect unique points to avoid moving shared points twice
       const movedPts = new Set();
-      for (const e of state.selectedEntities) {
+      for (const e of this._effectiveSelection()) {
         if (e.type === 'group') {
           e.translate(dx, dy);
           continue;
@@ -62,12 +62,30 @@ export class MoveTool extends BaseTool {
       const dx = wx - this._baseX;
       const dy = wy - this._baseY;
       const previews = [];
-      for (const e of state.selectedEntities) {
+      for (const e of this._effectiveSelection()) {
         const prev = this._makePreview(e, dx, dy);
         if (prev) previews.push(prev);
       }
       this.app.renderer.previewEntities = previews;
     }
+  }
+
+  _effectiveSelection() {
+    const result = [];
+    const seen = new Set();
+    const activeGroupId = this.app?._activeGroupEditId ?? null;
+    for (const entity of state.selectedEntities) {
+      if (!entity) continue;
+      const parentGroup = activeGroupId == null && entity.type !== 'group'
+        ? state.scene.groupForPrimitive(entity, null)
+        : null;
+      const target = parentGroup || entity;
+      if (target.type !== 'group' && activeGroupId != null && !state.scene.isPrimitiveInGroup(target, activeGroupId)) continue;
+      if (seen.has(target.id)) continue;
+      seen.add(target.id);
+      result.push(target);
+    }
+    return result;
   }
 
   /** Create a lightweight preview primitive offset by (dx, dy) */

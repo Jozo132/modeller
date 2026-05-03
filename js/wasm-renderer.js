@@ -17,6 +17,21 @@ import { buildProjectiveGridGuides } from './render/projective-quad.js';
 import { SketchFeature } from './cad/SketchFeature.js';
 import { constrainedTriangulate } from './cad/Tessellator2/CDT.js';
 
+const MIN_ORBIT_RADIUS = 0.001;
+const MAX_ORBIT_RADIUS = 100000;
+
+function _clampOrbitRadius(radius) {
+  return Math.max(MIN_ORBIT_RADIUS, Math.min(MAX_ORBIT_RADIUS, radius || MIN_ORBIT_RADIUS));
+}
+
+function _cameraClipRange(radius) {
+  const r = Math.max(Math.abs(radius || 1), MIN_ORBIT_RADIUS);
+  return {
+    near: Math.max(1e-6, Math.min(0.1, r * 1e-5)),
+    far: Math.max(100000, r * 1000),
+  };
+}
+
 function _projectPolygon2D(verts, normal) {
   const an = {
     x: Math.abs(normal?.x || 0),
@@ -426,6 +441,7 @@ export class WasmRenderer {
     this._sketchInactiveEdgeVertexCount = 0;
     this._sketchWireframeCache = new Map();
     this._partSketchImages = [];
+    this._lastPartSketchImages = [];
     this._imageResources = new Map();
 
     // Selected faces in 3D mode (multi-select)
@@ -443,6 +459,8 @@ export class WasmRenderer {
     // Sketch plane reference (set when in sketch-on-plane mode)
     this._sketchPlane = null; // 'XY', 'XZ', 'YZ', or null
     this._originPlaneVisibilityMask = 0b111;
+    this._gridVisible = true;
+    this._axesVisible = true;
 
     // Window resize handler
     this._resizeHandler = () => this.onWindowResize();
@@ -591,7 +609,7 @@ export class WasmRenderer {
     const pd = this._sketchPlaneDef;
     if (!pd) return false;
     const before = this.rayToPlane(screenX, screenY, pd);
-    this._orbitRadius = Math.max(10, Math.min(5000, this._orbitRadius * factor));
+    this._orbitRadius = _clampOrbitRadius(this._orbitRadius * factor);
     this._orbitDirty = true;
     this._applyOrbitCamera();
     const after = this.rayToPlane(screenX, screenY, pd);
@@ -705,7 +723,7 @@ export class WasmRenderer {
         return;
       }
       this._orbitRadius *= factor;
-      this._orbitRadius = Math.max(10, Math.min(5000, this._orbitRadius));
+      this._orbitRadius = _clampOrbitRadius(this._orbitRadius);
       this._orbitDirty = true;
       if (this.onCameraInteraction) this.onCameraInteraction('zoom', this.getOrbitState());
     }, { passive: false });
@@ -770,7 +788,7 @@ export class WasmRenderer {
         if (this._lastPinchDist > 0 && dist > 0) {
           const scale = this._lastPinchDist / dist;
           this._orbitRadius *= scale;
-          this._orbitRadius = Math.max(10, Math.min(5000, this._orbitRadius));
+          this._orbitRadius = _clampOrbitRadius(this._orbitRadius);
           this._orbitDirty = true;
         }
 
@@ -830,14 +848,19 @@ export class WasmRenderer {
   _applyOrbitCamera() {
     if (!this._ready) return;
     const t = this._orbitTarget;
+    this._orbitRadius = _clampOrbitRadius(this._orbitRadius);
+    const clip = _cameraClipRange(this._orbitRadius);
     const camera = computeOrbitCameraPosition(this._orbitTheta, this._orbitPhi, this._orbitRadius, t);
 
     this.wasm.setCameraPosition(camera.x, camera.y, camera.z);
     this.wasm.setCameraTarget(t.x, t.y, t.z);
+    if (typeof this.wasm.setCameraClipPlanes === 'function') {
+      this.wasm.setCameraClipPlanes(clip.near, clip.far);
+    }
 
     // Apply orthographic or perspective projection for 3D mode
     if (this._ortho3D || this._fovDegrees <= 0) {
-      this.wasm.setCameraMode(0);
+      this.wasm.setCameraMode(1);
       const w = this._cssWidth || this.container.clientWidth || 800;
       const h = this._cssHeight || this.container.clientHeight || 600;
       const aspect = w / h;
@@ -851,6 +874,9 @@ export class WasmRenderer {
       // and model use the same field of view (prevents mismatch on refresh).
       this.wasm.setFov(this._fov);
       this.wasm.setCameraMode(1);
+    }
+    if (this.wasm.setOriginPlanesVisible) {
+      this.wasm.setOriginPlanesVisible(this._originPlaneVisibilityMask);
     }
   }
 
@@ -880,7 +906,7 @@ export class WasmRenderer {
       const ORTHO_K = 0.5;
       const oldH = oldDeg > 0 ? Math.tan((oldDeg * Math.PI / 180) / 2) : ORTHO_K;
       const newH = newDeg > 0 ? Math.tan((newDeg * Math.PI / 180) / 2) : ORTHO_K;
-      this._orbitRadius = Math.max(1, Math.min(5000, this._orbitRadius * oldH / newH));
+      this._orbitRadius = _clampOrbitRadius(this._orbitRadius * oldH / newH);
     }
 
     this._fovDegrees = newDeg;
@@ -888,7 +914,7 @@ export class WasmRenderer {
     // Sync WASM camera FOV and mode
     if (this._ready) {
       if (this._fovDegrees <= 0) {
-        this.wasm.setCameraMode(0);
+        this.wasm.setCameraMode(1);
       } else {
         this.wasm.setFov(this._fov);
         this.wasm.setCameraMode(1);
@@ -1053,7 +1079,7 @@ export class WasmRenderer {
       // then override radius with the exact saved value.
       this.setFOV(state.fovDegrees);
     }
-    this._orbitRadius = state.radius;
+    this._orbitRadius = _clampOrbitRadius(state.radius);
     this._orbitDirty = true;
     this._applyOrbitCamera();
   }
@@ -1589,12 +1615,12 @@ export class WasmRenderer {
     if (!s) return;
     if (s.theta != null) this._orbitTheta = s.theta;
     if (s.phi != null) this._orbitPhi = s.phi;
-    if (s.radius != null) this._orbitRadius = s.radius;
+    if (s.radius != null) this._orbitRadius = _clampOrbitRadius(s.radius);
     if (s.target) this._orbitTarget = { x: s.target.x || 0, y: s.target.y || 0, z: s.target.z || 0 };
     if (s.fovDegrees != null) this.setFOV(s.fovDegrees);
     if (s.ortho3D != null) this.setOrtho3D(s.ortho3D);
     // Override radius again after setFOV (which adjusts radius for compensation)
-    if (s.radius != null) this._orbitRadius = s.radius;
+    if (s.radius != null) this._orbitRadius = _clampOrbitRadius(s.radius);
     this._orbitDirty = true;
   }
 
@@ -2040,8 +2066,8 @@ export class WasmRenderer {
       // Up must be (0,1,0) when looking down the Z axis to avoid
       // a degenerate lookAt matrix (up parallel to view direction).
       this.wasm.setCameraUp(0, 1, 0);
-      this.wasm.setGridVisible(1);
-      this.wasm.setAxesVisible(1);
+      this.wasm.setGridVisible(this._gridVisible ? 1 : 0);
+      this.wasm.setAxesVisible(this._axesVisible ? 1 : 0);
     } else {
       this.wasm.setCameraMode(1);
       // Restore Z-up for 3D orbit camera
@@ -2055,8 +2081,22 @@ export class WasmRenderer {
       // Apply orbit camera state
       this._orbitDirty = true;
       this._applyOrbitCamera();
-      this.wasm.setGridVisible(1);
-      this.wasm.setAxesVisible(1);
+      this.wasm.setGridVisible(this._gridVisible ? 1 : 0);
+      this.wasm.setAxesVisible(this._axesVisible ? 1 : 0);
+    }
+  }
+
+  setGridVisible(visible) {
+    this._gridVisible = visible !== false;
+    if (this._ready && this.wasm && this.wasm.setGridVisible) {
+      this.wasm.setGridVisible(this._gridVisible ? 1 : 0);
+    }
+  }
+
+  setAxesVisible(visible) {
+    this._axesVisible = visible !== false;
+    if (this._ready && this.wasm && this.wasm.setAxesVisible) {
+      this.wasm.setAxesVisible(this._axesVisible ? 1 : 0);
     }
   }
 
@@ -3445,11 +3485,13 @@ export class WasmRenderer {
     const width = this._cssWidth || this.container.clientWidth;
     const height = this._cssHeight || this.container.clientHeight;
     ctx.clearRect(0, 0, width, height);
-    if (!this._partSketchImages || this._partSketchImages.length === 0) return;
+    const imageDescriptors = this._partSketchImages || [];
+    if (!imageDescriptors.length) return;
 
     const projectPoint = (wx, wy, wz) => this.worldToScreen(wx, wy, wz);
-    for (const descriptor of this._partSketchImages) {
+    for (const descriptor of imageDescriptors) {
       const { image, plane, selected } = descriptor;
+      if (!image || image.visible === false) continue;
       const visibleLocalQuad = image.getWorldQuad();
       const warpLocalQuad = typeof image.getWarpWorldQuad === 'function'
         ? image.getWarpWorldQuad()
@@ -3860,7 +3902,10 @@ export class WasmRenderer {
     this._partSketchImages = [];
 
     const sketches = part.getSketches();
-    if (!sketches || sketches.length === 0) return;
+    if (!sketches || sketches.length === 0) {
+      this._lastPartSketchImages = [];
+      return;
+    }
     const liveSketchIds = new Set(sketches.map((feature) => feature?.id).filter(Boolean));
     for (const featureId of this._sketchWireframeCache.keys()) {
       if (!liveSketchIds.has(featureId)) this._sketchWireframeCache.delete(featureId);
@@ -3966,6 +4011,7 @@ export class WasmRenderer {
       this._sketchFaceTriangles = new Float32Array(faceVerts);
       this._sketchFaceTriangleCount = faceVerts.length / 6;
     }
+    this._lastPartSketchImages = this._partSketchImages.slice();
   }
 
   /**
@@ -4355,12 +4401,11 @@ export class WasmRenderer {
     if (w === 0 || h === 0) return null;
 
     const aspect = w / h;
-    const near = 0.1;
-    const far = 10000;
     const t = this._orbitTarget;
     const theta = this._orbitTheta;
     const phi = this._orbitPhi;
-    const r = this._orbitRadius;
+    const r = _clampOrbitRadius(this._orbitRadius);
+    const { near, far } = _cameraClipRange(r);
 
     const camX = t.x + r * Math.sin(phi) * Math.cos(theta);
     const camY = t.y + r * Math.sin(phi) * Math.sin(theta);
@@ -4481,6 +4526,7 @@ export class WasmRenderer {
     this._sketchPickSegments = [];
     this._sketchPickTriangles = [];
     this._partSketchImages = [];
+    this._lastPartSketchImages = [];
     this._renderedPart = null;
     this._activeSceneEdges = null;
     this._activeSceneEdgeVertexCount = 0;
@@ -4710,7 +4756,7 @@ export class WasmRenderer {
     if (this.mode === '3d') {
       const fit = computeFitViewState(this._partBounds, 25);
       this._orbitTarget = fit.target;
-      this._orbitRadius = fit.radius;
+      this._orbitRadius = _clampOrbitRadius(fit.radius);
       this.wasm.setGridSize(fit.gridSize, 20);
       this.wasm.setAxesSize(fit.axesSize);
       this._orbitTheta = Math.PI / 4;

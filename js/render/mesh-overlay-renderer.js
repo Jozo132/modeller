@@ -44,13 +44,13 @@ export function renderBaseMeshOverlay(executor, options) {
   if (normalColorShading) {
     executor.drawTriangleBufferNormalColor(meshTriangles, meshTriangleCount, {
       mvp,
-      polygonOffset: [1, 1],
+      polygonOffset: [2, 2],
     });
   } else {
     executor.drawTriangleBuffer(meshTriangles, meshTriangleCount, {
       mvp,
       color: faceColor,
-      polygonOffset: [1, 1],
+      polygonOffset: [2, 2],
       diagnosticHatch: !!diagnosticHatch,
     });
   }
@@ -70,6 +70,8 @@ export function renderBaseMeshOverlay(executor, options) {
       color: featureEdgeColor,
       lineWidth: 1,
       lineDash: [],
+      depthFunc: 'less',
+      depthWrite: false,
     });
   }
 
@@ -90,6 +92,8 @@ export function renderBaseMeshOverlay(executor, options) {
       color: visualEdgeColor,
       lineWidth: 1,
       lineDash: [],
+      depthFunc: 'less',
+      depthWrite: false,
     });
   }
 
@@ -100,6 +104,8 @@ export function renderBaseMeshOverlay(executor, options) {
       color: silhouetteColor,
       lineWidth: 1,
       lineDash: [],
+      depthFunc: 'less',
+      depthWrite: false,
     });
   }
 
@@ -109,6 +115,8 @@ export function renderBaseMeshOverlay(executor, options) {
       color: boundaryEdgeColor,
       lineWidth: 2,
       lineDash: [],
+      depthFunc: 'less',
+      depthWrite: false,
     });
   }
 }

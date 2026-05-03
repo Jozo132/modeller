@@ -1061,6 +1061,7 @@ export const {
   resize,
   setFov,
   setCameraMode,
+  setCameraClipPlanes,
   setCameraPosition,
   setCameraTarget,
   setCameraUp,

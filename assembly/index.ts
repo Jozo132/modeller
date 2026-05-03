@@ -108,6 +108,12 @@ export function setCameraMode(mode: i32): void {
   }
 }
 
+export function setCameraClipPlanes(near: f32, far: f32): void {
+  scene.camera.near = near;
+  scene.camera.far = far;
+  scene.camera.updateProjection();
+}
+
 export function setCameraPosition(x: f32, y: f32, z: f32): void {
   scene.camera.position.set(x, y, z);
 }
@@ -336,7 +342,9 @@ export function render(): void {
 
   // Axes
   if (scene.axesVisible) {
+    cmd.emitSetDepthTest(false);
     scene.renderAxes(cmd, vp);
+    cmd.emitSetDepthTest(true);
   }
 
   // 3D scene nodes (boxes, geometry)

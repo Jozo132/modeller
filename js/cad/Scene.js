@@ -695,6 +695,7 @@ export class Scene {
       image.id = d.id;
       image.layer = d.layer || '0';
       image.color = d.color || null;
+      image.visible = d.visible !== false;
       if (d.lineWidth != null) image.lineWidth = d.lineWidth;
       scene.images.push(image);
       shapeMap.set(d.id, image);

@@ -1,5 +1,15 @@
 import { mat4LookAt, mat4Multiply, mat4Ortho, mat4Perspective } from './render-math.js';
 
+const MIN_ORBIT_RADIUS = 0.001;
+
+function cameraClipRange(radius) {
+  const r = Math.max(Math.abs(radius || 1), MIN_ORBIT_RADIUS);
+  return {
+    near: Math.max(1e-6, Math.min(0.1, r * 1e-5)),
+    far: Math.max(100000, r * 1000),
+  };
+}
+
 function projectPolygon2D(verts, normal) {
   const an = {
     x: Math.abs(normal?.x || 0),
@@ -582,8 +592,7 @@ export function computeFitViewState(bounds, fallbackRadius = 25) {
 export function computeOrbitMvp({ width, height, target, theta, phi, radius, fov, fovDegrees, ortho3D, orthoBounds }) {
   if (!width || !height) return null;
   const aspect = width / height;
-  const near = 0.1;
-  const far = 10000;
+  const { near, far } = cameraClipRange(radius);
   const camera = computeOrbitCameraPosition(theta, phi, radius, target);
   const view = mat4LookAt(camera.x, camera.y, camera.z, target.x, target.y, target.z, 0, 0, 1);
   if (!view) return null;

@@ -23,6 +23,12 @@ export declare function setFov(fov: number): void;
  */
 export declare function setCameraMode(mode: number): void;
 /**
+ * assembly/index/setCameraClipPlanes
+ * @param near `f32`
+ * @param far `f32`
+ */
+export declare function setCameraClipPlanes(near: number, far: number): void;
+/**
  * assembly/index/setCameraPosition
  * @param x `f32`
  * @param y `f32`
