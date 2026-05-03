@@ -280,6 +280,7 @@ export class PartManager {
 
     const feature = this.part.getFeatures().find(f => f.id === featureId);
     if (feature) {
+      if (this.activeFeature === feature) return;
       this.activeFeature = feature;
       this.notifyListeners();
     }

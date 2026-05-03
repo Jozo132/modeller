@@ -7,6 +7,7 @@ import assert from 'assert';
 import { Part } from '../js/cad/Part.js';
 import { Sketch } from '../js/cad/Sketch.js';
 import { SketchFeature } from '../js/cad/SketchFeature.js';
+import { ExtrudeFeature } from '../js/cad/ExtrudeFeature.js';
 import { resetFeatureIds } from '../js/cad/Feature.js';
 import { resetTopoIds } from '../js/cad/BRepTopology.js';
 import { validateBody, validateFull } from '../js/cad/BRepValidator.js';
@@ -53,6 +54,17 @@ function polygonArea(points) {
   return area * 0.5;
 }
 
+function pointInTriangle2D(point, vertices) {
+  const [a, b, c] = vertices;
+  const cross = (p1, p2, p3) => (p2.x - p1.x) * (p3.y - p1.y) - (p2.y - p1.y) * (p3.x - p1.x);
+  const d1 = cross(point, a, b);
+  const d2 = cross(point, b, c);
+  const d3 = cross(point, c, a);
+  const hasNeg = d1 < -1e-8 || d2 < -1e-8 || d3 < -1e-8;
+  const hasPos = d1 > 1e-8 || d2 > 1e-8 || d3 > 1e-8;
+  return !(hasNeg && hasPos);
+}
+
 // ============================================================
 console.log('=== Exact Extrude B-Rep Tests ===\n');
 // ============================================================
@@ -83,6 +95,67 @@ test('Nested sketch profiles alternate material by odd-even depth', () => {
   assert.deepStrictEqual(byArea.map((entry) => entry.profile.isHole), [false, true, false, true]);
   assert.ok(byArea[0].profile.holes.includes(byArea[1].index), 'depth-1 loop should be a hole in the outer loop');
   assert.ok(byArea[2].profile.holes.includes(byArea[3].index), 'depth-3 loop should be a hole in the depth-2 island');
+});
+
+test('Extrude mesh preview groups sketch holes into cap openings', () => {
+  resetFeatureIds();
+  resetTopoIds();
+  const sketchFeature = new SketchFeature('PreviewHoleCaps');
+  const addRect = (x1, y1, x2, y2) => {
+    sketchFeature.sketch.addSegment(x1, y1, x2, y1);
+    sketchFeature.sketch.addSegment(x2, y1, x2, y2);
+    sketchFeature.sketch.addSegment(x2, y2, x1, y2);
+    sketchFeature.sketch.addSegment(x1, y2, x1, y1);
+  };
+
+  addRect(0, 0, 10, 10);
+  addRect(3, 3, 7, 7);
+
+  const sketchResult = sketchFeature.execute({});
+  const extrude = new ExtrudeFeature('PreviewExtrude', sketchFeature.id, 5);
+  const groups = extrude.groupProfilesForExtrusion(sketchResult.profiles);
+  assert.strictEqual(groups.length, 1, 'outer profile should carry its hole');
+  assert.strictEqual(groups[0].holes.length, 1, 'inner profile should be used as a cap hole');
+
+  const geometry = extrude.generateGeometry([groups[0].outer], sketchResult.plane, groups[0].holes, { previewOnly: true });
+  const capFaces = geometry.faces.filter((face) => Math.abs(face.normal?.z || 0) > 0.9);
+  assert.ok(capFaces.length > 0, 'expected triangulated cap faces');
+  assert.strictEqual(
+    capFaces.some((face) => pointInTriangle2D({ x: 5, y: 5 }, face.vertices)),
+    false,
+    'hole center should not be covered by preview/fallback cap triangles',
+  );
+});
+
+test('Accepted extrusion preserves cap holes in final mesh geometry', () => {
+  resetFeatureIds();
+  resetTopoIds();
+  const part = new Part('HoleCapExtrude');
+  const sketch = makeRectSketch(0, 0, 10, 10);
+  sketch.addSegment(3, 3, 7, 3);
+  sketch.addSegment(7, 3, 7, 7);
+  sketch.addSegment(7, 7, 3, 7);
+  sketch.addSegment(3, 7, 3, 3);
+  const plane = {
+    origin: { x: 0, y: 0, z: 0 },
+    normal: { x: 0, y: 0, z: 1 },
+    xAxis: { x: 1, y: 0, z: 0 },
+    yAxis: { x: 0, y: 1, z: 0 },
+  };
+
+  part.addSketch(sketch, plane);
+  const extrudeFeature = part.extrude(part.getSketches()[0].id, 5);
+  const geometry = extrudeFeature.result.geometry;
+  assert.ok(geometry, 'expected final extrude geometry');
+  assert.notStrictEqual(geometry.nativeExtrude, true, 'hole-bearing extrusion should not use native shortcut until native caps support inner loops');
+
+  const capFaces = geometry.faces.filter((face) => Math.abs(face.normal?.z || 0) > 0.9);
+  assert.ok(capFaces.length > 0, 'expected final cap faces');
+  assert.strictEqual(
+    capFaces.some((face) => pointInTriangle2D({ x: 5, y: 5 }, face.vertices)),
+    false,
+    'hole center should not be covered by final cap triangles',
+  );
 });
 
 test('Extrude produces topoBody on geometry', () => {

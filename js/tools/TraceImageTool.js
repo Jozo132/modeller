@@ -2,6 +2,7 @@ import { BaseTool } from './BaseTool.js';
 import { state } from '../state.js';
 import { takeSnapshot } from '../history.js';
 import { traceImageDataContours } from '../image/trace-raster.js';
+import { buildFittedTraceEntities, buildHybridTraceEntities } from '../image/trace-fitting.js';
 
 export class TraceImageTool extends BaseTool {
   constructor(app) {
@@ -52,6 +53,25 @@ export class TraceImageTool extends BaseTool {
       const worldPoints = contour.map((point) => this._mapContourPoint(point, raster, image));
       if (traceSettings.curveMode === 'spline') {
         this._collectContourSpline(worldPoints, minSegmentLength, splinesToCreate);
+      } else if (traceSettings.curveMode === 'fitting') {
+        const fitted = buildFittedTraceEntities(worldPoints, {
+          minSegmentLength,
+          detectionMode: traceSettings.detectionMode,
+          fitTolerance: traceSettings.fitTolerance,
+          fitMaxControls: traceSettings.fitMaxControls,
+          unitPerPixel: Math.max(unitPerPixelX, unitPerPixelY),
+        });
+        segmentsToCreate.push(...fitted.segments);
+        splinesToCreate.push(...fitted.splines);
+      } else if (traceSettings.curveMode === 'hybrid') {
+        const fitted = buildHybridTraceEntities(worldPoints, {
+          minSegmentLength,
+          detectionMode: traceSettings.detectionMode,
+          simplifyTolerance: traceSettings.simplifyTolerance,
+          unitPerPixel: Math.max(unitPerPixelX, unitPerPixelY),
+        });
+        segmentsToCreate.push(...fitted.segments);
+        splinesToCreate.push(...fitted.splines);
       } else {
         this._collectContourSegments(worldPoints, minSegmentLength, segmentsToCreate);
       }
@@ -81,7 +101,9 @@ export class TraceImageTool extends BaseTool {
     state.scene.solve();
     state.emit('change');
     this.app._scheduleRender?.();
-    const entityLabel = traceSettings.curveMode === 'spline' ? 'spline' : 'segment';
+    const entityLabel = traceSettings.curveMode === 'spline'
+      ? 'spline'
+      : (traceSettings.curveMode === 'hybrid' || traceSettings.curveMode === 'fitting' ? 'entity' : 'segment');
     this._finish(`Trace Image: Created ${entityCount} ${entityLabel}${entityCount === 1 ? '' : 's'} from ${contours.length} contour${contours.length === 1 ? '' : 's'}.`);
   }
 

@@ -401,6 +401,9 @@ export class WasmRenderer {
     this._renderedPart = null;
 
     // Pre-built mesh data for direct WebGL rendering (bypasses WASM scene nodes)
+    this._meshRenderCache = new WeakMap();
+    this._meshRenderCacheKey = null;
+    this._meshRenderGeometry = null;
     this._meshTriangles = null;  // Float32Array: interleaved [x,y,z,nx,ny,nz, ...]
     this._meshTriangleCount = 0;
     this._problemTriangles = null; // Diagnostic triangles for inverted/problem faces
@@ -421,6 +424,7 @@ export class WasmRenderer {
     this._sketchEdgeVertexCount = 0;
     this._sketchInactiveEdges = null;     // Float32Array: inactive sketch edges (grey)
     this._sketchInactiveEdgeVertexCount = 0;
+    this._sketchWireframeCache = new Map();
     this._partSketchImages = [];
     this._imageResources = new Map();
 
@@ -1074,11 +1078,13 @@ export class WasmRenderer {
    * first and sketch face triangles as a fallback.
    * @param {number} screenX - Screen X coordinate
    * @param {number} screenY - Screen Y coordinate
+   * @param {{includeFaces?: boolean}} [options]
    * @returns {{featureId: string}|null}
    */
-  pickSketch(screenX, screenY) {
+  pickSketch(screenX, screenY, options = {}) {
+    const includeFaces = options.includeFaces !== false;
     const hasSegments = !!(this._sketchPickSegments && this._sketchPickSegments.length > 0);
-    const hasTriangles = !!(this._sketchPickTriangles && this._sketchPickTriangles.length > 0);
+    const hasTriangles = includeFaces && !!(this._sketchPickTriangles && this._sketchPickTriangles.length > 0);
     if (!hasSegments && !hasTriangles) return null;
 
     const mvp = this._computeMVP();
@@ -1647,6 +1653,168 @@ export class WasmRenderer {
     if (this._renderedPart) {
       this._buildSketchWireframes(this._renderedPart);
     }
+  }
+
+  _sketchWireHashValue(hash, value) {
+    const normalized = Number.isFinite(value) ? Math.round(value * 1e6) : 0;
+    return Math.imul((hash ^ normalized) >>> 0, 16777619) >>> 0;
+  }
+
+  _sketchWireHashText(hash, value) {
+    const text = String(value ?? '');
+    for (let i = 0; i < text.length; i++) {
+      hash = Math.imul((hash ^ text.charCodeAt(i)) >>> 0, 16777619) >>> 0;
+    }
+    return hash >>> 0;
+  }
+
+  _sketchWireSignature(sketchFeature, sketch, plane) {
+    let hash = 2166136261;
+    hash = this._sketchWireHashText(hash, sketchFeature?.id || '');
+    for (const vector of [plane?.origin, plane?.xAxis, plane?.yAxis, plane?.normal]) {
+      hash = this._sketchWireHashValue(hash, vector?.x);
+      hash = this._sketchWireHashValue(hash, vector?.y);
+      hash = this._sketchWireHashValue(hash, vector?.z);
+    }
+
+    const hashPoint = (point) => {
+      hash = this._sketchWireHashValue(hash, point?.x);
+      hash = this._sketchWireHashValue(hash, point?.y);
+    };
+    const hashHandle = (handle) => {
+      hash = this._sketchWireHashValue(hash, handle?.dx);
+      hash = this._sketchWireHashValue(hash, handle?.dy);
+    };
+    const hashEntity = (entity) => {
+      hash = this._sketchWireHashText(hash, entity?.id || entity?.type || '');
+      hash = this._sketchWireHashValue(hash, entity?.visible === false ? 0 : 1);
+      hash = this._sketchWireHashValue(hash, entity?.construction ? 1 : 0);
+      hash = this._sketchWireHashText(hash, entity?.layer || '');
+    };
+
+    for (const seg of sketch?.segments || []) {
+      hashEntity(seg);
+      hashPoint(seg?.p1);
+      hashPoint(seg?.p2);
+    }
+    for (const circle of sketch?.circles || []) {
+      hashEntity(circle);
+      hashPoint(circle?.center);
+      hash = this._sketchWireHashValue(hash, circle?.radius);
+    }
+    for (const arc of sketch?.arcs || []) {
+      hashEntity(arc);
+      hashPoint(arc?.center);
+      hash = this._sketchWireHashValue(hash, arc?.radius);
+      hash = this._sketchWireHashValue(hash, arc?.startAngle);
+      hash = this._sketchWireHashValue(hash, arc?.endAngle);
+    }
+    for (const spl of sketch?.splines || []) {
+      hashEntity(spl);
+      for (const point of spl?.points || []) hashPoint(point);
+    }
+    for (const bez of sketch?.beziers || []) {
+      hashEntity(bez);
+      for (const vertex of bez?.vertices || []) {
+        hashPoint(vertex?.point);
+        hashHandle(vertex?.handleIn);
+        hashHandle(vertex?.handleOut);
+        hash = this._sketchWireHashValue(hash, vertex?.tangent === false ? 0 : 1);
+      }
+    }
+    return hash.toString(16);
+  }
+
+  _getSketchWireframeCacheEntry(sketchFeature, sketch, plane, toWorld, nx, ny, nz) {
+    const featureId = sketchFeature?.id || '__unknown__';
+    const signature = this._sketchWireSignature(sketchFeature, sketch, plane);
+    const cached = this._sketchWireframeCache.get(featureId);
+    if (cached?.signature === signature) return cached;
+
+    const lineVertices = [];
+    const pickSegments = [];
+    const faceVertices = [];
+    const pickTriangles = [];
+
+    const appendLine = (a, b) => {
+      lineVertices.push(a.x, a.y, a.z, b.x, b.y, b.z);
+      pickSegments.push({ a, b });
+    };
+
+    for (const seg of sketch?.segments || []) {
+      if (!seg.visible || seg.construction || !seg.p1 || !seg.p2) continue;
+      appendLine(toWorld(seg.p1.x, seg.p1.y), toWorld(seg.p2.x, seg.p2.y));
+    }
+
+    for (const circle of sketch?.circles || []) {
+      if (!circle.visible || !circle.center) continue;
+      const numSegs = 32;
+      for (let i = 0; i < numSegs; i++) {
+        const a1 = (i / numSegs) * Math.PI * 2;
+        const a2 = ((i + 1) / numSegs) * Math.PI * 2;
+        appendLine(
+          toWorld(circle.center.x + Math.cos(a1) * circle.radius, circle.center.y + Math.sin(a1) * circle.radius),
+          toWorld(circle.center.x + Math.cos(a2) * circle.radius, circle.center.y + Math.sin(a2) * circle.radius),
+        );
+      }
+    }
+
+    for (const arc of sketch?.arcs || []) {
+      if (!arc.visible || !arc.center) continue;
+      const numSegs = 16;
+      const startA = arc.startAngle || 0;
+      const endA = arc.endAngle || Math.PI;
+      let sweep = endA - startA;
+      if (sweep < 0) sweep += Math.PI * 2;
+      for (let i = 0; i < numSegs; i++) {
+        const a1 = startA + (i / numSegs) * sweep;
+        const a2 = startA + ((i + 1) / numSegs) * sweep;
+        appendLine(
+          toWorld(arc.center.x + Math.cos(a1) * arc.radius, arc.center.y + Math.sin(a1) * arc.radius),
+          toWorld(arc.center.x + Math.cos(a2) * arc.radius, arc.center.y + Math.sin(a2) * arc.radius),
+        );
+      }
+    }
+
+    for (const spl of sketch?.splines || []) {
+      if (!spl.visible || spl.construction || !spl.p1 || !spl.p2) continue;
+      const pts = spl.tessellate2D(32);
+      for (let i = 0; i < pts.length - 1; i++) {
+        appendLine(toWorld(pts[i].x, pts[i].y), toWorld(pts[i + 1].x, pts[i + 1].y));
+      }
+    }
+
+    for (const bez of sketch?.beziers || []) {
+      if (!bez.visible || bez.construction || !bez.p1 || !bez.p2) continue;
+      const pts = bez.tessellate2D(16);
+      for (let i = 0; i < pts.length - 1; i++) {
+        appendLine(toWorld(pts[i].x, pts[i].y), toWorld(pts[i + 1].x, pts[i + 1].y));
+      }
+    }
+
+    const profiles = Array.isArray(sketchFeature?.result?.profiles)
+      ? sketchFeature.result.profiles
+      : extractRenderableSketchProfiles(sketch?.scene || sketch);
+    for (const tri of triangulateSketchProfileFill(profiles)) {
+      const a2 = tri[0];
+      const b2 = tri[1];
+      const c2 = tri[2];
+      const a = toWorld(a2.x, a2.y);
+      const b = toWorld(b2.x, b2.y);
+      const c = toWorld(c2.x, c2.y);
+      faceVertices.push(a.x, a.y, a.z, nx, ny, nz);
+      faceVertices.push(b.x, b.y, b.z, nx, ny, nz);
+      faceVertices.push(c.x, c.y, c.z, nx, ny, nz);
+      pickTriangles.push([a, b, c]);
+    }
+
+    const entry = { signature, lineVertices, pickSegments, faceVertices, pickTriangles };
+    this._sketchWireframeCache.set(featureId, entry);
+    return entry;
+  }
+
+  _appendSketchWireArray(target, source) {
+    for (let i = 0; i < source.length; i++) target.push(source[i]);
   }
 
   /**
@@ -2799,7 +2967,6 @@ export class WasmRenderer {
   /* ---------- 3D Part Rendering ---------- */
 
   renderPart(part) {
-    this.clearPartGeometry();
     if (!part || !this._ready) return;
     this._renderedPart = part;
 
@@ -2816,6 +2983,7 @@ export class WasmRenderer {
 
     const geo = part.getFinalGeometry();
     if (!geo) {
+      this._clearMeshRenderData();
       // Still build sketch wireframes even without solid geometry
       this._buildSketchWireframes(part);
       return;
@@ -2826,7 +2994,9 @@ export class WasmRenderer {
       if (bb) this._partBounds = bb;
 
       // Build actual mesh from geometry faces
-      this._buildMeshFromGeometry(geo.geometry);
+      this._buildMeshFromGeometry(geo.geometry, geo);
+    } else {
+      this._clearMeshRenderData();
     }
 
     // Build sketch wireframes for all sketch features (visible in 3D mode)
@@ -3342,8 +3512,63 @@ export class WasmRenderer {
    * Triangulate polygon faces and build Float32Arrays for WebGL rendering.
    * Stores face metadata for selection/identification.
    */
-  _buildMeshFromGeometry(geometry) {
-    Object.assign(this, buildMeshRenderData(geometry));
+  _meshRenderKey(geometry, result = null) {
+    if (result?.exactBodyRevisionId != null) return `rev:${result.exactBodyRevisionId}`;
+    if (result?.irHash != null) return `ir:${result.irHash}`;
+    if (geometry?.exactBodyRevisionId != null) return `geo-rev:${geometry.exactBodyRevisionId}`;
+    if (geometry?.wasmHandleId != null) return `handle:${geometry.wasmHandleId}:${geometry.wasmHandleRevision || ''}`;
+    return `shape:${geometry?.faces?.length || 0}:${geometry?.edges?.length || 0}:${geometry?.vertices?.length || 0}`;
+  }
+
+  _buildMeshFromGeometry(geometry, result = null) {
+    if (!geometry) {
+      this._clearMeshRenderData();
+      return;
+    }
+    const cacheKey = this._meshRenderKey(geometry, result);
+    if (this._meshRenderGeometry === geometry && this._meshRenderCacheKey === cacheKey) {
+      return;
+    }
+
+    const cached = this._meshRenderCache.get(geometry);
+    if (cached?.key === cacheKey) {
+      Object.assign(this, cached.data);
+      this._meshRenderGeometry = geometry;
+      this._meshRenderCacheKey = cacheKey;
+      return;
+    }
+
+    const data = buildMeshRenderData(geometry);
+    this._meshRenderCache.set(geometry, { key: cacheKey, data });
+    Object.assign(this, data);
+    this._meshRenderGeometry = geometry;
+    this._meshRenderCacheKey = cacheKey;
+  }
+
+  _clearMeshRenderData() {
+    this._partBounds = null;
+    this._meshRenderGeometry = null;
+    this._meshRenderCacheKey = null;
+    this._meshTriangles = null;
+    this._meshTriangleCount = 0;
+    this._problemTriangles = null;
+    this._problemTriangleCount = 0;
+    this._meshEdges = null;
+    this._meshEdgeVertexCount = 0;
+    this._meshVisualEdges = null;
+    this._meshVisualEdgeVertexCount = 0;
+    this._meshDashedFeatureEdges = null;
+    this._meshDashedFeatureEdgeVertexCount = 0;
+    this._meshTriangleOverlayEdges = null;
+    this._meshTriangleOverlayEdgeVertexCount = 0;
+    this._meshSilhouetteCandidates = null;
+    this._meshBoundaryEdges = null;
+    this._meshBoundaryEdgeVertexCount = 0;
+    this._meshFaces = null;
+    this._triFaceMap = null;
+    this._meshEdgeSegments = null;
+    this._meshEdgePaths = null;
+    this._edgeToPath = null;
   }
 
   /**
@@ -3579,6 +3804,10 @@ export class WasmRenderer {
 
     const sketches = part.getSketches();
     if (!sketches || sketches.length === 0) return;
+    const liveSketchIds = new Set(sketches.map((feature) => feature?.id).filter(Boolean));
+    for (const featureId of this._sketchWireframeCache.keys()) {
+      if (!liveSketchIds.has(featureId)) this._sketchWireframeCache.delete(featureId);
+    }
 
     const activeSketchId = part.getActiveSketchId ? part.getActiveSketchId() : null;
     const selectedId = this._selectedFeatureId || null;
@@ -3635,92 +3864,9 @@ export class WasmRenderer {
         z: plane.origin.z + px * plane.xAxis.z + py * plane.yAxis.z + nz * SKETCH_WIRE_OFFSET,
       });
 
-      // Segments
-      if (sketch.segments) {
-        for (const seg of sketch.segments) {
-          if (!seg.visible || seg.construction || !seg.p1 || !seg.p2) continue;
-          const a = toWorld(seg.p1.x, seg.p1.y);
-          const b = toWorld(seg.p2.x, seg.p2.y);
-          lines.push(a.x, a.y, a.z, b.x, b.y, b.z);
-          featureSegments.push({ a, b });
-        }
-      }
-
-      // Circles (approximate with line segments)
-      if (sketch.circles) {
-        for (const circle of sketch.circles) {
-          if (!circle.visible || !circle.center) continue;
-          const numSegs = 32;
-          for (let i = 0; i < numSegs; i++) {
-            const a1 = (i / numSegs) * Math.PI * 2;
-            const a2 = ((i + 1) / numSegs) * Math.PI * 2;
-            const p1 = toWorld(
-              circle.center.x + Math.cos(a1) * circle.radius,
-              circle.center.y + Math.sin(a1) * circle.radius
-            );
-            const p2 = toWorld(
-              circle.center.x + Math.cos(a2) * circle.radius,
-              circle.center.y + Math.sin(a2) * circle.radius
-            );
-            lines.push(p1.x, p1.y, p1.z, p2.x, p2.y, p2.z);
-            featureSegments.push({ a: p1, b: p2 });
-          }
-        }
-      }
-
-      // Arcs (approximate with line segments)
-      if (sketch.arcs) {
-        for (const arc of sketch.arcs) {
-          if (!arc.visible || !arc.center) continue;
-          const numSegs = 16;
-          let startA = arc.startAngle || 0;
-          let endA = arc.endAngle || Math.PI;
-          let sweep = endA - startA;
-          if (sweep < 0) sweep += Math.PI * 2;
-          for (let i = 0; i < numSegs; i++) {
-            const a1 = startA + (i / numSegs) * sweep;
-            const a2 = startA + ((i + 1) / numSegs) * sweep;
-            const p1 = toWorld(
-              arc.center.x + Math.cos(a1) * arc.radius,
-              arc.center.y + Math.sin(a1) * arc.radius
-            );
-            const p2 = toWorld(
-              arc.center.x + Math.cos(a2) * arc.radius,
-              arc.center.y + Math.sin(a2) * arc.radius
-            );
-            lines.push(p1.x, p1.y, p1.z, p2.x, p2.y, p2.z);
-            featureSegments.push({ a: p1, b: p2 });
-          }
-        }
-      }
-
-      // Splines (tessellate as line segments)
-      if (sketch.splines) {
-        for (const spl of sketch.splines) {
-          if (!spl.visible || spl.construction || !spl.p1 || !spl.p2) continue;
-          const pts = spl.tessellate2D(32);
-          for (let i = 0; i < pts.length - 1; i++) {
-            const p1 = toWorld(pts[i].x, pts[i].y);
-            const p2 = toWorld(pts[i + 1].x, pts[i + 1].y);
-            lines.push(p1.x, p1.y, p1.z, p2.x, p2.y, p2.z);
-            featureSegments.push({ a: p1, b: p2 });
-          }
-        }
-      }
-
-      // Beziers (tessellate as line segments)
-      if (sketch.beziers) {
-        for (const bez of sketch.beziers) {
-          if (!bez.visible || bez.construction || !bez.p1 || !bez.p2) continue;
-          const pts = bez.tessellate2D(16);
-          for (let i = 0; i < pts.length - 1; i++) {
-            const p1 = toWorld(pts[i].x, pts[i].y);
-            const p2 = toWorld(pts[i + 1].x, pts[i + 1].y);
-            lines.push(p1.x, p1.y, p1.z, p2.x, p2.y, p2.z);
-            featureSegments.push({ a: p1, b: p2 });
-          }
-        }
-      }
+      const cachedGeometry = this._getSketchWireframeCacheEntry(sketchFeature, sketch, plane, toWorld, nx, ny, nz);
+      this._appendSketchWireArray(lines, cachedGeometry.lineVertices);
+      this._appendSketchWireArray(featureSegments, cachedGeometry.pickSegments);
 
       if (featureSegments.length > 0) {
         this._sketchPickSegments.push({
@@ -3732,19 +3878,8 @@ export class WasmRenderer {
       // Build triangulated face fill for closed profiles (extrudable faces)
       // so they are visually painted in feature mode just like in sketch mode.
       if (!isActive || !this._sketchPlane) {
-        const profiles = extractRenderableSketchProfiles(sketch.scene || sketch);
-        for (const tri of triangulateSketchProfileFill(profiles)) {
-          const a2 = tri[0];
-          const b2 = tri[1];
-          const c2 = tri[2];
-          const a = toWorld(a2.x, a2.y);
-          const b = toWorld(b2.x, b2.y);
-          const c = toWorld(c2.x, c2.y);
-          faceVerts.push(a.x, a.y, a.z, nx, ny, nz);
-          faceVerts.push(b.x, b.y, b.z, nx, ny, nz);
-          faceVerts.push(c.x, c.y, c.z, nx, ny, nz);
-          featureTriangles.push([a, b, c]);
-        }
+        this._appendSketchWireArray(faceVerts, cachedGeometry.faceVertices);
+        this._appendSketchWireArray(featureTriangles, cachedGeometry.pickTriangles);
       }
 
       if (featureTriangles.length > 0) {
@@ -4277,24 +4412,7 @@ export class WasmRenderer {
       this.wasm.removeNode(id);
     }
     this._partNodes = [];
-    this._partBounds = null;
-    this._meshTriangles = null;
-    this._meshTriangleCount = 0;
-    this._problemTriangles = null;
-    this._problemTriangleCount = 0;
-    this._meshEdges = null;
-    this._meshEdgeVertexCount = 0;
-    this._meshVisualEdges = null;
-    this._meshVisualEdgeVertexCount = 0;
-    this._meshDashedFeatureEdges = null;
-    this._meshDashedFeatureEdgeVertexCount = 0;
-    this._meshTriangleOverlayEdges = null;
-    this._meshTriangleOverlayEdgeVertexCount = 0;
-    this._meshSilhouetteCandidates = null;
-    this._meshBoundaryEdges = null;
-    this._meshBoundaryEdgeVertexCount = 0;
-    this._meshFaces = null;
-    this._triFaceMap = null;
+    this._clearMeshRenderData();
     this._sketchEdges = null;
     this._sketchEdgeVertexCount = 0;
     this._sketchInactiveEdges = null;
@@ -4310,9 +4428,6 @@ export class WasmRenderer {
     this._activeSceneEdges = null;
     this._activeSceneEdgeVertexCount = 0;
     this._selectedFaceIndices.clear();
-    this._meshEdgeSegments = null;
-    this._meshEdgePaths = null;
-    this._edgeToPath = null;
     this._selectedEdgeIndices.clear();
     this._hoveredEdgeIndex = -1;
     this._hoveredFaceIndex = -1;
@@ -4985,15 +5100,20 @@ function _groupSketchProfiles(profiles) {
   return groups;
 }
 
-export function triangulateSketchProfileFill(profiles) {
+export function triangulateSketchProfileFill(profiles, options = {}) {
   const triangles = [];
+  const triangulationOptions = options.recoverBoundaryVertices === true
+    ? undefined
+    : { recoverBoundaryVertices: false };
   for (const group of _groupSketchProfiles(profiles)) {
-    const outer = _normalizeProfileRing(group.outer.points, false);
+    const outer = _simplifyProfileFillRing(_normalizeProfileRing(group.outer.points, false), options);
     const holes = group.holes
-      .map((hole) => _normalizeProfileRing(hole.points, true))
+      .map((hole) => _simplifyProfileFillRing(_normalizeProfileRing(hole.points, true), options))
       .filter((ring) => ring.length >= 3);
     if (outer.length < 3) continue;
-    const triIndices = constrainedTriangulate(outer, holes);
+    const triIndices = triangulationOptions
+      ? constrainedTriangulate(outer, holes, [], triangulationOptions)
+      : constrainedTriangulate(outer, holes);
     const triPoints = [
       ...outer,
       ...holes.flat(),
@@ -5006,6 +5126,74 @@ export function triangulateSketchProfileFill(profiles) {
     }
   }
   return triangles;
+}
+
+function _simplifyProfileFillRing(points, options = {}) {
+  if (!Array.isArray(points) || points.length < 96 || options.simplify === false) return points;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const point of points) {
+    minX = Math.min(minX, point.x);
+    minY = Math.min(minY, point.y);
+    maxX = Math.max(maxX, point.x);
+    maxY = Math.max(maxY, point.y);
+  }
+  const diag = Math.hypot(maxX - minX, maxY - minY);
+  const tolerance = Number.isFinite(options.simplifyTolerance)
+    ? Math.max(0, options.simplifyTolerance)
+    : Math.max(diag * 0.00025, 1e-5);
+  if (tolerance <= 0) return points;
+  const simplified = _simplifyClosedRing(points, tolerance);
+  return simplified.length >= 3 ? simplified : points;
+}
+
+function _simplifyClosedRing(points, tolerance) {
+  let anchor = 0;
+  for (let i = 1; i < points.length; i++) {
+    if (points[i].x < points[anchor].x || (points[i].x === points[anchor].x && points[i].y < points[anchor].y)) {
+      anchor = i;
+    }
+  }
+  const rotated = [...points.slice(anchor), ...points.slice(0, anchor), points[anchor]];
+  const simplified = _simplifyOpenPolyline(rotated, tolerance);
+  if (simplified.length > 1) simplified.pop();
+  return simplified;
+}
+
+function _simplifyOpenPolyline(points, tolerance) {
+  if (points.length <= 2) return points.slice();
+  const keep = new Uint8Array(points.length);
+  keep[0] = 1;
+  keep[points.length - 1] = 1;
+  const stack = [[0, points.length - 1]];
+  while (stack.length > 0) {
+    const [start, end] = stack.pop();
+    let maxDistance = -1;
+    let split = -1;
+    for (let i = start + 1; i < end; i++) {
+      const distance = _pointLineDistance2D(points[i], points[start], points[end]);
+      if (distance > maxDistance) {
+        maxDistance = distance;
+        split = i;
+      }
+    }
+    if (maxDistance > tolerance && split > start) {
+      keep[split] = 1;
+      stack.push([start, split], [split, end]);
+    }
+  }
+  const result = [];
+  for (let i = 0; i < points.length; i++) {
+    if (keep[i]) result.push(points[i]);
+  }
+  return result;
+}
+
+function _pointLineDistance2D(point, start, end) {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const len = Math.hypot(dx, dy);
+  if (len <= 1e-12) return Math.hypot(point.x - start.x, point.y - start.y);
+  return Math.abs(dy * point.x - dx * point.y + end.x * start.y - end.y * start.x) / len;
 }
 
 function _normalizeProfileRing(points, clockwise) {

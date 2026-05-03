@@ -117,6 +117,20 @@ function getFeatureCbrepCacheVersion(feature) {
   return version == null ? null : String(version);
 }
 
+function _featureParamFingerprint(feature) {
+  if (!feature || typeof feature.serialize !== 'function') return null;
+  try {
+    const data = feature.serialize();
+    if (data && typeof data === 'object') {
+      delete data.modified;
+      delete data.created;
+    }
+    return JSON.stringify(data);
+  } catch {
+    return null;
+  }
+}
+
 function restoreFinalCbrepPayload(part, payload, irHash, cacheVersion = null) {
   if (!part?.featureTree || !payload) return false;
 
@@ -648,7 +662,10 @@ export class Part {
     const feature = this.featureTree.getFeature(featureId);
     
     if (feature) {
+      const before = _featureParamFingerprint(feature);
       modifyFn(feature);
+      const after = _featureParamFingerprint(feature);
+      if (before != null && before === after) return;
       this.featureTree.markModified(featureId);
       this.modified = new Date();
       this.updatePhysicalProperties();

@@ -33,12 +33,13 @@ import {
   Coincident, Horizontal, Vertical,
   Parallel, Perpendicular, EqualLength,
   Fixed, Distance, Tangent, Angle,
-  resolveValue, setVariable, getVariable, getVariableRaw, removeVariable, getAllVariables,
+  resolveValue, setVariable, getVariable, getVariableRaw, removeVariable, getAllVariables, resolveAllVariables,
 } from './cad/Constraint.js';
 import { union } from './cad/Operations.js';
 import { motionAnalysis } from './motion.js';
 import { setFlag } from './featureFlags.js';
 import { traceImageDataContours } from './image/trace-raster.js';
+import { buildFittedTraceEntities, buildHybridTraceEntities } from './image/trace-fitting.js';
 import { PPoint } from './cad/Point.js';
 import { PSegment } from './cad/Segment.js';
 import { PSpline } from './cad/SplinePrimitive.js';
@@ -137,9 +138,14 @@ class App {
     this._awaitingSketchPlane = false; // true when waiting for user to pick a plane/face for sketch
     this._draggingExtrudeHandle = false;
     this._extrudeHandleInfo = null; // {origin, tip, dir} for drag handle
+    this._extrudePreviewFrame = 0;
+    this._extrudePreviewRunning = false;
+    this._extrudePreviewQueued = false;
+    this._extrudePreviewCache = null;
     this._extrudeArrowHoveredState = false;
     this._diagnosticBackfaceHatchMode = this._loadDiagnosticBackfaceHatchMode();
     this._diagnosticBackfaceHatchAuto = false;
+    this._meshHoleCache = new WeakMap();
     this._invisibleEdgesVisible = this._loadInvisibleEdgesVisible();
     this._meshTriangleOverlayMode = this._loadMeshTriangleOverlayMode();
     this._normalColorShadingEnabled = this._loadNormalColorShading();
@@ -253,6 +259,10 @@ class App {
     this._lpHoverPrimId = null;    // primitive hovered from left panel
     this._lpHoverConstraintId = null; // constraint hovered from left panel
     this._lpSelectedConstraintId = null; // constraint selected in left panel
+    this._variablesListSignature = '';
+    this._variablesListDelegated = null;
+    this._leftPanelRebuildFrame = 0;
+    this._leftPanelRebuildQueued = false;
 
     // 3D Part management
     this._3dMode = true; // Always in unified 3D+sketch mode
@@ -318,25 +328,34 @@ class App {
 
           // Restore Part state if saved
           if (loaded.part && loaded.workspaceMode === 'part') {
-            this._partManager.deserialize(loaded.part, {
-              finalCbrepPayload: loaded.finalCbrepPayload,
-              finalCbrepHash: loaded.finalCbrepHash,
-            });
-            if (this._restoreUsedReplayFallback(this._partManager.getPart())) {
-              info('Browser restore replayed solid features; persisting refreshed checkpoints for faster subsequent reloads');
-              debouncedSave();
+            try {
+              this._partManager.deserialize(loaded.part, {
+                finalCbrepPayload: loaded.finalCbrepPayload,
+                finalCbrepHash: loaded.finalCbrepHash,
+              });
+              if (this._restoreUsedReplayFallback(this._partManager.getPart())) {
+                info('Browser restore replayed solid features; persisting refreshed checkpoints for faster subsequent reloads');
+                debouncedSave();
+              }
+              this._enterWorkspace('part');
+              if (loaded.sessionState) {
+                this._restoreSessionState(loaded.sessionState, loaded.orbit);
+              }
+              // Restore orbit camera (skip if sketch mode — normal view was set by restore)
+              if (loaded.orbit && this._renderer3d && !this._sketchingOnPlane) {
+                this._renderer3d.setOrbitState(loaded.orbit);
+              }
+              // Restore named scenes
+              if (loaded.scenes) this._scenes = loaded.scenes;
+              this._setStartupLoading(true, 'Preparing part workspace...', 72);
+            } catch (err) {
+              error('Failed to restore saved Part workspace:', err);
+              this._setStartupLoading(false);
+              this._showQuickStart();
+              this.setStatus(`Failed to restore saved project: ${err.message}`);
+              return;
             }
-            this._enterWorkspace('part');
-            if (loaded.sessionState) {
-              this._restoreSessionState(loaded.sessionState, loaded.orbit);
-            }
-            // Restore orbit camera (skip if sketch mode — normal view was set by restore)
-            if (loaded.orbit && this._renderer3d && !this._sketchingOnPlane) {
-              this._renderer3d.setOrbitState(loaded.orbit);
-            }
-            // Restore named scenes
-            if (loaded.scenes) this._scenes = loaded.scenes;
-            this._setStartupLoading(true, 'Preparing part workspace...', 72);
+
             const readyPromise = this._renderer3d && this._renderer3d._loadPromise
               ? this._renderer3d._loadPromise
               : Promise.resolve();
@@ -347,6 +366,10 @@ class App {
               this._setStartupLoading(true, 'Workspace restored.', 100);
               requestAnimationFrame(() => this._setStartupLoading(false));
               info('App initialization completed (restored Part workspace)');
+            }).catch((err) => {
+              error('Failed to prepare restored Part workspace:', err);
+              this._setStartupLoading(false);
+              this.setStatus(`Failed to prepare restored workspace: ${err.message}`);
             });
             return;
           }
@@ -1195,7 +1218,7 @@ class App {
           this._extrudeMode.distance = newDist;
           const distInput = document.querySelector('#left-feature-params-content input[type="number"]');
           if (distInput) distInput.value = newDist;
-          this._updateExtrudePreview();
+          this._requestExtrudePreview();
         }
         return;
       }
@@ -1515,7 +1538,7 @@ class App {
           return;
         }
 
-        const sketchHit = this._renderer3d.pickSketch(e.clientX, e.clientY);
+        const sketchHit = this._renderer3d.pickSketch(e.clientX, e.clientY, { includeFaces: false });
         if (sketchHit) {
           if (!e.shiftKey && !e.ctrlKey) {
             this._selectedFaces.clear();
@@ -1656,7 +1679,7 @@ class App {
 
       // In Part mode: double-click sketch wireframe to enter sketch edit mode
       if (this._workspaceMode === 'part' && !this._sketchingOnPlane && this._renderer3d) {
-        const sketchHit = this._renderer3d.pickSketch(e.clientX, e.clientY);
+        const sketchHit = this._renderer3d.pickSketch(e.clientX, e.clientY, { includeFaces: false });
         if (sketchHit) {
           const feature = this._partManager.getFeatures().find(f => f.id === sketchHit.featureId);
           if (feature && feature.type === 'sketch') {
@@ -1865,7 +1888,7 @@ class App {
                 }
 
                 // Sketch picking
-                const sketchHit = this._renderer3d.pickSketch(ct.clientX, ct.clientY);
+                const sketchHit = this._renderer3d.pickSketch(ct.clientX, ct.clientY, { includeFaces: false });
                 if (sketchHit) {
                   this._selectedFaces.clear();
                   this._renderer3d.clearFaceSelection();
@@ -3785,14 +3808,14 @@ class App {
       this._sceneVersion += 1;
       this._updatePerspectiveEditModeLockUi();
       this._scheduleRender();
-      this._rebuildLeftPanel();
+      this._scheduleLeftPanelRebuild();
       debouncedSave();
     });
     state.on('selection:change', (sel) => {
       this._sceneVersion += 1;
       this._updatePerspectiveEditModeLockUi();
       this._updatePropertiesPanel(sel);
-      this._rebuildLeftPanel();
+      this._scheduleLeftPanelRebuild();
       this._scheduleRender();
     });
     state.on('layers:change', () => {
@@ -4001,19 +4024,25 @@ class App {
       const trace = typeof image.getTraceSettings === 'function' ? image.getTraceSettings() : (image.traceSettings || {});
       const thresholdMode = trace.thresholdMode === 'manual' ? 'manual' : 'auto';
       const detectionMode = trace.detectionMode === 'edge' ? 'edge' : 'contour';
-      const curveMode = trace.curveMode === 'spline' ? 'spline' : 'straight';
+      const curveMode = trace.curveMode === 'spline' || trace.curveMode === 'hybrid' || trace.curveMode === 'fitting' ? trace.curveMode : 'straight';
+      const showThresholdLevel = thresholdMode === 'manual';
+      const showEdgeLevel = detectionMode === 'edge';
+      const showSimplify = curveMode === 'straight' || curveMode === 'hybrid';
+      const showFit = curveMode === 'fitting';
       return `
         <div id="prop-image-trace-stats" class="image-trace-stats">Scene preview pending</div>
         <div class="prop-row"><label>Detect</label><select id="prop-image-trace-detection"><option value="contour" ${detectionMode === 'contour' ? 'selected' : ''}>Contour</option><option value="edge" ${detectionMode === 'edge' ? 'selected' : ''}>Edge</option></select></div>
-        <div class="prop-row"><label>Trace As</label><select id="prop-image-trace-curve"><option value="straight" ${curveMode === 'straight' ? 'selected' : ''}>Straight</option><option value="spline" ${curveMode === 'spline' ? 'selected' : ''}>Spline</option></select></div>
+        <div class="prop-row"><label>Trace As</label><select id="prop-image-trace-curve"><option value="straight" ${curveMode === 'straight' ? 'selected' : ''}>Straight</option><option value="hybrid" ${curveMode === 'hybrid' ? 'selected' : ''}>Hybrid</option><option value="fitting" ${curveMode === 'fitting' ? 'selected' : ''}>Fitting</option><option value="spline" ${curveMode === 'spline' ? 'selected' : ''}>Spline</option></select></div>
         <div class="prop-row"><label>Threshold</label><select id="prop-image-trace-threshold-mode"><option value="auto" ${thresholdMode === 'auto' ? 'selected' : ''}>Auto</option><option value="manual" ${thresholdMode === 'manual' ? 'selected' : ''}>Manual</option></select></div>
-        <div class="prop-row"><label>Level</label><input id="prop-image-trace-threshold" type="number" min="0" max="255" step="1" value="${Number.isFinite(trace.threshold) ? trace.threshold : 127}" /></div>
-        <div class="prop-row"><label>Levels</label><input id="prop-image-trace-levels" type="text" value="${escapeHtml(trace.thresholdLevels || '')}" placeholder="64,128,192" /></div>
-        <div class="prop-row"><label>Invert</label><input id="prop-image-trace-invert" type="checkbox" ${trace.invert ? 'checked' : ''} /></div>
+        ${showThresholdLevel ? `<div class="prop-row"><label>Level</label><input id="prop-image-trace-threshold" type="number" min="0" max="255" step="1" value="${Number.isFinite(trace.threshold) ? trace.threshold : 127}" /></div>` : ''}
+        ${showThresholdLevel ? `<div class="prop-row"><label>Levels</label><input id="prop-image-trace-levels" type="text" value="${escapeHtml(trace.thresholdLevels || '')}" placeholder="64,128,192" /></div>` : ''}
+        ${showThresholdLevel ? `<div class="prop-row"><label>Invert</label><input id="prop-image-trace-invert" type="checkbox" ${trace.invert ? 'checked' : ''} /></div>` : ''}
         <div class="prop-row"><label>Speck Filter</label><input id="prop-image-trace-speck" type="number" min="0" step="1" value="${Number.isFinite(trace.minSpeckArea) ? trace.minSpeckArea : 8}" /></div>
         <div class="prop-row"><label>Min Area</label><input id="prop-image-trace-min-area" type="number" min="0" step="1" value="${Number.isFinite(trace.minArea) ? trace.minArea : 12}" /></div>
-        <div class="prop-row"><label>Simplify</label><input id="prop-image-trace-simplify" type="number" min="0" step="0.1" value="${Number.isFinite(trace.simplifyTolerance) ? trace.simplifyTolerance : 1.5}" /></div>
-        <div class="prop-row"><label>Edge Level</label><input id="prop-image-trace-edge-threshold" type="number" min="1" max="255" step="1" value="${Number.isFinite(trace.edgeThreshold) ? trace.edgeThreshold : 72}" /></div>
+        ${showSimplify ? `<div class="prop-row"><label>Simplify</label><input id="prop-image-trace-simplify" type="number" min="0" step="0.1" value="${Number.isFinite(trace.simplifyTolerance) ? trace.simplifyTolerance : 1.5}" /></div>` : ''}
+        ${showFit ? `<div class="prop-row"><label>Fit Tolerance</label><input id="prop-image-trace-fit-tolerance" type="number" min="0" step="0.1" value="${Number.isFinite(trace.fitTolerance) ? trace.fitTolerance : 1.2}" /></div>` : ''}
+        ${showFit ? `<div class="prop-row"><label>Fit Detail</label><input id="prop-image-trace-fit-controls" type="number" min="4" max="64" step="1" value="${Number.isFinite(trace.fitMaxControls) ? trace.fitMaxControls : 16}" /></div>` : ''}
+        ${showEdgeLevel ? `<div class="prop-row"><label>Edge Level</label><input id="prop-image-trace-edge-threshold" type="number" min="1" max="255" step="1" value="${Number.isFinite(trace.edgeThreshold) ? trace.edgeThreshold : 72}" /></div>` : ''}
         <div class="image-props-actions">
           <button id="prop-image-trace" type="button" class="app-modal-btn primary" ${context.isPerspectiveEditing ? 'disabled' : ''}>Trace To Path</button>
         </div>
@@ -4105,6 +4134,22 @@ class App {
       if (traceSettings.curveMode === 'spline') {
         const spline = this._buildTracePreviewSpline(worldPoints, minSegmentLength);
         if (spline) previewEntities.push(spline);
+      } else if (traceSettings.curveMode === 'fitting') {
+        this._appendTracePreviewFitting(
+          worldPoints,
+          minSegmentLength,
+          previewEntities,
+          traceSettings,
+          Math.max(unitPerPixelX, unitPerPixelY),
+        );
+      } else if (traceSettings.curveMode === 'hybrid') {
+        this._appendTracePreviewHybrid(
+          worldPoints,
+          minSegmentLength,
+          previewEntities,
+          traceSettings,
+          Math.max(unitPerPixelX, unitPerPixelY),
+        );
       } else {
         this._appendTracePreviewSegments(worldPoints, minSegmentLength, previewEntities);
       }
@@ -4138,6 +4183,47 @@ class App {
       const segment = new PSegment(new PPoint(start.x, start.y), new PPoint(end.x, end.y));
       segment.color = '#ffcc33';
       entities.push(segment);
+    }
+  }
+
+  _appendTracePreviewHybrid(points, minSegmentLength, entities, traceSettings = {}, unitPerPixel = 1) {
+    const fitted = buildHybridTraceEntities(points, {
+      minSegmentLength,
+      detectionMode: traceSettings.detectionMode,
+      simplifyTolerance: traceSettings.simplifyTolerance,
+      unitPerPixel,
+    });
+    for (const { start, end } of fitted.segments) {
+      if (Math.hypot(end.x - start.x, end.y - start.y) <= minSegmentLength) continue;
+      const segment = new PSegment(new PPoint(start.x, start.y), new PPoint(end.x, end.y));
+      segment.color = '#ffcc33';
+      entities.push(segment);
+    }
+    for (const controlPoints of fitted.splines) {
+      const spline = new PSpline(controlPoints.map((point) => new PPoint(point.x, point.y)));
+      spline.color = '#ffcc33';
+      entities.push(spline);
+    }
+  }
+
+  _appendTracePreviewFitting(points, minSegmentLength, entities, traceSettings = {}, unitPerPixel = 1) {
+    const fitted = buildFittedTraceEntities(points, {
+      minSegmentLength,
+      detectionMode: traceSettings.detectionMode,
+      fitTolerance: traceSettings.fitTolerance,
+      fitMaxControls: traceSettings.fitMaxControls,
+      unitPerPixel,
+    });
+    for (const { start, end } of fitted.segments) {
+      if (Math.hypot(end.x - start.x, end.y - start.y) <= minSegmentLength) continue;
+      const segment = new PSegment(new PPoint(start.x, start.y), new PPoint(end.x, end.y));
+      segment.color = '#ffcc33';
+      entities.push(segment);
+    }
+    for (const controlPoints of fitted.splines) {
+      const spline = new PSpline(controlPoints.map((point) => new PPoint(point.x, point.y)));
+      spline.color = '#ffcc33';
+      entities.push(spline);
     }
   }
 
@@ -4193,7 +4279,7 @@ class App {
         commit(() => apply(value));
       });
     };
-    const bindTraceSetting = (selector, read) => {
+    const bindTraceSetting = (selector, read, options = {}) => {
       const input = panel.querySelector(selector);
       if (!input) return;
       input.addEventListener('change', () => {
@@ -4205,8 +4291,8 @@ class App {
           } else {
             image.traceSettings = { ...(image.traceSettings || {}), ...update };
           }
-        }, false);
-        this._updateImageTraceScenePreview(panel, image);
+        }, options.refreshPanel === true);
+        if (options.refreshPanel !== true) this._updateImageTraceScenePreview(panel, image);
       });
     };
 
@@ -4251,9 +4337,11 @@ class App {
     bindNumber('#prop-image-grid-height', (value) => { image.gridHeight = Math.max(0.01, value); });
     bindInteger('#prop-image-grid-cells-x', (value) => { image.gridCellsX = Math.max(1, Math.round(value)); });
     bindInteger('#prop-image-grid-cells-y', (value) => { image.gridCellsY = Math.max(1, Math.round(value)); });
-    bindTraceSetting('#prop-image-trace-detection', (input) => ({ detectionMode: input.value === 'edge' ? 'edge' : 'contour' }));
-    bindTraceSetting('#prop-image-trace-curve', (input) => ({ curveMode: input.value === 'spline' ? 'spline' : 'straight' }));
-    bindTraceSetting('#prop-image-trace-threshold-mode', (input) => ({ thresholdMode: input.value === 'manual' ? 'manual' : 'auto' }));
+    bindTraceSetting('#prop-image-trace-detection', (input) => ({ detectionMode: input.value === 'edge' ? 'edge' : 'contour' }), { refreshPanel: true });
+    bindTraceSetting('#prop-image-trace-curve', (input) => ({
+      curveMode: input.value === 'spline' || input.value === 'hybrid' || input.value === 'fitting' ? input.value : 'straight',
+    }), { refreshPanel: true });
+    bindTraceSetting('#prop-image-trace-threshold-mode', (input) => ({ thresholdMode: input.value === 'manual' ? 'manual' : 'auto' }), { refreshPanel: true });
     bindTraceSetting('#prop-image-trace-threshold', (input) => {
       const value = parseFloat(input.value);
       return Number.isFinite(value) ? { threshold: value } : null;
@@ -4271,6 +4359,14 @@ class App {
     bindTraceSetting('#prop-image-trace-simplify', (input) => {
       const value = parseFloat(input.value);
       return Number.isFinite(value) ? { simplifyTolerance: value } : null;
+    });
+    bindTraceSetting('#prop-image-trace-fit-tolerance', (input) => {
+      const value = parseFloat(input.value);
+      return Number.isFinite(value) ? { fitTolerance: value } : null;
+    });
+    bindTraceSetting('#prop-image-trace-fit-controls', (input) => {
+      const value = parseInt(input.value, 10);
+      return Number.isFinite(value) ? { fitMaxControls: value } : null;
     });
     bindTraceSetting('#prop-image-trace-edge-threshold', (input) => {
       const value = parseFloat(input.value);
@@ -4474,11 +4570,29 @@ class App {
   }
 
   _rebuildLeftPanel() {
+    this._leftPanelRebuildQueued = false;
+    this._leftPanelRebuildFrame = 0;
     this._rebuildPrimitivesList();
     this._rebuildDimensionsList();
     this._rebuildConstraintsList();
     this._rebuildVariablesList();
     this._updateToggleAllButtons();
+  }
+
+  _scheduleLeftPanelRebuild() {
+    this._leftPanelRebuildQueued = true;
+    if (this._leftPanelRebuildFrame) return;
+    const run = () => {
+      this._leftPanelRebuildFrame = 0;
+      if (!this._leftPanelRebuildQueued) return;
+      this._rebuildLeftPanel();
+    };
+    if (typeof requestAnimationFrame === 'function') {
+      this._leftPanelRebuildFrame = requestAnimationFrame(run);
+    } else {
+      this._leftPanelRebuildFrame = 1;
+      Promise.resolve().then(run);
+    }
   }
 
   /**
@@ -5686,116 +5800,147 @@ class App {
 
   _rebuildVariablesList() {
     const list = document.getElementById('variables-list');
-    list.innerHTML = '';
+    if (!list) return;
     const vars = getAllVariables();
+    const signature = this._variablesListSignatureFor(vars);
+    if (signature === this._variablesListSignature && !list.querySelector('.lp-inline-input')) {
+      return;
+    }
+    this._variablesListSignature = signature;
+    this._ensureVariablesListDelegation(list);
+    list.textContent = '';
 
     if (vars.size === 0) {
       list.innerHTML = '<p class="hint">No variables</p>';
       return;
     }
 
+    const resolvedVars = resolveAllVariables(vars);
+    const fragment = document.createDocumentFragment();
     for (const [name, rawValue] of vars) {
       const row = document.createElement('div');
       row.className = 'lp-item';
+      row.dataset.varName = name;
 
       // Compute resolved value for display
       const isFormula = typeof rawValue === 'string';
-      const resolved = isFormula ? resolveValue(rawValue) : rawValue;
+      const resolved = resolvedVars.get(name);
       const displayValue = isFormula
         ? `${rawValue} = ${isNaN(resolved) ? '?' : resolved.toFixed(4)}`
         : rawValue;
 
-      row.innerHTML = `<span class="lp-icon" style="color:var(--accent)">𝑥</span>` +
-        `<span class="lp-var-name">${name}</span>` +
+      row.innerHTML = `<span class="lp-icon" style="color:var(--accent)">x</span>` +
+        `<span class="lp-var-name">${this._escapeHtml(name)}</span>` +
         `<span class="lp-var-eq">=</span>` +
-        `<span class="lp-var-value">${displayValue}</span>` +
-        `<button class="lp-edit" title="Edit variable (name &amp; value)">✎</button>` +
-        `<button class="lp-delete" title="Delete variable">✕</button>`;
+        `<span class="lp-var-value">${this._escapeHtml(String(displayValue))}</span>` +
+        `<button class="lp-edit" data-var-action="edit" title="Edit variable (name &amp; value)">Edit</button>` +
+        `<button class="lp-delete" data-var-action="delete" title="Delete variable">Delete</button>`;
 
-      // --- Inline value edit: click on the value span ---
-      const valueSpan = row.querySelector('.lp-var-value');
-      valueSpan.addEventListener('click', (e) => {
-        e.stopPropagation();
-        this._inlineEditVariableValue(row, name, rawValue);
-      });
-
-      // --- Inline name edit: double-click on the name span ---
-      const nameSpan = row.querySelector('.lp-var-name');
-      nameSpan.addEventListener('dblclick', (e) => {
-        e.stopPropagation();
-        this._inlineEditVariableName(row, name, rawValue);
-      });
-
-      // --- Edit button: full popup for name=value ---
-      row.querySelector('.lp-edit').addEventListener('click', async () => {
-        const val = await showPrompt({
-          title: 'Edit Variable',
-          message: `Edit variable (name=value or name=formula):`,
-          defaultValue: `${name}=${rawValue}`,
-        });
-        if (val !== null && val !== '') {
-          const eqIdx = val.indexOf('=');
-          if (eqIdx > 0) {
-            const newName = val.substring(0, eqIdx).trim();
-            const valueStr = val.substring(eqIdx + 1).trim();
-            const num = parseFloat(valueStr);
-            if (newName) {
-              takeSnapshot();
-              if (newName !== name) {
-                this._renameVariableEverywhere(name, newName);
-              }
-              setVariable(newName, isNaN(num) ? valueStr : num);
-              state.scene.solve();
-              state.emit('change');
-              this._scheduleRender();
-            }
-          }
-        }
-      });
-
-      row.querySelector('.lp-delete').addEventListener('click', async () => {
-        takeSnapshot();
-        removeVariable(name);
-        state.scene.solve();
-        state.emit('change');
-        this._scheduleRender();
-      });
-
-      // Right-click context menu
-      row.addEventListener('contextmenu', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const ctxItems = [];
-        ctxItems.push({
-          type: 'item',
-          label: 'Rename',
-          icon: '✎',
-          action: () => { this._inlineEditVariableName(row, name, rawValue); },
-        });
-        ctxItems.push({
-          type: 'item',
-          label: 'Edit Value',
-          icon: '=',
-          action: () => { this._inlineEditVariableValue(row, name, rawValue); },
-        });
-        ctxItems.push({ type: 'separator' });
-        ctxItems.push({
-          type: 'item',
-          label: 'Delete',
-          icon: '🗑',
-          action: () => {
-            takeSnapshot();
-            removeVariable(name);
-            state.scene.solve();
-            state.emit('change');
-            this._scheduleRender();
-          },
-        });
-        showContextMenu(e.clientX, e.clientY, ctxItems);
-      });
-
-      list.appendChild(row);
+      fragment.appendChild(row);
     }
+    list.appendChild(fragment);
+  }
+
+  _variablesListSignatureFor(vars) {
+    let signature = String(vars.size);
+    for (const [name, value] of vars) signature += `\n${name}=${String(value)}`;
+    return signature;
+  }
+
+  _ensureVariablesListDelegation(list) {
+    if (this._variablesListDelegated === list) return;
+    this._variablesListDelegated = list;
+    list.addEventListener('click', (e) => this._handleVariablesListClick(e));
+    list.addEventListener('dblclick', (e) => this._handleVariablesListDblClick(e));
+    list.addEventListener('contextmenu', (e) => this._handleVariablesListContextMenu(e));
+  }
+
+  _variableRowFromEvent(e) {
+    const row = e.target?.closest?.('.lp-item');
+    if (!row || !row.dataset.varName) return null;
+    return row;
+  }
+
+  _handleVariablesListClick(e) {
+    const row = this._variableRowFromEvent(e);
+    if (!row) return;
+    const name = row.dataset.varName;
+    const rawValue = getVariableRaw(name);
+    if (e.target?.classList?.contains('lp-var-value')) {
+      e.stopPropagation();
+      this._inlineEditVariableValue(row, name, rawValue);
+      return;
+    }
+    const action = e.target?.dataset?.varAction;
+    if (action === 'edit') {
+      e.stopPropagation();
+      this._editVariableByPrompt(name, rawValue);
+    } else if (action === 'delete') {
+      e.stopPropagation();
+      this._deleteVariable(name);
+    }
+  }
+
+  _handleVariablesListDblClick(e) {
+    const row = this._variableRowFromEvent(e);
+    if (!row || !e.target?.classList?.contains('lp-var-name')) return;
+    e.stopPropagation();
+    const name = row.dataset.varName;
+    this._inlineEditVariableName(row, name, getVariableRaw(name));
+  }
+
+  _handleVariablesListContextMenu(e) {
+    const row = this._variableRowFromEvent(e);
+    if (!row) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const name = row.dataset.varName;
+    const rawValue = getVariableRaw(name);
+    showContextMenu(e.clientX, e.clientY, [
+      { type: 'item', label: 'Rename', icon: 'Edit', action: () => this._inlineEditVariableName(row, name, rawValue) },
+      { type: 'item', label: 'Edit Value', icon: '=', action: () => this._inlineEditVariableValue(row, name, rawValue) },
+      { type: 'separator' },
+      { type: 'item', label: 'Delete', icon: 'Delete', action: () => this._deleteVariable(name) },
+    ]);
+  }
+
+  async _editVariableByPrompt(name, rawValue) {
+    const val = await showPrompt({
+      title: 'Edit Variable',
+      message: 'Edit variable (name=value or name=formula):',
+      defaultValue: `${name}=${rawValue}`,
+    });
+    if (val === null || val === '') return;
+    const eqIdx = val.indexOf('=');
+    if (eqIdx <= 0) return;
+    const newName = val.substring(0, eqIdx).trim();
+    const valueStr = val.substring(eqIdx + 1).trim();
+    const num = parseFloat(valueStr);
+    if (!newName) return;
+    takeSnapshot();
+    if (newName !== name) this._renameVariableEverywhere(name, newName);
+    setVariable(newName, isNaN(num) ? valueStr : num);
+    state.scene.solve();
+    state.emit('change');
+    this._scheduleRender();
+  }
+
+  _deleteVariable(name) {
+    takeSnapshot();
+    removeVariable(name);
+    state.scene.solve();
+    state.emit('change');
+    this._scheduleRender();
+  }
+
+  _escapeHtml(value) {
+    return String(value).replace(/[&<>"']/g, (ch) => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;',
+    }[ch]));
   }
 
   /**
@@ -7157,6 +7302,8 @@ class App {
 
   _hasMeshHoles(geometry) {
     if (!geometry || !geometry.faces || geometry.faces.length === 0) return false;
+    const cached = this._meshHoleCache?.get?.(geometry);
+    if (cached !== undefined) return cached;
     const edgeCounts = new Map();
     const coordKey = (value) => (Math.abs(value) < 0.5e-5 ? 0 : value).toFixed(5);
     const vertexKey = (v) => `${coordKey(v.x)},${coordKey(v.y)},${coordKey(v.z)}`;
@@ -7177,7 +7324,9 @@ class App {
       if (count === 1) boundaryEdges++;
       else if (count > 2) nonManifoldEdges++;
     }
-    return boundaryEdges > 0 || nonManifoldEdges > 0;
+    const hasHoles = boundaryEdges > 0 || nonManifoldEdges > 0;
+    this._meshHoleCache?.set?.(geometry, hasHoles);
+    return hasHoles;
   }
 
   _isOriginPlaneVisible(planeName) {
@@ -10321,19 +10470,128 @@ class App {
   /**
    * Compute and display ghost preview for the current extrude mode parameters.
    */
-  async _updateExtrudePreview() {
-    if (!this._extrudeMode || !this._renderer3d) return;
-
-    const em = this._extrudeMode;
-    if (!em.sketchFeatureId || (em.extrudeType === 'distance' && em.distance <= 0)) {
-      this._renderer3d.clearGhostPreview();
-      this._renderer3d.clearExtrudeArrow();
-      this._extrudeHandleInfo = null;
-      this._scheduleRender();
+  _requestExtrudePreview() {
+    this._extrudePreviewQueued = true;
+    if (this._extrudePreviewFrame) return;
+    if (typeof requestAnimationFrame !== 'function') {
+      this._extrudePreviewFrame = 1;
+      Promise.resolve().then(() => {
+        this._extrudePreviewFrame = 0;
+        if (!this._extrudePreviewQueued) return;
+        this._extrudePreviewQueued = false;
+        this._updateExtrudePreview();
+      });
       return;
     }
+    this._extrudePreviewFrame = requestAnimationFrame(() => {
+      this._extrudePreviewFrame = 0;
+      if (!this._extrudePreviewQueued) return;
+      this._extrudePreviewQueued = false;
+      this._updateExtrudePreview();
+    });
+  }
 
+  _extrudePreviewCacheKey(em, sketchFeature) {
+    const sketch = sketchFeature?.sketch?.scene || sketchFeature?.sketch || null;
+    const counts = [
+      sketch?.segments?.length || 0,
+      sketch?.circles?.length || 0,
+      sketch?.arcs?.length || 0,
+      sketch?.splines?.length || 0,
+      sketch?.beziers?.length || 0,
+    ].join(',');
+    return JSON.stringify({
+      sketchFeatureId: em.sketchFeatureId,
+      counts,
+      direction: em.direction,
+      symmetric: em.symmetric,
+      extrudeType: em.extrudeType,
+      taper: !!em.taper,
+      taperAngle: em.taperAngle,
+      taperInward: !!em.taperInward,
+    });
+  }
+
+  _prepareCachedExtrudePreviewGeometry(cache, geometry, plane, distance, direction) {
+    if (!cache || !geometry?.faces || !plane?.normal || !Number.isFinite(distance)) return;
+    const seen = new Set();
+    const top = [];
+    const target = distance * direction;
+    for (const face of geometry.faces) {
+      for (const vertex of face.vertices || []) {
+        if (!vertex || seen.has(vertex)) continue;
+        seen.add(vertex);
+        const projection = (vertex.x - plane.origin.x) * plane.normal.x
+          + (vertex.y - plane.origin.y) * plane.normal.y
+          + (vertex.z - plane.origin.z) * plane.normal.z;
+        if (Math.abs(projection - target) > Math.max(1e-5, Math.abs(target) * 1e-7)) continue;
+        top.push({
+          vertex,
+          base: {
+            x: vertex.x - plane.normal.x * target,
+            y: vertex.y - plane.normal.y * target,
+            z: vertex.z - plane.normal.z * target,
+          },
+        });
+      }
+    }
+    cache.geometry = geometry;
+    cache.topVertices = top;
+    cache.previewPlane = plane;
+    cache.previewDirection = direction;
+  }
+
+  _updateCachedExtrudePreviewGeometry(cache, distance) {
+    if (!cache?.geometry || !cache.previewPlane?.normal || !Array.isArray(cache.topVertices)) return null;
+    const normal = cache.previewPlane.normal;
+    const target = distance * cache.previewDirection;
+    for (const item of cache.topVertices) {
+      item.vertex.x = item.base.x + normal.x * target;
+      item.vertex.y = item.base.y + normal.y * target;
+      item.vertex.z = item.base.z + normal.z * target;
+    }
+    for (const face of cache.geometry.faces || []) {
+      face.normal = this._calculatePreviewFaceNormal(face.vertices || []);
+    }
+    return cache.geometry;
+  }
+
+  _calculatePreviewFaceNormal(vertices) {
+    if (!Array.isArray(vertices) || vertices.length < 3) return { x: 0, y: 0, z: 1 };
+    const a = vertices[0];
+    const b = vertices[1];
+    const c = vertices[2];
+    const ux = b.x - a.x;
+    const uy = b.y - a.y;
+    const uz = b.z - a.z;
+    const vx = c.x - a.x;
+    const vy = c.y - a.y;
+    const vz = c.z - a.z;
+    const nx = uy * vz - uz * vy;
+    const ny = uz * vx - ux * vz;
+    const nz = ux * vy - uy * vx;
+    const len = Math.hypot(nx, ny, nz);
+    return len > 1e-12 ? { x: nx / len, y: ny / len, z: nz / len } : { x: 0, y: 0, z: 1 };
+  }
+
+  async _updateExtrudePreview() {
+    if (!this._extrudeMode || !this._renderer3d) return;
+    if (this._extrudePreviewRunning) {
+      this._requestExtrudePreview();
+      return;
+    }
+    this._extrudePreviewRunning = true;
+
+    const em = this._extrudeMode;
     try {
+      if (!em.sketchFeatureId || (em.extrudeType === 'distance' && em.distance <= 0)) {
+        this._renderer3d.clearGhostPreview();
+        this._renderer3d.clearExtrudeArrow();
+        this._extrudeHandleInfo = null;
+        this._scheduleRender();
+        return;
+      }
+
       const part = this._partManager.getPart();
       if (!part) return;
 
@@ -10346,8 +10604,15 @@ class App {
         return;
       }
 
-      // Execute sketch to get profiles
-      const sketchResult = sketchFeature.execute({ results: {}, tree: part.featureTree });
+      const cacheKey = this._extrudePreviewCacheKey(em, sketchFeature);
+      let cache = this._extrudePreviewCache;
+      if (!cache || cache.key !== cacheKey) {
+        const sketchResult = sketchFeature.execute({ results: {}, tree: part.featureTree });
+        cache = { key: cacheKey, sketchResult };
+        this._extrudePreviewCache = cache;
+      }
+
+      const sketchResult = cache.sketchResult;
       if (!sketchResult || !sketchResult.profiles || sketchResult.profiles.length === 0) {
         this._renderer3d.clearGhostPreview();
         this._renderer3d.clearExtrudeArrow();
@@ -10356,17 +10621,29 @@ class App {
         return;
       }
 
-      // Use a temporary ExtrudeFeature to generate geometry
-      const { ExtrudeFeature } = await import('./cad/ExtrudeFeature.js');
-      const tempExtrude = new ExtrudeFeature('_preview', em.sketchFeatureId, em.distance);
-      tempExtrude.direction = em.direction;
-      tempExtrude.symmetric = em.symmetric;
-      tempExtrude.extrudeType = em.extrudeType;
-      tempExtrude.taper = em.taper;
-      tempExtrude.taperAngle = em.taperAngle;
-      tempExtrude.taperInward = em.taperInward;
+      let geometry = !em.taper && em.extrudeType === 'distance'
+        ? this._updateCachedExtrudePreviewGeometry(cache, em.distance)
+        : null;
 
-      const geometry = tempExtrude.generateGeometry(sketchResult.profiles, sketchResult.plane);
+      // Use a temporary ExtrudeFeature to generate geometry
+      if (!geometry) {
+        const { ExtrudeFeature } = await import('./cad/ExtrudeFeature.js');
+        const tempExtrude = new ExtrudeFeature('_preview', em.sketchFeatureId, em.distance);
+        tempExtrude.direction = em.direction;
+        tempExtrude.symmetric = em.symmetric;
+        tempExtrude.extrudeType = em.extrudeType;
+        tempExtrude.taper = em.taper;
+        tempExtrude.taperAngle = em.taperAngle;
+        tempExtrude.taperInward = em.taperInward;
+
+        const profileGroups = tempExtrude.groupProfilesForExtrusion(sketchResult.profiles);
+        const previewGeometries = profileGroups.map((group) =>
+          tempExtrude.generateGeometry([group.outer], sketchResult.plane, group.holes, { previewOnly: true }));
+        geometry = this._combineExtrudePreviewGeometries(previewGeometries);
+        if (!em.taper && em.extrudeType === 'distance') {
+          this._prepareCachedExtrudePreviewGeometry(cache, geometry, sketchResult.plane, em.distance, em.direction);
+        }
+      }
       this._renderer3d.setGhostPreview(geometry);
 
       // Compute extrude handle position (centroid of first profile)
@@ -10404,7 +10681,23 @@ class App {
       this._renderer3d.clearExtrudeArrow();
       this._extrudeHandleInfo = null;
       this._scheduleRender();
+    } finally {
+      this._extrudePreviewRunning = false;
+      if (this._extrudePreviewQueued) {
+        this._requestExtrudePreview();
+      }
     }
+  }
+
+  _combineExtrudePreviewGeometries(geometries) {
+    const valid = (geometries || []).filter((geometry) => geometry && Array.isArray(geometry.faces));
+    if (valid.length === 0) return { vertices: [], faces: [], edges: [] };
+    if (valid.length === 1) return valid[0];
+    return {
+      vertices: valid.flatMap((geometry) => geometry.vertices || []),
+      faces: valid.flatMap((geometry) => geometry.faces || []),
+      edges: [],
+    };
   }
 
   /**
@@ -10524,6 +10817,12 @@ class App {
     this._extrudeHandleInfo = null;
     this._draggingExtrudeHandle = false;
     this._extrudeArrowHoveredState = false;
+    this._extrudePreviewCache = null;
+    this._extrudePreviewQueued = false;
+    if (this._extrudePreviewFrame) {
+      if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(this._extrudePreviewFrame);
+      this._extrudePreviewFrame = 0;
+    }
     const exitBtn = document.getElementById('btn-exit-extrude');
     if (exitBtn) exitBtn.style.display = 'none';
 

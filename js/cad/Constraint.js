@@ -28,6 +28,24 @@ export function getVariable(name) {
 }
 export function removeVariable(name) { _variables.delete(name); }
 export function getAllVariables() { return new Map(_variables); }
+export function resolveAllVariables(vars = _variables) {
+  const source = vars instanceof Map ? vars : new Map(Object.entries(vars || {}));
+  const memo = new Map();
+  const resolveName = (name, visiting = new Set()) => {
+    if (memo.has(name)) return memo.get(name);
+    if (visiting.has(name)) return NaN;
+    const raw = source.get(name);
+    if (raw === undefined) return NaN;
+    const value = typeof raw === 'number'
+      ? raw
+      : _evalExpression(raw, new Set([...visiting, name]), source, memo);
+    memo.set(name, value);
+    return value;
+  };
+  const resolved = new Map();
+  for (const name of source.keys()) resolved.set(name, resolveName(name));
+  return resolved;
+}
 export function clearVariables() { _variables.clear(); }
 export function serializeVariables() {
   const out = {};
@@ -79,7 +97,7 @@ function _resolveWithCycleCheck(raw, visiting) {
  * @param {string} expr - The expression to evaluate
  * @param {Set<string>} visiting - Set of variable names currently being resolved (for cycle detection)
  */
-function _evalExpression(expr, visiting = new Set()) {
+function _evalExpression(expr, visiting = new Set(), source = _variables, memo = null) {
   // Tokenize: numbers, identifiers, operators, parentheses
   const tokens = [];
   const re = /(\d+\.?\d*|\.\d+)|([a-zA-Z_][a-zA-Z0-9_]*)|([+\-*/()])/g;
@@ -145,12 +163,15 @@ function _evalExpression(expr, visiting = new Set()) {
     if (tok.type === 'var') {
       consume();
       const varName = tok.val;
+      if (memo && memo.has(varName)) return memo.get(varName);
       if (visiting.has(varName)) return NaN; // circular reference
-      const raw = _variables.get(varName);
+      const raw = source.get(varName);
       if (raw === undefined) return NaN;
       if (typeof raw === 'number') return raw;
       // It's a formula — resolve recursively
-      return _evalExpression(raw, new Set([...visiting, varName]));
+      const value = _evalExpression(raw, new Set([...visiting, varName]), source, memo);
+      if (memo) memo.set(varName, value);
+      return value;
     }
     return NaN;
   }

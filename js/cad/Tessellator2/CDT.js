@@ -23,9 +23,10 @@ const EPSILON = 1e-10;
  * @param {Array<{x:number,y:number}>} outerLoop - CCW outer boundary
  * @param {Array<Array<{x:number,y:number}>>} [holes=[]] - CW inner boundaries
  * @param {Array<{x:number,y:number}>} [steinerPoints=[]] - Optional interior points (no constraint edges)
+ * @param {{recoverBoundaryVertices?: boolean}} [options] - Optional controls for callers that only need visual fills
  * @returns {Array<[number,number,number]>} Triangle index triples into outerLoop+holes+steiner concatenation
  */
-export function constrainedTriangulate(outerLoop, holes = [], steinerPoints = []) {
+export function constrainedTriangulate(outerLoop, holes = [], steinerPoints = [], options = {}) {
   if (outerLoop.length < 3) return [];
   if (outerLoop.length === 3 && holes.length === 0 && steinerPoints.length === 0) return [[0, 1, 2]];
 
@@ -255,8 +256,10 @@ export function constrainedTriangulate(outerLoop, holes = [], steinerPoints = []
   // boundary points (e.g. curve samples projected onto a planar face).
   // When a constraint vertex is missing from all triangles, find the
   // constraint edge it lies on and split the adjacent triangle.
-  _recoverMissingBoundaryVertices(points, interior, outerLoop.length, holes);
-  _splitTriangulationEdgesAtBoundaryVertices(points, interior, outerLoop.length, holes);
+  if (options.recoverBoundaryVertices !== false) {
+    _recoverMissingBoundaryVertices(points, interior, outerLoop.length, holes);
+    _splitTriangulationEdgesAtBoundaryVertices(points, interior, outerLoop.length, holes);
+  }
 
   return interior;
 }

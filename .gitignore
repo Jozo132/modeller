@@ -17,3 +17,4 @@ NUL
 nul
 # Local-only audit tracker (contents explicitly marked "do not commit")
 CAD-KERNEL-AUDIT.md
+!**/sample-image-oh-yeah.png

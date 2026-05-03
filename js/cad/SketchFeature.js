@@ -415,26 +415,42 @@ function _classifyProfileNesting(profiles) {
     return;
   }
 
-  // Compute signed area and a representative interior point for each profile
+  // Compute signed area and representative interior samples for each profile.
+  // Use several inward-nudged edge midpoints because a single sample can land
+  // on a spline cusp or near another boundary in traced artwork.
   const meta = profiles.map((profile, idx) => {
     const pts = profile.points;
     let area = 0;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (let i = 0; i < pts.length; i++) {
       const j = (i + 1) % pts.length;
       area += pts[i].x * pts[j].y - pts[j].x * pts[i].y;
+      minX = Math.min(minX, pts[i].x);
+      minY = Math.min(minY, pts[i].y);
+      maxX = Math.max(maxX, pts[i].x);
+      maxY = Math.max(maxY, pts[i].y);
     }
     area *= 0.5;
-    // Use the midpoint of the first edge, nudged inward via the edge normal
-    const p0 = pts[0], p1 = pts[1 % pts.length];
-    const dx = p1.x - p0.x, dy = p1.y - p0.y;
-    const len = Math.sqrt(dx * dx + dy * dy) || 1;
-    // Inward normal depends on winding; for CCW (area>0) inward is to the right
-    const sign = area >= 0 ? 1 : -1;
-    const testPt = {
-      x: (p0.x + p1.x) / 2 + sign * dy / len * 1e-6,
-      y: (p0.y + p1.y) / 2 - sign * dx / len * 1e-6,
-    };
-    return { idx, absArea: Math.abs(area), testPt };
+    const diag = Math.hypot(maxX - minX, maxY - minY) || 1;
+    const eps = Math.max(diag * 1e-6, 1e-7);
+    const ccw = area >= 0;
+    const samples = [];
+    const step = Math.max(1, Math.floor(pts.length / 12));
+    for (let i = 0; i < pts.length; i += step) {
+      const p0 = pts[i];
+      const p1 = pts[(i + 1) % pts.length];
+      const dx = p1.x - p0.x, dy = p1.y - p0.y;
+      const len = Math.hypot(dx, dy);
+      if (len <= 1e-12) continue;
+      // CCW interior is left of each directed edge; CW interior is right.
+      const nx = ccw ? -dy / len : dy / len;
+      const ny = ccw ? dx / len : -dx / len;
+      samples.push({
+        x: (p0.x + p1.x) * 0.5 + nx * eps,
+        y: (p0.y + p1.y) * 0.5 + ny * eps,
+      });
+    }
+    return { idx, absArea: Math.abs(area), samples };
   });
 
   // For each profile, count how many other profiles contain its test point
@@ -445,7 +461,7 @@ function _classifyProfileNesting(profiles) {
     let bestParentArea = Infinity;
     for (const other of meta) {
       if (other.idx === m.idx) continue;
-      if (_pointInPolygon(m.testPt, profiles[other.idx].points)) {
+      if (m.samples.some((sample) => _pointInPolygon(sample, profiles[other.idx].points))) {
         depth++;
         if (other.absArea < bestParentArea) {
           bestParentArea = other.absArea;

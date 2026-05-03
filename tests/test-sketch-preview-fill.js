@@ -111,6 +111,19 @@ test('renderer preview fill subtracts circular holes from filled profiles', () =
   assert.strictEqual(pointCovered({ x: 25, y: 25 }, triangles), false, 'circular hole center should stay empty');
 });
 
+test('executed sketch profiles classify near-boundary holes with inward samples', () => {
+  const sketchFeature = new SketchFeature('NearBoundaryHoleProfile');
+  addRect(sketchFeature, 0, 0, 10, 10);
+  addRect(sketchFeature, 1, 5e-7, 2, 1);
+
+  const result = sketchFeature.execute({});
+  assert.strictEqual(result.profiles.length, 2, 'expected outer loop plus near-boundary inner loop');
+
+  const hole = result.profiles.find((profile) => profile.isHole);
+  assert.ok(hole, 'expected near-boundary inner loop to be classified as a hole');
+  assert.strictEqual(hole.nestingDepth, 1, 'near-boundary hole should have odd nesting depth');
+});
+
 test('sketch picking falls back to filled face triangles in part mode', () => {
   const picker = createFakeSketchPicker({
     triangles: [{
@@ -125,6 +138,22 @@ test('sketch picking falls back to filled face triangles in part mode', () => {
 
   const hit = WasmRenderer.prototype.pickSketch.call(picker, 50, 50);
   assert.deepStrictEqual(hit, { featureId: 'feature_sketch_face' });
+});
+
+test('sketch picking can ignore filled faces for outline-only selection', () => {
+  const picker = createFakeSketchPicker({
+    triangles: [{
+      featureId: 'feature_sketch_face',
+      triangles: [[
+        { x: -0.4, y: -0.4, z: 0 },
+        { x: 0.4, y: -0.4, z: 0 },
+        { x: 0, y: 0.4, z: 0 },
+      ]],
+    }],
+  });
+
+  const hit = WasmRenderer.prototype.pickSketch.call(picker, 50, 50, { includeFaces: false });
+  assert.strictEqual(hit, null);
 });
 
 test('sketch picking still prefers nearby edges over filled faces', () => {

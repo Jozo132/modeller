@@ -50,7 +50,9 @@ export function normalizeTraceOptions(options = {}) {
   const thresholdLevels = parseThresholdLevels(options.thresholdLevels ?? options.thresholds);
   const thresholdMode = options.thresholdMode === 'manual' || thresholdLevels.length > 0 ? 'manual' : 'auto';
   const detectionMode = options.detectionMode === 'edge' ? 'edge' : 'contour';
-  const curveMode = options.curveMode === 'spline' ? 'spline' : 'straight';
+  const curveMode = options.curveMode === 'spline' || options.curveMode === 'hybrid' || options.curveMode === 'fitting'
+    ? options.curveMode
+    : 'straight';
   return {
     minAlpha: Number.isFinite(options.minAlpha) ? Math.max(0, Math.min(255, options.minAlpha)) : 16,
     thresholdMode,
@@ -62,6 +64,8 @@ export function normalizeTraceOptions(options = {}) {
     minSpeckArea: Number.isFinite(options.minSpeckArea) ? Math.max(0, Math.round(options.minSpeckArea)) : 0,
     minArea: Number.isFinite(options.minArea) ? Math.max(0, options.minArea) : 8,
     simplifyTolerance: Number.isFinite(options.simplifyTolerance) ? Math.max(0, options.simplifyTolerance) : 1.25,
+    fitTolerance: Number.isFinite(options.fitTolerance) ? Math.max(0, options.fitTolerance) : 1.2,
+    fitMaxControls: Number.isFinite(options.fitMaxControls) ? Math.max(4, Math.round(options.fitMaxControls)) : 16,
     curveMode,
   };
 }

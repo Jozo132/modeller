@@ -74,19 +74,7 @@ export class ExtrudeFeature extends Feature {
     // Get the current solid (if any)
     let solid = this.getPreviousSolid(context);
 
-    // Group profiles: outer profiles (non-holes) carry their hole children.
-    // Each group is { outer: profile, holes: [profile, ...] }.
-    const profileGroups = [];
-    for (let i = 0; i < profiles.length; i++) {
-      if (profiles[i].isHole) continue; // holes are attached to their parent
-      const group = { outer: profiles[i], holes: [] };
-      if (profiles[i].holes) {
-        for (const hi of profiles[i].holes) {
-          group.holes.push(profiles[hi]);
-        }
-      }
-      profileGroups.push(group);
-    }
+    const profileGroups = this.groupProfilesForExtrusion(profiles);
 
     const profileGeometries = profileGroups.map((group) =>
       this.generateGeometry([group.outer], plane, group.holes));
@@ -142,6 +130,29 @@ export class ExtrudeFeature extends Feature {
   }
 
   /**
+   * Group extracted sketch profiles into independent extrusion regions.
+   * Outer/island profiles become bodies; odd-depth profiles become cap holes
+   * attached to their direct parent.
+   * @param {Array<Object>} profiles
+   * @returns {Array<{outer: Object, holes: Object[]}>}
+   */
+  groupProfilesForExtrusion(profiles) {
+    const groups = [];
+    if (!Array.isArray(profiles)) return groups;
+    for (let i = 0; i < profiles.length; i++) {
+      const profile = profiles[i];
+      if (!profile || profile.isHole) continue;
+      const group = { outer: profile, holes: [] };
+      for (const hi of profile.holes || []) {
+        const hole = profiles[hi];
+        if (hole) group.holes.push(hole);
+      }
+      groups.push(group);
+    }
+    return groups;
+  }
+
+  /**
    * Union a new body into an existing solid (used for multi-profile merging).
    */
   _unionBody(solid, geometry) {
@@ -159,14 +170,62 @@ export class ExtrudeFeature extends Feature {
       }
       return { geometry };
     }
+    if (this.operation === 'new') {
+      return this._appendBodyGeometry(solid, geometry);
+    }
     try {
       const resultGeom = booleanOp(solid.geometry, geometry, 'union',
         null, { sourceFeatureId: this.id });
       return { geometry: resultGeom };
     } catch (err) {
       console.warn('Multi-profile union failed:', err.message);
+      if (this.operation === 'new') {
+        return this._appendBodyGeometry(solid, geometry);
+      }
       return solid;
     }
+  }
+
+  _appendBodyGeometry(solid, geometry) {
+    if (!solid?.geometry) return { geometry };
+    if (!geometry) return solid;
+
+    const combined = {
+      ...solid.geometry,
+      vertices: [
+        ...(solid.geometry.vertices || []),
+        ...(geometry.vertices || []),
+      ],
+      faces: [
+        ...(solid.geometry.faces || []),
+        ...(geometry.faces || []),
+      ],
+    };
+
+    if (solid.geometry.topoBody && geometry.topoBody) {
+      const topoBody = TopoBody.deserialize(solid.geometry.topoBody.serialize());
+      const appendedBody = TopoBody.deserialize(geometry.topoBody.serialize());
+      for (const shell of appendedBody.shells || []) topoBody.addShell(shell);
+      deriveEdgeAndVertexHashes(topoBody);
+      combined.topoBody = topoBody;
+    } else {
+      combined.topoBody = solid.geometry.topoBody || geometry.topoBody || null;
+    }
+
+    for (const face of combined.faces) {
+      if (!face.shared) face.shared = { sourceFeatureId: this.id };
+    }
+    const edgeResult = computeFeatureEdges(combined.faces);
+    const hasNativeCurves = combined.nativeExtrude || geometry.nativeExtrude || solid.geometry.nativeExtrude;
+    combined.edges = hasNativeCurves
+      ? _augmentNativeCurvedSelectableEdges(edgeResult.edges, combined.faces)
+      : edgeResult.edges;
+    combined.paths = hasNativeCurves
+      ? chainEdgePaths(combined.edges)
+      : edgeResult.paths;
+    combined.visualEdges = edgeResult.visualEdges;
+    delete combined.nativeExtrude;
+    return { geometry: combined };
   }
 
   /**
@@ -352,7 +411,7 @@ export class ExtrudeFeature extends Feature {
    * @param {Array} [holes] - Hole profiles to subtract from the extrusion
    * @returns {Object} 3D geometry data
    */
-  generateGeometry(profiles, plane, holes = []) {
+  generateGeometry(profiles, plane, holes = [], options = {}) {
     const planeFrame = this.resolvePlaneFrame(plane);
     const resolvedPlane = planeFrame.plane;
     const geometry = {
@@ -580,6 +639,10 @@ export class ExtrudeFeature extends Feature {
       }
     }
     
+    if (options.previewOnly === true) {
+      return geometry;
+    }
+
     // Attach exact B-Rep alongside mesh
     try {
       geometry.topoBody = this.buildExactBrep(profiles, resolvedPlane, extrusionVector, planeFrame, baseOffset, tipOffset, holes);
@@ -607,6 +670,7 @@ export class ExtrudeFeature extends Feature {
     if (this.operation !== 'new') return null;
     if (this.symmetric || this.taper || this.extrudeType !== 'distance') return null;
     if (!topoBody) return null;
+    if (Array.isArray(holes) && holes.length > 0) return null;
     if (!this._nativeProfilesAreSupported(profiles, holes)) return null;
 
     const nativeVector = {

@@ -23,6 +23,8 @@ const DEFAULT_TRACE_SETTINGS = Object.freeze({
   minArea: 12,
   simplifyTolerance: 1.5,
   curveMode: 'straight',
+  fitTolerance: 1.2,
+  fitMaxControls: 16,
   detectionMode: 'contour',
   edgeThreshold: 72,
 });
@@ -104,7 +106,9 @@ function cloneTraceSettings(settings) {
     minSpeckArea: Number.isFinite(source.minSpeckArea) ? Math.max(0, Math.round(source.minSpeckArea)) : DEFAULT_TRACE_SETTINGS.minSpeckArea,
     minArea: Number.isFinite(source.minArea) ? Math.max(0, source.minArea) : DEFAULT_TRACE_SETTINGS.minArea,
     simplifyTolerance: Number.isFinite(source.simplifyTolerance) ? Math.max(0, source.simplifyTolerance) : DEFAULT_TRACE_SETTINGS.simplifyTolerance,
-    curveMode: source.curveMode === 'spline' ? 'spline' : DEFAULT_TRACE_SETTINGS.curveMode,
+    curveMode: source.curveMode === 'spline' || source.curveMode === 'hybrid' || source.curveMode === 'fitting' ? source.curveMode : DEFAULT_TRACE_SETTINGS.curveMode,
+    fitTolerance: Number.isFinite(source.fitTolerance) ? Math.max(0, source.fitTolerance) : DEFAULT_TRACE_SETTINGS.fitTolerance,
+    fitMaxControls: Number.isFinite(source.fitMaxControls) ? Math.max(4, Math.round(source.fitMaxControls)) : DEFAULT_TRACE_SETTINGS.fitMaxControls,
     detectionMode: source.detectionMode === 'edge' ? 'edge' : DEFAULT_TRACE_SETTINGS.detectionMode,
     edgeThreshold: Number.isFinite(source.edgeThreshold) ? Math.max(1, Math.min(255, Math.round(source.edgeThreshold))) : DEFAULT_TRACE_SETTINGS.edgeThreshold,
   };
