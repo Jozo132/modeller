@@ -232,6 +232,99 @@ test('applied perspective keeps the full image visible outside the corrected gri
   ]);
 });
 
+test('applied crop shrinks the visible quad without changing the corrected warp quad', () => {
+  const image = new ImagePrimitive('data:image/png;base64,HHCROP', 0, 0, 100, 50, {
+    perspectiveEnabled: true,
+    gridWidth: 200,
+    gridHeight: 100,
+  });
+
+  image.beginPerspectiveEdit();
+  image.setPerspectiveDraftPoint(0, 0.2, 0.1);
+  image.setPerspectiveDraftPoint(1, 0.8, 0.15);
+  image.setPerspectiveDraftPoint(2, 0.72, 0.88);
+  image.setPerspectiveDraftPoint(3, 0.24, 0.84);
+  image.applyPerspectiveEdit({
+    targetWidth: image.gridWidth,
+    targetHeight: image.gridHeight,
+    moveToOrigin: true,
+    placeOnGrid: true,
+  });
+
+  const warpQuad = image.getWarpWorldQuad();
+  image.setCropRect({ x: 12, y: 18, width: 90, height: 40 });
+
+  assert.deepStrictEqual(image.getWorldQuad(), [
+    { x: 12, y: 18 },
+    { x: 102, y: 18 },
+    { x: 102, y: 58 },
+    { x: 12, y: 58 },
+  ]);
+  assert.deepStrictEqual(image.getCropLocalQuad(), [
+    { x: 12, y: 18 },
+    { x: 102, y: 18 },
+    { x: 102, y: 58 },
+    { x: 12, y: 58 },
+  ]);
+  assert.deepStrictEqual(image.getWarpWorldQuad(), warpQuad);
+});
+
+test('crop state survives scene serialization', () => {
+  const scene = new Scene();
+  const image = scene.addImage('data:image/png;base64,SERIAL', 0, 0, 100, 50, {
+    perspectiveEnabled: true,
+    gridWidth: 200,
+    gridHeight: 100,
+  });
+
+  image.beginPerspectiveEdit();
+  image.setPerspectiveDraftPoint(0, 0.2, 0.1);
+  image.setPerspectiveDraftPoint(1, 0.8, 0.15);
+  image.setPerspectiveDraftPoint(2, 0.72, 0.88);
+  image.setPerspectiveDraftPoint(3, 0.24, 0.84);
+  image.applyPerspectiveEdit({
+    targetWidth: image.gridWidth,
+    targetHeight: image.gridHeight,
+    moveToOrigin: true,
+    placeOnGrid: true,
+  });
+  image.setCropRect({ x: 10, y: 12, width: 140, height: 56 });
+
+  const restored = Scene.deserialize(scene.serialize()).images[0];
+  assert.deepStrictEqual(restored.getCropRect(), { x: 10, y: 12, width: 140, height: 56 });
+  assert.deepStrictEqual(restored.getWorldQuad(), [
+    { x: 10, y: 12 },
+    { x: 150, y: 12 },
+    { x: 150, y: 68 },
+    { x: 10, y: 68 },
+  ]);
+});
+
+test('full-grid crop remains an explicit crop state', () => {
+  const image = new ImagePrimitive('data:image/png;base64,FULLGRID', 0, 0, 100, 50, {
+    perspectiveEnabled: true,
+    gridWidth: 200,
+    gridHeight: 100,
+    perspectiveOutputQuad: [
+      { x: -20, y: -10 },
+      { x: 220, y: -8 },
+      { x: 210, y: 112 },
+      { x: -12, y: 105 },
+    ],
+  });
+
+  image.setCropRect({ x: 0, y: 0, width: 200, height: 100 });
+
+  assert.strictEqual(image.hasCrop(), true);
+  assert.deepStrictEqual(image.getCropRect(), { x: 0, y: 0, width: 200, height: 100 });
+  assert.deepStrictEqual(image.getWorldQuad(), [
+    { x: 0, y: 0 },
+    { x: 200, y: 0 },
+    { x: 200, y: 100 },
+    { x: 0, y: 100 },
+  ]);
+});
+
 test('re-editing applied perspective restores the pre-apply image ratio and guide mapping', () => {
   const image = new ImagePrimitive('data:image/png;base64,IIII', 0, 0, 100, 50, {
     perspectiveEnabled: true,

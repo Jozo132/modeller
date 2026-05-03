@@ -14,6 +14,19 @@ const DEFAULT_SOURCE_QUAD = Object.freeze([
   { u: 0, v: 1 },
 ]);
 
+const DEFAULT_TRACE_SETTINGS = Object.freeze({
+  thresholdMode: 'auto',
+  threshold: 127,
+  thresholdLevels: '',
+  invert: false,
+  minSpeckArea: 8,
+  minArea: 12,
+  simplifyTolerance: 1.5,
+  curveMode: 'straight',
+  detectionMode: 'contour',
+  edgeThreshold: 72,
+});
+
 function fullSourceQuad() {
   return DEFAULT_SOURCE_QUAD.map((point) => ({ ...point }));
 }
@@ -57,6 +70,20 @@ function cloneOptionalQuad(quad) {
   }));
 }
 
+function cloneCropRect(rect) {
+  if (!rect || typeof rect !== 'object') {
+    return null;
+  }
+  const x = Number.isFinite(rect.x) ? rect.x : 0;
+  const y = Number.isFinite(rect.y) ? rect.y : 0;
+  const width = Number.isFinite(rect.width) ? rect.width : 0;
+  const height = Number.isFinite(rect.height) ? rect.height : 0;
+  if (width <= 1e-9 || height <= 1e-9) {
+    return null;
+  }
+  return { x, y, width, height };
+}
+
 function cloneSourceQuad(quad) {
   if (Array.isArray(quad) && quad.length === 4) {
     return quad.map((point) => ({
@@ -65,6 +92,22 @@ function cloneSourceQuad(quad) {
     }));
   }
   return DEFAULT_SOURCE_QUAD.map((point) => ({ ...point }));
+}
+
+function cloneTraceSettings(settings) {
+  const source = settings && typeof settings === 'object' ? settings : {};
+  return {
+    thresholdMode: source.thresholdMode === 'manual' ? 'manual' : DEFAULT_TRACE_SETTINGS.thresholdMode,
+    threshold: Number.isFinite(source.threshold) ? Math.max(0, Math.min(255, Math.round(source.threshold))) : DEFAULT_TRACE_SETTINGS.threshold,
+    thresholdLevels: typeof source.thresholdLevels === 'string' ? source.thresholdLevels : DEFAULT_TRACE_SETTINGS.thresholdLevels,
+    invert: source.invert === true,
+    minSpeckArea: Number.isFinite(source.minSpeckArea) ? Math.max(0, Math.round(source.minSpeckArea)) : DEFAULT_TRACE_SETTINGS.minSpeckArea,
+    minArea: Number.isFinite(source.minArea) ? Math.max(0, source.minArea) : DEFAULT_TRACE_SETTINGS.minArea,
+    simplifyTolerance: Number.isFinite(source.simplifyTolerance) ? Math.max(0, source.simplifyTolerance) : DEFAULT_TRACE_SETTINGS.simplifyTolerance,
+    curveMode: source.curveMode === 'spline' ? 'spline' : DEFAULT_TRACE_SETTINGS.curveMode,
+    detectionMode: source.detectionMode === 'edge' ? 'edge' : DEFAULT_TRACE_SETTINGS.detectionMode,
+    edgeThreshold: Number.isFinite(source.edgeThreshold) ? Math.max(1, Math.min(255, Math.round(source.edgeThreshold))) : DEFAULT_TRACE_SETTINGS.edgeThreshold,
+  };
 }
 
 function pointInPolygon(px, py, polygon) {
@@ -121,14 +164,29 @@ export class ImagePrimitive extends Primitive {
     this.gridCellsY = normalizeCellCount(options.gridCellsY, 3);
     this.quad = cloneQuad(options.quad, this.width, this.height);
     this.sourceQuad = cloneSourceQuad(options.sourceQuad);
+    this.cropRect = cloneCropRect(options.cropRect);
+    this.traceSettings = cloneTraceSettings(options.traceSettings);
     this.perspectiveEditQuad = cloneOptionalQuad(options.perspectiveEditQuad);
     this.perspectiveOutputQuad = cloneOptionalQuad(options.perspectiveOutputQuad);
     this._perspectiveEditing = false;
     this._perspectiveDraftQuad = null;
+    this._clampCropRectToGrid();
   }
 
   static fullSourceQuad() {
     return fullSourceQuad();
+  }
+
+  static defaultTraceSettings() {
+    return cloneTraceSettings(DEFAULT_TRACE_SETTINGS);
+  }
+
+  getTraceSettings() {
+    return cloneTraceSettings(this.traceSettings);
+  }
+
+  setTraceSettings(settings) {
+    this.traceSettings = cloneTraceSettings({ ...this.traceSettings, ...(settings || {}) });
   }
 
   isPerspectiveEditing() {
@@ -201,12 +259,17 @@ export class ImagePrimitive extends Primitive {
     this.perspectiveOutputQuad = this.perspectiveEnabled
       ? this.buildPerspectiveOutputQuad(this.sourceQuad, { width: targetWidth, height: targetHeight })
       : null;
+    if (!this.perspectiveEnabled) {
+      this.cropRect = null;
+    }
+    this._clampCropRectToGrid();
     this.cancelPerspectiveEdit();
   }
 
   resetPerspectiveCorrection() {
     this.sourceQuad = fullSourceQuad();
     this.perspectiveEnabled = false;
+    this.cropRect = null;
     this.perspectiveEditQuad = null;
     this.perspectiveOutputQuad = null;
     this.cancelPerspectiveEdit();
@@ -227,6 +290,7 @@ export class ImagePrimitive extends Primitive {
       this.y = 0;
     }
     this.resetLocalQuad(targetWidth, targetHeight);
+    this._clampCropRectToGrid();
   }
 
   resetLocalQuad(width = this.width, height = this.height) {
@@ -281,7 +345,60 @@ export class ImagePrimitive extends Primitive {
     return DEFAULT_SOURCE_QUAD.map((point, index) => applyProjectiveMatrix(matrix, point.u, point.v) || targetQuad[index]);
   }
 
-  getDisplayLocalQuad() {
+  _clampCropRectToGrid() {
+    if (!this.cropRect) return;
+    const maxWidth = Math.max(0.01, Number.isFinite(this.gridWidth) ? this.gridWidth : this.width);
+    const maxHeight = Math.max(0.01, Number.isFinite(this.gridHeight) ? this.gridHeight : this.height);
+    const minX = Math.max(0, Math.min(maxWidth, this.cropRect.x));
+    const minY = Math.max(0, Math.min(maxHeight, this.cropRect.y));
+    const maxX = Math.max(minX, Math.min(maxWidth, minX + this.cropRect.width));
+    const maxY = Math.max(minY, Math.min(maxHeight, minY + this.cropRect.height));
+    const width = maxX - minX;
+    const height = maxY - minY;
+    if (width <= 1e-9 || height <= 1e-9) {
+      this.cropRect = null;
+      return;
+    }
+    this.cropRect = { x: minX, y: minY, width, height };
+  }
+
+  setCropRect(rect) {
+    this.cropRect = cloneCropRect(rect);
+    this._clampCropRectToGrid();
+  }
+
+  resetCrop() {
+    this.cropRect = null;
+  }
+
+  getCropRect() {
+    if (!this.cropRect) {
+      return null;
+    }
+    if (!this.perspectiveEnabled || this._perspectiveEditing) {
+      return null;
+    }
+    return cloneCropRect(this.cropRect);
+  }
+
+  hasCrop() {
+    return !!this.getCropRect();
+  }
+
+  getCropLocalQuad() {
+    const cropRect = this.getCropRect();
+    if (!cropRect) {
+      return null;
+    }
+    return [
+      { x: cropRect.x, y: cropRect.y },
+      { x: cropRect.x + cropRect.width, y: cropRect.y },
+      { x: cropRect.x + cropRect.width, y: cropRect.y + cropRect.height },
+      { x: cropRect.x, y: cropRect.y + cropRect.height },
+    ];
+  }
+
+  getWarpLocalQuad() {
     if (this._perspectiveEditing && this.perspectiveEditQuad) {
       return cloneOptionalQuad(this.perspectiveEditQuad);
     }
@@ -289,6 +406,14 @@ export class ImagePrimitive extends Primitive {
       return cloneOptionalQuad(this.perspectiveOutputQuad);
     }
     return this.getLocalQuad();
+  }
+
+  getDisplayLocalQuad() {
+    const cropQuad = this.getCropLocalQuad();
+    if (cropQuad) {
+      return cropQuad;
+    }
+    return this.getWarpLocalQuad();
   }
 
   _getEditingDisplayQuad() {
@@ -301,11 +426,11 @@ export class ImagePrimitive extends Primitive {
     return this.quad.map((point) => ({ x: point.x, y: point.y }));
   }
 
-  getWorldQuad() {
+  _transformLocalQuadToWorld(quad) {
     const angle = (this.rotation * Math.PI) / 180;
     const cos = Math.cos(angle);
     const sin = Math.sin(angle);
-    return this.getDisplayLocalQuad().map((point) => {
+    return quad.map((point) => {
       const sx = point.x * this.scaleX;
       const sy = point.y * this.scaleY;
       return {
@@ -313,6 +438,23 @@ export class ImagePrimitive extends Primitive {
         y: this.y + sx * sin + sy * cos,
       };
     });
+  }
+
+  getWorldQuad() {
+    return this._transformLocalQuadToWorld(this.getDisplayLocalQuad());
+  }
+
+  getWarpWorldQuad() {
+    return this._transformLocalQuadToWorld(this.getWarpLocalQuad());
+  }
+
+  getCropWorldQuad() {
+    const cropQuad = this.getCropLocalQuad();
+    return cropQuad ? this._transformLocalQuadToWorld(cropQuad) : null;
+  }
+
+  mapLocalPoint(x, y) {
+    return this._transformLocalQuadToWorld([{ x, y }])[0];
   }
 
   mapNormalizedPoint(u, v) {
@@ -435,6 +577,8 @@ export class ImagePrimitive extends Primitive {
       gridCellsX: this.gridCellsX,
       gridCellsY: this.gridCellsY,
       quad: this.quad.map((point) => ({ x: point.x, y: point.y })),
+      cropRect: this.cropRect ? { ...this.cropRect } : null,
+      traceSettings: this.getTraceSettings(),
       perspectiveEditQuad: this.perspectiveEditQuad ? this.perspectiveEditQuad.map((point) => ({ x: point.x, y: point.y })) : null,
       perspectiveOutputQuad: this.perspectiveOutputQuad ? this.perspectiveOutputQuad.map((point) => ({ x: point.x, y: point.y })) : null,
       sourceQuad: this.sourceQuad.map((point) => ({ u: point.u, v: point.v })),

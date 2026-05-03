@@ -38,10 +38,14 @@ import {
 import { union } from './cad/Operations.js';
 import { motionAnalysis } from './motion.js';
 import { setFlag } from './featureFlags.js';
+import { traceImageDataContours } from './image/trace-raster.js';
+import { PPoint } from './cad/Point.js';
+import { PSegment } from './cad/Segment.js';
+import { PSpline } from './cad/SplinePrimitive.js';
 import {
   SelectTool, LineTool, RectangleTool, CircleTool,
   ArcTool, PolylineTool, SplineTool, BezierTool, TextTool, DimensionTool,
-  MoveTool, CopyTool,
+  MoveTool, CopyTool, TraceImageTool,
   TrimTool, SplitTool, DisconnectTool, UnionTool,
   CoincidentTool, HorizontalTool, VerticalTool,
   ParallelTool, PerpendicularTool, DistanceConstraintTool,
@@ -73,6 +77,7 @@ const IMAGE_PROPERTY_SECTIONS = [
   { key: 'transform', label: 'Transform' },
   { key: 'appearance', label: 'Appearance' },
   { key: 'perspective', label: 'Perspective' },
+  { key: 'trace', label: 'Trace' },
 ];
 
 function escapeHtml(value) {
@@ -221,6 +226,7 @@ class App {
       dimension:     new DimensionTool(this),
       move:          new MoveTool(this),
       copy:          new CopyTool(this),
+      trace_image:   new TraceImageTool(this),
       trim:          new TrimTool(this),
       split:         new SplitTool(this),
       disconnect:    new DisconnectTool(this),
@@ -2060,6 +2066,7 @@ class App {
           case 'tool-rect': this.setActiveTool('rectangle'); break;
           case 'tool-circle': this.setActiveTool('circle'); break;
           case 'tool-arc': this.setActiveTool('arc'); break;
+          case 'tool-trace-image': this.setActiveTool('trace_image'); break;
           case 'tool-chamfer': document.getElementById('btn-chamfer')?.click(); break;
           case 'tool-fillet': document.getElementById('btn-fillet')?.click(); break;
           case 'scene-manager': this._toggleSceneManager(); break;
@@ -2836,6 +2843,7 @@ class App {
       case 'arc': case 'a': this.setActiveTool('arc'); break;
       case 'polyline': case 'pl': case 'p': this.setActiveTool('polyline'); break;
       case 'text': case 't': this.setActiveTool('text'); break;
+      case 'trace': case 'trace-image': case 'trace_image': this.setActiveTool('trace_image'); break;
       case 'dim': case 'dimension': case 'd': this.setActiveTool('dimension'); break;
       case 'move': case 'm': this.setActiveTool('move'); break;
       case 'copy': case 'co': this.setActiveTool('copy'); break;
@@ -3810,6 +3818,7 @@ class App {
       selection = [perspectiveEditingImage];
     }
     if (!selection || selection.length === 0) {
+      this._clearImageTraceScenePreview();
       panel.innerHTML = '<p class="hint">Select an entity to view properties</p>';
       return;
     }
@@ -3818,9 +3827,11 @@ class App {
       if (e.type === 'image') {
         panel.innerHTML = this._renderImagePropertiesPanel(e);
         this._bindImagePropertyControls(panel, e);
+        this._updateImageTraceScenePreview(panel, e);
         this._scheduleRender();
         return;
       }
+      this._clearImageTraceScenePreview();
       const typeName = e.type.charAt(0).toUpperCase() + e.type.slice(1);
       let html = `<div class="prop-row"><label>Type</label><span>${typeName}</span></div>`;
       html += `<div class="prop-row"><label>Layer</label><span>${e.layer}</span></div>`;
@@ -3884,6 +3895,7 @@ class App {
 
       panel.innerHTML = html;
     } else {
+      this._clearImageTraceScenePreview();
       panel.innerHTML = `<p class="hint">${selection.length} entities selected</p>`;
     }
     this._scheduleRender();
@@ -3912,6 +3924,15 @@ class App {
     const hasAppliedPerspective = typeof image.hasAppliedPerspectiveCorrection === 'function'
       ? image.hasAppliedPerspectiveCorrection()
       : !!image.perspectiveEnabled;
+    const hasActiveCrop = typeof image.hasCrop === 'function' && image.hasCrop();
+    const cropRect = hasAppliedPerspective
+      ? ((typeof image.getCropRect === 'function' && image.getCropRect()) || {
+        x: 0,
+        y: 0,
+        width: image.gridWidth || image.width,
+        height: image.gridHeight || image.height,
+      })
+      : null;
     const perspectiveStatus = isPerspectiveEditing
       ? 'Draft edit active'
       : (hasAppliedPerspective ? 'Applied correction' : 'Original projection');
@@ -3937,9 +3958,10 @@ class App {
           <div class="prop-row"><label>Pixels</label><span>${pixels}</span></div>
           <div class="prop-row"><label>Displayed Size</label><span>${displayedSize}</span></div>
           <div class="prop-row"><label>Perspective</label><span>${perspectiveStatus}</span></div>
+          <div class="prop-row"><label>Crop</label><span>${hasAppliedPerspective ? (hasActiveCrop ? 'Corrected grid crop active' : 'Full corrected image') : 'Unavailable'}</span></div>
         </div>
         <hr/>
-        ${this._renderImagePropertySectionContent(image, currentSection.key, { perspectiveStatus, isPerspectiveEditing, hasAppliedPerspective })}
+        ${this._renderImagePropertySectionContent(image, currentSection.key, { perspectiveStatus, isPerspectiveEditing, hasAppliedPerspective, hasActiveCrop, cropRect })}
       </div>
     `;
   }
@@ -3975,11 +3997,40 @@ class App {
       `;
     }
 
+    if (sectionKey === 'trace') {
+      const trace = typeof image.getTraceSettings === 'function' ? image.getTraceSettings() : (image.traceSettings || {});
+      const thresholdMode = trace.thresholdMode === 'manual' ? 'manual' : 'auto';
+      const detectionMode = trace.detectionMode === 'edge' ? 'edge' : 'contour';
+      const curveMode = trace.curveMode === 'spline' ? 'spline' : 'straight';
+      return `
+        <div id="prop-image-trace-stats" class="image-trace-stats">Scene preview pending</div>
+        <div class="prop-row"><label>Detect</label><select id="prop-image-trace-detection"><option value="contour" ${detectionMode === 'contour' ? 'selected' : ''}>Contour</option><option value="edge" ${detectionMode === 'edge' ? 'selected' : ''}>Edge</option></select></div>
+        <div class="prop-row"><label>Trace As</label><select id="prop-image-trace-curve"><option value="straight" ${curveMode === 'straight' ? 'selected' : ''}>Straight</option><option value="spline" ${curveMode === 'spline' ? 'selected' : ''}>Spline</option></select></div>
+        <div class="prop-row"><label>Threshold</label><select id="prop-image-trace-threshold-mode"><option value="auto" ${thresholdMode === 'auto' ? 'selected' : ''}>Auto</option><option value="manual" ${thresholdMode === 'manual' ? 'selected' : ''}>Manual</option></select></div>
+        <div class="prop-row"><label>Level</label><input id="prop-image-trace-threshold" type="number" min="0" max="255" step="1" value="${Number.isFinite(trace.threshold) ? trace.threshold : 127}" /></div>
+        <div class="prop-row"><label>Levels</label><input id="prop-image-trace-levels" type="text" value="${escapeHtml(trace.thresholdLevels || '')}" placeholder="64,128,192" /></div>
+        <div class="prop-row"><label>Invert</label><input id="prop-image-trace-invert" type="checkbox" ${trace.invert ? 'checked' : ''} /></div>
+        <div class="prop-row"><label>Speck Filter</label><input id="prop-image-trace-speck" type="number" min="0" step="1" value="${Number.isFinite(trace.minSpeckArea) ? trace.minSpeckArea : 8}" /></div>
+        <div class="prop-row"><label>Min Area</label><input id="prop-image-trace-min-area" type="number" min="0" step="1" value="${Number.isFinite(trace.minArea) ? trace.minArea : 12}" /></div>
+        <div class="prop-row"><label>Simplify</label><input id="prop-image-trace-simplify" type="number" min="0" step="0.1" value="${Number.isFinite(trace.simplifyTolerance) ? trace.simplifyTolerance : 1.5}" /></div>
+        <div class="prop-row"><label>Edge Level</label><input id="prop-image-trace-edge-threshold" type="number" min="1" max="255" step="1" value="${Number.isFinite(trace.edgeThreshold) ? trace.edgeThreshold : 72}" /></div>
+        <div class="image-props-actions">
+          <button id="prop-image-trace" type="button" class="app-modal-btn primary" ${context.isPerspectiveEditing ? 'disabled' : ''}>Trace To Path</button>
+        </div>
+      `;
+    }
+
     const startLabel = context.isPerspectiveEditing
       ? 'Editing In Sketch'
       : (context.hasAppliedPerspective ? 'Edit Applied Perspective' : 'Start Perspective Edit');
     const gridCellsX = Math.max(1, Math.round(image.gridCellsX || 3));
     const gridCellsY = Math.max(1, Math.round(image.gridCellsY || 3));
+    const cropRect = context.cropRect || {
+      x: 0,
+      y: 0,
+      width: image.gridWidth || image.width,
+      height: image.gridHeight || image.height,
+    };
 
     return `
       <div class="image-props-note">Drag the four gold handles in the sketch to place the source grid. The image stays on its original projection until you press Apply. Apply scales the corrected image to the grid width and height below, then anchors its bottom-left corner at the sketch origin.</div>
@@ -3999,7 +4050,120 @@ class App {
       <div class="image-props-actions">
         <button id="prop-image-rectify" type="button" class="app-modal-btn">Rectify To Grid @ Origin</button>
       </div>
+      <hr/>
+      <div class="image-props-note">Crop applies after perspective correction in corrected grid coordinates. Use Crop To Grid to clip away the outer image beyond the selected perspective frame.</div>
+      <div class="prop-row"><label>Crop X</label><input id="prop-image-crop-x" type="number" min="0" step="0.1" value="${cropRect.x}" ${context.hasAppliedPerspective && !context.isPerspectiveEditing ? '' : 'disabled'} /></div>
+      <div class="prop-row"><label>Crop Y</label><input id="prop-image-crop-y" type="number" min="0" step="0.1" value="${cropRect.y}" ${context.hasAppliedPerspective && !context.isPerspectiveEditing ? '' : 'disabled'} /></div>
+      <div class="prop-row"><label>Crop Width</label><input id="prop-image-crop-width" type="number" min="0.01" step="0.1" value="${cropRect.width}" ${context.hasAppliedPerspective && !context.isPerspectiveEditing ? '' : 'disabled'} /></div>
+      <div class="prop-row"><label>Crop Height</label><input id="prop-image-crop-height" type="number" min="0.01" step="0.1" value="${cropRect.height}" ${context.hasAppliedPerspective && !context.isPerspectiveEditing ? '' : 'disabled'} /></div>
+      <div class="image-props-actions">
+        <button id="prop-image-crop-grid" type="button" class="app-modal-btn" ${context.hasAppliedPerspective && !context.isPerspectiveEditing ? '' : 'disabled'}>Crop To Grid</button>
+        <button id="prop-image-reset-crop" type="button" class="app-modal-btn" ${context.hasAppliedPerspective && context.hasActiveCrop && !context.isPerspectiveEditing ? '' : 'disabled'}>Show Full Corrected Image</button>
+      </div>
     `;
+  }
+
+  _clearImageTraceScenePreview() {
+    if (this._imageTracePreviewImageId == null) return;
+    if (this.renderer) this.renderer.previewEntities = [];
+    this._imageTracePreviewImageId = null;
+    this._scheduleRender();
+  }
+
+  _updateImageTraceScenePreview(panel, image) {
+    const stats = panel.querySelector('#prop-image-trace-stats');
+    if (this._getImagePropertySection(image) !== 'trace') {
+      this._clearImageTraceScenePreview();
+      return;
+    }
+
+    const raster = this._renderer3d?.buildTraceImageRaster?.(image, { maxRasterSize: 768 });
+    if (!raster?.canvas) {
+      if (stats) stats.textContent = 'Image pixels not ready';
+      this._clearImageTraceScenePreview();
+      return;
+    }
+
+    const rasterCtx = raster.canvas.getContext('2d', { willReadFrequently: true }) || raster.canvas.getContext('2d');
+    if (!rasterCtx) {
+      if (stats) stats.textContent = 'Preview unavailable';
+      this._clearImageTraceScenePreview();
+      return;
+    }
+    const imageData = rasterCtx.getImageData(0, 0, raster.canvas.width, raster.canvas.height);
+    const traceSettings = typeof image.getTraceSettings === 'function' ? image.getTraceSettings() : (image.traceSettings || {});
+    const contours = traceImageDataContours(imageData.data, raster.canvas.width, raster.canvas.height, traceSettings);
+    const unitPerPixelX = raster.localRect.width / Math.max(1, raster.canvas.width);
+    const unitPerPixelY = raster.localRect.height / Math.max(1, raster.canvas.height);
+    const minSegmentLength = Math.max(unitPerPixelX, unitPerPixelY) * 0.35;
+    const previewEntities = [];
+    let pointCount = 0;
+
+    for (const contour of contours.slice(0, 300)) {
+      pointCount += contour.length;
+      const worldPoints = contour.map((point) => this._mapImageTracePoint(point, raster, image));
+      if (traceSettings.curveMode === 'spline') {
+        const spline = this._buildTracePreviewSpline(worldPoints, minSegmentLength);
+        if (spline) previewEntities.push(spline);
+      } else {
+        this._appendTracePreviewSegments(worldPoints, minSegmentLength, previewEntities);
+      }
+    }
+
+    if (this.renderer) this.renderer.previewEntities = previewEntities;
+    this._imageTracePreviewImageId = image.id;
+    this._scheduleRender();
+    if (stats) {
+      const capped = contours.length > 300 ? '300+' : String(contours.length);
+      stats.textContent = `${capped} contour${contours.length === 1 ? '' : 's'}, ${pointCount} points previewed in scene`;
+    }
+  }
+
+  _mapImageTracePoint(point, raster, image) {
+    const localX = raster.localRect.x + (point.x / Math.max(1, raster.canvas.width)) * raster.localRect.width;
+    const localY = raster.localRect.y + (1 - (point.y / Math.max(1, raster.canvas.height))) * raster.localRect.height;
+    return typeof image.mapLocalPoint === 'function'
+      ? image.mapLocalPoint(localX, localY)
+      : { x: image.x + localX, y: image.y + localY };
+  }
+
+  _appendTracePreviewSegments(points, minSegmentLength, entities) {
+    if (!Array.isArray(points) || points.length < 3) return;
+    const cleaned = this._cleanTracePreviewPoints(points, minSegmentLength * 0.25);
+    if (cleaned.length < 3) return;
+    for (let index = 0; index < cleaned.length; index++) {
+      const start = cleaned[index];
+      const end = cleaned[(index + 1) % cleaned.length];
+      if (Math.hypot(end.x - start.x, end.y - start.y) <= minSegmentLength) continue;
+      const segment = new PSegment(new PPoint(start.x, start.y), new PPoint(end.x, end.y));
+      segment.color = '#ffcc33';
+      entities.push(segment);
+    }
+  }
+
+  _buildTracePreviewSpline(points, minSegmentLength) {
+    if (!Array.isArray(points) || points.length < 3) return null;
+    const cleaned = this._cleanTracePreviewPoints(points, minSegmentLength);
+    if (cleaned.length < 3) return null;
+    const first = cleaned[0];
+    const last = cleaned[cleaned.length - 1];
+    if (Math.hypot(first.x - last.x, first.y - last.y) > minSegmentLength) {
+      cleaned.push({ ...first });
+    }
+    if (cleaned.length < 4) return null;
+    const spline = new PSpline(cleaned.map((point) => new PPoint(point.x, point.y)));
+    spline.color = '#ffcc33';
+    return spline;
+  }
+
+  _cleanTracePreviewPoints(points, minDistance) {
+    const cleaned = [];
+    for (const point of points) {
+      const previous = cleaned[cleaned.length - 1];
+      if (previous && Math.hypot(point.x - previous.x, point.y - previous.y) <= minDistance) continue;
+      cleaned.push(point);
+    }
+    return cleaned;
   }
 
   _bindImagePropertyControls(panel, image) {
@@ -4027,6 +4191,22 @@ class App {
         const value = parseInt(input.value, 10);
         if (!Number.isFinite(value)) return;
         commit(() => apply(value));
+      });
+    };
+    const bindTraceSetting = (selector, read) => {
+      const input = panel.querySelector(selector);
+      if (!input) return;
+      input.addEventListener('change', () => {
+        const update = read(input);
+        if (!update) return;
+        commit(() => {
+          if (typeof image.setTraceSettings === 'function') {
+            image.setTraceSettings(update);
+          } else {
+            image.traceSettings = { ...(image.traceSettings || {}), ...update };
+          }
+        }, false);
+        this._updateImageTraceScenePreview(panel, image);
       });
     };
 
@@ -4071,6 +4251,51 @@ class App {
     bindNumber('#prop-image-grid-height', (value) => { image.gridHeight = Math.max(0.01, value); });
     bindInteger('#prop-image-grid-cells-x', (value) => { image.gridCellsX = Math.max(1, Math.round(value)); });
     bindInteger('#prop-image-grid-cells-y', (value) => { image.gridCellsY = Math.max(1, Math.round(value)); });
+    bindTraceSetting('#prop-image-trace-detection', (input) => ({ detectionMode: input.value === 'edge' ? 'edge' : 'contour' }));
+    bindTraceSetting('#prop-image-trace-curve', (input) => ({ curveMode: input.value === 'spline' ? 'spline' : 'straight' }));
+    bindTraceSetting('#prop-image-trace-threshold-mode', (input) => ({ thresholdMode: input.value === 'manual' ? 'manual' : 'auto' }));
+    bindTraceSetting('#prop-image-trace-threshold', (input) => {
+      const value = parseFloat(input.value);
+      return Number.isFinite(value) ? { threshold: value } : null;
+    });
+    bindTraceSetting('#prop-image-trace-levels', (input) => ({ thresholdLevels: input.value.trim() }));
+    bindTraceSetting('#prop-image-trace-invert', (input) => ({ invert: input.checked }));
+    bindTraceSetting('#prop-image-trace-speck', (input) => {
+      const value = parseFloat(input.value);
+      return Number.isFinite(value) ? { minSpeckArea: value } : null;
+    });
+    bindTraceSetting('#prop-image-trace-min-area', (input) => {
+      const value = parseFloat(input.value);
+      return Number.isFinite(value) ? { minArea: value } : null;
+    });
+    bindTraceSetting('#prop-image-trace-simplify', (input) => {
+      const value = parseFloat(input.value);
+      return Number.isFinite(value) ? { simplifyTolerance: value } : null;
+    });
+    bindTraceSetting('#prop-image-trace-edge-threshold', (input) => {
+      const value = parseFloat(input.value);
+      return Number.isFinite(value) ? { edgeThreshold: value } : null;
+    });
+
+    const cropXInput = panel.querySelector('#prop-image-crop-x');
+    const cropYInput = panel.querySelector('#prop-image-crop-y');
+    const cropWidthInput = panel.querySelector('#prop-image-crop-width');
+    const cropHeightInput = panel.querySelector('#prop-image-crop-height');
+    const commitCropRect = () => {
+      if (!cropXInput || !cropYInput || !cropWidthInput || !cropHeightInput) return;
+      const x = parseFloat(cropXInput.value);
+      const y = parseFloat(cropYInput.value);
+      const width = parseFloat(cropWidthInput.value);
+      const height = parseFloat(cropHeightInput.value);
+      if (![x, y, width, height].every(Number.isFinite)) return;
+      commit(() => {
+        image.setCropRect({ x, y, width, height });
+      });
+    };
+    cropXInput?.addEventListener('change', commitCropRect);
+    cropYInput?.addEventListener('change', commitCropRect);
+    cropWidthInput?.addEventListener('change', commitCropRect);
+    cropHeightInput?.addEventListener('change', commitCropRect);
 
     panel.querySelectorAll('[data-image-stepper]').forEach((button) => {
       button.addEventListener('click', () => {
@@ -4155,6 +4380,38 @@ class App {
         commit(() => {
           image.resetPerspectiveCorrection();
         });
+      });
+    }
+
+    const cropGridBtn = panel.querySelector('#prop-image-crop-grid');
+    if (cropGridBtn) {
+      cropGridBtn.addEventListener('click', () => {
+        commit(() => {
+          image.setCropRect({
+            x: 0,
+            y: 0,
+            width: image.gridWidth || image.width,
+            height: image.gridHeight || image.height,
+          });
+        });
+        this.setStatus('Corrected image cropped to the perspective grid bounds.');
+      });
+    }
+
+    const resetCropBtn = panel.querySelector('#prop-image-reset-crop');
+    if (resetCropBtn) {
+      resetCropBtn.addEventListener('click', () => {
+        commit(() => {
+          image.resetCrop();
+        });
+        this.setStatus('Corrected image crop cleared.');
+      });
+    }
+
+    const traceImageBtn = panel.querySelector('#prop-image-trace');
+    if (traceImageBtn) {
+      traceImageBtn.addEventListener('click', () => {
+        this.setActiveTool('trace_image');
       });
     }
   }

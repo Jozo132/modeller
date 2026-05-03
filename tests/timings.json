@@ -88,6 +88,7 @@
     "test-brep-topology.js": 0.032,
     "test-history-cbrep-checkpoints.js": 0.019,
     "test-toolkit.js": 0.018,
+    "test-trace-raster.js": 0.017,
     "test-dirty-face-tracking.js": 0.012,
     "test-recalculate-handle-churn.js": 0.011
 }

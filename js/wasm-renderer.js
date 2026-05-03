@@ -247,6 +247,16 @@ function _transformSourceTriangleToDest(ctx, source, srcTri, dstTri) {
   ctx.restore();
 }
 
+function _traceQuadPath(ctx, quad) {
+  if (!ctx || !Array.isArray(quad) || quad.length === 0) return;
+  ctx.beginPath();
+  ctx.moveTo(quad[0].x, quad[0].y);
+  for (let index = 1; index < quad.length; index++) {
+    ctx.lineTo(quad[index].x, quad[index].y);
+  }
+  ctx.closePath();
+}
+
 function _isIdentitySourceQuad(sourceQuad) {
   const base = [
     { u: 0, v: 0 },
@@ -2158,23 +2168,24 @@ export class WasmRenderer {
       previewEntities.forEach((entity) => {
         if (!entity) return;
         const flags = F_VISIBLE | F_PREVIEW;
+        const [r, g, b, a] = parseColor(entity.color || '#ffcc33');
         if (entity.type === 'segment' && entity.p1 && entity.p2) {
-          wasm.addEntitySegment(entity.p1.x, entity.p1.y, entity.p2.x, entity.p2.y, flags, 0, 0.749, 1, 1);
+          wasm.addEntitySegment(entity.p1.x, entity.p1.y, entity.p2.x, entity.p2.y, flags, r, g, b, a);
         } else if (entity.type === 'circle' && entity.center) {
-          wasm.addEntityCircle(entity.center.x, entity.center.y, entity.radius, flags, 0, 0.749, 1, 1);
+          wasm.addEntityCircle(entity.center.x, entity.center.y, entity.radius, flags, r, g, b, a);
         } else if (entity.type === 'arc' && entity.center) {
-          wasm.addEntityArc(entity.center.x, entity.center.y, entity.radius, entity.startAngle, entity.endAngle, flags, 0, 0.749, 1, 1);
+          wasm.addEntityArc(entity.center.x, entity.center.y, entity.radius, entity.startAngle, entity.endAngle, flags, r, g, b, a);
         } else if (entity.type === 'spline' && entity.points && entity.points.length >= 2) {
           // Tessellate spline into line segments for WASM rendering
           const pts = entity.tessellate2D(32);
           for (let i = 0; i < pts.length - 1; i++) {
-            wasm.addEntitySegment(pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y, flags, 0, 0.749, 1, 1);
+            wasm.addEntitySegment(pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y, flags, r, g, b, a);
           }
         } else if (entity.type === 'bezier' && entity.vertices && entity.vertices.length >= 2) {
           // Tessellate bezier into line segments for WASM rendering
           const pts = entity.tessellate2D(16);
           for (let i = 0; i < pts.length - 1; i++) {
-            wasm.addEntitySegment(pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y, flags, 0, 0.749, 1, 1);
+            wasm.addEntitySegment(pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y, flags, r, g, b, a);
           }
         } else if (entity.type === 'dimension' && wasm.addEntityDimension) {
           const DIM_LINEAR = 0, DIM_HORIZONTAL = 1, DIM_VERTICAL = 2, DIM_ANGLE = 3;
@@ -2962,15 +2973,139 @@ export class WasmRenderer {
     return result;
   }
 
+  _createOffscreenCanvas(width, height) {
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(width));
+    canvas.height = Math.max(1, Math.round(height));
+    return canvas;
+  }
+
+  _scaleRasterSize(width, height, maxRasterSize = 2048) {
+    const safeWidth = Math.max(1, Number.isFinite(width) ? width : 1);
+    const safeHeight = Math.max(1, Number.isFinite(height) ? height : 1);
+    const maxSide = Math.max(256, Math.round(maxRasterSize || 2048));
+    const scale = Math.min(1, maxSide / Math.max(safeWidth, safeHeight));
+    return {
+      width: Math.max(32, Math.round(safeWidth * scale)),
+      height: Math.max(32, Math.round(safeHeight * scale)),
+    };
+  }
+
+  _cropTraceCanvas(sourceCanvas, fullRect, cropRect) {
+    const pixelsPerUnitX = sourceCanvas.width / Math.max(1e-9, fullRect.width);
+    const pixelsPerUnitY = sourceCanvas.height / Math.max(1e-9, fullRect.height);
+    const srcX = Math.max(0, Math.floor((cropRect.x - fullRect.x) * pixelsPerUnitX));
+    const srcY = Math.max(0, Math.floor((fullRect.y + fullRect.height - (cropRect.y + cropRect.height)) * pixelsPerUnitY));
+    const srcWidth = Math.max(1, Math.ceil(cropRect.width * pixelsPerUnitX));
+    const srcHeight = Math.max(1, Math.ceil(cropRect.height * pixelsPerUnitY));
+    const clampedWidth = Math.max(1, Math.min(srcWidth, sourceCanvas.width - srcX));
+    const clampedHeight = Math.max(1, Math.min(srcHeight, sourceCanvas.height - srcY));
+    const canvas = this._createOffscreenCanvas(clampedWidth, clampedHeight);
+    const cropCtx = canvas.getContext('2d');
+    cropCtx.drawImage(sourceCanvas, srcX, srcY, clampedWidth, clampedHeight, 0, 0, canvas.width, canvas.height);
+    return {
+      canvas,
+      localRect: {
+        x: cropRect.x,
+        y: cropRect.y,
+        width: cropRect.width,
+        height: cropRect.height,
+      },
+    };
+  }
+
+  buildTraceImageRaster(primitive, options = {}) {
+    const source = this._getAdjustedImageSource(primitive);
+    if (!source) return null;
+
+    const hasAppliedPerspective = typeof primitive.hasAppliedPerspectiveCorrection === 'function'
+      ? primitive.hasAppliedPerspectiveCorrection()
+      : !!primitive.perspectiveEnabled;
+
+    if (!hasAppliedPerspective) {
+      const baseWidth = source.width || source.naturalWidth || 1;
+      const baseHeight = source.height || source.naturalHeight || 1;
+      const rasterSize = this._scaleRasterSize(baseWidth, baseHeight, options.maxRasterSize);
+      const canvas = this._createOffscreenCanvas(rasterSize.width, rasterSize.height);
+      const rasterCtx = canvas.getContext('2d');
+      rasterCtx.drawImage(source, 0, 0, canvas.width, canvas.height);
+      return {
+        canvas,
+        localRect: {
+          x: 0,
+          y: 0,
+          width: Math.max(0.01, primitive.width || 1),
+          height: Math.max(0.01, primitive.height || 1),
+        },
+      };
+    }
+
+    const fullRect = {
+      x: 0,
+      y: 0,
+      width: Math.max(0.01, primitive.gridWidth || primitive.width || 1),
+      height: Math.max(0.01, primitive.gridHeight || primitive.height || 1),
+    };
+    const resolvedSource = this._resolvePerspectiveSource(primitive, source, primitive.sourceQuad);
+    const renderSource = resolvedSource.source;
+    const normalizedSourceQuad = resolvedSource.normalizedQuad;
+    const renderSourceWidth = renderSource.width || renderSource.naturalWidth || 1;
+    const renderSourceHeight = renderSource.height || renderSource.naturalHeight || 1;
+    const rasterSize = this._scaleRasterSize(renderSourceWidth, renderSourceHeight, options.maxRasterSize);
+    const canvas = this._createOffscreenCanvas(rasterSize.width, rasterSize.height);
+    const rasterCtx = canvas.getContext('2d');
+    const sourceQuadPixels = _sourceQuadToPixels(normalizedSourceQuad, renderSourceWidth, renderSourceHeight);
+    const destQuadPixels = [
+      { x: 0, y: canvas.height },
+      { x: canvas.width, y: canvas.height },
+      { x: canvas.width, y: 0 },
+      { x: 0, y: 0 },
+    ];
+    const subdivisions = 12;
+    for (let iy = 0; iy < subdivisions; iy++) {
+      const v0 = iy / subdivisions;
+      const v1 = (iy + 1) / subdivisions;
+      for (let ix = 0; ix < subdivisions; ix++) {
+        const u0 = ix / subdivisions;
+        const u1 = (ix + 1) / subdivisions;
+        const src00 = _bilinearQuadPoint(sourceQuadPixels, u0, v0);
+        const src10 = _bilinearQuadPoint(sourceQuadPixels, u1, v0);
+        const src11 = _bilinearQuadPoint(sourceQuadPixels, u1, v1);
+        const src01 = _bilinearQuadPoint(sourceQuadPixels, u0, v1);
+        const dst00 = _bilinearQuadPoint(destQuadPixels, u0, v0);
+        const dst10 = _bilinearQuadPoint(destQuadPixels, u1, v0);
+        const dst11 = _bilinearQuadPoint(destQuadPixels, u1, v1);
+        const dst01 = _bilinearQuadPoint(destQuadPixels, u0, v1);
+        _transformSourceTriangleToDest(rasterCtx, renderSource, [src00, src10, src11], [dst00, dst10, dst11]);
+        _transformSourceTriangleToDest(rasterCtx, renderSource, [src00, src11, src01], [dst00, dst11, dst01]);
+      }
+    }
+
+    const cropRect = typeof primitive.getCropRect === 'function' ? primitive.getCropRect() : null;
+    return cropRect
+      ? this._cropTraceCanvas(canvas, fullRect, cropRect)
+      : { canvas, localRect: fullRect };
+  }
+
   _drawSketchImageOverlay(ctx, primitive, projectPoint, options = {}) {
     const source = this._getAdjustedImageSource(primitive);
     if (!source) return false;
 
-    const destQuadWorld = primitive.getWorldQuad();
+    const destQuadWorld = typeof primitive.getWarpWorldQuad === 'function'
+      ? primitive.getWarpWorldQuad()
+      : primitive.getWorldQuad();
     const destQuadScreen = destQuadWorld.map((point) => projectPoint(point.x, point.y));
     if (destQuadScreen.some((point) => !point || !Number.isFinite(point.x) || !Number.isFinite(point.y))) {
       return false;
     }
+    const visibleQuadWorld = primitive.getWorldQuad();
+    const visibleQuadScreen = visibleQuadWorld.map((point) => projectPoint(point.x, point.y));
+    const cropQuadWorld = typeof primitive.getCropWorldQuad === 'function'
+      ? primitive.getCropWorldQuad()
+      : null;
+    const cropQuadScreen = cropQuadWorld
+      ? cropQuadWorld.map((point) => projectPoint(point.x, point.y))
+      : null;
 
     const renderSourceQuad = typeof primitive.getRenderSourceQuad === 'function'
       ? primitive.getRenderSourceQuad()
@@ -2990,6 +3125,10 @@ export class WasmRenderer {
       || !_isIdentitySourceQuad(renderSourceQuad);
 
     ctx.save();
+    if (cropQuadScreen && cropQuadScreen.every((point) => point && Number.isFinite(point.x) && Number.isFinite(point.y))) {
+      _traceQuadPath(ctx, cropQuadScreen);
+      ctx.clip();
+    }
     ctx.globalAlpha = Math.max(0.05, Math.min(1, primitive.opacity || 0.8));
     if (!useWarp) {
       const minX = Math.min(...destQuadScreen.map((point) => point.x));
@@ -3025,12 +3164,7 @@ export class WasmRenderer {
       ctx.strokeStyle = options.outlineColor || '#00bfff';
       ctx.lineWidth = 1.5;
       ctx.setLineDash([]);
-      ctx.beginPath();
-      ctx.moveTo(destQuadScreen[0].x, destQuadScreen[0].y);
-      for (let i = 1; i < destQuadScreen.length; i++) {
-        ctx.lineTo(destQuadScreen[i].x, destQuadScreen[i].y);
-      }
-      ctx.closePath();
+      _traceQuadPath(ctx, visibleQuadScreen);
       ctx.stroke();
       ctx.restore();
     }
@@ -3089,15 +3223,35 @@ export class WasmRenderer {
     const projectPoint = (wx, wy, wz) => this.worldToScreen(wx, wy, wz);
     for (const descriptor of this._partSketchImages) {
       const { image, plane, selected } = descriptor;
-      const localQuad = image.getWorldQuad();
-      const worldQuad = localQuad.map((point) => ({
+      const visibleLocalQuad = image.getWorldQuad();
+      const warpLocalQuad = typeof image.getWarpWorldQuad === 'function'
+        ? image.getWarpWorldQuad()
+        : visibleLocalQuad;
+      const cropLocalQuad = typeof image.getCropWorldQuad === 'function'
+        ? image.getCropWorldQuad()
+        : null;
+      const worldQuad = warpLocalQuad.map((point) => ({
         x: plane.origin.x + point.x * plane.xAxis.x + point.y * plane.yAxis.x,
         y: plane.origin.y + point.x * plane.xAxis.y + point.y * plane.yAxis.y,
         z: plane.origin.z + point.x * plane.xAxis.z + point.y * plane.yAxis.z,
       }));
+      const visibleWorldQuad = visibleLocalQuad.map((point) => ({
+        x: plane.origin.x + point.x * plane.xAxis.x + point.y * plane.yAxis.x,
+        y: plane.origin.y + point.x * plane.xAxis.y + point.y * plane.yAxis.y,
+        z: plane.origin.z + point.x * plane.xAxis.z + point.y * plane.yAxis.z,
+      }));
+      const cropWorldQuad = cropLocalQuad
+        ? cropLocalQuad.map((point) => ({
+          x: plane.origin.x + point.x * plane.xAxis.x + point.y * plane.yAxis.x,
+          y: plane.origin.y + point.x * plane.xAxis.y + point.y * plane.yAxis.y,
+          z: plane.origin.z + point.x * plane.xAxis.z + point.y * plane.yAxis.z,
+        }))
+        : null;
       const temp = {
         ...image,
-        getWorldQuad: () => worldQuad.map((point) => ({ x: point.x, y: point.y, z: point.z })),
+        getWorldQuad: () => visibleWorldQuad.map((point) => ({ x: point.x, y: point.y, z: point.z })),
+        getWarpWorldQuad: () => worldQuad.map((point) => ({ x: point.x, y: point.y, z: point.z })),
+        getCropWorldQuad: () => cropWorldQuad ? cropWorldQuad.map((point) => ({ x: point.x, y: point.y, z: point.z })) : null,
       };
       this._drawPartSketchImageOverlay(ctx, temp, projectPoint, selected);
     }
@@ -3107,11 +3261,21 @@ export class WasmRenderer {
     const source = this._getAdjustedImageSource(image);
     if (!source) return false;
 
-    const destQuadWorld = image.getWorldQuad();
+    const destQuadWorld = typeof image.getWarpWorldQuad === 'function'
+      ? image.getWarpWorldQuad()
+      : image.getWorldQuad();
     const destQuadScreen = destQuadWorld.map((point) => projectPoint(point.x, point.y, point.z));
     if (destQuadScreen.some((point) => !point || !Number.isFinite(point.x) || !Number.isFinite(point.y))) {
       return false;
     }
+    const visibleQuadWorld = image.getWorldQuad();
+    const visibleQuadScreen = visibleQuadWorld.map((point) => projectPoint(point.x, point.y, point.z));
+    const cropQuadWorld = typeof image.getCropWorldQuad === 'function'
+      ? image.getCropWorldQuad()
+      : null;
+    const cropQuadScreen = cropQuadWorld
+      ? cropQuadWorld.map((point) => projectPoint(point.x, point.y, point.z))
+      : null;
 
     const renderSourceQuad = typeof image.getRenderSourceQuad === 'function'
       ? image.getRenderSourceQuad()
@@ -3121,6 +3285,10 @@ export class WasmRenderer {
     const normalizedRenderSourceQuad = resolvedSource.normalizedQuad;
     const sourceQuadPixels = _sourceQuadToPixels(normalizedRenderSourceQuad, renderSource.width || renderSource.naturalWidth, renderSource.height || renderSource.naturalHeight);
     ctx.save();
+    if (cropQuadScreen && cropQuadScreen.every((point) => point && Number.isFinite(point.x) && Number.isFinite(point.y))) {
+      _traceQuadPath(ctx, cropQuadScreen);
+      ctx.clip();
+    }
     ctx.globalAlpha = Math.max(0.05, Math.min(0.65, image.opacity || 0.8));
     const subdivisions = image.perspectiveEnabled ? 10 : 4;
     for (let iy = 0; iy < subdivisions; iy++) {
@@ -3147,10 +3315,7 @@ export class WasmRenderer {
       ctx.save();
       ctx.strokeStyle = 'rgba(0, 191, 255, 0.9)';
       ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.moveTo(destQuadScreen[0].x, destQuadScreen[0].y);
-      for (let i = 1; i < destQuadScreen.length; i++) ctx.lineTo(destQuadScreen[i].x, destQuadScreen[i].y);
-      ctx.closePath();
+      _traceQuadPath(ctx, visibleQuadScreen);
       ctx.stroke();
       ctx.restore();
     }

@@ -633,6 +633,8 @@ export class Scene {
         gridCellsX: d.gridCellsX,
         gridCellsY: d.gridCellsY,
         quad: d.quad,
+        cropRect: d.cropRect,
+        traceSettings: d.traceSettings,
         perspectiveEditQuad: d.perspectiveEditQuad,
         perspectiveOutputQuad: d.perspectiveOutputQuad,
         sourceQuad: d.sourceQuad,

@@ -494,6 +494,15 @@ html, body {
   flex: 1 1 140px;
 }
 
+.image-trace-stats {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(255,255,255,0.03);
+  color: var(--text-secondary);
+  font-size: 11px;
+  padding: 7px;
+}
+
 .image-stepper {
   display: flex;
   align-items: center;

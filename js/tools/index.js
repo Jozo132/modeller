@@ -11,6 +11,7 @@ export { TextTool } from './TextTool.js';
 export { DimensionTool } from './DimensionTool.js';
 export { MoveTool } from './MoveTool.js';
 export { CopyTool } from './CopyTool.js';
+export { TraceImageTool } from './TraceImageTool.js';
 
 // Edit / operations
 export { TrimTool } from './TrimTool.js';
