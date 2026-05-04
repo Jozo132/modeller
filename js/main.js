@@ -72,6 +72,7 @@ const NORMAL_COLOR_SHADING_KEY = 'cad-modeller-normal-color-shading';
 const RECORDING_BAR_VISIBLE_KEY = 'cad-modeller-recording-bar-visible';
 const COMMAND_BAR_VISIBLE_KEY = 'cad-modeller-command-bar-visible';
 const TESS_QUALITY_STORAGE_KEY = 'cad-modeller-tessellation-quality-preset';
+const CLICK_DRAG_TOLERANCE_PX = 4;
 const TESS_QUALITY_PRESETS = new Set(['draft', 'normal', 'fine', 'ultra']);
 const IMAGE_PROPERTY_SECTIONS = [
   { key: 'overview', label: 'Overview' },
@@ -182,6 +183,7 @@ class App {
     this._renderer3d.shouldAllowLeftClickOrbit = () => {
       return this._workspaceMode === 'part'
         && !this._sketchingOnPlane
+        && !this._awaitingSketchPlane
         && !this._extrudeMode
         && !this._chamferMode
         && !this._filletMode;
@@ -410,11 +412,19 @@ class App {
       panel.prepend(toggle);
       toggle.addEventListener('click', () => {
         panel.classList.toggle('mobile-collapsed');
+        document.body.classList.toggle('mobile-sidebar-collapsed', panel.classList.contains('mobile-collapsed'));
         // Trigger resize so the 3D viewport recalculates
         if (this._renderer3d) requestAnimationFrame(() => this._renderer3d.onWindowResize());
       });
       // Start collapsed on mobile so the scene is visible
       panel.classList.add('mobile-collapsed');
+      document.body.classList.add('mobile-sidebar-collapsed');
+      if (this._renderer3d) {
+        requestAnimationFrame(() => {
+          this._renderer3d.onWindowResize();
+          this._scheduleRender();
+        });
+      }
     }
 
     // ── Collapsible node tree ──
@@ -1240,6 +1250,7 @@ class App {
       const sy = e.clientY - rect.top;
       movedSinceDown = false;
       mouseDown = true;
+      this._mouseDownStart = { sx, sy };
 
       // Middle button = orbit, Right button = pan (handled by WasmRenderer controls)
       if (e.button === 1 || e.button === 2) {
@@ -1247,7 +1258,7 @@ class App {
       }
 
       // Left-click orbit active: let WasmRenderer handle orbit, skip tool processing
-      if (e.button === 0 && this._renderer3d && this._renderer3d._leftClickOrbiting) {
+      if (e.button === 0 && this._renderer3d && this._renderer3d._leftClickOrbiting && !this._awaitingSketchPlane) {
         return;
       }
 
@@ -1313,7 +1324,11 @@ class App {
       const rect = canvas.getBoundingClientRect();
       const sx = e.clientX - rect.left;
       const sy = e.clientY - rect.top;
-      if (mouseDown) movedSinceDown = true;
+      if (mouseDown && this._mouseDownStart) {
+        const dxFromDown = sx - this._mouseDownStart.sx;
+        const dyFromDown = sy - this._mouseDownStart.sy;
+        movedSinceDown = Math.hypot(dxFromDown, dyFromDown) > CLICK_DRAG_TOLERANCE_PX;
+      }
 
       // Extrude handle dragging
       if (this._draggingExtrudeHandle && this._extrudeDragStart && this._extrudeMode) {
@@ -1441,6 +1456,7 @@ class App {
       const sx = e.clientX - rect.left;
       const sy = e.clientY - rect.top;
       mouseDown = false;
+      this._mouseDownStart = null;
 
       // Extrude handle drag end
       if (this._draggingExtrudeHandle) {
@@ -1476,7 +1492,7 @@ class App {
 
     // Click
     canvas.addEventListener('click', (e) => {
-      if (movedSinceDown && this.activeTool.name === 'select' && !this._sketchingOnPlane) {
+      if (movedSinceDown && this.activeTool.name === 'select' && !this._sketchingOnPlane && !this._awaitingSketchPlane) {
         movedSinceDown = false;
         return;
       }
