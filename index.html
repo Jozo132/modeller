@@ -48,22 +48,29 @@
       <div class="menu-dropdown">
         <button data-action="new">New</button>
         <hr>
-        <button data-action="open-cmod">Open .cmod...</button>
-        <button data-action="save-cmod">Export .cmod</button>
+        <button data-action="open-cmod">Open</button>
+        <button data-action="save-cmod">Save</button>
         <hr>
-        <button data-action="import-step">Import STEP...</button>
-        <button data-action="export-step">Export STEP</button>
-        <hr>
-        <button data-action="import-dxf">Import DXF...</button>
-        <button data-action="import-image">Import Image...</button>
-        <button data-action="export-dxf">Export DXF</button>
-        <button data-action="export-stl">Export STL</button>
-        <hr>
-        <button data-action="import-svg">Import SVG...</button>
-        <button data-action="export-svg">Export SVG</button>
-        <hr>
-        <button data-action="import-json">Import JSON...</button>
-        <button data-action="export-json">Export JSON</button>
+        <div class="menu-submenu-item" data-submenu="import">
+          <span>Import</span><span class="submenu-arrow">&#9654;</span>
+          <div class="menu-submenu">
+            <button data-action="import-step">STEP...</button>
+            <button data-action="import-dxf">DXF...</button>
+            <button data-action="import-image">Image...</button>
+            <button data-action="import-svg">SVG...</button>
+            <button data-action="import-json">JSON...</button>
+          </div>
+        </div>
+        <div class="menu-submenu-item" data-submenu="export">
+          <span>Export</span><span class="submenu-arrow">&#9654;</span>
+          <div class="menu-submenu">
+            <button data-action="export-step">STEP</button>
+            <button data-action="export-dxf">DXF</button>
+            <button data-action="export-stl">STL</button>
+            <button data-action="export-svg">SVG</button>
+            <button data-action="export-json">JSON</button>
+          </div>
+        </div>
         <hr>
         <div class="menu-submenu-item" data-submenu="examples">
           <span>Examples</span><span class="submenu-arrow">&#9654;</span>

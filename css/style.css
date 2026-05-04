@@ -169,6 +169,9 @@ html, body {
   border-radius: 4px;
   box-shadow: 0 4px 12px rgba(0,0,0,0.5);
   padding: 4px 0;
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+  scrollbar-gutter: stable;
   z-index: 201;
 }
 .menu-submenu-item:hover > .menu-submenu {
