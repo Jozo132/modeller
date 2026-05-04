@@ -26,7 +26,8 @@ export async function loadReleaseWasmModule(options = {}) {
   const specifier = fresh
     ? `../build/release.js?cacheBust=${Date.now()}-${++cacheBustCounter}`
     : '../build/release.js';
-  const loadPromise = loadModule(specifier);
+  const loadFreshModule = () => loadModule(`../build/release.js?cacheBust=${Date.now()}-${++cacheBustCounter}`);
+  const loadPromise = fresh ? loadFreshModule() : loadModule(specifier);
 
   if (!fresh) {
     cachedModulePromise = loadPromise;
@@ -42,7 +43,7 @@ export async function loadReleaseWasmModule(options = {}) {
     if (!fresh) {
       cachedModulePromise = null;
       if (isRetryableWasmLoadError(error)) {
-        const freshModule = await loadReleaseWasmModule({ fresh: true });
+        const freshModule = await loadFreshModule();
         cachedModulePromise = Promise.resolve(freshModule);
         return freshModule;
       }
