@@ -1091,85 +1091,11 @@ export class WasmRenderer {
    * @returns {{faceIndex: number, face: Object, point: {x:number,y:number,z:number}}|null}
    */
   pickFace(screenX, screenY) {
-    // ── DEBUG ─────────────────────────────────────────────────────────────────
-    const _dbg_hasTri = !!(this._meshTriangles && this._meshTriangleCount > 0);
-    const _dbg_triCount = this._meshTriangleCount;
-    const _dbg_faceCount = this._meshFaces ? this._meshFaces.length : 0;
-    // ─────────────────────────────────────────────────────────────────────────
+    if (!this._meshTriangles || this._meshTriangleCount === 0 || !this._meshFaces) return null;
 
-    if (!this._meshTriangles || this._meshTriangleCount === 0 || !this._meshFaces) {
-      console.log('[PICK-FACE] early-return: no mesh data', {
-        hasTri: _dbg_hasTri, triCount: _dbg_triCount, faceCount: _dbg_faceCount,
-        rendererMode: this.mode,
-      });
-      return null;
-    }
-
-    const rect = this.canvas.getBoundingClientRect();
-    const ndcX = ((screenX - rect.left) / rect.width) * 2 - 1;
-    const ndcY = -((screenY - rect.top) / rect.height) * 2 + 1;
-
-    // Compute camera ray in world space
-    const mvp = this._computeMVP();
-    if (!mvp) {
-      console.log('[PICK-FACE] early-return: _computeMVP() returned null');
-      return null;
-    }
-
-    // Invert MVP to get ray
-    const invMVP = this._mat4Invert(mvp);
-    if (!invMVP) {
-      console.log('[PICK-FACE] early-return: _mat4Invert() returned null (singular matrix)');
-      return null;
-    }
-
-    // Near point (NDC z = -1) and far point (NDC z = 1)
-    const nearW = this._mat4TransformVec4(invMVP, ndcX, ndcY, -1, 1);
-    const farW = this._mat4TransformVec4(invMVP, ndcX, ndcY, 1, 1);
-    if (Math.abs(nearW.w) < 1e-10 || Math.abs(farW.w) < 1e-10) {
-      console.log('[PICK-FACE] early-return: degenerate near/far w', nearW.w, farW.w);
-      return null;
-    }
-
-    const origin = { x: nearW.x / nearW.w, y: nearW.y / nearW.w, z: nearW.z / nearW.w };
-    const farPt = { x: farW.x / farW.w, y: farW.y / farW.w, z: farW.z / farW.w };
-    const dir = {
-      x: farPt.x - origin.x,
-      y: farPt.y - origin.y,
-      z: farPt.z - origin.z,
-    };
-    const dirLen = Math.sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
-    if (dirLen < 1e-10) {
-      console.log('[PICK-FACE] early-return: zero-length ray direction');
-      return null;
-    }
-    dir.x /= dirLen; dir.y /= dirLen; dir.z /= dirLen;
-
-    // ── DEBUG: dump ray and a few triangle samples ────────────────────────────
-    const _dbg_triData = this._meshTriangles;
-    const _dbg_numTri = this._meshTriangleCount / 3;
-    const _dbg_sampleCount = Math.min(3, _dbg_numTri);
-    const _dbg_samples = [];
-    for (let _s = 0; _s < _dbg_sampleCount; _s++) {
-      const _b = _s * 3 * 6;
-      _dbg_samples.push({
-        v0: { x: +_dbg_triData[_b].toFixed(3), y: +_dbg_triData[_b + 1].toFixed(3), z: +_dbg_triData[_b + 2].toFixed(3) },
-        v1: { x: +_dbg_triData[_b + 6].toFixed(3), y: +_dbg_triData[_b + 7].toFixed(3), z: +_dbg_triData[_b + 8].toFixed(3) },
-        v2: { x: +_dbg_triData[_b + 12].toFixed(3), y: +_dbg_triData[_b + 13].toFixed(3), z: +_dbg_triData[_b + 14].toFixed(3) },
-      });
-    }
-    console.log('[PICK-FACE] ray', {
-      triCount: _dbg_numTri,
-      ndc: { x: +ndcX.toFixed(4), y: +ndcY.toFixed(4) },
-      origin: { x: +origin.x.toFixed(3), y: +origin.y.toFixed(3), z: +origin.z.toFixed(3) },
-      dir: { x: +dir.x.toFixed(4), y: +dir.y.toFixed(4), z: +dir.z.toFixed(4) },
-      sampleTriangles: _dbg_samples,
-      orbitRadius: this._orbitRadius,
-      orbitTarget: this._orbitTarget,
-      mode: this.mode,
-      fovDeg: this._fovDegrees,
-    });
-    // ─────────────────────────────────────────────────────────────────────────
+    const ray = this._computePickRay(screenX, screenY);
+    if (!ray) return null;
+    const { origin, dir } = ray;
 
     // Test ray against all triangles
     let closestT = Infinity;
@@ -1220,33 +1146,12 @@ export class WasmRenderer {
     const hasTriangles = includeFaces && !!(this._sketchPickTriangles && this._sketchPickTriangles.length > 0);
     if (!hasSegments && !hasTriangles) return null;
 
-    const mvp = this._computeMVP();
-    if (!mvp) return null;
-    const invMVP = this._mat4Invert(mvp);
-    if (!invMVP) return null;
-
-    const rect = this.canvas.getBoundingClientRect();
-    const ndcX = ((screenX - rect.left) / rect.width) * 2 - 1;
-    const ndcY = -((screenY - rect.top) / rect.height) * 2 + 1;
-
-    const nearW = this._mat4TransformVec4(invMVP, ndcX, ndcY, -1, 1);
-    const farW = this._mat4TransformVec4(invMVP, ndcX, ndcY, 1, 1);
-    if (Math.abs(nearW.w) < 1e-10 || Math.abs(farW.w) < 1e-10) return null;
-
-    const origin = { x: nearW.x / nearW.w, y: nearW.y / nearW.w, z: nearW.z / nearW.w };
-    const farPt = { x: farW.x / farW.w, y: farW.y / farW.w, z: farW.z / farW.w };
-    const dir = {
-      x: farPt.x - origin.x,
-      y: farPt.y - origin.y,
-      z: farPt.z - origin.z,
-    };
-    const dirLen = Math.sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
-    if (dirLen < 1e-10) return null;
-    dir.x /= dirLen; dir.y /= dirLen; dir.z /= dirLen;
+    const ray = this._computePickRay(screenX, screenY);
+    if (!ray) return null;
+    const { origin, dir, mvp, ndcX, ndcY, rect } = ray;
 
     // Screen-space pixel threshold for picking (in pixels)
     const pixelThreshold = 12;
-
     let closestDist = Infinity;
     let closestFeatureId = null;
     let closestWorldPt = null;
@@ -1307,37 +1212,11 @@ export class WasmRenderer {
    * @returns {{edgeIndex: number, edge: Object, point: {x,y,z}}|null}
    */
   pickEdge(screenX, screenY) {
-    if (!this._meshEdgeSegments || this._meshEdgeSegments.length === 0) {
-      console.log('[PICK-EDGE] early-return: no edge segments', {
-        hasSegments: !!this._meshEdgeSegments,
-        count: this._meshEdgeSegments ? this._meshEdgeSegments.length : 0,
-      });
-      return null;
-    }
+    if (!this._meshEdgeSegments || this._meshEdgeSegments.length === 0) return null;
 
-    const mvp = this._computeMVP();
-    if (!mvp) return null;
-    const invMVP = this._mat4Invert(mvp);
-    if (!invMVP) return null;
-
-    const rect = this.canvas.getBoundingClientRect();
-    const ndcX = ((screenX - rect.left) / rect.width) * 2 - 1;
-    const ndcY = -((screenY - rect.top) / rect.height) * 2 + 1;
-
-    const nearW = this._mat4TransformVec4(invMVP, ndcX, ndcY, -1, 1);
-    const farW = this._mat4TransformVec4(invMVP, ndcX, ndcY, 1, 1);
-    if (Math.abs(nearW.w) < 1e-10 || Math.abs(farW.w) < 1e-10) return null;
-
-    const origin = { x: nearW.x / nearW.w, y: nearW.y / nearW.w, z: nearW.z / nearW.w };
-    const farPt = { x: farW.x / farW.w, y: farW.y / farW.w, z: farW.z / farW.w };
-    const dir = {
-      x: farPt.x - origin.x,
-      y: farPt.y - origin.y,
-      z: farPt.z - origin.z,
-    };
-    const dirLen = Math.sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
-    if (dirLen < 1e-10) return null;
-    dir.x /= dirLen; dir.y /= dirLen; dir.z /= dirLen;
+    const ray = this._computePickRay(screenX, screenY);
+    if (!ray) return null;
+    const { origin, dir, mvp, ndcX, ndcY, rect } = ray;
 
     const pixelThreshold = 12;
     let closestDist = Infinity;
@@ -1689,44 +1568,9 @@ export class WasmRenderer {
    * @returns {string|null} 'XY', 'XZ', 'YZ', or null
    */
   pickPlane(screenX, screenY) {
-    const mvp = this._computeMVP();
-    if (!mvp) {
-      console.log('[PICK-PLANE] early-return: _computeMVP() null');
-      return null;
-    }
-
-    const invMVP = this._mat4Invert(mvp);
-    if (!invMVP) {
-      console.log('[PICK-PLANE] early-return: singular matrix');
-      return null;
-    }
-
-    const rect = this.canvas.getBoundingClientRect();
-    const ndcX = ((screenX - rect.left) / rect.width) * 2 - 1;
-    const ndcY = -((screenY - rect.top) / rect.height) * 2 + 1;
-
-    const nearW = this._mat4TransformVec4(invMVP, ndcX, ndcY, -1, 1);
-    const farW = this._mat4TransformVec4(invMVP, ndcX, ndcY, 1, 1);
-    if (Math.abs(nearW.w) < 1e-10 || Math.abs(farW.w) < 1e-10) return null;
-
-    const origin = { x: nearW.x / nearW.w, y: nearW.y / nearW.w, z: nearW.z / nearW.w };
-    const farPt = { x: farW.x / farW.w, y: farW.y / farW.w, z: farW.z / farW.w };
-    const dir = {
-      x: farPt.x - origin.x,
-      y: farPt.y - origin.y,
-      z: farPt.z - origin.z,
-    };
-    const dirLen = Math.sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
-    if (dirLen < 1e-10) return null;
-    dir.x /= dirLen; dir.y /= dirLen; dir.z /= dirLen;
-
-    // ── DEBUG ─────────────────────────────────────────────────────────────────
-    console.log('[PICK-PLANE]', {
-      planeMask: this._originPlaneVisibilityMask,
-      origin: { x: +origin.x.toFixed(3), y: +origin.y.toFixed(3), z: +origin.z.toFixed(3) },
-      dir: { x: +dir.x.toFixed(4), y: +dir.y.toFixed(4), z: +dir.z.toFixed(4) },
-    });
-    // ─────────────────────────────────────────────────────────────────────────
+    const ray = this._computePickRay(screenX, screenY);
+    if (!ray) return null;
+    const { origin, dir } = ray;
 
     const planeSize = 5.0;
     const planes = [
@@ -4504,6 +4348,48 @@ export class WasmRenderer {
 
     // MVP = proj * view (column-major multiplication)
     return this._mat4Multiply(proj, view);
+  }
+
+  /**
+   * Compute a world-space pick ray from screen coordinates.
+   * Works for both orthographic and perspective cameras. For perspective,
+   * the far NDC plane maps to projective infinity (farW.w → 0); in that case
+   * farW.xyz is used directly as the unnormalized ray direction.
+   * @param {number} screenX - client X coordinate
+   * @param {number} screenY - client Y coordinate
+   * @returns {{origin:{x,y,z}, dir:{x,y,z}, mvp:Float32Array, ndcX:number, ndcY:number, rect:DOMRect}|null}
+   */
+  _computePickRay(screenX, screenY) {
+    const mvp = this._computeMVP();
+    if (!mvp) return null;
+    const invMVP = this._mat4Invert(mvp);
+    if (!invMVP) return null;
+
+    const rect = this.canvas.getBoundingClientRect();
+    const ndcX = ((screenX - rect.left) / rect.width) * 2 - 1;
+    const ndcY = -((screenY - rect.top) / rect.height) * 2 + 1;
+
+    // Near point (NDC z = -1) always has finite w for any valid projection.
+    const nearW = this._mat4TransformVec4(invMVP, ndcX, ndcY, -1, 1);
+    if (Math.abs(nearW.w) < 1e-10) return null;
+    const origin = { x: nearW.x / nearW.w, y: nearW.y / nearW.w, z: nearW.z / nearW.w };
+
+    // Far point (NDC z = +1). For a perspective projection the far plane sits at
+    // projective infinity so farW.w → 0. In that case farW.xyz is the direction.
+    const farW = this._mat4TransformVec4(invMVP, ndcX, ndcY, 1, 1);
+    let dir;
+    if (Math.abs(farW.w) < 1e-10) {
+      dir = { x: farW.x, y: farW.y, z: farW.z };
+    } else {
+      const farPt = { x: farW.x / farW.w, y: farW.y / farW.w, z: farW.z / farW.w };
+      dir = { x: farPt.x - origin.x, y: farPt.y - origin.y, z: farPt.z - origin.z };
+    }
+
+    const dirLen = Math.sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+    if (dirLen < 1e-10) return null;
+    dir.x /= dirLen; dir.y /= dirLen; dir.z /= dirLen;
+
+    return { origin, dir, mvp, ndcX, ndcY, rect };
   }
 
   _mat4Perspective(fov, aspect, near, far) {
