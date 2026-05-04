@@ -525,10 +525,7 @@ export class WasmRenderer {
 
     if (this.mode === '3d' && !this._sketchPlane) {
       this._renderPartSketchImagesOverlay();
-    }
-
-    // Draw origin plane labels (XY / XZ / YZ) on the 2D overlay in 3D part mode
-    if (this.mode === '3d' && !this._sketchPlane) {
+      // Draw origin plane labels (XY / XZ / YZ) on the 2D overlay in 3D part mode
       this._drawOriginPlaneLabels();
     }
 

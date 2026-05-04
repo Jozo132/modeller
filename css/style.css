@@ -23,6 +23,7 @@
   --toolbar-btn-sz: 26px;                                        /* button square size */
   --toolbar-rows: 2;
   --toolbar-height: calc(var(--toolbar-btn-sz) * var(--toolbar-rows) + 17px); /* 2 rows + label + padding */
+  --toolbar-minimized-height: 20px;
   --top-offset: calc(24px + var(--toolbar-height)); /* menu-bar + toolbar */
 }
 
@@ -203,7 +204,7 @@ html, body {
 
 /* Override --top-offset when toolbar is minimized/auto so panels reposition */
 body.toolbar-minimized, body.toolbar-auto {
-  --top-offset: calc(24px + 20px); /* menu-bar + slim toolbar handle */
+  --top-offset: calc(24px + var(--toolbar-minimized-height)); /* menu-bar + slim toolbar handle */
 }
 
 /* Toolbar — single horizontal ribbon; each group contains a 2-row button grid */
@@ -228,7 +229,7 @@ body.toolbar-minimized, body.toolbar-auto {
 /* ── Toolbar minimize states ── */
 /* Minimized: show only the slim handle bar (the toggle button row) */
 body.toolbar-minimized #toolbar {
-  height: 20px;
+  height: var(--toolbar-minimized-height);
   overflow: hidden;
   padding: 0 4px;
 }
@@ -242,7 +243,7 @@ body.toolbar-minimized #toolbar #toolbar-toggle-btn {
 
 /* Auto-hide: collapsed by default, expands on hover */
 body.toolbar-auto #toolbar {
-  height: 20px;
+  height: var(--toolbar-minimized-height);
   overflow: hidden;
   padding: 0 4px;
   transition: height 0.18s ease;
