@@ -1,4 +1,5 @@
 // js/main.js — Application entry point
+import './console-middleware.js';
 import { state } from './state.js';
 import { Viewport } from './viewport.js';
 import { WasmRenderer } from './wasm-renderer.js';
@@ -29,6 +30,7 @@ import { loadProject, debouncedSave, clearSavedProject, setViewport, setPartMana
 import { showConfirm, showPrompt, showDimensionInput, isModalOpen, showCustomDialog } from './ui/popup.js';
 import { DxfExportPanel } from './ui/dxfExportPanel.js';
 import { showContextMenu, closeContextMenu, isContextMenuOpen } from './ui/contextMenu.js';
+import { clearConsoleEntries, getConsoleEntries, getConsoleLevelPriority, subscribeConsoleEntries } from './console-middleware.js';
 import {
   Coincident, Horizontal, Vertical,
   Parallel, Perpendicular, EqualLength,
@@ -73,6 +75,8 @@ const RECORDING_BAR_VISIBLE_KEY = 'cad-modeller-recording-bar-visible';
 const COMMAND_BAR_VISIBLE_KEY = 'cad-modeller-command-bar-visible';
 const TESS_QUALITY_STORAGE_KEY = 'cad-modeller-tessellation-quality-preset';
 const CLICK_DRAG_TOLERANCE_PX = 4;
+const CONSOLE_TREE_MAX_ITEMS = 100;
+const CONSOLE_SCROLL_STICK_THRESHOLD_PX = 16;
 const TESS_QUALITY_PRESETS = new Set(['draft', 'normal', 'fine', 'ultra']);
 const IMAGE_PROPERTY_SECTIONS = [
   { key: 'overview', label: 'Overview' },
@@ -89,6 +93,168 @@ function escapeHtml(value) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+function formatConsoleTime(timestampMs) {
+  const date = new Date(timestampMs);
+  const pad = (value, width = 2) => String(value).padStart(width, '0');
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}`;
+}
+
+function summarizeConsoleValue(value) {
+  if (value === null) return 'null';
+  if (value === undefined) return 'undefined';
+  if (typeof value === 'string') return JSON.stringify(value);
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') return String(value);
+  if (typeof value === 'symbol') return value.toString();
+  if (typeof value === 'function') return `[Function ${value.name || 'anonymous'}]`;
+  if (value instanceof Error) return `${value.name}: ${value.message}`;
+  if (value instanceof Date) return `Date ${value.toISOString()}`;
+  if (Array.isArray(value)) return `Array(${value.length})`;
+  if (value instanceof Map) return `Map(${value.size})`;
+  if (value instanceof Set) return `Set(${value.size})`;
+  if (typeof value === 'object') {
+    const name = value?.constructor?.name;
+    const keys = Object.keys(value || {});
+    return `${name && name !== 'Object' ? `${name} ` : ''}{${keys.slice(0, 3).join(', ')}${keys.length > 3 ? ', …' : ''}}`;
+  }
+  return String(value);
+}
+
+function createConsoleValueNode(value, prettyPrint, seen = new WeakSet(), depth = 0) {
+  const span = document.createElement('span');
+  if (!prettyPrint) {
+    span.className = 'console-value-text';
+    const type = value === null ? 'null' : typeof value;
+    span.classList.add(`console-value-${type === 'object' ? 'object' : type}`);
+    span.textContent = summarizeConsoleValue(value);
+    return span;
+  }
+
+  if (value === null) {
+    span.className = 'console-value-text console-value-null';
+    span.textContent = 'null';
+    return span;
+  }
+  if (value === undefined) {
+    span.className = 'console-value-text console-value-undefined';
+    span.textContent = 'undefined';
+    return span;
+  }
+  if (typeof value === 'string') {
+    span.className = 'console-value-text console-value-string';
+    span.textContent = JSON.stringify(value);
+    return span;
+  }
+  if (typeof value === 'number') {
+    span.className = 'console-value-text console-value-number';
+    span.textContent = String(value);
+    return span;
+  }
+  if (typeof value === 'boolean') {
+    span.className = 'console-value-text console-value-boolean';
+    span.textContent = String(value);
+    return span;
+  }
+  if (typeof value === 'bigint') {
+    span.className = 'console-value-text console-value-bigint';
+    span.textContent = String(value);
+    return span;
+  }
+  if (typeof value === 'symbol') {
+    span.className = 'console-value-text console-value-symbol';
+    span.textContent = value.toString();
+    return span;
+  }
+  if (typeof value === 'function') {
+    span.className = 'console-value-text console-value-function';
+    span.textContent = `[Function ${value.name || 'anonymous'}]`;
+    return span;
+  }
+  if (value instanceof Date) {
+    span.className = 'console-value-text console-value-date';
+    span.textContent = value.toISOString();
+    return span;
+  }
+  if (value instanceof Error) {
+    const details = document.createElement('details');
+    details.className = 'console-tree';
+    const summary = document.createElement('summary');
+    summary.textContent = `${value.name}: ${value.message}`;
+    details.appendChild(summary);
+    const children = document.createElement('div');
+    children.className = 'console-tree-children';
+    if (value.stack) {
+      value.stack.split('\n').forEach((line) => {
+        const row = document.createElement('div');
+        row.className = 'console-tree-item';
+        row.textContent = line;
+        children.appendChild(row);
+      });
+    }
+    details.appendChild(children);
+    return details;
+  }
+  if (typeof value === 'object') {
+    if (seen.has(value)) {
+      span.className = 'console-value-text console-value-undefined';
+      span.textContent = '[Circular]';
+      return span;
+    }
+    seen.add(value);
+    const details = document.createElement('details');
+    details.className = 'console-tree';
+    if (depth < 1) details.open = true;
+    const summary = document.createElement('summary');
+    summary.textContent = summarizeConsoleValue(value);
+    details.appendChild(summary);
+    const children = document.createElement('div');
+    children.className = 'console-tree-children';
+    let items = [];
+    try {
+      if (Array.isArray(value)) {
+        items = value.map((entry, index) => [index, entry]);
+      } else if (value instanceof Map) {
+        items = Array.from(value.entries());
+      } else if (value instanceof Set) {
+        items = Array.from(value.values()).map((entry, index) => [index, entry]);
+      } else {
+        items = Object.entries(value);
+      }
+    } catch {
+      items = [['value', '[Uninspectable]']];
+    }
+    if (items.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'console-tree-item';
+      empty.textContent = '(empty)';
+      children.appendChild(empty);
+    } else {
+      items.slice(0, CONSOLE_TREE_MAX_ITEMS).forEach(([key, entryValue]) => {
+        const row = document.createElement('div');
+        row.className = 'console-tree-item';
+        const keyEl = document.createElement('span');
+        keyEl.className = 'console-tree-key';
+        keyEl.textContent = `${String(key)}:`;
+        row.appendChild(keyEl);
+        row.appendChild(createConsoleValueNode(entryValue, true, seen, depth + 1));
+        children.appendChild(row);
+      });
+      if (items.length > CONSOLE_TREE_MAX_ITEMS) {
+        const truncated = document.createElement('div');
+        truncated.className = 'console-tree-item';
+        truncated.textContent = `… ${items.length - CONSOLE_TREE_MAX_ITEMS} more`;
+        children.appendChild(truncated);
+      }
+    }
+    details.appendChild(children);
+    seen.delete(value);
+    return details;
+  }
+
+  span.className = 'console-value-text';
+  span.textContent = String(value);
+  return span;
 }
 
 function readPersistedTessellationPreset() {
@@ -152,6 +318,11 @@ class App {
     this._invisibleEdgesVisible = this._loadInvisibleEdgesVisible();
     this._meshTriangleOverlayMode = this._loadMeshTriangleOverlayMode();
     this._normalColorShadingEnabled = this._loadNormalColorShading();
+    this._consoleViewOpen = false;
+    this._consoleFilterLevel = 'all';
+    this._consolePrettyPrint = true;
+    this._consoleEntriesCache = getConsoleEntries();
+    this._consoleUnsubscribe = null;
     this._partGridVisible = true;
     this._partOriginAxisVisible = true;
     this._imagePropertySections = new Map();
@@ -275,6 +446,7 @@ class App {
     this._bind3DCanvasEvents(); // 3D-only interactions
     this._bindToolbarEvents();
     this._bindMenuBarEvents();
+    this._bindConsoleViewEvents();
     this._bindKeyboardEvents();
     this._bindResizeEvent();
     this._bindStateEvents();
@@ -2219,6 +2391,7 @@ class App {
           case 'tool-fillet': document.getElementById('btn-fillet')?.click(); break;
           case 'scene-manager': this._toggleSceneManager(); break;
           case 'help-shortcuts': this.setStatus('Shortcuts: L=Line, R=Rect, C=Circle, Esc=Select, Del=Delete, Ctrl+Z=Undo, Ctrl+Y=Redo, F=Fit'); break;
+          case 'help-console': this._openConsoleView(); break;
           case 'help-about': this.setStatus('CAD Modeller v1.0.0 — Parametric 2D/3D CAD'); break;
         }
       });
@@ -2292,6 +2465,127 @@ class App {
       e.stopPropagation();
       this._toggleCommandBar(!!e.currentTarget.checked);
     });
+  }
+
+  _bindConsoleViewEvents() {
+    const root = document.getElementById('console-view');
+    if (!root) return;
+    this._consoleView = {
+      root,
+      count: document.getElementById('console-entry-count'),
+      entries: document.getElementById('console-entries'),
+      levelFilter: document.getElementById('console-level-filter'),
+      prettyPrint: document.getElementById('console-pretty-print'),
+      clearButton: document.getElementById('console-clear-btn'),
+      closeButton: document.getElementById('console-close-btn'),
+    };
+
+    this._consoleView.levelFilter.value = this._consoleFilterLevel;
+    this._consoleView.prettyPrint.checked = this._consolePrettyPrint;
+
+    this._consoleView.levelFilter.addEventListener('change', () => {
+      this._consoleFilterLevel = this._consoleView.levelFilter.value;
+      this._renderConsoleView();
+    });
+    this._consoleView.prettyPrint.addEventListener('change', () => {
+      this._consolePrettyPrint = !!this._consoleView.prettyPrint.checked;
+      this._renderConsoleView();
+    });
+    this._consoleView.clearButton.addEventListener('click', () => {
+      clearConsoleEntries();
+      this.setStatus('Console cleared.');
+    });
+    this._consoleView.closeButton.addEventListener('click', () => this._closeConsoleView());
+
+    this._consoleUnsubscribe = subscribeConsoleEntries((entries) => {
+      this._consoleEntriesCache = entries;
+      if (this._consoleViewOpen) this._renderConsoleView();
+    });
+  }
+
+  _openConsoleView() {
+    if (!this._consoleView) return;
+    this._consoleViewOpen = true;
+    this._consoleEntriesCache = getConsoleEntries();
+    document.body.classList.add('console-view-open');
+    this._consoleView.root.setAttribute('aria-hidden', 'false');
+    this._renderConsoleView();
+  }
+
+  _closeConsoleView() {
+    if (!this._consoleView) return;
+    this._consoleViewOpen = false;
+    document.body.classList.remove('console-view-open');
+    this._consoleView.root.setAttribute('aria-hidden', 'true');
+  }
+
+  _renderConsoleView() {
+    if (!this._consoleView) return;
+    const threshold = this._consoleFilterLevel === 'all'
+      ? -Infinity
+      : getConsoleLevelPriority(this._consoleFilterLevel);
+    const filteredEntries = this._consoleEntriesCache.filter((entry) => (
+      threshold === -Infinity || getConsoleLevelPriority(entry.level) >= threshold
+    ));
+
+    if (this._consoleView.count) {
+      this._consoleView.count.textContent = `${filteredEntries.length} / ${this._consoleEntriesCache.length} entries`;
+    }
+
+    const container = this._consoleView.entries;
+    if (!container) return;
+    const shouldStickToBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - CONSOLE_SCROLL_STICK_THRESHOLD_PX;
+    container.innerHTML = '';
+
+    if (filteredEntries.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'console-entry empty';
+      empty.textContent = 'No console entries match the current filter.';
+      container.appendChild(empty);
+      return;
+    }
+
+    filteredEntries.forEach((entry) => {
+      const row = document.createElement('div');
+      row.className = `console-entry level-${entry.level}`;
+
+      const line = document.createElement('div');
+      line.className = 'console-entry-line';
+      line.textContent = String(entry.line);
+
+      const time = document.createElement('div');
+      time.className = 'console-entry-time';
+      time.textContent = formatConsoleTime(entry.timestampMs);
+
+      const level = document.createElement('div');
+      level.className = 'console-entry-level';
+      level.textContent = entry.level;
+
+      const source = document.createElement('div');
+      source.className = 'console-entry-source';
+      source.textContent = entry.location?.display || entry.source;
+
+      const message = document.createElement('div');
+      message.className = 'console-entry-message';
+      if (!entry.args.length) {
+        message.textContent = '(no arguments)';
+      } else {
+        entry.args.forEach((arg) => {
+          message.appendChild(createConsoleValueNode(arg, this._consolePrettyPrint));
+        });
+      }
+
+      row.appendChild(line);
+      row.appendChild(time);
+      row.appendChild(level);
+      row.appendChild(source);
+      row.appendChild(message);
+      container.appendChild(row);
+    });
+
+    if (shouldStickToBottom) {
+      container.scrollTop = container.scrollHeight;
+    }
   }
 
   _bindToolbarEvents() {
@@ -2563,6 +2857,13 @@ class App {
     document.addEventListener('keydown', (e) => {
       // Don't intercept when a modal dialog is open
       if (isModalOpen()) return;
+      if (this._consoleViewOpen) {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          this._closeConsoleView();
+        }
+        return;
+      }
 
       // Don't intercept when typing in input fields, textareas, or contenteditable
       const tag = document.activeElement?.tagName?.toLowerCase();

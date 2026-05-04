@@ -126,6 +126,7 @@
       <span class="menu-label">Help</span>
       <div class="menu-dropdown">
         <button data-action="help-shortcuts">Keyboard Shortcuts</button>
+        <button data-action="help-console">Console</button>
         <button data-action="help-about">About</button>
       </div>
     </div>
@@ -379,6 +380,44 @@
 
   <!-- Unified 3D View (replaces 2D canvas) -->
   <div id="view-3d"></div>
+
+  <div id="console-view" class="console-view" aria-hidden="true">
+    <div class="console-view-header">
+      <div class="console-view-heading">
+        <h2>Console</h2>
+        <span id="console-entry-count" class="console-entry-count">0 entries</span>
+      </div>
+      <div class="console-view-actions">
+        <label class="console-control">
+          <span>Level</span>
+          <select id="console-level-filter">
+            <option value="all">All</option>
+            <option value="debug">Debug+</option>
+            <option value="log">Log+</option>
+            <option value="info">Info+</option>
+            <option value="warn">Warn+</option>
+            <option value="error">Error</option>
+          </select>
+        </label>
+        <label class="console-control console-checkbox">
+          <input id="console-pretty-print" type="checkbox" checked>
+          <span>Pretty print</span>
+        </label>
+        <button id="console-clear-btn" type="button">Clear</button>
+        <button id="console-close-btn" type="button" class="primary">Back</button>
+      </div>
+    </div>
+    <div class="console-view-body">
+      <div class="console-view-columns" aria-hidden="true">
+        <span>Line</span>
+        <span>Time</span>
+        <span>Level</span>
+        <span>Source</span>
+        <span>Message</span>
+      </div>
+      <div id="console-entries" class="console-entries"></div>
+    </div>
+  </div>
 
   <!-- Playback position indicator (shown during recording playback) -->
   <div id="playback-indicator" class="playback-indicator" style="display:none">
