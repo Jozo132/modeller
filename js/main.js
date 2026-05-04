@@ -8558,23 +8558,8 @@ class App {
           this._scheduleRender();
         };
 
-        planeEl.onclick = (e) => {
-          if (e.target && e.target.classList && e.target.classList.contains('node-tree-eye')) return;
-          if (this._workspaceMode !== 'part') return;
-          if (this._isEditingFeature()) return;
-          if (!isVisible) return;
-          if (this._selectedPlane === planeName) {
-            this._selectedPlane = null;
-          } else {
-            this._selectedPlane = planeName;
-          }
-          // Sync highlight to 3D renderer
-          if (this._renderer3d) {
-            this._renderer3d.setSelectedPlane(this._selectedPlane);
-          }
-          this._updateNodeTree();
-          this._scheduleRender();
-        };
+        // Plane click is handled by _bindPlaneSelectionEvents (addEventListener) to
+        // avoid a double-toggle caused by having two handlers on the same element.
       });
     }
 
@@ -8648,21 +8633,23 @@ class App {
         if (feature.type === 'sketch') {
           this._lastSketchFeatureId = feature.id;
         }
-        if (this._featurePanel) {
-          this._featurePanel.selectFeature(feature.id);
-        } else {
-          if (this._parametersPanel) {
-            this._parametersPanel.showFeature(feature);
-          }
-          this._showLeftFeatureParams(feature);
-        }
-        // Highlight selected feature in 3D view
+        // Set selected feature in 3D view BEFORE notifying the feature panel so
+        // that _selectedFeatureId is already set when notifyListeners fires
+        // _update3DView → _buildSketchWireframes (which reads _selectedFeatureId).
         if (this._renderer3d) {
           this._renderer3d.setSelectedFeature(feature.id);
         }
+        if (this._featurePanel) {
+          this._featurePanel.selectFeature(feature.id);
+        }
+        // Show feature parameters in the left panel (always, regardless of featurePanel)
+        if (this._parametersPanel) {
+          this._parametersPanel.showFeature(feature);
+        }
+        this._showLeftFeatureParams(feature);
         this._recorder.featureSelected(feature.id, feature.type, feature.name);
         this._updateNodeTree();
-        this._update3DView();
+        this._updateOperationButtons();
         this._scheduleRender();
       });
 
@@ -9132,27 +9119,26 @@ class App {
   _bindPlaneSelectionEvents() {
     const planeItems = document.querySelectorAll('.node-tree-plane[data-plane]');
     planeItems.forEach((item) => {
-      item.addEventListener('click', () => {
+      item.addEventListener('click', (e) => {
+        if (e.target && e.target.classList && e.target.classList.contains('node-tree-eye')) return;
         if (this._workspaceMode !== 'part') return;
+        if (this._isEditingFeature()) return;
         const plane = item.getAttribute('data-plane');
         if (!this._isOriginPlaneVisible(plane)) return;
         if (this._selectedPlane === plane) {
           // Deselect
           this._selectedPlane = null;
-          item.classList.remove('selected');
         } else {
-          // Deselect previous
-          planeItems.forEach(p => p.classList.remove('selected'));
-          // Select new
+          // Select new (deselect previous)
           this._selectedPlane = plane;
-          item.classList.add('selected');
         }
         // Sync highlight to 3D renderer
         if (this._renderer3d) {
           this._renderer3d.setSelectedPlane(this._selectedPlane);
         }
         info(`Plane selection: ${this._selectedPlane || 'none'}`);
-        this._update3DView();
+        this._updateNodeTree();
+        this._updateOperationButtons();
         this._scheduleRender();
       });
 
