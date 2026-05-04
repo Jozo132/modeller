@@ -12,6 +12,8 @@ const entries = [];
 let originals = null;
 let installed = false;
 let nextLine = 1;
+const WINDOW_CAPTURE_FLAG = '__modellerConsoleWindowCaptureInstalled';
+const WINDOW_API_KEY = '__modellerConsole';
 
 function normalizeLevel(level) {
   return CONSOLE_LEVELS[level] !== undefined ? level : 'log';
@@ -105,8 +107,8 @@ function captureConsoleCall(level, args) {
 }
 
 function installWindowErrorCapture() {
-  if (typeof window === 'undefined' || window.__cadConsoleWindowCaptureInstalled) return;
-  window.__cadConsoleWindowCaptureInstalled = true;
+  if (typeof window === 'undefined' || window[WINDOW_CAPTURE_FLAG]) return;
+  window[WINDOW_CAPTURE_FLAG] = true;
 
   window.addEventListener('error', (event) => {
     const location = buildLocation(event.filename, event.lineno, event.colno)
@@ -153,7 +155,7 @@ export function installConsoleMiddleware() {
   });
   installWindowErrorCapture();
   if (typeof window !== 'undefined') {
-    window.__cadConsole = {
+    window[WINDOW_API_KEY] = {
       getEntries: () => getConsoleEntries(),
       clear: () => clearConsoleEntries(),
       subscribe: (listener) => subscribeConsoleEntries(listener),

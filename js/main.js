@@ -75,6 +75,8 @@ const RECORDING_BAR_VISIBLE_KEY = 'cad-modeller-recording-bar-visible';
 const COMMAND_BAR_VISIBLE_KEY = 'cad-modeller-command-bar-visible';
 const TESS_QUALITY_STORAGE_KEY = 'cad-modeller-tessellation-quality-preset';
 const CLICK_DRAG_TOLERANCE_PX = 4;
+const CONSOLE_TREE_MAX_ITEMS = 100;
+const CONSOLE_SCROLL_STICK_THRESHOLD_PX = 16;
 const TESS_QUALITY_PRESETS = new Set(['draft', 'normal', 'fine', 'ultra']);
 const IMAGE_PROPERTY_SECTIONS = [
   { key: 'overview', label: 'Overview' },
@@ -209,14 +211,18 @@ function createConsoleValueNode(value, prettyPrint, seen = new WeakSet(), depth 
     const children = document.createElement('div');
     children.className = 'console-tree-children';
     let items = [];
-    if (Array.isArray(value)) {
-      items = value.map((entry, index) => [index, entry]);
-    } else if (value instanceof Map) {
-      items = Array.from(value.entries());
-    } else if (value instanceof Set) {
-      items = Array.from(value.values()).map((entry, index) => [index, entry]);
-    } else {
-      items = Object.entries(value);
+    try {
+      if (Array.isArray(value)) {
+        items = value.map((entry, index) => [index, entry]);
+      } else if (value instanceof Map) {
+        items = Array.from(value.entries());
+      } else if (value instanceof Set) {
+        items = Array.from(value.values()).map((entry, index) => [index, entry]);
+      } else {
+        items = Object.entries(value);
+      }
+    } catch {
+      items = [['value', '[Uninspectable]']];
     }
     if (items.length === 0) {
       const empty = document.createElement('div');
@@ -224,7 +230,7 @@ function createConsoleValueNode(value, prettyPrint, seen = new WeakSet(), depth 
       empty.textContent = '(empty)';
       children.appendChild(empty);
     } else {
-      items.slice(0, 100).forEach(([key, entryValue]) => {
+      items.slice(0, CONSOLE_TREE_MAX_ITEMS).forEach(([key, entryValue]) => {
         const row = document.createElement('div');
         row.className = 'console-tree-item';
         const keyEl = document.createElement('span');
@@ -234,14 +240,15 @@ function createConsoleValueNode(value, prettyPrint, seen = new WeakSet(), depth 
         row.appendChild(createConsoleValueNode(entryValue, true, seen, depth + 1));
         children.appendChild(row);
       });
-      if (items.length > 100) {
+      if (items.length > CONSOLE_TREE_MAX_ITEMS) {
         const truncated = document.createElement('div');
         truncated.className = 'console-tree-item';
-        truncated.textContent = `… ${items.length - 100} more`;
+        truncated.textContent = `… ${items.length - CONSOLE_TREE_MAX_ITEMS} more`;
         children.appendChild(truncated);
       }
     }
     details.appendChild(children);
+    seen.delete(value);
     return details;
   }
 
@@ -2527,7 +2534,7 @@ class App {
 
     const container = this._consoleView.entries;
     if (!container) return;
-    const shouldStickToBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 16;
+    const shouldStickToBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - CONSOLE_SCROLL_STICK_THRESHOLD_PX;
     container.innerHTML = '';
 
     if (filteredEntries.length === 0) {
