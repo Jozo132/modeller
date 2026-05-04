@@ -179,15 +179,7 @@ class App {
     this._renderer3d.setInvisibleEdgesVisible(this._invisibleEdgesVisible);
     this._renderer3d.setMeshTriangleOverlayMode(this._meshTriangleOverlayMode);
     this._renderer3d.setNormalColorShadingEnabled(this._normalColorShadingEnabled);
-    // Allow left-click orbit in 3D part mode when no special mode is active
-    this._renderer3d.shouldAllowLeftClickOrbit = () => {
-      return this._workspaceMode === 'part'
-        && !this._sketchingOnPlane
-        && !this._awaitingSketchPlane
-        && !this._extrudeMode
-        && !this._chamferMode
-        && !this._filletMode;
-    };
+    this._renderer3d.shouldAllowLeftClickOrbit = () => false;
     if (this._renderer3d._loadPromise) {
       this._renderer3d._loadPromise.then(async () => {
         this._update3DView();
@@ -7529,11 +7521,7 @@ class App {
   /** Update the left-click orbit flag on the renderer based on current UI state. */
   _updateLeftClickOrbit() {
     if (!this._renderer3d) return;
-    this._renderer3d._leftClickOrbitEnabled = this._workspaceMode === 'part'
-      && !this._sketchingOnPlane
-      && !this._extrudeMode
-      && !this._chamferMode
-      && !this._filletMode;
+    this._renderer3d._leftClickOrbitEnabled = false;
   }
 
   _hasMeshHoles(geometry) {
