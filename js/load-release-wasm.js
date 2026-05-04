@@ -5,6 +5,14 @@ function loadModule(specifier) {
   return import(specifier);
 }
 
+function buildFreshSpecifier() {
+  return `../build/release.js?cacheBust=${Date.now()}-${++cacheBustCounter}`;
+}
+
+function loadFreshModule() {
+  return loadModule(buildFreshSpecifier());
+}
+
 export function isRetryableWasmLoadError(error) {
   if (!error) return false;
   const name = String(error.name || '');
@@ -23,11 +31,7 @@ export async function loadReleaseWasmModule(options = {}) {
   const { fresh = false } = options;
   if (!fresh && cachedModulePromise) return cachedModulePromise;
 
-  const specifier = fresh
-    ? `../build/release.js?cacheBust=${Date.now()}-${++cacheBustCounter}`
-    : '../build/release.js';
-  const loadFreshModule = () => loadModule(`../build/release.js?cacheBust=${Date.now()}-${++cacheBustCounter}`);
-  const loadPromise = fresh ? loadFreshModule() : loadModule(specifier);
+  const loadPromise = fresh ? loadFreshModule() : loadModule('../build/release.js');
 
   if (!fresh) {
     cachedModulePromise = loadPromise;
@@ -43,9 +47,15 @@ export async function loadReleaseWasmModule(options = {}) {
     if (!fresh) {
       cachedModulePromise = null;
       if (isRetryableWasmLoadError(error)) {
-        const freshModule = await loadFreshModule();
-        cachedModulePromise = Promise.resolve(freshModule);
-        return freshModule;
+        const retryPromise = loadFreshModule().then((freshModule) => {
+          cachedModulePromise = Promise.resolve(freshModule);
+          return freshModule;
+        }).catch((retryError) => {
+          cachedModulePromise = null;
+          throw retryError;
+        });
+        cachedModulePromise = retryPromise;
+        return retryPromise;
       }
     }
     throw error;
