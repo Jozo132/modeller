@@ -2472,14 +2472,18 @@ class App {
         if (localStorage.getItem(`tg:${groupId}`) === '1') {
           group.classList.add('tg-collapsed');
         }
-      } catch (_) {}
+      } catch (e) {
+        // localStorage unavailable (private browsing / quota exceeded) — proceed without persistence
+      }
 
       label.addEventListener('click', () => {
         const collapsed = group.classList.toggle('tg-collapsed');
         try {
           if (collapsed) localStorage.setItem(`tg:${groupId}`, '1');
           else localStorage.removeItem(`tg:${groupId}`);
-        } catch (_) {}
+        } catch (e) {
+          // localStorage unavailable — collapse/expand works but won't persist across sessions
+        }
       });
     });
   }
