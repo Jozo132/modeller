@@ -1707,12 +1707,8 @@ body.sketch-on-plane .toolbar-row-sketch {
 
   /* When sidebar is collapsed, viewport expands to fill */
   #left-panel.mobile-collapsed ~ #cad-canvas,
-  body:has(#left-panel.mobile-collapsed) #cad-canvas {
-    bottom: calc(var(--bottom-offset) + 32px);
-  }
-  body:has(#left-panel.mobile-collapsed) #view-3d {
-    bottom: calc(var(--bottom-offset) + 32px);
-  }
+  body:has(#left-panel.mobile-collapsed) #cad-canvas,
+  body:has(#left-panel.mobile-collapsed) #view-3d,
   body.mobile-sidebar-collapsed #cad-canvas,
   body.mobile-sidebar-collapsed #view-3d {
     bottom: calc(var(--bottom-offset) + 32px);

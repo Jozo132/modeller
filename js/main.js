@@ -1324,9 +1324,9 @@ class App {
       const rect = canvas.getBoundingClientRect();
       const sx = e.clientX - rect.left;
       const sy = e.clientY - rect.top;
-      if (mouseDown) {
-        const dxFromDown = sx - (this._mouseDownStart?.sx ?? sx);
-        const dyFromDown = sy - (this._mouseDownStart?.sy ?? sy);
+      if (mouseDown && this._mouseDownStart) {
+        const dxFromDown = sx - this._mouseDownStart.sx;
+        const dyFromDown = sy - this._mouseDownStart.sy;
         movedSinceDown = Math.hypot(dxFromDown, dyFromDown) > CLICK_DRAG_TOLERANCE_PX;
       }
 
