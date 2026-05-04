@@ -9160,6 +9160,8 @@ class App {
           this._renderer3d.setSelectedPlane(this._selectedPlane);
         }
         info(`Plane selection: ${this._selectedPlane || 'none'}`);
+        // Refresh the Feature Properties panel to show the updated selection
+        this._showLeftFeatureParams(null);
         this._updateNodeTree();
         this._updateOperationButtons();
         this._scheduleRender();
