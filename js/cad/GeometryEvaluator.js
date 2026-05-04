@@ -12,6 +12,7 @@
 //   - ISO 10303-42 (STEP geometry)
 
 import { warnOnceForFallback } from './fallback/warnOnce.js';
+import { loadReleaseWasmModule } from '../load-release-wasm.js';
 
 // ─── Tolerances ──────────────────────────────────────────────────────
 // Centralized tolerance constants used throughout evaluation, tessellation,
@@ -39,7 +40,7 @@ let _wasmMem = null;
 async function initWasm() {
   if (_wasm) return true;
   try {
-    const mod = await import('../../build/release.js');
+    const mod = await loadReleaseWasmModule();
     _wasm = mod;
     _wasmMem = mod.memory;
     return true;

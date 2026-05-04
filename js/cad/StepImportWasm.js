@@ -12,6 +12,7 @@
 
 import { loadBodyIntoWasm } from './wasm/TopoSerializer.js';
 import { globalTessConfig } from './TessellationConfig.js';
+import { loadReleaseWasmModule } from '../load-release-wasm.js';
 
 function cleanComponent(value) {
     return Math.abs(value) < 1e-12 ? 0 : value;
@@ -40,7 +41,7 @@ async function _ensureWasm() {
     if (_initPromise) return _initPromise;
     _initPromise = (async () => {
         try {
-            const mod = await import('../../build/release.js');
+            const mod = await loadReleaseWasmModule();
             _wasm = mod;
             _wasmMem = mod.memory;
             return true;

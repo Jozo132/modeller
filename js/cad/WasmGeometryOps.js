@@ -1,5 +1,7 @@
 // js/cad/WasmGeometryOps.js — Synchronous wrappers around preloaded WASM geometry ops.
 
+import { loadReleaseWasmModule } from '../load-release-wasm.js';
+
 let _wasm = null;
 let _wasmMem = null;
 let _wasmLoadPromise = null;
@@ -9,7 +11,7 @@ export async function preloadWasmGeometryOps() {
   if (!_wasmLoadPromise) {
     _wasmLoadPromise = (async () => {
       try {
-        const mod = await import('../../build/release.js');
+        const mod = await loadReleaseWasmModule();
         _wasm = mod;
         _wasmMem = mod.memory;
         return true;

@@ -1449,4 +1449,9 @@ export const {
     else { return await globalThis.WebAssembly.compileStreaming(globalThis.fetch(url)); }
   })(), {
   }
-))(new URL("release.wasm", import.meta.url));
+))((() => {
+  const wasmUrl = new URL("release.wasm", import.meta.url);
+  const cacheBust = new URL(import.meta.url).searchParams.get("cacheBust");
+  if (cacheBust) wasmUrl.searchParams.set("cacheBust", cacheBust);
+  return wasmUrl;
+})());

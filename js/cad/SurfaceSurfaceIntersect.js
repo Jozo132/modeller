@@ -13,6 +13,7 @@ import { NurbsCurve } from './NurbsCurve.js';
 import { DEFAULT_TOLERANCE } from './Tolerance.js';
 import { SurfaceType } from './BRepTopology.js';
 import { GeometryEvaluator } from './GeometryEvaluator.js';
+import { loadReleaseWasmModule } from '../load-release-wasm.js';
 
 // ─── Optional WASM backend for the numeric marcher ────────────────────
 // Loaded lazily (fire-and-forget) so this module does NOT hold a
@@ -22,7 +23,7 @@ import { GeometryEvaluator } from './GeometryEvaluator.js';
 // restore on refresh. Until the import resolves, `_numericMarch` falls
 // back to the pure-JS path.
 let _ssxMod = null;
-import('../../build/release.js').then((mod) => {
+loadReleaseWasmModule().then((mod) => {
   if (
     typeof mod.ssxRefinePair === 'function' &&
     typeof mod.ssxFindSeeds === 'function' &&

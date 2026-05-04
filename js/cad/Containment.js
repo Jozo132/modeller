@@ -22,6 +22,7 @@ import { getFlag } from '../featureFlags.js';
 import { warnOnceForFallback } from './fallback/warnOnce.js';
 import { SurfaceType } from './BRepTopology.js';
 import { loadBodyIntoWasm } from './wasm/TopoSerializer.js';
+import { loadReleaseWasmModule } from '../load-release-wasm.js';
 
 // ---------------------------------------------------------------------------
 // WASM native containment — trimmed-face via tessellation-based ray-cast
@@ -48,7 +49,7 @@ let _wasmMem = null;
 async function _ensureWasm() {
   if (_wasm) return true;
   try {
-    const mod = await import('../../build/release.js');
+    const mod = await loadReleaseWasmModule();
     _wasm = mod;
     _wasmMem = mod.memory;
     return true;

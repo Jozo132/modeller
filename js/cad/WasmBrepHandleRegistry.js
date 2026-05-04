@@ -1,4 +1,6 @@
 // @ts-nocheck
+import { loadReleaseWasmModule } from '../load-release-wasm.js';
+
 /**
  * WasmBrepHandleRegistry — JS-side bridge for the WASM B-Rep kernel handle system.
  *
@@ -55,7 +57,7 @@ export class WasmBrepHandleRegistry {
     async init() {
         if (this.#ready) return;
         try {
-            const mod = await import('../../build/release.js');
+            const mod = await loadReleaseWasmModule();
             _wasm = mod;
             _wasmMem = mod.memory;
             this.#ready = true;
