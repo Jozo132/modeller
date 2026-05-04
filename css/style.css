@@ -3240,6 +3240,26 @@ body.workspace-part #parameters-panel {
   transition: width 0.35s ease;
 }
 
+.startup-loading-actions {
+  margin-top: 16px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.startup-console-button {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-primary);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.startup-console-button:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
 .quick-start-overlay {
   position: fixed;
   inset: 0;
@@ -3257,7 +3277,7 @@ body.workspace-part #parameters-panel {
 .console-view {
   position: fixed;
   inset: 0;
-  z-index: 520;
+  z-index: 560;
   background: var(--bg-dark);
   display: none;
   flex-direction: column;
