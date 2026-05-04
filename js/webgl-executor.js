@@ -105,8 +105,10 @@ const LINE_VS = `#version 300 es
 layout(location = 0) in vec3 aPosition;
 uniform mat4 uMVP;
 uniform float uPointSize;
+uniform float uDepthBias;
 void main() {
   gl_Position = uMVP * vec4(aPosition, 1.0);
+  gl_Position.z -= uDepthBias * gl_Position.w;
   gl_PointSize = uPointSize;
 }`;
 
@@ -203,6 +205,7 @@ export class WebGLExecutor {
       uMVP: gl.getUniformLocation(p, 'uMVP'),
       uColor: gl.getUniformLocation(p, 'uColor'),
       uPointSize: gl.getUniformLocation(p, 'uPointSize'),
+      uDepthBias: gl.getUniformLocation(p, 'uDepthBias'),
       uViewDir: gl.getUniformLocation(p, 'uViewDir'),
     }));
 
@@ -305,9 +308,75 @@ export class WebGLExecutor {
     this._viewDir[2] = z;
   }
 
+  _setDepthFuncOption(depthFunc, fallback = 'lequal') {
+    const selected = depthFunc || fallback;
+    if (selected === 'greater') {
+      this.setDepthFunc(this.gl.GREATER);
+    } else if (selected === 'less') {
+      this.setDepthFunc(this.gl.LESS);
+    } else if (selected === 'equal') {
+      this.setDepthFunc(this.gl.EQUAL);
+    } else if (selected === 'gequal') {
+      this.setDepthFunc(this.gl.GEQUAL);
+    } else if (selected === 'always') {
+      this.setDepthFunc(this.gl.ALWAYS);
+    } else {
+      this.setDepthFunc(this.gl.LEQUAL);
+    }
+  }
+
+  drawTriangleDepthPrepass(data, vertexCount, options) {
+    const gl = this.gl;
+    const prevBlend = this._st.blend;
+    const prevDepthTest = this._st.depthTest;
+    const prevDepthFunc = this._st.depthFunc;
+    const prevCull = this._st.cullFace;
+    const prevDepthWrite = this._st.depthWrite;
+    const prevPolyOff = this._st.polygonOffset;
+
+    gl.viewport(0, 0, this.width, this.height);
+    this.setBlend(false);
+    this.setDepthTest(true);
+    this.setDepthFunc(gl.LESS);
+    this.setCullFace(true);
+    gl.cullFace(gl.BACK);
+    this.setDepthWrite(true);
+    if (options.polygonOffset) {
+      this.setPolygonOffset(true);
+      gl.polygonOffset(options.polygonOffset[0], options.polygonOffset[1]);
+    } else {
+      this.setPolygonOffset(false);
+    }
+
+    gl.colorMask(false, false, false, false);
+    gl.useProgram(this.programs[0]);
+    gl.uniformMatrix4fv(this.uniforms[0].uMVP, false, options.mvp);
+    gl.uniform4f(this.uniforms[0].uColor, 0, 0, 0, 0);
+    if (this.uniforms[0].uViewDir) {
+      gl.uniform3fv(this.uniforms[0].uViewDir, this._viewDir);
+    }
+
+    gl.bindVertexArray(this.vaoSolid);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo);
+    gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
+    gl.drawArrays(gl.TRIANGLES, 0, vertexCount);
+    gl.bindVertexArray(null);
+    gl.colorMask(true, true, true, true);
+
+    this.setPolygonOffset(prevPolyOff);
+    this.setDepthWrite(prevDepthWrite);
+    this.setDepthFunc(prevDepthFunc);
+    this.setDepthTest(prevDepthTest);
+    this.setCullFace(prevCull);
+    this.setBlend(prevBlend);
+  }
+
   drawTriangleBuffer(data, vertexCount, options) {
     const gl = this.gl;
     const prevBlend = this._st.blend;
+    const prevDepthTest = this._st.depthTest;
+    const prevDepthFunc = this._st.depthFunc;
+    const prevDepthWrite = this._st.depthWrite;
     const prevCull = this._st.cullFace;
     const prevPolyOff = this._st.polygonOffset;
 
@@ -315,6 +384,11 @@ export class WebGLExecutor {
     if ((options.color?.[3] ?? 1) < 1) {
       this.setBlend(true);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    }
+    this.setDepthTest(options.depthTest !== false);
+    this._setDepthFuncOption(options.depthFunc, 'lequal');
+    if (Object.prototype.hasOwnProperty.call(options, 'depthWrite')) {
+      this.setDepthWrite(!!options.depthWrite);
     }
     this.setCullFace(true);
     gl.cullFace(gl.BACK);
@@ -339,17 +413,28 @@ export class WebGLExecutor {
 
     this.setPolygonOffset(prevPolyOff);
     this.setCullFace(prevCull);
+    this.setDepthWrite(prevDepthWrite);
+    this.setDepthFunc(prevDepthFunc);
+    this.setDepthTest(prevDepthTest);
     this.setBlend(prevBlend);
   }
 
   drawTriangleBufferNormalColor(data, vertexCount, options) {
     const gl = this.gl;
     const prevBlend = this._st.blend;
+    const prevDepthTest = this._st.depthTest;
+    const prevDepthFunc = this._st.depthFunc;
+    const prevDepthWrite = this._st.depthWrite;
     const prevCull = this._st.cullFace;
     const prevPolyOff = this._st.polygonOffset;
 
     gl.viewport(0, 0, this.width, this.height);
     this.setBlend(false);
+    this.setDepthTest(options.depthTest !== false);
+    this._setDepthFuncOption(options.depthFunc, 'lequal');
+    if (Object.prototype.hasOwnProperty.call(options, 'depthWrite')) {
+      this.setDepthWrite(!!options.depthWrite);
+    }
     this.setCullFace(true);
     gl.cullFace(gl.BACK);
 
@@ -372,6 +457,9 @@ export class WebGLExecutor {
 
     this.setPolygonOffset(prevPolyOff);
     this.setCullFace(prevCull);
+    this.setDepthWrite(prevDepthWrite);
+    this.setDepthFunc(prevDepthFunc);
+    this.setDepthTest(prevDepthTest);
     this.setBlend(prevBlend);
   }
 
@@ -390,15 +478,7 @@ export class WebGLExecutor {
 
     this.setDepthTest(options.depthTest !== false);
 
-    if (options.depthFunc === 'greater') {
-      this.setDepthFunc(gl.GREATER);
-    } else if (options.depthFunc === 'less') {
-      this.setDepthFunc(gl.LESS);
-    } else if (options.depthFunc === 'always') {
-      this.setDepthFunc(gl.ALWAYS);
-    } else {
-      this.setDepthFunc(gl.LEQUAL);
-    }
+    this._setDepthFuncOption(options.depthFunc, 'lequal');
 
     if (Object.prototype.hasOwnProperty.call(options, 'depthWrite')) {
       this.setDepthWrite(!!options.depthWrite);
@@ -407,6 +487,7 @@ export class WebGLExecutor {
     gl.useProgram(this.programs[1]);
     gl.uniformMatrix4fv(this.uniforms[1].uMVP, false, options.mvp);
     gl.uniform4f(this.uniforms[1].uColor, ...(options.color || [1, 1, 1, 1]));
+    gl.uniform1f(this.uniforms[1].uDepthBias, options.depthBias || 0);
     gl.lineWidth(options.lineWidth || 1);
 
     gl.bindVertexArray(this.vaoLine);
@@ -414,6 +495,7 @@ export class WebGLExecutor {
     gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
     gl.drawArrays(gl.LINES, 0, vertexCount);
     gl.bindVertexArray(null);
+    gl.uniform1f(this.uniforms[1].uDepthBias, 0);
 
     this.setBlend(prevBlend);
     this.setDepthTest(prevDepthTest);
@@ -435,6 +517,7 @@ export class WebGLExecutor {
     gl.uniformMatrix4fv(this.uniforms[1].uMVP, false, options.mvp);
     gl.uniform4f(this.uniforms[1].uColor, ...(options.color || [1, 1, 1, 1]));
     gl.uniform1f(this.uniforms[1].uPointSize, options.pointSize || 1);
+    gl.uniform1f(this.uniforms[1].uDepthBias, 0);
 
     gl.bindVertexArray(this.vaoLine);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo);

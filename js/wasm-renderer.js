@@ -28,8 +28,8 @@ function _clampOrbitRadius(radius) {
 function _cameraClipRange(radius) {
   const r = Math.max(Math.abs(radius || 1), MIN_ORBIT_RADIUS);
   return {
-    near: Math.max(1e-6, Math.min(0.1, r * 1e-5)),
-    far: Math.max(100000, r * 1000),
+    near: Math.max(0.01, Math.min(1, r * 0.005)),
+    far: Math.max(1000, r * 20),
   };
 }
 
@@ -461,6 +461,8 @@ export class WasmRenderer {
     this._sketchPlane = null; // 'XY', 'XZ', 'YZ', or null
     this._originPlaneVisibilityMask = 0b111;
     this._originPlaneScale = 5.0; // world-space half-size, kept in sync with orbit radius
+    this._hoveredPlaneName = null;
+    this._selectedPlaneName = null;
     this._gridVisible = true;
     this._axesVisible = true;
 
@@ -532,6 +534,7 @@ export class WasmRenderer {
     }
 
     if (this.mode === '3d' && !this._sketchPlane) {
+      this._renderOriginPlanesOverlay();
       this._renderPartSketchImagesOverlay();
       // Draw origin plane labels (XY / XZ / YZ) on the 2D overlay in 3D part mode
       this._drawOriginPlaneLabels();
@@ -886,7 +889,7 @@ export class WasmRenderer {
       this.wasm.setCameraMode(1);
     }
     if (this.wasm.setOriginPlanesVisible) {
-      this.wasm.setOriginPlanesVisible(this._originPlaneVisibilityMask);
+      this.wasm.setOriginPlanesVisible(0);
     }
     // Scale origin planes and axes to stay proportional to the view distance.
     // 0.2 × orbitRadius keeps them at roughly 20% of the visible scene extent.
@@ -987,12 +990,33 @@ export class WasmRenderer {
     if (Math.abs(clip.w) < 1e-10) return null;
     const ndcX = clip.x / clip.w;
     const ndcY = clip.y / clip.w;
+    const ndcZ = clip.z / clip.w;
     const w = this._cssWidth || this.container.clientWidth;
     const h = this._cssHeight || this.container.clientHeight;
     return {
       x: (ndcX * 0.5 + 0.5) * w,
       y: (1 - (ndcY * 0.5 + 0.5)) * h,
+      depth: ndcZ * 0.5 + 0.5,
     };
+  }
+
+  _isScreenPointVisibleAtDepth(screenPoint, depth, tolerance = 2e-3) {
+    const gl = this.executor?.gl;
+    const canvas = this.canvas;
+    const cssWidth = this._cssWidth || this.container.clientWidth;
+    const cssHeight = this._cssHeight || this.container.clientHeight;
+    if (!gl || !canvas || !cssWidth || !cssHeight || !Number.isFinite(depth)) return true;
+
+    const px = Math.max(0, Math.min(canvas.width - 1, Math.round((screenPoint.x / cssWidth) * canvas.width)));
+    const py = Math.max(0, Math.min(canvas.height - 1, Math.round(((cssHeight - screenPoint.y) / cssHeight) * canvas.height)));
+    const depthSample = new Float32Array(1);
+    try {
+      gl.readPixels(px, py, 1, 1, gl.DEPTH_COMPONENT, gl.FLOAT, depthSample);
+    } catch {
+      return true;
+    }
+    if (!Number.isFinite(depthSample[0])) return true;
+    return depth <= depthSample[0] + tolerance;
   }
 
   /** Returns true if there is an active sketch plane definition set. */
@@ -1634,6 +1658,7 @@ export class WasmRenderer {
    * @param {string|null} planeName - 'XY', 'XZ', 'YZ', or null
    */
   setHoveredPlane(planeName) {
+    this._hoveredPlaneName = planeName || null;
     if (!this._ready || !this.wasm || !this.wasm.setOriginPlaneHovered) return;
     let mask = 0;
     if (planeName === 'XY') mask = 1;
@@ -1648,6 +1673,7 @@ export class WasmRenderer {
    * @param {string|null} planeName - 'XY', 'XZ', 'YZ', or null
    */
   setSelectedPlane(planeName) {
+    this._selectedPlaneName = planeName || null;
     if (!this._ready || !this.wasm || !this.wasm.setOriginPlaneSelected) return;
     let mask = 0;
     if (planeName === 'XY') mask = 1;
@@ -1655,6 +1681,84 @@ export class WasmRenderer {
     else if (planeName === 'YZ') mask = 4;
     if ((mask & this._originPlaneVisibilityMask) === 0) mask = 0;
     this.wasm.setOriginPlaneSelected(mask);
+  }
+
+  /**
+   * Render origin planes in the JS overlay after the part mesh so they share
+   * the same depth buffer and sort correctly against model geometry.
+   */
+  _renderOriginPlanesOverlay() {
+    if (this.mode !== '3d' || this._sketchPlane) return;
+    const exec = this.executor;
+    if (!exec) return;
+    const mvp = this._computeMVP();
+    if (!mvp) return;
+
+    const planeSize = this._originPlaneScale;
+    const planeDefs = [
+      {
+        name: 'XY',
+        mask: 1,
+        normal: [0, 0, 1],
+        front: [-planeSize, -planeSize, 0, planeSize, -planeSize, 0, planeSize, planeSize, 0, -planeSize, -planeSize, 0, planeSize, planeSize, 0, -planeSize, planeSize, 0],
+        back: [-planeSize, -planeSize, 0, planeSize, planeSize, 0, planeSize, -planeSize, 0, -planeSize, -planeSize, 0, -planeSize, planeSize, 0, planeSize, planeSize, 0],
+        border: [-planeSize, -planeSize, 0, planeSize, -planeSize, 0, planeSize, -planeSize, 0, planeSize, planeSize, 0, planeSize, planeSize, 0, -planeSize, planeSize, 0, -planeSize, planeSize, 0, -planeSize, -planeSize, 0],
+      },
+      {
+        name: 'XZ',
+        mask: 2,
+        normal: [0, 1, 0],
+        front: [-planeSize, 0, -planeSize, planeSize, 0, -planeSize, planeSize, 0, planeSize, -planeSize, 0, -planeSize, planeSize, 0, planeSize, -planeSize, 0, planeSize],
+        back: [-planeSize, 0, -planeSize, planeSize, 0, planeSize, planeSize, 0, -planeSize, -planeSize, 0, -planeSize, -planeSize, 0, planeSize, planeSize, 0, planeSize],
+        border: [-planeSize, 0, -planeSize, planeSize, 0, -planeSize, planeSize, 0, -planeSize, planeSize, 0, planeSize, planeSize, 0, planeSize, -planeSize, 0, planeSize, -planeSize, 0, planeSize, -planeSize, 0, -planeSize],
+      },
+      {
+        name: 'YZ',
+        mask: 4,
+        normal: [1, 0, 0],
+        front: [0, -planeSize, -planeSize, 0, planeSize, -planeSize, 0, planeSize, planeSize, 0, -planeSize, -planeSize, 0, planeSize, planeSize, 0, -planeSize, planeSize],
+        back: [0, -planeSize, -planeSize, 0, planeSize, planeSize, 0, planeSize, -planeSize, 0, -planeSize, -planeSize, 0, -planeSize, planeSize, 0, planeSize, planeSize],
+        border: [0, -planeSize, -planeSize, 0, planeSize, -planeSize, 0, planeSize, -planeSize, 0, planeSize, planeSize, 0, planeSize, planeSize, 0, -planeSize, planeSize, 0, -planeSize, planeSize, 0, -planeSize, -planeSize],
+      },
+    ];
+
+    for (const plane of planeDefs) {
+      if ((this._originPlaneVisibilityMask & plane.mask) === 0) continue;
+
+      const isHovered = this._hoveredPlaneName === plane.name;
+      const isSelected = this._selectedPlaneName === plane.name;
+      const fillColor = isSelected
+        ? [0.2, 0.6, 1.0, 0.30]
+        : (isHovered ? [0.53, 0.81, 0.92, 0.22] : [0.53, 0.81, 0.92, 0.12]);
+      const borderAlpha = isSelected ? 0.9 : (isHovered ? 0.7 : 0.4);
+      const borderWidth = isSelected ? 2.5 : (isHovered ? 2.0 : 1.0);
+
+      const interleaved = [];
+      const pushTriangleVertices = (vertices, normal) => {
+        for (let index = 0; index < vertices.length; index += 3) {
+          interleaved.push(vertices[index], vertices[index + 1], vertices[index + 2], normal[0], normal[1], normal[2]);
+        }
+      };
+      pushTriangleVertices(plane.front, plane.normal);
+      pushTriangleVertices(plane.back, [-plane.normal[0], -plane.normal[1], -plane.normal[2]]);
+
+      exec.drawTriangleBuffer(new Float32Array(interleaved), 12, {
+        mvp,
+        color: fillColor,
+        depthFunc: 'less',
+        depthWrite: false,
+        polygonOffset: [1, 1],
+      });
+
+      exec.drawLineBuffer(new Float32Array(plane.border), 8, {
+        mvp,
+        color: [fillColor[0], fillColor[1], fillColor[2], borderAlpha],
+        lineWidth: borderWidth,
+        lineDash: [],
+        depthFunc: 'less',
+        depthWrite: false,
+      });
+    }
   }
 
   /**
@@ -1666,63 +1770,106 @@ export class WasmRenderer {
     if (this.mode !== '3d') return;
     const ctx = this.overlayCtx;
     if (!ctx) return;
+    const getLabelAnchorVisibilityScore = (projected) => {
+      const samples = [
+        { x: 0, y: 0 },
+        { x: 6, y: 0 },
+        { x: -6, y: 0 },
+        { x: 0, y: 6 },
+        { x: 0, y: -6 },
+        { x: 4, y: 4 },
+        { x: -4, y: 4 },
+        { x: 4, y: -4 },
+        { x: -4, y: -4 },
+      ];
+      let visibleSamples = 0;
+      for (const sample of samples) {
+        if (this._isScreenPointVisibleAtDepth({
+          x: projected.x + sample.x,
+          y: projected.y + sample.y,
+        }, projected.depth, 1.2e-2)) {
+          visibleSamples++;
+        }
+      }
+      return visibleSamples;
+    };
 
     // Plane definitions: label, 3D anchor (bottom-left corner of the quad),
     // and in-plane right/up unit vectors in world space.
     // The anchor position uses the current plane scale so labels track the plane edges.
     const s = this._originPlaneScale;
+    const anchorScalars = [];
+    const anchorLevels = [0.92, 0.78, 0.64, 0.5, 0.36, 0.22];
+    for (const level of anchorLevels) {
+      anchorScalars.push(
+        [-level, -level],
+        [level, -level],
+        [-level, level],
+        [level, level],
+      );
+    }
+    for (const level of [0.78, 0.56, 0.34]) {
+      anchorScalars.push(
+        [-level, 0],
+        [level, 0],
+        [0, -level],
+        [0, level],
+      );
+    }
+    const createPlaneAnchors = (mapAnchor) => anchorScalars.map(([u, v]) => mapAnchor(u * s, v * s));
     const PLANE_LABELS = [
-      { name: 'XY', mask: 1, wx: -s, wy: -s, wz: 0,  rx: 1, ry: 0, rz: 0,  ux: 0, uy: 1, uz: 0 },
-      { name: 'XZ', mask: 2, wx: -s, wy:  0, wz: -s,  rx: 1, ry: 0, rz: 0,  ux: 0, uy: 0, uz: 1 },
-      { name: 'YZ', mask: 4, wx:  0, wy: -s, wz: -s,  rx: 0, ry: 1, rz: 0,  ux: 0, uy: 0, uz: 1 },
+      {
+        name: 'XY', mask: 1, rx: 1, ry: 0, rz: 0, ux: 0, uy: 1, uz: 0,
+        anchors: createPlaneAnchors((x, y) => ({ wx: x, wy: y, wz: 0 })),
+      },
+      {
+        name: 'XZ', mask: 2, rx: 1, ry: 0, rz: 0, ux: 0, uy: 0, uz: 1,
+        anchors: createPlaneAnchors((x, z) => ({ wx: x, wy: 0, wz: z })),
+      },
+      {
+        name: 'YZ', mask: 4, rx: 0, ry: 1, rz: 0, ux: 0, uy: 0, uz: 1,
+        anchors: createPlaneAnchors((y, z) => ({ wx: 0, wy: y, wz: z })),
+      },
     ];
 
-    const FONT_PX = 11; // desired text height in screen pixels
+    const FONT_PX = 14; // desired text height in screen pixels
     const vw = this._cssWidth  || this.container.clientWidth;
     const vh = this._cssHeight || this.container.clientHeight;
 
     for (const pl of PLANE_LABELS) {
       if ((this._originPlaneVisibilityMask & pl.mask) === 0) continue;
 
-      const a = this.worldToScreen(pl.wx, pl.wy, pl.wz);
-      if (!a) continue;
+      let anchorWorld = null;
+      let a = null;
+      let bestVisibilityScore = 0;
+      for (const candidate of pl.anchors) {
+        const projected = this.worldToScreen(candidate.wx, candidate.wy, candidate.wz);
+        if (!projected) continue;
+        if (!Number.isFinite(projected.depth) || projected.depth < 0 || projected.depth > 1) continue;
+        if (projected.x < -30 || projected.x > vw + 30 || projected.y < -30 || projected.y > vh + 30) continue;
+        const visibilityScore = getLabelAnchorVisibilityScore(projected);
+        if (visibilityScore <= 0) continue;
+        if (visibilityScore < bestVisibilityScore) continue;
+        bestVisibilityScore = visibilityScore;
+        anchorWorld = candidate;
+        a = projected;
+      }
+      if (!anchorWorld || !a) continue;
 
-      // Project one step in each in-plane direction to get screen-space axes
-      const rPt = this.worldToScreen(pl.wx + pl.rx, pl.wy + pl.ry, pl.wz + pl.rz);
-      const uPt = this.worldToScreen(pl.wx + pl.ux, pl.wy + pl.uy, pl.wz + pl.uz);
-      if (!rPt || !uPt) continue;
-
-      const srx = rPt.x - a.x;  const sry = rPt.y - a.y;
-      const sux = uPt.x - a.x;  const suy = uPt.y - a.y;
-      const srLen = Math.hypot(srx, sry);
-      const suLen = Math.hypot(sux, suy);
-      if (srLen < 0.1 || suLen < 0.1) continue; // degenerate / edge-on view
-
-      // Clip to viewport — don't draw if anchor is far off-screen
-      if (a.x < -30 || a.x > vw + 30 || a.y < -30 || a.y > vh + 30) continue;
-
-      // Normalise to FONT_PX for constant screen-size text.
-      // Canvas Y is downward, so negate the up-vector's screen contribution.
-      const nrx =  (srx / srLen) * FONT_PX;
-      const nry =  (sry / srLen) * FONT_PX;
-      const nux = -(sux / suLen) * FONT_PX;
-      const nuy = -(suy / suLen) * FONT_PX;
+      const center = this.worldToScreen(0, 0, 0);
+      const offsetX = center ? Math.sign(center.x - a.x) * 8 : 8;
+      const offsetY = center ? Math.sign(center.y - a.y) * 8 : -8;
 
       ctx.save();
-      // Transform: 1 local unit = FONT_PX screen pixels, aligned to the plane
-      ctx.transform(nrx, nry, nux, nuy, a.x, a.y);
-      ctx.font = 'bold 1px monospace';  // 1 local unit tall = FONT_PX screen pixels
-      ctx.textBaseline = 'bottom';
-      ctx.textAlign = 'left';
-
-      // Shadow for legibility (lineWidth in local units)
+      ctx.font = `bold ${FONT_PX}px monospace`;
+      ctx.textBaseline = 'middle';
+      ctx.textAlign = 'center';
       ctx.strokeStyle = 'rgba(0,0,0,0.7)';
-      ctx.lineWidth = 3 / FONT_PX;
+      ctx.lineWidth = 3;
       ctx.lineJoin = 'round';
-      ctx.strokeText(pl.name, 0, 0);
-
+      ctx.strokeText(pl.name, a.x + offsetX, a.y + offsetY);
       ctx.fillStyle = '#00e5ff';
-      ctx.fillText(pl.name, 0, 0);
+      ctx.fillText(pl.name, a.x + offsetX, a.y + offsetY);
       ctx.restore();
     }
   }
@@ -1737,6 +1884,18 @@ export class WasmRenderer {
     if (this._renderedPart) {
       this._buildSketchWireframes(this._renderedPart);
     }
+  }
+
+  clearSketchOverlayData(part = this._renderedPart || null) {
+    this._activeSceneEdges = null;
+    this._activeSceneEdgeVertexCount = 0;
+    this._selectedFeatureId = null;
+    if (part) {
+      this._buildSketchWireframes(part);
+      return;
+    }
+    this._sketchSelectedEdges = null;
+    this._sketchSelectedEdgeVertexCount = 0;
   }
 
   _sketchWireHashValue(hash, value) {
@@ -2115,7 +2274,7 @@ export class WasmRenderer {
     if (!planes.XZ || planes.XZ.visible) mask |= 2;
     if (!planes.YZ || planes.YZ.visible) mask |= 4;
     this._originPlaneVisibilityMask = mask;
-    this.wasm.setOriginPlanesVisible(mask);
+    this.wasm.setOriginPlanesVisible(0);
   }
 
   setVisible(visible) {
@@ -3085,7 +3244,7 @@ export class WasmRenderer {
     if (!part || !this._ready) return;
     this._renderedPart = part;
 
-    // Update origin plane visibility in WASM
+    // Track origin plane visibility, but keep the legacy WASM plane pass disabled.
     if (this.wasm && this.wasm.setOriginPlanesVisible) {
       const planes = part.getOriginPlanes ? part.getOriginPlanes() : {};
       let mask = 0;
@@ -3093,7 +3252,7 @@ export class WasmRenderer {
       if (!planes.XZ || planes.XZ.visible) mask |= 2;
       if (!planes.YZ || planes.YZ.visible) mask |= 4;
       this._originPlaneVisibilityMask = mask;
-      this.wasm.setOriginPlanesVisible(mask);
+      this.wasm.setOriginPlanesVisible(0);
     }
 
     const geo = part.getFinalGeometry();

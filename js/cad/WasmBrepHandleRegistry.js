@@ -48,6 +48,12 @@ export class WasmBrepHandleRegistry {
     /** Whether init() has been called successfully */
     #ready = false;
 
+    /** Whether init() already failed and the registry is unavailable */
+    #unavailable = false;
+
+    /** Last init error captured while entering unavailable mode */
+    #initError = null;
+
     // ────────────────────── init ──────────────────────
 
     /**
@@ -55,20 +61,33 @@ export class WasmBrepHandleRegistry {
      * Safe to call multiple times — subsequent calls are no-ops.
      */
     async init() {
-        if (this.#ready) return;
+        if (this.#ready) return true;
+        if (this.#unavailable) return false;
         try {
             const mod = await loadReleaseWasmModule();
             _wasm = mod;
             _wasmMem = mod.memory;
             this.#ready = true;
+            this.#unavailable = false;
+            this.#initError = null;
+            return true;
         } catch (e) {
-            console.error('[WasmBrepHandleRegistry] WASM init failed:', e);
-            throw e;
+            this.#ready = false;
+            this.#unavailable = true;
+            this.#initError = e;
+            console.warn('[WasmBrepHandleRegistry] WASM init unavailable; falling back to JS-only mode:', e);
+            return false;
         }
     }
 
     /** @returns {boolean} */
     get ready() { return this.#ready; }
+
+    /** @returns {boolean} */
+    get unavailable() { return this.#unavailable; }
+
+    /** @returns {unknown} */
+    get initError() { return this.#initError; }
 
     /** @returns {any} The raw WASM module exports (null if not initialised) */
     get wasmExports() { return _wasm; }

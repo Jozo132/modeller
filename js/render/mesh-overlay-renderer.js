@@ -7,6 +7,7 @@ const DEFAULT_HIDDEN_FEATURE_EDGE_COLOR = [0.14, 0.14, 0.14, 0.55];
 const DEFAULT_SILHOUETTE_COLOR = [0.1, 0.1, 0.1, 1];
 const DEFAULT_BOUNDARY_EDGE_COLOR = [1.0, 0.4, 0.7, 1];
 const DEFAULT_TRIANGLE_OUTLINE_COLOR = [0.72, 0.72, 0.72, 0.7];
+const FEATURE_EDGE_DEPTH_BIAS = 2e-6;
 
 // Build a Float32Array containing only the segments of meshEdges whose adjacent faces
 // are front-facing toward the camera.  Used by executors that have no hardware depth test.
@@ -84,18 +85,36 @@ export function renderBaseMeshOverlay(executor, options) {
   // Diagnostic hatch uses a combined front+back face pass with painter's algorithm
   const { diagnosticHatch, normalColorShading } = options;
 
+  const supportsDepthPrepass = typeof executor.drawTriangleDepthPrepass === 'function'
+    && typeof executor.setDepthWrite === 'function';
+  const visibleEdgeDepthFunc = supportsDepthPrepass ? 'lequal' : 'less';
+  const triangleOverlayDepthFunc = supportsDepthPrepass ? 'lequal' : 'less';
+
+  if (supportsDepthPrepass) {
+    executor.drawTriangleDepthPrepass(meshTriangles, meshTriangleCount, { mvp });
+    executor.setDepthWrite(false);
+  }
+
   if (normalColorShading) {
     executor.drawTriangleBufferNormalColor(meshTriangles, meshTriangleCount, {
       mvp,
-      polygonOffset: [2, 2],
+      depthFunc: supportsDepthPrepass ? 'lequal' : 'less',
+      depthWrite: false,
+      polygonOffset: supportsDepthPrepass ? null : [2, 2],
     });
   } else {
     executor.drawTriangleBuffer(meshTriangles, meshTriangleCount, {
       mvp,
       color: faceColor,
-      polygonOffset: [2, 2],
+      depthFunc: supportsDepthPrepass ? 'lequal' : 'less',
+      depthWrite: false,
+      polygonOffset: supportsDepthPrepass ? null : [2, 2],
       diagnosticHatch: !!diagnosticHatch,
     });
+  }
+
+  if (supportsDepthPrepass) {
+    executor.setDepthWrite(true);
   }
 
   if (meshTriangleOverlayMode === 'outline' && meshTriangleOverlayEdges && meshTriangleOverlayEdgeVertexCount > 0) {
@@ -104,11 +123,14 @@ export function renderBaseMeshOverlay(executor, options) {
       color: triangleOutlineColor,
       lineWidth: 1,
       lineDash: [],
+      depthFunc: triangleOverlayDepthFunc,
+      depthWrite: false,
     });
   }
 
   // For executors without hardware depth testing (e.g. CanvasCommandExecutor), pre-filter
-  // feature edges to front-facing faces only using adjacent face normals.
+  // feature edges to front-facing faces only using adjacent face normals. WebGL relies on
+  // the depth prepass instead; filtering there drops valid concave edges.
   let visibleEdges = meshEdges;
   let visibleEdgeCount = meshEdgeVertexCount;
   if (!executor.setDepthTest && meshEdgeSegments && orbitState) {
@@ -136,8 +158,9 @@ export function renderBaseMeshOverlay(executor, options) {
       color: featureEdgeColor,
       lineWidth: 1,
       lineDash: [],
-      depthFunc: 'less',
+      depthFunc: visibleEdgeDepthFunc,
       depthWrite: false,
+      depthBias: supportsDepthPrepass ? FEATURE_EDGE_DEPTH_BIAS : 0,
     });
   }
 
@@ -158,7 +181,7 @@ export function renderBaseMeshOverlay(executor, options) {
       color: visualEdgeColor,
       lineWidth: 1,
       lineDash: [],
-      depthFunc: 'less',
+      depthFunc: triangleOverlayDepthFunc,
       depthWrite: false,
     });
   }
@@ -170,7 +193,7 @@ export function renderBaseMeshOverlay(executor, options) {
       color: silhouetteColor,
       lineWidth: 1,
       lineDash: [],
-      depthFunc: 'less',
+      depthFunc: visibleEdgeDepthFunc,
       depthWrite: false,
     });
   }
@@ -181,7 +204,7 @@ export function renderBaseMeshOverlay(executor, options) {
       color: boundaryEdgeColor,
       lineWidth: 2,
       lineDash: [],
-      depthFunc: 'less',
+      depthFunc: visibleEdgeDepthFunc,
       depthWrite: false,
     });
   }

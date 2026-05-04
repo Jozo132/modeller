@@ -380,8 +380,15 @@ function surfaceNormalAt(point, surface, sameSense) {
 }
 
 function shouldPreferSurfaceNormals(info, vertices) {
-  if (!info?.hasFeatureSource || !info.surface || !info.surfaceInfo || !Array.isArray(vertices) || vertices.length !== 3) return false;
+  if (!info?.surface || !Array.isArray(vertices) || vertices.length !== 3) return false;
   if (info.preferSurfaceNormals !== undefined) return info.preferSurfaceNormals;
+
+  if (info.shared?.isFillet || info.surfaceType === 'fillet') {
+    info.preferSurfaceNormals = true;
+    return true;
+  }
+
+  if (!info.hasFeatureSource || !info.surfaceInfo) return false;
 
   const centroid = {
     x: (vertices[0].x + vertices[1].x + vertices[2].x) / 3,

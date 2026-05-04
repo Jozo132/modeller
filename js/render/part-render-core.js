@@ -5,8 +5,8 @@ const MIN_ORBIT_RADIUS = 0.001;
 function cameraClipRange(radius) {
   const r = Math.max(Math.abs(radius || 1), MIN_ORBIT_RADIUS);
   return {
-    near: Math.max(1e-6, Math.min(0.1, r * 1e-5)),
-    far: Math.max(100000, r * 1000),
+    near: Math.max(0.01, Math.min(1, r * 0.005)),
+    far: Math.max(1000, r * 20),
   };
 }
 
@@ -107,6 +107,36 @@ function computePolygonNormal(verts) {
   return { x: nx / len, y: ny / len, z: nz / len };
 }
 
+function normalizeVector(vector) {
+  const length = Math.sqrt(
+    (vector?.x || 0) * (vector?.x || 0)
+    + (vector?.y || 0) * (vector?.y || 0)
+    + (vector?.z || 0) * (vector?.z || 0)
+  );
+  if (length <= 1e-10) return null;
+  return {
+    x: vector.x / length,
+    y: vector.y / length,
+    z: vector.z / length,
+  };
+}
+
+function exactSurfaceNormalAt(point, topoFace) {
+  if (!point || !topoFace?.surface || typeof topoFace.surface.closestPointUV !== 'function' || typeof topoFace.surface.normal !== 'function') {
+    return null;
+  }
+  try {
+    const uv = topoFace.surface.closestPointUV(point);
+    const sampled = normalizeVector(topoFace.surface.normal(uv.u, uv.v));
+    if (!sampled) return null;
+    return topoFace.sameSense === false
+      ? { x: -sampled.x, y: -sampled.y, z: -sampled.z }
+      : sampled;
+  } catch {
+    return null;
+  }
+}
+
 function makeVertexKey(v, precision = 5) {
   return `${v.x.toFixed(precision)},${v.y.toFixed(precision)},${v.z.toFixed(precision)}`;
 }
@@ -148,7 +178,6 @@ function computeGeometryDiagonal(faces) {
   const dz = maxZ - minZ;
   return Math.max(Math.sqrt(dx * dx + dy * dy + dz * dz), 1);
 }
-
 function buildPolylineBuffer(edges) {
   const data = [];
   for (const edge of edges || []) {
@@ -342,6 +371,9 @@ function buildSilhouetteCandidates(faces) {
 
 export function buildMeshRenderData(geometry) {
   const faces = geometry.faces || [];
+  const topoFaceById = typeof geometry.topoBody?.faces === 'function'
+    ? new Map(geometry.topoBody.faces().map((face) => [face.id, face]))
+    : null;
   const geometryDiag = computeGeometryDiagonal(faces);
   const featureEdgeSegments = buildFeatureEdgeSegmentSet(geometry.edges || []);
   const edgeDashLength = Math.max(geometryDiag / 180, 0.05);
@@ -420,6 +452,8 @@ export function buildMeshRenderData(geometry) {
     const vertexNormals = Array.isArray(face.vertexNormals) && face.vertexNormals.length === verts.length
       ? face.vertexNormals
       : null;
+    const topoFace = topoFaceById && face.topoFaceId != null ? topoFaceById.get(face.topoFaceId) : null;
+    const preferExactNormals = !!(face.shared?.isFillet && topoFace);
     if (verts.length < 3) continue;
 
     for (let i = 1; i < verts.length - 1; i++) {
@@ -433,7 +467,9 @@ export function buildMeshRenderData(geometry) {
         triData[ti++] = v.y;
         triData[ti++] = v.z;
         if (curved) {
-          const sn = triNormals ? triNormals[vi] : smoothNormals.get(`${g}|${vKey(v)}`);
+          const sn = (preferExactNormals ? exactSurfaceNormalAt(v, topoFace) : null)
+            || (triNormals ? triNormals[vi] : smoothNormals.get(`${g}|${vKey(v)}`))
+            || n;
           triData[ti++] = sn.x;
           triData[ti++] = sn.y;
           triData[ti++] = sn.z;

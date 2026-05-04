@@ -1436,7 +1436,8 @@ class App {
         }
 
         if (!mouseDown) {
-          const hitPlaneResult = this._renderer3d.pickPlane(e.clientX, e.clientY);
+          const geometryHoverActive = this._renderer3d._hoveredEdgeIndex >= 0 || this._renderer3d._hoveredFaceIndex >= 0;
+          const hitPlaneResult = geometryHoverActive ? null : this._renderer3d.pickPlane(e.clientX, e.clientY);
           const hitPlane = hitPlaneResult ? hitPlaneResult.name : null;
           if (hitPlane !== this._hoveredPlane) {
             this._hoveredPlane = hitPlane;
@@ -3984,7 +3985,11 @@ class App {
   async _initWasmHandleSubsystem() {
     try {
       const registry = new WasmBrepHandleRegistry();
-      await registry.init();
+      const ready = await registry.init();
+      if (!ready || !registry.ready) {
+        warn('[WASM] Handle subsystem unavailable; continuing in JS-only mode.', registry.initError || 'unknown init failure');
+        return;
+      }
       this._wasmHandleRegistry = registry;
 
       const residencyMgr = new HandleResidencyManager(registry);
@@ -9327,6 +9332,10 @@ class App {
     modeIndicator.className = 'status-mode part-mode';
 
     this.setActiveTool('select');
+    if (this._featurePanel) this._featurePanel.selectFeature(null);
+    if (this._renderer3d) this._renderer3d.clearSketchOverlayData(part);
+    if (this._parametersPanel) this._parametersPanel.clear();
+    this._showLeftFeatureParams(null);
     this._update3DView();
     this._updateOperationButtons();
     this.setStatus('Sketch discarded. Returned to Part Design mode.');
@@ -10570,11 +10579,12 @@ class App {
     modeIndicator.className = 'status-mode part-mode';
 
     this.setActiveTool('select');
+    if (this._featurePanel) this._featurePanel.selectFeature(null);
+    if (this._renderer3d) this._renderer3d.clearSketchOverlayData(part);
+    if (this._parametersPanel) this._parametersPanel.clear();
+    this._showLeftFeatureParams(null);
     this._update3DView();
     this._updateOperationButtons();
-    // Exit sketch in a neutral selection state.
-    if (this._featurePanel) this._featurePanel.selectFeature(null);
-    if (this._renderer3d) this._renderer3d.setSelectedFeature(null);
     this.setStatus('Returned to Part Design mode.');
     this._recorder.sketchFinished(this._lastSketchFeatureId, 0);
     info('Finished sketch-on-plane, returned to Part Design mode');
