@@ -18,15 +18,11 @@
   --grid-minor: rgba(255,255,255,0.03);
   --panel-width: 220px;
   --bottom-offset: 28px;
-  /* Toolbar layout — update when row count changes */
+  /* Toolbar layout — fixed 3-row ribbon; groups each contain a 3-row button grid */
   --toolbar-row-h: 34px;
-  --toolbar-height: var(--toolbar-row-h);      /* 1 row by default */
+  --toolbar-btn-sz: 26px;                                        /* button square size */
+  --toolbar-height: calc(var(--toolbar-row-h) * 3 + 4px);       /* always 3 rows + 4px padding */
   --top-offset: calc(24px + var(--toolbar-height)); /* menu-bar + toolbar */
-}
-
-/* In sketch-on-plane mode the toolbar grows to 3 rows */
-body.sketch-on-plane {
-  --toolbar-height: calc(var(--toolbar-row-h) * 3 + 2px); /* 3 rows + 2 row-borders */
 }
 
 html, body {
@@ -204,75 +200,72 @@ html, body {
   font-style: italic;
 }
 
-/* Toolbar */
+/* Toolbar — single horizontal ribbon; each group contains a 3-row button grid */
 #toolbar {
   position: fixed;
   top: 24px; left: 0; right: 0;
-  height: auto;
+  height: var(--toolbar-height);
   background: var(--bg-toolbar);
   border-bottom: 1px solid var(--border);
   display: flex;
-  flex-direction: column;
-  padding: 0;
+  flex-direction: row;
+  align-items: stretch;
+  padding: 2px 4px;
   gap: 0;
   z-index: 100;
   user-select: none;
-  overflow: hidden;
-}
-
-/* Each toolbar row */
-.toolbar-row {
-  display: flex;
-  align-items: center;
-  height: var(--toolbar-row-h);
-  padding: 0 6px;
-  gap: 2px;
   overflow-x: auto;
   overflow-y: hidden;
-  white-space: nowrap;
-  flex-shrink: 0;
 }
 
-.toolbar-row + .toolbar-row {
-  border-top: 1px solid var(--border);
+/* Toolbar rows become transparent flex wrappers so their groups are direct children of #toolbar */
+.toolbar-row {
+  display: contents;
 }
 
 /* Sketch draw/constrain rows — hidden in part/default modes */
 .toolbar-row-sketch {
-  display: none !important;
+  display: none;
 }
 body.sketch-on-plane .toolbar-row-sketch {
-  display: flex !important;
+  display: contents;
 }
 
+/* Each group: vertical column — label on top, then a 3-row button grid */
 .tool-group {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: flex-start;
+  align-self: stretch;
+  padding: 2px 3px;
   gap: 1px;
-  padding: 0 2px;
+  min-width: 0;
 }
 
+/* Vertical separator between groups */
 .toolbar-sep {
   width: 1px;
-  height: 20px;
+  align-self: stretch;
   background: var(--border);
-  margin: 0 3px;
+  margin: 4px 3px;
   flex-shrink: 0;
 }
 
-/* Group label — acts as collapse/expand toggle */
+/* Group label — acts as collapse/expand toggle, sits above the button grid */
 .group-label {
   font-size: 9px;
   color: var(--text-secondary);
-  margin-right: 3px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
   cursor: pointer;
   user-select: none;
-  padding: 2px 3px;
+  padding: 0 1px;
+  height: 13px;
+  line-height: 13px;
   border-radius: 2px;
   flex-shrink: 0;
   transition: color 0.12s;
+  white-space: nowrap;
 }
 .group-label:hover {
   color: var(--text-primary);
@@ -285,9 +278,19 @@ body.sketch-on-plane .toolbar-row-sketch {
 .tg-collapsed .group-label::after {
   content: ' ▸';
 }
-/* When group is collapsed, hide all direct children except the label */
-.tool-group.tg-collapsed > *:not(.group-label) {
+/* When group is collapsed, hide the button grid */
+.tool-group.tg-collapsed > .group-btns {
   display: none !important;
+}
+
+/* Button grid: 3 rows, auto columns, column-major flow */
+.group-btns {
+  display: grid;
+  grid-template-rows: repeat(3, var(--toolbar-btn-sz));
+  grid-auto-flow: column;
+  grid-auto-columns: var(--toolbar-btn-sz);
+  gap: 1px;
+  flex-shrink: 0;
 }
 
 #toolbar button {
@@ -1566,6 +1569,7 @@ body.sketch-on-plane .toolbar-row-sketch {
   :root {
     --panel-width: 0px;
     --toolbar-row-h: 42px;
+    --toolbar-btn-sz: 32px;
   }
 
   #menu-bar {
@@ -1579,35 +1583,34 @@ body.sketch-on-plane .toolbar-row-sketch {
   }
 
   #toolbar {
-    overflow: hidden;
-  }
-
-  .toolbar-row {
-    height: var(--toolbar-row-h);
-    padding: 4px 8px;
-    gap: 4px;
     overflow-x: auto;
     overflow-y: hidden;
     -webkit-overflow-scrolling: touch;
     scrollbar-width: none;
+    padding: 2px 8px;
   }
-  .toolbar-row::-webkit-scrollbar {
+  #toolbar::-webkit-scrollbar {
     display: none;
   }
 
   .tool-group {
-    gap: 3px;
-    padding: 0 1px;
+    gap: 2px;
+    padding: 2px 2px;
+  }
+
+  .group-btns {
+    grid-template-rows: repeat(3, var(--toolbar-btn-sz));
+    grid-auto-columns: var(--toolbar-btn-sz);
+    gap: 2px;
   }
 
   .toolbar-sep {
-    height: 26px;
-    margin: 0 2px;
+    margin: 4px 2px;
   }
 
   #toolbar button {
-    width: 34px;
-    height: 32px;
+    width: var(--toolbar-btn-sz);
+    height: var(--toolbar-btn-sz);
     border-radius: 6px;
   }
 

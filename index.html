@@ -140,128 +140,150 @@
       <!-- File group -->
       <div class="tool-group" data-group="file">
         <span class="group-label" title="Toggle File group">File</span>
-        <button id="btn-new" title="New Drawing (Ctrl+N)"><svg viewBox="0 0 20 20"><path d="M5 2h7l4 4v11a1 1 0 01-1 1H5a1 1 0 01-1-1V3a1 1 0 011-1z" fill="none"/><path d="M12 2v4h4" fill="none"/></svg></button>
-        <button id="btn-open" title="Open DXF"><svg viewBox="0 0 20 20"><path d="M3 16V7h4l2 2h7v7H3z" fill="none"/><path d="M3 7V5a1 1 0 011-1h4l2 2" fill="none"/></svg></button>
-        <button id="btn-save" title="Save DXF (Ctrl+S)"><svg viewBox="0 0 20 20"><path d="M5 2h8l4 4v10a2 2 0 01-2 2H5a2 2 0 01-2-2V4a2 2 0 012-2z" fill="none"/><path d="M7 2v5h6V2" fill="none"/><rect x="6" y="12" width="8" height="4" rx="0.5" fill="none"/></svg></button>
+        <div class="group-btns">
+          <button id="btn-new" title="New Drawing (Ctrl+N)"><svg viewBox="0 0 20 20"><path d="M5 2h7l4 4v11a1 1 0 01-1 1H5a1 1 0 01-1-1V3a1 1 0 011-1z" fill="none"/><path d="M12 2v4h4" fill="none"/></svg></button>
+          <button id="btn-open" title="Open DXF"><svg viewBox="0 0 20 20"><path d="M3 16V7h4l2 2h7v7H3z" fill="none"/><path d="M3 7V5a1 1 0 011-1h4l2 2" fill="none"/></svg></button>
+          <button id="btn-save" title="Save DXF (Ctrl+S)"><svg viewBox="0 0 20 20"><path d="M5 2h8l4 4v10a2 2 0 01-2 2H5a2 2 0 01-2-2V4a2 2 0 012-2z" fill="none"/><path d="M7 2v5h6V2" fill="none"/><rect x="6" y="12" width="8" height="4" rx="0.5" fill="none"/></svg></button>
+        </div>
       </div>
       <div class="toolbar-sep"></div>
 
       <!-- Select + Undo/Redo + Delete group -->
       <div class="tool-group" data-group="select-edit">
         <span class="group-label" title="Toggle Edit group">Edit</span>
-        <button id="btn-select" title="Select (Esc)" data-tool="select"><svg viewBox="0 0 20 20"><path d="M6 2l0 14 4-4 4 6 2-1-4-6 5-1z" fill="none"/></svg></button>
-        <button id="btn-undo" title="Undo (Ctrl+Z)"><svg viewBox="0 0 20 20"><path d="M5 10a6 6 0 116 6" fill="none"/><polyline points="2,10 5,7 8,10" fill="none"/></svg></button>
-        <button id="btn-redo" title="Redo (Ctrl+Y)"><svg viewBox="0 0 20 20"><path d="M15 10a6 6 0 10-6 6" fill="none"/><polyline points="18,10 15,7 12,10" fill="none"/></svg></button>
-        <button id="btn-delete" title="Delete (Del)" class="sketch-tool-only"><svg viewBox="0 0 20 20"><polyline points="6,6 7,17 13,17 14,6" fill="none"/><line x1="4" y1="6" x2="16" y2="6"/><path d="M8 3h4v3H8z" fill="none"/></svg></button>
+        <div class="group-btns">
+          <button id="btn-select" title="Select (Esc)" data-tool="select"><svg viewBox="0 0 20 20"><path d="M6 2l0 14 4-4 4 6 2-1-4-6 5-1z" fill="none"/></svg></button>
+          <button id="btn-undo" title="Undo (Ctrl+Z)"><svg viewBox="0 0 20 20"><path d="M5 10a6 6 0 116 6" fill="none"/><polyline points="2,10 5,7 8,10" fill="none"/></svg></button>
+          <button id="btn-redo" title="Redo (Ctrl+Y)"><svg viewBox="0 0 20 20"><path d="M15 10a6 6 0 10-6 6" fill="none"/><polyline points="18,10 15,7 12,10" fill="none"/></svg></button>
+          <button id="btn-delete" title="Delete (Del)" class="sketch-tool-only"><svg viewBox="0 0 20 20"><polyline points="6,6 7,17 13,17 14,6" fill="none"/><line x1="4" y1="6" x2="16" y2="6"/><path d="M8 3h4v3H8z" fill="none"/></svg></button>
+        </div>
       </div>
       <div class="toolbar-sep"></div>
 
       <!-- View group -->
       <div class="tool-group" data-group="view">
         <span class="group-label" title="Toggle View group">View</span>
-        <button id="btn-zoom-fit" title="Fit All (F)"><svg viewBox="0 0 20 20"><polyline points="3,7 3,3 7,3" fill="none"/><polyline points="13,3 17,3 17,7" fill="none"/><polyline points="17,13 17,17 13,17" fill="none"/><polyline points="7,17 3,17 3,13" fill="none"/><rect x="6" y="6" width="8" height="8" rx="0.5" fill="none" opacity="0.4"/></svg></button>
-        <button id="btn-zoom-in" title="Zoom In (+)"><svg viewBox="0 0 20 20"><circle cx="9" cy="9" r="5" fill="none"/><line x1="13" y1="13" x2="17" y2="17"/><line x1="7" y1="9" x2="11" y2="9"/><line x1="9" y1="7" x2="9" y2="11"/></svg></button>
-        <button id="btn-zoom-out" title="Zoom Out (-)"><svg viewBox="0 0 20 20"><circle cx="9" cy="9" r="5" fill="none"/><line x1="13" y1="13" x2="17" y2="17"/><line x1="7" y1="9" x2="11" y2="9"/></svg></button>
-        <button id="btn-grid-toggle" title="Toggle Grid (G)"><svg viewBox="0 0 20 20"><rect x="3" y="3" width="14" height="14" fill="none" opacity="0.3"/><line x1="7" y1="3" x2="7" y2="17"/><line x1="13" y1="3" x2="13" y2="17"/><line x1="3" y1="7" x2="17" y2="7"/><line x1="3" y1="13" x2="17" y2="13"/></svg></button>
-        <button id="btn-snap-toggle" title="Snap (S)" class="active"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="4" fill="none"/><circle cx="10" cy="10" r="1.5" fill="currentColor" stroke="none"/><line x1="10" y1="2" x2="10" y2="6"/><line x1="10" y1="14" x2="10" y2="18"/><line x1="2" y1="10" x2="6" y2="10"/><line x1="14" y1="10" x2="18" y2="10"/></svg></button>
-        <button id="btn-autocoincidence-toggle" title="Auto-Connect Coincidences" class="active"><svg viewBox="0 0 20 20"><circle cx="7" cy="10" r="3" fill="none"/><circle cx="13" cy="10" r="3" fill="none"/><circle cx="10" cy="10" r="1.5" fill="currentColor" stroke="none"/></svg></button>
-        <button id="btn-ortho-toggle" title="Ortho (O)"><svg viewBox="0 0 20 20"><line x1="4" y1="16" x2="4" y2="4"/><line x1="4" y1="16" x2="16" y2="16"/><rect x="4" y="12" width="4" height="4" fill="none" opacity="0.5"/></svg></button>
+        <div class="group-btns">
+          <button id="btn-zoom-fit" title="Fit All (F)"><svg viewBox="0 0 20 20"><polyline points="3,7 3,3 7,3" fill="none"/><polyline points="13,3 17,3 17,7" fill="none"/><polyline points="17,13 17,17 13,17" fill="none"/><polyline points="7,17 3,17 3,13" fill="none"/><rect x="6" y="6" width="8" height="8" rx="0.5" fill="none" opacity="0.4"/></svg></button>
+          <button id="btn-zoom-in" title="Zoom In (+)"><svg viewBox="0 0 20 20"><circle cx="9" cy="9" r="5" fill="none"/><line x1="13" y1="13" x2="17" y2="17"/><line x1="7" y1="9" x2="11" y2="9"/><line x1="9" y1="7" x2="9" y2="11"/></svg></button>
+          <button id="btn-zoom-out" title="Zoom Out (-)"><svg viewBox="0 0 20 20"><circle cx="9" cy="9" r="5" fill="none"/><line x1="13" y1="13" x2="17" y2="17"/><line x1="7" y1="9" x2="11" y2="9"/></svg></button>
+          <button id="btn-grid-toggle" title="Toggle Grid (G)"><svg viewBox="0 0 20 20"><rect x="3" y="3" width="14" height="14" fill="none" opacity="0.3"/><line x1="7" y1="3" x2="7" y2="17"/><line x1="13" y1="3" x2="13" y2="17"/><line x1="3" y1="7" x2="17" y2="7"/><line x1="3" y1="13" x2="17" y2="13"/></svg></button>
+          <button id="btn-snap-toggle" title="Snap (S)" class="active"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="4" fill="none"/><circle cx="10" cy="10" r="1.5" fill="currentColor" stroke="none"/><line x1="10" y1="2" x2="10" y2="6"/><line x1="10" y1="14" x2="10" y2="18"/><line x1="2" y1="10" x2="6" y2="10"/><line x1="14" y1="10" x2="18" y2="10"/></svg></button>
+          <button id="btn-autocoincidence-toggle" title="Auto-Connect Coincidences" class="active"><svg viewBox="0 0 20 20"><circle cx="7" cy="10" r="3" fill="none"/><circle cx="13" cy="10" r="3" fill="none"/><circle cx="10" cy="10" r="1.5" fill="currentColor" stroke="none"/></svg></button>
+          <button id="btn-ortho-toggle" title="Ortho (O)"><svg viewBox="0 0 20 20"><line x1="4" y1="16" x2="4" y2="4"/><line x1="4" y1="16" x2="16" y2="16"/><rect x="4" y="12" width="4" height="4" fill="none" opacity="0.5"/></svg></button>
+        </div>
       </div>
 
       <!-- Part: Sketch entry group (part-mode-only) -->
       <div class="toolbar-sep part-mode-only"></div>
       <div class="tool-group part-mode-only" data-group="part-sketch">
         <span class="group-label" title="Toggle Sketch group">Sketch</span>
-        <button id="btn-sketch-on-plane" title="Sketch on Plane – Enter 2D sketch mode" class="sketch-accent" aria-label="Sketch on Plane – Enter 2D sketch mode"><svg viewBox="0 0 20 20"><polygon points="3,13 10,16 17,13 10,7" fill="none" opacity="0.4"/><path d="M6 11L10 9L14 11" fill="none"/><line x1="8" y1="10" x2="12" y2="10"/></svg></button>
-        <button id="btn-create-plane" title="Create Plane"><svg viewBox="0 0 20 20"><polygon points="2,14 10,17 18,14 10,7" fill="none"/><line x1="10" y1="3" x2="10" y2="7" stroke-dasharray="1.5,1.5"/><circle cx="10" cy="3" r="1" fill="currentColor" stroke="none"/></svg></button>
-        <button id="btn-add-sketch" title="Add Sketch to Part" disabled><svg viewBox="0 0 20 20"><rect x="4" y="4" width="12" height="12" rx="1" fill="none"/><line x1="7" y1="10" x2="13" y2="10"/><line x1="10" y1="7" x2="10" y2="13"/></svg></button>
+        <div class="group-btns">
+          <button id="btn-sketch-on-plane" title="Sketch on Plane – Enter 2D sketch mode" class="sketch-accent" aria-label="Sketch on Plane – Enter 2D sketch mode"><svg viewBox="0 0 20 20"><polygon points="3,13 10,16 17,13 10,7" fill="none" opacity="0.4"/><path d="M6 11L10 9L14 11" fill="none"/><line x1="8" y1="10" x2="12" y2="10"/></svg></button>
+          <button id="btn-create-plane" title="Create Plane"><svg viewBox="0 0 20 20"><polygon points="2,14 10,17 18,14 10,7" fill="none"/><line x1="10" y1="3" x2="10" y2="7" stroke-dasharray="1.5,1.5"/><circle cx="10" cy="3" r="1" fill="currentColor" stroke="none"/></svg></button>
+          <button id="btn-add-sketch" title="Add Sketch to Part" disabled><svg viewBox="0 0 20 20"><rect x="4" y="4" width="12" height="12" rx="1" fill="none"/><line x1="7" y1="10" x2="13" y2="10"/><line x1="10" y1="7" x2="10" y2="13"/></svg></button>
+        </div>
       </div>
 
       <!-- Part: Feature operations group (part-mode-only) -->
       <div class="toolbar-sep part-mode-only"></div>
       <div class="tool-group part-mode-only" data-group="part-features">
         <span class="group-label" title="Toggle Features group">Features</span>
-        <button id="btn-extrude" title="Extrude" disabled><svg viewBox="0 0 20 20"><rect x="5" y="12" width="10" height="5" rx="0.5" fill="none"/><rect x="7" y="5" width="6" height="7" rx="0.5" fill="none"/><line x1="7" y1="5" x2="5" y2="12"/><line x1="13" y1="5" x2="15" y2="12"/></svg></button>
-        <button id="btn-extrude-cut" title="Extrude Cut" disabled><svg viewBox="0 0 20 20"><rect x="5" y="4" width="10" height="5" rx="0.5" fill="none"/><rect x="7" y="9" width="6" height="8" rx="0.5" fill="none"/><line x1="7" y1="9" x2="5" y2="9"/><line x1="13" y1="9" x2="15" y2="9"/><polyline points="8,18 10,20 12,18" fill="none"/></svg></button>
-        <button id="btn-revolve" title="Revolve" disabled><svg viewBox="0 0 20 20"><ellipse cx="10" cy="10" rx="7" ry="3" fill="none"/><path d="M3 10 Q3 6 10 6" fill="none" opacity="0.5"/><path d="M17 10 Q17 14 10 14" fill="none" opacity="0.5"/><line x1="2" y1="4" x2="2" y2="16" stroke-dasharray="2,2"/></svg></button>
+        <div class="group-btns">
+          <button id="btn-extrude" title="Extrude" disabled><svg viewBox="0 0 20 20"><rect x="5" y="12" width="10" height="5" rx="0.5" fill="none"/><rect x="7" y="5" width="6" height="7" rx="0.5" fill="none"/><line x1="7" y1="5" x2="5" y2="12"/><line x1="13" y1="5" x2="15" y2="12"/></svg></button>
+          <button id="btn-extrude-cut" title="Extrude Cut" disabled><svg viewBox="0 0 20 20"><rect x="5" y="4" width="10" height="5" rx="0.5" fill="none"/><rect x="7" y="9" width="6" height="8" rx="0.5" fill="none"/><line x1="7" y1="9" x2="5" y2="9"/><line x1="13" y1="9" x2="15" y2="9"/><polyline points="8,18 10,20 12,18" fill="none"/></svg></button>
+          <button id="btn-revolve" title="Revolve" disabled><svg viewBox="0 0 20 20"><ellipse cx="10" cy="10" rx="7" ry="3" fill="none"/><path d="M3 10 Q3 6 10 6" fill="none" opacity="0.5"/><path d="M17 10 Q17 14 10 14" fill="none" opacity="0.5"/><line x1="2" y1="4" x2="2" y2="16" stroke-dasharray="2,2"/></svg></button>
+        </div>
       </div>
 
       <!-- Part: Edit operations group (part-mode-only) -->
       <div class="toolbar-sep part-mode-only"></div>
       <div class="tool-group part-mode-only" data-group="part-ops">
         <span class="group-label" title="Toggle Operations group">Ops</span>
-        <button id="btn-chamfer" title="Chamfer" disabled><svg viewBox="0 0 20 20"><path d="M4 16L4 8L8 4L16 4" fill="none"/><line x1="4" y1="8" x2="8" y2="4" stroke-width="2"/></svg></button>
-        <button id="btn-fillet" title="Fillet" disabled><svg viewBox="0 0 20 20"><path d="M4 16L4 8L16 4" fill="none"/><path d="M4 8 Q4 4 8 4" fill="none" stroke-width="2"/><line x1="8" y1="4" x2="16" y2="4" fill="none"/></svg></button>
-        <button id="btn-motion" title="Motion Analysis"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="none"/><polygon points="8,6 8,14 14,10" fill="currentColor" stroke="none"/></svg></button>
+        <div class="group-btns">
+          <button id="btn-chamfer" title="Chamfer" disabled><svg viewBox="0 0 20 20"><path d="M4 16L4 8L8 4L16 4" fill="none"/><line x1="4" y1="8" x2="8" y2="4" stroke-width="2"/></svg></button>
+          <button id="btn-fillet" title="Fillet" disabled><svg viewBox="0 0 20 20"><path d="M4 16L4 8L16 4" fill="none"/><path d="M4 8 Q4 4 8 4" fill="none" stroke-width="2"/><line x1="8" y1="4" x2="16" y2="4" fill="none"/></svg></button>
+          <button id="btn-motion" title="Motion Analysis"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="none"/><polygon points="8,6 8,14 14,10" fill="currentColor" stroke="none"/></svg></button>
+        </div>
       </div>
 
     </div><!-- /toolbar-row-1 -->
 
     <!-- ── Row 2: Sketch draw / modify / ops (visible only while sketching) ── -->
     <div class="toolbar-row toolbar-row-sketch" id="toolbar-row-2">
-
-      <!-- Draw primitives group -->
+      <div class="toolbar-sep"></div>
       <div class="tool-group" data-group="draw">
         <span class="group-label" title="Toggle Draw group">Draw</span>
-        <button id="btn-construction" title="Construction Mode (Q)"><svg viewBox="0 0 20 20"><line x1="3" y1="6" x2="17" y2="6"/><line x1="3" y1="14" x2="6" y2="14"/><line x1="8" y1="14" x2="10" y2="14"/><line x1="12" y1="14" x2="17" y2="14"/></svg></button>
-        <button id="btn-line" title="Line (L)" data-tool="line"><svg viewBox="0 0 20 20"><line x1="4" y1="16" x2="16" y2="4"/><circle cx="4" cy="16" r="1.5" fill="currentColor" stroke="none"/><circle cx="16" cy="4" r="1.5" fill="currentColor" stroke="none"/></svg></button>
-        <button id="btn-rect" title="Rectangle (R)" data-tool="rectangle"><svg viewBox="0 0 20 20"><rect x="3" y="5" width="14" height="10" rx="0.5" fill="none"/></svg></button>
-        <button id="btn-circle" title="Circle (C)" data-tool="circle"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="none"/><circle cx="10" cy="10" r="1" fill="currentColor" stroke="none"/></svg></button>
-        <button id="btn-arc" title="Arc (A)" data-tool="arc"><svg viewBox="0 0 20 20"><path d="M4 16A9 9 0 0116 4" fill="none"/><circle cx="4" cy="16" r="1.5" fill="currentColor" stroke="none"/><circle cx="16" cy="4" r="1.5" fill="currentColor" stroke="none"/></svg></button>
-        <button id="btn-polyline" title="Polyline (P)" data-tool="polyline"><svg viewBox="0 0 20 20"><polyline points="3,16 7,5 13,14 17,4" fill="none"/><circle cx="3" cy="16" r="1.2" fill="currentColor" stroke="none"/><circle cx="7" cy="5" r="1.2" fill="currentColor" stroke="none"/><circle cx="13" cy="14" r="1.2" fill="currentColor" stroke="none"/><circle cx="17" cy="4" r="1.2" fill="currentColor" stroke="none"/></svg></button>
-        <button id="btn-spline" title="Spline" data-tool="spline"><svg viewBox="0 0 20 20"><path d="M3 15 Q5 5 10 10 T17 4" fill="none"/><circle cx="3" cy="15" r="1.2" fill="currentColor" stroke="none"/><circle cx="17" cy="4" r="1.2" fill="currentColor" stroke="none"/></svg></button>
-        <button id="btn-bezier" title="Bezier Curve" data-tool="bezier"><svg viewBox="0 0 20 20"><path d="M3 16 C6 4 14 4 17 16" fill="none"/><circle cx="3" cy="16" r="1.2" fill="currentColor" stroke="none"/><circle cx="17" cy="16" r="1.2" fill="currentColor" stroke="none"/><line x1="3" y1="16" x2="6" y2="4" stroke="currentColor" stroke-width="0.5" stroke-dasharray="1,1"/><line x1="17" y1="16" x2="14" y2="4" stroke="currentColor" stroke-width="0.5" stroke-dasharray="1,1"/><circle cx="6" cy="4" r="0.8" fill="currentColor" stroke="none" opacity="0.6"/><circle cx="14" cy="4" r="0.8" fill="currentColor" stroke="none" opacity="0.6"/></svg></button>
-        <button id="btn-text" title="Text (T)" data-tool="text"><svg viewBox="0 0 20 20"><line x1="4" y1="4" x2="16" y2="4"/><line x1="10" y1="4" x2="10" y2="17"/><line x1="7" y1="17" x2="13" y2="17"/></svg></button>
+        <div class="group-btns">
+          <button id="btn-construction" title="Construction Mode (Q)"><svg viewBox="0 0 20 20"><line x1="3" y1="6" x2="17" y2="6"/><line x1="3" y1="14" x2="6" y2="14"/><line x1="8" y1="14" x2="10" y2="14"/><line x1="12" y1="14" x2="17" y2="14"/></svg></button>
+          <button id="btn-line" title="Line (L)" data-tool="line"><svg viewBox="0 0 20 20"><line x1="4" y1="16" x2="16" y2="4"/><circle cx="4" cy="16" r="1.5" fill="currentColor" stroke="none"/><circle cx="16" cy="4" r="1.5" fill="currentColor" stroke="none"/></svg></button>
+          <button id="btn-rect" title="Rectangle (R)" data-tool="rectangle"><svg viewBox="0 0 20 20"><rect x="3" y="5" width="14" height="10" rx="0.5" fill="none"/></svg></button>
+          <button id="btn-circle" title="Circle (C)" data-tool="circle"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="none"/><circle cx="10" cy="10" r="1" fill="currentColor" stroke="none"/></svg></button>
+          <button id="btn-arc" title="Arc (A)" data-tool="arc"><svg viewBox="0 0 20 20"><path d="M4 16A9 9 0 0116 4" fill="none"/><circle cx="4" cy="16" r="1.5" fill="currentColor" stroke="none"/><circle cx="16" cy="4" r="1.5" fill="currentColor" stroke="none"/></svg></button>
+          <button id="btn-polyline" title="Polyline (P)" data-tool="polyline"><svg viewBox="0 0 20 20"><polyline points="3,16 7,5 13,14 17,4" fill="none"/><circle cx="3" cy="16" r="1.2" fill="currentColor" stroke="none"/><circle cx="7" cy="5" r="1.2" fill="currentColor" stroke="none"/><circle cx="13" cy="14" r="1.2" fill="currentColor" stroke="none"/><circle cx="17" cy="4" r="1.2" fill="currentColor" stroke="none"/></svg></button>
+          <button id="btn-spline" title="Spline" data-tool="spline"><svg viewBox="0 0 20 20"><path d="M3 15 Q5 5 10 10 T17 4" fill="none"/><circle cx="3" cy="15" r="1.2" fill="currentColor" stroke="none"/><circle cx="17" cy="4" r="1.2" fill="currentColor" stroke="none"/></svg></button>
+          <button id="btn-bezier" title="Bezier Curve" data-tool="bezier"><svg viewBox="0 0 20 20"><path d="M3 16 C6 4 14 4 17 16" fill="none"/><circle cx="3" cy="16" r="1.2" fill="currentColor" stroke="none"/><circle cx="17" cy="16" r="1.2" fill="currentColor" stroke="none"/><line x1="3" y1="16" x2="6" y2="4" stroke="currentColor" stroke-width="0.5" stroke-dasharray="1,1"/><line x1="17" y1="16" x2="14" y2="4" stroke="currentColor" stroke-width="0.5" stroke-dasharray="1,1"/><circle cx="6" cy="4" r="0.8" fill="currentColor" stroke="none" opacity="0.6"/><circle cx="14" cy="4" r="0.8" fill="currentColor" stroke="none" opacity="0.6"/></svg></button>
+          <button id="btn-text" title="Text (T)" data-tool="text"><svg viewBox="0 0 20 20"><line x1="4" y1="4" x2="16" y2="4"/><line x1="10" y1="4" x2="10" y2="17"/><line x1="7" y1="17" x2="13" y2="17"/></svg></button>
+        </div>
       </div>
       <div class="toolbar-sep"></div>
 
       <!-- Modify group -->
       <div class="tool-group" data-group="modify">
         <span class="group-label" title="Toggle Modify group">Modify</span>
-        <button id="btn-move" title="Move (M)" data-tool="move"><svg viewBox="0 0 20 20"><line x1="10" y1="3" x2="10" y2="17"/><line x1="3" y1="10" x2="17" y2="10"/><polyline points="7,5 10,3 13,5" fill="none"/><polyline points="7,15 10,17 13,15" fill="none"/><polyline points="5,7 3,10 5,13" fill="none"/><polyline points="15,7 17,10 15,13" fill="none"/></svg></button>
-        <button id="btn-copy" title="Copy (Ctrl+D)" data-tool="copy"><svg viewBox="0 0 20 20"><rect x="7" y="2" width="9" height="11" rx="1" fill="none"/><rect x="4" y="7" width="9" height="11" rx="1" fill="none"/></svg></button>
-        <button id="btn-trim" title="Trim (X)" data-tool="trim"><svg viewBox="0 0 20 20"><line x1="3" y1="10" x2="17" y2="10"/><line x1="10" y1="3" x2="10" y2="17" stroke-dasharray="2,2" opacity="0.5"/><line x1="3" y1="6" x2="3" y2="14"/></svg></button>
-        <button id="btn-split" title="Split (K)" data-tool="split"><svg viewBox="0 0 20 20"><line x1="3" y1="10" x2="8" y2="10"/><line x1="12" y1="10" x2="17" y2="10"/><circle cx="10" cy="10" r="2" fill="currentColor" stroke="none"/></svg></button>
+        <div class="group-btns">
+          <button id="btn-move" title="Move (M)" data-tool="move"><svg viewBox="0 0 20 20"><line x1="10" y1="3" x2="10" y2="17"/><line x1="3" y1="10" x2="17" y2="10"/><polyline points="7,5 10,3 13,5" fill="none"/><polyline points="7,15 10,17 13,15" fill="none"/><polyline points="5,7 3,10 5,13" fill="none"/><polyline points="15,7 17,10 15,13" fill="none"/></svg></button>
+          <button id="btn-copy" title="Copy (Ctrl+D)" data-tool="copy"><svg viewBox="0 0 20 20"><rect x="7" y="2" width="9" height="11" rx="1" fill="none"/><rect x="4" y="7" width="9" height="11" rx="1" fill="none"/></svg></button>
+          <button id="btn-trim" title="Trim (X)" data-tool="trim"><svg viewBox="0 0 20 20"><line x1="3" y1="10" x2="17" y2="10"/><line x1="10" y1="3" x2="10" y2="17" stroke-dasharray="2,2" opacity="0.5"/><line x1="3" y1="6" x2="3" y2="14"/></svg></button>
+          <button id="btn-split" title="Split (K)" data-tool="split"><svg viewBox="0 0 20 20"><line x1="3" y1="10" x2="8" y2="10"/><line x1="12" y1="10" x2="17" y2="10"/><circle cx="10" cy="10" r="2" fill="currentColor" stroke="none"/></svg></button>
+        </div>
       </div>
       <div class="toolbar-sep"></div>
 
       <!-- Sketch ops group -->
       <div class="tool-group" data-group="ops">
         <span class="group-label" title="Toggle Ops group">Ops</span>
-        <button id="btn-disconnect" title="Disconnect Point" data-tool="disconnect"><svg viewBox="0 0 20 20"><circle cx="7" cy="10" r="2.5" fill="none"/><circle cx="13" cy="10" r="2.5" fill="none"/><line x1="5" y1="5" x2="15" y2="15" stroke-dasharray="2,2"/></svg></button>
-        <button id="btn-union" title="Union / Join Points" data-tool="union"><svg viewBox="0 0 20 20"><circle cx="8" cy="10" r="3" fill="none"/><circle cx="12" cy="10" r="3" fill="none"/><circle cx="10" cy="10" r="1" fill="currentColor" stroke="none"/></svg></button>
-        <button id="btn-trace-image" title="Trace Image" data-tool="trace_image"><svg viewBox="0 0 20 20"><rect x="3" y="4" width="6" height="6" rx="0.5" fill="none"/><path d="M4 15C6 12 8 12 10 10C12 8 14 8 16 5" fill="none"/><circle cx="16" cy="5" r="1" fill="currentColor" stroke="none"/></svg></button>
+        <div class="group-btns">
+          <button id="btn-disconnect" title="Disconnect Point" data-tool="disconnect"><svg viewBox="0 0 20 20"><circle cx="7" cy="10" r="2.5" fill="none"/><circle cx="13" cy="10" r="2.5" fill="none"/><line x1="5" y1="5" x2="15" y2="15" stroke-dasharray="2,2"/></svg></button>
+          <button id="btn-union" title="Union / Join Points" data-tool="union"><svg viewBox="0 0 20 20"><circle cx="8" cy="10" r="3" fill="none"/><circle cx="12" cy="10" r="3" fill="none"/><circle cx="10" cy="10" r="1" fill="currentColor" stroke="none"/></svg></button>
+          <button id="btn-trace-image" title="Trace Image" data-tool="trace_image"><svg viewBox="0 0 20 20"><rect x="3" y="4" width="6" height="6" rx="0.5" fill="none"/><path d="M4 15C6 12 8 12 10 10C12 8 14 8 16 5" fill="none"/><circle cx="16" cy="5" r="1" fill="currentColor" stroke="none"/></svg></button>
+        </div>
       </div>
 
     </div><!-- /toolbar-row-2 -->
 
     <!-- ── Row 3: Sketch constraints / patterns (visible only while sketching) ── -->
     <div class="toolbar-row toolbar-row-sketch" id="toolbar-row-3">
+      <div class="toolbar-sep"></div>
 
       <!-- Constrain group -->
       <div class="tool-group" data-group="constrain">
         <span class="group-label" title="Toggle Constrain group">Constrain</span>
-        <button id="btn-dimension" title="Smart Dimension (D)" data-tool="dimension"><svg viewBox="0 0 20 20"><line x1="4" y1="14" x2="16" y2="14"/><line x1="4" y1="11" x2="4" y2="17"/><line x1="16" y1="11" x2="16" y2="17"/><polygon points="6,13 4,14 6,15" fill="currentColor" stroke="none"/><polygon points="14,13 16,14 14,15" fill="currentColor" stroke="none"/><text x="8" y="12" font-size="5" fill="currentColor" stroke="none">42</text></svg></button>
-        <button id="btn-coincident" title="Coincident" data-tool="coincident"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="3" fill="currentColor" stroke="none"/><circle cx="10" cy="10" r="6" fill="none"/></svg></button>
-        <button id="btn-horizontal" title="Horizontal" data-tool="horizontal"><svg viewBox="0 0 20 20"><line x1="3" y1="10" x2="17" y2="10"/><polygon points="5,9 3,10 5,11" fill="currentColor" stroke="none"/><polygon points="15,9 17,10 15,11" fill="currentColor" stroke="none"/></svg></button>
-        <button id="btn-vertical" title="Vertical" data-tool="vertical"><svg viewBox="0 0 20 20"><line x1="10" y1="3" x2="10" y2="17"/><polygon points="9,5 10,3 11,5" fill="currentColor" stroke="none"/><polygon points="9,15 10,17 11,15" fill="currentColor" stroke="none"/></svg></button>
-        <button id="btn-parallel" title="Parallel" data-tool="parallel"><svg viewBox="0 0 20 20"><line x1="4" y1="7" x2="16" y2="7"/><line x1="4" y1="13" x2="16" y2="13"/></svg></button>
-        <button id="btn-perpendicular" title="Perpendicular" data-tool="perpendicular"><svg viewBox="0 0 20 20"><line x1="4" y1="16" x2="4" y2="4"/><line x1="4" y1="16" x2="16" y2="16"/><rect x="4" y="12" width="4" height="4" fill="none" opacity="0.6"/></svg></button>
-        <button id="btn-distance" title="Fixed Distance" data-tool="distance"><svg viewBox="0 0 20 20"><circle cx="5" cy="10" r="2" fill="currentColor" stroke="none"/><circle cx="15" cy="10" r="2" fill="currentColor" stroke="none"/><line x1="7" y1="10" x2="13" y2="10" stroke-dasharray="2,2"/></svg></button>
-        <button id="btn-lock" title="Lock Point" data-tool="lock"><svg viewBox="0 0 20 20"><rect x="5" y="10" width="10" height="7" rx="1.5" fill="none"/><path d="M7 10V7a3 3 0 016 0v3" fill="none"/></svg></button>
-        <button id="btn-equal" title="Equal Length" data-tool="equal"><svg viewBox="0 0 20 20"><line x1="4" y1="8" x2="16" y2="8"/><line x1="4" y1="12" x2="16" y2="12"/></svg></button>
-        <button id="btn-tangent" title="Tangent" data-tool="tangent"><svg viewBox="0 0 20 20"><circle cx="9" cy="10" r="5" fill="none"/><line x1="14" y1="4" x2="14" y2="16"/></svg></button>
-        <button id="btn-angle" title="Angle" data-tool="angle"><svg viewBox="0 0 20 20"><line x1="3" y1="17" x2="17" y2="17"/><line x1="3" y1="17" x2="13" y2="5"/><path d="M8 17 A5 5 0 0 1 7 13" fill="none"/></svg></button>
-        <button id="btn-midpoint-snap" title="Midpoint Snap" data-tool="midpoint_snap"><svg viewBox="0 0 20 20"><line x1="3" y1="10" x2="17" y2="10"/><circle cx="10" cy="10" r="2.5" fill="currentColor" stroke="none"/><circle cx="3" cy="10" r="1.2" fill="currentColor" stroke="none"/><circle cx="17" cy="10" r="1.2" fill="currentColor" stroke="none"/></svg></button>
+        <div class="group-btns">
+          <button id="btn-dimension" title="Smart Dimension (D)" data-tool="dimension"><svg viewBox="0 0 20 20"><line x1="4" y1="14" x2="16" y2="14"/><line x1="4" y1="11" x2="4" y2="17"/><line x1="16" y1="11" x2="16" y2="17"/><polygon points="6,13 4,14 6,15" fill="currentColor" stroke="none"/><polygon points="14,13 16,14 14,15" fill="currentColor" stroke="none"/><text x="8" y="12" font-size="5" fill="currentColor" stroke="none">42</text></svg></button>
+          <button id="btn-coincident" title="Coincident" data-tool="coincident"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="3" fill="currentColor" stroke="none"/><circle cx="10" cy="10" r="6" fill="none"/></svg></button>
+          <button id="btn-horizontal" title="Horizontal" data-tool="horizontal"><svg viewBox="0 0 20 20"><line x1="3" y1="10" x2="17" y2="10"/><polygon points="5,9 3,10 5,11" fill="currentColor" stroke="none"/><polygon points="15,9 17,10 15,11" fill="currentColor" stroke="none"/></svg></button>
+          <button id="btn-vertical" title="Vertical" data-tool="vertical"><svg viewBox="0 0 20 20"><line x1="10" y1="3" x2="10" y2="17"/><polygon points="9,5 10,3 11,5" fill="currentColor" stroke="none"/><polygon points="9,15 10,17 11,15" fill="currentColor" stroke="none"/></svg></button>
+          <button id="btn-parallel" title="Parallel" data-tool="parallel"><svg viewBox="0 0 20 20"><line x1="4" y1="7" x2="16" y2="7"/><line x1="4" y1="13" x2="16" y2="13"/></svg></button>
+          <button id="btn-perpendicular" title="Perpendicular" data-tool="perpendicular"><svg viewBox="0 0 20 20"><line x1="4" y1="16" x2="4" y2="4"/><line x1="4" y1="16" x2="16" y2="16"/><rect x="4" y="12" width="4" height="4" fill="none" opacity="0.6"/></svg></button>
+          <button id="btn-distance" title="Fixed Distance" data-tool="distance"><svg viewBox="0 0 20 20"><circle cx="5" cy="10" r="2" fill="currentColor" stroke="none"/><circle cx="15" cy="10" r="2" fill="currentColor" stroke="none"/><line x1="7" y1="10" x2="13" y2="10" stroke-dasharray="2,2"/></svg></button>
+          <button id="btn-lock" title="Lock Point" data-tool="lock"><svg viewBox="0 0 20 20"><rect x="5" y="10" width="10" height="7" rx="1.5" fill="none"/><path d="M7 10V7a3 3 0 016 0v3" fill="none"/></svg></button>
+          <button id="btn-equal" title="Equal Length" data-tool="equal"><svg viewBox="0 0 20 20"><line x1="4" y1="8" x2="16" y2="8"/><line x1="4" y1="12" x2="16" y2="12"/></svg></button>
+          <button id="btn-tangent" title="Tangent" data-tool="tangent"><svg viewBox="0 0 20 20"><circle cx="9" cy="10" r="5" fill="none"/><line x1="14" y1="4" x2="14" y2="16"/></svg></button>
+          <button id="btn-angle" title="Angle" data-tool="angle"><svg viewBox="0 0 20 20"><line x1="3" y1="17" x2="17" y2="17"/><line x1="3" y1="17" x2="13" y2="5"/><path d="M8 17 A5 5 0 0 1 7 13" fill="none"/></svg></button>
+          <button id="btn-midpoint-snap" title="Midpoint Snap" data-tool="midpoint_snap"><svg viewBox="0 0 20 20"><line x1="3" y1="10" x2="17" y2="10"/><circle cx="10" cy="10" r="2.5" fill="currentColor" stroke="none"/><circle cx="3" cy="10" r="1.2" fill="currentColor" stroke="none"/><circle cx="17" cy="10" r="1.2" fill="currentColor" stroke="none"/></svg></button>
+        </div>
       </div>
       <div class="toolbar-sep"></div>
 
       <!-- Pattern group -->
       <div class="tool-group" data-group="pattern">
         <span class="group-label" title="Toggle Pattern group">Pattern</span>
-        <button id="btn-mirror" title="Mirror" data-tool="mirror"><svg viewBox="0 0 20 20"><line x1="10" y1="3" x2="10" y2="17" stroke-dasharray="2,2"/><polygon points="4,7 7,4 7,16 4,13" fill="none"/><polygon points="16,7 13,4 13,16 16,13" fill="none"/></svg></button>
-        <button id="btn-linear-pattern" title="Linear Pattern" data-tool="linear_pattern"><svg viewBox="0 0 20 20"><rect x="2" y="7" width="4" height="6" rx="0.5" fill="none"/><rect x="8" y="7" width="4" height="6" rx="0.5" fill="none"/><rect x="14" y="7" width="4" height="6" rx="0.5" fill="none"/><line x1="6" y1="16" x2="14" y2="16"/><polygon points="13,15 14,16 13,17" fill="currentColor" stroke="none"/></svg></button>
-        <button id="btn-radial-pattern" title="Radial Pattern" data-tool="radial_pattern"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="none" stroke-dasharray="2,2"/><rect x="8" y="1" width="4" height="4" rx="0.5" fill="none"/><rect x="15" y="8" width="4" height="4" rx="0.5" fill="none"/><rect x="8" y="15" width="4" height="4" rx="0.5" fill="none"/><rect x="1" y="8" width="4" height="4" rx="0.5" fill="none"/></svg></button>
+        <div class="group-btns">
+          <button id="btn-mirror" title="Mirror" data-tool="mirror"><svg viewBox="0 0 20 20"><line x1="10" y1="3" x2="10" y2="17" stroke-dasharray="2,2"/><polygon points="4,7 7,4 7,16 4,13" fill="none"/><polygon points="16,7 13,4 13,16 16,13" fill="none"/></svg></button>
+          <button id="btn-linear-pattern" title="Linear Pattern" data-tool="linear_pattern"><svg viewBox="0 0 20 20"><rect x="2" y="7" width="4" height="6" rx="0.5" fill="none"/><rect x="8" y="7" width="4" height="6" rx="0.5" fill="none"/><rect x="14" y="7" width="4" height="6" rx="0.5" fill="none"/><line x1="6" y1="16" x2="14" y2="16"/><polygon points="13,15 14,16 13,17" fill="currentColor" stroke="none"/></svg></button>
+          <button id="btn-radial-pattern" title="Radial Pattern" data-tool="radial_pattern"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="none" stroke-dasharray="2,2"/><rect x="8" y="1" width="4" height="4" rx="0.5" fill="none"/><rect x="15" y="8" width="4" height="4" rx="0.5" fill="none"/><rect x="8" y="15" width="4" height="4" rx="0.5" fill="none"/><rect x="1" y="8" width="4" height="4" rx="0.5" fill="none"/></svg></button>
+        </div>
       </div>
 
     </div><!-- /toolbar-row-3 -->
