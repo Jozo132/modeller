@@ -1476,7 +1476,7 @@ class App {
 
     // Click
     canvas.addEventListener('click', (e) => {
-      if (movedSinceDown && this.activeTool.name === 'select') {
+      if (movedSinceDown && this.activeTool.name === 'select' && !this._sketchingOnPlane) {
         movedSinceDown = false;
         return;
       }
@@ -2459,6 +2459,29 @@ class App {
     document.getElementById('status-autocoincidence').classList.toggle('active', state.autoCoincidence);
     document.getElementById('btn-autocoincidence-toggle').classList.toggle('active', state.autoCoincidence);
     document.getElementById('status-ortho').classList.toggle('active', state.orthoEnabled);
+
+    // Tool group collapse / expand with localStorage persistence
+    document.querySelectorAll('#toolbar .group-label').forEach(label => {
+      const group = label.closest('.tool-group');
+      if (!group) return;
+      const groupId = group.dataset.group;
+      if (!groupId) return;
+
+      // Restore persisted collapsed state
+      try {
+        if (localStorage.getItem(`tg:${groupId}`) === '1') {
+          group.classList.add('tg-collapsed');
+        }
+      } catch (_) {}
+
+      label.addEventListener('click', () => {
+        const collapsed = group.classList.toggle('tg-collapsed');
+        try {
+          if (collapsed) localStorage.setItem(`tg:${groupId}`, '1');
+          else localStorage.removeItem(`tg:${groupId}`);
+        } catch (_) {}
+      });
+    });
   }
 
   // --- Keyboard ---

@@ -18,6 +18,15 @@
   --grid-minor: rgba(255,255,255,0.03);
   --panel-width: 220px;
   --bottom-offset: 28px;
+  /* Toolbar layout — update when row count changes */
+  --toolbar-row-h: 34px;
+  --toolbar-height: var(--toolbar-row-h);      /* 1 row by default */
+  --top-offset: calc(24px + var(--toolbar-height)); /* menu-bar + toolbar */
+}
+
+/* In sketch-on-plane mode the toolbar grows to 3 rows */
+body.sketch-on-plane {
+  --toolbar-height: calc(var(--toolbar-row-h) * 3 + 2px); /* 3 rows + 2 row-borders */
 }
 
 html, body {
@@ -199,18 +208,41 @@ html, body {
 #toolbar {
   position: fixed;
   top: 24px; left: 0; right: 0;
-  height: 34px;
+  height: auto;
   background: var(--bg-toolbar);
   border-bottom: 1px solid var(--border);
   display: flex;
-  align-items: center;
-  padding: 0 6px;
-  gap: 2px;
+  flex-direction: column;
+  padding: 0;
+  gap: 0;
   z-index: 100;
   user-select: none;
+  overflow: hidden;
+}
+
+/* Each toolbar row */
+.toolbar-row {
+  display: flex;
+  align-items: center;
+  height: var(--toolbar-row-h);
+  padding: 0 6px;
+  gap: 2px;
   overflow-x: auto;
   overflow-y: hidden;
   white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.toolbar-row + .toolbar-row {
+  border-top: 1px solid var(--border);
+}
+
+/* Sketch draw/constrain rows — hidden in part/default modes */
+.toolbar-row-sketch {
+  display: none !important;
+}
+body.sketch-on-plane .toolbar-row-sketch {
+  display: flex !important;
 }
 
 .tool-group {
@@ -228,12 +260,34 @@ html, body {
   flex-shrink: 0;
 }
 
+/* Group label — acts as collapse/expand toggle */
 .group-label {
   font-size: 9px;
   color: var(--text-secondary);
   margin-right: 3px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
+  cursor: pointer;
+  user-select: none;
+  padding: 2px 3px;
+  border-radius: 2px;
+  flex-shrink: 0;
+  transition: color 0.12s;
+}
+.group-label:hover {
+  color: var(--text-primary);
+}
+.group-label::after {
+  content: ' ▾';
+  font-size: 7px;
+  opacity: 0.6;
+}
+.tg-collapsed .group-label::after {
+  content: ' ▸';
+}
+/* When group is collapsed, hide all direct children except the label */
+.tool-group.tg-collapsed > *:not(.group-label) {
+  display: none !important;
 }
 
 #toolbar button {
@@ -318,7 +372,7 @@ html, body {
 /* Properties Panel (unified right sidebar) */
 #properties-panel {
   position: fixed;
-  top: 58px;
+  top: var(--top-offset);
   right: 0;
   width: var(--panel-width);
   bottom: var(--bottom-offset);
@@ -581,7 +635,7 @@ html, body {
 /* Left Panel (Primitives & Constraints) */
 #left-panel {
   position: fixed;
-  top: 58px;
+  top: var(--top-offset);
   left: 0;
   width: var(--panel-width);
   bottom: var(--bottom-offset);
@@ -847,7 +901,7 @@ html, body {
 /* Canvas */
 #cad-canvas {
   position: fixed;
-  top: 58px;
+  top: var(--top-offset);
   left: var(--panel-width);
   right: var(--panel-width);
   bottom: var(--bottom-offset);
@@ -894,10 +948,11 @@ html, body {
   border: 1px solid rgba(76, 175, 80, 0.4);
 }
 
-/* Hide drawing/edit/constrain tool groups when in 3D mode */
+/* Smooth transitions for tool groups */
 .tool-group[data-group="draw"],
-.tool-group[data-group="edit"],
+.tool-group[data-group="modify"],
 .tool-group[data-group="constrain"],
+.tool-group[data-group="pattern"],
 .tool-group[data-group="ops"] {
   transition: opacity 0.2s, pointer-events 0s;
 }
@@ -1609,7 +1664,7 @@ html, body {
   /* ── Collapsible node tree on mobile ── */
   .node-tree {
     width: 180px;
-    max-height: calc(100vh - 142px);
+    max-height: calc(100vh - var(--top-offset) - 84px);
   }
   .node-tree-header {
     cursor: pointer;
@@ -2028,7 +2083,7 @@ body.motion-active #view-3d {
 /* Unified 3D View - Full Screen */
 #view-3d {
   position: fixed;
-  top: 58px;
+  top: var(--top-offset);
   left: var(--panel-width);
   right: var(--panel-width);
   bottom: var(--bottom-offset);
@@ -2707,10 +2762,10 @@ body.workspace-part #parameters-panel {
 /* Node Tree Overlay — transparent panel in top-left of viewport */
 .node-tree {
   position: fixed;
-  top: 66px;
+  top: calc(var(--top-offset) + 8px);
   left: calc(var(--panel-width) + 8px);
   width: 200px;
-  max-height: calc(100vh - 142px);
+  max-height: calc(100vh - var(--top-offset) - 84px);
   background: rgba(30, 30, 30, 0.75);
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 6px;
@@ -3190,12 +3245,8 @@ body.workspace-part.sketch-on-plane #left-feature-params {
   display: none !important;
 }
 
-/* In Part workspace (not sketching): hide sketch-specific tool groups */
-body.workspace-part .tool-group[data-group="draw"],
-body.workspace-part .tool-group[data-group="constrain"],
-body.workspace-part .tool-group[data-group="ops"] {
-  display: none;
-}
+/* In Part workspace (not sketching): hide sketch-specific tool groups (now in toolbar-row-sketch rows) */
+/* toolbar-row-sketch is already hidden by default; nothing extra needed here */
 /* In Part workspace (not sketching): hide sketch-only edit buttons */
 body.workspace-part .sketch-tool-only {
   display: none;
@@ -3209,12 +3260,6 @@ body.workspace-part .sketch-tool-only {
 }
 
 /* In Part workspace, re-enable sketch tools during sketch-on-plane */
-body.workspace-part.sketch-on-plane .tool-group[data-group="draw"],
-body.workspace-part.sketch-on-plane .tool-group[data-group="edit"],
-body.workspace-part.sketch-on-plane .tool-group[data-group="constrain"],
-body.workspace-part.sketch-on-plane .tool-group[data-group="ops"] {
-  display: flex !important;
-}
 body.workspace-part.sketch-on-plane .sketch-tool-only {
   display: inline-flex !important;
 }
@@ -3223,6 +3268,9 @@ body.workspace-part.sketch-on-plane .sketch-tool-only {
 body.sketch-on-plane .part-mode-only {
   display: none !important;
 }
+body.sketch-on-plane .tool-group[data-group="part-sketch"],
+body.sketch-on-plane .tool-group[data-group="part-features"],
+body.sketch-on-plane .tool-group[data-group="part-ops"],
 body.sketch-on-plane .tool-group[data-group="part-tools"] {
   display: none !important;
 }
@@ -3237,7 +3285,7 @@ body.sketch-on-plane #parameters-panel {
 /* ── Exit Sketch Button ── */
 .exit-sketch-btn {
   position: fixed;
-  top: 66px;
+  top: calc(var(--top-offset) + 8px);
   left: calc(var(--panel-width) + 8px);
   z-index: 200;
   display: none;
@@ -3269,7 +3317,7 @@ body.sketch-on-plane #parameters-panel {
 }
 .exit-extrude-btn {
   position: fixed;
-  top: 66px;
+  top: calc(var(--top-offset) + 8px);
   left: calc(var(--panel-width) + 216px);
   z-index: 200;
   display: none;
@@ -3310,6 +3358,9 @@ body.sketch-on-plane #parameters-panel {
 }
 
 /* Scene Manager active: hide part editing tools, feature props, node tree */
+body.scene-manager-active .part-mode-only[data-group="part-sketch"],
+body.scene-manager-active .part-mode-only[data-group="part-features"],
+body.scene-manager-active .part-mode-only[data-group="part-ops"],
 body.scene-manager-active .part-mode-only[data-group="part-tools"] {
   display: none !important;
 }
