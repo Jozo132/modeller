@@ -346,10 +346,12 @@ export function render(): void {
     scene.renderGrid(cmd, vp);
   }
 
-  // Axes
+  // Axes (depth test off, depth write off so they don't pollute the depth buffer)
   if (scene.axesVisible) {
     cmd.emitSetDepthTest(false);
+    cmd.emitSetDepthWrite(false);
     scene.renderAxes(cmd, vp);
+    cmd.emitSetDepthWrite(true);
     cmd.emitSetDepthTest(true);
   }
 

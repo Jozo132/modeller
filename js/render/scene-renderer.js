@@ -245,6 +245,11 @@ export class SceneRenderer {
     const mvp = this._computeMvp();
     if (!mvp) return;
 
+    // Re-enable depth testing if the executor supports it (mirrors WasmRenderer setup).
+    if (this.executor.setDepthTest) {
+      this.executor.setDepthTest(true);
+    }
+
     renderBaseMeshOverlay(this.executor, {
       meshTriangles: this._meshTriangles,
       meshTriangleCount: this._meshTriangleCount,
@@ -256,6 +261,7 @@ export class SceneRenderer {
       meshTriangleOverlayEdgeVertexCount: this._meshTriangleOverlayEdgeVertexCount,
       meshEdges: this._meshEdges,
       meshEdgeVertexCount: this._meshEdgeVertexCount,
+      meshEdgeSegments: this._meshEdgeSegments,
       meshSilhouetteCandidates: this._meshSilhouetteCandidates,
       meshBoundaryEdges: this._meshBoundaryEdges,
       meshBoundaryEdgeVertexCount: this._meshBoundaryEdgeVertexCount,

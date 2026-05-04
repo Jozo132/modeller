@@ -1,4 +1,4 @@
-import { computeSilhouetteEdges } from './part-render-core.js';
+import { computeOrbitCameraPosition, computeSilhouetteEdges } from './part-render-core.js';
 
 const DEFAULT_FACE_COLOR = [0.65, 0.75, 0.65, 1];
 const DEFAULT_VISUAL_EDGE_COLOR = [0.25, 0.25, 0.25, 0.35];
@@ -7,6 +7,48 @@ const DEFAULT_HIDDEN_FEATURE_EDGE_COLOR = [0.14, 0.14, 0.14, 0.55];
 const DEFAULT_SILHOUETTE_COLOR = [0.1, 0.1, 0.1, 1];
 const DEFAULT_BOUNDARY_EDGE_COLOR = [1.0, 0.4, 0.7, 1];
 const DEFAULT_TRIANGLE_OUTLINE_COLOR = [0.72, 0.72, 0.72, 0.7];
+
+// Build a Float32Array containing only the segments of meshEdges whose adjacent faces
+// are front-facing toward the camera.  Used by executors that have no hardware depth test.
+function buildFrontFacingEdgeBuffer(meshEdges, meshEdgeSegments, viewDir) {
+  if (!meshEdges || !meshEdgeSegments || !viewDir) return { data: meshEdges, count: meshEdges ? meshEdges.length / 3 : 0 };
+
+  const result = [];
+  let vertexOffset = 0;
+
+  for (const seg of meshEdgeSegments) {
+    const points = seg.points;
+    const numPoints = Array.isArray(points) ? points.length : 0;
+    const numLines = Math.max(0, numPoints - 1);
+    const numVertices = numLines * 2;
+
+    // Keep the edge if it has no normals or at least one adjacent face faces the camera.
+    // A face is front-facing when its outward normal has a negative dot product with the
+    // view direction (i.e. the normal points toward the camera).
+    let frontFacing = !seg.normals || seg.normals.length === 0;
+    if (!frontFacing) {
+      for (const n of seg.normals) {
+        if (n.x * viewDir.x + n.y * viewDir.y + n.z * viewDir.z < 0) {
+          frontFacing = true;
+          break;
+        }
+      }
+    }
+
+    if (frontFacing) {
+      for (let i = 0; i < numVertices; i++) {
+        const base = (vertexOffset + i) * 3;
+        result.push(meshEdges[base], meshEdges[base + 1], meshEdges[base + 2]);
+      }
+    }
+
+    vertexOffset += numVertices;
+  }
+
+  return result.length > 0
+    ? { data: new Float32Array(result), count: result.length / 3 }
+    : { data: null, count: 0 };
+}
 
 export function renderBaseMeshOverlay(executor, options) {
   const {
@@ -18,6 +60,7 @@ export function renderBaseMeshOverlay(executor, options) {
     meshTriangleOverlayEdgeVertexCount,
     meshEdges,
     meshEdgeVertexCount,
+    meshEdgeSegments,
     meshDashedFeatureEdges,
     meshDashedFeatureEdgeVertexCount,
     meshSilhouetteCandidates,
@@ -64,8 +107,31 @@ export function renderBaseMeshOverlay(executor, options) {
     });
   }
 
-  if (meshEdges && meshEdgeVertexCount > 0) {
-    executor.drawLineBuffer(meshEdges, meshEdgeVertexCount, {
+  // For executors without hardware depth testing (e.g. CanvasCommandExecutor), pre-filter
+  // feature edges to front-facing faces only using adjacent face normals.
+  let visibleEdges = meshEdges;
+  let visibleEdgeCount = meshEdgeVertexCount;
+  if (!executor.setDepthTest && meshEdgeSegments && orbitState) {
+    const camera = computeOrbitCameraPosition(
+      orbitState.theta, orbitState.phi, orbitState.radius, orbitState.target
+    );
+    const tx = orbitState.target?.x || 0;
+    const ty = orbitState.target?.y || 0;
+    const tz = orbitState.target?.z || 0;
+    const dx = tx - camera.x;
+    const dy = ty - camera.y;
+    const dz = tz - camera.z;
+    const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (len > 1e-10) {
+      const viewDir = { x: dx / len, y: dy / len, z: dz / len };
+      const filtered = buildFrontFacingEdgeBuffer(meshEdges, meshEdgeSegments, viewDir);
+      visibleEdges = filtered.data;
+      visibleEdgeCount = filtered.count;
+    }
+  }
+
+  if (visibleEdges && visibleEdgeCount > 0) {
+    executor.drawLineBuffer(visibleEdges, visibleEdgeCount, {
       mvp,
       color: featureEdgeColor,
       lineWidth: 1,
