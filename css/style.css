@@ -22,7 +22,7 @@
   --toolbar-row-h: 34px;
   --toolbar-btn-sz: 26px;                                        /* button square size */
   --toolbar-rows: 2;
-  --toolbar-height: calc(var(--toolbar-btn-sz) * var(--toolbar-rows) + 17px); /* 2 rows + label + padding */
+  --toolbar-height: calc(var(--toolbar-btn-sz) * var(--toolbar-rows) + 19px); /* 2×26px buttons + 13px label + 2×1px row-gaps + 2×2px padding = 71px */
   --toolbar-minimized-height: 20px;
   --top-offset: calc(24px + var(--toolbar-height)); /* menu-bar + toolbar */
 }

@@ -8970,15 +8970,38 @@ class App {
     const hasSolid = this._partManager && this._partManager.getFeatures().some(
       f => f.type === 'extrude' || f.type === 'extrude-cut' || f.type === 'revolve'
     );
-    
+
+    // Determine current selection composition
+    const hasEdgeSelected = this._renderer3d &&
+      this._renderer3d._selectedEdgeIndices && this._renderer3d._selectedEdgeIndices.size > 0;
+    const selectedFaceCount = this._selectedFaces ? this._selectedFaces.size : 0;
+    const hasPlaneSelected = !!this._selectedPlane;
+
+    // Sketch-on-plane is only valid when exactly one flat face or one plane (or nothing) is selected,
+    // and no edges are selected.
+    const singleFlatFace = selectedFaceCount === 1 &&
+      [...this._selectedFaces.values()].every(hit => hit.face && !hit.face.isCurved);
+    const sketchableSelection =
+      !hasEdgeSelected &&
+      (
+        (selectedFaceCount === 0 && !hasPlaneSelected) || // nothing selected
+        (selectedFaceCount === 0 && hasPlaneSelected)   || // one plane selected
+        singleFlatFace                                     // exactly one flat face
+      );
+
+    // Extrude/extrude-cut cannot be applied to edge selections in the default part mode
+    const extrudable = !hasEdgeSelected;
+
     const btnAddSketch = document.getElementById('btn-add-sketch');
     if (btnAddSketch) btnAddSketch.disabled = !hasEntities || busy;
+    const btnSketchOnPlane = document.getElementById('btn-sketch-on-plane');
+    if (btnSketchOnPlane) btnSketchOnPlane.disabled = busy || !sketchableSelection;
     const btnExtrude = document.getElementById('btn-extrude');
-    if (btnExtrude) btnExtrude.disabled = busy;
+    if (btnExtrude) btnExtrude.disabled = busy || !extrudable;
     const btnRevolve = document.getElementById('btn-revolve');
     if (btnRevolve) btnRevolve.disabled = !hasSketch || busy;
     const btnExtrudeCut = document.getElementById('btn-extrude-cut');
-    if (btnExtrudeCut) btnExtrudeCut.disabled = busy;
+    if (btnExtrudeCut) btnExtrudeCut.disabled = busy || !extrudable;
     const btnChamfer = document.getElementById('btn-chamfer');
     if (btnChamfer) btnChamfer.disabled = !hasSolid || busy;
     const btnFillet = document.getElementById('btn-fillet');
