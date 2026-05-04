@@ -72,6 +72,7 @@ const NORMAL_COLOR_SHADING_KEY = 'cad-modeller-normal-color-shading';
 const RECORDING_BAR_VISIBLE_KEY = 'cad-modeller-recording-bar-visible';
 const COMMAND_BAR_VISIBLE_KEY = 'cad-modeller-command-bar-visible';
 const TESS_QUALITY_STORAGE_KEY = 'cad-modeller-tessellation-quality-preset';
+const CLICK_DRAG_TOLERANCE_PX = 4;
 const TESS_QUALITY_PRESETS = new Set(['draft', 'normal', 'fine', 'ultra']);
 const IMAGE_PROPERTY_SECTIONS = [
   { key: 'overview', label: 'Overview' },
@@ -1326,7 +1327,7 @@ class App {
       if (mouseDown) {
         const dxFromDown = sx - (this._mouseDownStart?.sx ?? sx);
         const dyFromDown = sy - (this._mouseDownStart?.sy ?? sy);
-        movedSinceDown = Math.hypot(dxFromDown, dyFromDown) > 4;
+        movedSinceDown = Math.hypot(dxFromDown, dyFromDown) > CLICK_DRAG_TOLERANCE_PX;
       }
 
       // Extrude handle dragging
