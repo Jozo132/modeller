@@ -154,12 +154,17 @@ function createProgram(gl, vsSource, fsSource) {
 
 export class WebGLExecutor {
   constructor(canvas) {
-    const gl = canvas.getContext('webgl2', {
-      antialias: true,
-      alpha: false,
-      preserveDrawingBuffer: true,
-      stencil: true,
-    });
+    const contextOptions = [
+      { antialias: true, alpha: false, preserveDrawingBuffer: true, stencil: true },
+      { antialias: true, alpha: false, preserveDrawingBuffer: false, stencil: true },
+      { antialias: false, alpha: false, preserveDrawingBuffer: false, stencil: false },
+      { antialias: false, alpha: true, preserveDrawingBuffer: false, stencil: false },
+    ];
+    let gl = null;
+    for (const options of contextOptions) {
+      gl = canvas.getContext('webgl2', options);
+      if (gl) break;
+    }
     if (!gl) throw new Error('WebGL2 not supported');
     this.gl = gl;
     this.width = canvas.width;
