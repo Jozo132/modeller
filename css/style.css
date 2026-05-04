@@ -217,13 +217,17 @@ body.toolbar-minimized, body.toolbar-auto {
   display: flex;
   flex-direction: row;
   align-items: stretch;
-  padding: 2px 52px 2px 4px; /* right padding reserves space for the absolute toggle btn */
+  padding: 2px 48px 2px 4px; /* right padding reserves space for the fixed toggle btn */
   gap: 0;
   z-index: 100;
   user-select: none;
   overflow-x: auto;
   overflow-y: hidden;
+  scrollbar-width: none; /* hide scrollbar (Firefox) */
   transition: height 0.18s ease;
+}
+#toolbar::-webkit-scrollbar {
+  display: none; /* hide scrollbar (Chrome/Safari) */
 }
 
 /* ── Toolbar minimize states ── */
@@ -231,7 +235,7 @@ body.toolbar-minimized, body.toolbar-auto {
 body.toolbar-minimized #toolbar {
   height: var(--toolbar-minimized-height);
   overflow: hidden;
-  padding: 0 52px 0 4px;
+  padding: 0 48px 0 4px;
 }
 body.toolbar-minimized #toolbar .toolbar-row,
 body.toolbar-minimized #toolbar .toolbar-row-sketch {
@@ -242,14 +246,14 @@ body.toolbar-minimized #toolbar .toolbar-row-sketch {
 body.toolbar-auto #toolbar {
   height: var(--toolbar-minimized-height);
   overflow: hidden;
-  padding: 0 52px 0 4px;
+  padding: 0 48px 0 4px;
   transition: height 0.18s ease;
 }
 body.toolbar-auto #toolbar:hover {
   height: var(--toolbar-height);
   overflow-x: auto;
   overflow-y: hidden;
-  padding: 2px 52px 2px 4px;
+  padding: 2px 48px 2px 4px;
 }
 body.toolbar-auto #toolbar .toolbar-row,
 body.toolbar-auto #toolbar .toolbar-row-sketch {
@@ -262,36 +266,37 @@ body.toolbar-auto.sketch-on-plane #toolbar:hover .toolbar-row-sketch {
   display: contents !important;
 }
 
-/* Toolbar toggle button — absolutely positioned at the top-right of the toolbar
-   so it never participates in flex layout and never squeezes tool groups */
+/* Toolbar toggle button — position:fixed so it is always viewport-relative and
+   never clipped or displaced by the toolbar's overflow:auto scroll container */
 #toolbar-toggle-btn {
-  position: absolute;
-  top: 2px;
-  right: 4px;
+  position: fixed;
+  top: 24px; /* same top edge as #toolbar */
+  right: 0;
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 3px;
-  padding: 2px 5px;
-  height: calc(var(--toolbar-minimized-height) - 4px);
+  padding: 0 6px;
+  width: 48px;
+  height: var(--toolbar-height);
   cursor: pointer;
   color: var(--text-secondary);
   font-size: 10px;
   white-space: nowrap;
   background: var(--bg-toolbar);
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  z-index: 1;
+  border-left: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  z-index: 101; /* above #toolbar (z-index:100) */
   transition: color 0.12s, background 0.12s;
 }
 #toolbar-toggle-btn:hover {
   color: var(--text-primary);
   background: rgba(255,255,255,0.07);
 }
-/* In minimized/auto state centre vertically within the slim bar */
+/* Slim height in minimized/auto states */
 body.toolbar-minimized #toolbar-toggle-btn,
 body.toolbar-auto #toolbar-toggle-btn {
-  top: 50%;
-  transform: translateY(-50%);
+  height: var(--toolbar-minimized-height);
 }
 
 /* Toolbar rows become transparent flex wrappers so their groups are direct children of #toolbar */

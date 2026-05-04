@@ -1644,53 +1644,70 @@ export class WasmRenderer {
 
   /**
    * Draw cyan labels (XY, XZ, YZ) at the bottom-left corner of each visible origin plane.
-   * Labels are drawn in screen-space so they stay the same size regardless of zoom.
+   * Labels are drawn in planar projection — they appear as if written on the plane surface
+   * (correct orientation, constant screen size regardless of zoom).
    */
   _drawOriginPlaneLabels() {
     if (this.mode !== '3d') return;
     const ctx = this.overlayCtx;
     if (!ctx) return;
 
-    // Plane definitions: label, 3D world position for the bottom-left corner of the 5×5 quad
-    // XY plane (normal +Z): viewed from above — bottom-left in XY space is (-5, -5, 0)
-    // XZ plane (normal +Y): viewed from front — left = -X, bottom = -Z → (-5, 0, -5)
-    // YZ plane (normal +X): viewed from right — left = -Y, bottom = -Z → (0, -5, -5)
+    // Plane definitions: label, 3D anchor (bottom-left corner of the 5×5 quad),
+    // and in-plane right/up unit vectors in world space.
     const PLANE_LABELS = [
-      { name: 'XY', mask: 1, wx: -5, wy: -5, wz: 0 },
-      { name: 'XZ', mask: 2, wx: -5, wy:  0, wz: -5 },
-      { name: 'YZ', mask: 4, wx:  0, wy: -5, wz: -5 },
+      { name: 'XY', mask: 1, wx: -5, wy: -5, wz: 0,  rx: 1, ry: 0, rz: 0,  ux: 0, uy: 1, uz: 0 },
+      { name: 'XZ', mask: 2, wx: -5, wy:  0, wz: -5,  rx: 1, ry: 0, rz: 0,  ux: 0, uy: 0, uz: 1 },
+      { name: 'YZ', mask: 4, wx:  0, wy: -5, wz: -5,  rx: 0, ry: 1, rz: 0,  ux: 0, uy: 0, uz: 1 },
     ];
 
-    ctx.save();
-    ctx.font = 'bold 11px monospace';
-    ctx.textBaseline = 'bottom';
-    ctx.textAlign = 'left';
+    const FONT_PX = 11; // desired text height in screen pixels
+    const vw = this._cssWidth  || this.container.clientWidth;
+    const vh = this._cssHeight || this.container.clientHeight;
 
     for (const pl of PLANE_LABELS) {
       if ((this._originPlaneVisibilityMask & pl.mask) === 0) continue;
 
-      const s = this.worldToScreen(pl.wx, pl.wy, pl.wz);
-      if (!s) continue;
+      const a = this.worldToScreen(pl.wx, pl.wy, pl.wz);
+      if (!a) continue;
 
-      // Clip to viewport — don't draw if behind the camera or off-screen
-      const w = this._cssWidth || this.container.clientWidth;
-      const h = this._cssHeight || this.container.clientHeight;
-      if (s.x < -20 || s.x > w + 20 || s.y < -20 || s.y > h + 20) continue;
+      // Project one step in each in-plane direction to get screen-space axes
+      const rPt = this.worldToScreen(pl.wx + pl.rx, pl.wy + pl.ry, pl.wz + pl.rz);
+      const uPt = this.worldToScreen(pl.wx + pl.ux, pl.wy + pl.uy, pl.wz + pl.uz);
+      if (!rPt || !uPt) continue;
 
-      const x = Math.round(s.x) + 2;
-      const y = Math.round(s.y) - 2;
+      const srx = rPt.x - a.x;  const sry = rPt.y - a.y;
+      const sux = uPt.x - a.x;  const suy = uPt.y - a.y;
+      const srLen = Math.hypot(srx, sry);
+      const suLen = Math.hypot(sux, suy);
+      if (srLen < 0.1 || suLen < 0.1) continue; // degenerate / edge-on view
 
-      // Shadow for legibility
+      // Clip to viewport — don't draw if anchor is far off-screen
+      if (a.x < -30 || a.x > vw + 30 || a.y < -30 || a.y > vh + 30) continue;
+
+      // Normalise to FONT_PX for constant screen-size text.
+      // Canvas Y is downward, so negate the up-vector's screen contribution.
+      const nrx =  (srx / srLen) * FONT_PX;
+      const nry =  (sry / srLen) * FONT_PX;
+      const nux = -(sux / suLen) * FONT_PX;
+      const nuy = -(suy / suLen) * FONT_PX;
+
+      ctx.save();
+      // Transform: 1 local unit = FONT_PX screen pixels, aligned to the plane
+      ctx.transform(nrx, nry, nux, nuy, a.x, a.y);
+      ctx.font = 'bold 1px monospace';  // 1 local unit tall = FONT_PX screen pixels
+      ctx.textBaseline = 'bottom';
+      ctx.textAlign = 'left';
+
+      // Shadow for legibility (lineWidth in local units)
       ctx.strokeStyle = 'rgba(0,0,0,0.7)';
-      ctx.lineWidth = 3;
+      ctx.lineWidth = 3 / FONT_PX;
       ctx.lineJoin = 'round';
-      ctx.strokeText(pl.name, x, y);
+      ctx.strokeText(pl.name, 0, 0);
 
-      ctx.fillStyle = '#00e5ff'; // cyan
-      ctx.fillText(pl.name, x, y);
+      ctx.fillStyle = '#00e5ff';
+      ctx.fillText(pl.name, 0, 0);
+      ctx.restore();
     }
-
-    ctx.restore();
   }
 
   /**
