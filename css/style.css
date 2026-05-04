@@ -217,7 +217,7 @@ body.toolbar-minimized, body.toolbar-auto {
   display: flex;
   flex-direction: row;
   align-items: stretch;
-  padding: 2px 4px;
+  padding: 2px 52px 2px 4px; /* right padding reserves space for the absolute toggle btn */
   gap: 0;
   z-index: 100;
   user-select: none;
@@ -231,28 +231,25 @@ body.toolbar-minimized, body.toolbar-auto {
 body.toolbar-minimized #toolbar {
   height: var(--toolbar-minimized-height);
   overflow: hidden;
-  padding: 0 4px;
+  padding: 0 52px 0 4px;
 }
 body.toolbar-minimized #toolbar .toolbar-row,
 body.toolbar-minimized #toolbar .toolbar-row-sketch {
   display: none !important;
-}
-body.toolbar-minimized #toolbar #toolbar-toggle-btn {
-  display: flex;
 }
 
 /* Auto-hide: collapsed by default, expands on hover */
 body.toolbar-auto #toolbar {
   height: var(--toolbar-minimized-height);
   overflow: hidden;
-  padding: 0 4px;
+  padding: 0 52px 0 4px;
   transition: height 0.18s ease;
 }
 body.toolbar-auto #toolbar:hover {
   height: var(--toolbar-height);
   overflow-x: auto;
   overflow-y: hidden;
-  padding: 2px 4px;
+  padding: 2px 52px 2px 4px;
 }
 body.toolbar-auto #toolbar .toolbar-row,
 body.toolbar-auto #toolbar .toolbar-row-sketch {
@@ -265,32 +262,36 @@ body.toolbar-auto.sketch-on-plane #toolbar:hover .toolbar-row-sketch {
   display: contents !important;
 }
 
-/* Toolbar toggle button — always visible at far right of toolbar */
+/* Toolbar toggle button — absolutely positioned at the top-right of the toolbar
+   so it never participates in flex layout and never squeezes tool groups */
 #toolbar-toggle-btn {
-  margin-left: auto;
+  position: absolute;
+  top: 2px;
+  right: 4px;
   display: flex;
   align-items: center;
   gap: 3px;
-  flex-shrink: 0;
-  padding: 0 4px;
+  padding: 2px 5px;
+  height: calc(var(--toolbar-minimized-height) - 4px);
   cursor: pointer;
   color: var(--text-secondary);
   font-size: 10px;
   white-space: nowrap;
-  background: transparent;
-  border: none;
+  background: var(--bg-toolbar);
+  border: 1px solid var(--border);
   border-radius: 3px;
+  z-index: 1;
   transition: color 0.12s, background 0.12s;
 }
 #toolbar-toggle-btn:hover {
   color: var(--text-primary);
   background: rgba(255,255,255,0.07);
 }
-/* In minimized/auto state show a thin stripe label */
+/* In minimized/auto state centre vertically within the slim bar */
 body.toolbar-minimized #toolbar-toggle-btn,
 body.toolbar-auto #toolbar-toggle-btn {
-  display: flex;
-  align-self: center;
+  top: 50%;
+  transform: translateY(-50%);
 }
 
 /* Toolbar rows become transparent flex wrappers so their groups are direct children of #toolbar */
