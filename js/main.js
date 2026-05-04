@@ -10066,6 +10066,7 @@ class App {
         this._planesBeforeSketch = { XY: !!planes.XY?.visible, XZ: !!planes.XZ?.visible, YZ: !!planes.YZ?.visible };
       }
       ['XY', 'XZ', 'YZ'].forEach(p => { if (planes[p]?.visible) part.setOriginPlaneVisible(p, false); });
+      if (this._renderer3d) this._renderer3d.syncOriginPlaneVisibility(part);
     }
 
     // Add sketch-on-plane body class to control UI visibility
@@ -10214,6 +10215,7 @@ class App {
         this._planesBeforeSketch = { XY: !!planes.XY?.visible, XZ: !!planes.XZ?.visible, YZ: !!planes.YZ?.visible };
       }
       ['XY', 'XZ', 'YZ'].forEach(p => { if (planes[p]?.visible) part.setOriginPlaneVisible(p, false); });
+      if (this._renderer3d) this._renderer3d.syncOriginPlaneVisibility(part);
     }
 
     document.body.classList.add('sketch-on-plane');
@@ -10599,6 +10601,7 @@ class App {
         this._planesBeforeSketch = { XY: !!planes.XY?.visible, XZ: !!planes.XZ?.visible, YZ: !!planes.YZ?.visible };
       }
       ['XY', 'XZ', 'YZ'].forEach(p => { if (planes[p]?.visible) part.setOriginPlaneVisible(p, false); });
+      if (this._renderer3d) this._renderer3d.syncOriginPlaneVisibility(part);
     }
 
     // Enter sketch-on-plane mode

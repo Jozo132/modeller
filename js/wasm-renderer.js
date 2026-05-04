@@ -2084,6 +2084,23 @@ export class WasmRenderer {
     }
   }
 
+  /**
+   * Immediately sync origin plane visibility from a part's data model to the
+   * WASM renderer.  Call this whenever plane visibility changes but a full
+   * renderPart() rebuild is not being triggered in the same frame.
+   * @param {object} part - Part instance with getOriginPlanes()
+   */
+  syncOriginPlaneVisibility(part) {
+    if (!this._ready || !this.wasm || !this.wasm.setOriginPlanesVisible) return;
+    const planes = part && part.getOriginPlanes ? part.getOriginPlanes() : {};
+    let mask = 0;
+    if (!planes.XY || planes.XY.visible) mask |= 1;
+    if (!planes.XZ || planes.XZ.visible) mask |= 2;
+    if (!planes.YZ || planes.YZ.visible) mask |= 4;
+    this._originPlaneVisibilityMask = mask;
+    this.wasm.setOriginPlanesVisible(mask);
+  }
+
   setVisible(visible) {
     this.canvas.style.display = visible ? 'block' : 'none';
     this.overlayCanvas.style.display = visible ? 'block' : 'none';
