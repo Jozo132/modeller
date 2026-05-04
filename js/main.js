@@ -1235,6 +1235,24 @@ class App {
     let movedSinceDown = false;
     let mouseDown = false;
 
+    // ── DEBUG: capture-phase listener to detect if clicks even reach the
+    // 3D viewport area.  Uses the container element so it fires even when
+    // child elements stop propagation.
+    const view3dEl = document.getElementById('view-3d');
+    if (view3dEl) {
+      view3dEl.addEventListener('click', (e) => {
+        const rect = view3dEl.getBoundingClientRect();
+        const sx = (e.clientX - rect.left).toFixed(1);
+        const sy = (e.clientY - rect.top).toFixed(1);
+        console.log('[3D-VIEW-CLICK] click reached #view-3d container', {
+          screen: { x: sx, y: sy },
+          target: e.target?.tagName + (e.target?.id ? '#' + e.target.id : ''),
+          targetIsCanvas: e.target === canvas,
+        });
+      }, true /* capture phase */);
+    }
+    // ────────────────────────────────────────────────────────────────────────
+
     // Mouse down
     canvas.addEventListener('mousedown', (e) => {
       const rect = canvas.getBoundingClientRect();
@@ -1484,7 +1502,28 @@ class App {
 
     // Click
     canvas.addEventListener('click', (e) => {
+      // ── DEBUG: 3D click diagnostics ──────────────────────────────────────────
+      const _dbgRect = canvas.getBoundingClientRect();
+      const _dbgSx = e.clientX - _dbgRect.left;
+      const _dbgSy = e.clientY - _dbgRect.top;
+      console.log('[3D-CLICK]', {
+        screen: { x: _dbgSx.toFixed(1), y: _dbgSy.toFixed(1) },
+        movedSinceDown,
+        tool: this.activeTool?.name,
+        workspaceMode: this._workspaceMode,
+        sketchingOnPlane: !!this._sketchingOnPlane,
+        awaitingSketchPlane: !!this._awaitingSketchPlane,
+        extrudeMode: !!this._extrudeMode,
+        chamferMode: !!this._chamferMode,
+        filletMode: !!this._filletMode,
+        sceneManagerOpen: !!this._sceneManagerOpen,
+        leftClickOrbiting: !!(this._renderer3d?._leftClickOrbiting),
+        renderer3dMode: this._renderer3d?.mode,
+      });
+      // ─────────────────────────────────────────────────────────────────────────
+
       if (movedSinceDown && this.activeTool.name === 'select' && !this._sketchingOnPlane && !this._awaitingSketchPlane) {
+        console.log('[3D-CLICK] SUPPRESSED: movedSinceDown=true in select tool (drag detected)');
         movedSinceDown = false;
         return;
       }
@@ -1494,7 +1533,10 @@ class App {
       const sy = e.clientY - rect.top;
 
       if (this._sketchingOnPlane) {
-        if (this.activeTool.name === 'select' && this.activeTool._isDragging) return;
+        if (this.activeTool.name === 'select' && this.activeTool._isDragging) {
+          console.log('[3D-CLICK] SUPPRESSED: sketching on plane + select tool is dragging');
+          return;
+        }
         // Sketching on plane in 3D: raycast to plane with snap support
         const sketchVP = this._getSketchViewport();
         let world;
@@ -1521,13 +1563,18 @@ class App {
       }
 
       const world = this._renderer3d.screenToWorld(sx, sy);
+      console.log('[3D-CLICK] world coords:', world);
 
       // In Part mode 3D view: handle sketch/face/geometry picking and plane clicking
       if (this._workspaceMode === 'part' && this._renderer3d) {
         // Scene manager active: suppress all part picking interactions
-        if (this._sceneManagerOpen) return;
+        if (this._sceneManagerOpen) {
+          console.log('[3D-CLICK] SUPPRESSED: sceneManagerOpen');
+          return;
+        }
         if (!this._sketchingOnPlane && !this._extrudeMode && this._activeFeatureSelectionTarget) {
           if (this._handleActiveFeatureSelectionClick(e)) {
+            console.log('[3D-CLICK] handled by _handleActiveFeatureSelectionClick');
             return;
           }
         }
@@ -1594,6 +1641,7 @@ class App {
         // Edge/face picking in default part select mode (multi-select with Shift/Ctrl)
         if (!this._sketchingOnPlane && !this._extrudeMode) {
           const edgeHit = this._renderer3d.pickEdge(e.clientX, e.clientY);
+          console.log('[3D-CLICK] pickEdge result:', edgeHit ? `edge #${edgeHit.edgeIndex}` : 'miss');
           if (edgeHit) {
             this._renderer3d.setHoveredEdge(-1);
             if (e.shiftKey) {
@@ -1655,6 +1703,7 @@ class App {
         }
 
         const sketchHit = this._renderer3d.pickSketch(e.clientX, e.clientY, { includeFaces: false });
+        console.log('[3D-CLICK] pickSketch result:', sketchHit ? `sketch ${sketchHit.featureId}` : 'miss');
         if (sketchHit) {
           if (!e.shiftKey && !e.ctrlKey) {
             this._selectedFaces.clear();
@@ -1677,6 +1726,7 @@ class App {
           info(`Sketch selected: ${sketchHit.featureId}`);
         } else {
           const hit = this._renderer3d.pickFace(e.clientX, e.clientY);
+          console.log('[3D-CLICK] pickFace result:', hit ? `face #${hit.faceIndex} normal=(${hit.face?.normal?.x?.toFixed(2)},${hit.face?.normal?.y?.toFixed(2)},${hit.face?.normal?.z?.toFixed(2)})` : 'miss');
           if (hit) {
             if (e.shiftKey) {
               // Shift+click: add face to selection
@@ -1710,6 +1760,7 @@ class App {
           } else {
             // Try plane picking
             const hitPlaneResult = this._renderer3d.pickPlane(e.clientX, e.clientY);
+            console.log('[3D-CLICK] pickPlane result:', hitPlaneResult ? hitPlaneResult.name : 'miss');
             const clickPoint3D = hitPlaneResult ? hitPlaneResult.point : null;
 
             this._recorder.faceDeselected(clickPoint3D);
@@ -1753,9 +1804,12 @@ class App {
         }
         this._updateNodeTree();
         this._updateOperationButtons();
+      } else {
+        console.log('[3D-CLICK] NOT in part mode — workspaceMode =', this._workspaceMode, '| renderer3d =', !!this._renderer3d);
       }
 
       if (this.activeTool.onClick) {
+        console.log('[3D-CLICK] forwarding to activeTool.onClick:', this.activeTool.name);
         this.activeTool.onClick(world.x, world.y, e);
       }
 
