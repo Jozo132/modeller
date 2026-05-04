@@ -152,14 +152,34 @@ function createProgram(gl, vsSource, fsSource) {
   return program;
 }
 
+export function isLikelySamsungAndroidChrome(userAgent = globalThis.navigator?.userAgent || '') {
+  return /Android/i.test(userAgent)
+    && /Chrome\//i.test(userAgent)
+    && /(SamsungBrowser|;\s*SM-|;\s*GT-|;\s*SCH-|;\s*SHV-|;\s*SHW-|;\s*SGH-|;\s*SPH-|;\s*SC-|;\s*SCV-)/i.test(userAgent);
+}
+
+export function getWebGL2ContextOptions(userAgent = globalThis.navigator?.userAgent || '') {
+  const standardOptions = [
+    { antialias: true, alpha: false, preserveDrawingBuffer: true, stencil: true },
+    { antialias: true, alpha: false, preserveDrawingBuffer: false, stencil: true },
+    { antialias: false, alpha: false, preserveDrawingBuffer: false, stencil: false },
+    { antialias: false, alpha: true, preserveDrawingBuffer: false, stencil: false },
+  ];
+
+  if (!isLikelySamsungAndroidChrome(userAgent)) return standardOptions;
+
+  return [
+    { antialias: true, alpha: false, preserveDrawingBuffer: false, stencil: false },
+    { antialias: true, alpha: false, preserveDrawingBuffer: false, stencil: true },
+    { antialias: false, alpha: false, preserveDrawingBuffer: false, stencil: false },
+    { antialias: false, alpha: true, preserveDrawingBuffer: false, stencil: false },
+    { antialias: true, alpha: false, preserveDrawingBuffer: true, stencil: false },
+  ];
+}
+
 export class WebGLExecutor {
   constructor(canvas) {
-    const contextOptions = [
-      { antialias: true, alpha: false, preserveDrawingBuffer: true, stencil: true },
-      { antialias: true, alpha: false, preserveDrawingBuffer: false, stencil: true },
-      { antialias: false, alpha: false, preserveDrawingBuffer: false, stencil: false },
-      { antialias: false, alpha: true, preserveDrawingBuffer: false, stencil: false },
-    ];
+    const contextOptions = getWebGL2ContextOptions();
     let gl = null;
     for (const options of contextOptions) {
       gl = canvas.getContext('webgl2', options);

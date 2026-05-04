@@ -138,6 +138,7 @@ class App {
     this._activeFeatureSelectionTarget = null; // active inline selection field {featureId, fieldId, selectionType, acceptedTypes, maxSelections, stateKey}
     this._dxfExportPanel = null;  // DXF export sidebar panel instance
     this._awaitingSketchPlane = false; // true when waiting for user to pick a plane/face for sketch
+    this._planesBeforeSketch = null; // saved {XY, XZ, YZ} visibility before hiding planes for sketch mode
     this._draggingExtrudeHandle = false;
     this._extrudeHandleInfo = null; // {origin, tip, dir} for drag handle
     this._extrudePreviewFrame = 0;
@@ -179,15 +180,7 @@ class App {
     this._renderer3d.setInvisibleEdgesVisible(this._invisibleEdgesVisible);
     this._renderer3d.setMeshTriangleOverlayMode(this._meshTriangleOverlayMode);
     this._renderer3d.setNormalColorShadingEnabled(this._normalColorShadingEnabled);
-    // Allow left-click orbit in 3D part mode when no special mode is active
-    this._renderer3d.shouldAllowLeftClickOrbit = () => {
-      return this._workspaceMode === 'part'
-        && !this._sketchingOnPlane
-        && !this._awaitingSketchPlane
-        && !this._extrudeMode
-        && !this._chamferMode
-        && !this._filletMode;
-    };
+    this._renderer3d.shouldAllowLeftClickOrbit = () => false;
     if (this._renderer3d._loadPromise) {
       this._renderer3d._loadPromise.then(async () => {
         this._update3DView();
@@ -482,8 +475,12 @@ class App {
             constraintIconsVisible: state.constraintIconsVisible,
             activeTool: this.activeTool,
           });
-        } else {
-          // No sketch entities: clear stale 2D overlays
+        } else if (this._renderer3d.mode !== '3d') {
+          // No sketch entities and not in 3D part mode: clear stale 2D overlays.
+          // In 3D mode the overlay is fully managed by the renderer's own animation
+          // loop (_renderFrame → _renderPartSketchImagesOverlay + _drawOriginPlaneLabels),
+          // so calling clearOverlay() here would race with that loop and produce
+          // flickering/missing labels and sketch images during mouse movement.
           this._renderer3d.clearOverlay();
         }
       } catch (err) {
@@ -1502,7 +1499,9 @@ class App {
       const sy = e.clientY - rect.top;
 
       if (this._sketchingOnPlane) {
-        if (this.activeTool.name === 'select' && this.activeTool._isDragging) return;
+        if (this.activeTool.name === 'select' && this.activeTool._isDragging) {
+          return;
+        }
         // Sketching on plane in 3D: raycast to plane with snap support
         const sketchVP = this._getSketchViewport();
         let world;
@@ -1533,7 +1532,9 @@ class App {
       // In Part mode 3D view: handle sketch/face/geometry picking and plane clicking
       if (this._workspaceMode === 'part' && this._renderer3d) {
         // Scene manager active: suppress all part picking interactions
-        if (this._sceneManagerOpen) return;
+        if (this._sceneManagerOpen) {
+          return;
+        }
         if (!this._sketchingOnPlane && !this._extrudeMode && this._activeFeatureSelectionTarget) {
           if (this._handleActiveFeatureSelectionClick(e)) {
             return;
@@ -2502,6 +2503,57 @@ class App {
         }
       });
     });
+
+    // ── Toolbar minimize / auto-hide toggle ──
+    // States: 'open' → 'minimized' → 'auto' → 'open' (cycles)
+    {
+      const btn = document.getElementById('toolbar-toggle-btn');
+      const icon = document.getElementById('toolbar-toggle-icon');
+      const lbl = document.getElementById('toolbar-toggle-label');
+      if (btn && icon && lbl) {
+        // Icons SVG paths for each state
+        const STATES = ['open', 'minimized', 'auto'];
+        const ICONS = {
+          open:      '<polyline points="2,10 8,4 14,10"/>',  // chevron-up (open)
+          minimized: '<polyline points="2,6 8,12 14,6"/>',    // chevron-down (collapsed)
+          auto:      '<circle cx="8" cy="8" r="5"/><line x1="8" y1="3" x2="8" y2="13"/>',  // auto icon
+        };
+        const TITLES = {
+          open:      'Toolbar is open – click to minimize',
+          minimized: 'Toolbar is minimized – click to enable auto-hide',
+          auto:      'Toolbar auto-hides on hover – click to open',
+        };
+
+        let state = 'open';
+        // Restore from localStorage
+        try {
+          const saved = localStorage.getItem('toolbar-state');
+          if (STATES.includes(saved)) state = saved;
+        } catch (e) { /* ignore */ }
+
+        const applyState = (s) => {
+          state = s;
+          document.body.classList.remove('toolbar-minimized', 'toolbar-auto');
+          if (s === 'minimized') document.body.classList.add('toolbar-minimized');
+          else if (s === 'auto') document.body.classList.add('toolbar-auto');
+          icon.innerHTML = ICONS[s];
+          lbl.textContent = s === 'open' ? 'Open' : s === 'minimized' ? 'Min' : 'Auto';
+          btn.title = TITLES[s];
+          try { localStorage.setItem('toolbar-state', s); } catch (e) { /* ignore */ }
+          // Trigger a renderer resize so the 3D canvas adjusts to the new --top-offset
+          if (this._renderer3d && typeof this._renderer3d.onWindowResize === 'function') {
+            setTimeout(() => this._renderer3d.onWindowResize(), 200);
+          }
+        };
+
+        applyState(state);
+
+        btn.addEventListener('click', () => {
+          const idx = STATES.indexOf(state);
+          applyState(STATES[(idx + 1) % STATES.length]);
+        });
+      }
+    }
   }
 
   // --- Keyboard ---
@@ -7529,11 +7581,7 @@ class App {
   /** Update the left-click orbit flag on the renderer based on current UI state. */
   _updateLeftClickOrbit() {
     if (!this._renderer3d) return;
-    this._renderer3d._leftClickOrbitEnabled = this._workspaceMode === 'part'
-      && !this._sketchingOnPlane
-      && !this._extrudeMode
-      && !this._chamferMode
-      && !this._filletMode;
+    this._renderer3d._leftClickOrbitEnabled = false;
   }
 
   _hasMeshHoles(geometry) {
@@ -8511,23 +8559,8 @@ class App {
           this._scheduleRender();
         };
 
-        planeEl.onclick = (e) => {
-          if (e.target && e.target.classList && e.target.classList.contains('node-tree-eye')) return;
-          if (this._workspaceMode !== 'part') return;
-          if (this._isEditingFeature()) return;
-          if (!isVisible) return;
-          if (this._selectedPlane === planeName) {
-            this._selectedPlane = null;
-          } else {
-            this._selectedPlane = planeName;
-          }
-          // Sync highlight to 3D renderer
-          if (this._renderer3d) {
-            this._renderer3d.setSelectedPlane(this._selectedPlane);
-          }
-          this._updateNodeTree();
-          this._scheduleRender();
-        };
+        // Plane click is handled by _bindPlaneSelectionEvents (addEventListener) to
+        // avoid a double-toggle caused by having two handlers on the same element.
       });
     }
 
@@ -8601,21 +8634,23 @@ class App {
         if (feature.type === 'sketch') {
           this._lastSketchFeatureId = feature.id;
         }
-        if (this._featurePanel) {
-          this._featurePanel.selectFeature(feature.id);
-        } else {
-          if (this._parametersPanel) {
-            this._parametersPanel.showFeature(feature);
-          }
-          this._showLeftFeatureParams(feature);
-        }
-        // Highlight selected feature in 3D view
+        // Set selected feature in 3D view BEFORE notifying the feature panel so
+        // that _selectedFeatureId is already set when notifyListeners fires
+        // _update3DView → _buildSketchWireframes (which reads _selectedFeatureId).
         if (this._renderer3d) {
           this._renderer3d.setSelectedFeature(feature.id);
         }
+        if (this._featurePanel) {
+          this._featurePanel.selectFeature(feature.id);
+        }
+        // Show feature parameters in the left panel (always, regardless of featurePanel)
+        if (this._parametersPanel) {
+          this._parametersPanel.showFeature(feature);
+        }
+        this._showLeftFeatureParams(feature);
         this._recorder.featureSelected(feature.id, feature.type, feature.name);
         this._updateNodeTree();
-        this._update3DView();
+        this._updateOperationButtons();
         this._scheduleRender();
       });
 
@@ -8936,15 +8971,38 @@ class App {
     const hasSolid = this._partManager && this._partManager.getFeatures().some(
       f => f.type === 'extrude' || f.type === 'extrude-cut' || f.type === 'revolve'
     );
-    
+
+    // Determine current selection composition
+    const hasEdgeSelected = this._renderer3d &&
+      this._renderer3d._selectedEdgeIndices && this._renderer3d._selectedEdgeIndices.size > 0;
+    const selectedFaceCount = this._selectedFaces ? this._selectedFaces.size : 0;
+    const hasPlaneSelected = !!this._selectedPlane;
+
+    // Sketch-on-plane is only valid when exactly one flat face or one plane (or nothing) is selected,
+    // and no edges are selected.
+    const singleFlatFace = selectedFaceCount === 1 &&
+      [...this._selectedFaces.values()].every(hit => hit.face && !hit.face.isCurved);
+    const sketchableSelection =
+      !hasEdgeSelected &&
+      (
+        (selectedFaceCount === 0 && !hasPlaneSelected) || // nothing selected
+        (selectedFaceCount === 0 && hasPlaneSelected)   || // one plane selected
+        singleFlatFace                                     // exactly one flat face
+      );
+
+    // Extrude/extrude-cut cannot be applied to edge selections in the default part mode
+    const extrudable = !hasEdgeSelected;
+
     const btnAddSketch = document.getElementById('btn-add-sketch');
     if (btnAddSketch) btnAddSketch.disabled = !hasEntities || busy;
+    const btnSketchOnPlane = document.getElementById('btn-sketch-on-plane');
+    if (btnSketchOnPlane) btnSketchOnPlane.disabled = busy || !sketchableSelection;
     const btnExtrude = document.getElementById('btn-extrude');
-    if (btnExtrude) btnExtrude.disabled = busy;
+    if (btnExtrude) btnExtrude.disabled = busy || !extrudable;
     const btnRevolve = document.getElementById('btn-revolve');
     if (btnRevolve) btnRevolve.disabled = !hasSketch || busy;
     const btnExtrudeCut = document.getElementById('btn-extrude-cut');
-    if (btnExtrudeCut) btnExtrudeCut.disabled = busy;
+    if (btnExtrudeCut) btnExtrudeCut.disabled = busy || !extrudable;
     const btnChamfer = document.getElementById('btn-chamfer');
     if (btnChamfer) btnChamfer.disabled = !hasSolid || busy;
     const btnFillet = document.getElementById('btn-fillet');
@@ -9085,27 +9143,28 @@ class App {
   _bindPlaneSelectionEvents() {
     const planeItems = document.querySelectorAll('.node-tree-plane[data-plane]');
     planeItems.forEach((item) => {
-      item.addEventListener('click', () => {
+      item.addEventListener('click', (e) => {
+        if (e.target && e.target.classList && e.target.classList.contains('node-tree-eye')) return;
         if (this._workspaceMode !== 'part') return;
+        if (this._isEditingFeature()) return;
         const plane = item.getAttribute('data-plane');
         if (!this._isOriginPlaneVisible(plane)) return;
         if (this._selectedPlane === plane) {
           // Deselect
           this._selectedPlane = null;
-          item.classList.remove('selected');
         } else {
-          // Deselect previous
-          planeItems.forEach(p => p.classList.remove('selected'));
-          // Select new
+          // Select new (deselect previous)
           this._selectedPlane = plane;
-          item.classList.add('selected');
         }
         // Sync highlight to 3D renderer
         if (this._renderer3d) {
           this._renderer3d.setSelectedPlane(this._selectedPlane);
         }
         info(`Plane selection: ${this._selectedPlane || 'none'}`);
-        this._update3DView();
+        // Refresh the Feature Properties panel to show the updated selection
+        this._showLeftFeatureParams(null);
+        this._updateNodeTree();
+        this._updateOperationButtons();
         this._scheduleRender();
       });
 
@@ -9206,6 +9265,15 @@ class App {
     this._activeSketchPlane = null;
     this._activeSketchPlaneDef = null;
     this._3dMode = true;
+
+    // Restore origin plane visibility to what it was before entering sketch mode
+    if (this._planesBeforeSketch) {
+      const part2 = this._partManager ? this._partManager.getPart() : null;
+      if (part2 && part2.setOriginPlaneVisible) {
+        ['XY', 'XZ', 'YZ'].forEach(p => part2.setOriginPlaneVisible(p, !!this._planesBeforeSketch[p]));
+      }
+      this._planesBeforeSketch = null;
+    }
 
     document.body.classList.remove('sketch-on-plane');
     const exitBtn = document.getElementById('btn-exit-sketch');
@@ -9990,6 +10058,17 @@ class App {
     const part = this._partManager.getPart();
     if (part) part.setActiveSketch(null);
 
+    // Hide all origin planes while sketching — they are not needed and obstruct the view.
+    // If planes were not already saved (e.g. by _enterAwaitSketchPlane auto-show), save them now.
+    if (part && part.getOriginPlanes) {
+      const planes = part.getOriginPlanes();
+      if (!this._planesBeforeSketch) {
+        this._planesBeforeSketch = { XY: !!planes.XY?.visible, XZ: !!planes.XZ?.visible, YZ: !!planes.YZ?.visible };
+      }
+      ['XY', 'XZ', 'YZ'].forEach(p => { if (planes[p]?.visible) part.setOriginPlaneVisible(p, false); });
+      if (this._renderer3d) this._renderer3d.syncOriginPlaneVisibility(part);
+    }
+
     // Add sketch-on-plane body class to control UI visibility
     document.body.classList.add('sketch-on-plane');
 
@@ -10048,6 +10127,25 @@ class App {
     this._awaitingSketchPlane = true;
     const btn = document.getElementById('btn-sketch-on-plane');
     if (btn) btn.classList.add('awaiting');
+
+    // If the feature tree is empty and all planes are hidden, auto-show planes so
+    // the user can see them and click one to start the sketch.
+    const part = this._partManager ? this._partManager.getPart() : null;
+    if (part) {
+      const features = this._partManager.getFeatures ? this._partManager.getFeatures() : [];
+      const hasUserFeatures = features.length > 0;
+      const planes = part.getOriginPlanes ? part.getOriginPlanes() : {};
+      const allPlanesHidden = ['XY', 'XZ', 'YZ'].every(p => !planes[p] || !planes[p].visible);
+      if (!hasUserFeatures && allPlanesHidden) {
+        // Save the pre-auto-show state (all hidden) so it can be restored on cancel
+        this._planesBeforeSketch = { XY: false, XZ: false, YZ: false };
+        ['XY', 'XZ', 'YZ'].forEach(p => part.setOriginPlaneVisible(p, true));
+        this._updateNodeTree();
+        this._update3DView();
+        this._scheduleRender();
+      }
+    }
+
     this.setStatus('Select a flat face or reference plane to start sketching. Press Escape to cancel.');
   }
 
@@ -10056,6 +10154,19 @@ class App {
     this._awaitingSketchPlane = false;
     const btn = document.getElementById('btn-sketch-on-plane');
     if (btn) btn.classList.remove('awaiting');
+
+    // Restore planes if they were auto-shown for an empty tree
+    if (this._planesBeforeSketch) {
+      const part = this._partManager ? this._partManager.getPart() : null;
+      if (part && part.setOriginPlaneVisible) {
+        ['XY', 'XZ', 'YZ'].forEach(p => part.setOriginPlaneVisible(p, !!this._planesBeforeSketch[p]));
+      }
+      this._planesBeforeSketch = null;
+      this._updateNodeTree();
+      this._update3DView();
+      this._scheduleRender();
+    }
+
     this.setStatus('Sketch plane selection cancelled.');
   }
 
@@ -10096,6 +10207,16 @@ class App {
 
     const part = this._partManager.getPart();
     if (part) part.setActiveSketch(null);
+
+    // Hide all origin planes while sketching — they are not needed and obstruct the view.
+    if (part && part.getOriginPlanes) {
+      const planes = part.getOriginPlanes();
+      if (!this._planesBeforeSketch) {
+        this._planesBeforeSketch = { XY: !!planes.XY?.visible, XZ: !!planes.XZ?.visible, YZ: !!planes.YZ?.visible };
+      }
+      ['XY', 'XZ', 'YZ'].forEach(p => { if (planes[p]?.visible) part.setOriginPlaneVisible(p, false); });
+      if (this._renderer3d) this._renderer3d.syncOriginPlaneVisibility(part);
+    }
 
     document.body.classList.add('sketch-on-plane');
 
@@ -10387,6 +10508,15 @@ class App {
     this._activeSketchPlaneDef = null;
     this._3dMode = true;
 
+    // Restore origin plane visibility to what it was before entering sketch mode
+    if (this._planesBeforeSketch) {
+      const partForPlanes = this._partManager ? this._partManager.getPart() : null;
+      if (partForPlanes && partForPlanes.setOriginPlaneVisible) {
+        ['XY', 'XZ', 'YZ'].forEach(p => partForPlanes.setOriginPlaneVisible(p, !!this._planesBeforeSketch[p]));
+      }
+      this._planesBeforeSketch = null;
+    }
+
     // Remove sketch-on-plane body class, hide Exit Sketch button
     document.body.classList.remove('sketch-on-plane');
     const exitBtn = document.getElementById('btn-exit-sketch');
@@ -10463,6 +10593,16 @@ class App {
 
     const part = this._partManager.getPart();
     if (part) part.setActiveSketch(sketchFeature.id);
+
+    // Hide all origin planes while sketching — they are not needed and obstruct the view.
+    if (part && part.getOriginPlanes) {
+      const planes = part.getOriginPlanes();
+      if (!this._planesBeforeSketch) {
+        this._planesBeforeSketch = { XY: !!planes.XY?.visible, XZ: !!planes.XZ?.visible, YZ: !!planes.YZ?.visible };
+      }
+      ['XY', 'XZ', 'YZ'].forEach(p => { if (planes[p]?.visible) part.setOriginPlaneVisible(p, false); });
+      if (this._renderer3d) this._renderer3d.syncOriginPlaneVisibility(part);
+    }
 
     // Enter sketch-on-plane mode
     this._sketchingOnPlane = true;

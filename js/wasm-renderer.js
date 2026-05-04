@@ -459,6 +459,7 @@ export class WasmRenderer {
     // Sketch plane reference (set when in sketch-on-plane mode)
     this._sketchPlane = null; // 'XY', 'XZ', 'YZ', or null
     this._originPlaneVisibilityMask = 0b111;
+    this._originPlaneScale = 5.0; // world-space half-size, kept in sync with orbit radius
     this._gridVisible = true;
     this._axesVisible = true;
 
@@ -525,6 +526,8 @@ export class WasmRenderer {
 
     if (this.mode === '3d' && !this._sketchPlane) {
       this._renderPartSketchImagesOverlay();
+      // Draw origin plane labels (XY / XZ / YZ) on the 2D overlay in 3D part mode
+      this._drawOriginPlaneLabels();
     }
 
     if (this.onPostRender) this.onPostRender();
@@ -878,6 +881,13 @@ export class WasmRenderer {
     if (this.wasm.setOriginPlanesVisible) {
       this.wasm.setOriginPlanesVisible(this._originPlaneVisibilityMask);
     }
+    // Scale origin planes and axes to stay proportional to the view distance.
+    // 0.2 × orbitRadius keeps them at roughly 20% of the visible scene extent.
+    const planeScale = this._orbitRadius * 0.2;
+    this._originPlaneScale = planeScale;
+    if (this.wasm.setOriginPlaneScale) {
+      this.wasm.setOriginPlaneScale(planeScale);
+    }
   }
 
   /**
@@ -1093,33 +1103,9 @@ export class WasmRenderer {
   pickFace(screenX, screenY) {
     if (!this._meshTriangles || this._meshTriangleCount === 0 || !this._meshFaces) return null;
 
-    const rect = this.canvas.getBoundingClientRect();
-    const ndcX = ((screenX - rect.left) / rect.width) * 2 - 1;
-    const ndcY = -((screenY - rect.top) / rect.height) * 2 + 1;
-
-    // Compute camera ray in world space
-    const mvp = this._computeMVP();
-    if (!mvp) return null;
-
-    // Invert MVP to get ray
-    const invMVP = this._mat4Invert(mvp);
-    if (!invMVP) return null;
-
-    // Near point (NDC z = -1) and far point (NDC z = 1)
-    const nearW = this._mat4TransformVec4(invMVP, ndcX, ndcY, -1, 1);
-    const farW = this._mat4TransformVec4(invMVP, ndcX, ndcY, 1, 1);
-    if (Math.abs(nearW.w) < 1e-10 || Math.abs(farW.w) < 1e-10) return null;
-
-    const origin = { x: nearW.x / nearW.w, y: nearW.y / nearW.w, z: nearW.z / nearW.w };
-    const farPt = { x: farW.x / farW.w, y: farW.y / farW.w, z: farW.z / farW.w };
-    const dir = {
-      x: farPt.x - origin.x,
-      y: farPt.y - origin.y,
-      z: farPt.z - origin.z,
-    };
-    const dirLen = Math.sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
-    if (dirLen < 1e-10) return null;
-    dir.x /= dirLen; dir.y /= dirLen; dir.z /= dirLen;
+    const ray = this._computePickRay(screenX, screenY);
+    if (!ray) return null;
+    const { origin, dir } = ray;
 
     // Test ray against all triangles
     let closestT = Infinity;
@@ -1170,33 +1156,12 @@ export class WasmRenderer {
     const hasTriangles = includeFaces && !!(this._sketchPickTriangles && this._sketchPickTriangles.length > 0);
     if (!hasSegments && !hasTriangles) return null;
 
-    const mvp = this._computeMVP();
-    if (!mvp) return null;
-    const invMVP = this._mat4Invert(mvp);
-    if (!invMVP) return null;
-
-    const rect = this.canvas.getBoundingClientRect();
-    const ndcX = ((screenX - rect.left) / rect.width) * 2 - 1;
-    const ndcY = -((screenY - rect.top) / rect.height) * 2 + 1;
-
-    const nearW = this._mat4TransformVec4(invMVP, ndcX, ndcY, -1, 1);
-    const farW = this._mat4TransformVec4(invMVP, ndcX, ndcY, 1, 1);
-    if (Math.abs(nearW.w) < 1e-10 || Math.abs(farW.w) < 1e-10) return null;
-
-    const origin = { x: nearW.x / nearW.w, y: nearW.y / nearW.w, z: nearW.z / nearW.w };
-    const farPt = { x: farW.x / farW.w, y: farW.y / farW.w, z: farW.z / farW.w };
-    const dir = {
-      x: farPt.x - origin.x,
-      y: farPt.y - origin.y,
-      z: farPt.z - origin.z,
-    };
-    const dirLen = Math.sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
-    if (dirLen < 1e-10) return null;
-    dir.x /= dirLen; dir.y /= dirLen; dir.z /= dirLen;
+    const ray = this._computePickRay(screenX, screenY);
+    if (!ray) return null;
+    const { origin, dir, mvp, ndcX, ndcY, rect } = ray;
 
     // Screen-space pixel threshold for picking (in pixels)
     const pixelThreshold = 12;
-
     let closestDist = Infinity;
     let closestFeatureId = null;
     let closestWorldPt = null;
@@ -1259,29 +1224,9 @@ export class WasmRenderer {
   pickEdge(screenX, screenY) {
     if (!this._meshEdgeSegments || this._meshEdgeSegments.length === 0) return null;
 
-    const mvp = this._computeMVP();
-    if (!mvp) return null;
-    const invMVP = this._mat4Invert(mvp);
-    if (!invMVP) return null;
-
-    const rect = this.canvas.getBoundingClientRect();
-    const ndcX = ((screenX - rect.left) / rect.width) * 2 - 1;
-    const ndcY = -((screenY - rect.top) / rect.height) * 2 + 1;
-
-    const nearW = this._mat4TransformVec4(invMVP, ndcX, ndcY, -1, 1);
-    const farW = this._mat4TransformVec4(invMVP, ndcX, ndcY, 1, 1);
-    if (Math.abs(nearW.w) < 1e-10 || Math.abs(farW.w) < 1e-10) return null;
-
-    const origin = { x: nearW.x / nearW.w, y: nearW.y / nearW.w, z: nearW.z / nearW.w };
-    const farPt = { x: farW.x / farW.w, y: farW.y / farW.w, z: farW.z / farW.w };
-    const dir = {
-      x: farPt.x - origin.x,
-      y: farPt.y - origin.y,
-      z: farPt.z - origin.z,
-    };
-    const dirLen = Math.sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
-    if (dirLen < 1e-10) return null;
-    dir.x /= dirLen; dir.y /= dirLen; dir.z /= dirLen;
+    const ray = this._computePickRay(screenX, screenY);
+    if (!ray) return null;
+    const { origin, dir, mvp, ndcX, ndcY, rect } = ray;
 
     const pixelThreshold = 12;
     let closestDist = Infinity;
@@ -1633,32 +1578,11 @@ export class WasmRenderer {
    * @returns {string|null} 'XY', 'XZ', 'YZ', or null
    */
   pickPlane(screenX, screenY) {
-    const mvp = this._computeMVP();
-    if (!mvp) return null;
+    const ray = this._computePickRay(screenX, screenY);
+    if (!ray) return null;
+    const { origin, dir } = ray;
 
-    const invMVP = this._mat4Invert(mvp);
-    if (!invMVP) return null;
-
-    const rect = this.canvas.getBoundingClientRect();
-    const ndcX = ((screenX - rect.left) / rect.width) * 2 - 1;
-    const ndcY = -((screenY - rect.top) / rect.height) * 2 + 1;
-
-    const nearW = this._mat4TransformVec4(invMVP, ndcX, ndcY, -1, 1);
-    const farW = this._mat4TransformVec4(invMVP, ndcX, ndcY, 1, 1);
-    if (Math.abs(nearW.w) < 1e-10 || Math.abs(farW.w) < 1e-10) return null;
-
-    const origin = { x: nearW.x / nearW.w, y: nearW.y / nearW.w, z: nearW.z / nearW.w };
-    const farPt = { x: farW.x / farW.w, y: farW.y / farW.w, z: farW.z / farW.w };
-    const dir = {
-      x: farPt.x - origin.x,
-      y: farPt.y - origin.y,
-      z: farPt.z - origin.z,
-    };
-    const dirLen = Math.sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
-    if (dirLen < 1e-10) return null;
-    dir.x /= dirLen; dir.y /= dirLen; dir.z /= dirLen;
-
-    const planeSize = 5.0;
+    const planeSize = this._originPlaneScale;
     const planes = [
       { name: 'XY', normal: { x: 0, y: 0, z: 1 }, uAxis: 'x', vAxis: 'y', constAxis: 'z', constVal: 0 },
       { name: 'XZ', normal: { x: 0, y: 1, z: 0 }, uAxis: 'x', vAxis: 'z', constAxis: 'y', constVal: 0 },
@@ -1724,6 +1648,76 @@ export class WasmRenderer {
     else if (planeName === 'YZ') mask = 4;
     if ((mask & this._originPlaneVisibilityMask) === 0) mask = 0;
     this.wasm.setOriginPlaneSelected(mask);
+  }
+
+  /**
+   * Draw cyan labels (XY, XZ, YZ) at the bottom-left corner of each visible origin plane.
+   * Labels are drawn in planar projection — they appear as if written on the plane surface
+   * (correct orientation, constant screen size regardless of zoom).
+   */
+  _drawOriginPlaneLabels() {
+    if (this.mode !== '3d') return;
+    const ctx = this.overlayCtx;
+    if (!ctx) return;
+
+    // Plane definitions: label, 3D anchor (bottom-left corner of the quad),
+    // and in-plane right/up unit vectors in world space.
+    // The anchor position uses the current plane scale so labels track the plane edges.
+    const s = this._originPlaneScale;
+    const PLANE_LABELS = [
+      { name: 'XY', mask: 1, wx: -s, wy: -s, wz: 0,  rx: 1, ry: 0, rz: 0,  ux: 0, uy: 1, uz: 0 },
+      { name: 'XZ', mask: 2, wx: -s, wy:  0, wz: -s,  rx: 1, ry: 0, rz: 0,  ux: 0, uy: 0, uz: 1 },
+      { name: 'YZ', mask: 4, wx:  0, wy: -s, wz: -s,  rx: 0, ry: 1, rz: 0,  ux: 0, uy: 0, uz: 1 },
+    ];
+
+    const FONT_PX = 11; // desired text height in screen pixels
+    const vw = this._cssWidth  || this.container.clientWidth;
+    const vh = this._cssHeight || this.container.clientHeight;
+
+    for (const pl of PLANE_LABELS) {
+      if ((this._originPlaneVisibilityMask & pl.mask) === 0) continue;
+
+      const a = this.worldToScreen(pl.wx, pl.wy, pl.wz);
+      if (!a) continue;
+
+      // Project one step in each in-plane direction to get screen-space axes
+      const rPt = this.worldToScreen(pl.wx + pl.rx, pl.wy + pl.ry, pl.wz + pl.rz);
+      const uPt = this.worldToScreen(pl.wx + pl.ux, pl.wy + pl.uy, pl.wz + pl.uz);
+      if (!rPt || !uPt) continue;
+
+      const srx = rPt.x - a.x;  const sry = rPt.y - a.y;
+      const sux = uPt.x - a.x;  const suy = uPt.y - a.y;
+      const srLen = Math.hypot(srx, sry);
+      const suLen = Math.hypot(sux, suy);
+      if (srLen < 0.1 || suLen < 0.1) continue; // degenerate / edge-on view
+
+      // Clip to viewport — don't draw if anchor is far off-screen
+      if (a.x < -30 || a.x > vw + 30 || a.y < -30 || a.y > vh + 30) continue;
+
+      // Normalise to FONT_PX for constant screen-size text.
+      // Canvas Y is downward, so negate the up-vector's screen contribution.
+      const nrx =  (srx / srLen) * FONT_PX;
+      const nry =  (sry / srLen) * FONT_PX;
+      const nux = -(sux / suLen) * FONT_PX;
+      const nuy = -(suy / suLen) * FONT_PX;
+
+      ctx.save();
+      // Transform: 1 local unit = FONT_PX screen pixels, aligned to the plane
+      ctx.transform(nrx, nry, nux, nuy, a.x, a.y);
+      ctx.font = 'bold 1px monospace';  // 1 local unit tall = FONT_PX screen pixels
+      ctx.textBaseline = 'bottom';
+      ctx.textAlign = 'left';
+
+      // Shadow for legibility (lineWidth in local units)
+      ctx.strokeStyle = 'rgba(0,0,0,0.7)';
+      ctx.lineWidth = 3 / FONT_PX;
+      ctx.lineJoin = 'round';
+      ctx.strokeText(pl.name, 0, 0);
+
+      ctx.fillStyle = '#00e5ff';
+      ctx.fillText(pl.name, 0, 0);
+      ctx.restore();
+    }
   }
 
   /**
@@ -2098,6 +2092,23 @@ export class WasmRenderer {
     if (this._ready && this.wasm && this.wasm.setAxesVisible) {
       this.wasm.setAxesVisible(this._axesVisible ? 1 : 0);
     }
+  }
+
+  /**
+   * Immediately sync origin plane visibility from a part's data model to the
+   * WASM renderer.  Call this whenever plane visibility changes but a full
+   * renderPart() rebuild is not being triggered in the same frame.
+   * @param {object} part - Part instance with getOriginPlanes()
+   */
+  syncOriginPlaneVisibility(part) {
+    if (!this._ready || !this.wasm || !this.wasm.setOriginPlanesVisible) return;
+    const planes = part && part.getOriginPlanes ? part.getOriginPlanes() : {};
+    let mask = 0;
+    if (!planes.XY || planes.XY.visible) mask |= 1;
+    if (!planes.XZ || planes.XZ.visible) mask |= 2;
+    if (!planes.YZ || planes.YZ.visible) mask |= 4;
+    this._originPlaneVisibilityMask = mask;
+    this.wasm.setOriginPlanesVisible(mask);
   }
 
   setVisible(visible) {
@@ -4434,6 +4445,48 @@ export class WasmRenderer {
 
     // MVP = proj * view (column-major multiplication)
     return this._mat4Multiply(proj, view);
+  }
+
+  /**
+   * Compute a world-space pick ray from screen coordinates.
+   * Works for both orthographic and perspective cameras. For perspective,
+   * the far NDC plane maps to projective infinity (farW.w → 0); in that case
+   * farW.xyz is used directly as the unnormalized ray direction.
+   * @param {number} screenX - client X coordinate
+   * @param {number} screenY - client Y coordinate
+   * @returns {{origin:{x,y,z}, dir:{x,y,z}, mvp:Float32Array, ndcX:number, ndcY:number, rect:DOMRect}|null}
+   */
+  _computePickRay(screenX, screenY) {
+    const mvp = this._computeMVP();
+    if (!mvp) return null;
+    const invMVP = this._mat4Invert(mvp);
+    if (!invMVP) return null;
+
+    const rect = this.canvas.getBoundingClientRect();
+    const ndcX = ((screenX - rect.left) / rect.width) * 2 - 1;
+    const ndcY = -((screenY - rect.top) / rect.height) * 2 + 1;
+
+    // Near point (NDC z = -1) always has finite w for any valid projection.
+    const nearW = this._mat4TransformVec4(invMVP, ndcX, ndcY, -1, 1);
+    if (Math.abs(nearW.w) < 1e-10) return null;
+    const origin = { x: nearW.x / nearW.w, y: nearW.y / nearW.w, z: nearW.z / nearW.w };
+
+    // Far point (NDC z = +1). For a perspective projection the far plane sits at
+    // projective infinity so farW.w → 0. In that case farW.xyz is the direction.
+    const farW = this._mat4TransformVec4(invMVP, ndcX, ndcY, 1, 1);
+    let dir;
+    if (Math.abs(farW.w) < 1e-10) {
+      dir = { x: farW.x, y: farW.y, z: farW.z };
+    } else {
+      const farPt = { x: farW.x / farW.w, y: farW.y / farW.w, z: farW.z / farW.w };
+      dir = { x: farPt.x - origin.x, y: farPt.y - origin.y, z: farPt.z - origin.z };
+    }
+
+    const dirLen = Math.sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+    if (dirLen < 1e-10) return null;
+    dir.x /= dirLen; dir.y /= dirLen; dir.z /= dirLen;
+
+    return { origin, dir, mvp, ndcX, ndcY, rect };
   }
 
   _mat4Perspective(fov, aspect, near, far) {

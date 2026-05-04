@@ -230,6 +230,10 @@ export class SceneRenderer {
     if (len > 1e-8) {
       this.executor.setViewDir(dx / len, dy / len, dz / len);
     }
+    // Scale origin planes and axes with the orbit radius
+    if (this.wasm.setOriginPlaneScale) {
+      this.wasm.setOriginPlaneScale(this._orbitRadius * 0.2);
+    }
   }
 
   _buildMeshFromGeometry(geometry) {
@@ -240,6 +244,11 @@ export class SceneRenderer {
     if (!this._meshTriangles || this._meshTriangleCount === 0) return;
     const mvp = this._computeMvp();
     if (!mvp) return;
+
+    // Re-enable depth testing if the executor supports it (mirrors WasmRenderer setup).
+    if (this.executor.setDepthTest) {
+      this.executor.setDepthTest(true);
+    }
 
     renderBaseMeshOverlay(this.executor, {
       meshTriangles: this._meshTriangles,
@@ -252,6 +261,7 @@ export class SceneRenderer {
       meshTriangleOverlayEdgeVertexCount: this._meshTriangleOverlayEdgeVertexCount,
       meshEdges: this._meshEdges,
       meshEdgeVertexCount: this._meshEdgeVertexCount,
+      meshEdgeSegments: this._meshEdgeSegments,
       meshSilhouetteCandidates: this._meshSilhouetteCandidates,
       meshBoundaryEdges: this._meshBoundaryEdges,
       meshBoundaryEdgeVertexCount: this._meshBoundaryEdgeVertexCount,

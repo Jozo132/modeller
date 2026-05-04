@@ -141,6 +141,11 @@ export declare function setOriginPlaneHovered(mask: number): void;
  */
 export declare function setOriginPlaneSelected(mask: number): void;
 /**
+ * assembly/index/setOriginPlaneScale
+ * @param scale `f32`
+ */
+export declare function setOriginPlaneScale(scale: number): void;
+/**
  * assembly/index/setMousePosition
  * @param x `f32`
  * @param y `f32`
