@@ -478,10 +478,10 @@ export class WasmRenderer {
 
   async _loadWasm() {
     try {
-      const width = Math.max(1, Math.trunc(this.canvas.width || 0));
-      const height = Math.max(1, Math.trunc(this.canvas.height || 0));
       const initialize = async (fresh = false) => {
         const mod = await loadReleaseWasmModule({ fresh });
+        const width = Math.max(1, Math.trunc(this.canvas.width || 0));
+        const height = Math.max(1, Math.trunc(this.canvas.height || 0));
         mod.init(width, height);
         this.wasm = mod;
       };

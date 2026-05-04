@@ -1,12 +1,13 @@
 let cachedModulePromise = null;
 let cacheBustCounter = 0;
+const RELEASE_WASM_MODULE_SPECIFIER = '../build/release.js';
 
 function loadModule(specifier) {
   return import(specifier);
 }
 
 function buildFreshSpecifier() {
-  return `../build/release.js?cacheBust=${Date.now()}-${++cacheBustCounter}`;
+  return `${RELEASE_WASM_MODULE_SPECIFIER}?cacheBust=${Date.now()}-${++cacheBustCounter}`;
 }
 
 function loadFreshModule() {
@@ -17,10 +18,11 @@ export function isRetryableWasmLoadError(error) {
   if (!error) return false;
   const name = String(error.name || '');
   const message = String(error.message || '');
-  return name === 'RuntimeError'
+  const hasRetryableMessage = /WebAssembly|WASM|wasm|unreachable|compile|instantiate/i.test(message);
+  return (name === 'RuntimeError' && hasRetryableMessage)
     || name === 'CompileError'
     || name === 'LinkError'
-    || /WebAssembly|WASM|unreachable|compile|instantiate/i.test(message);
+    || hasRetryableMessage;
 }
 
 export function invalidateReleaseWasmModuleCache() {
@@ -31,7 +33,7 @@ export async function loadReleaseWasmModule(options = {}) {
   const { fresh = false } = options;
   if (!fresh && cachedModulePromise) return cachedModulePromise;
 
-  const loadPromise = fresh ? loadFreshModule() : loadModule('../build/release.js');
+  const loadPromise = fresh ? loadFreshModule() : loadModule(RELEASE_WASM_MODULE_SPECIFIER);
 
   if (!fresh) {
     cachedModulePromise = loadPromise;
