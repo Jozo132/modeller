@@ -80,4 +80,22 @@ test.describe('CAD Modeller Smoke', () => {
     // No uncaught JS errors should have occurred
     expect(errors).toHaveLength(0);
   });
+
+  test('console recovery opens on mobile even if main startup throws', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.route('**/js/main.js', (route) => route.fulfill({
+      status: 200,
+      contentType: 'application/javascript',
+      body: 'throw new Error("Simulated mobile startup failure");',
+    }));
+
+    await page.goto('/');
+    await expect(page.locator('#startup-loading')).toBeVisible();
+
+    await page.locator('#startup-open-console').click();
+
+    await expect(page.locator('#console-view')).toBeVisible();
+    await expect(page.locator('#startup-loading')).toBeHidden();
+    await expect(page.locator('#console-entries')).toContainText('Simulated mobile startup failure');
+  });
 });
