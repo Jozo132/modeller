@@ -474,8 +474,12 @@ class App {
             constraintIconsVisible: state.constraintIconsVisible,
             activeTool: this.activeTool,
           });
-        } else {
-          // No sketch entities: clear stale 2D overlays
+        } else if (this._renderer3d.mode !== '3d') {
+          // No sketch entities and not in 3D part mode: clear stale 2D overlays.
+          // In 3D mode the overlay is fully managed by the renderer's own animation
+          // loop (_renderFrame → _renderPartSketchImagesOverlay + _drawOriginPlaneLabels),
+          // so calling clearOverlay() here would race with that loop and produce
+          // flickering/missing labels and sketch images during mouse movement.
           this._renderer3d.clearOverlay();
         }
       } catch (err) {
