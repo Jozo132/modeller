@@ -33,7 +33,6 @@
     "test-geometry-evaluator.js": 0.941,
     "test-coplanar-merge.js": 0.896,
     "test-helpers.js": 0.852,
-    "test-face-selection.js": 0.844,
     "test-multi-sketch-planes.js": 0.84,
     "test-fallback-boolean.js": 0.82,
     "test-step-export.js": 0.771,
@@ -79,7 +78,7 @@
     "test-interaction-recorder.js": 0.187,
     "test-worker-dispatcher.js": 0.177,
     "test-mirror-pattern.js": 0.176,
-    "test-touch-gestures.js": 0.163,
+    "test-face-selection.js": 0.175,
     "test-containment.js": 0.079,
     "test-feature-tree-incremental-tess.js": 0.062,
     "test-sketch-preview-fill.js": 0.058,
@@ -92,5 +91,7 @@
     "test-toolkit.js": 0.018,
     "test-dirty-face-tracking.js": 0.012,
     "test-recalculate-handle-churn.js": 0.011,
-    "test-groups.js": 0.009
+    "test-groups.js": 0.009,
+    "test-scene-rendering-regressions.js": 0.009,
+    "test-touch-gestures.js": 0.003
 }
