@@ -18,6 +18,8 @@
 //     args: [ [keyword:string, argsArray], [keyword, argsArray], ... ] }
 // and StepImport.js merges them via _mergeComplexEntityFromWasm().
 
+import { loadReleaseWasmModule } from '../load-release-wasm.js';
+
 let _wasm = null;
 let _wasmLoadPromise = null;
 
@@ -32,7 +34,7 @@ async function _loadWasm() {
   if (_wasm) return _wasm;
   if (_wasmLoadPromise) return _wasmLoadPromise;
   _wasmLoadPromise = (async () => {
-    const mod = await import('../../build/release.js');
+    const mod = await loadReleaseWasmModule();
     _wasm = mod;
     return mod;
   })();

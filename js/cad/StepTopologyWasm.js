@@ -26,6 +26,7 @@
 // skipped ratio exceeds a threshold.
 
 import { globalTessConfig } from './TessellationConfig.js';
+import { loadReleaseWasmModule } from '../load-release-wasm.js';
 
 let _wasm = null;
 let _wasmLoadPromise = null;
@@ -35,7 +36,7 @@ async function _loadWasm() {
   if (_wasm) return _wasm;
   if (_wasmLoadPromise) return _wasmLoadPromise;
   _wasmLoadPromise = (async () => {
-    const mod = await import('../../build/release.js');
+    const mod = await loadReleaseWasmModule();
     _wasm = mod;
     // One-time init: clears the 4M-entry idLookup / vertexCache / edgeCache
     // arrays to ID_NONE (0xFFFFFFFF).  Subsequent calls only reset the

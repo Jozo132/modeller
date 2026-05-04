@@ -13,6 +13,8 @@
 //   await wasmTessellation.init();  // Load WASM module (once)
 //   const mesh = wasmTessellation.tessellateSurface(surface, segsU, segsV);
 
+import { loadReleaseWasmModule } from '../load-release-wasm.js';
+
 let wasmModule = null;
 let wasmMemory = null;
 
@@ -23,8 +25,7 @@ let wasmMemory = null;
 async function initWasm() {
   if (wasmModule) return true;
   try {
-    // Dynamic import of the WASM module — works in both browser and Node.js
-    const wasm = await import('../../build/release.js');
+    const wasm = await loadReleaseWasmModule();
     wasmModule = wasm;
     wasmMemory = wasm.memory;
     return true;

@@ -12,6 +12,7 @@ import { NurbsCurve } from './NurbsCurve.js';
 import { DEFAULT_TOLERANCE } from './Tolerance.js';
 import { SurfaceType } from './BRepTopology.js';
 import { GeometryEvaluator } from './GeometryEvaluator.js';
+import { loadReleaseWasmModule } from '../load-release-wasm.js';
 
 // Lazy WASM module reference (same singleton as StepImportWasm.js)
 let _wasm = null;
@@ -39,7 +40,7 @@ async function _ensureWasm() {
   if (!_wasmLoadPromise) {
     _wasmLoadPromise = (async () => {
       try {
-        const mod = await import('../../build/release.js');
+        const mod = await loadReleaseWasmModule();
         _wasm = mod;
         _wasmMem = mod.memory;
         return true;
