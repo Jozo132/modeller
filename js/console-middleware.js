@@ -126,7 +126,9 @@ function installWindowErrorCapture() {
   });
 
   window.addEventListener('unhandledrejection', (event) => {
-    const reason = event.reason ?? 'Unhandled promise rejection';
+    const reason = event.reason === undefined
+      ? 'Unhandled promise rejection (no reason provided)'
+      : event.reason;
     const stack = reason && typeof reason === 'object' ? reason.stack || null : null;
     pushConsoleEntry(createConsoleEntry({
       level: 'error',
