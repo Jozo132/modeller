@@ -459,6 +459,7 @@ export class WasmRenderer {
     // Sketch plane reference (set when in sketch-on-plane mode)
     this._sketchPlane = null; // 'XY', 'XZ', 'YZ', or null
     this._originPlaneVisibilityMask = 0b111;
+    this._originPlaneScale = 5.0; // world-space half-size, kept in sync with orbit radius
     this._gridVisible = true;
     this._axesVisible = true;
 
@@ -879,6 +880,13 @@ export class WasmRenderer {
     }
     if (this.wasm.setOriginPlanesVisible) {
       this.wasm.setOriginPlanesVisible(this._originPlaneVisibilityMask);
+    }
+    // Scale origin planes and axes to stay proportional to the view distance.
+    // 0.2 × orbitRadius keeps them at roughly 20% of the visible scene extent.
+    const planeScale = this._orbitRadius * 0.2;
+    this._originPlaneScale = planeScale;
+    if (this.wasm.setOriginPlaneScale) {
+      this.wasm.setOriginPlaneScale(planeScale);
     }
   }
 
@@ -1574,7 +1582,7 @@ export class WasmRenderer {
     if (!ray) return null;
     const { origin, dir } = ray;
 
-    const planeSize = 5.0;
+    const planeSize = this._originPlaneScale;
     const planes = [
       { name: 'XY', normal: { x: 0, y: 0, z: 1 }, uAxis: 'x', vAxis: 'y', constAxis: 'z', constVal: 0 },
       { name: 'XZ', normal: { x: 0, y: 1, z: 0 }, uAxis: 'x', vAxis: 'z', constAxis: 'y', constVal: 0 },
@@ -1652,12 +1660,14 @@ export class WasmRenderer {
     const ctx = this.overlayCtx;
     if (!ctx) return;
 
-    // Plane definitions: label, 3D anchor (bottom-left corner of the 5×5 quad),
+    // Plane definitions: label, 3D anchor (bottom-left corner of the quad),
     // and in-plane right/up unit vectors in world space.
+    // The anchor position uses the current plane scale so labels track the plane edges.
+    const s = this._originPlaneScale;
     const PLANE_LABELS = [
-      { name: 'XY', mask: 1, wx: -5, wy: -5, wz: 0,  rx: 1, ry: 0, rz: 0,  ux: 0, uy: 1, uz: 0 },
-      { name: 'XZ', mask: 2, wx: -5, wy:  0, wz: -5,  rx: 1, ry: 0, rz: 0,  ux: 0, uy: 0, uz: 1 },
-      { name: 'YZ', mask: 4, wx:  0, wy: -5, wz: -5,  rx: 0, ry: 1, rz: 0,  ux: 0, uy: 0, uz: 1 },
+      { name: 'XY', mask: 1, wx: -s, wy: -s, wz: 0,  rx: 1, ry: 0, rz: 0,  ux: 0, uy: 1, uz: 0 },
+      { name: 'XZ', mask: 2, wx: -s, wy:  0, wz: -s,  rx: 1, ry: 0, rz: 0,  ux: 0, uy: 0, uz: 1 },
+      { name: 'YZ', mask: 4, wx:  0, wy: -s, wz: -s,  rx: 0, ry: 1, rz: 0,  ux: 0, uy: 0, uz: 1 },
     ];
 
     const FONT_PX = 11; // desired text height in screen pixels

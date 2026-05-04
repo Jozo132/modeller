@@ -230,6 +230,10 @@ export class SceneRenderer {
     if (len > 1e-8) {
       this.executor.setViewDir(dx / len, dy / len, dz / len);
     }
+    // Scale origin planes and axes with the orbit radius
+    if (this.wasm.setOriginPlaneScale) {
+      this.wasm.setOriginPlaneScale(this._orbitRadius * 0.2);
+    }
   }
 
   _buildMeshFromGeometry(geometry) {

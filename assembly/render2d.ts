@@ -414,8 +414,7 @@ export function render2DEntities(cmd: CommandBuffer, vp: Mat4, entities: EntityS
  * Draws XY, XZ, and YZ plane boxes centered at the origin with light blue clickable faces.
  * @param planesVisible - bitmask: bit 0 = XY, bit 1 = XZ, bit 2 = YZ
  */
-export function renderOriginPlanes(cmd: CommandBuffer, vp: Mat4, planesVisible: i32 = 7, planesHovered: i32 = 0, planesSelected: i32 = 0): void {
-  const planeSize: f32 = 5.0;
+export function renderOriginPlanes(cmd: CommandBuffer, vp: Mat4, planesVisible: i32 = 7, planesHovered: i32 = 0, planesSelected: i32 = 0, planeSize: f32 = 5.0): void {
 
   // Disable depth testing so planes are always visible as transparent
   // overlays even when 3D geometry is in front of them.  Depth writing

@@ -206,6 +206,11 @@ export function setOriginPlaneSelected(mask: i32): void {
   originPlaneSelected = mask;
 }
 
+export function setOriginPlaneScale(scale: f32): void {
+  originPlaneScale = scale;
+  scene.axesSize = scale;
+}
+
 // === Mouse/Input ===
 
 export function setMousePosition(x: f32, y: f32): void {
@@ -322,6 +327,7 @@ export function getSolverMaxError(): f32 {
 let originPlanesVisible: i32 = 7; // all visible by default
 let originPlaneHovered: i32 = 0;  // hover highlight mask
 let originPlaneSelected: i32 = 0; // selection highlight mask
+let originPlaneScale: f32 = 5.0;  // world-space half-size of each plane quad
 
 // === Render ===
 
@@ -353,7 +359,7 @@ export function render(): void {
   // Origin planes overlay (visible in 3D mode).
   // Draw after solids so they don't clip or cut into body geometry.
   if (renderMode == 1) {
-    renderOriginPlanes(cmd, vp, originPlanesVisible, originPlaneHovered, originPlaneSelected);
+    renderOriginPlanes(cmd, vp, originPlanesVisible, originPlaneHovered, originPlaneSelected, originPlaneScale);
   }
 
   // 2D entities on XY plane

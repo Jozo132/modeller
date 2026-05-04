@@ -1079,6 +1079,7 @@ export const {
   setOriginPlanesVisible,
   setOriginPlaneHovered,
   setOriginPlaneSelected,
+  setOriginPlaneScale,
   setMousePosition,
   mouseAction,
   setMouseButton,
