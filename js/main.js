@@ -138,6 +138,7 @@ class App {
     this._activeFeatureSelectionTarget = null; // active inline selection field {featureId, fieldId, selectionType, acceptedTypes, maxSelections, stateKey}
     this._dxfExportPanel = null;  // DXF export sidebar panel instance
     this._awaitingSketchPlane = false; // true when waiting for user to pick a plane/face for sketch
+    this._planesBeforeSketch = null; // saved {XY, XZ, YZ} visibility before hiding planes for sketch mode
     this._draggingExtrudeHandle = false;
     this._extrudeHandleInfo = null; // {origin, tip, dir} for drag handle
     this._extrudePreviewFrame = 0;
@@ -9265,6 +9266,15 @@ class App {
     this._activeSketchPlaneDef = null;
     this._3dMode = true;
 
+    // Restore origin plane visibility to what it was before entering sketch mode
+    if (this._planesBeforeSketch) {
+      const part2 = this._partManager ? this._partManager.getPart() : null;
+      if (part2 && part2.setOriginPlaneVisible) {
+        ['XY', 'XZ', 'YZ'].forEach(p => part2.setOriginPlaneVisible(p, !!this._planesBeforeSketch[p]));
+      }
+      this._planesBeforeSketch = null;
+    }
+
     document.body.classList.remove('sketch-on-plane');
     const exitBtn = document.getElementById('btn-exit-sketch');
     if (exitBtn) exitBtn.style.display = 'none';
@@ -10048,6 +10058,16 @@ class App {
     const part = this._partManager.getPart();
     if (part) part.setActiveSketch(null);
 
+    // Hide all origin planes while sketching — they are not needed and obstruct the view.
+    // If planes were not already saved (e.g. by _enterAwaitSketchPlane auto-show), save them now.
+    if (part && part.getOriginPlanes) {
+      const planes = part.getOriginPlanes();
+      if (!this._planesBeforeSketch) {
+        this._planesBeforeSketch = { XY: !!planes.XY?.visible, XZ: !!planes.XZ?.visible, YZ: !!planes.YZ?.visible };
+      }
+      ['XY', 'XZ', 'YZ'].forEach(p => { if (planes[p]?.visible) part.setOriginPlaneVisible(p, false); });
+    }
+
     // Add sketch-on-plane body class to control UI visibility
     document.body.classList.add('sketch-on-plane');
 
@@ -10106,6 +10126,25 @@ class App {
     this._awaitingSketchPlane = true;
     const btn = document.getElementById('btn-sketch-on-plane');
     if (btn) btn.classList.add('awaiting');
+
+    // If the feature tree is empty and all planes are hidden, auto-show planes so
+    // the user can see them and click one to start the sketch.
+    const part = this._partManager ? this._partManager.getPart() : null;
+    if (part) {
+      const features = this._partManager.getFeatures ? this._partManager.getFeatures() : [];
+      const hasUserFeatures = features.length > 0;
+      const planes = part.getOriginPlanes ? part.getOriginPlanes() : {};
+      const allPlanesHidden = ['XY', 'XZ', 'YZ'].every(p => !planes[p] || !planes[p].visible);
+      if (!hasUserFeatures && allPlanesHidden) {
+        // Save the pre-auto-show state (all hidden) so it can be restored on cancel
+        this._planesBeforeSketch = { XY: false, XZ: false, YZ: false };
+        ['XY', 'XZ', 'YZ'].forEach(p => part.setOriginPlaneVisible(p, true));
+        this._updateNodeTree();
+        this._update3DView();
+        this._scheduleRender();
+      }
+    }
+
     this.setStatus('Select a flat face or reference plane to start sketching. Press Escape to cancel.');
   }
 
@@ -10114,6 +10153,19 @@ class App {
     this._awaitingSketchPlane = false;
     const btn = document.getElementById('btn-sketch-on-plane');
     if (btn) btn.classList.remove('awaiting');
+
+    // Restore planes if they were auto-shown for an empty tree
+    if (this._planesBeforeSketch) {
+      const part = this._partManager ? this._partManager.getPart() : null;
+      if (part && part.setOriginPlaneVisible) {
+        ['XY', 'XZ', 'YZ'].forEach(p => part.setOriginPlaneVisible(p, !!this._planesBeforeSketch[p]));
+      }
+      this._planesBeforeSketch = null;
+      this._updateNodeTree();
+      this._update3DView();
+      this._scheduleRender();
+    }
+
     this.setStatus('Sketch plane selection cancelled.');
   }
 
@@ -10154,6 +10206,15 @@ class App {
 
     const part = this._partManager.getPart();
     if (part) part.setActiveSketch(null);
+
+    // Hide all origin planes while sketching — they are not needed and obstruct the view.
+    if (part && part.getOriginPlanes) {
+      const planes = part.getOriginPlanes();
+      if (!this._planesBeforeSketch) {
+        this._planesBeforeSketch = { XY: !!planes.XY?.visible, XZ: !!planes.XZ?.visible, YZ: !!planes.YZ?.visible };
+      }
+      ['XY', 'XZ', 'YZ'].forEach(p => { if (planes[p]?.visible) part.setOriginPlaneVisible(p, false); });
+    }
 
     document.body.classList.add('sketch-on-plane');
 
@@ -10445,6 +10506,15 @@ class App {
     this._activeSketchPlaneDef = null;
     this._3dMode = true;
 
+    // Restore origin plane visibility to what it was before entering sketch mode
+    if (this._planesBeforeSketch) {
+      const partForPlanes = this._partManager ? this._partManager.getPart() : null;
+      if (partForPlanes && partForPlanes.setOriginPlaneVisible) {
+        ['XY', 'XZ', 'YZ'].forEach(p => partForPlanes.setOriginPlaneVisible(p, !!this._planesBeforeSketch[p]));
+      }
+      this._planesBeforeSketch = null;
+    }
+
     // Remove sketch-on-plane body class, hide Exit Sketch button
     document.body.classList.remove('sketch-on-plane');
     const exitBtn = document.getElementById('btn-exit-sketch');
@@ -10521,6 +10591,15 @@ class App {
 
     const part = this._partManager.getPart();
     if (part) part.setActiveSketch(sketchFeature.id);
+
+    // Hide all origin planes while sketching — they are not needed and obstruct the view.
+    if (part && part.getOriginPlanes) {
+      const planes = part.getOriginPlanes();
+      if (!this._planesBeforeSketch) {
+        this._planesBeforeSketch = { XY: !!planes.XY?.visible, XZ: !!planes.XZ?.visible, YZ: !!planes.YZ?.visible };
+      }
+      ['XY', 'XZ', 'YZ'].forEach(p => { if (planes[p]?.visible) part.setOriginPlaneVisible(p, false); });
+    }
 
     // Enter sketch-on-plane mode
     this._sketchingOnPlane = true;
