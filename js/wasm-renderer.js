@@ -527,6 +527,11 @@ export class WasmRenderer {
       this._renderPartSketchImagesOverlay();
     }
 
+    // Draw origin plane labels (XY / XZ / YZ) on the 2D overlay in 3D part mode
+    if (this.mode === '3d' && !this._sketchPlane) {
+      this._drawOriginPlaneLabels();
+    }
+
     if (this.onPostRender) this.onPostRender();
   }
 
@@ -1638,6 +1643,57 @@ export class WasmRenderer {
     else if (planeName === 'YZ') mask = 4;
     if ((mask & this._originPlaneVisibilityMask) === 0) mask = 0;
     this.wasm.setOriginPlaneSelected(mask);
+  }
+
+  /**
+   * Draw cyan labels (XY, XZ, YZ) at the bottom-left corner of each visible origin plane.
+   * Labels are drawn in screen-space so they stay the same size regardless of zoom.
+   */
+  _drawOriginPlaneLabels() {
+    if (this.mode !== '3d') return;
+    const ctx = this.overlayCtx;
+    if (!ctx) return;
+
+    // Plane definitions: label, 3D world position for the bottom-left corner of the 5×5 quad
+    // XY plane (normal +Z): viewed from above — bottom-left in XY space is (-5, -5, 0)
+    // XZ plane (normal +Y): viewed from front — left = -X, bottom = -Z → (-5, 0, -5)
+    // YZ plane (normal +X): viewed from right — left = -Y, bottom = -Z → (0, -5, -5)
+    const PLANE_LABELS = [
+      { name: 'XY', mask: 1, wx: -5, wy: -5, wz: 0 },
+      { name: 'XZ', mask: 2, wx: -5, wy:  0, wz: -5 },
+      { name: 'YZ', mask: 4, wx:  0, wy: -5, wz: -5 },
+    ];
+
+    ctx.save();
+    ctx.font = 'bold 11px monospace';
+    ctx.textBaseline = 'bottom';
+    ctx.textAlign = 'left';
+
+    for (const pl of PLANE_LABELS) {
+      if ((this._originPlaneVisibilityMask & pl.mask) === 0) continue;
+
+      const s = this.worldToScreen(pl.wx, pl.wy, pl.wz);
+      if (!s) continue;
+
+      // Clip to viewport — don't draw if behind the camera or off-screen
+      const w = this._cssWidth || this.container.clientWidth;
+      const h = this._cssHeight || this.container.clientHeight;
+      if (s.x < -20 || s.x > w + 20 || s.y < -20 || s.y > h + 20) continue;
+
+      const x = Math.round(s.x) + 2;
+      const y = Math.round(s.y) - 2;
+
+      // Shadow for legibility
+      ctx.strokeStyle = 'rgba(0,0,0,0.7)';
+      ctx.lineWidth = 3;
+      ctx.lineJoin = 'round';
+      ctx.strokeText(pl.name, x, y);
+
+      ctx.fillStyle = '#00e5ff'; // cyan
+      ctx.fillText(pl.name, x, y);
+    }
+
+    ctx.restore();
   }
 
   /**

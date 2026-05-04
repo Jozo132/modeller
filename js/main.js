@@ -2498,6 +2498,57 @@ class App {
         }
       });
     });
+
+    // ── Toolbar minimize / auto-hide toggle ──
+    // States: 'open' → 'minimized' → 'auto' → 'open' (cycles)
+    {
+      const btn = document.getElementById('toolbar-toggle-btn');
+      const icon = document.getElementById('toolbar-toggle-icon');
+      const lbl = document.getElementById('toolbar-toggle-label');
+      if (btn && icon && lbl) {
+        // Icons SVG paths for each state
+        const STATES = ['open', 'minimized', 'auto'];
+        const ICONS = {
+          open:      '<polyline points="2,10 8,4 14,10"/>',  // chevron-up (open)
+          minimized: '<polyline points="2,6 8,12 14,6"/>',    // chevron-down (collapsed)
+          auto:      '<circle cx="8" cy="8" r="5"/><line x1="8" y1="3" x2="8" y2="13"/>',  // auto icon
+        };
+        const TITLES = {
+          open:      'Toolbar is open – click to minimize',
+          minimized: 'Toolbar is minimized – click to enable auto-hide',
+          auto:      'Toolbar auto-hides on hover – click to open',
+        };
+
+        let state = 'open';
+        // Restore from localStorage
+        try {
+          const saved = localStorage.getItem('toolbar-state');
+          if (STATES.includes(saved)) state = saved;
+        } catch (e) { /* ignore */ }
+
+        const applyState = (s) => {
+          state = s;
+          document.body.classList.remove('toolbar-minimized', 'toolbar-auto');
+          if (s === 'minimized') document.body.classList.add('toolbar-minimized');
+          else if (s === 'auto') document.body.classList.add('toolbar-auto');
+          icon.innerHTML = ICONS[s];
+          lbl.textContent = s === 'open' ? 'Open' : s === 'minimized' ? 'Min' : 'Auto';
+          btn.title = TITLES[s];
+          try { localStorage.setItem('toolbar-state', s); } catch (e) { /* ignore */ }
+          // Trigger a renderer resize so the 3D canvas adjusts to the new --top-offset
+          if (this._renderer3d && typeof this._renderer3d.onWindowResize === 'function') {
+            setTimeout(() => this._renderer3d.onWindowResize(), 200);
+          }
+        };
+
+        applyState(state);
+
+        btn.addEventListener('click', () => {
+          const idx = STATES.indexOf(state);
+          applyState(STATES[(idx + 1) % STATES.length]);
+        });
+      }
+    }
   }
 
   // --- Keyboard ---
