@@ -6,7 +6,7 @@ function updateStartupRecoveryMessage() {
   if (window.__modellerMainAppInitialized) return;
   const label = document.getElementById('startup-loading-label');
   if (!label) return;
-  label.textContent = 'Startup hit an error. Open Console to inspect logs while the rest of the app is recovering.';
+  label.textContent = 'Startup encountered an error. Open Console to inspect logs while the rest of the app is recovering.';
 }
 
 function bindConsoleRecovery() {

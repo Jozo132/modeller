@@ -341,6 +341,7 @@ class ConsoleViewController {
     this._isolated = active;
     document.body.classList.toggle('console-view-isolated', active);
     if (active) {
+      this._hiddenStates.clear();
       ['startup-loading', 'quick-start'].forEach((id) => {
         const element = document.getElementById(id);
         if (!element) return;
