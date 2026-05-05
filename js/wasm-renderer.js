@@ -3168,6 +3168,63 @@ export class WasmRenderer {
       ctx.fill('evenodd');
     }
 
+    const drawTopWireframe = (entity, points) => {
+      if (!entity?.visible || !Array.isArray(points) || points.length < 2) return;
+      if (!isLayerVisible(entity.layer)) return;
+      const [r, g, b, a] = entityColor(entity);
+      ctx.save();
+      ctx.strokeStyle = `rgba(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)}, ${Math.max(0.55, a)})`;
+      ctx.lineWidth = entity.selected ? 1.8 : (entity.construction ? 1.1 : 1.35);
+      ctx.setLineDash(entity.construction ? [6, 4] : []);
+      ctx.beginPath();
+      const start = sketchPtToScreen(points[0].x, points[0].y);
+      ctx.moveTo(start.x, start.y);
+      for (let index = 1; index < points.length; index++) {
+        const point = sketchPtToScreen(points[index].x, points[index].y);
+        ctx.lineTo(point.x, point.y);
+      }
+      ctx.stroke();
+      ctx.restore();
+    };
+
+    for (const seg of scene.segments || []) {
+      drawTopWireframe(seg, [seg.p1, seg.p2]);
+    }
+    for (const circle of scene.circles || []) {
+      const points = [];
+      const steps = 48;
+      for (let step = 0; step <= steps; step++) {
+        const angle = (step / steps) * Math.PI * 2;
+        points.push({
+          x: circle.center.x + Math.cos(angle) * circle.radius,
+          y: circle.center.y + Math.sin(angle) * circle.radius,
+        });
+      }
+      drawTopWireframe(circle, points);
+    }
+    for (const arc of scene.arcs || []) {
+      const points = [];
+      const steps = 32;
+      let start = arc.startAngle || 0;
+      let end = arc.endAngle || Math.PI;
+      let sweep = end - start;
+      if (sweep < 0) sweep += Math.PI * 2;
+      for (let step = 0; step <= steps; step++) {
+        const angle = start + (step / steps) * sweep;
+        points.push({
+          x: arc.center.x + Math.cos(angle) * arc.radius,
+          y: arc.center.y + Math.sin(angle) * arc.radius,
+        });
+      }
+      drawTopWireframe(arc, points);
+    }
+    for (const spline of scene.splines || []) {
+      drawTopWireframe(spline, spline.tessellate2D(48));
+    }
+    for (const bezier of scene.beziers || []) {
+      drawTopWireframe(bezier, bezier.tessellate2D(32));
+    }
+
     // --- Selection grips (blue squares at snap points of selected entities) ---
     ctx.fillStyle = '#00bfff';
     const allEntities = [

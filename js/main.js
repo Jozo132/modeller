@@ -159,6 +159,7 @@ class App {
     });
     this._partGridVisible = true;
     this._partOriginAxisVisible = true;
+    this._rollbackIndexBeforeSketchEdit = null;
     this._imagePropertySections = new Map();
     this._scenes = []; // named camera presets for repeatable renders
     this._sceneManagerOpen = false;
@@ -1143,12 +1144,11 @@ class App {
       });
       items.push({
         type: 'item',
-        label: state.gridVisible ? 'Hide Grid' : 'Show Grid',
+        label: this._getCurrentGridVisible() ? 'Hide Grid' : 'Show Grid',
         icon: '#',
         shortcut: 'G',
         action: () => {
-          state.gridVisible = !state.gridVisible;
-          document.getElementById('btn-grid-toggle').classList.toggle('active', state.gridVisible);
+          this._toggleGridVisibility();
           this._scheduleRender();
         },
       });
@@ -2387,8 +2387,7 @@ class App {
       this._scheduleRender();
     });
     document.getElementById('btn-grid-toggle').addEventListener('click', () => {
-      state.gridVisible = !state.gridVisible;
-      this._recorder.settingToggled('grid', state.gridVisible);
+      this._toggleGridVisibility();
       this._scheduleRender();
     });
 
@@ -2732,7 +2731,7 @@ class App {
           this._scheduleRender();
           break;
         case 'g': case 'G':
-          state.gridVisible = !state.gridVisible;
+          this._toggleGridVisibility();
           this._scheduleRender();
           break;
         case 's': case 'S':
@@ -3061,7 +3060,7 @@ class App {
 
     if (command === 'setting') {
       // setting <name> <value>
-      if (args[0] === 'grid') { state.gridVisible = args[1] !== 'false'; }
+      if (args[0] === 'grid') { this._toggleGridVisibility(args[1] !== 'false'); }
       else if (args[0] === 'snap') { state.snapEnabled = args[1] !== 'false'; }
       else if (args[0] === 'ortho') { state.orthoEnabled = args[1] !== 'false'; }
       else if (args[0] === 'fov' && args[1] != null) {
@@ -3136,7 +3135,7 @@ class App {
           const size = parseFloat(args[0]);
           if (size > 0) state.gridSize = size;
         } else {
-          state.gridVisible = !state.gridVisible;
+          this._toggleGridVisibility();
         }
         this._scheduleRender();
         break;
@@ -7575,8 +7574,55 @@ class App {
     return !!(originPlanes && originPlanes[planeName] && originPlanes[planeName].visible);
   }
 
+  _getCurrentGridVisible() {
+    return this._workspaceMode === 'part' ? this._partGridVisible : state.gridVisible;
+  }
+
+  _syncGridToggleButton() {
+    const button = document.getElementById('btn-grid-toggle');
+    if (button) button.classList.toggle('active', this._getCurrentGridVisible());
+  }
+
+  _toggleGridVisibility(nextVisible = null) {
+    const visible = typeof nextVisible === 'boolean'
+      ? nextVisible
+      : !this._getCurrentGridVisible();
+    if (this._workspaceMode === 'part') {
+      this._partGridVisible = visible;
+      this._recorder.settingToggled('grid', visible);
+      this._applyReferenceVisibility();
+      this._updateNodeTree();
+      this._syncGridToggleButton();
+      return;
+    }
+    state.gridVisible = visible;
+    this._recorder.settingToggled('grid', visible);
+    this._syncGridToggleButton();
+  }
+
+  _applySketchEditRollback(sketchFeature) {
+    const features = this._partManager?.getFeatures?.() || [];
+    if (!sketchFeature || features.length === 0) return;
+    const sketchIndex = features.findIndex((feature) => feature.id === sketchFeature.id);
+    if (sketchIndex < 0) return;
+    if (this._rollbackIndexBeforeSketchEdit == null) {
+      this._rollbackIndexBeforeSketchEdit = this._rollbackIndex;
+    }
+    const rollbackPos = Math.min(features.length, sketchIndex + 1);
+    this._rollbackIndex = rollbackPos >= features.length ? -1 : rollbackPos;
+    this._applyRollbackSuppression();
+  }
+
+  _restoreSketchEditRollback() {
+    if (this._rollbackIndexBeforeSketchEdit == null) return;
+    this._rollbackIndex = this._rollbackIndexBeforeSketchEdit;
+    this._rollbackIndexBeforeSketchEdit = null;
+    this._applyRollbackSuppression();
+  }
+
   _applyReferenceVisibility() {
     if (!this._renderer3d) return;
+    this._syncGridToggleButton();
     if (this._workspaceMode === 'part') {
       this._renderer3d.setGridVisible(this._partGridVisible);
       this._renderer3d.setAxesVisible(this._partOriginAxisVisible);
@@ -7596,6 +7642,7 @@ class App {
       savedOrbitState: this._savedOrbitState,
       expandedFolders: Array.from(this._expandedFolders || []),
       rollbackIndex: this._rollbackIndex,
+      rollbackIndexBeforeSketchEdit: this._rollbackIndexBeforeSketchEdit,
       partGridVisible: this._partGridVisible,
       partOriginAxisVisible: this._partOriginAxisVisible,
     };
@@ -7607,6 +7654,9 @@ class App {
     this._expandedFolders = new Set(Array.isArray(sessionState.expandedFolders) ? sessionState.expandedFolders : []);
     if (typeof sessionState.rollbackIndex === 'number') {
       this._rollbackIndex = sessionState.rollbackIndex;
+    }
+    if (typeof sessionState.rollbackIndexBeforeSketchEdit === 'number') {
+      this._rollbackIndexBeforeSketchEdit = sessionState.rollbackIndexBeforeSketchEdit;
     }
     if (typeof sessionState.partGridVisible === 'boolean') {
       this._partGridVisible = sessionState.partGridVisible;
@@ -8852,6 +8902,7 @@ class App {
       newIndex = Math.max(0, Math.min(features.length, newIndex));
       if (newIndex !== this._rollbackIndex && !(newIndex === features.length && this._rollbackIndex === -1)) {
         this._rollbackIndex = newIndex >= features.length ? -1 : newIndex;
+        this._rollbackIndexBeforeSketchEdit = null;
         this._applyRollbackSuppression();
         // notifyListeners in _applyRollbackSuppression triggers _updateNodeTree, _update3DView
         this._scheduleRender();
@@ -8910,6 +8961,7 @@ class App {
       part.featureTree.applyRollbackSuppression(pos);
       part.modified = new Date();
     }
+    this._syncGridToggleButton();
     this._partManager.notifyListeners();
   }
 
@@ -9229,6 +9281,7 @@ class App {
       }
       this._planesBeforeSketch = null;
     }
+    this._restoreSketchEditRollback();
 
     document.body.classList.remove('sketch-on-plane');
     const exitBtn = document.getElementById('btn-exit-sketch');
@@ -10475,6 +10528,7 @@ class App {
       }
       this._planesBeforeSketch = null;
     }
+    this._restoreSketchEditRollback();
 
     // Remove sketch-on-plane body class, hide Exit Sketch button
     document.body.classList.remove('sketch-on-plane');
@@ -10553,6 +10607,7 @@ class App {
 
     const part = this._partManager.getPart();
     if (part) part.setActiveSketch(sketchFeature.id);
+    this._applySketchEditRollback(sketchFeature);
 
     // Hide all origin planes while sketching — they are not needed and obstruct the view.
     if (part && part.getOriginPlanes) {
