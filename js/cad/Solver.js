@@ -170,7 +170,7 @@ let _nextTargetId = 1;
 
 function _targetObjectId(object) {
   let id = _targetIds.get(object);
-  if (id == null) {
+  if (id === undefined) {
     id = _nextTargetId++;
     _targetIds.set(object, id);
   }

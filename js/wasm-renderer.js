@@ -3187,12 +3187,15 @@ export class WasmRenderer {
       ctx.restore();
     };
 
+    const TOP_WIREFRAME_CIRCLE_STEPS = 48;
+    const TOP_WIREFRAME_ARC_STEPS = 32;
+
     for (const seg of scene.segments || []) {
       drawTopWireframe(seg, [seg.p1, seg.p2]);
     }
     for (const circle of scene.circles || []) {
       const points = [];
-      const steps = 48;
+      const steps = TOP_WIREFRAME_CIRCLE_STEPS;
       for (let step = 0; step <= steps; step++) {
         const angle = (step / steps) * Math.PI * 2;
         points.push({
@@ -3204,7 +3207,7 @@ export class WasmRenderer {
     }
     for (const arc of scene.arcs || []) {
       const points = [];
-      const steps = 32;
+      const steps = TOP_WIREFRAME_ARC_STEPS;
       let start = arc.startAngle || 0;
       let end = arc.endAngle || Math.PI;
       let sweep = end - start;

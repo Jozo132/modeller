@@ -7605,7 +7605,7 @@ class App {
     if (!sketchFeature || features.length === 0) return;
     const sketchIndex = features.findIndex((feature) => feature.id === sketchFeature.id);
     if (sketchIndex < 0) return;
-    if (this._rollbackIndexBeforeSketchEdit == null) {
+    if (this._rollbackIndexBeforeSketchEdit === null) {
       this._rollbackIndexBeforeSketchEdit = this._rollbackIndex;
     }
     const rollbackPos = Math.min(features.length, sketchIndex + 1);
@@ -7614,7 +7614,7 @@ class App {
   }
 
   _restoreSketchEditRollback() {
-    if (this._rollbackIndexBeforeSketchEdit == null) return;
+    if (this._rollbackIndexBeforeSketchEdit === null) return;
     this._rollbackIndex = this._rollbackIndexBeforeSketchEdit;
     this._rollbackIndexBeforeSketchEdit = null;
     this._applyRollbackSuppression();
