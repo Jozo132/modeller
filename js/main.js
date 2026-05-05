@@ -12129,6 +12129,26 @@ class App {
       const file = files[0];
       this._handleDroppedFile(file);
     });
+
+    document.addEventListener('paste', (e) => {
+      // Ignore paste events when the user is typing in an input or textarea
+      const tag = document.activeElement?.tagName?.toLowerCase();
+      if (tag === 'input' || tag === 'textarea') return;
+
+      const items = e.clipboardData?.items;
+      if (!items) return;
+
+      for (const item of items) {
+        if (item.type.startsWith('image/')) {
+          const file = item.getAsFile();
+          if (file) {
+            e.preventDefault();
+            this._handleDroppedImage(file);
+          }
+          return;
+        }
+      }
+    });
   }
 
   /**
