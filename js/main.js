@@ -12144,8 +12144,8 @@ class App {
           if (file) {
             e.preventDefault();
             this._handleDroppedImage(file);
+            return;
           }
-          return;
         }
       }
     });
