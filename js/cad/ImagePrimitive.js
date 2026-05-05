@@ -369,8 +369,8 @@ export class ImagePrimitive extends Primitive {
       this._perspectiveDraftTargetQuad[3].x - this._perspectiveDraftTargetQuad[0].x,
       this._perspectiveDraftTargetQuad[3].y - this._perspectiveDraftTargetQuad[0].y,
     );
-    this.gridWidth = Math.max(0.01, (bottom + top) * 0.5);
-    this.gridHeight = Math.max(0.01, (right + left) * 0.5);
+    this.gridWidth = Math.max(MIN_DIMENSION, (bottom + top) * 0.5);
+    this.gridHeight = Math.max(MIN_DIMENSION, (right + left) * 0.5);
   }
 
   setPerspectiveDraftHandleWorldPoint(index, wx, wy) {

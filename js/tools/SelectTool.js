@@ -28,7 +28,8 @@ function _pointInPolygon(px, py, polygon) {
     const yi = polygon[i].y;
     const xj = polygon[j].x;
     const yj = polygon[j].y;
-    const denom = Math.abs(yj - yi) < POLYGON_EPSILON ? POLYGON_EPSILON : (yj - yi);
+    const denom = yj - yi;
+    if (Math.abs(denom) < POLYGON_EPSILON) continue;
     const intersects = ((yi > py) !== (yj > py))
       && (px < ((xj - xi) * (py - yi)) / denom + xi);
     if (intersects) inside = !inside;
