@@ -97,7 +97,7 @@ export function showConfirm({ title = 'Confirm', message = '', okText = 'OK', ca
     };
 
     document.addEventListener('keydown', onKeyDown);
-    backdrop.addEventListener('click', () => finish(false));
+    backdrop.addEventListener('click', () => finish(null));
     cancelBtn.addEventListener('click', () => finish(false));
     okBtn.addEventListener('click', () => finish(true));
 

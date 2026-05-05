@@ -23,7 +23,7 @@ import {
 } from './Constraint.js';
 
 const MERGE_TOLERANCE = 1e-4; // world units — points closer than this auto-merge
-const ADD_CONSTRAINT_SOLVE_OPTIONS = Object.freeze({ maxIter: 1200, relaxation: 0.75, tolerance: 1e-4 });
+const ADD_CONSTRAINT_SOLVE_OPTIONS = Object.freeze({ maxIter: 1200, relaxation: 1, tolerance: 1e-4 });
 
 export class Scene {
   constructor() {

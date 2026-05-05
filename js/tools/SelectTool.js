@@ -11,7 +11,9 @@ const PICK_PT_PX = 14;    // pixel tolerance for point picking (tighter — poin
 const DRAG_THRESHOLD = 5; // min pixels before a drag starts
 const ALIGN_TOL_PX = 5;   // pixel tolerance for alignment guide detection
 const POLYGON_EPSILON = 1e-9;
-const LIVE_DRAG_SOLVE_OPTIONS = { maxIter: 800, relaxation: 0.75, tolerance: 1e-4 };
+const DRAG_SETTLE_EXTRA_ITERATIONS = 5;
+const LIVE_DRAG_SOLVE_OPTIONS = { maxIter: 800, relaxation: 1, tolerance: 1e-4 };
+const LIVE_DRAG_ORTHOGONAL_SLACK = 2e-3;
 
 /** Collect the unique movable points of a shape. */
 function _shapePoints(shape) {
@@ -76,6 +78,9 @@ export class SelectTool extends BaseTool {
     this._dragCancelState = null;
     this._dragSolvedPointState = null;
     this._dragAcceptedMaxError = Number.POSITIVE_INFINITY;
+    this._dragSettleFrameId = 0;
+    this._dragSettleRemaining = 0;
+    this._dragSettleTarget = null;
   }
 
   activate() {
@@ -95,7 +100,17 @@ export class SelectTool extends BaseTool {
     this._lineSnapCandidates = [];
     this._alignmentGuides = [];
     this._dragCancelState = null;
+    this._clearDragSettle();
     super.deactivate();
+  }
+
+  _clearDragSettle() {
+    if (this._dragSettleFrameId && typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(this._dragSettleFrameId);
+    }
+    this._dragSettleFrameId = 0;
+    this._dragSettleRemaining = 0;
+    this._dragSettleTarget = null;
   }
 
   _captureSceneDragState() {
@@ -122,6 +137,7 @@ export class SelectTool extends BaseTool {
   }
 
   _resetDragState() {
+    this._clearDragSettle();
     this._dragPoint = null;
     this._dragShape = null;
     this._dragShapePts = [];
@@ -167,6 +183,67 @@ export class SelectTool extends BaseTool {
     this._dragAcceptedMaxError = this._currentConstraintMaxError();
   }
 
+  _findDraggedPointSnapshot(point) {
+    if (!point || !Array.isArray(this._dragSolvedPointState)) return null;
+    return this._dragSolvedPointState.find((entry) => entry?.point === point) || null;
+  }
+
+  _stabilizeDraggedSolve(result) {
+    if (!result || !Array.isArray(this._dragSolvedPointState) || this._dragSolvedPointState.length === 0) return;
+
+    const draggedPoints = [];
+    if (this._dragPoint) {
+      draggedPoints.push(this._dragPoint);
+    } else if (Array.isArray(this._dragShapePts) && this._dragShapePts.length > 0) {
+      draggedPoints.push(...this._dragShapePts);
+    }
+    if (draggedPoints.length === 0) return;
+
+    let deltaX = 0;
+    let deltaY = 0;
+    let deltaCount = 0;
+    for (const point of draggedPoints) {
+      const previous = this._findDraggedPointSnapshot(point);
+      if (!previous) continue;
+      deltaX += point.x - previous.x;
+      deltaY += point.y - previous.y;
+      deltaCount++;
+    }
+    if (deltaCount === 0) return;
+
+    const absDx = Math.abs(deltaX);
+    const absDy = Math.abs(deltaY);
+    if (absDx <= 1e-9 && absDy <= 1e-9) return;
+
+    const lockedAxis = absDx >= absDy ? 'y' : 'x';
+    const protectedPoints = new Set(draggedPoints);
+    const solvedState = this._snapshotScenePointPositions();
+    let changed = false;
+
+    for (const entry of this._dragSolvedPointState) {
+      if (!entry?.point || protectedPoints.has(entry.point) || entry.point.fixed === true) continue;
+      if (Math.abs(entry.point[lockedAxis] - entry[lockedAxis]) <= 1e-12) continue;
+      entry.point[lockedAxis] = entry[lockedAxis];
+      changed = true;
+    }
+
+    if (!changed) return;
+
+    const stabilizedError = this._currentConstraintMaxError();
+    const baseError = Number(result.maxError);
+    const allowedError = Number.isFinite(baseError)
+      ? baseError + LIVE_DRAG_ORTHOGONAL_SLACK
+      : Number.POSITIVE_INFINITY;
+
+    if (Number.isFinite(stabilizedError) && stabilizedError <= allowedError) {
+      result.maxError = stabilizedError;
+      result.converged = stabilizedError <= LIVE_DRAG_SOLVE_OPTIONS.tolerance;
+      return;
+    }
+
+    this._restoreScenePointPositions(solvedState);
+  }
+
   _beginConstrainedDragIfNeeded() {
     if (this._dragSolvedPointState) return;
     this._dragSolvedPointState = this._snapshotScenePointPositions();
@@ -178,13 +255,18 @@ export class SelectTool extends BaseTool {
     if (result.converged) return true;
     const maxError = Number(result.maxError);
     if (!Number.isFinite(maxError)) return false;
-    return maxError + 1e-6 < this._dragAcceptedMaxError;
+    const acceptedMaxError = Number.isFinite(this._dragAcceptedMaxError)
+      ? this._dragAcceptedMaxError
+      : Number.POSITIVE_INFINITY;
+    const slack = Math.max(LIVE_DRAG_SOLVE_OPTIONS.tolerance, 1e-6);
+    return maxError <= acceptedMaxError + slack;
   }
 
   _solveDraggedConstraintState(fallback = null) {
     const solveOptions = LIVE_DRAG_SOLVE_OPTIONS;
     const result = state.scene.solve(solveOptions);
     if (this._shouldAcceptDraggedSolve(result)) {
+      this._stabilizeDraggedSolve(result);
       this._commitSolvedPointState();
       return true;
     }
@@ -193,6 +275,7 @@ export class SelectTool extends BaseTool {
       fallback();
       const relaxedResult = state.scene.solve(solveOptions);
       if (this._shouldAcceptDraggedSolve(relaxedResult)) {
+        this._stabilizeDraggedSolve(relaxedResult);
         this._commitSolvedPointState();
         return true;
       }
@@ -200,6 +283,123 @@ export class SelectTool extends BaseTool {
     this._restoreScenePointPositions(this._dragSolvedPointState);
     state.scene.solve(solveOptions);
     return false;
+  }
+
+  _applyDraggedPointTarget(targetX, targetY) {
+    this._dragPoint.x = targetX;
+    this._dragPoint.y = targetY;
+    const wasFixed = this._dragPoint.fixed;
+    this._dragPoint.fixed = true;
+    const solved = this._solveDraggedConstraintState(() => {
+      this._dragPoint.x = targetX;
+      this._dragPoint.y = targetY;
+      this._dragPoint.fixed = false;
+    });
+    this._dragPoint.fixed = wasFixed;
+
+    if (solved && state.autoCoincidence) {
+      this._snapCandidates = this._findSnapCandidates([this._dragPoint]);
+      this._lineSnapCandidates = this._findLineSnapCandidates([this._dragPoint]);
+    } else {
+      this._snapCandidates = [];
+      this._lineSnapCandidates = [];
+    }
+    this._alignmentGuides = solved ? this._findAlignmentGuides([this._dragPoint]) : [];
+
+    state.emit('change');
+    return solved;
+  }
+
+  _applyDraggedShapeTarget(wx, wy) {
+    const wdx = wx - this._dragStart.wx;
+    const wdy = wy - this._dragStart.wy;
+    let solved = true;
+
+    if (this._dragShapePts.length > 0) {
+      const movedPoints = this._dragShapePts.map((point) => ({ point, x: point.x + wdx, y: point.y + wdy }));
+      const savedFixed = this._dragShapePts.map((point) => point.fixed);
+      for (const moved of movedPoints) {
+        moved.point.x = moved.x;
+        moved.point.y = moved.y;
+      }
+      for (const point of this._dragShapePts) {
+        point.fixed = true;
+      }
+      solved = this._solveDraggedConstraintState(() => {
+        for (const moved of movedPoints) {
+          moved.point.x = moved.x;
+          moved.point.y = moved.y;
+        }
+        for (const point of this._dragShapePts) {
+          point.fixed = false;
+        }
+      });
+      for (let index = 0; index < this._dragShapePts.length; index++) {
+        this._dragShapePts[index].fixed = savedFixed[index];
+      }
+
+      if (solved) {
+        this._dragStart.wx = wx;
+        this._dragStart.wy = wy;
+      }
+
+      if (solved && state.autoCoincidence) {
+        this._snapCandidates = this._findSnapCandidates(this._dragShapePts);
+        this._lineSnapCandidates = this._findLineSnapCandidates(this._dragShapePts);
+      } else {
+        this._snapCandidates = [];
+        this._lineSnapCandidates = [];
+      }
+      this._alignmentGuides = solved ? this._findAlignmentGuides(this._dragShapePts) : [];
+    } else {
+      this._dragShape.translate(wdx, wdy);
+      this._dragStart.wx = wx;
+      this._dragStart.wy = wy;
+      this._snapCandidates = [];
+      this._lineSnapCandidates = [];
+      this._alignmentGuides = [];
+    }
+
+    state.emit('change');
+    return solved;
+  }
+
+  _canReplayDragSettle() {
+    return !!(
+      this._isDragging
+      && this._dragStart
+      && this._dragSettleTarget
+      && this._dragSettleRemaining > 0
+      && (this._dragPoint || this._dragShape)
+    );
+  }
+
+  _scheduleIdleDragSettleFrame() {
+    if (this._dragSettleFrameId || typeof requestAnimationFrame !== 'function') return;
+    this._dragSettleFrameId = requestAnimationFrame(() => {
+      this._dragSettleFrameId = 0;
+      if (!this._canReplayDragSettle()) return;
+      const { wx: targetX, wy: targetY } = this._dragSettleTarget;
+      this._dragSettleRemaining -= 1;
+      if (this._dragPoint) {
+        this._applyDraggedPointTarget(targetX, targetY);
+      } else if (this._dragShape) {
+        this._applyDraggedShapeTarget(targetX, targetY);
+      }
+      if (typeof this.app?._scheduleRender === 'function') {
+        this.app._scheduleRender();
+      }
+      if (this._canReplayDragSettle()) {
+        this._scheduleIdleDragSettleFrame();
+      }
+    });
+  }
+
+  _queueIdleDragSettle(wx, wy) {
+    if (!(this._dragPoint || this._dragShape)) return;
+    this._dragSettleTarget = { wx, wy };
+    this._dragSettleRemaining = DRAG_SETTLE_EXTRA_ITERATIONS;
+    this._scheduleIdleDragSettleFrame();
   }
 
   _restoreSceneDragState(snapshot) {
@@ -662,30 +862,8 @@ export class SelectTool extends BaseTool {
         this._beginConstrainedDragIfNeeded();
       }
       if (this._isDragging) {
-        const targetX = wx;
-        const targetY = wy;
-        this._dragPoint.x = targetX;
-        this._dragPoint.y = targetY;
-        const wasFixed = this._dragPoint.fixed;
-        this._dragPoint.fixed = true;
-        const solved = this._solveDraggedConstraintState(() => {
-          this._dragPoint.x = targetX;
-          this._dragPoint.y = targetY;
-          this._dragPoint.fixed = false;
-        });
-        this._dragPoint.fixed = wasFixed;
-
-        // Snap-to-coincidence detection for the single dragged point
-        if (solved && state.autoCoincidence) {
-          this._snapCandidates = this._findSnapCandidates([this._dragPoint]);
-          this._lineSnapCandidates = this._findLineSnapCandidates([this._dragPoint]);
-        } else {
-          this._snapCandidates = [];
-          this._lineSnapCandidates = [];
-        }
-        this._alignmentGuides = solved ? this._findAlignmentGuides([this._dragPoint]) : [];
-
-        state.emit('change');
+        this._applyDraggedPointTarget(wx, wy);
+        this._queueIdleDragSettle(wx, wy);
       }
       return;
     }
@@ -717,54 +895,8 @@ export class SelectTool extends BaseTool {
         this._beginConstrainedDragIfNeeded();
       }
       if (this._isDragging) {
-        const wdx = wx - this._dragStart.wx;
-        const wdy = wy - this._dragStart.wy;
-        if (this._dragShapePts.length > 0) {
-          const movedPoints = this._dragShapePts.map((point) => ({ point, x: point.x + wdx, y: point.y + wdy }));
-          const savedFixed = this._dragShapePts.map(p => p.fixed);
-          for (const moved of movedPoints) {
-            moved.point.x = moved.x;
-            moved.point.y = moved.y;
-          }
-          for (const p of this._dragShapePts) {
-            p.fixed = true;
-          }
-          const solved = this._solveDraggedConstraintState(() => {
-            for (const moved of movedPoints) {
-              moved.point.x = moved.x;
-              moved.point.y = moved.y;
-            }
-            for (const p of this._dragShapePts) {
-              p.fixed = false;
-            }
-          });
-          for (let i = 0; i < this._dragShapePts.length; i++) {
-            this._dragShapePts[i].fixed = savedFixed[i];
-          }
-
-          if (solved) {
-            this._dragStart.wx = wx;
-            this._dragStart.wy = wy;
-          }
-
-          if (solved && state.autoCoincidence) {
-            this._snapCandidates = this._findSnapCandidates(this._dragShapePts);
-            this._lineSnapCandidates = this._findLineSnapCandidates(this._dragShapePts);
-          } else {
-            this._snapCandidates = [];
-            this._lineSnapCandidates = [];
-          }
-          this._alignmentGuides = solved ? this._findAlignmentGuides(this._dragShapePts) : [];
-        } else {
-          this._dragShape.translate(wdx, wdy);
-          this._dragStart.wx = wx;
-          this._dragStart.wy = wy;
-          this._snapCandidates = [];
-          this._lineSnapCandidates = [];
-          this._alignmentGuides = [];
-        }
-
-        state.emit('change');
+        this._applyDraggedShapeTarget(wx, wy);
+        this._queueIdleDragSettle(wx, wy);
       }
       return;
     }
@@ -792,6 +924,7 @@ export class SelectTool extends BaseTool {
   }
 
   onMouseUp(wx, wy, event) {
+    this._clearDragSettle();
     // ---- Finish image handle drag ----
     if (this._dragImageHandle) {
       if (this._isDragging) {

@@ -35,6 +35,7 @@
     "test-helpers.js": 0.852,
     "test-multi-sketch-planes.js": 0.84,
     "test-fallback-boolean.js": 0.82,
+    "test-sketch-solver.js": 0.772,
     "test-step-export.js": 0.771,
     "test-spline-multi-extrude.js": 0.762,
     "test-boolean-analytic.js": 0.731,

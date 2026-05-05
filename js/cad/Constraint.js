@@ -429,63 +429,19 @@ export class Perpendicular extends Constraint {
     return Math.abs((dxA * dxB + dyA * dyB) / (lenA * lenB));
   }
   apply() {
-    // Rotate segB 90° from segA.
-    // Prefer pivoting around a shared endpoint when the segments are connected.
-    const dxA = this.segA.x2 - this.segA.x1, dyA = this.segA.y2 - this.segA.y1;
-    const lenA = Math.hypot(dxA, dyA) || 1e-9;
-    // Perpendicular unit vector to segA
-    const upX = -dyA / lenA, upY = dxA / lenA;
-
-    const dxB = this.segB.x2 - this.segB.x1, dyB = this.segB.y2 - this.segB.y1;
-    const lenB = Math.hypot(dxB, dyB) || 1e-9;
-    const dot = dxB * upX + dyB * upY;
-    const sign = dot >= 0 ? 1 : -1;
-    const dirX = sign * upX;
-    const dirY = sign * upY;
-    const b1 = this.segB.p1;
-    const b2 = this.segB.p2;
-
-    let shared = null;
-    let other = null;
-    if (this.segA.p1 === b1 || this.segA.p2 === b1) {
-      shared = b1;
-      other = b2;
-    } else if (this.segA.p1 === b2 || this.segA.p2 === b2) {
-      shared = b2;
-      other = b1;
-    }
-
-    if (shared && other) {
-      if (!other.fixed) {
-        other.x = shared.x + dirX * lenB;
-        other.y = shared.y + dirY * lenB;
-        return;
-      }
-      if (!shared.fixed) {
-        shared.x = other.x - dirX * lenB;
-        shared.y = other.y - dirY * lenB;
+    const sharedCandidate = _pickLowerMotionPerpendicularCandidate(
+      _choosePerpendicularSharedCandidate(this.segA, this.segB),
+      _choosePerpendicularSharedCandidate(this.segB, this.segA),
+    );
+    if (sharedCandidate) {
+      for (const move of sharedCandidate.moves) {
+        move.point.x = move.x;
+        move.point.y = move.y;
       }
       return;
     }
 
-    if (b1.fixed && b2.fixed) return;
-    if (b1.fixed) {
-      b2.x = b1.x + dirX * lenB;
-      b2.y = b1.y + dirY * lenB;
-      return;
-    }
-    if (b2.fixed) {
-      b1.x = b2.x - dirX * lenB;
-      b1.y = b2.y - dirY * lenB;
-      return;
-    }
-
-    const mx = this.segB.midX, my = this.segB.midY;
-    const halfLen = lenB / 2;
-    b1.x = mx - dirX * halfLen;
-    b1.y = my - dirY * halfLen;
-    b2.x = mx + dirX * halfLen;
-    b2.y = my + dirY * halfLen;
+    _applyPerpendicularDirectionalStep(this.segA, this.segB);
   }
   involvedPoints() { return [this.segA.p1, this.segA.p2, this.segB.p1, this.segB.p2]; }
   serialize() { return { ...super.serialize(), segA: this.segA.id, segB: this.segB.id }; }
@@ -877,16 +833,28 @@ function _reflectPoint(px, py, ax, ay, bx, by) {
 function _scaleSegToLength(seg, target) {
   const dx = seg.x2 - seg.x1, dy = seg.y2 - seg.y1;
   const len = Math.hypot(dx, dy) || 1e-9;
+  if (seg.p1.fixed && seg.p2.fixed) return;
+
+  if (seg.p1.fixed && !seg.p2.fixed) {
+    const scale = target / len;
+    seg.p2.x = seg.p1.x + (dx * scale);
+    seg.p2.y = seg.p1.y + (dy * scale);
+    return;
+  }
+
+  if (!seg.p1.fixed && seg.p2.fixed) {
+    const scale = target / len;
+    seg.p1.x = seg.p2.x - (dx * scale);
+    seg.p1.y = seg.p2.y - (dy * scale);
+    return;
+  }
+
   const scale = target / len;
   const mx = seg.midX, my = seg.midY;
-  if (!seg.p1.fixed) {
-    seg.p1.x = mx - (dx / 2) * scale;
-    seg.p1.y = my - (dy / 2) * scale;
-  }
-  if (!seg.p2.fixed) {
-    seg.p2.x = mx + (dx / 2) * scale;
-    seg.p2.y = my + (dy / 2) * scale;
-  }
+  seg.p1.x = mx - (dx / 2) * scale;
+  seg.p1.y = my - (dy / 2) * scale;
+  seg.p2.x = mx + (dx / 2) * scale;
+  seg.p2.y = my + (dy / 2) * scale;
 }
 
 function _ptLineDist(px, py, ax, ay, bx, by) {
@@ -894,4 +862,113 @@ function _ptLineDist(px, py, ax, ay, bx, by) {
   const len = Math.hypot(dx, dy);
   if (len === 0) return Math.hypot(px - ax, py - ay);
   return Math.abs((dy * px - dx * py + bx * ay - by * ax)) / len;
+}
+
+function _getPerpendicularReferenceDirection(seg) {
+  const dx = seg.x2 - seg.x1;
+  const dy = seg.y2 - seg.y1;
+  const len = Math.hypot(dx, dy) || 1e-9;
+  let ux = dx / len;
+  let uy = dy / len;
+  const axisTol = 1e-9;
+  if (Math.abs(dy) <= axisTol * len) {
+    ux = dx >= 0 ? 1 : -1;
+    uy = 0;
+  } else if (Math.abs(dx) <= axisTol * len) {
+    ux = 0;
+    uy = dy >= 0 ? 1 : -1;
+  }
+  return { ux, uy };
+}
+
+function _isAxisAlignedSegment(seg) {
+  const dx = seg.x2 - seg.x1;
+  const dy = seg.y2 - seg.y1;
+  const len = Math.hypot(dx, dy) || 1e-9;
+  const axisTol = 1e-9;
+  return Math.abs(dy) <= axisTol * len || Math.abs(dx) <= axisTol * len;
+}
+
+function _applyPerpendicularDirectionalStep(referenceSeg, movingSeg) {
+  const { ux, uy } = _getPerpendicularReferenceDirection(referenceSeg);
+  const upX = -uy;
+  const upY = ux;
+
+  const dx = movingSeg.x2 - movingSeg.x1;
+  const dy = movingSeg.y2 - movingSeg.y1;
+  const len = Math.hypot(dx, dy) || 1e-9;
+  const dot = dx * upX + dy * upY;
+  const sign = dot >= 0 ? 1 : -1;
+  const dirX = sign * upX;
+  const dirY = sign * upY;
+  const p1 = movingSeg.p1;
+  const p2 = movingSeg.p2;
+
+  if (p1.fixed && p2.fixed) return;
+  if (p1.fixed) {
+    p2.x = p1.x + dirX * len;
+    p2.y = p1.y + dirY * len;
+    return;
+  }
+  if (p2.fixed) {
+    p1.x = p2.x - dirX * len;
+    p1.y = p2.y - dirY * len;
+    return;
+  }
+
+  const mx = movingSeg.midX;
+  const my = movingSeg.midY;
+  const halfLen = len * 0.5;
+  p1.x = mx - dirX * halfLen;
+  p1.y = my - dirY * halfLen;
+  p2.x = mx + dirX * halfLen;
+  p2.y = my + dirY * halfLen;
+}
+
+function _choosePerpendicularSharedCandidate(referenceSeg, movingSeg) {
+  const shared = referenceSeg.p1 === movingSeg.p1 || referenceSeg.p2 === movingSeg.p1
+    ? movingSeg.p1
+    : (referenceSeg.p1 === movingSeg.p2 || referenceSeg.p2 === movingSeg.p2 ? movingSeg.p2 : null);
+  if (!shared) return null;
+
+  const other = movingSeg.p1 === shared ? movingSeg.p2 : movingSeg.p1;
+  const { ux, uy } = _getPerpendicularReferenceDirection(referenceSeg);
+  const upX = -uy;
+  const upY = ux;
+  const dx = other.x - shared.x;
+  const dy = other.y - shared.y;
+  const len = Math.hypot(dx, dy) || 1e-9;
+  const dot = dx * upX + dy * upY;
+  const sign = dot >= 0 ? 1 : -1;
+  const dirX = sign * upX;
+  const dirY = sign * upY;
+
+  if (!other.fixed) {
+    const targetX = shared.x + dirX * len;
+    const targetY = shared.y + dirY * len;
+    return {
+      preserveAxisAlignedReference: _isAxisAlignedSegment(referenceSeg) && !_isAxisAlignedSegment(movingSeg),
+      moves: [{ point: other, x: targetX, y: targetY }],
+      cost: Math.hypot(targetX - other.x, targetY - other.y),
+    };
+  }
+  if (!shared.fixed) {
+    const targetX = other.x - dirX * len;
+    const targetY = other.y - dirY * len;
+    return {
+      preserveAxisAlignedReference: _isAxisAlignedSegment(referenceSeg) && !_isAxisAlignedSegment(movingSeg),
+      moves: [{ point: shared, x: targetX, y: targetY }],
+      cost: Math.hypot(targetX - shared.x, targetY - shared.y),
+    };
+  }
+  return null;
+}
+
+function _pickLowerMotionPerpendicularCandidate(candidateA, candidateB) {
+  if (!candidateA) return candidateB;
+  if (!candidateB) return candidateA;
+  if (candidateA.preserveAxisAlignedReference !== candidateB.preserveAxisAlignedReference) {
+    return candidateA.preserveAxisAlignedReference ? candidateA : candidateB;
+  }
+  return candidateA.cost <= candidateB.cost ? candidateA : candidateB;
 }

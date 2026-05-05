@@ -1,24 +1,16 @@
 // js/cad/Solver.js — Iterative Gauss-Seidel constraint solver
 
-const MIN_RELAXATION_FACTOR = 1 / 64;
-
 /**
  * Solve all constraints iteratively until convergence.
- *
- * Instead of applying each constraint directly onto the already-mutated state,
- * collect each constraint's proposed correction from the same starting geometry
- * for the iteration and blend those corrections together. This keeps newly
- * added constraints from immediately destroying other constraints elsewhere in
- * the same profile/chain.
  *
  * @param {import('./Constraint.js').Constraint[]} constraints
  * @param {object} [opts]
  * @param {number} [opts.maxIter=200]    — max relaxation iterations
  * @param {number} [opts.tolerance=1e-6] — max acceptable residual
- * @param {number} [opts.relaxation=0.8] — initial blended correction factor
+ * @param {number} [opts.relaxation=1]   — damping factor for each constraint application
  * @returns {{ converged: boolean, iterations: number, maxError: number }}
  */
-export function solve(constraints, { maxIter = 200, tolerance = 1e-6, relaxation = 0.8 } = {}) {
+export function solve(constraints, { maxIter = 200, tolerance = 1e-6, relaxation = 1 } = {}) {
   if (constraints.length === 0) return { converged: true, iterations: 0, maxError: 0 };
 
   const allTargets = _collectSolveTargets(constraints);
@@ -28,48 +20,38 @@ export function solve(constraints, { maxIter = 200, tolerance = 1e-6, relaxation
     return { converged: true, iterations: 0, maxError: bestError };
   }
 
+  const factor = Math.max(0, Math.min(1, relaxation));
+  let iterations = 0;
+
   for (let i = 0; i < maxIter; i++) {
-    const maxError = _maxConstraintError(constraints);
-    if (maxError <= tolerance) {
-      return { converged: true, iterations: i, maxError };
-    }
+    iterations = i + 1;
+    let appliedAny = false;
 
-    const proposals = _collectConstraintProposals(constraints, tolerance);
-    if (proposals.size === 0) break;
-
-    const startState = _snapshotTargets(allTargets);
-    let applied = false;
-    let nextError = maxError;
-    let factor = Math.max(MIN_RELAXATION_FACTOR, Math.min(1, relaxation));
-
-    while (factor >= MIN_RELAXATION_FACTOR) {
-      _restoreTargets(startState);
-      const magnitude = _applyProposalDeltas(proposals, factor);
-      if (magnitude <= 1e-12) break;
-      nextError = _maxConstraintError(constraints);
-      if (Number.isFinite(nextError) && nextError <= maxError + tolerance) {
-        applied = true;
-        break;
+    for (const constraint of constraints) {
+      const err = Number(constraint?.error?.());
+      if (!Number.isFinite(err)) {
+        _restoreTargets(bestState);
+        return { converged: bestError <= tolerance, iterations, maxError: bestError };
       }
-      factor *= 0.5;
+      if (err <= tolerance) continue;
+      if (_applyConstraint(constraint, factor)) {
+        appliedAny = true;
+      }
     }
 
-    if (!applied) {
-      _restoreTargets(bestState);
-      return { converged: bestError <= tolerance, iterations: i + 1, maxError: bestError };
-    }
-
-    if (nextError < bestError) {
-      bestError = nextError;
+    const maxError = _maxConstraintError(constraints);
+    if (maxError < bestError) {
+      bestError = maxError;
       bestState = _snapshotTargets(allTargets);
     }
-    if (nextError <= tolerance) {
-      return { converged: true, iterations: i + 1, maxError: nextError };
+    if (maxError <= tolerance) {
+      return { converged: true, iterations, maxError };
     }
+    if (!appliedAny) break;
   }
 
   _restoreTargets(bestState);
-  return { converged: bestError <= tolerance, iterations: maxIter, maxError: bestError };
+  return { converged: bestError <= tolerance, iterations, maxError: bestError };
 }
 
 function _maxConstraintError(constraints) {
@@ -82,45 +64,36 @@ function _maxConstraintError(constraints) {
   return maxError;
 }
 
-function _collectConstraintProposals(constraints, tolerance) {
-  const proposals = new Map();
-  for (const constraint of constraints) {
-    const err = Number(constraint?.error?.());
-    if (!Number.isFinite(err) || err <= tolerance) continue;
+function _applyConstraint(constraint, factor) {
+  if (factor <= 0) return false;
 
-    const targets = _collectConstraintTargets(constraint);
-    if (targets.length === 0) continue;
-
-    const before = _snapshotTargets(targets);
+  const targets = _collectConstraintTargets(constraint);
+  if (targets.length === 0) {
     constraint.apply();
-    const after = _snapshotTargets(targets);
-    _restoreTargets(before);
+    return true;
+  }
 
-    for (let index = 0; index < targets.length; index++) {
-      const target = targets[index];
-      const delta = after.values[index] - before.values[index];
-      if (!Number.isFinite(delta) || Math.abs(delta) <= 1e-12) continue;
-      const entry = proposals.get(target.key);
-      if (entry) {
-        entry.delta += delta;
-        entry.count += 1;
-      } else {
-        proposals.set(target.key, { ...target, delta, count: 1 });
-      }
+  const before = _snapshotTargets(targets);
+  constraint.apply();
+
+  if (factor >= 1 - 1e-9) {
+    return true;
+  }
+
+  const after = _snapshotTargets(targets);
+  let changed = false;
+  for (let index = 0; index < targets.length; index++) {
+    const startValue = before.values[index];
+    const endValue = after.values[index];
+    if (!Number.isFinite(startValue) || !Number.isFinite(endValue)) {
+      _restoreTargets(before);
+      return false;
     }
+    const nextValue = startValue + ((endValue - startValue) * factor);
+    targets[index].owner[targets[index].prop] = nextValue;
+    if (Math.abs(nextValue - startValue) > 1e-12) changed = true;
   }
-  return proposals;
-}
-
-function _applyProposalDeltas(proposals, factor) {
-  let magnitude = 0;
-  for (const proposal of proposals.values()) {
-    const contributionCount = proposal.count > 0 ? proposal.count : 1;
-    const delta = (proposal.delta / contributionCount) * factor;
-    proposal.owner[proposal.prop] += delta;
-    magnitude += Math.abs(delta);
-  }
-  return magnitude;
+  return changed;
 }
 
 function _collectSolveTargets(constraints) {

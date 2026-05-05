@@ -1,0 +1,270 @@
+import './_watchdog.mjs';
+
+import assert from 'node:assert/strict';
+
+import { Scene } from '../js/cad/Scene.js';
+import {
+  Distance,
+  EqualLength,
+  Fixed,
+  Horizontal,
+  Length,
+  OnLine,
+  Perpendicular,
+  Vertical,
+} from '../js/cad/Constraint.js';
+import { state } from '../js/state.js';
+import { SelectTool } from '../js/tools/SelectTool.js';
+import { formatTimingSuffix, startTiming } from './test-timing.js';
+
+let passed = 0;
+let failed = 0;
+
+function test(label, fn) {
+  const startedAt = startTiming();
+  try {
+    fn();
+    passed++;
+    console.log(`  ✓ ${label}${formatTimingSuffix(startedAt)}`);
+  } catch (err) {
+    failed++;
+    console.log(`  ✗ ${label}${formatTimingSuffix(startedAt)}`);
+    console.log(`    ${err.message}`);
+  }
+}
+
+function approx(actual, expected, tolerance = 1e-3, label = 'value') {
+  assert.ok(Math.abs(actual - expected) <= tolerance, `${label}: expected ${expected}, got ${actual}`);
+}
+
+console.log('Sketch Solver Regressions');
+
+test('connected distance and axis constraints propagate through shared points', () => {
+  const scene = new Scene();
+  const ab = scene.addSegment(0, 0, 8, 2, { merge: false });
+  const bc = scene.addSegment(8, 2, 12, 7, { merge: true });
+
+  scene.addConstraint(new Fixed(ab.p1, 0, 0));
+  scene.addConstraint(new Distance(ab.p1, ab.p2, 10));
+  scene.addConstraint(new Horizontal(ab));
+  scene.addConstraint(new Distance(bc.p1, bc.p2, 5));
+  scene.addConstraint(new Vertical(bc));
+
+  const result = scene.solve({ maxIter: 1200, relaxation: 1, tolerance: 1e-4 });
+  assert.ok(result.maxError <= 1e-4, `expected converged shared-point solve, got maxError=${result.maxError}`);
+  approx(ab.p2.x, 10, 1e-3, 'ab.p2.x');
+  approx(ab.p2.y, 0, 1e-3, 'ab.p2.y');
+  approx(bc.p2.x, ab.p2.x, 1e-3, 'bc vertical x');
+  approx(bc.p2.y - bc.p1.y, 5, 1e-3, 'bc length direction');
+});
+
+test('adding perpendicular to a skewed connected corner resolves immediately', () => {
+  const scene = new Scene();
+  const base = scene.addSegment(0, 0, 10, 0, { merge: false });
+  const side = scene.addSegment(0, 0, 2, 6, { merge: true });
+  const sideLength = Math.hypot(side.p2.x - side.p1.x, side.p2.y - side.p1.y);
+
+  scene.addConstraint(new Fixed(base.p1, 0, 0));
+  scene.addConstraint(new Fixed(base.p2, 10, 0));
+  scene.addConstraint(new Distance(side.p1, side.p2, sideLength));
+  scene.addConstraint(new Perpendicular(base, side));
+
+  approx(side.p2.x, 0, 1e-3, 'side.p2.x');
+  approx(side.p2.y, sideLength, 1e-3, 'side.p2.y');
+  const result = scene.solve({ maxIter: 1200, relaxation: 1, tolerance: 1e-4 });
+  assert.ok(result.maxError <= 1e-4, `expected perpendicular corner solve, got maxError=${result.maxError}`);
+});
+
+test('connected perpendicular corner is order-independent for lower-motion solve', () => {
+  const buildScene = () => {
+    const scene = new Scene();
+    const left = scene.addSegment(0, 0, 3, 8, { merge: false });
+    const top = scene.addSegment(3, 8, 11, 8, { merge: true });
+    const right = scene.addSegment(11, 8, 12, 2, { merge: true });
+    const bottom = scene.addSegment(12, 2, 1, 0, { merge: true });
+    scene.addConstraint(new Horizontal(top));
+    return { scene, left, top, right, bottom };
+  };
+
+  const leftFirst = buildScene();
+  leftFirst.scene.addConstraint(new Perpendicular(leftFirst.left, leftFirst.top));
+
+  const topFirst = buildScene();
+  topFirst.scene.addConstraint(new Perpendicular(topFirst.top, topFirst.left));
+
+  approx(leftFirst.left.p1.x, topFirst.left.p1.x, 1e-3, 'left.p1.x');
+  approx(leftFirst.left.p1.y, topFirst.left.p1.y, 1e-3, 'left.p1.y');
+  approx(leftFirst.left.p2.x, topFirst.left.p2.x, 1e-3, 'left.p2.x');
+  approx(leftFirst.left.p2.y, topFirst.left.p2.y, 1e-3, 'left.p2.y');
+  approx(leftFirst.top.p1.y, leftFirst.top.p2.y, 1e-6, 'left-first horizontal top');
+  approx(topFirst.top.p1.y, topFirst.top.p2.y, 1e-6, 'top-first horizontal top');
+  approx(leftFirst.top.p1.x, 3, 1e-6, 'left-first top.p1.x');
+  approx(leftFirst.top.p1.y, 8, 1e-6, 'left-first top.p1.y');
+  approx(leftFirst.top.p2.x, 11, 1e-6, 'left-first top.p2.x');
+  approx(leftFirst.top.p2.y, 8, 1e-6, 'left-first top.p2.y');
+  approx(leftFirst.left.p2.x, 3, 1e-6, 'left-first left.p2.x');
+  approx(leftFirst.left.p2.y, 8, 1e-6, 'left-first left.p2.y');
+  approx(leftFirst.left.p1.x, 3, 1e-6, 'left-first left.p1.x');
+});
+
+test('length constraint scales from a fixed endpoint', () => {
+  const scene = new Scene();
+  const seg = scene.addSegment(0, 0, 0, 10, { merge: false });
+
+  scene.addConstraint(new Fixed(seg.p1, 0, 0));
+  scene.addConstraint(new Length(seg, 14));
+
+  const result = scene.solve({ maxIter: 1200, relaxation: 1, tolerance: 1e-4 });
+  assert.ok(result.maxError <= 1e-4, `expected fixed-endpoint length solve, got maxError=${result.maxError}`);
+  approx(seg.p1.x, 0, 1e-6, 'fixed-endpoint seg.p1.x');
+  approx(seg.p1.y, 0, 1e-6, 'fixed-endpoint seg.p1.y');
+  approx(seg.p2.x, 0, 1e-6, 'fixed-endpoint seg.p2.x');
+  approx(seg.p2.y, 14, 1e-6, 'fixed-endpoint seg.p2.y');
+});
+
+test('horizontal drag stabilization preserves orthogonal free edge position', () => {
+  const originalScene = state.scene;
+  try {
+    const scene = new Scene();
+    const bottomLeft = scene.addPoint(0, 0);
+    const topLeft = scene.addPoint(0, 10);
+    const topRight = scene.addPoint(10, 10);
+    const bottomRight = scene.addPoint(10, 0);
+
+    const left = {
+      type: 'segment',
+      p1: bottomLeft,
+      p2: topLeft,
+      get x1() { return this.p1.x; },
+      get y1() { return this.p1.y; },
+      get x2() { return this.p2.x; },
+      get y2() { return this.p2.y; },
+      get midX() { return (this.p1.x + this.p2.x) / 2; },
+      get midY() { return (this.p1.y + this.p2.y) / 2; },
+      get length() { return Math.hypot(this.x2 - this.x1, this.y2 - this.y1); },
+    };
+    const top = {
+      type: 'segment',
+      p1: topLeft,
+      p2: topRight,
+      get x1() { return this.p1.x; },
+      get y1() { return this.p1.y; },
+      get x2() { return this.p2.x; },
+      get y2() { return this.p2.y; },
+      get midX() { return (this.p1.x + this.p2.x) / 2; },
+      get midY() { return (this.p1.y + this.p2.y) / 2; },
+      get length() { return Math.hypot(this.x2 - this.x1, this.y2 - this.y1); },
+    };
+    const right = {
+      type: 'segment',
+      p1: topRight,
+      p2: bottomRight,
+      get x1() { return this.p1.x; },
+      get y1() { return this.p1.y; },
+      get x2() { return this.p2.x; },
+      get y2() { return this.p2.y; },
+      get midX() { return (this.p1.x + this.p2.x) / 2; },
+      get midY() { return (this.p1.y + this.p2.y) / 2; },
+      get length() { return Math.hypot(this.x2 - this.x1, this.y2 - this.y1); },
+    };
+    const bottom = {
+      type: 'segment',
+      p1: bottomRight,
+      p2: bottomLeft,
+      get x1() { return this.p1.x; },
+      get y1() { return this.p1.y; },
+      get x2() { return this.p2.x; },
+      get y2() { return this.p2.y; },
+      get midX() { return (this.p1.x + this.p2.x) / 2; },
+      get midY() { return (this.p1.y + this.p2.y) / 2; },
+      get length() { return Math.hypot(this.x2 - this.x1, this.y2 - this.y1); },
+    };
+
+    scene.points = [bottomLeft, topLeft, topRight, bottomRight];
+    scene.segments = [left, top, right, bottom];
+    scene.addConstraint(new Fixed(bottomLeft, 0, 0));
+    scene.addConstraint(new Horizontal(top));
+    scene.addConstraint(new Horizontal(bottom));
+    scene.addConstraint(new EqualLength(left, right));
+    scene.addConstraint(new OnLine(topLeft, scene._yAxisLine));
+    scene.addConstraint(new OnLine(bottomRight, scene._xAxisLine));
+
+    state.scene = scene;
+
+    const tool = new SelectTool({ renderer: { previewEntities: [] }, setStatus() {}, viewport: { zoom: 1 } });
+    tool._dragPoint = bottomRight;
+    tool._dragSolvedPointState = tool._snapshotScenePointPositions();
+
+    bottomRight.x = 14;
+    bottomRight.y = 0;
+    bottomRight.fixed = true;
+
+    const result = scene.solve({ maxIter: 800, relaxation: 1, tolerance: 1e-4 });
+    tool._stabilizeDraggedSolve(result);
+
+    approx(topLeft.y, 10, 1e-6, 'stabilized topLeft.y');
+    approx(topRight.y, 10, 1e-6, 'stabilized topRight.y');
+    assert.ok(result.maxError <= 0.015, `expected stabilized residual to stay bounded, got maxError=${result.maxError}`);
+  } finally {
+    if (state.scene?.points?.some((point) => point?.fixed)) {
+      for (const point of state.scene.points) {
+        if (point) point.fixed = false;
+      }
+    }
+    state.scene = originalScene;
+  }
+});
+
+test('idle drag settle replays the last drag target for five extra frames', () => {
+  const originalRequestAnimationFrame = globalThis.requestAnimationFrame;
+  const originalCancelAnimationFrame = globalThis.cancelAnimationFrame;
+  const frameQueue = [];
+
+  globalThis.requestAnimationFrame = (callback) => {
+    frameQueue.push(callback);
+    return frameQueue.length;
+  };
+  globalThis.cancelAnimationFrame = () => {};
+
+  try {
+    let renderCount = 0;
+    let replayCount = 0;
+    const tool = new SelectTool({
+      renderer: { previewEntities: [] },
+      setStatus() {},
+      viewport: { zoom: 1 },
+      _scheduleRender() { renderCount++; },
+    });
+
+    tool._isDragging = true;
+    tool._dragStart = { wx: 0, wy: 0 };
+    tool._dragPoint = { x: 0, y: 0, fixed: false };
+    tool._applyDraggedPointTarget = (wx, wy) => {
+      replayCount++;
+      approx(wx, 12, 1e-12, 'settle wx');
+      approx(wy, -4, 1e-12, 'settle wy');
+      return true;
+    };
+
+    tool._queueIdleDragSettle(12, -4);
+
+    while (frameQueue.length > 0) {
+      const callback = frameQueue.shift();
+      callback();
+    }
+
+    assert.equal(replayCount, 5, `expected 5 idle settle replays, got ${replayCount}`);
+    assert.equal(renderCount, 5, `expected 5 idle settle renders, got ${renderCount}`);
+    assert.equal(tool._dragSettleRemaining, 0, `expected settle countdown to finish, got ${tool._dragSettleRemaining}`);
+  } finally {
+    globalThis.requestAnimationFrame = originalRequestAnimationFrame;
+    globalThis.cancelAnimationFrame = originalCancelAnimationFrame;
+  }
+});
+
+console.log(`Passed: ${passed}`);
+console.log(`Failed: ${failed}`);
+
+if (failed > 0) {
+  process.exit(1);
+}
