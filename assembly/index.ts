@@ -80,8 +80,8 @@ export function init(canvasWidth: i32, canvasHeight: i32): void {
   const commandBuffer = getCommandBuffer();
   commandBuffer.reset();
 
-  const sceneRef = new Scene();
-  scene = sceneRef;
+  const sceneRef = getScene();
+  sceneRef.reset();
   sceneRef.canvasWidth = canvasWidth;
   sceneRef.canvasHeight = canvasHeight;
 

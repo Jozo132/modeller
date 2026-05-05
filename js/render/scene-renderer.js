@@ -76,6 +76,7 @@ export class SceneRenderer {
           }
         }
       })().catch((error) => {
+        this._ready = false;
         this._initPromise = null;
         throw error;
       });
