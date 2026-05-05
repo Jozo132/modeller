@@ -3554,9 +3554,6 @@ export class WasmRenderer {
     const renderSourceQuad = typeof primitive.getRenderSourceQuad === 'function'
       ? primitive.getRenderSourceQuad()
       : primitive.sourceQuad;
-    const guideSourceQuad = typeof primitive.getPerspectiveGuideQuad === 'function'
-      ? primitive.getPerspectiveGuideQuad()
-      : primitive.sourceQuad;
     const resolvedSource = this._resolvePerspectiveSource(primitive, source, renderSourceQuad);
     const renderSource = resolvedSource.source;
     const normalizedRenderSourceQuad = resolvedSource.normalizedQuad;
@@ -3614,7 +3611,15 @@ export class WasmRenderer {
     }
 
     if (options.drawPerspectiveGuides) {
-      const handlePoints = guideSourceQuad.map((point) => _bilinearQuadPoint(destQuadScreen, point.u, point.v));
+      const guideWorldQuad = typeof primitive.getPerspectiveGuideWorldQuad === 'function'
+        ? primitive.getPerspectiveGuideWorldQuad()
+        : null;
+      const handlePoints = guideWorldQuad
+        ? guideWorldQuad.map((point) => projectPoint(point.x, point.y))
+        : (primitive.sourceQuad || []).map((point) => _bilinearQuadPoint(destQuadScreen, point.u, point.v));
+      if (handlePoints.length !== 4 || handlePoints.some((point) => !point || !Number.isFinite(point.x) || !Number.isFinite(point.y))) {
+        return true;
+      }
       ctx.save();
       ctx.strokeStyle = 'rgba(255, 196, 64, 0.9)';
       ctx.fillStyle = 'rgba(255, 196, 64, 0.95)';

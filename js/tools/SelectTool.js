@@ -19,6 +19,21 @@ function _shapePoints(shape) {
   return [];
 }
 
+function _pointInPolygon(px, py, polygon) {
+  if (!Array.isArray(polygon) || polygon.length < 3) return false;
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = polygon[i].x;
+    const yi = polygon[i].y;
+    const xj = polygon[j].x;
+    const yj = polygon[j].y;
+    const intersects = ((yi > py) !== (yj > py))
+      && (px < ((xj - xi) * (py - yi)) / ((yj - yi) || 1e-9) + xi);
+    if (intersects) inside = !inside;
+  }
+  return inside;
+}
+
 /** True when every defining point of a primitive is fully locked. */
 function _isFullyConstrained(prim) {
   if (prim.type === 'point') return prim.fixed;
@@ -94,6 +109,9 @@ export class SelectTool extends BaseTool {
       draftQuad: typeof image.getPerspectiveGuideQuad === 'function'
         ? image.getPerspectiveGuideQuad().map((point) => ({ u: point.u, v: point.v }))
         : null,
+      targetQuad: typeof image.getPerspectiveDraftTargetQuad === 'function'
+        ? image.getPerspectiveDraftTargetQuad()
+        : null,
     };
   }
 
@@ -133,6 +151,9 @@ export class SelectTool extends BaseTool {
     snapshot.draftQuad.forEach((point, index) => {
       snapshot.image.setPerspectiveDraftPoint(index, point.u, point.v);
     });
+    if (typeof snapshot.image.setPerspectiveDraftTargetQuad === 'function') {
+      snapshot.image.setPerspectiveDraftTargetQuad(snapshot.targetQuad);
+    }
   }
 
   _cancelActiveDrag() {
@@ -221,6 +242,19 @@ export class SelectTool extends BaseTool {
       }
     }
     return best;
+  }
+
+  _findSelectedImageGrid(wx, wy) {
+    for (const entity of state.selectedEntities) {
+      if (!entity || entity.type !== 'image' || typeof entity.isPerspectiveEditing !== 'function' || !entity.isPerspectiveEditing()) continue;
+      const guideQuad = typeof entity.getPerspectiveGuideWorldQuad === 'function'
+        ? entity.getPerspectiveGuideWorldQuad()
+        : (typeof entity.getSourceHandlePoints === 'function' ? entity.getSourceHandlePoints() : null);
+      if (_pointInPolygon(wx, wy, guideQuad)) {
+        return { image: entity, index: -1, mode: 'grid' };
+      }
+    }
+    return null;
   }
 
   _getPerspectiveEditingImage() {
@@ -435,7 +469,7 @@ export class SelectTool extends BaseTool {
   onMouseDown(wx, wy, sx, sy, event) {
     if (event.button !== 0) return;
 
-    const imageHandle = this._findSelectedImageHandle(wx, wy, PICK_PT_PX);
+    const imageHandle = this._findSelectedImageHandle(wx, wy, PICK_PT_PX) || this._findSelectedImageGrid(wx, wy);
     if (imageHandle) {
       this._dragImageHandle = imageHandle;
       this._dragPoint = null;
@@ -530,9 +564,17 @@ export class SelectTool extends BaseTool {
         this._captureImageHandleDragState(this._dragImageHandle.image);
       }
       if (this._isDragging) {
-        const { image, index } = this._dragImageHandle;
-        const uv = image.worldToNormalized(wx, wy);
-        image.setPerspectiveDraftPoint(index, uv.u, uv.v);
+        const { image, index, mode } = this._dragImageHandle;
+        if (mode === 'grid' && typeof image.translatePerspectiveDraftWorld === 'function') {
+          image.translatePerspectiveDraftWorld(wx - this._dragStart.wx, wy - this._dragStart.wy);
+          this._dragStart.wx = wx;
+          this._dragStart.wy = wy;
+        } else if (typeof image.setPerspectiveDraftHandleWorldPoint === 'function') {
+          image.setPerspectiveDraftHandleWorldPoint(index, wx, wy);
+        } else {
+          const uv = image.worldToNormalized(wx, wy);
+          image.setPerspectiveDraftPoint(index, uv.u, uv.v);
+        }
         state.emit('change');
       }
       return;
