@@ -44,8 +44,8 @@ export class SceneNode {
 }
 
 export class Scene {
-  nodes: Array<SceneNode>;
-  camera: Camera;
+  nodes: Array<SceneNode> = new Array<SceneNode>();
+  camera: Camera = new Camera();
   canvasWidth: i32;
   canvasHeight: i32;
 
@@ -53,12 +53,16 @@ export class Scene {
   axesVisible: bool;
   gridSize: f32;
   gridDivisions: i32;
-  gridColor: Color;
+  gridColor: Color = new Color(0.5, 0.5, 0.5, 0.5);
   axesSize: f32;
 
   private nextId: i32;
 
   constructor() {
+    this.reset();
+  }
+
+  reset(): void {
     this.nodes = new Array<SceneNode>();
     this.camera = new Camera();
     this.canvasWidth = 800;
