@@ -10,6 +10,7 @@ const PICK_PX = 18;       // pixel tolerance for shape picking
 const PICK_PT_PX = 14;    // pixel tolerance for point picking (tighter — points are small)
 const DRAG_THRESHOLD = 5; // min pixels before a drag starts
 const ALIGN_TOL_PX = 5;   // pixel tolerance for alignment guide detection
+const POLYGON_EPSILON = 1e-9;
 
 /** Collect the unique movable points of a shape. */
 function _shapePoints(shape) {
@@ -27,7 +28,7 @@ function _pointInPolygon(px, py, polygon) {
     const yi = polygon[i].y;
     const xj = polygon[j].x;
     const yj = polygon[j].y;
-    const denom = Math.abs(yj - yi) < 1e-9 ? 1e-9 : (yj - yi);
+    const denom = Math.abs(yj - yi) < POLYGON_EPSILON ? POLYGON_EPSILON : (yj - yi);
     const intersects = ((yi > py) !== (yj > py))
       && (px < ((xj - xi) * (py - yi)) / denom + xi);
     if (intersects) inside = !inside;

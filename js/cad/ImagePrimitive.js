@@ -13,6 +13,7 @@ const DEFAULT_SOURCE_QUAD = Object.freeze([
   { u: 1, v: 1 },
   { u: 0, v: 1 },
 ]);
+const MIN_TRANSFORM_SCALE = 1e-9;
 
 const DEFAULT_TRACE_SETTINGS = Object.freeze({
   thresholdMode: 'auto',
@@ -112,6 +113,10 @@ function cloneTraceSettings(settings) {
     detectionMode: source.detectionMode === 'edge' ? 'edge' : DEFAULT_TRACE_SETTINGS.detectionMode,
     edgeThreshold: Number.isFinite(source.edgeThreshold) ? Math.max(1, Math.min(255, Math.round(source.edgeThreshold))) : DEFAULT_TRACE_SETTINGS.edgeThreshold,
   };
+}
+
+function safeTransformScale(value) {
+  return Math.abs(value) > MIN_TRANSFORM_SCALE ? value : 1;
 }
 
 function pointInPolygon(px, py, polygon) {
@@ -306,8 +311,8 @@ export class ImagePrimitive extends Primitive {
     const sin = Math.sin(angle);
     const invX = dx * cos + dy * sin;
     const invY = -dx * sin + dy * cos;
-    const scaleX = Math.abs(this.scaleX) > 1e-9 ? this.scaleX : 1;
-    const scaleY = Math.abs(this.scaleY) > 1e-9 ? this.scaleY : 1;
+    const scaleX = safeTransformScale(this.scaleX);
+    const scaleY = safeTransformScale(this.scaleY);
     return {
       x: invX / scaleX,
       y: invY / scaleY,
@@ -320,8 +325,8 @@ export class ImagePrimitive extends Primitive {
     const sin = Math.sin(angle);
     const invX = dx * cos + dy * sin;
     const invY = -dx * sin + dy * cos;
-    const scaleX = Math.abs(this.scaleX) > 1e-9 ? this.scaleX : 1;
-    const scaleY = Math.abs(this.scaleY) > 1e-9 ? this.scaleY : 1;
+    const scaleX = safeTransformScale(this.scaleX);
+    const scaleY = safeTransformScale(this.scaleY);
     return {
       x: invX / scaleX,
       y: invY / scaleY,
@@ -624,8 +629,8 @@ export class ImagePrimitive extends Primitive {
     const sin = Math.sin(angle);
     const invX = dx * cos + dy * sin;
     const invY = -dx * sin + dy * cos;
-    const scaleX = Math.abs(this.scaleX) > 1e-9 ? this.scaleX : 1;
-    const scaleY = Math.abs(this.scaleY) > 1e-9 ? this.scaleY : 1;
+    const scaleX = safeTransformScale(this.scaleX);
+    const scaleY = safeTransformScale(this.scaleY);
     const localPoint = {
       x: invX / scaleX,
       y: invY / scaleY,
