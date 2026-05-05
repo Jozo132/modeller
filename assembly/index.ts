@@ -30,31 +30,39 @@ let entities: EntityStore | null = null;
 let solver: ConstraintSolver | null = null;
 
 function getScene(): Scene {
-  if (scene === null) {
-    scene = new Scene();
+  let value = scene;
+  if (value === null) {
+    value = new Scene();
+    scene = value;
   }
-  return scene;
+  return value;
 }
 
 function getCommandBuffer(): CommandBuffer {
-  if (cmd === null) {
-    cmd = new CommandBuffer();
+  let value = cmd;
+  if (value === null) {
+    value = new CommandBuffer();
+    cmd = value;
   }
-  return cmd;
+  return value;
 }
 
 function getEntities(): EntityStore {
-  if (entities === null) {
-    entities = new EntityStore();
+  let value = entities;
+  if (value === null) {
+    value = new EntityStore();
+    entities = value;
   }
-  return entities;
+  return value;
 }
 
 function getSolver(): ConstraintSolver {
-  if (solver === null) {
-    solver = new ConstraintSolver();
+  let value = solver;
+  if (value === null) {
+    value = new ConstraintSolver();
+    solver = value;
   }
-  return solver;
+  return value;
 }
 
 // Mouse state
