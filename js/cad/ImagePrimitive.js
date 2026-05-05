@@ -15,6 +15,7 @@ const DEFAULT_SOURCE_QUAD = Object.freeze([
 ]);
 const MIN_TRANSFORM_SCALE = 1e-9;
 const MIN_DIMENSION = 0.01;
+const PERSPECTIVE_SOURCE_MARGIN_SCALE = 3;
 
 const DEFAULT_TRACE_SETTINGS = Object.freeze({
   thresholdMode: 'auto',
@@ -107,6 +108,66 @@ function cloneSourceQuad(quad) {
     }));
   }
   return DEFAULT_SOURCE_QUAD.map((point) => ({ ...point }));
+}
+
+function expandBounds(bounds, scale = PERSPECTIVE_SOURCE_MARGIN_SCALE) {
+  if (!bounds) return bounds;
+  const safeScale = Number.isFinite(scale) && scale > 1 ? scale : 1;
+  const centerU = (bounds.minU + bounds.maxU) * 0.5;
+  const centerV = (bounds.minV + bounds.maxV) * 0.5;
+  const halfSpanU = Math.max(1e-9, bounds.spanU * safeScale * 0.5);
+  const halfSpanV = Math.max(1e-9, bounds.spanV * safeScale * 0.5);
+  return {
+    minU: centerU - halfSpanU,
+    maxU: centerU + halfSpanU,
+    minV: centerV - halfSpanV,
+    maxV: centerV + halfSpanV,
+    spanU: halfSpanU * 2,
+    spanV: halfSpanV * 2,
+  };
+}
+
+function quadSignedArea(quad) {
+  if (!Array.isArray(quad) || quad.length !== 4) return 0;
+  let area = 0;
+  for (let index = 0; index < quad.length; index++) {
+    const current = quad[index];
+    const next = quad[(index + 1) % quad.length];
+    const x0 = Number.isFinite(current?.x) ? current.x : current?.u;
+    const y0 = Number.isFinite(current?.y) ? current.y : current?.v;
+    const x1 = Number.isFinite(next?.x) ? next.x : next?.u;
+    const y1 = Number.isFinite(next?.y) ? next.y : next?.v;
+    if (!Number.isFinite(x0) || !Number.isFinite(y0) || !Number.isFinite(x1) || !Number.isFinite(y1)) return 0;
+    area += x0 * y1 - x1 * y0;
+  }
+  return area * 0.5;
+}
+
+function _cross2d(a, b, c) {
+  const ax = (Number.isFinite(b?.x) ? b.x : b?.u) - (Number.isFinite(a?.x) ? a.x : a?.u);
+  const ay = (Number.isFinite(b?.y) ? b.y : b?.v) - (Number.isFinite(a?.y) ? a.y : a?.v);
+  const bx = (Number.isFinite(c?.x) ? c.x : c?.u) - (Number.isFinite(a?.x) ? a.x : a?.u);
+  const by = (Number.isFinite(c?.y) ? c.y : c?.v) - (Number.isFinite(a?.y) ? a.y : a?.v);
+  return ax * by - ay * bx;
+}
+
+function isValidPerspectiveQuad(quad, referenceQuad = null) {
+  if (!Array.isArray(quad) || quad.length !== 4) return false;
+  const area = quadSignedArea(quad);
+  if (!Number.isFinite(area) || Math.abs(area) <= 1e-9) return false;
+  const areaSign = Math.sign(area);
+  for (let index = 0; index < quad.length; index++) {
+    const cross = _cross2d(quad[index], quad[(index + 1) % quad.length], quad[(index + 2) % quad.length]);
+    if (!Number.isFinite(cross) || Math.abs(cross) <= 1e-9) return false;
+    if (Math.sign(cross) !== areaSign) return false;
+  }
+  if (referenceQuad) {
+    const refArea = quadSignedArea(referenceQuad);
+    if (Number.isFinite(refArea) && Math.abs(refArea) > 1e-9 && Math.sign(refArea) !== areaSign) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function cloneTraceSettings(settings) {
@@ -257,10 +318,16 @@ export class ImagePrimitive extends Primitive {
   }
 
   setPerspectiveDraftTargetQuad(quad) {
-    this._perspectiveDraftTargetQuad = cloneOptionalQuad(quad);
+    const nextQuad = cloneOptionalQuad(quad);
+    this._perspectiveDraftTargetQuad = isValidPerspectiveQuad(nextQuad, this._perspectiveDraftTargetQuad || targetRectQuad(this.gridWidth || this.width, this.gridHeight || this.height))
+      ? nextQuad
+      : this._perspectiveDraftTargetQuad;
   }
 
   getRenderSourceQuad() {
+    if (this._perspectiveEditing && this.perspectiveEnabled && this._perspectiveDraftTargetQuad) {
+      return cloneSourceQuad(this._perspectiveDraftQuad || this.sourceQuad);
+    }
     if (this._perspectiveEditing) {
       return fullSourceQuad();
     }
@@ -268,9 +335,16 @@ export class ImagePrimitive extends Primitive {
       return fullSourceQuad();
     }
     if (this.perspectiveOutputQuad) {
-      return fullSourceQuad();
+      return cloneSourceQuad(this.sourceQuad);
     }
     return cloneSourceQuad(this.sourceQuad);
+  }
+
+  getRenderSourceBounds(quad = this.sourceQuad) {
+    const bounds = this.getSourceQuadBounds(quad);
+    const needsMargin = (this._perspectiveEditing && this.perspectiveEnabled && this._perspectiveDraftTargetQuad)
+      || (!!this.perspectiveEnabled && !!this.perspectiveOutputQuad);
+    return needsMargin ? expandBounds(bounds, PERSPECTIVE_SOURCE_MARGIN_SCALE) : bounds;
   }
 
   setPerspectiveDraftPoint(index, u, v) {
@@ -278,20 +352,28 @@ export class ImagePrimitive extends Primitive {
       this.beginPerspectiveEdit();
     }
     if (index < 0 || index >= this._perspectiveDraftQuad.length) return;
-    this._perspectiveDraftQuad[index] = {
+    const candidate = cloneSourceQuad(this._perspectiveDraftQuad);
+    candidate[index] = {
       u: Number.isFinite(u) ? u : 0,
       v: Number.isFinite(v) ? v : 0,
     };
+    if (isValidPerspectiveQuad(candidate, this._perspectiveDraftQuad || DEFAULT_SOURCE_QUAD)) {
+      this._perspectiveDraftQuad = candidate;
+    }
   }
 
   _getTargetRectQuad(width = this.gridWidth || this.width, height = this.gridHeight || this.height) {
     return targetRectQuad(width, height);
   }
 
-  _mapTargetLocalPointToSource(point) {
-    const outputQuad = this._getCurrentPerspectiveOutputQuad();
-    const matrix = outputQuad
-      ? getQuadToQuadMatrix(outputQuad, DEFAULT_SOURCE_QUAD.map((sourcePoint) => ({ x: sourcePoint.u, y: sourcePoint.v })))
+  _mapTargetLocalPointToSource(point, options = {}) {
+    const targetQuad = cloneOptionalQuad(options.targetQuad)
+      || cloneOptionalQuad(this._perspectiveDraftTargetQuad)
+      || this._getCurrentPerspectiveOutputQuad();
+    const sourceQuad = cloneSourceQuad(options.sourceQuad || this._perspectiveDraftQuad || this.sourceQuad)
+      .map((sourcePoint) => ({ x: sourcePoint.u, y: sourcePoint.v }));
+    const matrix = targetQuad
+      ? getQuadToQuadMatrix(targetQuad, sourceQuad)
       : null;
     const mapped = matrix ? applyProjectiveMatrix(matrix, point.x, point.y) : null;
     return mapped
@@ -313,12 +395,10 @@ export class ImagePrimitive extends Primitive {
   }
 
   _getDraftPerspectiveOutputQuad() {
-    if (!this._perspectiveEditing || !this.perspectiveEnabled || !this._perspectiveDraftQuad) return null;
-    return this.buildPerspectiveOutputQuad(this._perspectiveDraftQuad, {
-      width: this.gridWidth || this.width,
-      height: this.gridHeight || this.height,
-      targetQuad: this._perspectiveDraftTargetQuad,
-    });
+    if (!this._perspectiveEditing || !this.perspectiveEnabled) return null;
+    return cloneOptionalQuad(this._perspectiveDraftTargetQuad)
+      || cloneOptionalQuad(this.perspectiveOutputQuad)
+      || null;
   }
 
   worldToLocalPoint(px, py) {
@@ -377,9 +457,18 @@ export class ImagePrimitive extends Primitive {
     if (this._perspectiveEditing && this.perspectiveEnabled && this._perspectiveDraftTargetQuad) {
       if (index < 0 || index >= this._perspectiveDraftTargetQuad.length) return;
       const localPoint = this.worldToLocalPoint(wx, wy);
-      this._perspectiveDraftTargetQuad[index] = localPoint;
+      const nextTargetQuad = cloneOptionalQuad(this._perspectiveDraftTargetQuad) || targetRectQuad(this.gridWidth || this.width, this.gridHeight || this.height);
+      nextTargetQuad[index] = localPoint;
+      if (!isValidPerspectiveQuad(nextTargetQuad, this._perspectiveDraftTargetQuad)) return;
       if (!this._perspectiveDraftQuad) this._perspectiveDraftQuad = cloneSourceQuad(this.sourceQuad);
-      this._perspectiveDraftQuad[index] = this._mapTargetLocalPointToSource(localPoint);
+      const nextSourceQuad = cloneSourceQuad(this._perspectiveDraftQuad);
+      nextSourceQuad[index] = this._mapTargetLocalPointToSource(localPoint, {
+        targetQuad: this._perspectiveDraftTargetQuad,
+        sourceQuad: this._perspectiveDraftQuad,
+      });
+      if (!isValidPerspectiveQuad(nextSourceQuad, this._perspectiveDraftQuad || DEFAULT_SOURCE_QUAD)) return;
+      this._perspectiveDraftTargetQuad = nextTargetQuad;
+      this._perspectiveDraftQuad = nextSourceQuad;
       this._updateDraftGridSizeFromTargetQuad();
       return;
     }
@@ -391,12 +480,16 @@ export class ImagePrimitive extends Primitive {
     if (!this._perspectiveEditing) return;
     if (this.perspectiveEnabled && this._perspectiveDraftTargetQuad) {
       const delta = this.worldVectorToLocal(dx, dy);
+      const previousTargetQuad = cloneOptionalQuad(this._perspectiveDraftTargetQuad);
       this._perspectiveDraftTargetQuad = this._perspectiveDraftTargetQuad.map((point) => ({
         x: point.x + delta.x,
         y: point.y + delta.y,
       }));
       if (!this._perspectiveDraftQuad) this._perspectiveDraftQuad = cloneSourceQuad(this.sourceQuad);
-      this._perspectiveDraftQuad = this._perspectiveDraftTargetQuad.map((point) => this._mapTargetLocalPointToSource(point));
+      this._perspectiveDraftQuad = this._perspectiveDraftTargetQuad.map((point) => this._mapTargetLocalPointToSource(point, {
+        targetQuad: previousTargetQuad,
+        sourceQuad: this._perspectiveDraftQuad,
+      }));
       return;
     }
     if (!this._perspectiveDraftQuad) this._perspectiveDraftQuad = cloneSourceQuad(this.sourceQuad);
@@ -411,13 +504,17 @@ export class ImagePrimitive extends Primitive {
 
   applyPerspectiveEdit(options = {}) {
     if (!this._perspectiveEditing || !this._perspectiveDraftQuad) return;
+    if (!isValidPerspectiveQuad(this._perspectiveDraftQuad, DEFAULT_SOURCE_QUAD)) return;
+    const committedProjectedQuad = cloneOptionalQuad(this.perspectiveEditQuad);
+    const preserveCommittedProjectedQuad = this.perspectiveEnabled && !!committedProjectedQuad;
     this.sourceQuad = cloneSourceQuad(this._perspectiveDraftQuad);
     this.perspectiveEnabled = !this.isIdentitySourceQuad(this.sourceQuad);
     const targetWidth = Math.max(MIN_DIMENSION, Number.isFinite(options.targetWidth) ? options.targetWidth : (this.gridWidth || this.width));
     const targetHeight = Math.max(MIN_DIMENSION, Number.isFinite(options.targetHeight) ? options.targetHeight : (this.gridHeight || this.height));
-    const targetQuad = this.perspectiveEnabled
+    const projectedTargetQuad = this.perspectiveEnabled
       ? (cloneOptionalQuad(this._perspectiveDraftTargetQuad) || targetRectQuad(targetWidth, targetHeight))
       : null;
+    if (projectedTargetQuad && !isValidPerspectiveQuad(projectedTargetQuad, targetRectQuad(targetWidth, targetHeight))) return;
     this.gridWidth = targetWidth;
     this.gridHeight = targetHeight;
     if (options.placeOnGrid !== false) {
@@ -427,9 +524,11 @@ export class ImagePrimitive extends Primitive {
         moveToOrigin: options.moveToOrigin !== false,
       });
     }
-    this.perspectiveEditQuad = targetQuad;
+    this.perspectiveEditQuad = preserveCommittedProjectedQuad
+      ? committedProjectedQuad
+      : projectedTargetQuad;
     this.perspectiveOutputQuad = this.perspectiveEnabled
-      ? this.buildPerspectiveOutputQuad(this.sourceQuad, { width: targetWidth, height: targetHeight, targetQuad })
+      ? targetRectQuad(targetWidth, targetHeight)
       : null;
     if (!this.perspectiveEnabled) {
       this.cropRect = null;
@@ -567,7 +666,8 @@ export class ImagePrimitive extends Primitive {
 
   getWarpLocalQuad() {
     if (this._perspectiveEditing && this.perspectiveEnabled) {
-      return this._getDraftPerspectiveOutputQuad()
+      return cloneOptionalQuad(this.perspectiveEditQuad)
+        || this._getDraftPerspectiveOutputQuad()
         || cloneOptionalQuad(this.perspectiveOutputQuad)
         || this.getLocalQuad();
     }
@@ -687,6 +787,11 @@ export class ImagePrimitive extends Primitive {
       return this._transformLocalQuadToWorld(this.perspectiveEditQuad);
     }
     return this.getPerspectiveGuideQuad().map((point) => this.mapNormalizedPoint(point.u, point.v));
+  }
+
+  getAppliedPerspectiveGuideWorldQuad() {
+    if (!this.perspectiveEditQuad) return null;
+    return this._transformLocalQuadToWorld(this.perspectiveEditQuad);
   }
 
   getBounds() {

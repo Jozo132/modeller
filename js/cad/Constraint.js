@@ -429,7 +429,8 @@ export class Perpendicular extends Constraint {
     return Math.abs((dxA * dxB + dyA * dyB) / (lenA * lenB));
   }
   apply() {
-    // Rotate segB 90° from segA, keeping segB's midpoint fixed
+    // Rotate segB 90° from segA.
+    // Prefer pivoting around a shared endpoint when the segments are connected.
     const dxA = this.segA.x2 - this.segA.x1, dyA = this.segA.y2 - this.segA.y1;
     const lenA = Math.hypot(dxA, dyA) || 1e-9;
     // Perpendicular unit vector to segA
@@ -439,17 +440,52 @@ export class Perpendicular extends Constraint {
     const lenB = Math.hypot(dxB, dyB) || 1e-9;
     const dot = dxB * upX + dyB * upY;
     const sign = dot >= 0 ? 1 : -1;
+    const dirX = sign * upX;
+    const dirY = sign * upY;
+    const b1 = this.segB.p1;
+    const b2 = this.segB.p2;
+
+    let shared = null;
+    let other = null;
+    if (this.segA.p1 === b1 || this.segA.p2 === b1) {
+      shared = b1;
+      other = b2;
+    } else if (this.segA.p1 === b2 || this.segA.p2 === b2) {
+      shared = b2;
+      other = b1;
+    }
+
+    if (shared && other) {
+      if (!other.fixed) {
+        other.x = shared.x + dirX * lenB;
+        other.y = shared.y + dirY * lenB;
+        return;
+      }
+      if (!shared.fixed) {
+        shared.x = other.x - dirX * lenB;
+        shared.y = other.y - dirY * lenB;
+      }
+      return;
+    }
+
+    if (b1.fixed && b2.fixed) return;
+    if (b1.fixed) {
+      b2.x = b1.x + dirX * lenB;
+      b2.y = b1.y + dirY * lenB;
+      return;
+    }
+    if (b2.fixed) {
+      b1.x = b2.x - dirX * lenB;
+      b1.y = b2.y - dirY * lenB;
+      return;
+    }
 
     const mx = this.segB.midX, my = this.segB.midY;
     const halfLen = lenB / 2;
-    if (!this.segB.p1.fixed) {
-      this.segB.p1.x = mx - sign * upX * halfLen;
-      this.segB.p1.y = my - sign * upY * halfLen;
-    }
-    if (!this.segB.p2.fixed) {
-      this.segB.p2.x = mx + sign * upX * halfLen;
-      this.segB.p2.y = my + sign * upY * halfLen;
-    }
+    b1.x = mx - dirX * halfLen;
+    b1.y = my - dirY * halfLen;
+    b2.x = mx + dirX * halfLen;
+    b2.y = my + dirY * halfLen;
   }
   involvedPoints() { return [this.segA.p1, this.segA.p2, this.segB.p1, this.segB.p2]; }
   serialize() { return { ...super.serialize(), segA: this.segA.id, segB: this.segB.id }; }

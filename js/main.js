@@ -161,6 +161,10 @@ class App {
     this._partOriginAxisVisible = true;
     this._rollbackIndexBeforeSketchEdit = null;
     this._imagePropertySections = new Map();
+    this._primitiveListRowHeight = 22;
+    this._primitiveListOverscan = 12;
+    this._primitiveListDescriptors = [];
+    this._primitiveListViewportFrame = 0;
     this._scenes = []; // named camera presets for repeatable renders
     this._sceneManagerOpen = false;
     this._recordingBarVisible = localStorage.getItem(RECORDING_BAR_VISIBLE_KEY) === 'true';
@@ -180,6 +184,9 @@ class App {
     // Initialize unified 3D renderer
     const view3dContainer = document.getElementById('view-3d');
     this._renderer3d = new WasmRenderer(view3dContainer);
+    if (this._renderer3d.webglUnavailableReason) {
+      this.setStatus(`3D renderer unavailable: ${this._renderer3d.webglUnavailableReason}`);
+    }
     this._renderer3d.setMode('2d'); // Start in 2D sketching mode
     this._renderer3d.setVisible(true);
     this._renderer3d.setDiagnosticBackfaceHatchEnabled(this._effectiveDiagnosticBackfaceHatchEnabled());
@@ -1496,7 +1503,7 @@ class App {
 
     // Click
     canvas.addEventListener('click', (e) => {
-      if (movedSinceDown && this.activeTool.name === 'select' && !this._sketchingOnPlane && !this._awaitingSketchPlane) {
+      if (movedSinceDown && this.activeTool.name === 'select' && !this._awaitingSketchPlane) {
         movedSinceDown = false;
         return;
       }
@@ -4285,9 +4292,10 @@ class App {
 
     const startLabel = context.isPerspectiveEditing
       ? 'Editing In Sketch'
-      : (context.hasAppliedPerspective ? 'Edit Applied Perspective' : 'Start Perspective Edit');
+      : (context.hasAppliedPerspective ? 'Edit Projected Grid' : 'Start Perspective Edit');
     const gridCellsX = Math.max(1, Math.round(image.gridCellsX || 3));
     const gridCellsY = Math.max(1, Math.round(image.gridCellsY || 3));
+    const lockAppliedGridFields = context.hasAppliedPerspective && !context.isPerspectiveEditing;
     const cropRect = context.cropRect || {
       x: 0,
       y: 0,
@@ -4296,12 +4304,12 @@ class App {
     };
 
     return `
-      <div class="image-props-note">Drag the gold grid handles to adjust the perspective anchors. Drag inside the grid to move the projected reference plane. Apply projects the image using the grid dimensions at the sketch origin.</div>
+      <div class="image-props-note">Drag the gold grid handles to adjust the perspective anchors. Drag inside the grid to move the projected reference plane. Apply projects the image using the grid dimensions at the sketch origin.${lockAppliedGridFields ? ' Reopen projected grid edit to change the applied size or handles.' : ''}</div>
       <div class="prop-row"><label>Status</label><span>${context.perspectiveStatus}</span></div>
-      <div class="prop-row"><label>Grid Width</label><input id="prop-image-grid-width" type="number" min="0.01" step="0.1" value="${image.gridWidth || image.width}" /></div>
-      <div class="prop-row"><label>Grid Height</label><input id="prop-image-grid-height" type="number" min="0.01" step="0.1" value="${image.gridHeight || image.height}" /></div>
-      <div class="prop-row prop-row-stepper"><label>Cells Wide</label><div class="image-stepper"><button type="button" class="image-stepper-btn" data-image-stepper="grid-cells-x:-1">-</button><input id="prop-image-grid-cells-x" type="number" min="1" step="1" value="${gridCellsX}" /><button type="button" class="image-stepper-btn" data-image-stepper="grid-cells-x:1">+</button></div></div>
-      <div class="prop-row prop-row-stepper"><label>Cells High</label><div class="image-stepper"><button type="button" class="image-stepper-btn" data-image-stepper="grid-cells-y:-1">-</button><input id="prop-image-grid-cells-y" type="number" min="1" step="1" value="${gridCellsY}" /><button type="button" class="image-stepper-btn" data-image-stepper="grid-cells-y:1">+</button></div></div>
+      <div class="prop-row"><label>Grid Width</label><input id="prop-image-grid-width" type="number" min="0.01" step="0.1" value="${image.gridWidth || image.width}" ${lockAppliedGridFields ? 'disabled' : ''} /></div>
+      <div class="prop-row"><label>Grid Height</label><input id="prop-image-grid-height" type="number" min="0.01" step="0.1" value="${image.gridHeight || image.height}" ${lockAppliedGridFields ? 'disabled' : ''} /></div>
+      <div class="prop-row prop-row-stepper"><label>Cells Wide</label><div class="image-stepper"><button type="button" class="image-stepper-btn" data-image-stepper="grid-cells-x:-1" ${lockAppliedGridFields ? 'disabled' : ''}>-</button><input id="prop-image-grid-cells-x" type="number" min="1" step="1" value="${gridCellsX}" ${lockAppliedGridFields ? 'disabled' : ''} /><button type="button" class="image-stepper-btn" data-image-stepper="grid-cells-x:1" ${lockAppliedGridFields ? 'disabled' : ''}>+</button></div></div>
+      <div class="prop-row prop-row-stepper"><label>Cells High</label><div class="image-stepper"><button type="button" class="image-stepper-btn" data-image-stepper="grid-cells-y:-1" ${lockAppliedGridFields ? 'disabled' : ''}>-</button><input id="prop-image-grid-cells-y" type="number" min="1" step="1" value="${gridCellsY}" ${lockAppliedGridFields ? 'disabled' : ''} /><button type="button" class="image-stepper-btn" data-image-stepper="grid-cells-y:1" ${lockAppliedGridFields ? 'disabled' : ''}>+</button></div></div>
       <div class="image-props-actions">
         <button id="prop-image-start-perspective" type="button" class="app-modal-btn" ${context.isPerspectiveEditing ? 'disabled' : ''}>${startLabel}</button>
         <button id="prop-image-apply-perspective" type="button" class="app-modal-btn primary" ${context.isPerspectiveEditing ? '' : 'disabled'}>Apply Perspective</button>
@@ -4683,6 +4691,10 @@ class App {
 
   // --- Left panel (Primitives & Constraints) ---
   _bindLeftPanelEvents() {
+    document.getElementById('primitives-list')?.addEventListener('scroll', () => {
+      this._schedulePrimitiveListViewportRender();
+    });
+
     // Handle DELETE key on selected constraint
     document.getElementById('left-panel').addEventListener('keydown', (e) => {
       if ((e.key === 'Delete' || e.key === 'Backspace') && this._lpSelectedConstraintId != null) {
@@ -4762,6 +4774,264 @@ class App {
       this._leftPanelRebuildFrame = 1;
       Promise.resolve().then(run);
     }
+  }
+
+  _schedulePrimitiveListViewportRender() {
+    if (this._primitiveListViewportFrame) return;
+    const run = () => {
+      this._primitiveListViewportFrame = 0;
+      this._renderVirtualizedPrimitivesList();
+    };
+    if (typeof requestAnimationFrame === 'function') {
+      this._primitiveListViewportFrame = requestAnimationFrame(run);
+    } else {
+      this._primitiveListViewportFrame = 1;
+      Promise.resolve().then(run);
+    }
+  }
+
+  _ensurePrimitiveListVirtualScaffold(list) {
+    let topSpacer = list.querySelector('.lp-virtual-spacer-top');
+    let content = list.querySelector('.lp-virtual-content');
+    let bottomSpacer = list.querySelector('.lp-virtual-spacer-bottom');
+    if (topSpacer && content && bottomSpacer) {
+      return { topSpacer, content, bottomSpacer };
+    }
+
+    list.innerHTML = '';
+    topSpacer = document.createElement('div');
+    topSpacer.className = 'lp-virtual-spacer lp-virtual-spacer-top';
+    content = document.createElement('div');
+    content.className = 'lp-virtual-content';
+    bottomSpacer = document.createElement('div');
+    bottomSpacer.className = 'lp-virtual-spacer lp-virtual-spacer-bottom';
+    list.appendChild(topSpacer);
+    list.appendChild(content);
+    list.appendChild(bottomSpacer);
+    return { topSpacer, content, bottomSpacer };
+  }
+
+  _createPrimitiveListRow(descriptor, scene) {
+    if (descriptor.kind === 'group') {
+      const group = descriptor.entity;
+      const row = document.createElement('div');
+      row.className = 'lp-item lp-group';
+      row.dataset.primId = group.id;
+      row.dataset.primType = 'group';
+      if (group.selected) row.classList.add('selected');
+      const childCount = group.childIds.length;
+      row.innerHTML = `<span class="lp-icon">${group.expanded ? '▾' : '▸'} 📁</span><span class="lp-label">${escapeHtml(group.name || `Group #${group.id}`)} <span style="opacity:0.5">(${childCount})</span></span>`;
+      row.addEventListener('click', (e) => {
+        if (e.target.closest('.lp-icon')) {
+          group.expanded = !group.expanded;
+          this._rebuildPrimitivesList();
+          return;
+        }
+        if (!e.shiftKey) state.clearSelection();
+        if (group.selected && e.shiftKey) state.deselect(group);
+        else state.select(group);
+        this._scheduleRender();
+      });
+      row.addEventListener('dblclick', (e) => {
+        e.preventDefault();
+        this._enterGroupEdit(group);
+      });
+      row.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!group.selected) {
+          state.clearSelection();
+          state.select(group);
+          this._scheduleRender();
+        }
+        showContextMenu(e.clientX, e.clientY, [
+          { type: 'item', label: 'Edit Group', icon: '📂', action: () => this._enterGroupEdit(group) },
+          { type: 'item', label: 'Ungroup', icon: '⇱', shortcut: 'Ctrl+G', action: () => this._ungroupSelection() },
+          { type: 'separator' },
+          { type: 'item', label: 'Delete', icon: '🗑', shortcut: 'Del', action: () => { takeSnapshot(); this._deleteSelection(); } },
+        ]);
+      });
+      return row;
+    }
+
+    if (descriptor.kind === 'group-child') {
+      const group = descriptor.group;
+      const child = descriptor.entity;
+      const row = document.createElement('div');
+      row.className = 'lp-item lp-group-child';
+      row.dataset.primId = child.id;
+      row.dataset.primType = child.type;
+      if (child.selected) row.classList.add('selected');
+      row.innerHTML = `<span class="lp-icon">${this._primIcon(child)}</span><span class="lp-label">${child.type.charAt(0).toUpperCase() + child.type.slice(1)} #${child.id}</span>`;
+      row.addEventListener('click', (e) => {
+        if (this._activeGroupEditId !== group.id) {
+          if (!e.shiftKey) state.clearSelection();
+          state.select(group);
+        } else {
+          if (!e.shiftKey) state.clearSelection();
+          if (child.selected && e.shiftKey) state.deselect(child);
+          else state.select(child);
+        }
+        this._scheduleRender();
+      });
+      return row;
+    }
+
+    const prim = descriptor.entity;
+    const row = document.createElement('div');
+    row.className = 'lp-item';
+    row.dataset.primId = prim.id;
+    row.dataset.primType = prim.type;
+
+    if (prim.selected) row.classList.add('selected');
+    const hoverEnt = this.renderer.hoverEntity;
+    if (hoverEnt && hoverEnt.id === prim.id) row.classList.add('highlight');
+    if (this._lpHoverConstraintId != null) {
+      const hc = scene.constraints.find((constraint) => constraint.id === this._lpHoverConstraintId);
+      if (hc && this._constraintPrimIds(hc).has(prim.id)) {
+        row.classList.add('highlight');
+      }
+    }
+
+    const typeName = prim.type.charAt(0).toUpperCase() + prim.type.slice(1);
+    let desc = `${typeName} #${prim.id}`;
+    if (prim.type === 'text') desc = `Text #${prim.id} "${prim.text}"`;
+    if (prim.construction) {
+      const ct = prim.constructionType || 'finite';
+      const ctTag = ct === 'finite' ? 'C' : ct === 'infinite-start' ? 'C←' : ct === 'infinite-end' ? 'C→' : 'C↔';
+      const ds = prim.constructionDash || 'dashed';
+      const dsTag = ds === 'dashed' ? '' : ds === 'dash-dot' ? ', ─·' : ', ···';
+      desc += ` <span style="opacity:0.5;color:#90EE90">(${ctTag}${dsTag})</span>`;
+    }
+    if (prim.lineWidth !== 1) {
+      desc += ` <span style="opacity:0.4;font-size:10px">[${prim.lineWidth}]</span>`;
+    }
+
+    const iconHtml = this._primIcon(prim);
+    const isHtml = iconHtml.startsWith('<');
+    row.innerHTML = `<span class="lp-icon">${isHtml ? '' : iconHtml}</span><span class="lp-label">${desc}</span>`;
+    if (isHtml) row.querySelector('.lp-icon').innerHTML = iconHtml;
+
+    row.addEventListener('mouseenter', () => {
+      this._lpHoverPrimId = prim.id;
+      this.renderer.hoverEntity = prim;
+      this._scheduleRender();
+      this._updateLeftPanelHighlights();
+    });
+    row.addEventListener('mouseleave', () => {
+      this._lpHoverPrimId = null;
+      if (this.renderer.hoverEntity === prim) this.renderer.hoverEntity = null;
+      this._scheduleRender();
+      this._updateLeftPanelHighlights();
+    });
+    row.addEventListener('click', (e) => {
+      if (!e.shiftKey) state.clearSelection();
+      if (prim.selected && e.shiftKey) {
+        state.deselect(prim);
+      } else {
+        state.select(prim);
+      }
+      this._scheduleRender();
+    });
+    row.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!prim.selected) {
+        state.clearSelection();
+        state.select(prim);
+        this._scheduleRender();
+      }
+      const isShape = prim.type === 'segment' || prim.type === 'circle' || prim.type === 'arc';
+      const ctxItems = [];
+      if (isShape) {
+        ctxItems.push({
+          type: 'item',
+          label: prim.construction ? 'Make Normal' : 'Make Construction',
+          icon: prim.construction ? '━' : '┄',
+          shortcut: 'Q',
+          action: () => {
+            takeSnapshot();
+            prim.construction = !prim.construction;
+            state.emit('change');
+            this._scheduleRender();
+          },
+        });
+        if (prim.type === 'segment' && prim.construction) {
+          const currentType = prim.constructionType || 'finite';
+          ctxItems.push({
+            type: 'submenu',
+            label: 'Construction Type',
+            icon: '⇔',
+            items: [
+              { key: 'finite', label: 'Finite' },
+              { key: 'infinite-start', label: 'Infinite Start' },
+              { key: 'infinite-end', label: 'Infinite End' },
+              { key: 'infinite-both', label: 'Infinite Both' },
+            ].map((opt) => ({
+              type: 'item',
+              label: opt.label,
+              icon: currentType === opt.key ? '✓' : '',
+              action: () => { takeSnapshot(); prim.constructionType = opt.key; state.emit('change'); this._scheduleRender(); },
+            })),
+          });
+        }
+        if (prim.construction) {
+          const currentDash = prim.constructionDash || 'dashed';
+          const dashArrays = { dashed: '6,4', 'dash-dot': '6,3,1,3', dotted: '1.5,3' };
+          const dashLabels = { dashed: 'Dashed', 'dash-dot': 'Dash-Dot', dotted: 'Dotted' };
+          ctxItems.push({
+            type: 'submenu',
+            label: 'Dash Style',
+            icon: '┄',
+            items: Object.keys(dashArrays).map((key) => ({
+              type: 'item',
+              label: dashLabels[key],
+              icon: currentDash === key ? '✓' : '',
+              labelHtml: `<span style="display:flex;align-items:center;gap:10px"><span>${dashLabels[key]}</span><svg width="40" height="2" viewBox="0 0 40 2" style="display:block"><line x1="0" y1="1" x2="40" y2="1" stroke="#ccc" stroke-width="1.5" stroke-dasharray="${dashArrays[key]}"/></svg></span>`,
+              action: () => { takeSnapshot(); prim.constructionDash = key; state.emit('change'); this._scheduleRender(); },
+            })),
+          });
+        }
+        ctxItems.push(this._thicknessSubmenu([prim]));
+        ctxItems.push({ type: 'separator' });
+      }
+      ctxItems.push({
+        type: 'item',
+        label: 'Delete',
+        icon: '🗑',
+        shortcut: 'Del',
+        action: () => { takeSnapshot(); this._deleteSelection(); },
+      });
+      showContextMenu(e.clientX, e.clientY, ctxItems);
+    });
+
+    return row;
+  }
+
+  _renderVirtualizedPrimitivesList() {
+    const list = document.getElementById('primitives-list');
+    if (!list) return;
+    const descriptors = this._primitiveListDescriptors || [];
+    if (!descriptors.length) return;
+
+    const { topSpacer, content, bottomSpacer } = this._ensurePrimitiveListVirtualScaffold(list);
+    const rowHeight = this._primitiveListRowHeight;
+    const overscan = this._primitiveListOverscan;
+    const viewportHeight = Math.max(list.clientHeight || 0, rowHeight * 8);
+    const startIndex = Math.max(0, Math.floor(list.scrollTop / rowHeight) - overscan);
+    const visibleCount = Math.ceil(viewportHeight / rowHeight) + (overscan * 2);
+    const endIndex = Math.min(descriptors.length, startIndex + visibleCount);
+
+    topSpacer.style.height = `${startIndex * rowHeight}px`;
+    bottomSpacer.style.height = `${Math.max(0, descriptors.length - endIndex) * rowHeight}px`;
+
+    const frag = document.createDocumentFragment();
+    const scene = state.scene;
+    for (let index = startIndex; index < endIndex; index++) {
+      frag.appendChild(this._createPrimitiveListRow(descriptors[index], scene));
+    }
+    content.innerHTML = '';
+    content.appendChild(frag);
   }
 
   /**
@@ -5326,225 +5596,33 @@ class App {
 
   _rebuildPrimitivesList() {
     const list = document.getElementById('primitives-list');
-    list.innerHTML = '';
     const scene = state.scene;
     const allShapes = [...scene.shapes()].filter(s => s.type !== 'dimension');
     const groups = [...(scene.groups || [])];
     const groupedIds = new Set(groups.flatMap((group) => group.childIds || []));
 
     if (allShapes.length === 0 && groups.length === 0) {
+      this._primitiveListDescriptors = [];
       list.innerHTML = '<p class="hint">No primitives</p>';
       return;
     }
 
-    const appendGroupRow = (group) => {
-      const row = document.createElement('div');
-      row.className = 'lp-item lp-group';
-      row.dataset.primId = group.id;
-      row.dataset.primType = 'group';
-      if (group.selected) row.classList.add('selected');
-      const childCount = group.childIds.length;
-      row.innerHTML = `<span class="lp-icon">${group.expanded ? '▾' : '▸'} 📁</span><span class="lp-label">${escapeHtml(group.name || `Group #${group.id}`)} <span style="opacity:0.5">(${childCount})</span></span>`;
-      row.addEventListener('click', (e) => {
-        if (e.target.closest('.lp-icon')) {
-          group.expanded = !group.expanded;
-          this._rebuildPrimitivesList();
-          return;
-        }
-        if (!e.shiftKey) state.clearSelection();
-        if (group.selected && e.shiftKey) state.deselect(group);
-        else state.select(group);
-        this._scheduleRender();
-      });
-      row.addEventListener('dblclick', (e) => {
-        e.preventDefault();
-        this._enterGroupEdit(group);
-      });
-      row.addEventListener('contextmenu', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        if (!group.selected) {
-          state.clearSelection();
-          state.select(group);
-          this._scheduleRender();
-        }
-        showContextMenu(e.clientX, e.clientY, [
-          { type: 'item', label: 'Edit Group', icon: '📂', action: () => this._enterGroupEdit(group) },
-          { type: 'item', label: 'Ungroup', icon: '⇱', shortcut: 'Ctrl+G', action: () => this._ungroupSelection() },
-          { type: 'separator' },
-          { type: 'item', label: 'Delete', icon: '🗑', shortcut: 'Del', action: () => { takeSnapshot(); this._deleteSelection(); } },
-        ]);
-      });
-      list.appendChild(row);
-
-      if (group.expanded) {
-        for (const child of group.getChildren()) {
-          const childRow = document.createElement('div');
-          childRow.className = 'lp-item lp-group-child';
-          childRow.dataset.primId = child.id;
-          childRow.dataset.primType = child.type;
-          if (child.selected) childRow.classList.add('selected');
-          childRow.innerHTML = `<span class="lp-icon">${this._primIcon(child)}</span><span class="lp-label">${child.type.charAt(0).toUpperCase() + child.type.slice(1)} #${child.id}</span>`;
-          childRow.addEventListener('click', (e) => {
-            if (this._activeGroupEditId !== group.id) {
-              if (!e.shiftKey) state.clearSelection();
-              state.select(group);
-            } else {
-              if (!e.shiftKey) state.clearSelection();
-              if (child.selected && e.shiftKey) state.deselect(child);
-              else state.select(child);
-            }
-            this._scheduleRender();
-          });
-          list.appendChild(childRow);
-        }
+    const descriptors = [];
+    for (const group of groups) {
+      descriptors.push({ kind: 'group', id: group.id, entity: group });
+      if (!group.expanded) continue;
+      for (const child of group.getChildren()) {
+        descriptors.push({ kind: 'group-child', id: child.id, entity: child, group });
       }
-    };
-
-    for (const group of groups) appendGroupRow(group);
+    }
 
     for (const prim of allShapes) {
       if (groupedIds.has(prim.id) && this._activeGroupEditId !== (scene.groupForPrimitive(prim)?.id ?? null)) continue;
-      const row = document.createElement('div');
-      row.className = 'lp-item';
-      row.dataset.primId = prim.id;
-      row.dataset.primType = prim.type;
-
-      // Mark as selected if the primitive is selected in the scene
-      if (prim.selected) row.classList.add('selected');
-
-      // Mark as highlighted if this primitive is being hovered on the canvas
-      const hoverEnt = this.renderer.hoverEntity;
-      if (hoverEnt && hoverEnt.id === prim.id) row.classList.add('highlight');
-
-      // Mark as highlighted if a constraint in the left panel references this primitive
-      if (this._lpHoverConstraintId != null) {
-        const hc = scene.constraints.find(c => c.id === this._lpHoverConstraintId);
-        if (hc && this._constraintPrimIds(hc).has(prim.id)) {
-          row.classList.add('highlight');
-        }
-      }
-
-      const typeName = prim.type.charAt(0).toUpperCase() + prim.type.slice(1);
-      let desc = `${typeName} #${prim.id}`;
-      if (prim.type === 'text') desc = `Text #${prim.id} "${prim.text}"`;
-      if (prim.construction) {
-        const ct = prim.constructionType || 'finite';
-        const ctTag = ct === 'finite' ? 'C' : ct === 'infinite-start' ? 'C←' : ct === 'infinite-end' ? 'C→' : 'C↔';
-        const ds = prim.constructionDash || 'dashed';
-        const dsTag = ds === 'dashed' ? '' : ds === 'dash-dot' ? ', ─·' : ', ···';
-        desc += ` <span style="opacity:0.5;color:#90EE90">(${ctTag}${dsTag})</span>`;
-      }
-      if (prim.lineWidth !== 1) {
-        desc += ` <span style="opacity:0.4;font-size:10px">[${prim.lineWidth}]</span>`;
-      }
-
-      const iconHtml = this._primIcon(prim);
-      const isHtml = iconHtml.startsWith('<');
-      row.innerHTML = `<span class="lp-icon">${isHtml ? '' : iconHtml}</span><span class="lp-label">${desc}</span>`;
-      if (isHtml) row.querySelector('.lp-icon').innerHTML = iconHtml;
-
-      // Mouse events for cross-highlighting
-      row.addEventListener('mouseenter', () => {
-        this._lpHoverPrimId = prim.id;
-        this.renderer.hoverEntity = prim;
-        this._scheduleRender();
-        this._updateLeftPanelHighlights();
-      });
-      row.addEventListener('mouseleave', () => {
-        this._lpHoverPrimId = null;
-        if (this.renderer.hoverEntity === prim) this.renderer.hoverEntity = null;
-        this._scheduleRender();
-        this._updateLeftPanelHighlights();
-      });
-
-      // Click to select/deselect and filter constraints
-      row.addEventListener('click', (e) => {
-        if (!e.shiftKey) state.clearSelection();
-        if (prim.selected && e.shiftKey) {
-          state.deselect(prim);
-        } else {
-          state.select(prim);
-        }
-        this._scheduleRender();
-      });
-
-      // Right-click context menu
-      row.addEventListener('contextmenu', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        // Select if not already
-        if (!prim.selected) {
-          state.clearSelection();
-          state.select(prim);
-          this._scheduleRender();
-        }
-        const isShape = prim.type === 'segment' || prim.type === 'circle' || prim.type === 'arc';
-        const ctxItems = [];
-        if (isShape) {
-          ctxItems.push({
-            type: 'item',
-            label: prim.construction ? 'Make Normal' : 'Make Construction',
-            icon: prim.construction ? '━' : '┄',
-            shortcut: 'Q',
-            action: () => {
-              takeSnapshot();
-              prim.construction = !prim.construction;
-              state.emit('change');
-              this._scheduleRender();
-            },
-          });
-          if (prim.type === 'segment' && prim.construction) {
-            const currentType = prim.constructionType || 'finite';
-            ctxItems.push({
-              type: 'submenu',
-              label: 'Construction Type',
-              icon: '⇔',
-              items: [
-                { key: 'finite', label: 'Finite' },
-                { key: 'infinite-start', label: 'Infinite Start' },
-                { key: 'infinite-end', label: 'Infinite End' },
-                { key: 'infinite-both', label: 'Infinite Both' },
-              ].map(opt => ({
-                type: 'item',
-                label: opt.label,
-                icon: currentType === opt.key ? '✓' : '',
-                action: () => { takeSnapshot(); prim.constructionType = opt.key; state.emit('change'); this._scheduleRender(); },
-              })),
-            });
-          }
-          if (prim.construction) {
-            const currentDash = prim.constructionDash || 'dashed';
-            const dashArrays = { 'dashed': '6,4', 'dash-dot': '6,3,1,3', 'dotted': '1.5,3' };
-            const dashLabels = { 'dashed': 'Dashed', 'dash-dot': 'Dash-Dot', 'dotted': 'Dotted' };
-            ctxItems.push({
-              type: 'submenu',
-              label: 'Dash Style',
-              icon: '┄',
-              items: Object.keys(dashArrays).map(key => ({
-                type: 'item',
-                label: dashLabels[key],
-                icon: currentDash === key ? '✓' : '',
-                labelHtml: `<span style="display:flex;align-items:center;gap:10px"><span>${dashLabels[key]}</span><svg width="40" height="2" viewBox="0 0 40 2" style="display:block"><line x1="0" y1="1" x2="40" y2="1" stroke="#ccc" stroke-width="1.5" stroke-dasharray="${dashArrays[key]}"/></svg></span>`,
-                action: () => { takeSnapshot(); prim.constructionDash = key; state.emit('change'); this._scheduleRender(); },
-              })),
-            });
-          }
-          ctxItems.push(this._thicknessSubmenu([prim]));
-          ctxItems.push({ type: 'separator' });
-        }
-        ctxItems.push({
-          type: 'item',
-          label: 'Delete',
-          icon: '🗑',
-          shortcut: 'Del',
-          action: () => { takeSnapshot(); this._deleteSelection(); },
-        });
-        showContextMenu(e.clientX, e.clientY, ctxItems);
-      });
-
-      list.appendChild(row);
+      descriptors.push({ kind: 'primitive', id: prim.id, entity: prim });
     }
+
+    this._primitiveListDescriptors = descriptors;
+    this._renderVirtualizedPrimitivesList();
   }
 
   _rebuildDimensionsList() {

@@ -20,6 +20,7 @@ import { loadReleaseWasmModule } from './load-release-wasm.js';
 
 const MIN_ORBIT_RADIUS = 0.001;
 const MAX_ORBIT_RADIUS = 100000;
+const MAX_EXPANDED_IMAGE_CACHE_ENTRIES = 12;
 
 function _clampOrbitRadius(radius) {
   return Math.max(MIN_ORBIT_RADIUS, Math.min(MAX_ORBIT_RADIUS, radius || MIN_ORBIT_RADIUS));
@@ -307,6 +308,7 @@ export class WasmRenderer {
     this.container = container;
     this.mode = '2d';
     this._ready = false;
+    this._webglUnavailableReason = null;
 
     // Create a <canvas> that fills the container
     this.canvas = document.createElement('canvas');
@@ -321,9 +323,6 @@ export class WasmRenderer {
     this.canvas.width = width;
     this.canvas.height = height;
 
-    // WebGL executor
-    this.executor = new WebGLExecutor(this.canvas);
-
     // 2D overlay canvas for text/sprites/dimension labels
     this.overlayCanvas = document.createElement('canvas');
     this.overlayCanvas.style.position = 'absolute';
@@ -337,6 +336,15 @@ export class WasmRenderer {
     container.appendChild(this.overlayCanvas);
     this.overlayCtx = this.overlayCanvas.getContext('2d');
     this.overlayCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    // WebGL executor
+    this.executor = null;
+    try {
+      this.executor = new WebGLExecutor(this.canvas);
+    } catch (err) {
+      this._webglUnavailableReason = err instanceof Error ? err.message : String(err);
+      console.warn('WasmRenderer: WebGL executor unavailable, disabling 3D renderer startup', err);
+    }
 
     // CSS pixel dimensions (used for coordinate mapping)
     this._cssWidth = width;
@@ -470,12 +478,40 @@ export class WasmRenderer {
     this._resizeHandler = () => this.onWindowResize();
     window.addEventListener('resize', this._resizeHandler);
 
+    if (!this.executor) {
+      this._loadPromise = null;
+      this._animationId = null;
+      this._drawWebGLUnavailableOverlay();
+      return;
+    }
+
     // Load WASM
     this._loadPromise = this._loadWasm();
 
     // Start animation loop
     this._animationId = null;
     this._animate();
+  }
+
+  get webglUnavailableReason() {
+    return this._webglUnavailableReason;
+  }
+
+  _drawWebGLUnavailableOverlay() {
+    const w = this._cssWidth || this.container.clientWidth || 800;
+    const h = this._cssHeight || this.container.clientHeight || 600;
+    this.overlayCtx.clearRect(0, 0, w, h);
+    this.overlayCtx.save();
+    this.overlayCtx.fillStyle = 'rgba(18, 18, 18, 0.88)';
+    this.overlayCtx.fillRect(0, 0, w, h);
+    this.overlayCtx.fillStyle = '#f2f2f2';
+    this.overlayCtx.font = '16px sans-serif';
+    this.overlayCtx.textAlign = 'center';
+    this.overlayCtx.fillText('WebGL2 is unavailable on this device/browser.', w * 0.5, h * 0.5 - 10);
+    this.overlayCtx.font = '13px sans-serif';
+    this.overlayCtx.fillStyle = '#c9c9c9';
+    this.overlayCtx.fillText('3D rendering is disabled. The app remains loaded so you can recover or switch environments.', w * 0.5, h * 0.5 + 14);
+    this.overlayCtx.restore();
   }
 
   async _loadWasm() {
@@ -2302,7 +2338,11 @@ export class WasmRenderer {
     this._cssWidth = w;
     this._cssHeight = h;
 
-    this.executor.resize(w, h);
+    if (this.executor) {
+      this.executor.resize(w, h);
+    } else {
+      this._drawWebGLUnavailableOverlay();
+    }
 
     if (this._ready) {
       this.wasm.resize(w, h);
@@ -3343,12 +3383,16 @@ export class WasmRenderer {
       failed: false,
       processed: new Map(),
       expanded: new Map(),
+      liveExpanded: null,
+      liveExpandedKey: null,
     };
     image.onload = () => {
       entry.ready = true;
       entry.failed = false;
       entry.processed.clear();
       entry.expanded.clear();
+      entry.liveExpanded = null;
+      entry.liveExpandedKey = null;
       if (this._last2DScene) {
         this.render2DScene(this._last2DScene, this._last2DOverlays || {});
       }
@@ -3358,6 +3402,8 @@ export class WasmRenderer {
       entry.failed = true;
       entry.processed.clear();
       entry.expanded.clear();
+      entry.liveExpanded = null;
+      entry.liveExpandedKey = null;
     };
     image.src = dataUrl;
     this._imageResources.set(dataUrl, entry);
@@ -3417,7 +3463,9 @@ export class WasmRenderer {
       return { source, normalizedQuad: sourceQuad };
     }
 
-    const bounds = typeof primitive.getSourceQuadBounds === 'function'
+    const bounds = typeof primitive.getRenderSourceBounds === 'function'
+      ? primitive.getRenderSourceBounds(sourceQuad)
+      : (typeof primitive.getSourceQuadBounds === 'function'
       ? primitive.getSourceQuadBounds(sourceQuad)
       : {
         minU: Math.min(...sourceQuad.map((point) => point.u || 0)),
@@ -3426,7 +3474,7 @@ export class WasmRenderer {
         maxV: Math.max(...sourceQuad.map((point) => point.v || 0)),
         spanU: Math.max(1e-9, Math.max(...sourceQuad.map((point) => point.u || 0)) - Math.min(...sourceQuad.map((point) => point.u || 0))),
         spanV: Math.max(1e-9, Math.max(...sourceQuad.map((point) => point.v || 0)) - Math.min(...sourceQuad.map((point) => point.v || 0))),
-      };
+      });
     const needsExpansion = bounds.minU < -1e-9 || bounds.maxU > 1 + 1e-9 || bounds.minV < -1e-9 || bounds.maxV > 1 + 1e-9;
     if (!needsExpansion) {
       return { source, normalizedQuad: sourceQuad };
@@ -3444,7 +3492,11 @@ export class WasmRenderer {
       bounds.minV.toFixed(6),
       bounds.maxV.toFixed(6),
     ].join('|');
-    if (entry.expanded.has(cacheKey)) {
+    const isPerspectiveEditing = typeof primitive?.isPerspectiveEditing === 'function' && primitive.isPerspectiveEditing();
+    if (isPerspectiveEditing && entry.liveExpandedKey === cacheKey && entry.liveExpanded) {
+      return entry.liveExpanded;
+    }
+    if (!isPerspectiveEditing && entry.expanded.has(cacheKey)) {
       return entry.expanded.get(cacheKey);
     }
 
@@ -3468,7 +3520,16 @@ export class WasmRenderer {
       ? primitive.normalizeSourceQuadToBounds(sourceQuad, bounds)
       : sourceQuad;
     const result = { source: canvas, normalizedQuad };
-    entry.expanded.set(cacheKey, result);
+    if (isPerspectiveEditing) {
+      entry.liveExpanded = result;
+      entry.liveExpandedKey = cacheKey;
+    } else {
+      if (entry.expanded.size >= MAX_EXPANDED_IMAGE_CACHE_ENTRIES) {
+        const oldestKey = entry.expanded.keys().next().value;
+        if (oldestKey !== undefined) entry.expanded.delete(oldestKey);
+      }
+      entry.expanded.set(cacheKey, result);
+    }
     return result;
   }
 
@@ -3666,12 +3727,30 @@ export class WasmRenderer {
     }
 
     if (options.drawPerspectiveGuides) {
+      const appliedGuideWorldQuad = typeof primitive.getAppliedPerspectiveGuideWorldQuad === 'function'
+        ? primitive.getAppliedPerspectiveGuideWorldQuad()
+        : null;
+      const appliedGuidePoints = (typeof primitive.isPerspectiveEditing === 'function' && primitive.isPerspectiveEditing() && appliedGuideWorldQuad)
+        ? appliedGuideWorldQuad.map((point) => projectPoint(point.x, point.y))
+        : null;
       const guideWorldQuad = typeof primitive.getPerspectiveGuideWorldQuad === 'function'
         ? primitive.getPerspectiveGuideWorldQuad()
         : null;
       const handlePoints = guideWorldQuad
         ? guideWorldQuad.map((point) => projectPoint(point.x, point.y))
         : (primitive.sourceQuad || []).map((point) => _bilinearQuadPoint(destQuadScreen, point.u, point.v));
+      if (appliedGuidePoints && appliedGuidePoints.length === 4 && appliedGuidePoints.every((point) => point && Number.isFinite(point.x) && Number.isFinite(point.y))) {
+        ctx.save();
+        ctx.strokeStyle = 'rgba(127, 216, 255, 0.9)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([6, 4]);
+        ctx.beginPath();
+        ctx.moveTo(appliedGuidePoints[0].x, appliedGuidePoints[0].y);
+        for (let i = 1; i < appliedGuidePoints.length; i++) ctx.lineTo(appliedGuidePoints[i].x, appliedGuidePoints[i].y);
+        ctx.closePath();
+        ctx.stroke();
+        ctx.restore();
+      }
       if (handlePoints.length !== 4 || handlePoints.some((point) => !point || !Number.isFinite(point.x) || !Number.isFinite(point.y))) {
         return true;
       }
@@ -5091,7 +5170,7 @@ export class WasmRenderer {
       cancelAnimationFrame(this._animationId);
     }
     this.clearGeometry();
-    this.executor.dispose();
+    if (this.executor) this.executor.dispose();
     if (this._resizeHandler) {
       window.removeEventListener('resize', this._resizeHandler);
     }

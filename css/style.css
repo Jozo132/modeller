@@ -772,6 +772,16 @@ body.sketch-on-plane .toolbar-row-sketch {
   overflow-y: auto;
 }
 
+.lp-virtual-spacer {
+  width: 100%;
+  flex: 0 0 auto;
+}
+
+.lp-virtual-content {
+  display: flex;
+  flex-direction: column;
+}
+
 #constraints-section {
   flex: 1;
   min-height: 80px;
@@ -790,6 +800,8 @@ body.sketch-on-plane .toolbar-row-sketch {
   align-items: center;
   gap: 6px;
   padding: 3px 6px;
+  min-height: 22px;
+  box-sizing: border-box;
   border-radius: 3px;
   cursor: pointer;
   font-size: 11px;

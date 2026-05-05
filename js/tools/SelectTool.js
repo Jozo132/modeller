@@ -11,6 +11,7 @@ const PICK_PT_PX = 14;    // pixel tolerance for point picking (tighter — poin
 const DRAG_THRESHOLD = 5; // min pixels before a drag starts
 const ALIGN_TOL_PX = 5;   // pixel tolerance for alignment guide detection
 const POLYGON_EPSILON = 1e-9;
+const LIVE_DRAG_SOLVE_OPTIONS = { maxIter: 800, relaxation: 0.75, tolerance: 1e-4 };
 
 /** Collect the unique movable points of a shape. */
 function _shapePoints(shape) {
@@ -73,6 +74,8 @@ export class SelectTool extends BaseTool {
     // Alignment guide state (visual only, no constraints)
     this._alignmentGuides = [];   // [{axis:'h'|'v', dragPt, matchPt, value}, ...]
     this._dragCancelState = null;
+    this._dragSolvedPointState = null;
+    this._dragAcceptedMaxError = Number.POSITIVE_INFINITY;
   }
 
   activate() {
@@ -132,6 +135,71 @@ export class SelectTool extends BaseTool {
     this._selectionBox = null;
     this._dragTookSnapshot = false;
     this._dragCancelState = null;
+    this._dragSolvedPointState = null;
+    this._dragAcceptedMaxError = Number.POSITIVE_INFINITY;
+  }
+
+  _currentConstraintMaxError() {
+    let maxError = 0;
+    for (const constraint of state.scene.constraints || []) {
+      const error = Number(constraint?.error?.());
+      if (!Number.isFinite(error)) return Number.POSITIVE_INFINITY;
+      if (error > maxError) maxError = error;
+    }
+    return maxError;
+  }
+
+  _snapshotScenePointPositions() {
+    return state.scene.points.map((point) => ({ point, x: point.x, y: point.y }));
+  }
+
+  _restoreScenePointPositions(snapshot) {
+    if (!Array.isArray(snapshot)) return;
+    for (const entry of snapshot) {
+      if (!entry?.point) continue;
+      entry.point.x = entry.x;
+      entry.point.y = entry.y;
+    }
+  }
+
+  _commitSolvedPointState() {
+    this._dragSolvedPointState = this._snapshotScenePointPositions();
+    this._dragAcceptedMaxError = this._currentConstraintMaxError();
+  }
+
+  _beginConstrainedDragIfNeeded() {
+    if (this._dragSolvedPointState) return;
+    this._dragSolvedPointState = this._snapshotScenePointPositions();
+    this._dragAcceptedMaxError = this._currentConstraintMaxError();
+  }
+
+  _shouldAcceptDraggedSolve(result) {
+    if (!result) return false;
+    if (result.converged) return true;
+    const maxError = Number(result.maxError);
+    if (!Number.isFinite(maxError)) return false;
+    return maxError + 1e-6 < this._dragAcceptedMaxError;
+  }
+
+  _solveDraggedConstraintState(fallback = null) {
+    const solveOptions = LIVE_DRAG_SOLVE_OPTIONS;
+    const result = state.scene.solve(solveOptions);
+    if (this._shouldAcceptDraggedSolve(result)) {
+      this._commitSolvedPointState();
+      return true;
+    }
+    if (typeof fallback === 'function') {
+      this._restoreScenePointPositions(this._dragSolvedPointState);
+      fallback();
+      const relaxedResult = state.scene.solve(solveOptions);
+      if (this._shouldAcceptDraggedSolve(relaxedResult)) {
+        this._commitSolvedPointState();
+        return true;
+      }
+    }
+    this._restoreScenePointPositions(this._dragSolvedPointState);
+    state.scene.solve(solveOptions);
+    return false;
   }
 
   _restoreSceneDragState(snapshot) {
@@ -591,31 +659,31 @@ export class SelectTool extends BaseTool {
         this._isDragging = true;
         this._captureSceneDragState();
         if (!this._dragTookSnapshot) { takeSnapshot(); this._dragTookSnapshot = true; }
+        this._beginConstrainedDragIfNeeded();
       }
       if (this._isDragging) {
-        this._dragPoint.x = wx;
-        this._dragPoint.y = wy;
+        const targetX = wx;
+        const targetY = wy;
+        this._dragPoint.x = targetX;
+        this._dragPoint.y = targetY;
         const wasFixed = this._dragPoint.fixed;
         this._dragPoint.fixed = true;
-        const result = state.scene.solve();
+        const solved = this._solveDraggedConstraintState(() => {
+          this._dragPoint.x = targetX;
+          this._dragPoint.y = targetY;
+          this._dragPoint.fixed = false;
+        });
         this._dragPoint.fixed = wasFixed;
 
-        // If the solver didn't converge (cursor position is beyond
-        // constraint limits), re-solve with the point unfixed so
-        // constraints pull it back to the nearest valid position.
-        if (!result.converged) {
-          state.scene.solve();
-        }
-
         // Snap-to-coincidence detection for the single dragged point
-        if (state.autoCoincidence) {
+        if (solved && state.autoCoincidence) {
           this._snapCandidates = this._findSnapCandidates([this._dragPoint]);
           this._lineSnapCandidates = this._findLineSnapCandidates([this._dragPoint]);
         } else {
           this._snapCandidates = [];
           this._lineSnapCandidates = [];
         }
-        this._alignmentGuides = this._findAlignmentGuides([this._dragPoint]);
+        this._alignmentGuides = solved ? this._findAlignmentGuides([this._dragPoint]) : [];
 
         state.emit('change');
       }
@@ -646,37 +714,47 @@ export class SelectTool extends BaseTool {
         this._isDragging = true;
         this._captureSceneDragState();
         if (!this._dragTookSnapshot) { takeSnapshot(); this._dragTookSnapshot = true; }
+        this._beginConstrainedDragIfNeeded();
       }
       if (this._isDragging) {
         const wdx = wx - this._dragStart.wx;
         const wdy = wy - this._dragStart.wy;
         if (this._dragShapePts.length > 0) {
+          const movedPoints = this._dragShapePts.map((point) => ({ point, x: point.x + wdx, y: point.y + wdy }));
           const savedFixed = this._dragShapePts.map(p => p.fixed);
+          for (const moved of movedPoints) {
+            moved.point.x = moved.x;
+            moved.point.y = moved.y;
+          }
           for (const p of this._dragShapePts) {
-            p.x += wdx;
-            p.y += wdy;
             p.fixed = true;
           }
-          // Update reference so delta is cumulative
-          this._dragStart.wx = wx;
-          this._dragStart.wy = wy;
-          const result = state.scene.solve();
+          const solved = this._solveDraggedConstraintState(() => {
+            for (const moved of movedPoints) {
+              moved.point.x = moved.x;
+              moved.point.y = moved.y;
+            }
+            for (const p of this._dragShapePts) {
+              p.fixed = false;
+            }
+          });
           for (let i = 0; i < this._dragShapePts.length; i++) {
             this._dragShapePts[i].fixed = savedFixed[i];
           }
 
-          if (!result.converged) {
-            state.scene.solve();
+          if (solved) {
+            this._dragStart.wx = wx;
+            this._dragStart.wy = wy;
           }
 
-          if (state.autoCoincidence) {
+          if (solved && state.autoCoincidence) {
             this._snapCandidates = this._findSnapCandidates(this._dragShapePts);
             this._lineSnapCandidates = this._findLineSnapCandidates(this._dragShapePts);
           } else {
             this._snapCandidates = [];
             this._lineSnapCandidates = [];
           }
-          this._alignmentGuides = this._findAlignmentGuides(this._dragShapePts);
+          this._alignmentGuides = solved ? this._findAlignmentGuides(this._dragShapePts) : [];
         } else {
           this._dragShape.translate(wdx, wdy);
           this._dragStart.wx = wx;
@@ -738,7 +816,7 @@ export class SelectTool extends BaseTool {
         }
         this._applySnapCandidates();
         this._applyLineSnapCandidates();
-        state.scene.solve();
+        state.scene.solve(LIVE_DRAG_SOLVE_OPTIONS);
         state.emit('change');
       }
       this._dragPoint = null;
@@ -775,7 +853,7 @@ export class SelectTool extends BaseTool {
           }
           this._applySnapCandidates();
           this._applyLineSnapCandidates();
-          state.scene.solve();
+          state.scene.solve(LIVE_DRAG_SOLVE_OPTIONS);
         }
         state.emit('change');
       }
