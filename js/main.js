@@ -4297,7 +4297,7 @@ class App {
     };
 
     return `
-      <div class="image-props-note">Drag the gold grid handles in the sketch. Applied images stay frozen while the grid maps back to source pixels; Apply projects the selected reference plane to the grid dimensions at the sketch origin.</div>
+      <div class="image-props-note">Drag the gold grid handles to adjust the perspective anchors. Drag inside the grid to move the projected reference plane. Apply projects the image using the grid dimensions at the sketch origin.</div>
       <div class="prop-row"><label>Status</label><span>${context.perspectiveStatus}</span></div>
       <div class="prop-row"><label>Grid Width</label><input id="prop-image-grid-width" type="number" min="0.01" step="0.1" value="${image.gridWidth || image.width}" /></div>
       <div class="prop-row"><label>Grid Height</label><input id="prop-image-grid-height" type="number" min="0.01" step="0.1" value="${image.gridHeight || image.height}" /></div>
@@ -4634,7 +4634,7 @@ class App {
         this._setImagePropertySection(image, 'perspective');
         state.emit('change');
         this._scheduleRender();
-        this.setStatus('Perspective edit active. Drag the grid handles or the grid body, then Apply or Cancel.');
+        this.setStatus('Perspective edit active. Drag handles to adjust anchors, or drag inside the grid to move the projected plane.');
         refreshPanel();
       });
     }

@@ -583,7 +583,7 @@ body.sketch-on-plane .toolbar-row-sketch {
 
 .image-props-tabs {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(max-content, 1fr));
   width: 100%;
   gap: 6px;
 }
