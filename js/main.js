@@ -4208,9 +4208,7 @@ class App {
           <div class="image-props-subtitle">${currentSection.label} ${currentIndex + 1}/${IMAGE_PROPERTY_SECTIONS.length}${isPerspectiveEditing ? ' · draft handles live in sketch' : ''}</div>
         </div>
         <div class="image-props-nav">
-          <button type="button" class="app-modal-btn" data-image-nav="prev" ${currentIndex === 0 ? 'disabled' : ''}>Back</button>
           <div class="image-props-tabs">${sectionButtons}</div>
-          <button type="button" class="app-modal-btn" data-image-nav="next" ${currentIndex === IMAGE_PROPERTY_SECTIONS.length - 1 ? 'disabled' : ''}>Next</button>
         </div>
         <div class="image-props-summary">
           <div class="prop-row"><label>ID</label><span>${image.id}</span></div>
@@ -4218,7 +4216,6 @@ class App {
           <div class="prop-row"><label>Pixels</label><span>${pixels}</span></div>
           <div class="prop-row"><label>Displayed Size</label><span>${displayedSize}</span></div>
           <div class="prop-row"><label>Perspective</label><span>${perspectiveStatus}</span></div>
-          <div class="prop-row"><label>Crop</label><span>${hasAppliedPerspective ? (hasActiveCrop ? 'Corrected grid crop active' : 'Full corrected image') : 'Unavailable'}</span></div>
         </div>
         <hr/>
         ${this._renderImagePropertySectionContent(image, currentSection.key, { perspectiveStatus, isPerspectiveEditing, hasAppliedPerspective, hasActiveCrop, cropRect })}
@@ -4300,7 +4297,7 @@ class App {
     };
 
     return `
-      <div class="image-props-note">Drag the four gold handles in the sketch to place the source grid. The image stays on its original projection until you press Apply. Apply scales the corrected image to the grid width and height below, then anchors its bottom-left corner at the sketch origin.</div>
+      <div class="image-props-note">Drag the gold grid handles to adjust the perspective anchors. Drag inside the grid to move the projected reference plane. Apply projects the image using the grid dimensions at the sketch origin.</div>
       <div class="prop-row"><label>Status</label><span>${context.perspectiveStatus}</span></div>
       <div class="prop-row"><label>Grid Width</label><input id="prop-image-grid-width" type="number" min="0.01" step="0.1" value="${image.gridWidth || image.width}" /></div>
       <div class="prop-row"><label>Grid Height</label><input id="prop-image-grid-height" type="number" min="0.01" step="0.1" value="${image.gridHeight || image.height}" /></div>
@@ -4313,19 +4310,6 @@ class App {
       <div class="image-props-actions">
         <button id="prop-image-cancel-perspective" type="button" class="app-modal-btn" ${context.isPerspectiveEditing ? '' : 'disabled'}>Cancel Edit</button>
         <button id="prop-image-reset-perspective" type="button" class="app-modal-btn" ${context.isPerspectiveEditing || context.hasAppliedPerspective ? '' : 'disabled'}>Reset Applied Perspective</button>
-      </div>
-      <div class="image-props-actions">
-        <button id="prop-image-rectify" type="button" class="app-modal-btn">Rectify To Grid @ Origin</button>
-      </div>
-      <hr/>
-      <div class="image-props-note">Crop applies after perspective correction in corrected grid coordinates. Use Crop To Grid to clip away the outer image beyond the selected perspective frame.</div>
-      <div class="prop-row"><label>Crop X</label><input id="prop-image-crop-x" type="number" min="0" step="0.1" value="${cropRect.x}" ${context.hasAppliedPerspective && !context.isPerspectiveEditing ? '' : 'disabled'} /></div>
-      <div class="prop-row"><label>Crop Y</label><input id="prop-image-crop-y" type="number" min="0" step="0.1" value="${cropRect.y}" ${context.hasAppliedPerspective && !context.isPerspectiveEditing ? '' : 'disabled'} /></div>
-      <div class="prop-row"><label>Crop Width</label><input id="prop-image-crop-width" type="number" min="0.01" step="0.1" value="${cropRect.width}" ${context.hasAppliedPerspective && !context.isPerspectiveEditing ? '' : 'disabled'} /></div>
-      <div class="prop-row"><label>Crop Height</label><input id="prop-image-crop-height" type="number" min="0.01" step="0.1" value="${cropRect.height}" ${context.hasAppliedPerspective && !context.isPerspectiveEditing ? '' : 'disabled'} /></div>
-      <div class="image-props-actions">
-        <button id="prop-image-crop-grid" type="button" class="app-modal-btn" ${context.hasAppliedPerspective && !context.isPerspectiveEditing ? '' : 'disabled'}>Crop To Grid</button>
-        <button id="prop-image-reset-crop" type="button" class="app-modal-btn" ${context.hasAppliedPerspective && context.hasActiveCrop && !context.isPerspectiveEditing ? '' : 'disabled'}>Show Full Corrected Image</button>
       </div>
     `;
   }
@@ -4611,26 +4595,6 @@ class App {
       return Number.isFinite(value) ? { edgeThreshold: value } : null;
     });
 
-    const cropXInput = panel.querySelector('#prop-image-crop-x');
-    const cropYInput = panel.querySelector('#prop-image-crop-y');
-    const cropWidthInput = panel.querySelector('#prop-image-crop-width');
-    const cropHeightInput = panel.querySelector('#prop-image-crop-height');
-    const commitCropRect = () => {
-      if (!cropXInput || !cropYInput || !cropWidthInput || !cropHeightInput) return;
-      const x = parseFloat(cropXInput.value);
-      const y = parseFloat(cropYInput.value);
-      const width = parseFloat(cropWidthInput.value);
-      const height = parseFloat(cropHeightInput.value);
-      if (![x, y, width, height].every(Number.isFinite)) return;
-      commit(() => {
-        image.setCropRect({ x, y, width, height });
-      });
-    };
-    cropXInput?.addEventListener('change', commitCropRect);
-    cropYInput?.addEventListener('change', commitCropRect);
-    cropWidthInput?.addEventListener('change', commitCropRect);
-    cropHeightInput?.addEventListener('change', commitCropRect);
-
     panel.querySelectorAll('[data-image-stepper]').forEach((button) => {
       button.addEventListener('click', () => {
         const [field, deltaToken] = String(button.dataset.imageStepper || '').split(':');
@@ -4670,7 +4634,7 @@ class App {
         this._setImagePropertySection(image, 'perspective');
         state.emit('change');
         this._scheduleRender();
-        this.setStatus('Perspective edit active. Drag the grid handles, then Apply or Cancel.');
+        this.setStatus('Perspective edit active. Drag handles to adjust anchors, or drag inside the grid to move the projected plane.');
         refreshPanel();
       });
     }
@@ -4701,52 +4665,12 @@ class App {
       });
     }
 
-    const rectifyBtn = panel.querySelector('#prop-image-rectify');
-    if (rectifyBtn) {
-      rectifyBtn.addEventListener('click', () => {
-        commit(() => {
-          image.resetPerspectiveCorrection();
-          image.applyGridFrame({
-            width: image.gridWidth,
-            height: image.gridHeight,
-            moveToOrigin: true,
-          });
-        });
-        this.setStatus('Image reset to the grid frame at the sketch origin.');
-      });
-    }
-
     const resetPerspectiveBtn = panel.querySelector('#prop-image-reset-perspective');
     if (resetPerspectiveBtn) {
       resetPerspectiveBtn.addEventListener('click', () => {
         commit(() => {
           image.resetPerspectiveCorrection();
         });
-      });
-    }
-
-    const cropGridBtn = panel.querySelector('#prop-image-crop-grid');
-    if (cropGridBtn) {
-      cropGridBtn.addEventListener('click', () => {
-        commit(() => {
-          image.setCropRect({
-            x: 0,
-            y: 0,
-            width: image.gridWidth || image.width,
-            height: image.gridHeight || image.height,
-          });
-        });
-        this.setStatus('Corrected image cropped to the perspective grid bounds.');
-      });
-    }
-
-    const resetCropBtn = panel.querySelector('#prop-image-reset-crop');
-    if (resetCropBtn) {
-      resetCropBtn.addEventListener('click', () => {
-        commit(() => {
-          image.resetCrop();
-        });
-        this.setStatus('Corrected image crop cleared.');
       });
     }
 
