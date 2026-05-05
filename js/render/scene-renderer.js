@@ -1,4 +1,3 @@
-import * as defaultWasmModule from '../../build/release.js';
 import { renderBaseMeshOverlay } from './mesh-overlay-renderer.js';
 import {
   buildMeshRenderData,
@@ -8,14 +7,16 @@ import {
 } from './part-render-core.js';
 import { LodManager } from './lod-manager.js';
 import { GpuTessPipeline } from './gpu-tess-pipeline.js';
+import { loadReleaseWasmModule } from '../load-release-wasm.js';
 
 export class SceneRenderer {
   constructor(options) {
     this.canvas = options.canvas;
     this.executor = options.executor;
-    this.wasm = options.wasmModule || defaultWasmModule;
+    this.wasm = options.wasmModule || null;
     this.mode = '3d';
     this._ready = false;
+    this._initPromise = null;
     this._fov = Math.PI / 4;
     this._fovDegrees = 45;
     this._orbitTheta = Math.PI / 4;
@@ -51,24 +52,35 @@ export class SceneRenderer {
   }
 
   async init() {
-    this.wasm.init(this.canvas.width, this.canvas.height);
-    this._ready = true;
-    this.setMode('3d');
+    if (this._ready) return;
+    if (!this._initPromise) {
+      this._initPromise = (async () => {
+        const wasm = this.wasm || await loadReleaseWasmModule();
+        this.wasm = wasm;
+        this.wasm.init(this.canvas.width, this.canvas.height);
+        this._ready = true;
+        this.setMode('3d');
 
-    // Attempt WebGPU tessellation pipeline (non-blocking, fallback-safe).
-    // The pipeline requires a WasmBrepHandleRegistry to upload data.
-    // We create the pipeline here for capability detection; the registry
-    // is attached later via initGpuTessPipeline(registry) when available.
-    if (GpuTessPipeline.isAvailable()) {
-      try {
-        this._gpuTessPipeline = new GpuTessPipeline();
-        // Don't init yet — needs registry. Just mark as detected.
-        this._gpuTessReady = false;
-      } catch {
-        this._gpuTessPipeline = null;
-        this._gpuTessReady = false;
-      }
+        // Attempt WebGPU tessellation pipeline (non-blocking, fallback-safe).
+        // The pipeline requires a WasmBrepHandleRegistry to upload data.
+        // We create the pipeline here for capability detection; the registry
+        // is attached later via initGpuTessPipeline(registry) when available.
+        if (GpuTessPipeline.isAvailable()) {
+          try {
+            this._gpuTessPipeline = new GpuTessPipeline();
+            // Don't init yet — needs registry. Just mark as detected.
+            this._gpuTessReady = false;
+          } catch {
+            this._gpuTessPipeline = null;
+            this._gpuTessReady = false;
+          }
+        }
+      })().catch((error) => {
+        this._initPromise = null;
+        throw error;
+      });
     }
+    await this._initPromise;
   }
 
   /**

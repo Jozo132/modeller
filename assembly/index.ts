@@ -23,11 +23,39 @@ import {
   computeTriangleNormal, computeBoundingBox, computeMeshVolume,
 } from "./tessellation";
 
-// Global state — initialized in init()
-let scene: Scene = new Scene();
-let cmd: CommandBuffer = new CommandBuffer();
-let entities: EntityStore = new EntityStore();
-let solver: ConstraintSolver = new ConstraintSolver();
+// Global state — initialized lazily to avoid eager renderer allocations.
+let scene: Scene | null = null;
+let cmd: CommandBuffer | null = null;
+let entities: EntityStore | null = null;
+let solver: ConstraintSolver | null = null;
+
+function getScene(): Scene {
+  if (scene === null) {
+    scene = new Scene();
+  }
+  return scene;
+}
+
+function getCommandBuffer(): CommandBuffer {
+  if (cmd === null) {
+    cmd = new CommandBuffer();
+  }
+  return cmd;
+}
+
+function getEntities(): EntityStore {
+  if (entities === null) {
+    entities = new EntityStore();
+  }
+  return entities;
+}
+
+function getSolver(): ConstraintSolver {
+  if (solver === null) {
+    solver = new ConstraintSolver();
+  }
+  return solver;
+}
 
 // Mouse state
 let mouseX: f32 = 0;
@@ -41,19 +69,22 @@ let renderMode: i32 = 0;
 // === Initialization ===
 
 export function init(canvasWidth: i32, canvasHeight: i32): void {
-  cmd = new CommandBuffer();
-  scene = new Scene();
-  scene.canvasWidth = canvasWidth;
-  scene.canvasHeight = canvasHeight;
+  const commandBuffer = getCommandBuffer();
+  commandBuffer.reset();
+
+  const sceneRef = new Scene();
+  scene = sceneRef;
+  sceneRef.canvasWidth = canvasWidth;
+  sceneRef.canvasHeight = canvasHeight;
 
   const aspect: f32 = <f32>canvasWidth / <f32>canvasHeight;
-  scene.camera.setPerspective(
+  sceneRef.camera.setPerspective(
     <f32>(Math.PI / 4.0),
     aspect,
     0.1,
     1000.0
   );
-  scene.camera.lookAt(
+  sceneRef.camera.lookAt(
     10, 10, 10,
     0, 0, 0,
     0, 0, 1
@@ -63,22 +94,23 @@ export function init(canvasWidth: i32, canvasHeight: i32): void {
 // === Canvas resize ===
 
 export function resize(width: i32, height: i32): void {
-  scene.canvasWidth = width;
-  scene.canvasHeight = height;
+  const sceneRef = getScene();
+  sceneRef.canvasWidth = width;
+  sceneRef.canvasHeight = height;
   const aspect: f32 = <f32>width / <f32>height;
 
-  if (scene.camera.isPerspective) {
-    scene.camera.setPerspective(scene.camera.fov, aspect, scene.camera.near, scene.camera.far);
+  if (sceneRef.camera.isPerspective) {
+    sceneRef.camera.setPerspective(sceneRef.camera.fov, aspect, sceneRef.camera.near, sceneRef.camera.far);
   } else {
     // Maintain ortho bounds aspect ratio
-    const halfW: f32 = (scene.camera.orthoRight - scene.camera.orthoLeft) * 0.5;
+    const halfW: f32 = (sceneRef.camera.orthoRight - sceneRef.camera.orthoLeft) * 0.5;
     const halfH: f32 = halfW / aspect;
-    const cx: f32 = (scene.camera.orthoLeft + scene.camera.orthoRight) * 0.5;
-    const cy: f32 = (scene.camera.orthoBottom + scene.camera.orthoTop) * 0.5;
-    scene.camera.setOrthographic(
+    const cx: f32 = (sceneRef.camera.orthoLeft + sceneRef.camera.orthoRight) * 0.5;
+    const cy: f32 = (sceneRef.camera.orthoBottom + sceneRef.camera.orthoTop) * 0.5;
+    sceneRef.camera.setOrthographic(
       cx - halfW, cx + halfW,
       cy - halfH, cy + halfH,
-      scene.camera.near, scene.camera.far
+      sceneRef.camera.near, sceneRef.camera.far
     );
   }
 }
@@ -86,54 +118,58 @@ export function resize(width: i32, height: i32): void {
 // === Camera ===
 
 export function setFov(fov: f32): void {
-  scene.camera.fov = fov;
-  if (scene.camera.isPerspective) {
-    const aspect: f32 = <f32>scene.canvasWidth / <f32>scene.canvasHeight;
-    scene.camera.setPerspective(fov, aspect, scene.camera.near, scene.camera.far);
+  const sceneRef = getScene();
+  sceneRef.camera.fov = fov;
+  if (sceneRef.camera.isPerspective) {
+    const aspect: f32 = <f32>sceneRef.canvasWidth / <f32>sceneRef.canvasHeight;
+    sceneRef.camera.setPerspective(fov, aspect, sceneRef.camera.near, sceneRef.camera.far);
   }
 }
 
 export function setCameraMode(mode: i32): void {
+  const sceneRef = getScene();
   renderMode = mode;
-  const aspect: f32 = <f32>scene.canvasWidth / <f32>scene.canvasHeight;
+  const aspect: f32 = <f32>sceneRef.canvasWidth / <f32>sceneRef.canvasHeight;
   if (mode == 1) {
-    scene.camera.setPerspective(scene.camera.fov, aspect, scene.camera.near, scene.camera.far);
+    sceneRef.camera.setPerspective(sceneRef.camera.fov, aspect, sceneRef.camera.near, sceneRef.camera.far);
   } else {
     // 2D mode: orthographic projection onto XY plane
-    scene.camera.setOrthographic(
+    sceneRef.camera.setOrthographic(
       -10 * aspect, 10 * aspect,
       -10, 10,
-      scene.camera.near, scene.camera.far
+      sceneRef.camera.near, sceneRef.camera.far
     );
   }
 }
 
 export function setCameraClipPlanes(near: f32, far: f32): void {
-  scene.camera.near = near;
-  scene.camera.far = far;
-  scene.camera.updateProjection();
+  const sceneRef = getScene();
+  sceneRef.camera.near = near;
+  sceneRef.camera.far = far;
+  sceneRef.camera.updateProjection();
 }
 
 export function setCameraPosition(x: f32, y: f32, z: f32): void {
-  scene.camera.position.set(x, y, z);
+  getScene().camera.position.set(x, y, z);
 }
 
 export function setCameraTarget(x: f32, y: f32, z: f32): void {
-  scene.camera.target.set(x, y, z);
+  getScene().camera.target.set(x, y, z);
 }
 
 export function setCameraUp(x: f32, y: f32, z: f32): void {
-  scene.camera.up.set(x, y, z);
+  getScene().camera.up.set(x, y, z);
 }
 
 export function setOrthoBounds(left: f32, right: f32, bottom: f32, top: f32): void {
-  scene.camera.setOrthographic(left, right, bottom, top, scene.camera.near, scene.camera.far);
+  const sceneRef = getScene();
+  sceneRef.camera.setOrthographic(left, right, bottom, top, sceneRef.camera.near, sceneRef.camera.far);
 }
 
 // === Scene management ===
 
 export function clearScene(): void {
-  scene.clear();
+  getScene().clear();
 }
 
 export function addBox(
@@ -141,7 +177,7 @@ export function addBox(
   posX: f32, posY: f32, posZ: f32,
   r: f32, g: f32, b: f32, a: f32
 ): i32 {
-  const node = scene.addNode();
+  const node = getScene().addNode();
   node.sizeX = sizeX;
   node.sizeY = sizeY;
   node.sizeZ = sizeZ;
@@ -151,25 +187,25 @@ export function addBox(
 }
 
 export function removeNode(id: i32): void {
-  scene.removeNode(id);
+  getScene().removeNode(id);
 }
 
 export function setNodeVisible(id: i32, visible: i32): void {
-  const node = scene.getNode(id);
+  const node = getScene().getNode(id);
   if (node !== null) {
     node.visible = visible != 0;
   }
 }
 
 export function setNodePosition(id: i32, x: f32, y: f32, z: f32): void {
-  const node = scene.getNode(id);
+  const node = getScene().getNode(id);
   if (node !== null) {
     node.position.set(x, y, z);
   }
 }
 
 export function setNodeColor(id: i32, r: f32, g: f32, b: f32, a: f32): void {
-  const node = scene.getNode(id);
+  const node = getScene().getNode(id);
   if (node !== null) {
     node.color.set(r, g, b, a);
   }
@@ -178,20 +214,21 @@ export function setNodeColor(id: i32, r: f32, g: f32, b: f32, a: f32): void {
 // === Grid/axes visibility ===
 
 export function setGridVisible(visible: i32): void {
-  scene.gridVisible = visible != 0;
+  getScene().gridVisible = visible != 0;
 }
 
 export function setAxesVisible(visible: i32): void {
-  scene.axesVisible = visible != 0;
+  getScene().axesVisible = visible != 0;
 }
 
 export function setGridSize(size: f32, divisions: i32): void {
-  scene.gridSize = size;
-  scene.gridDivisions = divisions;
+  const sceneRef = getScene();
+  sceneRef.gridSize = size;
+  sceneRef.gridDivisions = divisions;
 }
 
 export function setAxesSize(size: f32): void {
-  scene.axesSize = size;
+  getScene().axesSize = size;
 }
 
 export function setOriginPlanesVisible(mask: i32): void {
@@ -208,7 +245,7 @@ export function setOriginPlaneSelected(mask: i32): void {
 
 export function setOriginPlaneScale(scale: f32): void {
   originPlaneScale = scale;
-  scene.axesSize = scale;
+  getScene().axesSize = scale;
 }
 
 // === Mouse/Input ===
@@ -230,21 +267,21 @@ export function setMouseButton(button: i32): void {
 // === 2D Entity Management ===
 
 export function clearEntities(): void {
-  entities.clear();
+  getEntities().clear();
 }
 
 export function addEntitySegment(
   x1: f32, y1: f32, x2: f32, y2: f32,
   flags: i32, r: f32, g: f32, b: f32, a: f32
 ): i32 {
-  return entities.addSegment(x1, y1, x2, y2, flags, r, g, b, a);
+  return getEntities().addSegment(x1, y1, x2, y2, flags, r, g, b, a);
 }
 
 export function addEntityCircle(
   cx: f32, cy: f32, radius: f32,
   flags: i32, r: f32, g: f32, b: f32, a: f32
 ): i32 {
-  return entities.addCircle(cx, cy, radius, flags, r, g, b, a);
+  return getEntities().addCircle(cx, cy, radius, flags, r, g, b, a);
 }
 
 export function addEntityArc(
@@ -252,14 +289,14 @@ export function addEntityArc(
   startAngle: f32, endAngle: f32,
   flags: i32, r: f32, g: f32, b: f32, a: f32
 ): i32 {
-  return entities.addArc(cx, cy, radius, startAngle, endAngle, flags, r, g, b, a);
+  return getEntities().addArc(cx, cy, radius, startAngle, endAngle, flags, r, g, b, a);
 }
 
 export function addEntityPoint(
   x: f32, y: f32, size: f32,
   flags: i32, r: f32, g: f32, b: f32, a: f32
 ): i32 {
-  return entities.addPoint(x, y, size, flags, r, g, b, a);
+  return getEntities().addPoint(x, y, size, flags, r, g, b, a);
 }
 
 export function addEntityDimension(
@@ -268,59 +305,61 @@ export function addEntityDimension(
   angleStart: f32, angleSweep: f32,
   flags: i32, r: f32, g: f32, b: f32, a: f32
 ): i32 {
-  return entities.addDimension(x1, y1, x2, y2, offset, dimType, angleStart, angleSweep, flags, r, g, b, a);
+  return getEntities().addDimension(x1, y1, x2, y2, offset, dimType, angleStart, angleSweep, flags, r, g, b, a);
 }
 
 export function setSnapPosition(x: f32, y: f32, visible: i32): void {
-  entities.snapX = x;
-  entities.snapY = y;
-  entities.snapVisible = visible != 0;
+  const entitiesRef = getEntities();
+  entitiesRef.snapX = x;
+  entitiesRef.snapY = y;
+  entitiesRef.snapVisible = visible != 0;
 }
 
 export function setCursorPosition(x: f32, y: f32, visible: i32): void {
-  entities.cursorX = x;
-  entities.cursorY = y;
-  entities.cursorVisible = visible != 0;
+  const entitiesRef = getEntities();
+  entitiesRef.cursorX = x;
+  entitiesRef.cursorY = y;
+  entitiesRef.cursorVisible = visible != 0;
 }
 
 // === Constraint Solver ===
 
 export function clearSolver(): void {
-  solver.clear();
+  getSolver().clear();
 }
 
 export function addSolverPoint(x: f32, y: f32, fixed: i32): i32 {
-  return solver.addPoint(x, y, fixed != 0);
+  return getSolver().addPoint(x, y, fixed != 0);
 }
 
 export function addSolverConstraint(
   type: i32, p1: i32, p2: i32, p3: i32, p4: i32, value: f32
 ): i32 {
-  return solver.addConstraint(type, p1, p2, p3, p4, value);
+  return getSolver().addConstraint(type, p1, p2, p3, p4, value);
 }
 
 export function solveSolver(): i32 {
-  return solver.solve() ? 1 : 0;
+  return getSolver().solve() ? 1 : 0;
 }
 
 export function getSolverPointX(index: i32): f32 {
-  return solver.getPointX(index);
+  return getSolver().getPointX(index);
 }
 
 export function getSolverPointY(index: i32): f32 {
-  return solver.getPointY(index);
+  return getSolver().getPointY(index);
 }
 
 export function getSolverConverged(): i32 {
-  return solver.converged ? 1 : 0;
+  return getSolver().converged ? 1 : 0;
 }
 
 export function getSolverIterations(): i32 {
-  return solver.iterations;
+  return getSolver().iterations;
 }
 
 export function getSolverMaxError(): f32 {
-  return solver.maxError;
+  return getSolver().maxError;
 }
 
 // Origin planes visibility bitmask (bit 0=XY, bit 1=XZ, bit 2=YZ)
@@ -332,52 +371,55 @@ let originPlaneScale: f32 = 5.0;  // world-space half-size of each plane quad
 // === Render ===
 
 export function render(): void {
-  cmd.reset();
+  const commandBuffer = getCommandBuffer();
+  const sceneRef = getScene();
+  const entitiesRef = getEntities();
+  commandBuffer.reset();
 
   // Clear
-  cmd.emitClear(0.15, 0.15, 0.15, 1.0);
-  cmd.emitSetDepthTest(true);
+  commandBuffer.emitClear(0.15, 0.15, 0.15, 1.0);
+  commandBuffer.emitSetDepthTest(true);
 
   // View-projection matrix
-  const vp = scene.camera.getViewProjectionMatrix();
+  const vp = sceneRef.camera.getViewProjectionMatrix();
 
   // Grid
-  if (scene.gridVisible) {
-    scene.renderGrid(cmd, vp);
+  if (sceneRef.gridVisible) {
+    sceneRef.renderGrid(commandBuffer, vp);
   }
 
   // Axes (depth test off, depth write off so they don't pollute the depth buffer)
-  if (scene.axesVisible) {
-    cmd.emitSetDepthTest(false);
-    cmd.emitSetDepthWrite(false);
-    scene.renderAxes(cmd, vp);
-    cmd.emitSetDepthWrite(true);
-    cmd.emitSetDepthTest(true);
+  if (sceneRef.axesVisible) {
+    commandBuffer.emitSetDepthTest(false);
+    commandBuffer.emitSetDepthWrite(false);
+    sceneRef.renderAxes(commandBuffer, vp);
+    commandBuffer.emitSetDepthWrite(true);
+    commandBuffer.emitSetDepthTest(true);
   }
 
   // 3D scene nodes (boxes, geometry)
-  scene.renderNodes(cmd, vp);
+  sceneRef.renderNodes(commandBuffer, vp);
 
   // Origin planes overlay (visible in 3D mode).
   // Draw after solids so they don't clip or cut into body geometry.
   if (renderMode == 1) {
-    renderOriginPlanes(cmd, vp, originPlanesVisible, originPlaneHovered, originPlaneSelected, originPlaneScale);
+    renderOriginPlanes(commandBuffer, vp, originPlanesVisible, originPlaneHovered, originPlaneSelected, originPlaneScale);
   }
 
   // 2D entities on XY plane
-  render2DEntities(cmd, vp, entities);
+  render2DEntities(commandBuffer, vp, entitiesRef);
 
-  cmd.emitEnd();
+  commandBuffer.emitEnd();
 }
 
 // === Command buffer access ===
 
 export function getCommandBufferPtr(): usize {
-  return cmd.getBufferPtr();
+  return getCommandBuffer().getBufferPtr();
 }
 
 export function getCommandBufferLen(): i32 {
-  return cmd.getBufferLength();
+  return getCommandBuffer().getBufferLength();
 }
 
 // Re-export entity model matrix functions

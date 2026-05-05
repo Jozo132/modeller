@@ -16,7 +16,7 @@ import { GpuTessPipeline } from './render/gpu-tess-pipeline.js';
 import { buildProjectiveGridGuides } from './render/projective-quad.js';
 import { SketchFeature } from './cad/SketchFeature.js';
 import { constrainedTriangulate } from './cad/Tessellator2/CDT.js';
-import { isRetryableWasmLoadError, loadReleaseWasmModule } from './load-release-wasm.js';
+import { loadReleaseWasmModule } from './load-release-wasm.js';
 
 const MIN_ORBIT_RADIUS = 0.001;
 const MAX_ORBIT_RADIUS = 100000;
@@ -480,19 +480,11 @@ export class WasmRenderer {
 
   async _loadWasm() {
     try {
-      const initialize = async (fresh = false) => {
-        const mod = await loadReleaseWasmModule({ fresh });
-        const width = Math.max(1, Math.trunc(this.canvas.width || 0));
-        const height = Math.max(1, Math.trunc(this.canvas.height || 0));
-        mod.init(width, height);
-        this.wasm = mod;
-      };
-      try {
-        await initialize(false);
-      } catch (err) {
-        if (!isRetryableWasmLoadError(err)) throw err;
-        await initialize(true);
-      }
+      const mod = await loadReleaseWasmModule();
+      const width = Math.max(1, Math.trunc(this.canvas.width || 0));
+      const height = Math.max(1, Math.trunc(this.canvas.height || 0));
+      mod.init(width, height);
+      this.wasm = mod;
       this._ready = true;
       this.setMode(this.mode);
     } catch (err) {

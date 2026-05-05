@@ -163,5 +163,28 @@ check('camera movement does not emit LoD retessellation or change selected quali
   assert.deepEqual(globalTessConfig.serialize(), cfgBefore, 'selected tessellation preset should stay static');
 });
 
+check('init() is idempotent for an injected wasm module', async () => {
+  let initCalls = 0;
+  const fakeWasm = {
+    init() { initCalls++; },
+    setCameraMode() {},
+    setCameraUp() {},
+    setGridVisible() {},
+    setGridSize() {},
+    setAxesVisible() {},
+    setAxesSize() {},
+    clearEntities() {},
+    resetEntityModelMatrix() {},
+  };
+  const renderer = new SceneRenderer({
+    canvas: { width: 800, height: 600 },
+    executor: { resize() {}, execute() {}, setViewDir() {} },
+    wasmModule: fakeWasm,
+  });
+  await renderer.init();
+  await renderer.init();
+  assert.equal(initCalls, 1);
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
