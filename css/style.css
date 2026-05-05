@@ -589,7 +589,7 @@ body.sketch-on-plane .toolbar-row-sketch {
 
 .image-props-tab {
   min-height: 28px;
-  background: rgba(255,255,255,0.03);
+  background: rgba(255, 255, 255, 0.03);
   color: var(--text-secondary);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -608,8 +608,8 @@ body.sketch-on-plane .toolbar-row-sketch {
 .image-props-tab.active {
   color: var(--text-primary);
   border-color: var(--accent);
-  background: rgba(0,120,212,0.22);
-  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.04);
+  background: rgba(0, 120, 212, 0.22);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
 }
 
 .image-props-summary {

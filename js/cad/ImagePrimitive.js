@@ -249,10 +249,12 @@ export class ImagePrimitive extends Primitive {
   }
 
   getRenderSourceQuad() {
-    if (this._perspectiveEditing && this.perspectiveEnabled && this._perspectiveDraftQuad) {
-      return cloneSourceQuad(this._perspectiveDraftQuad);
+    if (this._perspectiveEditing) {
+      return this.perspectiveEnabled && this._perspectiveDraftQuad
+        ? cloneSourceQuad(this._perspectiveDraftQuad)
+        : fullSourceQuad();
     }
-    if (this._perspectiveEditing || !this.perspectiveEnabled) {
+    if (!this.perspectiveEnabled) {
       return fullSourceQuad();
     }
     return cloneSourceQuad(this.sourceQuad);
