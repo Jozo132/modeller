@@ -4,7 +4,7 @@ import './_watchdog.mjs';
 
 import { Scene } from '../js/cad/Scene.js';
 import { union } from '../js/cad/Operations.js';
-import { Horizontal, Length } from '../js/cad/Constraint.js';
+import { Horizontal, Vertical, Length } from '../js/cad/Constraint.js';
 
 let passed = 0;
 let failed = 0;
@@ -190,5 +190,36 @@ function assertApprox(a, b, msg, tol = 1e-4) {
 }
 
 // ---- Summary ----
+{
+  console.log('Test 7: Sequential profile constraints stay satisfied together');
+  const scene = new Scene();
+  const bottom = scene.addSegment(0, 0, 12, 1);
+  const right = scene.addSegment(12, 1, 11, 8);
+  const top = scene.addSegment(11, 8, -1, 7);
+  const left = scene.addSegment(-1, 7, 0, 0);
+
+  const constraints = [
+    new Horizontal(bottom),
+    new Vertical(right),
+    new Horizontal(top),
+    new Vertical(left),
+    new Length(bottom, 20),
+    new Length(right, 10),
+  ];
+
+  constraints.forEach((constraint, index) => {
+    scene.addConstraint(constraint);
+    const maxErr = Math.max(...scene.constraints.map((c) => c.error()));
+    assert(maxErr < 1e-3, `All constraints remain satisfied after add ${index + 1}, max error ${maxErr}`);
+  });
+
+  assertApprox(bottom.p1.y, bottom.p2.y, 'Bottom stays horizontal', 1e-3);
+  assertApprox(top.p1.y, top.p2.y, 'Top stays horizontal', 1e-3);
+  assertApprox(right.p1.x, right.p2.x, 'Right stays vertical', 1e-3);
+  assertApprox(left.p1.x, left.p2.x, 'Left stays vertical', 1e-3);
+  assertApprox(bottom.length, 20, 'Bottom length preserved', 1e-3);
+  assertApprox(right.length, 10, 'Right length preserved', 1e-3);
+}
+
 console.log(`\nSketch Drag Tests: ${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
