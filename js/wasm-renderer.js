@@ -3168,12 +3168,18 @@ export class WasmRenderer {
       ctx.fill('evenodd');
     }
 
+    const MIN_TOP_WIREFRAME_ALPHA = 0.55;
+    const TOP_WIREFRAME_CIRCLE_TESSELLATION_STEPS = 48;
+    const TOP_WIREFRAME_ARC_TESSELLATION_STEPS = 32;
+    const TOP_WIREFRAME_SPLINE_TESSELLATION_STEPS = 48;
+    const TOP_WIREFRAME_BEZIER_TESSELLATION_STEPS = 32;
+
     const drawTopWireframe = (entity, points) => {
       if (!entity?.visible || !Array.isArray(points) || points.length < 2) return;
       if (!isLayerVisible(entity.layer)) return;
       const [r, g, b, a] = entityColor(entity);
       ctx.save();
-      ctx.strokeStyle = `rgba(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)}, ${Math.max(0.55, a)})`;
+      ctx.strokeStyle = `rgba(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)}, ${Math.max(MIN_TOP_WIREFRAME_ALPHA, a)})`;
       ctx.lineWidth = entity.selected ? 1.8 : (entity.construction ? 1.1 : 1.35);
       ctx.setLineDash(entity.construction ? [6, 4] : []);
       ctx.beginPath();
@@ -3187,15 +3193,12 @@ export class WasmRenderer {
       ctx.restore();
     };
 
-    const TOP_WIREFRAME_CIRCLE_STEPS = 48;
-    const TOP_WIREFRAME_ARC_STEPS = 32;
-
     for (const seg of scene.segments || []) {
       drawTopWireframe(seg, [seg.p1, seg.p2]);
     }
     for (const circle of scene.circles || []) {
       const points = [];
-      const steps = TOP_WIREFRAME_CIRCLE_STEPS;
+      const steps = TOP_WIREFRAME_CIRCLE_TESSELLATION_STEPS;
       for (let step = 0; step <= steps; step++) {
         const angle = (step / steps) * Math.PI * 2;
         points.push({
@@ -3207,7 +3210,7 @@ export class WasmRenderer {
     }
     for (const arc of scene.arcs || []) {
       const points = [];
-      const steps = TOP_WIREFRAME_ARC_STEPS;
+      const steps = TOP_WIREFRAME_ARC_TESSELLATION_STEPS;
       let start = arc.startAngle || 0;
       let end = arc.endAngle || Math.PI;
       let sweep = end - start;
@@ -3222,10 +3225,10 @@ export class WasmRenderer {
       drawTopWireframe(arc, points);
     }
     for (const spline of scene.splines || []) {
-      drawTopWireframe(spline, spline.tessellate2D(48));
+      drawTopWireframe(spline, spline.tessellate2D(TOP_WIREFRAME_SPLINE_TESSELLATION_STEPS));
     }
     for (const bezier of scene.beziers || []) {
-      drawTopWireframe(bezier, bezier.tessellate2D(32));
+      drawTopWireframe(bezier, bezier.tessellate2D(TOP_WIREFRAME_BEZIER_TESSELLATION_STEPS));
     }
 
     // --- Selection grips (blue squares at snap points of selected entities) ---

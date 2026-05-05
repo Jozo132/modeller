@@ -1,6 +1,6 @@
 // js/cad/Solver.js — Iterative Gauss-Seidel constraint solver
 
-const MIN_RELAXATION = 1 / 64;
+const MIN_RELAXATION_FACTOR = 1 / 64;
 
 /**
  * Solve all constraints iteratively until convergence.
@@ -40,9 +40,9 @@ export function solve(constraints, { maxIter = 200, tolerance = 1e-6, relaxation
     const startState = _snapshotTargets(allTargets);
     let applied = false;
     let nextError = maxError;
-    let factor = Math.max(MIN_RELAXATION, Math.min(1, relaxation));
+    let factor = Math.max(MIN_RELAXATION_FACTOR, Math.min(1, relaxation));
 
-    while (factor >= MIN_RELAXATION) {
+    while (factor >= MIN_RELAXATION_FACTOR) {
       _restoreTargets(startState);
       const magnitude = _applyProposalDeltas(proposals, factor);
       if (magnitude <= 1e-12) break;
@@ -115,7 +115,8 @@ function _collectConstraintProposals(constraints, tolerance) {
 function _applyProposalDeltas(proposals, factor) {
   let magnitude = 0;
   for (const proposal of proposals.values()) {
-    const delta = (proposal.delta / proposal.count) * factor;
+    const contributionCount = proposal.count > 0 ? proposal.count : 1;
+    const delta = (proposal.delta / contributionCount) * factor;
     proposal.owner[proposal.prop] += delta;
     magnitude += Math.abs(delta);
   }
