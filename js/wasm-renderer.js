@@ -2843,10 +2843,11 @@ export class WasmRenderer {
         const sp2 = sketchPtToScreen(dim.x2, dim.y2);
         const sd1 = sketchPtToScreen(d1.x, d1.y);
         const sd2 = sketchPtToScreen(d2.x, d2.y);
+        if (!sp1 || !sp2 || !sd1 || !sd2) return;
         const mx = (d1.x + d2.x) / 2;
         const my = (d1.y + d2.y) / 2 + 12 * wpp;
         const mpt = sketchPtToScreen(mx, my);
-        if (!sp1 || !sp2 || !sd1 || !sd2 || !mpt) return;
+        if (!mpt) return;
 
         ctx.beginPath();
         ctx.moveTo(sp1.x, sp1.y);
@@ -2935,11 +2936,11 @@ export class WasmRenderer {
         ctx.strokeStyle = 'rgba(255, 180, 50, 0.5)';
         ctx.lineWidth = 1;
         ctx.beginPath();
-        let splinePolyHasStart = false;
+        let hasStart = false;
         for (let i = 0; i < pts.length; i++) {
           const sp = sketchPtToScreen(pts[i].x, pts[i].y);
-          if (!sp) { splinePolyHasStart = false; continue; }
-          if (!splinePolyHasStart) { ctx.moveTo(sp.x, sp.y); splinePolyHasStart = true; }
+          if (!sp) { hasStart = false; continue; }
+          if (!hasStart) { ctx.moveTo(sp.x, sp.y); hasStart = true; }
           else ctx.lineTo(sp.x, sp.y);
         }
         ctx.stroke();
@@ -3046,11 +3047,11 @@ export class WasmRenderer {
           ctx.strokeStyle = 'rgba(0, 191, 255, 0.5)';
           ctx.lineWidth = 1;
           ctx.beginPath();
-          let previewSplineHasStart = false;
+          let hasStart = false;
           for (let i = 0; i < entity.points.length; i++) {
             const sp = sketchPtToScreen(entity.points[i].x, entity.points[i].y);
-            if (!sp) { previewSplineHasStart = false; continue; }
-            if (!previewSplineHasStart) { ctx.moveTo(sp.x, sp.y); previewSplineHasStart = true; }
+            if (!sp) { hasStart = false; continue; }
+            if (!hasStart) { ctx.moveTo(sp.x, sp.y); hasStart = true; }
             else ctx.lineTo(sp.x, sp.y);
           }
           ctx.stroke();
