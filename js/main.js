@@ -37,7 +37,7 @@ import {
   Fixed, Distance, Tangent, Angle,
   resolveValue, setVariable, getVariable, getVariableRaw, removeVariable, getAllVariables, resolveAllVariables,
 } from './cad/Constraint.js';
-import { union } from './cad/Operations.js';
+import { chamferSketchCorner, filletSketchCorner, union } from './cad/Operations.js';
 import { motionAnalysis } from './motion.js';
 import { setFlag } from './featureFlags.js';
 import { traceImageDataContours } from './image/trace-raster.js';
@@ -7088,16 +7088,18 @@ class App {
     // Chamfer
     const btnChamfer = document.getElementById('btn-chamfer');
     if (btnChamfer) {
-      btnChamfer.addEventListener('click', () => {
-        this._startChamfer();
+      btnChamfer.addEventListener('click', async () => {
+        if (this._workspaceMode !== 'part' || this._sketchingOnPlane) await this._applySketchChamferFromSelection();
+        else this._startChamfer();
       });
     }
 
     // Fillet
     const btnFillet = document.getElementById('btn-fillet');
     if (btnFillet) {
-      btnFillet.addEventListener('click', () => {
-        this._startFillet();
+      btnFillet.addEventListener('click', async () => {
+        if (this._workspaceMode !== 'part' || this._sketchingOnPlane) await this._applySketchFilletFromSelection();
+        else this._startFillet();
       });
     }
   }
@@ -11428,6 +11430,68 @@ class App {
   // -----------------------------------------------------------------------
   // Chamfer
   // -----------------------------------------------------------------------
+
+  async _applySketchChamferFromSelection() {
+    const selection = state.selectedEntities || [];
+    const val = await showPrompt({
+      title: 'Sketch Chamfer',
+      message: 'Enter chamfer distance:',
+      defaultValue: '1',
+    });
+    const distance = parseFloat(val);
+    if (!Number.isFinite(distance) || distance <= 0) {
+      this.setStatus('Sketch chamfer cancelled or invalid distance.');
+      return;
+    }
+    try {
+      takeSnapshot();
+      const result = chamferSketchCorner(state.scene, selection, distance, {
+        layer: state.activeLayer,
+        construction: state.constructionMode,
+      });
+      if (!result) {
+        this.setStatus('Sketch chamfer: select a coincident corner point, two connected segments, or one segment with one connected corner.');
+        return;
+      }
+      state.clearSelection();
+      state.select(result.segment);
+      state.emit('change');
+      this.setStatus(`Sketch chamfer: ${distance} units.`);
+    } catch (err) {
+      this.setStatus(`Sketch chamfer failed: ${err.message}`);
+    }
+  }
+
+  async _applySketchFilletFromSelection() {
+    const selection = state.selectedEntities || [];
+    const val = await showPrompt({
+      title: 'Sketch Arc',
+      message: 'Enter arc radius:',
+      defaultValue: '1',
+    });
+    const radius = parseFloat(val);
+    if (!Number.isFinite(radius) || radius <= 0) {
+      this.setStatus('Sketch arc cancelled or invalid radius.');
+      return;
+    }
+    try {
+      takeSnapshot();
+      const result = filletSketchCorner(state.scene, selection, radius, {
+        layer: state.activeLayer,
+        construction: state.constructionMode,
+      });
+      if (!result) {
+        this.setStatus('Sketch arc: select a coincident corner point, two connected segments, or one segment with one connected corner.');
+        return;
+      }
+      state.clearSelection();
+      state.select(result.arc);
+      state.emit('change');
+      this.setStatus(`Sketch arc: radius ${radius}.`);
+    } catch (err) {
+      this.setStatus(`Sketch arc failed: ${err.message}`);
+    }
+  }
 
   _startChamfer() {
     if (this._workspaceMode !== 'part') {

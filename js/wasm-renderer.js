@@ -2578,10 +2578,18 @@ export class WasmRenderer {
         // hovered, or fully constrained. Also always show spline/bezier endpoints
         // (p1/p2) so the user can see and drag them.
         if (refs < 1 && !point.standalone && !point.selected && !point.fixed && !isHover && !isFCPt) return;
-        // For single-reference points, only show if they are spline/bezier endpoints
-        // (interior control points stay hidden until the spline is selected)
+        // For single-reference points, show editable primitive definition points
+        // (arc start/end/center, circle center, spline/bezier endpoints).
         if (refs === 1 && !point.selected && !point.fixed && !isHover && !isFCPt) {
           let isEndpoint = false;
+          for (const circle of scene.circles) {
+            if (circle.center === point) { isEndpoint = true; break; }
+          }
+          if (!isEndpoint) {
+            for (const arc of scene.arcs) {
+              if (arc.center === point || arc.startPoint === point || arc.endPoint === point) { isEndpoint = true; break; }
+            }
+          }
           for (const spl of scene.splines) {
             if (spl.p1 === point || spl.p2 === point) { isEndpoint = true; break; }
           }

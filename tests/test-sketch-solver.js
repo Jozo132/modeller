@@ -17,6 +17,7 @@ import {
   Vertical,
 } from '../js/cad/Constraint.js';
 import { computeFullyConstrained } from '../js/cad/ConstraintAnalysis.js';
+import { chamferSketchCorner, filletSketchCorner } from '../js/cad/Operations.js';
 import { state } from '../js/state.js';
 import { SelectTool } from '../js/tools/SelectTool.js';
 import { formatTimingSuffix, startTiming } from './test-timing.js';
@@ -350,7 +351,7 @@ test('circle and arc edge drags edit radius without moving center', () => {
   }
 });
 
-test('arc endpoint and center drags preserve expected edit modes', () => {
+test('arc endpoint and center point drags preserve expected edit modes', () => {
   const originalScene = state.scene;
   try {
     const scene = new Scene();
@@ -369,18 +370,19 @@ test('arc endpoint and center drags preserve expected edit modes', () => {
     approx(arc.endPoint.x, -10, 1e-9, 'opposite endpoint keeps angle at edited radius');
     approx(arc.endPoint.y, 0, 1e-9, 'opposite endpoint keeps angle at edited radius y');
 
-    tool._dragShape = arc;
-    tool._dragShapePts = tool._arcCenterDragPoints(arc.center);
-    tool._dragStart = { wx: 0, wy: 0 };
+    const startBefore = { x: arc.startPoint.x, y: arc.startPoint.y };
+    const endBefore = { x: arc.endPoint.x, y: arc.endPoint.y };
+    tool._dragPoint = arc.center;
+    tool._dragArcEndpoint = null;
     tool._dragSolvedPointState = tool._snapshotScenePointPositions();
-    tool._applyDraggedShapeTarget(2, 3);
+    tool._applyDraggedPointTarget(2, 3);
 
-    approx(arc.center.x, 2, 1e-9, 'arc center drag translates center');
-    approx(arc.center.y, 3, 1e-9, 'arc center drag translates center y');
-    approx(arc.startPoint.x, 2, 1e-9, 'arc center drag translates start x');
-    approx(arc.startPoint.y, 13, 1e-9, 'arc center drag translates start y');
-    approx(arc.endPoint.x, -8, 1e-9, 'arc center drag translates end x');
-    approx(arc.endPoint.y, 3, 1e-9, 'arc center drag translates end y');
+    approx(arc.center.x, 2, 1e-9, 'arc center point drag moves center x');
+    approx(arc.center.y, 3, 1e-9, 'arc center point drag moves center y');
+    approx(arc.startPoint.x, startBefore.x, 1e-9, 'arc center point drag leaves start x');
+    approx(arc.startPoint.y, startBefore.y, 1e-9, 'arc center point drag leaves start y');
+    approx(arc.endPoint.x, endBefore.x, 1e-9, 'arc center point drag leaves end x');
+    approx(arc.endPoint.y, endBefore.y, 1e-9, 'arc center point drag leaves end y');
   } finally {
     state.scene = originalScene;
   }
@@ -404,6 +406,50 @@ test('fully constrained analysis includes circle radius and all arc defining poi
   scene.addConstraint(new Fixed(arc.startPoint, arc.startPoint.x, arc.startPoint.y));
   scene.addConstraint(new Fixed(arc.endPoint, arc.endPoint.x, arc.endPoint.y));
   assert.equal(computeFullyConstrained(scene).entities.has(arc), true, 'arc is fully constrained when center and endpoints are constrained');
+});
+
+test('sketch chamfer replaces a coincident segment corner and preserves endpoint constraints', () => {
+  const scene = new Scene();
+  const horizontal = scene.addSegment(0, 0, 10, 0, { merge: false });
+  const vertical = scene.addSegment(10, 0, 10, 10, { merge: true });
+  const corner = horizontal.p2;
+
+  scene.addConstraint(new Horizontal(horizontal));
+  scene.addConstraint(new Vertical(vertical));
+  scene.addConstraint(new Fixed(corner, corner.x, corner.y));
+
+  const result = chamferSketchCorner(scene, [corner], 2);
+
+  assert.ok(result?.segment, 'chamfer segment should be created');
+  assert.equal(scene.segments.length, 3, 'two original segments plus chamfer segment');
+  approx(horizontal.p2.x, 8, 1e-6, 'horizontal segment trimmed from corner');
+  approx(horizontal.p2.y, 0, 1e-6, 'horizontal segment remains horizontal');
+  approx(vertical.p1.x, 10, 1e-6, 'vertical segment remains vertical');
+  approx(vertical.p1.y, 2, 1e-6, 'vertical segment trimmed from corner');
+  assert.equal(scene.constraints.some(c => c.type === 'horizontal' && c.seg === horizontal), true, 'horizontal constraint remains attached');
+  assert.equal(scene.constraints.some(c => c.type === 'vertical' && c.seg === vertical), true, 'vertical constraint remains attached');
+  assert.equal(scene.constraints.filter(c => c.type === 'fixed' && (c.pt === horizontal.p2 || c.pt === vertical.p1)).length, 2, 'corner fixed constraint duplicated to replacement endpoints');
+});
+
+test('sketch arc replaces a selected two-segment corner', () => {
+  const scene = new Scene();
+  const horizontal = scene.addSegment(0, 0, 10, 0, { merge: false });
+  const vertical = scene.addSegment(10, 0, 10, 10, { merge: true });
+
+  scene.addConstraint(new Horizontal(horizontal));
+  scene.addConstraint(new Vertical(vertical));
+
+  const result = filletSketchCorner(scene, [horizontal, vertical], 2);
+
+  assert.ok(result?.arc, 'fillet arc should be created');
+  assert.equal(scene.arcs.length, 1, 'one arc created');
+  approx(horizontal.p2.x, 8, 1e-6, 'horizontal segment trimmed by tangent distance');
+  approx(horizontal.p2.y, 0, 1e-6, 'horizontal tangent point y');
+  approx(vertical.p1.x, 10, 1e-6, 'vertical tangent point x');
+  approx(vertical.p1.y, 2, 1e-6, 'vertical segment trimmed by tangent distance');
+  approx(result.arc.radius, 2, 1e-6, 'fillet arc radius');
+  assert.equal(result.arc.startPoint, horizontal.p2, 'arc starts at first replacement endpoint');
+  assert.equal(result.arc.endPoint, vertical.p1, 'arc ends at second replacement endpoint');
 });
 
 console.log(`Passed: ${passed}`);

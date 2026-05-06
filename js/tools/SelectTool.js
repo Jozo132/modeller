@@ -881,20 +881,6 @@ export class SelectTool extends BaseTool {
         this._dragRadiusShape = null;
         return;
       }
-      const arcCenterPts = this._arcCenterDragPoints(pt);
-      if (arcCenterPts.length > 1) {
-        this._dragShape = state.scene.arcs.find(arc => arc.center === pt) || null;
-        this._dragShapePts = arcCenterPts;
-        this._dragPoint = null;
-        this._dragArcEndpoint = null;
-        this._dragRadiusShape = null;
-        this._dragImageHandle = null;
-        this._dragTookSnapshot = false;
-        this._isDragging = false;
-        this._dragStart = { wx, wy, sx, sy };
-        this._dragCancelState = null;
-        return;
-      }
       this._dragPoint = pt;
       this._dragArcEndpoint = this._findArcEndpoint(pt);
       this._dragShape = null;
