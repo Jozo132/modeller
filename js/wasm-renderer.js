@@ -1021,7 +1021,7 @@ export class WasmRenderer {
     const wz = pd.origin.z + lx * pd.xAxis.z + ly * pd.yAxis.z;
     // project
     const clip = this._mat4TransformVec4(mvp, wx, wy, wz, 1);
-    if (Math.abs(clip.w) < 1e-10) return null;
+    if (clip.w <= 0) return null; // point is behind or at the camera
     const ndcX = clip.x / clip.w;
     const ndcY = clip.y / clip.w;
     const w = this._cssWidth || this.container.clientWidth;
@@ -1043,7 +1043,7 @@ export class WasmRenderer {
     const mvp = this._computeMVP();
     if (!mvp) return null;
     const clip = this._mat4TransformVec4(mvp, wx, wy, wz, 1);
-    if (Math.abs(clip.w) < 1e-10) return null;
+    if (clip.w <= 0) return null; // point is behind or at the camera
     const ndcX = clip.x / clip.w;
     const ndcY = clip.y / clip.w;
     const ndcZ = clip.z / clip.w;
@@ -2761,9 +2761,10 @@ export class WasmRenderer {
       worldToScreenY = (wy) => ((bounds.top - wy) / (bounds.top - bounds.bottom)) * h;
       wpp = (bounds.right - bounds.left) / w;
     }
-    // Helper: project a local 2D point (x,y) in the sketch plane to screen
+    // Helper: project a local 2D point (x,y) in the sketch plane to screen.
+    // Returns null when the point is behind the perspective camera.
     const sketchPtToScreen = in3DSketch
-      ? (lx, ly) => this.sketchToScreen(lx, ly) || { x: 0, y: 0 }
+      ? (lx, ly) => this.sketchToScreen(lx, ly)
       : (lx, ly) => ({ x: worldToScreenX(lx), y: worldToScreenY(ly) });
 
     this._renderSceneImageOverlay(ctx, scene, {
@@ -2793,6 +2794,7 @@ export class WasmRenderer {
           const startA = dim._angleStart != null ? dim._angleStart : 0;
           const sweepA = dim._angleSweep != null ? dim._angleSweep : 0;
           const cpt = sketchPtToScreen(dim.x1, dim.y1);
+          if (!cpt) return;
           ctx.beginPath();
           ctx.arc(cpt.x, cpt.y, r, -startA, -(startA + sweepA), true);
           ctx.stroke();
@@ -2801,6 +2803,7 @@ export class WasmRenderer {
             dim.x1 + (Math.abs(dim.offset) + 14 * wpp) * Math.cos(midA),
             dim.y1 + (Math.abs(dim.offset) + 14 * wpp) * Math.sin(midA)
           );
+          if (!lpt) return;
           const label = dim.displayLabel || '';
           ctx.font = '12px Consolas, monospace';
           ctx.textBaseline = 'middle';
@@ -2840,6 +2843,10 @@ export class WasmRenderer {
         const sp2 = sketchPtToScreen(dim.x2, dim.y2);
         const sd1 = sketchPtToScreen(d1.x, d1.y);
         const sd2 = sketchPtToScreen(d2.x, d2.y);
+        const mx = (d1.x + d2.x) / 2;
+        const my = (d1.y + d2.y) / 2 + 12 * wpp;
+        const mpt = sketchPtToScreen(mx, my);
+        if (!sp1 || !sp2 || !sd1 || !sd2 || !mpt) return;
 
         ctx.beginPath();
         ctx.moveTo(sp1.x, sp1.y);
@@ -2880,9 +2887,6 @@ export class WasmRenderer {
           }
         }
 
-        const mx = (d1.x + d2.x) / 2;
-        const my = (d1.y + d2.y) / 2 + 12 * wpp;
-        const mpt = sketchPtToScreen(mx, my);
         const label = dim.displayLabel || '';
         ctx.font = '12px Consolas, monospace';
         ctx.textBaseline = 'middle';
@@ -2908,6 +2912,7 @@ export class WasmRenderer {
         ctx.font = '14px Consolas, monospace';
         ctx.textBaseline = 'middle';
         const tpt = sketchPtToScreen(text.x, text.y);
+        if (!tpt) return;
         ctx.save();
         ctx.translate(tpt.x, tpt.y);
         if (text.rotation) ctx.rotate(-text.rotation * Math.PI / 180);
@@ -2930,11 +2935,12 @@ export class WasmRenderer {
         ctx.strokeStyle = 'rgba(255, 180, 50, 0.5)';
         ctx.lineWidth = 1;
         ctx.beginPath();
-        const sp0 = sketchPtToScreen(pts[0].x, pts[0].y);
-        ctx.moveTo(sp0.x, sp0.y);
-        for (let i = 1; i < pts.length; i++) {
+        let splinePolyHasStart = false;
+        for (let i = 0; i < pts.length; i++) {
           const sp = sketchPtToScreen(pts[i].x, pts[i].y);
-          ctx.lineTo(sp.x, sp.y);
+          if (!sp) { splinePolyHasStart = false; continue; }
+          if (!splinePolyHasStart) { ctx.moveTo(sp.x, sp.y); splinePolyHasStart = true; }
+          else ctx.lineTo(sp.x, sp.y);
         }
         ctx.stroke();
         ctx.setLineDash([]);
@@ -2943,6 +2949,7 @@ export class WasmRenderer {
         for (let i = 0; i < pts.length; i++) {
           const cp = pts[i];
           const sp = sketchPtToScreen(cp.x, cp.y);
+          if (!sp) continue;
           const isEndpoint = i === 0 || i === pts.length - 1;
           const handleSize = isEndpoint ? 4 : 3;
           ctx.fillStyle = isEndpoint ? '#00bfff' : '#ffb432';
@@ -2977,6 +2984,7 @@ export class WasmRenderer {
         for (let vi = 0; vi < bez.vertices.length; vi++) {
           const v = bez.vertices[vi];
           const sp = sketchPtToScreen(v.point.x, v.point.y);
+          if (!sp) continue;
 
           // Draw handle lines and control points
           ctx.strokeStyle = v.tangent ? 'rgba(255, 152, 0, 0.7)' : 'rgba(136, 136, 136, 0.7)';
@@ -2985,26 +2993,30 @@ export class WasmRenderer {
           if (v.handleIn) {
             const hx = v.point.x + v.handleIn.dx, hy = v.point.y + v.handleIn.dy;
             const hs = sketchPtToScreen(hx, hy);
-            ctx.beginPath();
-            ctx.moveTo(sp.x, sp.y);
-            ctx.lineTo(hs.x, hs.y);
-            ctx.stroke();
-            ctx.fillStyle = v.tangent ? '#ff9800' : '#888';
-            ctx.beginPath();
-            ctx.arc(hs.x, hs.y, 3, 0, Math.PI * 2);
-            ctx.fill();
+            if (hs) {
+              ctx.beginPath();
+              ctx.moveTo(sp.x, sp.y);
+              ctx.lineTo(hs.x, hs.y);
+              ctx.stroke();
+              ctx.fillStyle = v.tangent ? '#ff9800' : '#888';
+              ctx.beginPath();
+              ctx.arc(hs.x, hs.y, 3, 0, Math.PI * 2);
+              ctx.fill();
+            }
           }
           if (v.handleOut) {
             const hx = v.point.x + v.handleOut.dx, hy = v.point.y + v.handleOut.dy;
             const hs = sketchPtToScreen(hx, hy);
-            ctx.beginPath();
-            ctx.moveTo(sp.x, sp.y);
-            ctx.lineTo(hs.x, hs.y);
-            ctx.stroke();
-            ctx.fillStyle = v.tangent ? '#ff9800' : '#888';
-            ctx.beginPath();
-            ctx.arc(hs.x, hs.y, 3, 0, Math.PI * 2);
-            ctx.fill();
+            if (hs) {
+              ctx.beginPath();
+              ctx.moveTo(sp.x, sp.y);
+              ctx.lineTo(hs.x, hs.y);
+              ctx.stroke();
+              ctx.fillStyle = v.tangent ? '#ff9800' : '#888';
+              ctx.beginPath();
+              ctx.arc(hs.x, hs.y, 3, 0, Math.PI * 2);
+              ctx.fill();
+            }
           }
 
           // Vertex point (diamond for tangent, square for corner)
@@ -3034,11 +3046,12 @@ export class WasmRenderer {
           ctx.strokeStyle = 'rgba(0, 191, 255, 0.5)';
           ctx.lineWidth = 1;
           ctx.beginPath();
-          const sp0 = sketchPtToScreen(entity.points[0].x, entity.points[0].y);
-          ctx.moveTo(sp0.x, sp0.y);
-          for (let i = 1; i < entity.points.length; i++) {
+          let previewSplineHasStart = false;
+          for (let i = 0; i < entity.points.length; i++) {
             const sp = sketchPtToScreen(entity.points[i].x, entity.points[i].y);
-            ctx.lineTo(sp.x, sp.y);
+            if (!sp) { previewSplineHasStart = false; continue; }
+            if (!previewSplineHasStart) { ctx.moveTo(sp.x, sp.y); previewSplineHasStart = true; }
+            else ctx.lineTo(sp.x, sp.y);
           }
           ctx.stroke();
           ctx.setLineDash([]);
@@ -3046,6 +3059,7 @@ export class WasmRenderer {
           for (let i = 0; i < entity.points.length; i++) {
             const cp = entity.points[i];
             const sp = sketchPtToScreen(cp.x, cp.y);
+            if (!sp) continue;
             const isEnd = i === 0 || i === entity.points.length - 1;
             ctx.fillStyle = isEnd ? '#00bfff' : 'rgba(0, 191, 255, 0.6)';
             ctx.fillRect(sp.x - 3, sp.y - 3, 6, 6);
@@ -3057,21 +3071,26 @@ export class WasmRenderer {
           for (let vi = 0; vi < entity.vertices.length; vi++) {
             const v = entity.vertices[vi];
             const sp = sketchPtToScreen(v.point.x, v.point.y);
+            if (!sp) continue;
             ctx.strokeStyle = 'rgba(0, 191, 255, 0.6)';
             ctx.lineWidth = 1;
             if (v.handleIn) {
               const hx = v.point.x + v.handleIn.dx, hy = v.point.y + v.handleIn.dy;
               const hs = sketchPtToScreen(hx, hy);
-              ctx.beginPath(); ctx.moveTo(sp.x, sp.y); ctx.lineTo(hs.x, hs.y); ctx.stroke();
-              ctx.fillStyle = '#00bfff';
-              ctx.beginPath(); ctx.arc(hs.x, hs.y, 3, 0, Math.PI * 2); ctx.fill();
+              if (hs) {
+                ctx.beginPath(); ctx.moveTo(sp.x, sp.y); ctx.lineTo(hs.x, hs.y); ctx.stroke();
+                ctx.fillStyle = '#00bfff';
+                ctx.beginPath(); ctx.arc(hs.x, hs.y, 3, 0, Math.PI * 2); ctx.fill();
+              }
             }
             if (v.handleOut) {
               const hx = v.point.x + v.handleOut.dx, hy = v.point.y + v.handleOut.dy;
               const hs = sketchPtToScreen(hx, hy);
-              ctx.beginPath(); ctx.moveTo(sp.x, sp.y); ctx.lineTo(hs.x, hs.y); ctx.stroke();
-              ctx.fillStyle = '#00bfff';
-              ctx.beginPath(); ctx.arc(hs.x, hs.y, 3, 0, Math.PI * 2); ctx.fill();
+              if (hs) {
+                ctx.beginPath(); ctx.moveTo(sp.x, sp.y); ctx.lineTo(hs.x, hs.y); ctx.stroke();
+                ctx.fillStyle = '#00bfff';
+                ctx.beginPath(); ctx.arc(hs.x, hs.y, 3, 0, Math.PI * 2); ctx.fill();
+              }
             }
             // Vertex marker
             ctx.fillStyle = '#00bfff';
@@ -3096,6 +3115,7 @@ export class WasmRenderer {
       }
 
       const origin = sketchPtToScreen(olx, oly);
+      if (!origin) return; // skip axis markers when origin is behind the camera
       const ox = origin.x;
       const oy = origin.y;
 
@@ -3131,63 +3151,67 @@ export class WasmRenderer {
 
       // Horizontal axis (positive direction to the right)
       const hEnd = sketchPtToScreen(olx + axisLen, oly);
-      ctx.save();
-      ctx.strokeStyle = hColor;
-      ctx.lineWidth = 1.5;
-      ctx.globalAlpha = 0.6;
-      ctx.setLineDash([]);
-      ctx.beginPath();
-      ctx.moveTo(ox, oy);
-      ctx.lineTo(hEnd.x, hEnd.y);
-      ctx.stroke();
-      // Arrow
-      const hDx = hEnd.x - ox, hDy = hEnd.y - oy;
-      const hLen = Math.hypot(hDx, hDy) || 1;
-      const hUx = hDx / hLen, hUy = hDy / hLen;
-      ctx.beginPath();
-      ctx.moveTo(hEnd.x, hEnd.y);
-      ctx.lineTo(hEnd.x - 8 * hUx - 4 * hUy, hEnd.y - 8 * hUy + 4 * hUx);
-      ctx.moveTo(hEnd.x, hEnd.y);
-      ctx.lineTo(hEnd.x - 8 * hUx + 4 * hUy, hEnd.y - 8 * hUy - 4 * hUx);
-      ctx.stroke();
-      // Label
-      ctx.globalAlpha = 0.8;
-      ctx.fillStyle = hColor;
-      ctx.font = 'bold 13px Consolas, monospace';
-      ctx.textBaseline = 'middle';
-      ctx.textAlign = 'left';
-      ctx.fillText(hLabel, hEnd.x + 4 * hUx, hEnd.y + 4 * hUy);
-      ctx.restore();
+      if (hEnd) {
+        ctx.save();
+        ctx.strokeStyle = hColor;
+        ctx.lineWidth = 1.5;
+        ctx.globalAlpha = 0.6;
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.moveTo(ox, oy);
+        ctx.lineTo(hEnd.x, hEnd.y);
+        ctx.stroke();
+        // Arrow
+        const hDx = hEnd.x - ox, hDy = hEnd.y - oy;
+        const hLen = Math.hypot(hDx, hDy) || 1;
+        const hUx = hDx / hLen, hUy = hDy / hLen;
+        ctx.beginPath();
+        ctx.moveTo(hEnd.x, hEnd.y);
+        ctx.lineTo(hEnd.x - 8 * hUx - 4 * hUy, hEnd.y - 8 * hUy + 4 * hUx);
+        ctx.moveTo(hEnd.x, hEnd.y);
+        ctx.lineTo(hEnd.x - 8 * hUx + 4 * hUy, hEnd.y - 8 * hUy - 4 * hUx);
+        ctx.stroke();
+        // Label
+        ctx.globalAlpha = 0.8;
+        ctx.fillStyle = hColor;
+        ctx.font = 'bold 13px Consolas, monospace';
+        ctx.textBaseline = 'middle';
+        ctx.textAlign = 'left';
+        ctx.fillText(hLabel, hEnd.x + 4 * hUx, hEnd.y + 4 * hUy);
+        ctx.restore();
+      }
 
       // Vertical axis (positive direction upward)
       const vEnd = sketchPtToScreen(olx, oly + axisLen);
-      ctx.save();
-      ctx.strokeStyle = vColor;
-      ctx.lineWidth = 1.5;
-      ctx.globalAlpha = 0.6;
-      ctx.setLineDash([]);
-      ctx.beginPath();
-      ctx.moveTo(ox, oy);
-      ctx.lineTo(vEnd.x, vEnd.y);
-      ctx.stroke();
-      // Arrow
-      const vDx = vEnd.x - ox, vDy = vEnd.y - oy;
-      const vLen = Math.hypot(vDx, vDy) || 1;
-      const vUx = vDx / vLen, vUy = vDy / vLen;
-      ctx.beginPath();
-      ctx.moveTo(vEnd.x, vEnd.y);
-      ctx.lineTo(vEnd.x - 8 * vUx - 4 * vUy, vEnd.y - 8 * vUy + 4 * vUx);
-      ctx.moveTo(vEnd.x, vEnd.y);
-      ctx.lineTo(vEnd.x - 8 * vUx + 4 * vUy, vEnd.y - 8 * vUy - 4 * vUx);
-      ctx.stroke();
-      // Label
-      ctx.globalAlpha = 0.8;
-      ctx.fillStyle = vColor;
-      ctx.font = 'bold 13px Consolas, monospace';
-      ctx.textBaseline = 'bottom';
-      ctx.textAlign = 'center';
-      ctx.fillText(vLabel, vEnd.x, vEnd.y - 4);
-      ctx.restore();
+      if (vEnd) {
+        ctx.save();
+        ctx.strokeStyle = vColor;
+        ctx.lineWidth = 1.5;
+        ctx.globalAlpha = 0.6;
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.moveTo(ox, oy);
+        ctx.lineTo(vEnd.x, vEnd.y);
+        ctx.stroke();
+        // Arrow
+        const vDx = vEnd.x - ox, vDy = vEnd.y - oy;
+        const vLen = Math.hypot(vDx, vDy) || 1;
+        const vUx = vDx / vLen, vUy = vDy / vLen;
+        ctx.beginPath();
+        ctx.moveTo(vEnd.x, vEnd.y);
+        ctx.lineTo(vEnd.x - 8 * vUx - 4 * vUy, vEnd.y - 8 * vUy + 4 * vUx);
+        ctx.moveTo(vEnd.x, vEnd.y);
+        ctx.lineTo(vEnd.x - 8 * vUx + 4 * vUy, vEnd.y - 8 * vUy - 4 * vUx);
+        ctx.stroke();
+        // Label
+        ctx.globalAlpha = 0.8;
+        ctx.fillStyle = vColor;
+        ctx.font = 'bold 13px Consolas, monospace';
+        ctx.textBaseline = 'bottom';
+        ctx.textAlign = 'center';
+        ctx.fillText(vLabel, vEnd.x, vEnd.y - 4);
+        ctx.restore();
+      }
 
       // Origin marker
       ctx.save();
@@ -3221,6 +3245,7 @@ export class WasmRenderer {
         ctx.font = '13px Consolas, monospace';
         // Keep icons close to their owning primitive without covering the constraint point.
         const cpt = sketchPtToScreen(cx + 5 * wpp, cy + 4 * wpp);
+        if (!cpt) return;
         ctx.fillText(icon, cpt.x, cpt.y);
       });
     }
@@ -3256,11 +3281,12 @@ export class WasmRenderer {
       ctx.lineWidth = entity.selected ? 1.8 : (entity.construction ? 1.1 : 1.35);
       ctx.setLineDash(entity.construction ? [6, 4] : []);
       ctx.beginPath();
-      const start = sketchPtToScreen(points[0].x, points[0].y);
-      ctx.moveTo(start.x, start.y);
-      for (let index = 1; index < points.length; index++) {
+      let hasStart = false;
+      for (let index = 0; index < points.length; index++) {
         const point = sketchPtToScreen(points[index].x, points[index].y);
-        ctx.lineTo(point.x, point.y);
+        if (!point) { hasStart = false; continue; } // behind camera — break the path
+        if (!hasStart) { ctx.moveTo(point.x, point.y); hasStart = true; }
+        else ctx.lineTo(point.x, point.y);
       }
       ctx.stroke();
       ctx.restore();
@@ -3319,6 +3345,7 @@ export class WasmRenderer {
       const snaps = entity.getSnapPoints ? entity.getSnapPoints().filter(s => s.type === 'endpoint' || s.type === 'center') : [];
       for (const snap of snaps) {
         const s = sketchPtToScreen(snap.x, snap.y);
+        if (!s) continue;
         ctx.fillRect(s.x - 3, s.y - 3, 6, 6);
       }
     }
@@ -3329,6 +3356,7 @@ export class WasmRenderer {
         const isHover = hoverEntity && hoverEntity.id === point.id;
         if (!point.selected && !isHover) return;
         const s = sketchPtToScreen(point.x, point.y);
+        if (!s) return;
         const isFCPt = fc.points.has(point);
         const r = point.selected ? 5.5 : (isHover ? 5 : ((point.fixed || isFCPt) ? 4.5 : 3.5));
         ctx.strokeStyle = point.selected ? '#00bfff' : '#7fd8ff';
@@ -3342,30 +3370,32 @@ export class WasmRenderer {
     // --- Snap indicator shapes (different shapes per snap type) ---
     if (snapPoint) {
       const snapScreen = sketchPtToScreen(snapPoint.x, snapPoint.y);
-      _drawSnapIndicator(ctx, snapScreen, snapPoint.type || 'endpoint');
+      if (snapScreen) _drawSnapIndicator(ctx, snapScreen, snapPoint.type || 'endpoint');
     }
 
     // --- Crosshair with gap around cursor ---
     if (cursorWorld && (this.mode === '2d' || this._sketchPlane)) {
       const cs = sketchPtToScreen(cursorWorld.x, cursorWorld.y);
-      const gap = 10;
-      ctx.save();
-      ctx.strokeStyle = 'rgba(255,255,255,0.25)';
-      ctx.lineWidth = 0.5;
-      ctx.setLineDash([]);
-      ctx.beginPath();
-      // Horizontal line with gap
-      ctx.moveTo(0, cs.y);
-      ctx.lineTo(cs.x - gap, cs.y);
-      ctx.moveTo(cs.x + gap, cs.y);
-      ctx.lineTo(w, cs.y);
-      // Vertical line with gap
-      ctx.moveTo(cs.x, 0);
-      ctx.lineTo(cs.x, cs.y - gap);
-      ctx.moveTo(cs.x, cs.y + gap);
-      ctx.lineTo(cs.x, h);
-      ctx.stroke();
-      ctx.restore();
+      if (cs) {
+        const gap = 10;
+        ctx.save();
+        ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+        ctx.lineWidth = 0.5;
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        // Horizontal line with gap
+        ctx.moveTo(0, cs.y);
+        ctx.lineTo(cs.x - gap, cs.y);
+        ctx.moveTo(cs.x + gap, cs.y);
+        ctx.lineTo(w, cs.y);
+        // Vertical line with gap
+        ctx.moveTo(cs.x, 0);
+        ctx.lineTo(cs.x, cs.y - gap);
+        ctx.moveTo(cs.x, cs.y + gap);
+        ctx.lineTo(cs.x, h);
+        ctx.stroke();
+        ctx.restore();
+      }
     }
 
     // --- Active tool overlay (selection box, snap indicators, etc.) ---
@@ -5379,13 +5409,14 @@ export function extractRenderableSketchProfiles(sketch, isLayerVisible = null) {
 function _appendPolylineProfilePath(ctx, profile, projectPoint) {
   const points = Array.isArray(profile?.points) ? profile.points : [];
   if (points.length < 3) return;
-  const first = projectPoint(points[0]);
-  ctx.moveTo(first.x, first.y);
-  for (let i = 1; i < points.length; i++) {
-    const point = projectPoint(points[i]);
-    ctx.lineTo(point.x, point.y);
+  let hasStart = false;
+  for (let i = 0; i < points.length; i++) {
+    const pt = projectPoint(points[i]);
+    if (!pt) { hasStart = false; continue; } // behind camera — break the subpath
+    if (!hasStart) { ctx.moveTo(pt.x, pt.y); hasStart = true; }
+    else ctx.lineTo(pt.x, pt.y);
   }
-  ctx.closePath();
+  if (hasStart) ctx.closePath();
 }
 
 function _groupSketchProfiles(profiles) {
