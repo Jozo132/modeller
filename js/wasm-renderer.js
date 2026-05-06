@@ -218,6 +218,24 @@ function _bilinearQuadPoint(quad, u, v) {
   return _lerpPoint(bottom, top, v);
 }
 
+function _bilinearQuadPoint3D(quad, u, v) {
+  const bl = quad[0];
+  const br = quad[1];
+  const tr = quad[2];
+  const tl = quad[3];
+  const bx = bl.x + (br.x - bl.x) * u;
+  const by = bl.y + (br.y - bl.y) * u;
+  const bz = bl.z + (br.z - bl.z) * u;
+  const tx = tl.x + (tr.x - tl.x) * u;
+  const ty = tl.y + (tr.y - tl.y) * u;
+  const tz = tl.z + (tr.z - tl.z) * u;
+  return {
+    x: bx + (tx - bx) * v,
+    y: by + (ty - by) * v,
+    z: bz + (tz - bz) * v,
+  };
+}
+
 function _projectiveQuadPoint(matrix, quad, u, v) {
   if (matrix) {
     const result = applyProjectiveMatrix(matrix, u, v);
@@ -3730,10 +3748,15 @@ export class WasmRenderer {
           const src10 = _projectiveQuadPoint(sourceMatrix, sourceQuadPixels, u1, v0);
           const src11 = _projectiveQuadPoint(sourceMatrix, sourceQuadPixels, u1, v1);
           const src01 = _projectiveQuadPoint(sourceMatrix, sourceQuadPixels, u0, v1);
-          const dst00 = _bilinearQuadPoint(destQuadScreen, u0, v0);
-          const dst10 = _bilinearQuadPoint(destQuadScreen, u1, v0);
-          const dst11 = _bilinearQuadPoint(destQuadScreen, u1, v1);
-          const dst01 = _bilinearQuadPoint(destQuadScreen, u0, v1);
+          const world00 = _bilinearQuadPoint(destQuadWorld, u0, v0);
+          const world10 = _bilinearQuadPoint(destQuadWorld, u1, v0);
+          const world11 = _bilinearQuadPoint(destQuadWorld, u1, v1);
+          const world01 = _bilinearQuadPoint(destQuadWorld, u0, v1);
+          const dst00 = projectPoint(world00.x, world00.y);
+          const dst10 = projectPoint(world10.x, world10.y);
+          const dst11 = projectPoint(world11.x, world11.y);
+          const dst01 = projectPoint(world01.x, world01.y);
+          if (!dst00 || !dst10 || !dst11 || !dst01) continue;
           _transformSourceTriangleToDest(ctx, renderSource, [src00, src10, src11], [dst00, dst10, dst11]);
           _transformSourceTriangleToDest(ctx, renderSource, [src00, src11, src01], [dst00, dst11, dst01]);
         }
@@ -3912,10 +3935,15 @@ export class WasmRenderer {
         const src10 = _projectiveQuadPoint(sourceMatrix, sourceQuadPixels, u1, v0);
         const src11 = _projectiveQuadPoint(sourceMatrix, sourceQuadPixels, u1, v1);
         const src01 = _projectiveQuadPoint(sourceMatrix, sourceQuadPixels, u0, v1);
-        const dst00 = _bilinearQuadPoint(destQuadScreen, u0, v0);
-        const dst10 = _bilinearQuadPoint(destQuadScreen, u1, v0);
-        const dst11 = _bilinearQuadPoint(destQuadScreen, u1, v1);
-        const dst01 = _bilinearQuadPoint(destQuadScreen, u0, v1);
+        const world00 = _bilinearQuadPoint3D(destQuadWorld, u0, v0);
+        const world10 = _bilinearQuadPoint3D(destQuadWorld, u1, v0);
+        const world11 = _bilinearQuadPoint3D(destQuadWorld, u1, v1);
+        const world01 = _bilinearQuadPoint3D(destQuadWorld, u0, v1);
+        const dst00 = projectPoint(world00.x, world00.y, world00.z);
+        const dst10 = projectPoint(world10.x, world10.y, world10.z);
+        const dst11 = projectPoint(world11.x, world11.y, world11.z);
+        const dst01 = projectPoint(world01.x, world01.y, world01.z);
+        if (!dst00 || !dst10 || !dst11 || !dst01) continue;
         _transformSourceTriangleToDest(ctx, renderSource, [src00, src10, src11], [dst00, dst10, dst11]);
         _transformSourceTriangleToDest(ctx, renderSource, [src00, src11, src01], [dst00, dst11, dst01]);
       }
