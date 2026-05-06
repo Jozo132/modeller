@@ -300,6 +300,29 @@ test('clockwise arcs preserve negative sweep across the angle wrap boundary', ()
   approx(arc.sweepAngle, -20 * Math.PI / 180, 1e-12, 'wrapped clockwise arc keeps short negative sweep');
 });
 
+test('arc endpoint drags preserve sweep direction across endpoint crossings', () => {
+  const scene = new Scene();
+  const ccwEnd = scene.addArc(0, 0, 5, 0, Math.PI, { merge: false });
+  ccwEnd.setEndpointPosition('end', 5 * Math.cos(-Math.PI * 3 / 4), 5 * Math.sin(-Math.PI * 3 / 4));
+  assert.ok(ccwEnd.sweepAngle > 0, `expected CCW end drag to keep positive sweep, got ${ccwEnd.sweepAngle}`);
+  approx(ccwEnd.endAngle, Math.PI * 5 / 4, 1e-12, 'CCW end drag preserves wrapped end angle');
+
+  const ccwStart = scene.addArc(20, 0, 5, 0, Math.PI, { merge: false });
+  ccwStart.setEndpointPosition('start', 20 + 5 * Math.cos(-Math.PI * 3 / 4), 5 * Math.sin(-Math.PI * 3 / 4));
+  assert.ok(ccwStart.sweepAngle > 0, `expected CCW start drag to keep positive sweep, got ${ccwStart.sweepAngle}`);
+  approx(ccwStart.startAngle, -Math.PI * 3 / 4, 1e-12, 'CCW start drag preserves wrapped start angle');
+
+  const cwEnd = scene.addArc(40, 0, 5, 0, -Math.PI, { merge: false });
+  cwEnd.setEndpointPosition('end', 40 + 5 * Math.cos(Math.PI * 3 / 4), 5 * Math.sin(Math.PI * 3 / 4));
+  assert.ok(cwEnd.sweepAngle < 0, `expected CW end drag to keep negative sweep, got ${cwEnd.sweepAngle}`);
+  approx(cwEnd.endAngle, -Math.PI * 5 / 4, 1e-12, 'CW end drag preserves wrapped end angle');
+
+  const cwStart = scene.addArc(60, 0, 5, 0, -Math.PI, { merge: false });
+  cwStart.setEndpointPosition('start', 60 + 5 * Math.cos(Math.PI * 3 / 4), 5 * Math.sin(Math.PI * 3 / 4));
+  assert.ok(cwStart.sweepAngle < 0, `expected CW start drag to keep negative sweep, got ${cwStart.sweepAngle}`);
+  approx(cwStart.startAngle, Math.PI * 3 / 4, 1e-12, 'CW start drag preserves wrapped start angle');
+});
+
 test('equal and tangent constraints support circle-like arc/circle pairs', () => {
   const scene = new Scene();
   const arc = scene.addArc(0, 0, 3, 0, Math.PI / 2, { merge: false });

@@ -169,15 +169,16 @@ export class PArc extends Primitive {
   setEndpointPosition(which, x, y) {
     const startAngle = this.startAngle;
     const endAngle = this.endAngle;
+    const sweep = this.sweepAngle;
     const nextRadius = Math.max(0, Math.hypot(x - this.cx, y - this.cy));
     const nextAngle = Math.atan2(y - this.cy, x - this.cx);
     this._radius = nextRadius;
     if (which === 'start') {
-      this._startAngle = nextAngle;
+      this._startAngle = _anglePreservingSweep(nextAngle, startAngle, endAngle, sweep, 'start');
       this._endAngle = endAngle;
     } else {
       this._startAngle = startAngle;
-      this._endAngle = nextAngle;
+      this._endAngle = _anglePreservingSweep(nextAngle, endAngle, startAngle, sweep, 'end');
     }
     this._syncEndpointRadius();
   }
@@ -212,4 +213,19 @@ function _angleNear(angle, reference) {
   while (angle - reference > Math.PI) angle -= Math.PI * 2;
   while (angle - reference < -Math.PI) angle += Math.PI * 2;
   return angle;
+}
+
+function _anglePreservingSweep(angle, previousAngle, fixedAngle, previousSweep, which) {
+  if (Math.abs(previousSweep) <= ARC_ANGLE_EPS) return _angleNear(angle, previousAngle);
+  const sign = Math.sign(previousSweep);
+  let best = null;
+  for (let turn = -2; turn <= 2; turn++) {
+    const candidate = angle + turn * Math.PI * 2;
+    const sweep = which === 'start' ? fixedAngle - candidate : candidate - fixedAngle;
+    if (sign > 0 && (sweep <= ARC_ANGLE_EPS || sweep > Math.PI * 2 + ARC_ANGLE_EPS)) continue;
+    if (sign < 0 && (sweep >= -ARC_ANGLE_EPS || sweep < -Math.PI * 2 - ARC_ANGLE_EPS)) continue;
+    const score = Math.abs(candidate - previousAngle);
+    if (!best || score < best.score) best = { angle: candidate, score };
+  }
+  return best ? best.angle : _angleNear(angle, previousAngle);
 }
