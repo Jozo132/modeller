@@ -345,6 +345,30 @@ test('arc creation preview keeps the nearest short sweep at crossover', () => {
   approx(tool._nearestEndAngle(Math.PI * 3 / 4), Math.PI * 3 / 4, 1e-12, 'creation preview keeps short CCW sweep');
 });
 
+test('wrapped clockwise arc draw normalizes canvas angles to a single turn', () => {
+  const scene = new Scene();
+  const arc = scene.addArc(0, 0, 5, 0, -Math.PI / 4, { merge: false });
+  arc._endAngle = -Math.PI * 2 - Math.PI / 4;
+
+  const calls = [];
+  const ctx = {
+    beginPath() {},
+    arc(...args) { calls.push(args); },
+    stroke() {},
+  };
+  const vp = {
+    zoom: 1,
+    worldToScreen(x, y) { return { x, y }; },
+  };
+
+  arc.draw(ctx, vp);
+
+  assert.equal(calls.length, 1, 'expected one canvas arc draw call');
+  const [, , , startAngle, endAngle, anticlockwise] = calls[0];
+  assert.equal(anticlockwise, true, 'wrapped clockwise arc should draw anticlockwise on canvas');
+  approx(Math.abs(endAngle - startAngle), Math.PI / 4, 1e-12, 'canvas draw uses the normalized short sweep');
+});
+
 test('equal and tangent constraints support circle-like arc/circle pairs', () => {
   const scene = new Scene();
   const arc = scene.addArc(0, 0, 3, 0, Math.PI / 2, { merge: false });
