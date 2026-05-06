@@ -33,7 +33,11 @@ export class PArc extends Primitive {
     return this._radius;
   }
   set radius(value) {
+    const startAngle = this.startAngle;
+    const endAngle = this.endAngle;
     this._radius = Math.max(0, value);
+    this._startAngle = startAngle;
+    this._endAngle = endAngle;
     this._syncEndpointRadius();
   }
   get startAngle() {
@@ -156,14 +160,30 @@ export class PArc extends Primitive {
     if (this.endPoint) this.endPoint.translate(dx, dy);
   }
 
+  setEndpointPosition(which, x, y) {
+    const startAngle = this.startAngle;
+    const endAngle = this.endAngle;
+    const nextRadius = Math.max(0, Math.hypot(x - this.cx, y - this.cy));
+    const nextAngle = Math.atan2(y - this.cy, x - this.cx);
+    this._radius = nextRadius;
+    if (which === 'start') {
+      this._startAngle = nextAngle;
+      this._endAngle = endAngle;
+    } else {
+      this._startAngle = startAngle;
+      this._endAngle = nextAngle;
+    }
+    this._syncEndpointRadius();
+  }
+
   _syncEndpointRadius() {
     if (this.startPoint) {
-      const a = this.startAngle;
+      const a = this._startAngle;
       this.startPoint.x = this.cx + this._radius * Math.cos(a);
       this.startPoint.y = this.cy + this._radius * Math.sin(a);
     }
     if (this.endPoint) {
-      const a = this.endAngle;
+      const a = this._endAngle;
       this.endPoint.x = this.cx + this._radius * Math.cos(a);
       this.endPoint.y = this.cy + this._radius * Math.sin(a);
     }

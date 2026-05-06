@@ -12,9 +12,11 @@ import {
   OnCircle,
   OnLine,
   Perpendicular,
+  RadiusConstraint,
   Tangent,
   Vertical,
 } from '../js/cad/Constraint.js';
+import { computeFullyConstrained } from '../js/cad/ConstraintAnalysis.js';
 import { state } from '../js/state.js';
 import { SelectTool } from '../js/tools/SelectTool.js';
 import { formatTimingSuffix, startTiming } from './test-timing.js';
@@ -314,6 +316,94 @@ test('on-circle constraint can keep standalone points on arc and circle edges', 
   point.y = 0;
   scene.solve({ maxIter: 400, relaxation: 1, tolerance: 1e-4 });
   approx(Math.hypot(point.x - circle.cx, point.y - circle.cy), 5, 1e-6, 'standalone point on circle');
+});
+
+test('circle and arc edge drags edit radius without moving center', () => {
+  const originalScene = state.scene;
+  try {
+    const scene = new Scene();
+    const circle = scene.addCircle(1, 2, 5, { merge: false });
+    state.scene = scene;
+
+    const tool = new SelectTool({ renderer: { previewEntities: [] }, setStatus() {}, viewport: { zoom: 1 } });
+    tool._dragRadiusShape = circle;
+    tool._dragStart = { wx: circle.cx + circle.radius, wy: circle.cy };
+    tool._dragSolvedPointState = tool._snapshotScenePointPositions();
+
+    tool._applyDraggedRadiusTarget(circle.cx, circle.cy + 8);
+
+    approx(circle.cx, 1, 1e-9, 'circle center x remains fixed during edge radius drag');
+    approx(circle.cy, 2, 1e-9, 'circle center y remains fixed during edge radius drag');
+    approx(circle.radius, 8, 1e-9, 'circle radius follows edge drag distance');
+
+    const arc = scene.addArc(0, 0, 5, 0, Math.PI, { merge: false });
+    tool._dragRadiusShape = arc;
+    tool._dragSolvedPointState = tool._snapshotScenePointPositions();
+
+    tool._applyDraggedRadiusTarget(0, 7);
+
+    approx(arc.radius, 7, 1e-9, 'arc radius follows edge drag distance');
+    approx(arc.startPoint.x, 7, 1e-9, 'arc start keeps angle at new radius');
+    approx(arc.endPoint.x, -7, 1e-9, 'arc end keeps angle at new radius');
+  } finally {
+    state.scene = originalScene;
+  }
+});
+
+test('arc endpoint and center drags preserve expected edit modes', () => {
+  const originalScene = state.scene;
+  try {
+    const scene = new Scene();
+    const arc = scene.addArc(0, 0, 5, 0, Math.PI, { merge: false });
+    state.scene = scene;
+
+    const tool = new SelectTool({ renderer: { previewEntities: [] }, setStatus() {}, viewport: { zoom: 1 } });
+    tool._dragPoint = arc.startPoint;
+    tool._dragArcEndpoint = { arc, which: 'start' };
+    tool._dragSolvedPointState = tool._snapshotScenePointPositions();
+
+    tool._applyDraggedArcEndpointTarget(0, 10);
+
+    approx(arc.radius, 10, 1e-9, 'arc endpoint drag changes radius');
+    approx(arc.startAngle, Math.PI / 2, 1e-9, 'arc endpoint drag changes selected endpoint angle');
+    approx(arc.endPoint.x, -10, 1e-9, 'opposite endpoint keeps angle at edited radius');
+    approx(arc.endPoint.y, 0, 1e-9, 'opposite endpoint keeps angle at edited radius y');
+
+    tool._dragShape = arc;
+    tool._dragShapePts = tool._arcCenterDragPoints(arc.center);
+    tool._dragStart = { wx: 0, wy: 0 };
+    tool._dragSolvedPointState = tool._snapshotScenePointPositions();
+    tool._applyDraggedShapeTarget(2, 3);
+
+    approx(arc.center.x, 2, 1e-9, 'arc center drag translates center');
+    approx(arc.center.y, 3, 1e-9, 'arc center drag translates center y');
+    approx(arc.startPoint.x, 2, 1e-9, 'arc center drag translates start x');
+    approx(arc.startPoint.y, 13, 1e-9, 'arc center drag translates start y');
+    approx(arc.endPoint.x, -8, 1e-9, 'arc center drag translates end x');
+    approx(arc.endPoint.y, 3, 1e-9, 'arc center drag translates end y');
+  } finally {
+    state.scene = originalScene;
+  }
+});
+
+test('fully constrained analysis includes circle radius and all arc defining points', () => {
+  const scene = new Scene();
+  const circle = scene.addCircle(0, 0, 5, { merge: false });
+
+  scene.addConstraint(new Fixed(circle.center, 0, 0));
+  assert.equal(computeFullyConstrained(scene).entities.has(circle), false, 'fixed center alone does not fully constrain circle radius');
+
+  scene.addConstraint(new RadiusConstraint(circle, 5));
+  assert.equal(computeFullyConstrained(scene).entities.has(circle), true, 'fixed center plus radius fully constrains circle');
+
+  const arc = scene.addArc(10, 0, 4, 0, Math.PI / 2, { merge: false });
+  scene.addConstraint(new Fixed(arc.center, 10, 0));
+  scene.addConstraint(new RadiusConstraint(arc, 4));
+  assert.equal(computeFullyConstrained(scene).entities.has(arc), false, 'arc still needs start/end angles constrained');
+
+  scene.addConstraint(new Fixed(arc.startPoint, arc.startPoint.x, arc.startPoint.y));
+  scene.addConstraint(new Fixed(arc.endPoint, arc.endPoint.x, arc.endPoint.y));
+  assert.equal(computeFullyConstrained(scene).entities.has(arc), true, 'arc is fully constrained when center and endpoints are constrained');
 });
 
 console.log(`Passed: ${passed}`);
