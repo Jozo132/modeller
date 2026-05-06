@@ -319,6 +319,21 @@ test('equal and tangent constraints support circle-like arc/circle pairs', () =>
   );
 });
 
+test('tangent constraint rotates free line endpoint around a fixed endpoint on a circle', () => {
+  const scene = new Scene();
+  const circle = scene.addCircle(0, 0, 5, { merge: false });
+  const line = scene.addSegment(5, 0, 0, 0, { merge: false });
+  line.p1.fixed = true;
+  scene.constraints.push(new Tangent(line, circle));
+
+  const result = scene.solve({ maxIter: 400, relaxation: 1, tolerance: 1e-4 });
+  assert.ok(result.maxError <= 1e-4, `expected tangent line solve, got maxError=${result.maxError}`);
+  approx(line.p1.x, 5, 1e-9, 'fixed endpoint x remains anchored');
+  approx(line.p1.y, 0, 1e-9, 'fixed endpoint y remains anchored');
+  approx(line.x2, 5, 1e-6, 'free endpoint rotates onto tangent x');
+  approx(Math.abs(line.y2), 5, 1e-6, 'free endpoint rotates onto tangent y');
+});
+
 test('on-circle constraint can keep standalone points on arc and circle edges', () => {
   const scene = new Scene();
   const circle = scene.addCircle(0, 0, 5, { merge: false });

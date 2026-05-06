@@ -2335,6 +2335,8 @@ class App {
     document.querySelectorAll('#toolbar button[data-tool]').forEach(btn => {
       btn.addEventListener('click', () => {
         const tool = btn.dataset.tool;
+        if (tool === 'sketch_fillet') { this._applySketchFilletFromSelection(); return; }
+        if (tool === 'sketch_chamfer') { this._applySketchChamferFromSelection(); return; }
         if (this._tryApplyConstraintFromSelection(tool)) return;
         this.setActiveTool(tool);
       });

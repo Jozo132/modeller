@@ -614,6 +614,14 @@ export class Tangent extends Constraint {
       return;
     }
     // Move the segment so that its line is exactly tangent
+    if (this.seg.p1.fixed && !this.seg.p2.fixed) {
+      if (_moveFreeEndpointToTangent(this.seg.p1, this.seg.p2, this.circle)) return;
+    } else if (this.seg.p2.fixed && !this.seg.p1.fixed) {
+      if (_moveFreeEndpointToTangent(this.seg.p2, this.seg.p1, this.circle)) return;
+    } else if (this.seg.p1.fixed && this.seg.p2.fixed) {
+      return;
+    }
+
     const cx = this.circle.cx, cy = this.circle.cy;
     const dx = this.seg.x2 - this.seg.x1, dy = this.seg.y2 - this.seg.y1;
     const len = Math.hypot(dx, dy) || 1e-9;
@@ -909,6 +917,42 @@ function _isCircleLike(shape) {
 
 function _shapeCenter(shape) {
   return _isCircleLike(shape) ? shape.center : null;
+}
+
+function _moveFreeEndpointToTangent(anchor, free, circle) {
+  if (!anchor || !free || !circle || free.fixed) return false;
+  const ax = anchor.x, ay = anchor.y;
+  const cx = circle.cx, cy = circle.cy;
+  const radius = Math.max(0, circle.radius);
+  const toCenterX = cx - ax;
+  const toCenterY = cy - ay;
+  const centerDist = Math.hypot(toCenterX, toCenterY);
+  if (!Number.isFinite(centerDist) || centerDist < radius - 1e-9 || centerDist < 1e-12) return false;
+
+  const currentDx = free.x - ax;
+  const currentDy = free.y - ay;
+  const currentLen = Math.hypot(currentDx, currentDy) || 1;
+  let candidates;
+  if (Math.abs(centerDist - radius) <= 1e-9) {
+    const ux = -toCenterY / centerDist;
+    const uy = toCenterX / centerDist;
+    candidates = [{ x: ux, y: uy }, { x: -ux, y: -uy }];
+  } else {
+    const base = Math.atan2(toCenterY, toCenterX);
+    const offset = Math.asin(Math.min(1, radius / centerDist));
+    candidates = [base + offset, base - offset].map((angle) => ({ x: Math.cos(angle), y: Math.sin(angle) }));
+  }
+
+  const currentUx = currentDx / currentLen;
+  const currentUy = currentDy / currentLen;
+  const best = candidates.reduce((bestCandidate, candidate) => {
+    const score = candidate.x * currentUx + candidate.y * currentUy;
+    return !bestCandidate || score > bestCandidate.score ? { ...candidate, score } : bestCandidate;
+  }, null);
+  if (!best) return false;
+  free.x = ax + best.x * currentLen;
+  free.y = ay + best.y * currentLen;
+  return true;
 }
 
 function _ptLineDist(px, py, ax, ay, bx, by) {
