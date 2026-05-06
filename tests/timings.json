@@ -78,7 +78,7 @@
     "test-worker-dispatcher.js": 0.177,
     "test-mirror-pattern.js": 0.176,
     "test-face-selection.js": 0.175,
-    "test-sketch-solver.js": 0.099,
+    "test-sketch-solver.js": 0.162,
     "test-containment.js": 0.079,
     "test-feature-tree-incremental-tess.js": 0.062,
     "test-sketch-preview-fill.js": 0.058,
