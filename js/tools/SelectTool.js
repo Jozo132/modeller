@@ -315,6 +315,7 @@ export class SelectTool extends BaseTool {
       const dirLen = Math.hypot(point.x - free.x, point.y - free.y) || 1;
       const dirX = (point.x - free.x) / dirLen;
       const dirY = (point.y - free.y) / dirLen;
+      // Sign of radial × tangent direction selects the CW/CCW tangent branch to preserve during drag.
       const orientation = Math.sign((radialX * dirY) - (radialY * dirX));
       if (orientation) constraint._preferredEndpointTangentOrientation = orientation;
       else delete constraint._preferredEndpointTangentOrientation;
