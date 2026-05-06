@@ -35,6 +35,10 @@ export class ArcTool extends BaseTool {
       }
     } else {
       const endAngle = this._nearestEndAngle(Math.atan2(wy - this._cy, wx - this._cx));
+      if (Math.abs(endAngle - this._startAngle) < 1e-6) {
+        this.setStatus('Arc: Pick a different end point');
+        return;
+      }
       const endSnap = this.app?.renderer?.snapPoint || null;
       takeSnapshot();
       const arc = state.scene.addArc(this._cx, this._cy, this._radius, this._startAngle, endAngle,
@@ -68,7 +72,6 @@ export class ArcTool extends BaseTool {
     let sweep = rawEndAngle - this._startAngle;
     while (sweep > Math.PI) sweep -= Math.PI * 2;
     while (sweep < -Math.PI) sweep += Math.PI * 2;
-    if (Math.abs(sweep) < 1e-6) sweep = Math.PI * 2;
     return this._startAngle + sweep;
   }
 

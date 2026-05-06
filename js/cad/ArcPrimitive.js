@@ -96,7 +96,7 @@ export class PArc extends Primitive {
 
   get sweepAngle() {
     let sweep = this.endAngle - this.startAngle;
-    if (Math.abs(sweep) < ARC_ANGLE_EPS) return Math.PI * 2;
+    if (Math.abs(sweep) < ARC_ANGLE_EPS) return 0;
     while (sweep > Math.PI * 2) sweep -= Math.PI * 2;
     while (sweep < -Math.PI * 2) sweep += Math.PI * 2;
     return sweep;
@@ -145,7 +145,7 @@ export class PArc extends Primitive {
       ctx.setLineDash(_constructionDash(this.constructionDash));
     }
     ctx.beginPath();
-    ctx.arc(c.x, c.y, r, -this.startAngle, -this.endAngle, this.sweepAngle >= 0);
+    ctx.arc(c.x, c.y, r, -this.startAngle, -this.endAngle, this.sweepAngle < 0);
     ctx.stroke();
     if (this.construction) ctx.restore();
   }
