@@ -92,7 +92,7 @@
     "test-dirty-face-tracking.js": 0.012,
     "test-recalculate-handle-churn.js": 0.011,
     "test-groups.js": 0.009,
+    "test-sketch-drag.js": 0.009,
     "test-scene-rendering-regressions.js": 0.007,
-    "test-sketch-drag.js": 0.007,
     "test-touch-gestures.js": 0.003
 }
