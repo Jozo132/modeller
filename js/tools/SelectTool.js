@@ -295,7 +295,34 @@ export class SelectTool extends BaseTool {
     return false;
   }
 
+  _prepareDraggedTangentEndpointHints(point) {
+    for (const constraint of state.scene.constraints || []) {
+      if (constraint?.type !== 'tangent' || constraint.seg?.type !== 'segment') continue;
+      const { seg, circle } = constraint;
+      let free = null;
+      if (seg.p1 === point) free = seg.p2;
+      else if (seg.p2 === point) free = seg.p1;
+      else {
+        delete constraint._preferredEndpointTangentOrientation;
+        continue;
+      }
+      if (!circle || !free || !Number.isFinite(circle.radius) || circle.radius <= 1e-12) {
+        delete constraint._preferredEndpointTangentOrientation;
+        continue;
+      }
+      const radialX = (free.x - circle.cx) / circle.radius;
+      const radialY = (free.y - circle.cy) / circle.radius;
+      const dirLen = Math.hypot(point.x - free.x, point.y - free.y) || 1;
+      const dirX = (point.x - free.x) / dirLen;
+      const dirY = (point.y - free.y) / dirLen;
+      const orientation = Math.sign((radialX * dirY) - (radialY * dirX));
+      if (orientation) constraint._preferredEndpointTangentOrientation = orientation;
+      else delete constraint._preferredEndpointTangentOrientation;
+    }
+  }
+
   _applyDraggedPointTarget(targetX, targetY) {
+    this._prepareDraggedTangentEndpointHints(this._dragPoint);
     this._dragPoint.x = targetX;
     this._dragPoint.y = targetY;
     const wasFixed = this._dragPoint.fixed;

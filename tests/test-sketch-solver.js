@@ -334,6 +334,41 @@ test('tangent constraint rotates free line endpoint around a fixed endpoint on a
   approx(Math.abs(line.y2), 5, 1e-6, 'free endpoint rotates onto tangent y');
 });
 
+test('tangent constraint moves coincident line endpoint around circle in both directions', () => {
+  const originalScene = state.scene;
+  const solveDraggedEndpoint = (targetX, targetY) => {
+    const scene = new Scene();
+    const circle = scene.addCircle(0, 0, 5, { merge: false });
+    const line = scene.addSegment(5, 0, 5, 5, { merge: false });
+    scene.constraints.push(new OnCircle(line.p1, circle));
+    scene.constraints.push(new Tangent(line, circle));
+    state.scene = scene;
+    const tool = new SelectTool({ renderer: { previewEntities: [] }, setStatus() {}, viewport: { zoom: 1 } });
+    tool._dragPoint = line.p2;
+    tool._dragSolvedPointState = tool._snapshotScenePointPositions();
+    const solved = tool._applyDraggedPointTarget(targetX, targetY);
+    return { scene, circle, line, solved, result: scene.solve({ maxIter: 800, relaxation: 1, tolerance: 1e-4 }) };
+  };
+
+  try {
+    const ccw = solveDraggedEndpoint(0, 10);
+    assert.ok(ccw.solved, 'CCW drag accepted');
+    assert.ok(ccw.result.maxError <= 1e-4, `expected CCW tangent drag solve, got maxError=${ccw.result.maxError}`);
+    approx(ccw.line.p1.x, 4.3301270189, 1e-6, 'CCW tangent point x');
+    approx(ccw.line.p1.y, 2.5, 1e-6, 'CCW tangent point y');
+    approx(Math.hypot(ccw.line.p1.x - ccw.circle.cx, ccw.line.p1.y - ccw.circle.cy), 5, 1e-6, 'CCW point remains on circle');
+
+    const cw = solveDraggedEndpoint(10, -5);
+    assert.ok(cw.solved, 'CW drag accepted');
+    assert.ok(cw.result.maxError <= 1e-4, `expected CW tangent drag solve, got maxError=${cw.result.maxError}`);
+    approx(cw.line.p1.x, 0, 1e-6, 'CW tangent point x');
+    approx(cw.line.p1.y, -5, 1e-6, 'CW tangent point y');
+    approx(Math.hypot(cw.line.p1.x - cw.circle.cx, cw.line.p1.y - cw.circle.cy), 5, 1e-6, 'CW point remains on circle');
+  } finally {
+    state.scene = originalScene;
+  }
+});
+
 test('on-circle constraint can keep standalone points on arc and circle edges', () => {
   const scene = new Scene();
   const circle = scene.addCircle(0, 0, 5, { merge: false });

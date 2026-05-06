@@ -615,8 +615,10 @@ export class Tangent extends Constraint {
     }
     // Move the segment so that its line is exactly tangent
     if (this.seg.p1.fixed && !this.seg.p2.fixed) {
+      if (_moveEndpointOnCircleToTangent(this.seg.p1, this.seg.p2, this.circle, this._preferredEndpointTangentOrientation)) return;
       if (_moveFreeEndpointToTangent(this.seg.p1, this.seg.p2, this.circle)) return;
     } else if (this.seg.p2.fixed && !this.seg.p1.fixed) {
+      if (_moveEndpointOnCircleToTangent(this.seg.p2, this.seg.p1, this.circle, this._preferredEndpointTangentOrientation)) return;
       if (_moveFreeEndpointToTangent(this.seg.p2, this.seg.p1, this.circle)) return;
     } else if (this.seg.p1.fixed && this.seg.p2.fixed) {
       return;
@@ -917,6 +919,61 @@ function _isCircleLike(shape) {
 
 function _shapeCenter(shape) {
   return _isCircleLike(shape) ? shape.center : null;
+}
+
+function _moveEndpointOnCircleToTangent(anchor, free, circle, preferredOrientationHint = null) {
+  if (!anchor || !free || !circle || free.fixed) return false;
+  const radius = Math.max(0, circle.radius);
+  if (radius <= 1e-12) return false;
+  const freeRadius = Math.hypot(free.x - circle.cx, free.y - circle.cy);
+  if (!Number.isFinite(freeRadius) || Math.abs(freeRadius - radius) > Math.max(1e-4, radius * 1e-4)) return false;
+
+  const ax = anchor.x - circle.cx;
+  const ay = anchor.y - circle.cy;
+  const anchorDist2 = ax * ax + ay * ay;
+  const radius2 = radius * radius;
+  if (!Number.isFinite(anchorDist2) || anchorDist2 < radius2 - 1e-9) return false;
+  if (anchorDist2 <= radius2 + 1e-9) {
+    free.x = circle.cx + ax;
+    free.y = circle.cy + ay;
+    return true;
+  }
+
+  const anchorDist = Math.sqrt(anchorDist2);
+  const tangentLen = Math.sqrt(Math.max(0, anchorDist2 - radius2));
+  const scale = radius2 / anchorDist2;
+  const offset = radius * tangentLen / anchorDist2;
+  const candidates = [
+    { x: circle.cx + (scale * ax) + (offset * -ay), y: circle.cy + (scale * ay) + (offset * ax) },
+    { x: circle.cx + (scale * ax) - (offset * -ay), y: circle.cy + (scale * ay) - (offset * ax) },
+  ];
+
+  const currentRadialX = (free.x - circle.cx) / radius;
+  const currentRadialY = (free.y - circle.cy) / radius;
+  const currentLineLen = Math.hypot(anchor.x - free.x, anchor.y - free.y) || 1;
+  const currentDirX = (anchor.x - free.x) / currentLineLen;
+  const currentDirY = (anchor.y - free.y) / currentLineLen;
+  const preferredOrientation = Math.sign(preferredOrientationHint)
+    || Math.sign((currentRadialX * currentDirY) - (currentRadialY * currentDirX))
+    || 1;
+
+  let best = null;
+  for (const candidate of candidates) {
+    const radialX = (candidate.x - circle.cx) / radius;
+    const radialY = (candidate.y - circle.cy) / radius;
+    const dirLen = Math.hypot(anchor.x - candidate.x, anchor.y - candidate.y) || 1;
+    const dirX = (anchor.x - candidate.x) / dirLen;
+    const dirY = (anchor.y - candidate.y) / dirLen;
+    const orientation = Math.sign((radialX * dirY) - (radialY * dirX)) || preferredOrientation;
+    const orientationPenalty = orientation === preferredOrientation ? 0 : 1e6;
+    const movement = Math.hypot(candidate.x - free.x, candidate.y - free.y);
+    const score = orientationPenalty + movement;
+    if (!best || score < best.score) best = { ...candidate, score };
+  }
+  if (!best) return false;
+  free.x = best.x;
+  free.y = best.y;
+  return true;
 }
 
 function _moveFreeEndpointToTangent(anchor, free, circle) {
