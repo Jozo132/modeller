@@ -21,11 +21,12 @@ function _rebuildSnapGrid() {
     if (!Array.isArray(snaps)) continue;
     for (const snap of snaps) {
       if (!snap || !Number.isFinite(snap.x) || !Number.isFinite(snap.y)) continue;
+      const indexedSnap = snap.target ? snap : { ...snap, target: entity };
       const cx = Math.floor(snap.x / _SNAP_CELL);
       const cy = Math.floor(snap.y / _SNAP_CELL);
       const key = `${cx},${cy}`;
       if (!grid.has(key)) grid.set(key, []);
-      grid.get(key).push(snap);
+      grid.get(key).push(indexedSnap);
     }
   }
   for (const point of state.scene.points || []) {

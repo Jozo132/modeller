@@ -5,6 +5,7 @@ import { takeSnapshot } from '../history.js';
 import { Scene } from '../cad/index.js';
 import { union } from '../cad/Operations.js';
 import { OnLine, OnCircle } from '../cad/Constraint.js';
+import { computeFullyConstrained } from '../cad/ConstraintAnalysis.js';
 
 const PICK_PX = 18;       // pixel tolerance for shape picking
 const PICK_PT_PX = 14;    // pixel tolerance for point picking (tighter — points are small)
@@ -42,10 +43,9 @@ function _pointInPolygon(px, py, polygon) {
 }
 
 /** True when every defining point of a primitive is fully locked. */
-function _isFullyConstrained(prim) {
-  if (prim.type === 'point') return prim.fixed;
-  const pts = _shapePoints(prim);
-  return pts.length > 0 && pts.every(p => p.fixed);
+function _isFullyConstrained(prim, fc = computeFullyConstrained(state.scene)) {
+  if (prim.type === 'point') return prim.fixed || fc.points.has(prim);
+  return fc.entities.has(prim);
 }
 
 export class SelectTool extends BaseTool {
@@ -63,6 +63,8 @@ export class SelectTool extends BaseTool {
     // Shape drag state
     this._dragShape = null;       // shape being dragged (segment / circle / arc)
     this._dragShapePts = [];      // non-fixed points of that shape
+    this._dragRadiusShape = null; // circle/arc edge radius being dragged
+    this._dragArcEndpoint = null; // { arc, which } for arc endpoint drags
     this._dragImageHandle = null; // { image, index }
 
     // Dimension drag state (repositioning the offset)
@@ -95,6 +97,8 @@ export class SelectTool extends BaseTool {
     this._dragPoint = null;
     this._dragShape = null;
     this._dragShapePts = [];
+    this._dragRadiusShape = null;
+    this._dragArcEndpoint = null;
     this._dragImageHandle = null;
     this._dragDimension = null;
     this._snapCandidates = [];
@@ -142,6 +146,8 @@ export class SelectTool extends BaseTool {
     this._dragPoint = null;
     this._dragShape = null;
     this._dragShapePts = [];
+    this._dragRadiusShape = null;
+    this._dragArcEndpoint = null;
     this._dragImageHandle = null;
     this._dragDimension = null;
     this._snapCandidates = [];
@@ -195,6 +201,9 @@ export class SelectTool extends BaseTool {
     const draggedPoints = [];
     if (this._dragPoint) {
       draggedPoints.push(this._dragPoint);
+      if (this._dragArcEndpoint?.arc) {
+        draggedPoints.push(this._dragArcEndpoint.arc.startPoint, this._dragArcEndpoint.arc.endPoint);
+      }
     } else if (Array.isArray(this._dragShapePts) && this._dragShapePts.length > 0) {
       draggedPoints.push(...this._dragShapePts);
     }
@@ -286,12 +295,70 @@ export class SelectTool extends BaseTool {
     return false;
   }
 
+  _prepareDraggedTangentEndpointHints(point) {
+    for (const constraint of state.scene.constraints || []) {
+      if (constraint?.type !== 'tangent' || constraint.seg?.type !== 'segment') continue;
+      const { seg, circle } = constraint;
+      let free = null;
+      if (seg.p1 === point) free = seg.p2;
+      else if (seg.p2 === point) free = seg.p1;
+      else {
+        delete constraint._preferredEndpointTangentOrientation;
+        continue;
+      }
+      if (!circle || !free || !Number.isFinite(circle.radius) || circle.radius <= 1e-12) {
+        delete constraint._preferredEndpointTangentOrientation;
+        continue;
+      }
+      const radialX = (free.x - circle.cx) / circle.radius;
+      const radialY = (free.y - circle.cy) / circle.radius;
+      const dirLen = Math.hypot(point.x - free.x, point.y - free.y) || 1;
+      const dirX = (point.x - free.x) / dirLen;
+      const dirY = (point.y - free.y) / dirLen;
+      // Sign of radial × tangent direction selects the CW/CCW tangent branch to preserve during drag.
+      const orientation = Math.sign((radialX * dirY) - (radialY * dirX));
+      if (orientation) constraint._preferredEndpointTangentOrientation = orientation;
+      else delete constraint._preferredEndpointTangentOrientation;
+    }
+  }
+
+  _applyDraggedCenterDependentTranslation(point, targetX, targetY) {
+    if (!point) return;
+    const dx = targetX - point.x;
+    const dy = targetY - point.y;
+    if (Math.hypot(dx, dy) <= 1e-12) return;
+
+    const draggedCircles = Array.from(state.scene.shapes()).filter((shape) =>
+      (shape.type === 'circle' || shape.type === 'arc') && shape.center === point
+    );
+    if (draggedCircles.length === 0) return;
+    const draggedCircleSet = new Set(draggedCircles);
+    const pointsToTranslate = new Set();
+    for (const constraint of state.scene.constraints || []) {
+      if (constraint?.type === 'on_circle' && draggedCircleSet.has(constraint.circle)) {
+        pointsToTranslate.add(constraint.pt);
+      } else if (constraint?.type === 'tangent' && draggedCircleSet.has(constraint.circle) && constraint.seg?.type === 'segment') {
+        pointsToTranslate.add(constraint.seg.p1);
+        pointsToTranslate.add(constraint.seg.p2);
+      }
+    }
+
+    for (const dependentPoint of pointsToTranslate) {
+      if (!dependentPoint || dependentPoint === point || dependentPoint.fixed) continue;
+      dependentPoint.x += dx;
+      dependentPoint.y += dy;
+    }
+  }
+
   _applyDraggedPointTarget(targetX, targetY) {
+    this._prepareDraggedTangentEndpointHints(this._dragPoint);
+    this._applyDraggedCenterDependentTranslation(this._dragPoint, targetX, targetY);
     this._dragPoint.x = targetX;
     this._dragPoint.y = targetY;
     const wasFixed = this._dragPoint.fixed;
     this._dragPoint.fixed = true;
     const solved = this._solveDraggedConstraintState(() => {
+      this._applyDraggedCenterDependentTranslation(this._dragPoint, targetX, targetY);
       this._dragPoint.x = targetX;
       this._dragPoint.y = targetY;
       this._dragPoint.fixed = false;
@@ -311,6 +378,55 @@ export class SelectTool extends BaseTool {
     return solved;
   }
 
+  _applyDraggedArcEndpointTarget(targetX, targetY) {
+    const drag = this._dragArcEndpoint;
+    if (!drag?.arc) return this._applyDraggedPointTarget(targetX, targetY);
+
+    drag.arc.setEndpointPosition(drag.which, targetX, targetY);
+    const endpoint = drag.which === 'start' ? drag.arc.startPoint : drag.arc.endPoint;
+    const wasFixed = endpoint?.fixed;
+    if (endpoint) endpoint.fixed = true;
+    const solved = this._solveDraggedConstraintState(() => {
+      drag.arc.setEndpointPosition(drag.which, targetX, targetY);
+      if (endpoint) endpoint.fixed = false;
+    });
+    if (endpoint) endpoint.fixed = wasFixed;
+
+    const dragPts = [endpoint].filter(Boolean);
+    if (solved && state.autoCoincidence) {
+      this._snapCandidates = this._findSnapCandidates(dragPts);
+      this._lineSnapCandidates = this._findLineSnapCandidates(dragPts);
+    } else {
+      this._snapCandidates = [];
+      this._lineSnapCandidates = [];
+    }
+    this._alignmentGuides = solved ? this._findAlignmentGuides(dragPts) : [];
+
+    state.emit('change');
+    return solved;
+  }
+
+  _applyDraggedRadiusTarget(wx, wy) {
+    const shape = this._dragRadiusShape;
+    if (!shape) return false;
+    const radius = Math.max(0, Math.hypot(wx - shape.cx, wy - shape.cy));
+    shape.radius = radius;
+    const solved = this._solveDraggedConstraintState(() => { shape.radius = radius; });
+    const dragPts = shape.type === 'arc' ? [shape.startPoint, shape.endPoint].filter(Boolean) : [];
+
+    if (solved && state.autoCoincidence && dragPts.length > 0) {
+      this._snapCandidates = this._findSnapCandidates(dragPts);
+      this._lineSnapCandidates = this._findLineSnapCandidates(dragPts);
+    } else {
+      this._snapCandidates = [];
+      this._lineSnapCandidates = [];
+    }
+    this._alignmentGuides = solved && dragPts.length > 0 ? this._findAlignmentGuides(dragPts) : [];
+
+    state.emit('change');
+    return solved;
+  }
+
   _applyDraggedShapeTarget(wx, wy) {
     const wdx = wx - this._dragStart.wx;
     const wdy = wy - this._dragStart.wy;
@@ -320,6 +436,9 @@ export class SelectTool extends BaseTool {
       const movedPoints = this._dragShapePts.map((point) => ({ point, x: point.x + wdx, y: point.y + wdy }));
       const savedFixed = this._dragShapePts.map((point) => point.fixed);
       for (const moved of movedPoints) {
+        this._applyDraggedCenterDependentTranslation(moved.point, moved.x, moved.y);
+      }
+      for (const moved of movedPoints) {
         moved.point.x = moved.x;
         moved.point.y = moved.y;
       }
@@ -327,6 +446,9 @@ export class SelectTool extends BaseTool {
         point.fixed = true;
       }
       solved = this._solveDraggedConstraintState(() => {
+        for (const moved of movedPoints) {
+          this._applyDraggedCenterDependentTranslation(moved.point, moved.x, moved.y);
+        }
         for (const moved of movedPoints) {
           moved.point.x = moved.x;
           moved.point.y = moved.y;
@@ -371,7 +493,7 @@ export class SelectTool extends BaseTool {
       && this._dragStart
       && this._dragSettleTarget
       && this._dragSettleRemaining > 0
-      && (this._dragPoint || this._dragShape)
+      && (this._dragPoint || this._dragShape || this._dragRadiusShape)
     );
   }
 
@@ -383,9 +505,12 @@ export class SelectTool extends BaseTool {
       const { wx: targetX, wy: targetY } = this._dragSettleTarget;
       this._dragSettleRemaining -= 1;
       if (this._dragPoint) {
-        this._applyDraggedPointTarget(targetX, targetY);
+        if (this._dragArcEndpoint) this._applyDraggedArcEndpointTarget(targetX, targetY);
+        else this._applyDraggedPointTarget(targetX, targetY);
       } else if (this._dragShape) {
         this._applyDraggedShapeTarget(targetX, targetY);
+      } else if (this._dragRadiusShape) {
+        this._applyDraggedRadiusTarget(targetX, targetY);
       }
       if (typeof this.app?._scheduleRender === 'function') {
         this.app._scheduleRender();
@@ -397,10 +522,18 @@ export class SelectTool extends BaseTool {
   }
 
   _queueIdleDragSettle(wx, wy) {
-    if (!(this._dragPoint || this._dragShape)) return;
+    if (!(this._dragPoint || this._dragShape || this._dragRadiusShape)) return;
     this._dragSettleTarget = { wx, wy };
     this._dragSettleRemaining = DRAG_SETTLE_EXTRA_ITERATIONS;
     this._scheduleIdleDragSettleFrame();
+  }
+
+  _findArcEndpointRole(point) {
+    for (const arc of state.scene.arcs || []) {
+      if (arc.startPoint === point) return { arc, which: 'start' };
+      if (arc.endPoint === point) return { arc, which: 'end' };
+    }
+    return null;
   }
 
   _restoreSceneDragState(snapshot) {
@@ -429,7 +562,7 @@ export class SelectTool extends BaseTool {
   }
 
   _cancelActiveDrag() {
-    const hadDragGesture = !!(this._dragStart || this._selectionBox || this._dragPoint || this._dragShape || this._dragDimension || this._dragImageHandle || this._isDragging);
+    const hadDragGesture = !!(this._dragStart || this._selectionBox || this._dragPoint || this._dragShape || this._dragRadiusShape || this._dragDimension || this._dragImageHandle || this._isDragging);
     const cancelState = this._dragCancelState;
     if (cancelState?.kind === 'scene') {
       this._restoreSceneDragState(cancelState);
@@ -783,20 +916,25 @@ export class SelectTool extends BaseTool {
       return;
     }
 
+    const fc = computeFullyConstrained(state.scene);
+
     // 1. Point takes priority
     const pt = this._findClosestPoint(wx, wy, PICK_PT_PX);
     if (pt) {
-      if (pt.fixed) {
+      if (_isFullyConstrained(pt, fc)) {
         // Fully constrained point — allow click-select but not drag
         this._dragStart = { wx, wy, sx, sy };
         this._isDragging = false;
         this._dragPoint = null;
         this._dragShape = null;
+        this._dragRadiusShape = null;
         return;
       }
       this._dragPoint = pt;
+      this._dragArcEndpoint = this._findArcEndpointRole(pt);
       this._dragShape = null;
       this._dragShapePts = [];
+      this._dragRadiusShape = null;
       this._dragTookSnapshot = false;
       this._isDragging = false;
       this._dragStart = { wx, wy, sx, sy };
@@ -820,7 +958,20 @@ export class SelectTool extends BaseTool {
 
     // 3. Shape drag (segment / circle / arc / image)
     const shape = entity;
-    if (shape && !_isFullyConstrained(shape)) {
+    if (shape && !_isFullyConstrained(shape, fc)) {
+      if (shape.type === 'circle' || shape.type === 'arc') {
+        this._dragRadiusShape = shape;
+        this._dragShape = null;
+        this._dragShapePts = [];
+        this._dragPoint = null;
+        this._dragArcEndpoint = null;
+        this._dragImageHandle = null;
+        this._dragTookSnapshot = false;
+        this._isDragging = false;
+        this._dragStart = { wx, wy, sx, sy };
+        this._dragCancelState = null;
+        return;
+      }
       const movable = _shapePoints(shape).filter(p => !p.fixed);
       const canTranslateDirectly = (shape.type === 'image' || shape.type === 'group') && typeof shape.translate === 'function';
       if (movable.length > 0 || canTranslateDirectly) {
@@ -828,6 +979,7 @@ export class SelectTool extends BaseTool {
         this._dragShapePts = movable;
         this._dragPoint = null;
         this._dragImageHandle = null;
+        this._dragRadiusShape = null;
         this._dragTookSnapshot = false;
         this._isDragging = false;
         this._dragStart = { wx, wy, sx, sy };
@@ -842,6 +994,7 @@ export class SelectTool extends BaseTool {
     this._dragPoint = null;
     this._dragShape = null;
     this._dragShapePts = [];
+    this._dragRadiusShape = null;
     this._dragImageHandle = null;
     this._dragDimension = null;
     this._dragCancelState = null;
@@ -884,7 +1037,8 @@ export class SelectTool extends BaseTool {
         this._beginConstrainedDragIfNeeded();
       }
       if (this._isDragging) {
-        this._applyDraggedPointTarget(wx, wy);
+        if (this._dragArcEndpoint) this._applyDraggedArcEndpointTarget(wx, wy);
+        else this._applyDraggedPointTarget(wx, wy);
         this._queueIdleDragSettle(wx, wy);
       }
       return;
@@ -902,6 +1056,23 @@ export class SelectTool extends BaseTool {
       if (this._isDragging) {
         this._dragDimension.offset = this._computeDimOffset(this._dragDimension, wx, wy);
         state.emit('change');
+      }
+      return;
+    }
+
+    // ---- Circle / arc edge radius drag in progress ----
+    if (this._dragRadiusShape && this._dragStart) {
+      const dx = sx - this._dragStart.sx;
+      const dy = sy - this._dragStart.sy;
+      if (!this._isDragging && (Math.abs(dx) > DRAG_THRESHOLD || Math.abs(dy) > DRAG_THRESHOLD)) {
+        this._isDragging = true;
+        this._captureSceneDragState();
+        if (!this._dragTookSnapshot) { takeSnapshot(); this._dragTookSnapshot = true; }
+        this._beginConstrainedDragIfNeeded();
+      }
+      if (this._isDragging) {
+        this._applyDraggedRadiusTarget(wx, wy);
+        this._queueIdleDragSettle(wx, wy);
       }
       return;
     }
@@ -975,6 +1146,31 @@ export class SelectTool extends BaseTool {
         state.emit('change');
       }
       this._dragPoint = null;
+      this._dragArcEndpoint = null;
+      this._snapCandidates = [];
+      this._lineSnapCandidates = [];
+      this._alignmentGuides = [];
+      this._isDragging = false;
+      this._dragStart = null;
+      this._dragTookSnapshot = false;
+      this._dragCancelState = null;
+      return;
+    }
+
+    // ---- Finish circle / arc radius drag ----
+    if (this._dragRadiusShape) {
+      if (this._isDragging) {
+        if (this._dragRadiusShape.type === 'arc' && state.autoCoincidence) {
+          const arcPts = [this._dragRadiusShape.startPoint, this._dragRadiusShape.endPoint].filter(Boolean);
+          this._snapCandidates = this._findSnapCandidates(arcPts);
+          this._lineSnapCandidates = this._findLineSnapCandidates(arcPts);
+        }
+        this._applySnapCandidates();
+        this._applyLineSnapCandidates();
+        state.scene.solve(LIVE_DRAG_SOLVE_OPTIONS);
+        state.emit('change');
+      }
+      this._dragRadiusShape = null;
       this._snapCandidates = [];
       this._lineSnapCandidates = [];
       this._alignmentGuides = [];

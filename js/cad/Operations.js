@@ -2,9 +2,15 @@
 //
 // disconnect, union (join), trim, split, move point, move line
 import {
-  Coincident, Horizontal, Vertical, Parallel, Perpendicular,
-  Angle, EqualLength, Length, Tangent, OnLine,
+  Coincident, Distance, Fixed, Horizontal, Vertical, Parallel, Perpendicular,
+  Angle, EqualLength, Length, Tangent, OnLine, OnCircle,
 } from './Constraint.js';
+import { PSegment } from './Segment.js';
+import { PArc } from './ArcPrimitive.js';
+
+const TWO_PI = Math.PI * 2;
+const MAX_CORNER_TRIM_RATIO = 0.95;
+const MIN_CORNER_ANGLE_TOLERANCE = 1e-6;
 
 /**
  * Disconnect a point from coincident points — duplicate it so shapes no longer share.
@@ -220,6 +226,69 @@ export function moveShape(scene, shape, dx, dy) {
   scene.solve();
 }
 
+export function chamferSketchCorner(scene, selection, distance, options = {}) {
+  const corner = resolveSketchCorner(scene, selection);
+  const amount = Number(distance);
+  if (!corner || !Number.isFinite(amount) || amount <= 0) return null;
+
+  const geom = _cornerTrimGeometry(corner, amount);
+  const { pA, pB } = _replaceCornerEndpoints(scene, corner, geom.trimA, geom.trimB);
+  const chamfer = new PSegment(pA, pB);
+  _copySketchStyle(chamfer, corner.segA, options);
+  scene.segments.push(chamfer);
+  _finishCornerReplacement(scene);
+  return { type: 'chamfer', segment: chamfer, pA, pB, corner };
+}
+
+export function filletSketchCorner(scene, selection, radius, options = {}) {
+  const corner = resolveSketchCorner(scene, selection);
+  const r = Number(radius);
+  if (!corner || !Number.isFinite(r) || r <= 0) return null;
+
+  const theta = _cornerAngle(corner);
+  if (theta <= MIN_CORNER_ANGLE_TOLERANCE || Math.abs(Math.PI - theta) <= MIN_CORNER_ANGLE_TOLERANCE) return null;
+  const trimDistance = r / Math.tan(theta / 2);
+  const geom = _cornerTrimGeometry(corner, trimDistance);
+  const bisector = _normalize({ x: corner.uA.x + corner.uB.x, y: corner.uA.y + corner.uB.y });
+  if (!bisector) return null;
+  const centerDistance = r / Math.sin(theta / 2);
+  const center = {
+    x: corner.x + bisector.x * centerDistance,
+    y: corner.y + bisector.y * centerDistance,
+  };
+
+  const { pA, pB } = _replaceCornerEndpoints(scene, corner, geom.trimA, geom.trimB);
+  const centerPoint = scene.addPoint(center.x, center.y);
+  const startAngle = Math.atan2(pA.y - center.y, pA.x - center.x);
+  let endAngle = Math.atan2(pB.y - center.y, pB.x - center.x);
+  let sweep = endAngle - startAngle;
+  while (sweep > Math.PI) { endAngle -= TWO_PI; sweep = endAngle - startAngle; }
+  while (sweep < -Math.PI) { endAngle += TWO_PI; sweep = endAngle - startAngle; }
+
+  const arc = new PArc(centerPoint, r, startAngle, endAngle, pA, pB);
+  _copySketchStyle(arc, corner.segA, options);
+  scene.arcs.push(arc);
+  _finishCornerReplacement(scene);
+  return { type: 'fillet', arc, pA, pB, center: centerPoint, corner };
+}
+
+export function resolveSketchCorner(scene, selection) {
+  const selected = Array.isArray(selection) ? selection.filter(Boolean) : [];
+  const selectedPoints = selected.filter(e => e.type === 'point');
+  const selectedSegments = selected.filter(e => e.type === 'segment');
+
+  if (selectedPoints.length === 1) {
+    return _cornerFromPoint(scene, selectedPoints[0]);
+  }
+  if (selectedSegments.length >= 2) {
+    return _cornerFromSegments(scene, selectedSegments[0], selectedSegments[1]);
+  }
+  if (selectedSegments.length === 1) {
+    return _cornerFromSingleSegment(scene, selectedSegments[0]);
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -228,6 +297,131 @@ function _shapePoints(shape) {
   if (shape.type === 'segment') return [shape.p1, shape.p2];
   if (shape.type === 'circle' || shape.type === 'arc') return [shape.center];
   return [];
+}
+
+function _copySketchStyle(target, source, options) {
+  target.layer = options.layer || source.layer;
+  target.color = options.color ?? source.color;
+  target.construction = options.construction ?? source.construction;
+  if (source.constructionDash) target.constructionDash = source.constructionDash;
+}
+
+function _cornerFromPoint(scene, point) {
+  const refs = _segmentEndpointRefs(scene, point);
+  if (refs.length !== 2) return null;
+  return _makeCorner(refs[0], refs[1]);
+}
+
+function _cornerFromSingleSegment(scene, seg) {
+  const candidates = [];
+  for (const point of [seg.p1, seg.p2]) {
+    const refs = _segmentEndpointRefs(scene, point).filter(ref => ref.seg !== seg);
+    if (refs.length === 1) candidates.push(_makeCorner({ seg, point }, refs[0]));
+  }
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
+function _cornerFromSegments(scene, segA, segB) {
+  const pairs = [];
+  for (const pA of [segA.p1, segA.p2]) {
+    for (const pB of [segB.p1, segB.p2]) {
+      if (_pointsCoincident(scene, pA, pB)) pairs.push([{ seg: segA, point: pA }, { seg: segB, point: pB }]);
+    }
+  }
+  return pairs.length === 1 ? _makeCorner(pairs[0][0], pairs[0][1]) : null;
+}
+
+function _segmentEndpointRefs(scene, point) {
+  const refs = [];
+  for (const seg of scene.segments || []) {
+    if (_pointsCoincident(scene, seg.p1, point)) refs.push({ seg, point: seg.p1 });
+    if (_pointsCoincident(scene, seg.p2, point)) refs.push({ seg, point: seg.p2 });
+  }
+  return refs;
+}
+
+function _pointsCoincident(scene, a, b) {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (Math.hypot(a.x - b.x, a.y - b.y) <= 1e-7) return true;
+  return (scene.constraints || []).some(c =>
+    c.type === 'coincident'
+    && ((c.ptA === a && c.ptB === b) || (c.ptA === b && c.ptB === a))
+  );
+}
+
+function _makeCorner(refA, refB) {
+  if (!refA || !refB || refA.seg === refB.seg) return null;
+  const otherA = refA.seg.p1 === refA.point ? refA.seg.p2 : refA.seg.p1;
+  const otherB = refB.seg.p1 === refB.point ? refB.seg.p2 : refB.seg.p1;
+  const x = (refA.point.x + refB.point.x) / 2;
+  const y = (refA.point.y + refB.point.y) / 2;
+  const uA = _normalize({ x: otherA.x - x, y: otherA.y - y });
+  const uB = _normalize({ x: otherB.x - x, y: otherB.y - y });
+  if (!uA || !uB) return null;
+  return { segA: refA.seg, segB: refB.seg, pointA: refA.point, pointB: refB.point, otherA, otherB, x, y, uA, uB };
+}
+
+function _normalize(v) {
+  const len = Math.hypot(v.x, v.y);
+  if (len <= 1e-9) return null;
+  return { x: v.x / len, y: v.y / len };
+}
+
+function _cornerAngle(corner) {
+  const dot = Math.max(-1, Math.min(1, corner.uA.x * corner.uB.x + corner.uA.y * corner.uB.y));
+  return Math.acos(dot);
+}
+
+function _cornerTrimGeometry(corner, distance) {
+  const maxA = Math.hypot(corner.otherA.x - corner.x, corner.otherA.y - corner.y) * MAX_CORNER_TRIM_RATIO;
+  const maxB = Math.hypot(corner.otherB.x - corner.x, corner.otherB.y - corner.y) * MAX_CORNER_TRIM_RATIO;
+  const d = Math.min(distance, maxA, maxB);
+  return {
+    trimA: { x: corner.x + corner.uA.x * d, y: corner.y + corner.uA.y * d },
+    trimB: { x: corner.x + corner.uB.x * d, y: corner.y + corner.uB.y * d },
+  };
+}
+
+function _replaceCornerEndpoints(scene, corner, trimA, trimB) {
+  const oldPoints = new Set([corner.pointA, corner.pointB]);
+  const pA = scene.addPoint(trimA.x, trimA.y);
+  const pB = scene.addPoint(trimB.x, trimB.y);
+  _duplicateCornerPointConstraints(scene, oldPoints, pA);
+  _duplicateCornerPointConstraints(scene, oldPoints, pB);
+  _setSegmentEndpoint(corner.segA, corner.pointA, pA);
+  _setSegmentEndpoint(corner.segB, corner.pointB, pB);
+  return { pA, pB };
+}
+
+function _setSegmentEndpoint(seg, oldPt, newPt) {
+  if (seg.p1 === oldPt) seg.p1 = newPt;
+  if (seg.p2 === oldPt) seg.p2 = newPt;
+}
+
+function _duplicateCornerPointConstraints(scene, oldPoints, newPt) {
+  const hasOld = (point) => oldPoints.has(point);
+  const constraints = [...(scene.constraints || [])];
+  for (const c of constraints) {
+    if (c.type === 'fixed' && hasOld(c.pt)) {
+      scene.constraints.push(new Fixed(newPt, newPt.x, newPt.y));
+    } else if (c.type === 'distance') {
+      if (hasOld(c.ptA) && !hasOld(c.ptB)) scene.constraints.push(new Distance(newPt, c.ptB, c.value));
+      else if (hasOld(c.ptB) && !hasOld(c.ptA)) scene.constraints.push(new Distance(c.ptA, newPt, c.value));
+    } else if (c.type === 'coincident') {
+      if (hasOld(c.ptA) && !hasOld(c.ptB)) scene.constraints.push(new Coincident(newPt, c.ptB));
+      else if (hasOld(c.ptB) && !hasOld(c.ptA)) scene.constraints.push(new Coincident(c.ptA, newPt));
+    } else if (c.type === 'on_line' && hasOld(c.pt)) {
+      scene.constraints.push(new OnLine(newPt, c.seg));
+    } else if (c.type === 'on_circle' && hasOld(c.pt)) {
+      scene.constraints.push(new OnCircle(newPt, c.circle));
+    }
+  }
+}
+
+function _finishCornerReplacement(scene) {
+  if (typeof scene._cleanOrphanPoints === 'function') scene._cleanOrphanPoints();
+  scene.solve();
 }
 
 /**

@@ -17,10 +17,12 @@ import { buildProjectiveGridGuides } from './render/projective-quad.js';
 import { SketchFeature } from './cad/SketchFeature.js';
 import { constrainedTriangulate } from './cad/Tessellator2/CDT.js';
 import { loadReleaseWasmModule } from './load-release-wasm.js';
+import { computeFullyConstrained } from './cad/ConstraintAnalysis.js';
 
 const MIN_ORBIT_RADIUS = 0.001;
 const MAX_ORBIT_RADIUS = 100000;
 const MAX_EXPANDED_IMAGE_CACHE_ENTRIES = 12;
+const FULLY_CONSTRAINED_COLOR = [0.035, 0.227, 0.612, 1.0]; // dark blue for fully constrained sketch geometry
 
 function _clampOrbitRadius(radius) {
   return Math.max(MIN_ORBIT_RADIUS, Math.min(MAX_ORBIT_RADIUS, radius || MIN_ORBIT_RADIUS));
@@ -2473,7 +2475,7 @@ export class WasmRenderer {
     };
 
     // Compute fully-constrained sets for this frame
-    const fc = _computeFullyConstrained(scene);
+    const fc = computeFullyConstrained(scene);
 
     const entityColor = (entity) => {
       if (entity.selected) return [0, 0.749, 1, 1];
@@ -2576,10 +2578,18 @@ export class WasmRenderer {
         // hovered, or fully constrained. Also always show spline/bezier endpoints
         // (p1/p2) so the user can see and drag them.
         if (refs < 1 && !point.standalone && !point.selected && !point.fixed && !isHover && !isFCPt) return;
-        // For single-reference points, only show if they are spline/bezier endpoints
-        // (interior control points stay hidden until the spline is selected)
+        // For single-reference points, show editable primitive definition points
+        // (arc start/end/center, circle center, spline/bezier endpoints).
         if (refs === 1 && !point.selected && !point.fixed && !isHover && !isFCPt) {
           let isEndpoint = false;
+          for (const circle of scene.circles) {
+            if (circle.center === point) { isEndpoint = true; break; }
+          }
+          if (!isEndpoint) {
+            for (const arc of scene.arcs) {
+              if (arc.center === point || arc.startPoint === point || arc.endPoint === point) { isEndpoint = true; break; }
+            }
+          }
           for (const spl of scene.splines) {
             if (spl.p1 === point || spl.p2 === point) { isEndpoint = true; break; }
           }
@@ -3183,7 +3193,8 @@ export class WasmRenderer {
         const ok = (typeof constraint.error === 'function') ? constraint.error() < 1e-4 : false;
         ctx.fillStyle = ok ? '#00e676' : '#ff643c';
         ctx.font = '13px Consolas, monospace';
-        const cpt = sketchPtToScreen(cx + 12 * wpp, cy + 10 * wpp);
+        // Keep icons close to their owning primitive without covering the constraint point.
+        const cpt = sketchPtToScreen(cx + 5 * wpp, cy + 4 * wpp);
         ctx.fillText(icon, cpt.x, cpt.y);
       });
     }
@@ -5185,218 +5196,6 @@ export class WasmRenderer {
       this.overlayCanvas.parentNode.removeChild(this.overlayCanvas);
     }
   }
-}
-
-// ---------------------------------------------------------------------------
-// Fully-constrained DOF analysis (ported from legacy renderer.js)
-// Propagates constraints from fixed points to determine which points and
-// entities are fully constrained (colored blue #569CD6 in the legacy UI).
-// ---------------------------------------------------------------------------
-
-const FULLY_CONSTRAINED_COLOR = [0.337, 0.612, 0.839, 1.0]; // #569CD6
-
-function _computeFullyConstrained(scene) {
-  const ps = new Map();
-  for (const pt of scene.points) {
-    ps.set(pt, {
-      xLock: !!pt.fixed,
-      yLock: !!pt.fixed,
-      radials: new Set(),
-      onFCLine: false,
-    });
-  }
-  // Include reference entities (origin, axis endpoints) as fully-constrained
-  if (scene._originPoint) {
-    for (const rp of [scene._originPoint, scene._xAxisLine && scene._xAxisLine.p2, scene._yAxisLine && scene._yAxisLine.p2]) {
-      if (rp && !ps.has(rp)) ps.set(rp, { xLock: true, yLock: true, radials: new Set(), onFCLine: false });
-    }
-  }
-
-  const ss = new Map();
-  for (const seg of scene.segments) {
-    ss.set(seg, { dirKnown: false, lenKnown: false });
-  }
-  if (scene._xAxisLine && !ss.has(scene._xAxisLine)) ss.set(scene._xAxisLine, { dirKnown: true, lenKnown: true });
-  if (scene._yAxisLine && !ss.has(scene._yAxisLine)) ss.set(scene._yAxisLine, { dirKnown: true, lenKnown: true });
-
-  const isFC = (s) => {
-    if (!s) return false;
-    if (s.xLock && s.yLock) return true;
-    const axes = (s.xLock ? 1 : 0) + (s.yLock ? 1 : 0);
-    if (axes >= 1 && (s.radials.size >= 1 || s.onFCLine)) return true;
-    if (s.radials.size >= 2) return true;
-    if (s.onFCLine && s.radials.size >= 1) return true;
-    return false;
-  };
-  const markFC = (s) => {
-    if (!s) return false;
-    let ch = false;
-    if (!s.xLock) { s.xLock = true; ch = true; }
-    if (!s.yLock) { s.yLock = true; ch = true; }
-    return ch;
-  };
-
-  let changed = true;
-  let safety = 100; // Max iterations to prevent infinite loops in cyclic constraint graphs
-  while (changed && safety-- > 0) {
-    changed = false;
-
-    for (const c of scene.constraints) {
-      switch (c.type) {
-        case 'fixed': {
-          const sp = ps.get(c.pt);
-          if (sp && markFC(sp)) changed = true;
-          break;
-        }
-        case 'parallel':
-        case 'perpendicular': {
-          const siA = ss.get(c.segA), siB = ss.get(c.segB);
-          if (siA && siB) {
-            if (siA.dirKnown && !siB.dirKnown) { siB.dirKnown = true; changed = true; }
-            if (siB.dirKnown && !siA.dirKnown) { siA.dirKnown = true; changed = true; }
-          }
-          break;
-        }
-        case 'horizontal':
-        case 'vertical': {
-          const si = ss.get(c.seg);
-          if (si && !si.dirKnown) { si.dirKnown = true; changed = true; }
-          break;
-        }
-        case 'coincident': {
-          const sa = ps.get(c.ptA), sb = ps.get(c.ptB);
-          if (sa && sb) {
-            if (isFC(sa) && !isFC(sb) && markFC(sb)) changed = true;
-            if (isFC(sb) && !isFC(sa) && markFC(sa)) changed = true;
-          }
-          break;
-        }
-        case 'angle': {
-          const siA = ss.get(c.segA), siB = ss.get(c.segB);
-          if (siA && siB) {
-            if (siA.dirKnown && !siB.dirKnown) { siB.dirKnown = true; changed = true; }
-            if (siB.dirKnown && !siA.dirKnown) { siA.dirKnown = true; changed = true; }
-          }
-          break;
-        }
-        case 'length': {
-          const si = ss.get(c.seg);
-          if (si && !si.lenKnown) { si.lenKnown = true; changed = true; }
-          break;
-        }
-        case 'equal_length': {
-          const siA = ss.get(c.segA), siB = ss.get(c.segB);
-          if (siA && siB) {
-            if (siA.lenKnown && !siB.lenKnown) { siB.lenKnown = true; changed = true; }
-            if (siB.lenKnown && !siA.lenKnown) { siA.lenKnown = true; changed = true; }
-          }
-          break;
-        }
-        case 'distance': {
-          const sa = ps.get(c.ptA), sb = ps.get(c.ptB);
-          if (sa && sb) {
-            if (isFC(sa) && !sb.radials.has(c.ptA)) { sb.radials.add(c.ptA); changed = true; }
-            if (isFC(sb) && !sa.radials.has(c.ptB)) { sa.radials.add(c.ptB); changed = true; }
-          }
-          for (const seg of scene.segments) {
-            const si = ss.get(seg);
-            if (!si || si.lenKnown) continue;
-            if ((seg.p1 === c.ptA && seg.p2 === c.ptB) || (seg.p1 === c.ptB && seg.p2 === c.ptA)) {
-              si.lenKnown = true; changed = true;
-            }
-          }
-          break;
-        }
-        case 'on_line': {
-          const sp = ps.get(c.pt);
-          const s1 = ps.get(c.seg.p1), s2 = ps.get(c.seg.p2);
-          if (sp && s1 && s2 && isFC(s1) && isFC(s2) && !sp.onFCLine) {
-            sp.onFCLine = true; changed = true;
-          }
-          break;
-        }
-        case 'on_circle': {
-          const sp = ps.get(c.pt), sc = ps.get(c.circle.center);
-          if (sp && sc && isFC(sc) && !sp.radials.has(c.circle.center)) {
-            sp.radials.add(c.circle.center); changed = true;
-          }
-          break;
-        }
-        case 'midpoint': {
-          const sp = ps.get(c.pt);
-          const s1 = ps.get(c.seg.p1), s2 = ps.get(c.seg.p2);
-          if (sp && s1 && s2) {
-            if (isFC(s1) && isFC(s2) && !isFC(sp) && markFC(sp)) changed = true;
-            if (isFC(sp) && isFC(s1) && !isFC(s2) && markFC(s2)) changed = true;
-            if (isFC(sp) && isFC(s2) && !isFC(s1) && markFC(s1)) changed = true;
-          }
-          break;
-        }
-        default: break;
-      }
-
-      // Handle dimension constraints (duck-typed)
-      if (c.type === 'dimension' && c.isConstraint && c.sourceA) {
-        if (c.dimType === 'distance' && c.sourceA.type === 'point' && c.sourceB && c.sourceB.type === 'point') {
-          const sa = ps.get(c.sourceA), sb = ps.get(c.sourceB);
-          if (sa && sb) {
-            if (isFC(sa) && !sb.radials.has(c.sourceA)) { sb.radials.add(c.sourceA); changed = true; }
-            if (isFC(sb) && !sa.radials.has(c.sourceB)) { sa.radials.add(c.sourceB); changed = true; }
-          }
-        } else if (c.dimType === 'distance' && c.sourceA.type === 'segment' && !c.sourceB) {
-          const si = ss.get(c.sourceA);
-          if (si && !si.lenKnown) { si.lenKnown = true; changed = true; }
-        } else if (c.dimType === 'angle' && c.sourceA.type === 'segment' && c.sourceB && c.sourceB.type === 'segment') {
-          const siA = ss.get(c.sourceA), siB = ss.get(c.sourceB);
-          if (siA && siB) {
-            if (siA.dirKnown && !siB.dirKnown) { siB.dirKnown = true; changed = true; }
-            if (siB.dirKnown && !siA.dirKnown) { siA.dirKnown = true; changed = true; }
-          }
-        }
-      }
-    }
-
-    // Derived segment rules
-    for (const seg of scene.segments) {
-      const si = ss.get(seg);
-      if (!si) continue;
-      const s1 = ps.get(seg.p1), s2 = ps.get(seg.p2);
-      if (!s1 || !s2) continue;
-      if (si.dirKnown && si.lenKnown) {
-        if (isFC(s1) && !isFC(s2) && markFC(s2)) changed = true;
-        if (isFC(s2) && !isFC(s1) && markFC(s1)) changed = true;
-      }
-      if (si.lenKnown && !si.dirKnown) {
-        if (isFC(s1) && !s2.radials.has(seg.p1)) { s2.radials.add(seg.p1); changed = true; }
-        if (isFC(s2) && !s1.radials.has(seg.p2)) { s1.radials.add(seg.p2); changed = true; }
-      }
-    }
-  }
-
-  const fcPoints = new Set();
-  for (const [pt, s] of ps) { if (isFC(s)) fcPoints.add(pt); }
-  const fcEntities = new Set();
-  for (const seg of scene.segments) {
-    if (fcPoints.has(seg.p1) && fcPoints.has(seg.p2)) fcEntities.add(seg);
-  }
-  for (const circ of scene.circles) {
-    if (fcPoints.has(circ.center)) fcEntities.add(circ);
-  }
-  for (const arc of scene.arcs) {
-    if (fcPoints.has(arc.center)) fcEntities.add(arc);
-  }
-  if (scene.splines) {
-    for (const spl of scene.splines) {
-      if (spl.points.every(p => fcPoints.has(p))) fcEntities.add(spl);
-    }
-  }
-  if (scene.beziers) {
-    for (const bez of scene.beziers) {
-      if (bez.points.every(p => fcPoints.has(p))) fcEntities.add(bez);
-    }
-  }
-
-  return { points: fcPoints, entities: fcEntities };
 }
 
 // ---------------------------------------------------------------------------

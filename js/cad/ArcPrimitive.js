@@ -33,11 +33,17 @@ export class PArc extends Primitive {
     return this._radius;
   }
   set radius(value) {
+    const startAngle = this.startAngle;
+    const endAngle = this.endAngle;
     this._radius = Math.max(0, value);
+    this._startAngle = startAngle;
+    this._endAngle = endAngle;
     this._syncEndpointRadius();
   }
   get startAngle() {
-    return this.startPoint ? Math.atan2(this.startPoint.y - this.cy, this.startPoint.x - this.cx) : this._startAngle;
+    return this.startPoint
+      ? _angleNear(Math.atan2(this.startPoint.y - this.cy, this.startPoint.x - this.cx), this._startAngle)
+      : this._startAngle;
   }
   set startAngle(value) {
     this._startAngle = value;
@@ -48,7 +54,9 @@ export class PArc extends Primitive {
     }
   }
   get endAngle() {
-    return this.endPoint ? Math.atan2(this.endPoint.y - this.cy, this.endPoint.x - this.cx) : this._endAngle;
+    return this.endPoint
+      ? _angleNear(Math.atan2(this.endPoint.y - this.cy, this.endPoint.x - this.cx), this._endAngle)
+      : this._endAngle;
   }
   set endAngle(value) {
     this._endAngle = value;
@@ -106,16 +114,18 @@ export class PArc extends Primitive {
     const sp = this.startPt;
     const ep = this.endPt;
     const mid = this.startAngle + this.sweepAngle / 2;
-    return [
+    const points = [
       { ...sp, type: 'endpoint' },
       { ...ep, type: 'endpoint' },
-      { x: this.cx + this.radius * Math.cos(mid), y: this.cy + this.radius * Math.sin(mid), type: 'midpoint' },
       { x: this.cx, y: this.cy, type: 'center' },
-      { x: this.cx + this.radius, y: this.cy, type: 'quadrant' },
-      { x: this.cx - this.radius, y: this.cy, type: 'quadrant' },
-      { x: this.cx, y: this.cy + this.radius, type: 'quadrant' },
-      { x: this.cx, y: this.cy - this.radius, type: 'quadrant' },
     ];
+    for (const angle of [0, Math.PI, Math.PI / 2, -Math.PI / 2]) {
+      if (this._angleInArc(angle)) {
+        points.push({ x: this.cx + this.radius * Math.cos(angle), y: this.cy + this.radius * Math.sin(angle), type: 'quadrant' });
+      }
+    }
+    points.push({ x: this.cx + this.radius * Math.cos(mid), y: this.cy + this.radius * Math.sin(mid), type: 'midpoint' });
+    return points;
   }
 
   distanceTo(px, py) {
@@ -140,12 +150,15 @@ export class PArc extends Primitive {
   draw(ctx, vp) {
     const c = vp.worldToScreen(this.cx, this.cy);
     const r = this.radius * vp.zoom;
+    const startAngle = this.startAngle;
+    const sweep = this.sweepAngle;
+    const endAngle = startAngle + sweep;
     if (this.construction) {
       ctx.save();
       ctx.setLineDash(_constructionDash(this.constructionDash));
     }
     ctx.beginPath();
-    ctx.arc(c.x, c.y, r, -this.startAngle, -this.endAngle, this.sweepAngle < 0);
+    ctx.arc(c.x, c.y, r, -startAngle, -endAngle, sweep < 0);
     ctx.stroke();
     if (this.construction) ctx.restore();
   }
@@ -156,14 +169,36 @@ export class PArc extends Primitive {
     if (this.endPoint) this.endPoint.translate(dx, dy);
   }
 
+  setEndpointPosition(which, x, y) {
+    const startAngle = this.startAngle;
+    const endAngle = this.endAngle;
+    const sweep = this.sweepAngle;
+    const nextRadius = Math.max(0, Math.hypot(x - this.cx, y - this.cy));
+    const nextAngle = Math.atan2(y - this.cy, x - this.cx);
+    const keepShortSweep = Math.abs(sweep) <= Math.PI + ARC_ANGLE_EPS;
+    this._radius = nextRadius;
+    if (which === 'start') {
+      this._startAngle = keepShortSweep
+        ? _angleForShortestSweep(nextAngle, endAngle, sweep, 'start')
+        : _anglePreservingSweep(nextAngle, startAngle, endAngle, sweep, 'start');
+      this._endAngle = endAngle;
+    } else {
+      this._startAngle = startAngle;
+      this._endAngle = keepShortSweep
+        ? _angleForShortestSweep(nextAngle, startAngle, sweep, 'end')
+        : _anglePreservingSweep(nextAngle, endAngle, startAngle, sweep, 'end');
+    }
+    this._syncEndpointRadius();
+  }
+
   _syncEndpointRadius() {
     if (this.startPoint) {
-      const a = this.startAngle;
+      const a = this._startAngle;
       this.startPoint.x = this.cx + this._radius * Math.cos(a);
       this.startPoint.y = this.cy + this._radius * Math.sin(a);
     }
     if (this.endPoint) {
-      const a = this.endAngle;
+      const a = this._endAngle;
       this.endPoint.x = this.cx + this._radius * Math.cos(a);
       this.endPoint.y = this.cy + this._radius * Math.sin(a);
     }
@@ -180,4 +215,35 @@ export class PArc extends Primitive {
       endPoint: this.endPoint?.id ?? null,
     };
   }
+}
+
+function _angleNear(angle, reference) {
+  while (angle - reference > Math.PI) angle -= Math.PI * 2;
+  while (angle - reference < -Math.PI) angle += Math.PI * 2;
+  return angle;
+}
+
+function _anglePreservingSweep(angle, previousAngle, fixedAngle, previousSweep, which) {
+  if (Math.abs(previousSweep) <= ARC_ANGLE_EPS) return _angleNear(angle, previousAngle);
+  const sign = Math.sign(previousSweep);
+  let best = null;
+  for (let turn = -2; turn <= 2; turn++) {
+    const candidate = angle + turn * Math.PI * 2;
+    const sweep = which === 'start' ? fixedAngle - candidate : candidate - fixedAngle;
+    if (sign > 0 && (sweep <= ARC_ANGLE_EPS || sweep > Math.PI * 2 + ARC_ANGLE_EPS)) continue;
+    if (sign < 0 && (sweep >= -ARC_ANGLE_EPS || sweep < -Math.PI * 2 - ARC_ANGLE_EPS)) continue;
+    const score = Math.abs(candidate - previousAngle);
+    if (!best || score < best.score) best = { angle: candidate, score };
+  }
+  return best ? best.angle : _angleNear(angle, previousAngle);
+}
+
+function _angleForShortestSweep(angle, fixedAngle, previousSweep, which) {
+  let sweep = which === 'start' ? fixedAngle - angle : angle - fixedAngle;
+  while (sweep > Math.PI) sweep -= Math.PI * 2;
+  while (sweep < -Math.PI) sweep += Math.PI * 2;
+  if (Math.abs(Math.abs(sweep) - Math.PI) <= ARC_ANGLE_EPS && Math.sign(previousSweep) < 0) {
+    sweep = -Math.PI;
+  }
+  return which === 'start' ? fixedAngle - sweep : fixedAngle + sweep;
 }

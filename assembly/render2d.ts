@@ -202,7 +202,8 @@ export function render2DEntities(cmd: CommandBuffer, vp: Mat4, entities: EntityS
 
     // Compute arc sweep
     let sweep = arc.endAngle - arc.startAngle;
-    if (sweep < 0) sweep += <f32>(Math.PI * 2.0);
+    while (sweep > <f32>(Math.PI * 2.0)) sweep -= <f32>(Math.PI * 2.0);
+    while (sweep < <f32>(-Math.PI * 2.0)) sweep += <f32>(Math.PI * 2.0);
     const steps: i32 = <i32>(Math.max(16.0, <f64>CIRCLE_SEGMENTS * <f64>Math.abs(<f64>sweep) / (Math.PI * 2.0)));
     const vertCount = steps * 2;
     const verts = new StaticArray<f32>(vertCount * 3);

@@ -12,10 +12,16 @@ import {
   OnCircle,
   OnLine,
   Perpendicular,
+  RadiusConstraint,
   Tangent,
   Vertical,
 } from '../js/cad/Constraint.js';
+import { computeFullyConstrained } from '../js/cad/ConstraintAnalysis.js';
+import { chamferSketchCorner, filletSketchCorner } from '../js/cad/Operations.js';
 import { state } from '../js/state.js';
+import { findSnap, invalidateSnapGrid } from '../js/snap.js';
+import { CoincidentTool } from '../js/tools/CoincidentTool.js';
+import { ArcTool } from '../js/tools/ArcTool.js';
 import { SelectTool } from '../js/tools/SelectTool.js';
 import { formatTimingSuffix, startTiming } from './test-timing.js';
 
@@ -284,6 +290,85 @@ test('arcs expose draggable start and end points through scene serialization', (
   approx(restoredArc.endAngle, Math.PI, 1e-6, 'restored arc end angle');
 });
 
+test('clockwise arcs preserve negative sweep across the angle wrap boundary', () => {
+  const scene = new Scene();
+  const start = -170 * Math.PI / 180;
+  const end = -190 * Math.PI / 180;
+  const arc = scene.addArc(0, 0, 5, start, end, { merge: false });
+
+  approx(arc.startAngle, start, 1e-12, 'wrapped clockwise arc start angle');
+  approx(arc.endAngle, end, 1e-12, 'wrapped clockwise arc end angle');
+  approx(arc.sweepAngle, -20 * Math.PI / 180, 1e-12, 'wrapped clockwise arc keeps short negative sweep');
+});
+
+test('arc endpoint drags switch short-arc direction seamlessly across endpoint crossings', () => {
+  const scene = new Scene();
+  const ccwEnd = scene.addArc(0, 0, 5, 0, Math.PI, { merge: false });
+  ccwEnd.setEndpointPosition('end', 5 * Math.cos(-Math.PI * 3 / 4), 5 * Math.sin(-Math.PI * 3 / 4));
+  assert.ok(ccwEnd.sweepAngle < 0, `expected CCW end drag to switch to short negative sweep, got ${ccwEnd.sweepAngle}`);
+  approx(ccwEnd.endAngle, -Math.PI * 3 / 4, 1e-12, 'CCW end drag keeps short wrapped end angle');
+
+  const ccwStart = scene.addArc(20, 0, 5, 0, Math.PI, { merge: false });
+  ccwStart.setEndpointPosition('start', 20 + 5 * Math.cos(-Math.PI * 3 / 4), 5 * Math.sin(-Math.PI * 3 / 4));
+  assert.ok(ccwStart.sweepAngle < 0, `expected CCW start drag to switch to short negative sweep, got ${ccwStart.sweepAngle}`);
+  approx(ccwStart.startAngle, Math.PI * 5 / 4, 1e-12, 'CCW start drag keeps short wrapped start angle');
+
+  const cwEnd = scene.addArc(40, 0, 5, 0, -Math.PI, { merge: false });
+  cwEnd.setEndpointPosition('end', 40 + 5 * Math.cos(Math.PI * 3 / 4), 5 * Math.sin(Math.PI * 3 / 4));
+  assert.ok(cwEnd.sweepAngle > 0, `expected CW end drag to switch to short positive sweep, got ${cwEnd.sweepAngle}`);
+  approx(cwEnd.endAngle, Math.PI * 3 / 4, 1e-12, 'CW end drag keeps short wrapped end angle');
+
+  const cwStart = scene.addArc(60, 0, 5, 0, -Math.PI, { merge: false });
+  cwStart.setEndpointPosition('start', 60 + 5 * Math.cos(Math.PI * 3 / 4), 5 * Math.sin(Math.PI * 3 / 4));
+  assert.ok(cwStart.sweepAngle > 0, `expected CW start drag to switch to short positive sweep, got ${cwStart.sweepAngle}`);
+  approx(cwStart.startAngle, -Math.PI * 5 / 4, 1e-12, 'CW start drag keeps short wrapped start angle');
+});
+
+test('long arcs preserve their sweep branch while dragging endpoints', () => {
+  const scene = new Scene();
+  const ccw = scene.addArc(0, 0, 5, 0, Math.PI * 5 / 4, { merge: false });
+  ccw.setEndpointPosition('end', 5 * Math.cos(-Math.PI / 3), 5 * Math.sin(-Math.PI / 3));
+  assert.ok(ccw.sweepAngle > Math.PI, `expected long CCW arc to stay long, got ${ccw.sweepAngle}`);
+  approx(ccw.endAngle, Math.PI * 5 / 3, 1e-12, 'long CCW arc keeps wrapped end angle');
+
+  const cw = scene.addArc(20, 0, 5, 0, -Math.PI * 5 / 4, { merge: false });
+  cw.setEndpointPosition('end', 20 + 5 * Math.cos(Math.PI / 3), 5 * Math.sin(Math.PI / 3));
+  assert.ok(cw.sweepAngle < -Math.PI, `expected long CW arc to stay long, got ${cw.sweepAngle}`);
+  approx(cw.endAngle, -Math.PI * 5 / 3, 1e-12, 'long CW arc keeps wrapped end angle');
+});
+
+test('arc creation preview keeps the nearest short sweep at crossover', () => {
+  const tool = new ArcTool({ renderer: { previewEntities: [], snapPoint: null } });
+  tool._startAngle = 0;
+
+  approx(tool._nearestEndAngle(-Math.PI * 3 / 4), -Math.PI * 3 / 4, 1e-12, 'creation preview switches to short CW sweep');
+  approx(tool._nearestEndAngle(Math.PI * 3 / 4), Math.PI * 3 / 4, 1e-12, 'creation preview keeps short CCW sweep');
+});
+
+test('wrapped clockwise arc draw normalizes canvas angles to a single turn', () => {
+  const scene = new Scene();
+  const arc = scene.addArc(0, 0, 5, 0, -Math.PI / 4, { merge: false });
+  arc._endAngle = -Math.PI * 2 - Math.PI / 4;
+
+  const calls = [];
+  const ctx = {
+    beginPath() {},
+    arc(...args) { calls.push(args); },
+    stroke() {},
+  };
+  const vp = {
+    zoom: 1,
+    worldToScreen(x, y) { return { x, y }; },
+  };
+
+  arc.draw(ctx, vp);
+
+  assert.equal(calls.length, 1, 'expected one canvas arc draw call');
+  const [, , , startAngle, endAngle, anticlockwise] = calls[0];
+  assert.equal(anticlockwise, true, 'wrapped clockwise arc should draw anticlockwise on canvas');
+  approx(Math.abs(endAngle - startAngle), Math.PI / 4, 1e-12, 'canvas draw uses the normalized short sweep');
+});
+
 test('equal and tangent constraints support circle-like arc/circle pairs', () => {
   const scene = new Scene();
   const arc = scene.addArc(0, 0, 3, 0, Math.PI / 2, { merge: false });
@@ -303,6 +388,98 @@ test('equal and tangent constraints support circle-like arc/circle pairs', () =>
   );
 });
 
+test('tangent constraint rotates free line endpoint around a fixed endpoint on a circle', () => {
+  const scene = new Scene();
+  const circle = scene.addCircle(0, 0, 5, { merge: false });
+  const line = scene.addSegment(5, 0, 0, 0, { merge: false });
+  line.p1.fixed = true;
+  scene.constraints.push(new Tangent(line, circle));
+
+  const result = scene.solve({ maxIter: 400, relaxation: 1, tolerance: 1e-4 });
+  assert.ok(result.maxError <= 1e-4, `expected tangent line solve, got maxError=${result.maxError}`);
+  approx(line.p1.x, 5, 1e-9, 'fixed endpoint x remains anchored');
+  approx(line.p1.y, 0, 1e-9, 'fixed endpoint y remains anchored');
+  approx(line.x2, 5, 1e-6, 'free endpoint rotates onto tangent x');
+  approx(Math.abs(line.y2), 5, 1e-6, 'free endpoint rotates onto tangent y');
+});
+
+test('tangent constraint moves coincident line endpoint around circle in both directions', () => {
+  const originalScene = state.scene;
+  const solveDraggedEndpoint = (targetX, targetY) => {
+    const scene = new Scene();
+    const circle = scene.addCircle(0, 0, 5, { merge: false });
+    const line = scene.addSegment(5, 0, 5, 5, { merge: false });
+    scene.constraints.push(new OnCircle(line.p1, circle));
+    scene.constraints.push(new Tangent(line, circle));
+    state.scene = scene;
+    const tool = new SelectTool({ renderer: { previewEntities: [] }, setStatus() {}, viewport: { zoom: 1 } });
+    tool._dragPoint = line.p2;
+    tool._dragSolvedPointState = tool._snapshotScenePointPositions();
+    const solved = tool._applyDraggedPointTarget(targetX, targetY);
+    return { scene, circle, line, solved, result: scene.solve({ maxIter: 800, relaxation: 1, tolerance: 1e-4 }) };
+  };
+
+  try {
+    const ccw = solveDraggedEndpoint(0, 10);
+    assert.ok(ccw.solved, 'CCW drag accepted');
+    assert.ok(ccw.result.maxError <= 1e-4, `expected CCW tangent drag solve, got maxError=${ccw.result.maxError}`);
+    approx(ccw.line.p1.x, 4.3301270189, 1e-6, 'CCW tangent point x');
+    approx(ccw.line.p1.y, 2.5, 1e-6, 'CCW tangent point y');
+    approx(Math.hypot(ccw.line.p1.x - ccw.circle.cx, ccw.line.p1.y - ccw.circle.cy), 5, 1e-6, 'CCW point remains on circle');
+
+    const cw = solveDraggedEndpoint(10, -5);
+    assert.ok(cw.solved, 'CW drag accepted');
+    assert.ok(cw.result.maxError <= 1e-4, `expected CW tangent drag solve, got maxError=${cw.result.maxError}`);
+    approx(cw.line.p1.x, 0, 1e-6, 'CW tangent point x');
+    approx(cw.line.p1.y, -5, 1e-6, 'CW tangent point y');
+    approx(Math.hypot(cw.line.p1.x - cw.circle.cx, cw.line.p1.y - cw.circle.cy), 5, 1e-6, 'CW point remains on circle');
+  } finally {
+    state.scene = originalScene;
+  }
+});
+
+test('dragging tangent circle center preserves nearby on-circle tangent solution', () => {
+  const originalScene = state.scene;
+  const solveDraggedCircleCenter = (targetX, targetY) => {
+    const scene = new Scene();
+    const circle = scene.addCircle(0, 0, 5, { merge: false });
+    const line = scene.addSegment(5, 0, 5, 5, { merge: false });
+    scene.constraints.push(new OnCircle(line.p1, circle));
+    scene.constraints.push(new Tangent(line, circle));
+    state.scene = scene;
+    const tool = new SelectTool({ renderer: { previewEntities: [] }, setStatus() {}, viewport: { zoom: 1 } });
+    tool._dragPoint = circle.center;
+    tool._dragSolvedPointState = tool._snapshotScenePointPositions();
+    tool._dragAcceptedMaxError = tool._currentConstraintMaxError();
+    const solved = tool._applyDraggedPointTarget(targetX, targetY);
+    return { scene, circle, line, solved, result: scene.solve({ maxIter: 800, relaxation: 1, tolerance: 1e-4 }) };
+  };
+
+  try {
+    const horizontal = solveDraggedCircleCenter(5, 0);
+    assert.ok(horizontal.solved, 'horizontal center drag accepted');
+    assert.ok(horizontal.result.maxError <= 1e-4, `expected horizontal center drag solve, got maxError=${horizontal.result.maxError}`);
+    approx(horizontal.circle.cx, 5, 1e-9, 'horizontal center target x');
+    approx(horizontal.circle.cy, 0, 1e-9, 'horizontal center target y');
+    approx(horizontal.line.p1.x, 10, 1e-9, 'horizontal tangent endpoint translates x');
+    approx(horizontal.line.p1.y, 0, 1e-9, 'horizontal tangent endpoint translates y');
+    approx(horizontal.line.p2.x, 10, 1e-9, 'horizontal free endpoint translates x');
+    approx(horizontal.line.p2.y, 5, 1e-9, 'horizontal free endpoint translates y');
+
+    const diagonal = solveDraggedCircleCenter(-2, 2);
+    assert.ok(diagonal.solved, 'diagonal center drag accepted');
+    assert.ok(diagonal.result.maxError <= 1e-4, `expected diagonal center drag solve, got maxError=${diagonal.result.maxError}`);
+    approx(diagonal.circle.cx, -2, 1e-9, 'diagonal center target x');
+    approx(diagonal.circle.cy, 2, 1e-9, 'diagonal center target y');
+    approx(diagonal.line.p1.x, 3, 1e-9, 'diagonal tangent endpoint translates x');
+    approx(diagonal.line.p1.y, 2, 1e-9, 'diagonal tangent endpoint translates y');
+    approx(diagonal.line.p2.x, 3, 1e-9, 'diagonal free endpoint translates x');
+    approx(diagonal.line.p2.y, 7, 1e-9, 'diagonal free endpoint translates y');
+  } finally {
+    state.scene = originalScene;
+  }
+});
+
 test('on-circle constraint can keep standalone points on arc and circle edges', () => {
   const scene = new Scene();
   const circle = scene.addCircle(0, 0, 5, { merge: false });
@@ -314,6 +491,265 @@ test('on-circle constraint can keep standalone points on arc and circle edges', 
   point.y = 0;
   scene.solve({ maxIter: 400, relaxation: 1, tolerance: 1e-4 });
   approx(Math.hypot(point.x - circle.cx, point.y - circle.cy), 5, 1e-6, 'standalone point on circle');
+});
+
+test('circle and arc quadrant snaps carry targets and only expose arc quadrants on the arc span', () => {
+  const originalScene = state.scene;
+  const originalSnapEnabled = state.snapEnabled;
+  const originalGridSize = state.gridSize;
+  try {
+    const scene = new Scene();
+    const circle = scene.addCircle(0, 0, 5, { merge: false });
+    const arc = scene.addArc(20, 0, 5, Math.PI / 4, 3 * Math.PI / 4, { merge: false });
+    state.scene = scene;
+    state.snapEnabled = true;
+    state.gridSize = 1000;
+    invalidateSnapGrid();
+
+    const viewport = {
+      zoom: 10,
+      worldToScreen: (x, y) => ({ x: x * 10, y: y * 10 }),
+      screenToWorld: (x, y) => ({ x: x / 10, y: y / 10 }),
+    };
+
+    const circleSnap = findSnap(50, 0, viewport, { ignoreGridSnap: true });
+    assert.equal(circleSnap?.type, 'quadrant', 'circle right quadrant should snap');
+    assert.equal(circleSnap?.target, circle, 'circle quadrant snap carries target');
+
+    const arcIncludedSnap = findSnap(200, 50, viewport, { ignoreGridSnap: true });
+    assert.equal(arcIncludedSnap?.type, 'quadrant', 'arc top quadrant should snap');
+    assert.equal(arcIncludedSnap?.target, arc, 'arc quadrant snap carries target');
+
+    const arcExcludedSnap = findSnap(250, 0, viewport, { ignoreGridSnap: true });
+    assert.equal(arcExcludedSnap, null, 'arc right quadrant outside the sweep should not snap');
+  } finally {
+    state.scene = originalScene;
+    state.snapEnabled = originalSnapEnabled;
+    state.gridSize = originalGridSize;
+    invalidateSnapGrid();
+  }
+});
+
+test('coincident tool projects points to the clicked circle or arc edge location', () => {
+  const originalScene = state.scene;
+  try {
+    const scene = new Scene();
+    const circle = scene.addCircle(0, 0, 5, { merge: false });
+    const point = scene.addPoint(0, 5);
+    point.standalone = true;
+    state.scene = scene;
+
+    const tool = new CoincidentTool({ renderer: { hoverEntity: null }, setStatus() {}, viewport: { zoom: 10 } });
+    tool._firstPt = point;
+    tool.step = 1;
+    tool.onClick(5, 0);
+
+    approx(point.x, 5, 1e-9, 'point projected to clicked circle edge x');
+    approx(point.y, 0, 1e-9, 'point projected to clicked circle edge y');
+    assert.equal(scene.constraints.some(c => c.type === 'on_circle' && c.pt === point && c.circle === circle), true, 'on-circle constraint added');
+
+    const arc = scene.addArc(20, 0, 5, 0, Math.PI / 2, { merge: false });
+    const arcPoint = scene.addPoint(20, 5);
+    arcPoint.standalone = true;
+    tool._firstPt = arcPoint;
+    tool.step = 1;
+    const arcClickX = 20 + 5 / Math.sqrt(2);
+    const arcClickY = 5 / Math.sqrt(2);
+    tool.onClick(arcClickX, arcClickY);
+
+    approx(arcPoint.x, arcClickX, 1e-9, 'point projected to clicked arc edge x');
+    approx(arcPoint.y, arcClickY, 1e-9, 'point projected to clicked arc edge y');
+    assert.equal(scene.constraints.some(c => c.type === 'on_circle' && c.pt === arcPoint && c.circle === arc), true, 'on-arc constraint added');
+  } finally {
+    state.scene = originalScene;
+  }
+});
+
+test('coincident tool preserves arc radius edit semantics when constraining arc endpoints to edges', () => {
+  const originalScene = state.scene;
+  try {
+    const scene = new Scene();
+    const arc = scene.addArc(0, 0, 5, 0, Math.PI / 2, { merge: false });
+    const line = scene.addSegment(-10, 8, 10, 8, { merge: false });
+    state.scene = scene;
+
+    const tool = new CoincidentTool({ renderer: { hoverEntity: null }, setStatus() {}, viewport: { zoom: 10 } });
+    tool._firstPt = arc.startPoint;
+    tool.step = 1;
+    tool.onClick(5, 8);
+
+    const expectedRadius = Math.hypot(5, 8);
+    approx(arc.center.x, 0, 1e-9, 'arc center x remains fixed');
+    approx(arc.center.y, 0, 1e-9, 'arc center y remains fixed');
+    approx(arc.startPoint.x, 5, 1e-9, 'arc start endpoint projected to line x');
+    approx(arc.startPoint.y, 8, 1e-9, 'arc start endpoint projected to line y');
+    approx(arc.radius, expectedRadius, 1e-9, 'arc radius follows coincident endpoint projection');
+    approx(arc.endPoint.x, 0, 1e-9, 'opposite arc endpoint keeps its angle x');
+    approx(arc.endPoint.y, expectedRadius, 1e-9, 'opposite arc endpoint updates to new radius');
+    assert.equal(scene.constraints.some(c => c.type === 'on_line' && c.pt === arc.startPoint && c.seg === line), true, 'on-line constraint added to arc endpoint');
+  } finally {
+    state.scene = originalScene;
+  }
+});
+
+test('coincident tool preserves arc radius edit semantics when unioning arc endpoints to points', () => {
+  const originalScene = state.scene;
+  try {
+    const scene = new Scene();
+    const arc = scene.addArc(0, 0, 5, 0, Math.PI / 2, { merge: false });
+    const target = scene.addPoint(0, 10);
+    target.standalone = true;
+    state.scene = scene;
+
+    const tool = new CoincidentTool({ renderer: { hoverEntity: null }, setStatus() {}, viewport: { zoom: 10 } });
+    tool._firstPt = arc.endPoint;
+    tool.step = 1;
+    tool.onClick(0, 10);
+
+    approx(arc.center.x, 0, 1e-9, 'arc center x remains fixed after endpoint union');
+    approx(arc.center.y, 0, 1e-9, 'arc center y remains fixed after endpoint union');
+    approx(arc.endPoint.x, 0, 1e-9, 'arc end endpoint unions to target x');
+    approx(arc.endPoint.y, 10, 1e-9, 'arc end endpoint unions to target y');
+    approx(arc.radius, 10, 1e-9, 'arc radius follows coincident endpoint union');
+    approx(arc.startPoint.x, 10, 1e-9, 'opposite arc endpoint updates to new radius x');
+    approx(arc.startPoint.y, 0, 1e-9, 'opposite arc endpoint keeps its angle y');
+    assert.equal(scene.points.includes(target), false, 'target point merged into arc endpoint');
+  } finally {
+    state.scene = originalScene;
+  }
+});
+
+test('circle and arc edge drags edit radius without moving center', () => {
+  const originalScene = state.scene;
+  try {
+    const scene = new Scene();
+    const circle = scene.addCircle(1, 2, 5, { merge: false });
+    state.scene = scene;
+
+    const tool = new SelectTool({ renderer: { previewEntities: [] }, setStatus() {}, viewport: { zoom: 1 } });
+    tool._dragRadiusShape = circle;
+    tool._dragStart = { wx: circle.cx + circle.radius, wy: circle.cy };
+    tool._dragSolvedPointState = tool._snapshotScenePointPositions();
+
+    tool._applyDraggedRadiusTarget(circle.cx, circle.cy + 8);
+
+    approx(circle.cx, 1, 1e-9, 'circle center x remains fixed during edge radius drag');
+    approx(circle.cy, 2, 1e-9, 'circle center y remains fixed during edge radius drag');
+    approx(circle.radius, 8, 1e-9, 'circle radius follows edge drag distance');
+
+    const arc = scene.addArc(0, 0, 5, 0, Math.PI, { merge: false });
+    tool._dragRadiusShape = arc;
+    tool._dragSolvedPointState = tool._snapshotScenePointPositions();
+
+    tool._applyDraggedRadiusTarget(0, 7);
+
+    approx(arc.radius, 7, 1e-9, 'arc radius follows edge drag distance');
+    approx(arc.startPoint.x, 7, 1e-9, 'arc start keeps angle at new radius');
+    approx(arc.endPoint.x, -7, 1e-9, 'arc end keeps angle at new radius');
+  } finally {
+    state.scene = originalScene;
+  }
+});
+
+test('arc endpoint and center point drags preserve expected edit modes', () => {
+  const originalScene = state.scene;
+  try {
+    const scene = new Scene();
+    const arc = scene.addArc(0, 0, 5, 0, Math.PI, { merge: false });
+    state.scene = scene;
+
+    const tool = new SelectTool({ renderer: { previewEntities: [] }, setStatus() {}, viewport: { zoom: 1 } });
+    tool._dragPoint = arc.startPoint;
+    tool._dragArcEndpoint = { arc, which: 'start' };
+    tool._dragSolvedPointState = tool._snapshotScenePointPositions();
+
+    tool._applyDraggedArcEndpointTarget(0, 10);
+
+    approx(arc.radius, 10, 1e-9, 'arc endpoint drag changes radius');
+    approx(arc.startAngle, Math.PI / 2, 1e-9, 'arc endpoint drag changes selected endpoint angle');
+    approx(arc.endPoint.x, -10, 1e-9, 'opposite endpoint keeps angle at edited radius');
+    approx(arc.endPoint.y, 0, 1e-9, 'opposite endpoint keeps angle at edited radius y');
+
+    const startBefore = { x: arc.startPoint.x, y: arc.startPoint.y };
+    const endBefore = { x: arc.endPoint.x, y: arc.endPoint.y };
+    tool._dragPoint = arc.center;
+    tool._dragArcEndpoint = null;
+    tool._dragSolvedPointState = tool._snapshotScenePointPositions();
+    tool._applyDraggedPointTarget(2, 3);
+
+    approx(arc.center.x, 2, 1e-9, 'arc center point drag moves center x');
+    approx(arc.center.y, 3, 1e-9, 'arc center point drag moves center y');
+    approx(arc.startPoint.x, startBefore.x, 1e-9, 'arc center point drag leaves start x');
+    approx(arc.startPoint.y, startBefore.y, 1e-9, 'arc center point drag leaves start y');
+    approx(arc.endPoint.x, endBefore.x, 1e-9, 'arc center point drag leaves end x');
+    approx(arc.endPoint.y, endBefore.y, 1e-9, 'arc center point drag leaves end y');
+  } finally {
+    state.scene = originalScene;
+  }
+});
+
+test('fully constrained analysis includes circle radius and all arc defining points', () => {
+  const scene = new Scene();
+  const circle = scene.addCircle(0, 0, 5, { merge: false });
+
+  scene.addConstraint(new Fixed(circle.center, 0, 0));
+  assert.equal(computeFullyConstrained(scene).entities.has(circle), false, 'fixed center alone does not fully constrain circle radius');
+
+  scene.addConstraint(new RadiusConstraint(circle, 5));
+  assert.equal(computeFullyConstrained(scene).entities.has(circle), true, 'fixed center plus radius fully constrains circle');
+
+  const arc = scene.addArc(10, 0, 4, 0, Math.PI / 2, { merge: false });
+  scene.addConstraint(new Fixed(arc.center, 10, 0));
+  scene.addConstraint(new RadiusConstraint(arc, 4));
+  assert.equal(computeFullyConstrained(scene).entities.has(arc), false, 'arc still needs start/end angles constrained');
+
+  scene.addConstraint(new Fixed(arc.startPoint, arc.startPoint.x, arc.startPoint.y));
+  scene.addConstraint(new Fixed(arc.endPoint, arc.endPoint.x, arc.endPoint.y));
+  assert.equal(computeFullyConstrained(scene).entities.has(arc), true, 'arc is fully constrained when center and endpoints are constrained');
+});
+
+test('sketch chamfer replaces a coincident segment corner and preserves endpoint constraints', () => {
+  const scene = new Scene();
+  const horizontal = scene.addSegment(0, 0, 10, 0, { merge: false });
+  const vertical = scene.addSegment(10, 0, 10, 10, { merge: true });
+  const corner = horizontal.p2;
+
+  scene.addConstraint(new Horizontal(horizontal));
+  scene.addConstraint(new Vertical(vertical));
+  scene.addConstraint(new Fixed(corner, corner.x, corner.y));
+
+  const result = chamferSketchCorner(scene, [corner], 2);
+
+  assert.ok(result?.segment, 'chamfer segment should be created');
+  assert.equal(scene.segments.length, 3, 'two original segments plus chamfer segment');
+  approx(horizontal.p2.x, 8, 1e-6, 'horizontal segment trimmed from corner');
+  approx(horizontal.p2.y, 0, 1e-6, 'horizontal segment remains horizontal');
+  approx(vertical.p1.x, 10, 1e-6, 'vertical segment remains vertical');
+  approx(vertical.p1.y, 2, 1e-6, 'vertical segment trimmed from corner');
+  assert.equal(scene.constraints.some(c => c.type === 'horizontal' && c.seg === horizontal), true, 'horizontal constraint remains attached');
+  assert.equal(scene.constraints.some(c => c.type === 'vertical' && c.seg === vertical), true, 'vertical constraint remains attached');
+  assert.equal(scene.constraints.filter(c => c.type === 'fixed' && (c.pt === horizontal.p2 || c.pt === vertical.p1)).length, 2, 'corner fixed constraint duplicated to replacement endpoints');
+});
+
+test('sketch arc replaces a selected two-segment corner', () => {
+  const scene = new Scene();
+  const horizontal = scene.addSegment(0, 0, 10, 0, { merge: false });
+  const vertical = scene.addSegment(10, 0, 10, 10, { merge: true });
+
+  scene.addConstraint(new Horizontal(horizontal));
+  scene.addConstraint(new Vertical(vertical));
+
+  const result = filletSketchCorner(scene, [horizontal, vertical], 2);
+
+  assert.ok(result?.arc, 'fillet arc should be created');
+  assert.equal(scene.arcs.length, 1, 'one arc created');
+  approx(horizontal.p2.x, 8, 1e-6, 'horizontal segment trimmed by tangent distance');
+  approx(horizontal.p2.y, 0, 1e-6, 'horizontal tangent point y');
+  approx(vertical.p1.x, 10, 1e-6, 'vertical tangent point x');
+  approx(vertical.p1.y, 2, 1e-6, 'vertical segment trimmed by tangent distance');
+  approx(result.arc.radius, 2, 1e-6, 'fillet arc radius');
+  assert.equal(result.arc.startPoint, horizontal.p2, 'arc starts at first replacement endpoint');
+  assert.equal(result.arc.endPoint, vertical.p1, 'arc ends at second replacement endpoint');
 });
 
 console.log(`Passed: ${passed}`);

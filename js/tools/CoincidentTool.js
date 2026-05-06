@@ -62,8 +62,7 @@ export class CoincidentTool extends BaseTool {
           targetSeg.x1, targetSeg.y1, targetSeg.x2, targetSeg.y2,
         );
         if (ix) {
-          pt.x = ix.x;
-          pt.y = ix.y;
+          this._movePointPreservingArcEndpoint(pt, ix.x, ix.y);
           return;
         }
       }
@@ -75,14 +74,48 @@ export class CoincidentTool extends BaseTool {
     const dy = targetSeg.y2 - targetSeg.y1;
     const len2 = dx * dx + dy * dy || 1e-18;
     const t = ((pt.x - targetSeg.x1) * dx + (pt.y - targetSeg.y1) * dy) / len2;
-    pt.x = targetSeg.x1 + t * dx;
-    pt.y = targetSeg.y1 + t * dy;
+    this._movePointPreservingArcEndpoint(pt, targetSeg.x1 + t * dx, targetSeg.y1 + t * dy);
   }
 
-  _movePointToCircle(pt, circle) {
-    const angle = Math.atan2(pt.y - circle.cy, pt.x - circle.cx);
-    pt.x = circle.cx + Math.cos(angle) * circle.radius;
-    pt.y = circle.cy + Math.sin(angle) * circle.radius;
+  _movePointToCircle(pt, circle, wx = pt.x, wy = pt.y) {
+    let angle = Math.atan2(wy - circle.cy, wx - circle.cx);
+    if (circle.type === 'arc' && !circle._angleInArc(angle)) {
+      const start = circle.startPt;
+      const end = circle.endPt;
+      if (Math.hypot(wx - end.x, wy - end.y) < Math.hypot(wx - start.x, wy - start.y)) {
+        angle = circle.endAngle;
+      } else {
+        angle = circle.startAngle;
+      }
+    }
+    this._movePointPreservingArcEndpoint(
+      pt,
+      circle.cx + Math.cos(angle) * circle.radius,
+      circle.cy + Math.sin(angle) * circle.radius
+    );
+  }
+
+  _arcEndpointRefs(pt) {
+    const refs = [];
+    for (const arc of state.scene.arcs || []) {
+      if (arc.startPoint === pt) refs.push({ arc, which: 'start' });
+      if (arc.endPoint === pt) refs.push({ arc, which: 'end' });
+    }
+    return refs;
+  }
+
+  _movePointPreservingArcEndpoint(pt, x, y) {
+    const refs = this._arcEndpointRefs(pt);
+    if (refs.length === 0) {
+      pt.x = x;
+      pt.y = y;
+      return;
+    }
+    for (const ref of refs) {
+      ref.arc.setEndpointPosition(ref.which, x, y);
+    }
+    pt.x = x;
+    pt.y = y;
   }
 
   // ---- events ----
@@ -108,6 +141,13 @@ export class CoincidentTool extends BaseTool {
       if (pt) {
         if (pt === this._firstPt) { this.setStatus('Same point — pick a different one'); return; }
         takeSnapshot();
+        const firstRefs = this._arcEndpointRefs(this._firstPt);
+        const targetRefs = this._arcEndpointRefs(pt);
+        if (firstRefs.length > 0) {
+          this._movePointPreservingArcEndpoint(this._firstPt, pt.x, pt.y);
+        } else if (targetRefs.length > 0) {
+          this._movePointPreservingArcEndpoint(pt, this._firstPt.x, this._firstPt.y);
+        }
         union(state.scene, this._firstPt, pt);
         state.emit('change');
         this._firstPt = null;
@@ -131,7 +171,7 @@ export class CoincidentTool extends BaseTool {
         this._movePointToLine(this._firstPt, seg);
         state.scene.addConstraint(new OnLine(this._firstPt, seg));
       } else {
-        this._movePointToCircle(this._firstPt, seg);
+        this._movePointToCircle(this._firstPt, seg, wx, wy);
         state.scene.addConstraint(new OnCircle(this._firstPt, seg));
       }
       state.emit('change');
