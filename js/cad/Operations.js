@@ -8,6 +8,9 @@ import {
 import { PSegment } from './Segment.js';
 import { PArc } from './ArcPrimitive.js';
 
+const TWO_PI = Math.PI * 2;
+const MAX_CORNER_TRIM_RATIO = 0.95;
+
 /**
  * Disconnect a point from coincident points — duplicate it so shapes no longer share.
  * Returns the new replacement point.
@@ -258,8 +261,8 @@ export function filletSketchCorner(scene, selection, radius, options = {}) {
   const startAngle = Math.atan2(pA.y - center.y, pA.x - center.x);
   let endAngle = Math.atan2(pB.y - center.y, pB.x - center.x);
   let sweep = endAngle - startAngle;
-  while (sweep > Math.PI) { endAngle -= Math.PI * 2; sweep = endAngle - startAngle; }
-  while (sweep < -Math.PI) { endAngle += Math.PI * 2; sweep = endAngle - startAngle; }
+  while (sweep > Math.PI) { endAngle -= TWO_PI; sweep = endAngle - startAngle; }
+  while (sweep < -Math.PI) { endAngle += TWO_PI; sweep = endAngle - startAngle; }
 
   const arc = new PArc(centerPoint, r, startAngle, endAngle, pA, pB);
   _copySketchStyle(arc, corner.segA, options);
@@ -370,8 +373,8 @@ function _cornerAngle(corner) {
 }
 
 function _cornerTrimGeometry(corner, distance) {
-  const maxA = Math.hypot(corner.otherA.x - corner.x, corner.otherA.y - corner.y) * 0.95;
-  const maxB = Math.hypot(corner.otherB.x - corner.x, corner.otherB.y - corner.y) * 0.95;
+  const maxA = Math.hypot(corner.otherA.x - corner.x, corner.otherA.y - corner.y) * MAX_CORNER_TRIM_RATIO;
+  const maxB = Math.hypot(corner.otherB.x - corner.x, corner.otherB.y - corner.y) * MAX_CORNER_TRIM_RATIO;
   const d = Math.min(distance, maxA, maxB);
   return {
     trimA: { x: corner.x + corner.uA.x * d, y: corner.y + corner.uA.y * d },

@@ -146,7 +146,7 @@ export function computeFullyConstrained(scene) {
         }
         case 'on_circle': {
           const sp = ps.get(c.pt), sc = ps.get(c.circle?.center), ci = cs.get(c.circle);
-          if (sp && sc && ci?.radiusKnown && isFC(sc) && !sp.radials.has(c.circle.center)) {
+          if (sp && sc && c.circle && ci?.radiusKnown && isFC(sc) && !sp.radials.has(c.circle.center)) {
             sp.radials.add(c.circle.center); changed = true;
           }
           break;

@@ -464,7 +464,7 @@ export class SelectTool extends BaseTool {
     this._scheduleIdleDragSettleFrame();
   }
 
-  _findArcEndpoint(point) {
+  _findArcEndpointRole(point) {
     for (const arc of state.scene.arcs || []) {
       if (arc.startPoint === point) return { arc, which: 'start' };
       if (arc.endPoint === point) return { arc, which: 'end' };
@@ -882,7 +882,7 @@ export class SelectTool extends BaseTool {
         return;
       }
       this._dragPoint = pt;
-      this._dragArcEndpoint = this._findArcEndpoint(pt);
+      this._dragArcEndpoint = this._findArcEndpointRole(pt);
       this._dragShape = null;
       this._dragShapePts = [];
       this._dragRadiusShape = null;
