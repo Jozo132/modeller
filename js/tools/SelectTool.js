@@ -322,13 +322,43 @@ export class SelectTool extends BaseTool {
     }
   }
 
+  _applyDraggedCenterDependentTranslation(point, targetX, targetY) {
+    if (!point) return;
+    const dx = targetX - point.x;
+    const dy = targetY - point.y;
+    if (Math.hypot(dx, dy) <= 1e-12) return;
+
+    const draggedCircles = Array.from(state.scene.shapes()).filter((shape) =>
+      (shape.type === 'circle' || shape.type === 'arc') && shape.center === point
+    );
+    if (draggedCircles.length === 0) return;
+    const draggedCircleSet = new Set(draggedCircles);
+    const pointsToTranslate = new Set();
+    for (const constraint of state.scene.constraints || []) {
+      if (constraint?.type === 'on_circle' && draggedCircleSet.has(constraint.circle)) {
+        pointsToTranslate.add(constraint.pt);
+      } else if (constraint?.type === 'tangent' && draggedCircleSet.has(constraint.circle) && constraint.seg?.type === 'segment') {
+        pointsToTranslate.add(constraint.seg.p1);
+        pointsToTranslate.add(constraint.seg.p2);
+      }
+    }
+
+    for (const dependentPoint of pointsToTranslate) {
+      if (!dependentPoint || dependentPoint === point || dependentPoint.fixed) continue;
+      dependentPoint.x += dx;
+      dependentPoint.y += dy;
+    }
+  }
+
   _applyDraggedPointTarget(targetX, targetY) {
     this._prepareDraggedTangentEndpointHints(this._dragPoint);
+    this._applyDraggedCenterDependentTranslation(this._dragPoint, targetX, targetY);
     this._dragPoint.x = targetX;
     this._dragPoint.y = targetY;
     const wasFixed = this._dragPoint.fixed;
     this._dragPoint.fixed = true;
     const solved = this._solveDraggedConstraintState(() => {
+      this._applyDraggedCenterDependentTranslation(this._dragPoint, targetX, targetY);
       this._dragPoint.x = targetX;
       this._dragPoint.y = targetY;
       this._dragPoint.fixed = false;
@@ -406,6 +436,9 @@ export class SelectTool extends BaseTool {
       const movedPoints = this._dragShapePts.map((point) => ({ point, x: point.x + wdx, y: point.y + wdy }));
       const savedFixed = this._dragShapePts.map((point) => point.fixed);
       for (const moved of movedPoints) {
+        this._applyDraggedCenterDependentTranslation(moved.point, moved.x, moved.y);
+      }
+      for (const moved of movedPoints) {
         moved.point.x = moved.x;
         moved.point.y = moved.y;
       }
@@ -413,6 +446,9 @@ export class SelectTool extends BaseTool {
         point.fixed = true;
       }
       solved = this._solveDraggedConstraintState(() => {
+        for (const moved of movedPoints) {
+          this._applyDraggedCenterDependentTranslation(moved.point, moved.x, moved.y);
+        }
         for (const moved of movedPoints) {
           moved.point.x = moved.x;
           moved.point.y = moved.y;

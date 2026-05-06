@@ -369,6 +369,48 @@ test('tangent constraint moves coincident line endpoint around circle in both di
   }
 });
 
+test('dragging tangent circle center preserves nearby on-circle tangent solution', () => {
+  const originalScene = state.scene;
+  const solveDraggedCircleCenter = (targetX, targetY) => {
+    const scene = new Scene();
+    const circle = scene.addCircle(0, 0, 5, { merge: false });
+    const line = scene.addSegment(5, 0, 5, 5, { merge: false });
+    scene.constraints.push(new OnCircle(line.p1, circle));
+    scene.constraints.push(new Tangent(line, circle));
+    state.scene = scene;
+    const tool = new SelectTool({ renderer: { previewEntities: [] }, setStatus() {}, viewport: { zoom: 1 } });
+    tool._dragPoint = circle.center;
+    tool._dragSolvedPointState = tool._snapshotScenePointPositions();
+    tool._dragAcceptedMaxError = tool._currentConstraintMaxError();
+    const solved = tool._applyDraggedPointTarget(targetX, targetY);
+    return { scene, circle, line, solved, result: scene.solve({ maxIter: 800, relaxation: 1, tolerance: 1e-4 }) };
+  };
+
+  try {
+    const horizontal = solveDraggedCircleCenter(5, 0);
+    assert.ok(horizontal.solved, 'horizontal center drag accepted');
+    assert.ok(horizontal.result.maxError <= 1e-4, `expected horizontal center drag solve, got maxError=${horizontal.result.maxError}`);
+    approx(horizontal.circle.cx, 5, 1e-9, 'horizontal center target x');
+    approx(horizontal.circle.cy, 0, 1e-9, 'horizontal center target y');
+    approx(horizontal.line.p1.x, 10, 1e-9, 'horizontal tangent endpoint translates x');
+    approx(horizontal.line.p1.y, 0, 1e-9, 'horizontal tangent endpoint translates y');
+    approx(horizontal.line.p2.x, 10, 1e-9, 'horizontal free endpoint translates x');
+    approx(horizontal.line.p2.y, 5, 1e-9, 'horizontal free endpoint translates y');
+
+    const diagonal = solveDraggedCircleCenter(-2, 2);
+    assert.ok(diagonal.solved, 'diagonal center drag accepted');
+    assert.ok(diagonal.result.maxError <= 1e-4, `expected diagonal center drag solve, got maxError=${diagonal.result.maxError}`);
+    approx(diagonal.circle.cx, -2, 1e-9, 'diagonal center target x');
+    approx(diagonal.circle.cy, 2, 1e-9, 'diagonal center target y');
+    approx(diagonal.line.p1.x, 3, 1e-9, 'diagonal tangent endpoint translates x');
+    approx(diagonal.line.p1.y, 2, 1e-9, 'diagonal tangent endpoint translates y');
+    approx(diagonal.line.p2.x, 3, 1e-9, 'diagonal free endpoint translates x');
+    approx(diagonal.line.p2.y, 7, 1e-9, 'diagonal free endpoint translates y');
+  } finally {
+    state.scene = originalScene;
+  }
+});
+
 test('on-circle constraint can keep standalone points on arc and circle edges', () => {
   const scene = new Scene();
   const circle = scene.addCircle(0, 0, 5, { merge: false });

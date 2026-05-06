@@ -75,10 +75,10 @@
     "test-feature-editor-ux.js": 0.202,
     "test-feature-flags.js": 0.198,
     "test-interaction-recorder.js": 0.187,
-    "test-sketch-solver.js": 0.177,
     "test-worker-dispatcher.js": 0.177,
     "test-mirror-pattern.js": 0.176,
     "test-face-selection.js": 0.175,
+    "test-sketch-solver.js": 0.099,
     "test-containment.js": 0.079,
     "test-feature-tree-incremental-tess.js": 0.062,
     "test-sketch-preview-fill.js": 0.058,
@@ -92,7 +92,7 @@
     "test-dirty-face-tracking.js": 0.012,
     "test-recalculate-handle-churn.js": 0.011,
     "test-groups.js": 0.009,
-    "test-sketch-drag.js": 0.008,
     "test-scene-rendering-regressions.js": 0.007,
+    "test-sketch-drag.js": 0.005,
     "test-touch-gestures.js": 0.003
 }
