@@ -172,13 +172,18 @@ export class PArc extends Primitive {
     const sweep = this.sweepAngle;
     const nextRadius = Math.max(0, Math.hypot(x - this.cx, y - this.cy));
     const nextAngle = Math.atan2(y - this.cy, x - this.cx);
+    const keepShortSweep = Math.abs(sweep) <= Math.PI + ARC_ANGLE_EPS;
     this._radius = nextRadius;
     if (which === 'start') {
-      this._startAngle = _anglePreservingSweep(nextAngle, startAngle, endAngle, sweep, 'start');
+      this._startAngle = keepShortSweep
+        ? _angleForShortestSweep(nextAngle, endAngle, sweep, 'start')
+        : _anglePreservingSweep(nextAngle, startAngle, endAngle, sweep, 'start');
       this._endAngle = endAngle;
     } else {
       this._startAngle = startAngle;
-      this._endAngle = _anglePreservingSweep(nextAngle, endAngle, startAngle, sweep, 'end');
+      this._endAngle = keepShortSweep
+        ? _angleForShortestSweep(nextAngle, startAngle, sweep, 'end')
+        : _anglePreservingSweep(nextAngle, endAngle, startAngle, sweep, 'end');
     }
     this._syncEndpointRadius();
   }
@@ -228,4 +233,14 @@ function _anglePreservingSweep(angle, previousAngle, fixedAngle, previousSweep, 
     if (!best || score < best.score) best = { angle: candidate, score };
   }
   return best ? best.angle : _angleNear(angle, previousAngle);
+}
+
+function _angleForShortestSweep(angle, fixedAngle, previousSweep, which) {
+  let sweep = which === 'start' ? fixedAngle - angle : angle - fixedAngle;
+  while (sweep > Math.PI) sweep -= Math.PI * 2;
+  while (sweep < -Math.PI) sweep += Math.PI * 2;
+  if (Math.abs(Math.abs(sweep) - Math.PI) <= ARC_ANGLE_EPS && Math.sign(previousSweep) < 0) {
+    sweep = -Math.PI;
+  }
+  return which === 'start' ? fixedAngle - sweep : fixedAngle + sweep;
 }

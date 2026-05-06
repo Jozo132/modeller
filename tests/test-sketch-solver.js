@@ -21,6 +21,7 @@ import { chamferSketchCorner, filletSketchCorner } from '../js/cad/Operations.js
 import { state } from '../js/state.js';
 import { findSnap, invalidateSnapGrid } from '../js/snap.js';
 import { CoincidentTool } from '../js/tools/CoincidentTool.js';
+import { ArcTool } from '../js/tools/ArcTool.js';
 import { SelectTool } from '../js/tools/SelectTool.js';
 import { formatTimingSuffix, startTiming } from './test-timing.js';
 
@@ -300,27 +301,48 @@ test('clockwise arcs preserve negative sweep across the angle wrap boundary', ()
   approx(arc.sweepAngle, -20 * Math.PI / 180, 1e-12, 'wrapped clockwise arc keeps short negative sweep');
 });
 
-test('arc endpoint drags preserve sweep direction across endpoint crossings', () => {
+test('arc endpoint drags switch short-arc direction seamlessly across endpoint crossings', () => {
   const scene = new Scene();
   const ccwEnd = scene.addArc(0, 0, 5, 0, Math.PI, { merge: false });
   ccwEnd.setEndpointPosition('end', 5 * Math.cos(-Math.PI * 3 / 4), 5 * Math.sin(-Math.PI * 3 / 4));
-  assert.ok(ccwEnd.sweepAngle > 0, `expected CCW end drag to keep positive sweep, got ${ccwEnd.sweepAngle}`);
-  approx(ccwEnd.endAngle, Math.PI * 5 / 4, 1e-12, 'CCW end drag preserves wrapped end angle');
+  assert.ok(ccwEnd.sweepAngle < 0, `expected CCW end drag to switch to short negative sweep, got ${ccwEnd.sweepAngle}`);
+  approx(ccwEnd.endAngle, -Math.PI * 3 / 4, 1e-12, 'CCW end drag keeps short wrapped end angle');
 
   const ccwStart = scene.addArc(20, 0, 5, 0, Math.PI, { merge: false });
   ccwStart.setEndpointPosition('start', 20 + 5 * Math.cos(-Math.PI * 3 / 4), 5 * Math.sin(-Math.PI * 3 / 4));
-  assert.ok(ccwStart.sweepAngle > 0, `expected CCW start drag to keep positive sweep, got ${ccwStart.sweepAngle}`);
-  approx(ccwStart.startAngle, -Math.PI * 3 / 4, 1e-12, 'CCW start drag preserves wrapped start angle');
+  assert.ok(ccwStart.sweepAngle < 0, `expected CCW start drag to switch to short negative sweep, got ${ccwStart.sweepAngle}`);
+  approx(ccwStart.startAngle, Math.PI * 5 / 4, 1e-12, 'CCW start drag keeps short wrapped start angle');
 
   const cwEnd = scene.addArc(40, 0, 5, 0, -Math.PI, { merge: false });
   cwEnd.setEndpointPosition('end', 40 + 5 * Math.cos(Math.PI * 3 / 4), 5 * Math.sin(Math.PI * 3 / 4));
-  assert.ok(cwEnd.sweepAngle < 0, `expected CW end drag to keep negative sweep, got ${cwEnd.sweepAngle}`);
-  approx(cwEnd.endAngle, -Math.PI * 5 / 4, 1e-12, 'CW end drag preserves wrapped end angle');
+  assert.ok(cwEnd.sweepAngle > 0, `expected CW end drag to switch to short positive sweep, got ${cwEnd.sweepAngle}`);
+  approx(cwEnd.endAngle, Math.PI * 3 / 4, 1e-12, 'CW end drag keeps short wrapped end angle');
 
   const cwStart = scene.addArc(60, 0, 5, 0, -Math.PI, { merge: false });
   cwStart.setEndpointPosition('start', 60 + 5 * Math.cos(Math.PI * 3 / 4), 5 * Math.sin(Math.PI * 3 / 4));
-  assert.ok(cwStart.sweepAngle < 0, `expected CW start drag to keep negative sweep, got ${cwStart.sweepAngle}`);
-  approx(cwStart.startAngle, Math.PI * 3 / 4, 1e-12, 'CW start drag preserves wrapped start angle');
+  assert.ok(cwStart.sweepAngle > 0, `expected CW start drag to switch to short positive sweep, got ${cwStart.sweepAngle}`);
+  approx(cwStart.startAngle, -Math.PI * 5 / 4, 1e-12, 'CW start drag keeps short wrapped start angle');
+});
+
+test('long arcs preserve their sweep branch while dragging endpoints', () => {
+  const scene = new Scene();
+  const ccw = scene.addArc(0, 0, 5, 0, Math.PI * 5 / 4, { merge: false });
+  ccw.setEndpointPosition('end', 5 * Math.cos(-Math.PI / 3), 5 * Math.sin(-Math.PI / 3));
+  assert.ok(ccw.sweepAngle > Math.PI, `expected long CCW arc to stay long, got ${ccw.sweepAngle}`);
+  approx(ccw.endAngle, Math.PI * 5 / 3, 1e-12, 'long CCW arc keeps wrapped end angle');
+
+  const cw = scene.addArc(20, 0, 5, 0, -Math.PI * 5 / 4, { merge: false });
+  cw.setEndpointPosition('end', 20 + 5 * Math.cos(Math.PI / 3), 5 * Math.sin(Math.PI / 3));
+  assert.ok(cw.sweepAngle < -Math.PI, `expected long CW arc to stay long, got ${cw.sweepAngle}`);
+  approx(cw.endAngle, -Math.PI * 5 / 3, 1e-12, 'long CW arc keeps wrapped end angle');
+});
+
+test('arc creation preview keeps the nearest short sweep at crossover', () => {
+  const tool = new ArcTool({ renderer: { previewEntities: [], snapPoint: null } });
+  tool._startAngle = 0;
+
+  approx(tool._nearestEndAngle(-Math.PI * 3 / 4), -Math.PI * 3 / 4, 1e-12, 'creation preview switches to short CW sweep');
+  approx(tool._nearestEndAngle(Math.PI * 3 / 4), Math.PI * 3 / 4, 1e-12, 'creation preview keeps short CCW sweep');
 });
 
 test('equal and tangent constraints support circle-like arc/circle pairs', () => {
