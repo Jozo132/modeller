@@ -404,6 +404,60 @@ test('coincident tool projects points to the clicked circle or arc edge location
   }
 });
 
+test('coincident tool preserves arc radius edit semantics when constraining arc endpoints to edges', () => {
+  const originalScene = state.scene;
+  try {
+    const scene = new Scene();
+    const arc = scene.addArc(0, 0, 5, 0, Math.PI / 2, { merge: false });
+    const line = scene.addSegment(-10, 8, 10, 8, { merge: false });
+    state.scene = scene;
+
+    const tool = new CoincidentTool({ renderer: { hoverEntity: null }, setStatus() {}, viewport: { zoom: 10 } });
+    tool._firstPt = arc.startPoint;
+    tool.step = 1;
+    tool.onClick(5, 8);
+
+    const expectedRadius = Math.hypot(5, 8);
+    approx(arc.center.x, 0, 1e-9, 'arc center x remains fixed');
+    approx(arc.center.y, 0, 1e-9, 'arc center y remains fixed');
+    approx(arc.startPoint.x, 5, 1e-9, 'arc start endpoint projected to line x');
+    approx(arc.startPoint.y, 8, 1e-9, 'arc start endpoint projected to line y');
+    approx(arc.radius, expectedRadius, 1e-9, 'arc radius follows coincident endpoint projection');
+    approx(arc.endPoint.x, 0, 1e-9, 'opposite arc endpoint keeps its angle x');
+    approx(arc.endPoint.y, expectedRadius, 1e-9, 'opposite arc endpoint updates to new radius');
+    assert.equal(scene.constraints.some(c => c.type === 'on_line' && c.pt === arc.startPoint && c.seg === line), true, 'on-line constraint added to arc endpoint');
+  } finally {
+    state.scene = originalScene;
+  }
+});
+
+test('coincident tool preserves arc radius edit semantics when unioning arc endpoints to points', () => {
+  const originalScene = state.scene;
+  try {
+    const scene = new Scene();
+    const arc = scene.addArc(0, 0, 5, 0, Math.PI / 2, { merge: false });
+    const target = scene.addPoint(0, 10);
+    target.standalone = true;
+    state.scene = scene;
+
+    const tool = new CoincidentTool({ renderer: { hoverEntity: null }, setStatus() {}, viewport: { zoom: 10 } });
+    tool._firstPt = arc.endPoint;
+    tool.step = 1;
+    tool.onClick(0, 10);
+
+    approx(arc.center.x, 0, 1e-9, 'arc center x remains fixed after endpoint union');
+    approx(arc.center.y, 0, 1e-9, 'arc center y remains fixed after endpoint union');
+    approx(arc.endPoint.x, 0, 1e-9, 'arc end endpoint unions to target x');
+    approx(arc.endPoint.y, 10, 1e-9, 'arc end endpoint unions to target y');
+    approx(arc.radius, 10, 1e-9, 'arc radius follows coincident endpoint union');
+    approx(arc.startPoint.x, 10, 1e-9, 'opposite arc endpoint updates to new radius x');
+    approx(arc.startPoint.y, 0, 1e-9, 'opposite arc endpoint keeps its angle y');
+    assert.equal(scene.points.includes(target), false, 'target point merged into arc endpoint');
+  } finally {
+    state.scene = originalScene;
+  }
+});
+
 test('circle and arc edge drags edit radius without moving center', () => {
   const originalScene = state.scene;
   try {
