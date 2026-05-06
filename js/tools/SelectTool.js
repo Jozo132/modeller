@@ -43,9 +43,9 @@ function _pointInPolygon(px, py, polygon) {
 }
 
 /** True when every defining point of a primitive is fully locked. */
-function _isFullyConstrained(prim) {
-  if (prim.type === 'point') return prim.fixed;
-  return computeFullyConstrained(state.scene).entities.has(prim);
+function _isFullyConstrained(prim, fc = computeFullyConstrained(state.scene)) {
+  if (prim.type === 'point') return prim.fixed || fc.points.has(prim);
+  return fc.entities.has(prim);
 }
 
 export class SelectTool extends BaseTool {
@@ -867,11 +867,12 @@ export class SelectTool extends BaseTool {
       return;
     }
 
+    const fc = computeFullyConstrained(state.scene);
+
     // 1. Point takes priority
     const pt = this._findClosestPoint(wx, wy, PICK_PT_PX);
     if (pt) {
-      const pointFullyConstrained = computeFullyConstrained(state.scene).points.has(pt);
-      if (pt.fixed || pointFullyConstrained) {
+      if (_isFullyConstrained(pt, fc)) {
         // Fully constrained point — allow click-select but not drag
         this._dragStart = { wx, wy, sx, sy };
         this._isDragging = false;
@@ -922,7 +923,7 @@ export class SelectTool extends BaseTool {
 
     // 3. Shape drag (segment / circle / arc / image)
     const shape = entity;
-    if (shape && !_isFullyConstrained(shape)) {
+    if (shape && !_isFullyConstrained(shape, fc)) {
       if (shape.type === 'circle' || shape.type === 'arc') {
         this._dragRadiusShape = shape;
         this._dragShape = null;
