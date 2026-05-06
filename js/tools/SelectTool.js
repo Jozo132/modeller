@@ -662,7 +662,7 @@ export class SelectTool extends BaseTool {
         }
       }
       if (bestShape) {
-        candidates.push({ dragPt: dp, shape: bestShape, seg: bestShape, x: bestX, y: bestY, kind: bestKind });
+        candidates.push({ dragPt: dp, shape: bestShape, x: bestX, y: bestY, kind: bestKind });
       }
     }
     return candidates;

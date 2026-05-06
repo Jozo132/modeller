@@ -3,6 +3,7 @@ import { Primitive } from './Primitive.js';
 
 const _DASH_PATTERNS = { 'dashed': [10, 5], 'dash-dot': [12, 4, 2, 4], 'dotted': [2, 4] };
 function _constructionDash(style) { return _DASH_PATTERNS[style] || _DASH_PATTERNS['dashed']; }
+const ARC_ANGLE_EPS = 1e-12;
 
 export class PArc extends Primitive {
   /**
@@ -95,7 +96,7 @@ export class PArc extends Primitive {
 
   get sweepAngle() {
     let sweep = this.endAngle - this.startAngle;
-    if (Math.abs(sweep) < 1e-12) return Math.PI * 2;
+    if (Math.abs(sweep) < ARC_ANGLE_EPS) return Math.PI * 2;
     while (sweep > Math.PI * 2) sweep -= Math.PI * 2;
     while (sweep < -Math.PI * 2) sweep += Math.PI * 2;
     return sweep;
@@ -127,7 +128,7 @@ export class PArc extends Primitive {
 
   _angleInArc(angle) {
     const sweep = this.sweepAngle;
-    if (Math.abs(Math.abs(sweep) - Math.PI * 2) < 1e-12) return true;
+    if (Math.abs(Math.abs(sweep) - Math.PI * 2) < ARC_ANGLE_EPS) return true;
     if (sweep >= 0) {
       const a = ((angle - this.startAngle) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2);
       return a <= sweep;
