@@ -12,6 +12,7 @@ export class PPoint extends Primitive {
     this.x = x;
     this.y = y;
     this.fixed = fixed;
+    this.standalone = false;
   }
 
   getBounds() { return { minX: this.x, minY: this.y, maxX: this.x, maxY: this.y }; }
@@ -41,6 +42,6 @@ export class PPoint extends Primitive {
   }
 
   serialize() {
-    return { ...super.serialize(), x: this.x, y: this.y, fixed: this.fixed };
+    return { ...super.serialize(), x: this.x, y: this.y, fixed: this.fixed, standalone: this.standalone };
   }
 }

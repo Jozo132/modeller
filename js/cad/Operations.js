@@ -23,8 +23,12 @@ export function disconnect(scene, point) {
     if (shape.type === 'segment') {
       if (shape.p1 === point) shape.p1 = np;
       if (shape.p2 === point) shape.p2 = np;
-    } else if (shape.type === 'circle' || shape.type === 'arc') {
+    } else if (shape.type === 'circle') {
       shape.center = np;
+    } else if (shape.type === 'arc') {
+      if (shape.center === point) shape.center = np;
+      if (shape.startPoint === point) shape.startPoint = np;
+      if (shape.endPoint === point) shape.endPoint = np;
     }
   }
 
@@ -62,6 +66,8 @@ export function union(scene, ptA, ptB) {
   }
   for (const a of scene.arcs) {
     if (a.center === ptB) a.center = ptA;
+    if (a.startPoint === ptB) a.startPoint = ptA;
+    if (a.endPoint === ptB) a.endPoint = ptA;
   }
 
   // Re-wire spline control points from ptB → ptA

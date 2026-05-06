@@ -4,7 +4,7 @@ import { state } from '../state.js';
 import { takeSnapshot } from '../history.js';
 import { Scene } from '../cad/index.js';
 import { union } from '../cad/Operations.js';
-import { OnLine } from '../cad/Constraint.js';
+import { OnLine, OnCircle } from '../cad/Constraint.js';
 
 const PICK_PX = 18;       // pixel tolerance for shape picking
 const PICK_PT_PX = 14;    // pixel tolerance for point picking (tighter — points are small)
@@ -18,7 +18,8 @@ const LIVE_DRAG_ORTHOGONAL_SLACK = 2e-3;
 /** Collect the unique movable points of a shape. */
 function _shapePoints(shape) {
   if (shape.type === 'segment') return [shape.p1, shape.p2];
-  if (shape.type === 'circle' || shape.type === 'arc') return [shape.center];
+  if (shape.type === 'circle') return [shape.center];
+  if (shape.type === 'arc') return [shape.center, shape.startPoint, shape.endPoint].filter(Boolean);
   if (shape.type === 'group') return [];
   return [];
 }
@@ -70,8 +71,8 @@ export class SelectTool extends BaseTool {
     // Snap-to-coincidence state
     this._snapCandidates = [];    // [{dragPt, targetPt, x, y}, ...] — nearby points to merge on drop
 
-    // Point-to-line snap state
-    this._lineSnapCandidates = []; // [{dragPt, seg, x, y}, ...] — points to constrain on-line on drop
+    // Point-to-edge snap state
+    this._lineSnapCandidates = []; // [{dragPt, shape, x, y, kind}, ...] — points to constrain to an edge on drop
 
     // Alignment guide state (visual only, no constraints)
     this._alignmentGuides = [];   // [{axis:'h'|'v', dragPt, matchPt, value}, ...]
@@ -627,7 +628,8 @@ export class SelectTool extends BaseTool {
       if (alreadyOnLine) continue;
 
       let bestDist = Infinity;
-      let bestSeg = null;
+      let bestShape = null;
+      let bestKind = null;
       let bestX = 0, bestY = 0;
       for (const seg of scene.segments) {
         // Skip segments that own this point
@@ -643,11 +645,24 @@ export class SelectTool extends BaseTool {
           bestX = seg.x1 + t * dx;
           bestY = seg.y1 + t * dy;
           bestDist = d;
-          bestSeg = seg;
+          bestShape = seg;
+          bestKind = 'line';
         }
       }
-      if (bestSeg) {
-        candidates.push({ dragPt: dp, seg: bestSeg, x: bestX, y: bestY });
+      for (const circle of [...(scene.circles || []), ...(scene.arcs || [])]) {
+        if (circle.center === dp || circle.startPoint === dp || circle.endPoint === dp) continue;
+        const d = circle.distanceTo(dp.x, dp.y);
+        if (d < snapTol && d < bestDist) {
+          const angle = Math.atan2(dp.y - circle.cy, dp.x - circle.cx);
+          bestX = circle.cx + Math.cos(angle) * circle.radius;
+          bestY = circle.cy + Math.sin(angle) * circle.radius;
+          bestDist = d;
+          bestShape = circle;
+          bestKind = 'circle';
+        }
+      }
+      if (bestShape) {
+        candidates.push({ dragPt: dp, shape: bestShape, seg: bestShape, x: bestX, y: bestY, kind: bestKind });
       }
     }
     return candidates;
@@ -658,8 +673,15 @@ export class SelectTool extends BaseTool {
     if (this._lineSnapCandidates.length === 0) return;
     const scene = state.scene;
     for (const c of this._lineSnapCandidates) {
-      if (scene.points.includes(c.dragPt) && scene.segments.includes(c.seg)) {
-        const constraint = new OnLine(c.dragPt, c.seg);
+      if (scene.points.includes(c.dragPt) && c.kind === 'line' && scene.segments.includes(c.shape)) {
+        c.dragPt.x = c.x;
+        c.dragPt.y = c.y;
+        const constraint = new OnLine(c.dragPt, c.shape);
+        scene.addConstraint(constraint);
+      } else if (scene.points.includes(c.dragPt) && c.kind === 'circle' && (scene.circles.includes(c.shape) || scene.arcs.includes(c.shape))) {
+        c.dragPt.x = c.x;
+        c.dragPt.y = c.y;
+        const constraint = new OnCircle(c.dragPt, c.shape);
         scene.addConstraint(constraint);
       }
     }

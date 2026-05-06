@@ -9,8 +9,10 @@ import {
   Fixed,
   Horizontal,
   Length,
+  OnCircle,
   OnLine,
   Perpendicular,
+  Tangent,
   Vertical,
 } from '../js/cad/Constraint.js';
 import { state } from '../js/state.js';
@@ -260,6 +262,58 @@ test('idle drag settle replays the last drag target for five extra frames', () =
     globalThis.requestAnimationFrame = originalRequestAnimationFrame;
     globalThis.cancelAnimationFrame = originalCancelAnimationFrame;
   }
+});
+
+test('arcs expose draggable start and end points through scene serialization', () => {
+  const scene = new Scene();
+  const arc = scene.addArc(0, 0, 5, 0, Math.PI / 2, { merge: false });
+
+  assert.ok(arc.startPoint, 'arc start point should exist');
+  assert.ok(arc.endPoint, 'arc end point should exist');
+  approx(arc.startPoint.x, 5, 1e-6, 'arc start point x');
+  approx(arc.endPoint.y, 5, 1e-6, 'arc end point y');
+
+  arc.endPoint.x = -5;
+  arc.endPoint.y = 0;
+  approx(arc.endAngle, Math.PI, 1e-6, 'dragged arc end angle');
+
+  const restored = Scene.deserialize(scene.serialize());
+  const restoredArc = restored.arcs[0];
+  assert.ok(restored.points.includes(restoredArc.startPoint), 'restored start point is registered');
+  assert.ok(restored.points.includes(restoredArc.endPoint), 'restored end point is registered');
+  approx(restoredArc.endAngle, Math.PI, 1e-6, 'restored arc end angle');
+});
+
+test('equal and tangent constraints support circle-like arc/circle pairs', () => {
+  const scene = new Scene();
+  const arc = scene.addArc(0, 0, 3, 0, Math.PI / 2, { merge: false });
+  const circle = scene.addCircle(10, 0, 5, { merge: false });
+
+  scene.addConstraint(new EqualLength(arc, circle));
+  approx(arc.radius, circle.radius, 1e-6, 'equal circle-like radius');
+
+  scene.addConstraint(new Tangent(arc, circle));
+  const result = scene.solve({ maxIter: 1200, relaxation: 1, tolerance: 1e-4 });
+  assert.ok(result.maxError <= 1e-3, `expected arc/circle tangent solve, got maxError=${result.maxError}`);
+  approx(
+    Math.hypot(circle.cx - arc.cx, circle.cy - arc.cy),
+    arc.radius + circle.radius,
+    1e-3,
+    'arc/circle tangent distance'
+  );
+});
+
+test('on-circle constraint can keep standalone points on arc and circle edges', () => {
+  const scene = new Scene();
+  const circle = scene.addCircle(0, 0, 5, { merge: false });
+  const point = scene.addPoint(3, 4);
+  point.standalone = true;
+
+  scene.addConstraint(new OnCircle(point, circle));
+  point.x = 10;
+  point.y = 0;
+  scene.solve({ maxIter: 400, relaxation: 1, tolerance: 1e-4 });
+  approx(Math.hypot(point.x - circle.cx, point.y - circle.cy), 5, 1e-6, 'standalone point on circle');
 });
 
 console.log(`Passed: ${passed}`);

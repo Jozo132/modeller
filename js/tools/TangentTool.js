@@ -1,4 +1,4 @@
-// js/tools/TangentTool.js — Select a segment and a circle/arc to make tangent
+// js/tools/TangentTool.js — Select line/circle/arc pairs to make tangent
 import { BaseTool } from './BaseTool.js';
 import { state } from '../state.js';
 import { takeSnapshot } from '../history.js';
@@ -8,18 +8,18 @@ export class TangentTool extends BaseTool {
   constructor(app) {
     super(app);
     this.name = 'tangent';
-    this._seg = null;
+    this._first = null;
   }
 
   activate() {
     super.activate();
-    this._seg = null;
+    this._first = null;
     this.step = 0;
-    this.setStatus('Click a segment (line)');
+    this.setStatus('Click a line, circle, or arc');
   }
 
   deactivate() {
-    this._seg = null;
+    this._first = null;
     this.app.renderer.hoverEntity = null;
     super.deactivate();
   }
@@ -28,9 +28,9 @@ export class TangentTool extends BaseTool {
     const tol = 12 / this._effectiveZoom();
     const hit = state.scene.findClosestShape(wx, wy, tol);
     if (this.step === 0) {
-      this.app.renderer.hoverEntity = (hit && hit.type === 'segment') ? hit : null;
+      this.app.renderer.hoverEntity = (hit && this._isTangentShape(hit)) ? hit : null;
     } else {
-      this.app.renderer.hoverEntity = (hit && (hit.type === 'circle' || hit.type === 'arc')) ? hit : null;
+      this.app.renderer.hoverEntity = (hit && this._canTangent(this._first, hit)) ? hit : null;
     }
   }
 
@@ -40,23 +40,34 @@ export class TangentTool extends BaseTool {
     if (!hit) return;
 
     if (this.step === 0) {
-      if (hit.type !== 'segment') { this.setStatus('Click on a segment first'); return; }
-      this._seg = hit;
+      if (!this._isTangentShape(hit)) { this.setStatus('Click a line, circle, or arc first'); return; }
+      this._first = hit;
       this.step = 1;
-      this.setStatus('Click a circle or arc');
+      this.setStatus('Click tangent target');
     } else {
-      if (hit.type !== 'circle' && hit.type !== 'arc') { this.setStatus('Click on a circle or arc'); return; }
+      if (!this._canTangent(this._first, hit)) { this.setStatus('Click a valid tangent target'); return; }
       takeSnapshot();
-      state.scene.addConstraint(new Tangent(this._seg, hit));
+      state.scene.addConstraint(new Tangent(this._first, hit));
       state.emit('change');
-      this._seg = null;
+      this._first = null;
       this.step = 0;
-      this.setStatus('Tangent applied. Click a segment for next, or switch tool.');
+      this.setStatus('Tangent applied. Click first tangent shape for next, or switch tool.');
     }
   }
 
+  _isTangentShape(shape) {
+    return !!shape && (shape.type === 'segment' || shape.type === 'circle' || shape.type === 'arc');
+  }
+
+  _canTangent(a, b) {
+    if (!this._isTangentShape(a) || !this._isTangentShape(b) || a === b) return false;
+    return a.type === 'segment' || b.type === 'segment' || (
+      (a.type === 'circle' || a.type === 'arc') && (b.type === 'circle' || b.type === 'arc')
+    );
+  }
+
   onCancel() {
-    this._seg = null;
+    this._first = null;
     this.app.renderer.hoverEntity = null;
     super.onCancel();
   }

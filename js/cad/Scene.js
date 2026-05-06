@@ -141,7 +141,13 @@ export class Scene {
 
   addArc(cx, cy, radius, startAngle, endAngle, { merge = true, layer = '0', color = null, construction = false } = {}) {
     const center = merge ? this.getOrCreatePoint(cx, cy) : this.addPoint(cx, cy);
-    const a = new PArc(center, radius, startAngle, endAngle);
+    const sx = cx + radius * Math.cos(startAngle);
+    const sy = cy + radius * Math.sin(startAngle);
+    const ex = cx + radius * Math.cos(endAngle);
+    const ey = cy + radius * Math.sin(endAngle);
+    const startPoint = merge ? this.getOrCreatePoint(sx, sy) : this.addPoint(sx, sy);
+    const endPoint = merge ? this.getOrCreatePoint(ex, ey) : this.addPoint(ex, ey);
+    const a = new PArc(center, radius, startAngle, endAngle, startPoint, endPoint);
     a.layer = layer;
     a.color = color;
     a.construction = construction;
@@ -241,7 +247,7 @@ export class Scene {
     // Remove all shapes that reference this point
     this.segments = this.segments.filter(s => s.p1 !== pt && s.p2 !== pt);
     this.circles = this.circles.filter(c => c.center !== pt);
-    this.arcs = this.arcs.filter(a => a.center !== pt);
+    this.arcs = this.arcs.filter(a => a.center !== pt && a.startPoint !== pt && a.endPoint !== pt);
     this.splines = this.splines.filter(spl => !spl.points.includes(pt));
     this.beziers = this.beziers.filter(bez => !bez.points.includes(pt));
     // Remove constraints referencing this point
@@ -263,7 +269,7 @@ export class Scene {
   removeCircle(circ) {
     this.circles = this.circles.filter(c => c !== circ);
     this.constraints = this.constraints.filter(c => {
-      if (c.circle === circ || c.shape === circ) return false;
+      if (c.circle === circ || c.shape === circ || c.seg === circ || c.segA === circ || c.segB === circ) return false;
       if (c.sourceA === circ || c.sourceB === circ) return false;
       return true;
     });
@@ -273,7 +279,7 @@ export class Scene {
   removeArc(arc) {
     this.arcs = this.arcs.filter(a => a !== arc);
     this.constraints = this.constraints.filter(c => {
-      if (c.circle === arc || c.shape === arc) return false;
+      if (c.circle === arc || c.shape === arc || c.seg === arc || c.segA === arc || c.segB === arc) return false;
       if (c.sourceA === arc || c.sourceB === arc) return false;
       return true;
     });
@@ -334,10 +340,14 @@ export class Scene {
     const used = new Set();
     for (const s of this.segments) { used.add(s.p1); used.add(s.p2); }
     for (const c of this.circles) { used.add(c.center); }
-    for (const a of this.arcs) { used.add(a.center); }
+    for (const a of this.arcs) {
+      used.add(a.center);
+      if (a.startPoint) used.add(a.startPoint);
+      if (a.endPoint) used.add(a.endPoint);
+    }
     for (const spl of this.splines) { for (const p of spl.points) used.add(p); }
     for (const bez of this.beziers) { for (const p of bez.points) used.add(p); }
-    this.points = this.points.filter(p => used.has(p));
+    this.points = this.points.filter(p => used.has(p) || p.standalone);
     this.constraints = this.constraints.filter(c =>
       c.involvedPoints().every(pt => this.points.includes(pt) || (pt && pt._isReference))
     );
@@ -377,8 +387,9 @@ export class Scene {
 
   /** Fast count of drawable shapes (avoids array allocation). */
   entityCount() {
+    const standalonePoints = this.points.reduce((count, point) => count + (point.standalone ? 1 : 0), 0);
     return this.segments.length + this.circles.length + this.arcs.length +
-      this.splines.length + this.beziers.length + this.images.length + this.texts.length + this.dimensions.length;
+      this.splines.length + this.beziers.length + this.images.length + this.texts.length + this.dimensions.length + standalonePoints;
   }
 
   /** All primitives including bare points. */
@@ -436,7 +447,7 @@ export class Scene {
     const out = [];
     for (const s of this.segments) if (s.p1 === pt || s.p2 === pt) out.push(s);
     for (const c of this.circles) if (c.center === pt) out.push(c);
-    for (const a of this.arcs) if (a.center === pt) out.push(a);
+    for (const a of this.arcs) if (a.center === pt || a.startPoint === pt || a.endPoint === pt) out.push(a);
     for (const spl of this.splines) if (spl.points.includes(pt)) out.push(spl);
     for (const bez of this.beziers) if (bez.points.includes(pt)) out.push(bez);
     return out;
@@ -475,7 +486,8 @@ export class Scene {
         const pts = c.involvedPoints();
         if (prim.type === 'point') return pts.includes(prim);
         if (prim.type === 'segment') return pts.includes(prim.p1) || pts.includes(prim.p2);
-        if (prim.type === 'circle' || prim.type === 'arc') return pts.includes(prim.center);
+        if (prim.type === 'circle') return pts.includes(prim.center);
+        if (prim.type === 'arc') return pts.includes(prim.center) || pts.includes(prim.startPoint) || pts.includes(prim.endPoint);
         if (prim.type === 'spline' || prim.type === 'bezier') return prim.points.some(p => pts.includes(p));
         return false;
       }
@@ -483,8 +495,10 @@ export class Scene {
       if (prim.type === 'point') return pts.includes(prim);
       if (prim.type === 'segment') return c.seg === prim || c.segA === prim || c.segB === prim ||
         pts.includes(prim.p1) || pts.includes(prim.p2);
-      if (prim.type === 'circle' || prim.type === 'arc') return c.circle === prim || c.shape === prim ||
+      if (prim.type === 'circle') return c.circle === prim || c.shape === prim || c.seg === prim || c.segA === prim || c.segB === prim ||
         pts.includes(prim.center);
+      if (prim.type === 'arc') return c.circle === prim || c.shape === prim || c.seg === prim || c.segA === prim || c.segB === prim ||
+        pts.includes(prim.center) || pts.includes(prim.startPoint) || pts.includes(prim.endPoint);
       if (prim.type === 'spline' || prim.type === 'bezier') return prim.points.some(p => pts.includes(p));
       return false;
     });
@@ -571,6 +585,7 @@ export class Scene {
       p.id = d.id;
       p.layer = d.layer || '0';
       p.color = d.color || null;
+      p.standalone = d.standalone === true;
       scene.points.push(p);
       ptMap.set(d.id, p);
       if (d.id > maxPrimId) maxPrimId = d.id;
@@ -617,7 +632,9 @@ export class Scene {
     for (const d of (data.arcs || [])) {
       const center = ptMap.get(d.center);
       if (!center) continue;
-      const a = new PArc(center, d.radius, d.startAngle, d.endAngle);
+      const startPoint = d.startPoint != null ? ptMap.get(d.startPoint) : null;
+      const endPoint = d.endPoint != null ? ptMap.get(d.endPoint) : null;
+      const a = new PArc(center, d.radius, d.startAngle, d.endAngle, startPoint, endPoint);
       a.id = d.id;
       a.layer = d.layer || '0';
       a.color = d.color || null;
