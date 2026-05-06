@@ -46,7 +46,7 @@ import { PPoint } from './cad/Point.js';
 import { PSegment } from './cad/Segment.js';
 import { PSpline } from './cad/SplinePrimitive.js';
 import {
-  SelectTool, LineTool, RectangleTool, CircleTool,
+  SelectTool, PointTool, LineTool, RectangleTool, CircleTool,
   ArcTool, PolylineTool, SplineTool, BezierTool, TextTool, DimensionTool,
   MoveTool, CopyTool, TraceImageTool,
   TrimTool, SplitTool, DisconnectTool, UnionTool,
@@ -232,6 +232,7 @@ class App {
     // Tools
     this.tools = {
       select:        new SelectTool(this),
+      point:         new PointTool(this),
       line:          new LineTool(this),
       rectangle:     new RectangleTool(this),
       circle:        new CircleTool(this),
@@ -701,6 +702,10 @@ class App {
           takeSnapshot();
           state.scene.addConstraint(new EqualLength(segments[0], segments[1]));
           applied = true;
+        } else if (curves.length === 2) {
+          takeSnapshot();
+          state.scene.addConstraint(new EqualLength(curves[0], curves[1]));
+          applied = true;
         }
         break;
 
@@ -761,6 +766,10 @@ class App {
         if (segments.length === 1 && curves.length === 1) {
           takeSnapshot();
           state.scene.addConstraint(new Tangent(segments[0], curves[0]));
+          applied = true;
+        } else if (curves.length === 2) {
+          takeSnapshot();
+          state.scene.addConstraint(new Tangent(curves[0], curves[1]));
           applied = true;
         }
         break;
@@ -884,7 +893,7 @@ class App {
     const btn = document.getElementById('btn-construction');
     btn.classList.toggle('active', state.constructionMode);
     // Tint all Draw tool buttons when construction mode is active
-    const drawBtns = document.querySelectorAll('#btn-line, #btn-rect, #btn-circle, #btn-arc, #btn-polyline');
+    const drawBtns = document.querySelectorAll('#btn-point, #btn-line, #btn-rect, #btn-circle, #btn-arc, #btn-polyline');
     for (const b of drawBtns) {
       b.classList.toggle('construction-mode', state.constructionMode);
     }

@@ -1,5 +1,6 @@
 // js/tools/index.js — Tool registry
 export { SelectTool } from './SelectTool.js';
+export { PointTool } from './PointTool.js';
 export { LineTool } from './LineTool.js';
 export { RectangleTool } from './RectangleTool.js';
 export { CircleTool } from './CircleTool.js';

@@ -504,13 +504,28 @@ export class EqualLength extends Constraint {
     this.segA = segA;
     this.segB = segB;
   }
-  error() { return Math.abs(this.segA.length - this.segB.length); }
+  _isRadiusPair() {
+    return _isCircleLike(this.segA) && _isCircleLike(this.segB);
+  }
+  error() {
+    if (this._isRadiusPair()) return Math.abs(this.segA.radius - this.segB.radius);
+    return Math.abs(this.segA.length - this.segB.length);
+  }
   apply() {
+    if (this._isRadiusPair()) {
+      const target = (this.segA.radius + this.segB.radius) / 2;
+      this.segA.radius = target;
+      this.segB.radius = target;
+      return;
+    }
     const target = (this.segA.length + this.segB.length) / 2;
     _scaleSegToLength(this.segB, target);
     _scaleSegToLength(this.segA, target);
   }
-  involvedPoints() { return [this.segA.p1, this.segA.p2, this.segB.p1, this.segB.p2]; }
+  involvedPoints() {
+    if (this._isRadiusPair()) return [_shapeCenter(this.segA), _shapeCenter(this.segB)].filter(Boolean);
+    return [this.segA.p1, this.segA.p2, this.segB.p1, this.segB.p2];
+  }
   serialize() { return { ...super.serialize(), segA: this.segA.id, segB: this.segB.id }; }
 }
 
@@ -566,12 +581,38 @@ export class Tangent extends Constraint {
     this.circle = circle; // PCircle or PArc
   }
   error() {
+    if (_isCircleLike(this.seg) && _isCircleLike(this.circle)) {
+      const target = this.seg.radius + this.circle.radius;
+      return Math.abs(Math.hypot(this.circle.cx - this.seg.cx, this.circle.cy - this.seg.cy) - target);
+    }
     // distance from circle center to the line should equal radius
     const d = _ptLineDist(this.circle.cx, this.circle.cy,
       this.seg.x1, this.seg.y1, this.seg.x2, this.seg.y2);
     return Math.abs(d - this.circle.radius);
   }
   apply() {
+    if (_isCircleLike(this.seg) && _isCircleLike(this.circle)) {
+      const a = this.seg, b = this.circle;
+      const target = a.radius + b.radius;
+      let dx = b.cx - a.cx, dy = b.cy - a.cy;
+      let dist = Math.hypot(dx, dy);
+      if (dist < 1e-9) { dx = 1; dy = 0; dist = 1; }
+      const ux = dx / dist, uy = dy / dist;
+      const err = dist - target;
+      const ac = _shapeCenter(a), bc = _shapeCenter(b);
+      if (ac?.fixed && bc?.fixed) return;
+      if (ac?.fixed && bc && !bc.fixed) {
+        bc.x -= ux * err;
+        bc.y -= uy * err;
+      } else if (bc?.fixed && ac && !ac.fixed) {
+        ac.x += ux * err;
+        ac.y += uy * err;
+      } else {
+        if (ac) { ac.x += ux * err / 2; ac.y += uy * err / 2; }
+        if (bc) { bc.x -= ux * err / 2; bc.y -= uy * err / 2; }
+      }
+      return;
+    }
     // Move the segment so that its line is exactly tangent
     const cx = this.circle.cx, cy = this.circle.cy;
     const dx = this.seg.x2 - this.seg.x1, dy = this.seg.y2 - this.seg.y1;
@@ -586,7 +627,12 @@ export class Tangent extends Constraint {
     if (!this.seg.p1.fixed) { this.seg.p1.x += nx * correction; this.seg.p1.y += ny * correction; }
     if (!this.seg.p2.fixed) { this.seg.p2.x += nx * correction; this.seg.p2.y += ny * correction; }
   }
-  involvedPoints() { return [this.seg.p1, this.seg.p2, this.circle.center]; }
+  involvedPoints() {
+    if (_isCircleLike(this.seg) && _isCircleLike(this.circle)) {
+      return [_shapeCenter(this.seg), _shapeCenter(this.circle)].filter(Boolean);
+    }
+    return [this.seg.p1, this.seg.p2, this.circle.center];
+  }
   serialize() { return { ...super.serialize(), seg: this.seg.id, circle: this.circle.id }; }
 }
 
@@ -855,6 +901,14 @@ function _scaleSegToLength(seg, target) {
   seg.p1.y = my - (dy / 2) * scale;
   seg.p2.x = mx + (dx / 2) * scale;
   seg.p2.y = my + (dy / 2) * scale;
+}
+
+function _isCircleLike(shape) {
+  return !!shape && (shape.type === 'circle' || shape.type === 'arc') && Number.isFinite(shape.radius);
+}
+
+function _shapeCenter(shape) {
+  return _isCircleLike(shape) ? shape.center : null;
 }
 
 function _ptLineDist(px, py, ax, ay, bx, by) {

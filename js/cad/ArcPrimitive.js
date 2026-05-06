@@ -3,6 +3,7 @@ import { Primitive } from './Primitive.js';
 
 const _DASH_PATTERNS = { 'dashed': [10, 5], 'dash-dot': [12, 4, 2, 4], 'dotted': [2, 4] };
 function _constructionDash(style) { return _DASH_PATTERNS[style] || _DASH_PATTERNS['dashed']; }
+const ARC_ANGLE_EPS = 1e-12;
 
 export class PArc extends Primitive {
   /**
@@ -11,24 +12,62 @@ export class PArc extends Primitive {
    * @param {number} startAngle — radians
    * @param {number} endAngle   — radians
    */
-  constructor(center, radius, startAngle, endAngle) {
+  constructor(center, radius, startAngle, endAngle, startPoint = null, endPoint = null) {
     super('arc');
     this.center = center;
-    this.radius = radius;
-    this.startAngle = startAngle;
-    this.endAngle = endAngle;
+    this._radius = radius;
+    this._startAngle = startAngle;
+    this._endAngle = endAngle;
+    this.startPoint = startPoint;
+    this.endPoint = endPoint;
   }
 
   get cx() { return this.center.x; }
   get cy() { return this.center.y; }
+  get radius() {
+    if (this.startPoint && this.endPoint) {
+      const rs = Math.hypot(this.startPoint.x - this.cx, this.startPoint.y - this.cy);
+      const re = Math.hypot(this.endPoint.x - this.cx, this.endPoint.y - this.cy);
+      if (Number.isFinite(rs) && Number.isFinite(re)) return (rs + re) / 2;
+    }
+    return this._radius;
+  }
+  set radius(value) {
+    this._radius = Math.max(0, value);
+    this._syncEndpointRadius();
+  }
+  get startAngle() {
+    return this.startPoint ? Math.atan2(this.startPoint.y - this.cy, this.startPoint.x - this.cx) : this._startAngle;
+  }
+  set startAngle(value) {
+    this._startAngle = value;
+    if (this.startPoint) {
+      const r = this.radius;
+      this.startPoint.x = this.cx + r * Math.cos(value);
+      this.startPoint.y = this.cy + r * Math.sin(value);
+    }
+  }
+  get endAngle() {
+    return this.endPoint ? Math.atan2(this.endPoint.y - this.cy, this.endPoint.x - this.cx) : this._endAngle;
+  }
+  set endAngle(value) {
+    this._endAngle = value;
+    if (this.endPoint) {
+      const r = this.radius;
+      this.endPoint.x = this.cx + r * Math.cos(value);
+      this.endPoint.y = this.cy + r * Math.sin(value);
+    }
+  }
 
   /** Start-point on perimeter */
   get startPt() {
+    if (this.startPoint) return { x: this.startPoint.x, y: this.startPoint.y };
     return { x: this.cx + this.radius * Math.cos(this.startAngle),
              y: this.cy + this.radius * Math.sin(this.startAngle) };
   }
   /** End-point on perimeter */
   get endPt() {
+    if (this.endPoint) return { x: this.endPoint.x, y: this.endPoint.y };
     return { x: this.cx + this.radius * Math.cos(this.endAngle),
              y: this.cy + this.radius * Math.sin(this.endAngle) };
   }
@@ -47,8 +86,7 @@ export class PArc extends Primitive {
 
   _sample(n) {
     const pts = [];
-    let sweep = this.endAngle - this.startAngle;
-    if (sweep <= 0) sweep += Math.PI * 2;
+    const sweep = this.sweepAngle;
     for (let i = 0; i <= n; i++) {
       const a = this.startAngle + (sweep * i) / n;
       pts.push({ x: this.cx + this.radius * Math.cos(a), y: this.cy + this.radius * Math.sin(a) });
@@ -56,15 +94,27 @@ export class PArc extends Primitive {
     return pts;
   }
 
+  get sweepAngle() {
+    let sweep = this.endAngle - this.startAngle;
+    if (Math.abs(sweep) < ARC_ANGLE_EPS) return 0;
+    while (sweep > Math.PI * 2) sweep -= Math.PI * 2;
+    while (sweep < -Math.PI * 2) sweep += Math.PI * 2;
+    return sweep;
+  }
+
   getSnapPoints() {
     const sp = this.startPt;
     const ep = this.endPt;
-    const mid = (this.startAngle + this.endAngle) / 2;
+    const mid = this.startAngle + this.sweepAngle / 2;
     return [
       { ...sp, type: 'endpoint' },
       { ...ep, type: 'endpoint' },
       { x: this.cx + this.radius * Math.cos(mid), y: this.cy + this.radius * Math.sin(mid), type: 'midpoint' },
       { x: this.cx, y: this.cy, type: 'center' },
+      { x: this.cx + this.radius, y: this.cy, type: 'quadrant' },
+      { x: this.cx - this.radius, y: this.cy, type: 'quadrant' },
+      { x: this.cx, y: this.cy + this.radius, type: 'quadrant' },
+      { x: this.cx, y: this.cy - this.radius, type: 'quadrant' },
     ];
   }
 
@@ -77,10 +127,14 @@ export class PArc extends Primitive {
   }
 
   _angleInArc(angle) {
-    let a = ((angle - this.startAngle) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2);
-    let sweep = ((this.endAngle - this.startAngle) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2);
-    if (sweep === 0) sweep = Math.PI * 2;
-    return a <= sweep;
+    const sweep = this.sweepAngle;
+    if (Math.abs(Math.abs(sweep) - Math.PI * 2) < ARC_ANGLE_EPS) return true;
+    if (sweep >= 0) {
+      const a = ((angle - this.startAngle) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2);
+      return a <= sweep;
+    }
+    const a = ((this.startAngle - angle) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2);
+    return a <= -sweep;
   }
 
   draw(ctx, vp) {
@@ -91,13 +145,28 @@ export class PArc extends Primitive {
       ctx.setLineDash(_constructionDash(this.constructionDash));
     }
     ctx.beginPath();
-    ctx.arc(c.x, c.y, r, -this.startAngle, -this.endAngle, true);
+    ctx.arc(c.x, c.y, r, -this.startAngle, -this.endAngle, this.sweepAngle < 0);
     ctx.stroke();
     if (this.construction) ctx.restore();
   }
 
   translate(dx, dy) {
     this.center.translate(dx, dy);
+    if (this.startPoint) this.startPoint.translate(dx, dy);
+    if (this.endPoint) this.endPoint.translate(dx, dy);
+  }
+
+  _syncEndpointRadius() {
+    if (this.startPoint) {
+      const a = this.startAngle;
+      this.startPoint.x = this.cx + this._radius * Math.cos(a);
+      this.startPoint.y = this.cy + this._radius * Math.sin(a);
+    }
+    if (this.endPoint) {
+      const a = this.endAngle;
+      this.endPoint.x = this.cx + this._radius * Math.cos(a);
+      this.endPoint.y = this.cy + this._radius * Math.sin(a);
+    }
   }
 
   serialize() {
@@ -107,6 +176,8 @@ export class PArc extends Primitive {
       radius: this.radius,
       startAngle: this.startAngle,
       endAngle: this.endAngle,
+      startPoint: this.startPoint?.id ?? null,
+      endPoint: this.endPoint?.id ?? null,
     };
   }
 }

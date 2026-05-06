@@ -4,7 +4,7 @@
 import { BaseTool } from './BaseTool.js';
 import { state } from '../state.js';
 import { takeSnapshot } from '../history.js';
-import { OnLine } from '../cad/Constraint.js';
+import { OnCircle, OnLine } from '../cad/Constraint.js';
 import { union } from '../cad/Operations.js';
 
 const PT_PX = 12;   // pixel tolerance for point picking
@@ -40,7 +40,7 @@ export class CoincidentTool extends BaseTool {
   _findSegment(wx, wy) {
     const tol = SEG_PX / this._effectiveZoom();
     const hit = state.scene.findClosestShape(wx, wy, tol);
-    return (hit && hit.type === 'segment') ? hit : null;
+    return (hit && (hit.type === 'segment' || hit.type === 'circle' || hit.type === 'arc')) ? hit : null;
   }
 
   /**
@@ -79,6 +79,12 @@ export class CoincidentTool extends BaseTool {
     pt.y = targetSeg.y1 + t * dy;
   }
 
+  _movePointToCircle(pt, circle) {
+    const angle = Math.atan2(pt.y - circle.cy, pt.x - circle.cx);
+    pt.x = circle.cx + Math.cos(angle) * circle.radius;
+    pt.y = circle.cy + Math.sin(angle) * circle.radius;
+  }
+
   // ---- events ----
 
   onMouseMove(wx, wy) {
@@ -95,9 +101,9 @@ export class CoincidentTool extends BaseTool {
       if (!pt) { this.setStatus('No point found — click closer to a point'); return; }
       this._firstPt = pt;
       this.step = 1;
-      this.setStatus('Click second point, or a line to project onto');
+      this.setStatus('Click second point, or an edge to project onto');
     } else {
-      // Second click — destination: point or line body
+      // Second click — destination: point or edge body
       const pt = this._findPoint(wx, wy);
       if (pt) {
         if (pt === this._firstPt) { this.setStatus('Same point — pick a different one'); return; }
@@ -110,24 +116,28 @@ export class CoincidentTool extends BaseTool {
         return;
       }
 
-      // Clicking on a line body → project point onto line
+      // Clicking on an edge body → project point onto line/circle/arc
       const seg = this._findSegment(wx, wy);
-      if (!seg) { this.setStatus('No point or line found — click closer'); return; }
+      if (!seg) { this.setStatus('No point or edge found — click closer'); return; }
 
       // Don't project if the point is already an endpoint of the target
-      if (this._firstPt === seg.p1 || this._firstPt === seg.p2) {
-        this.setStatus('Point is already on this line');
+      if (this._firstPt === seg.p1 || this._firstPt === seg.p2 || this._firstPt === seg.center || this._firstPt === seg.startPoint || this._firstPt === seg.endPoint) {
+        this.setStatus('Point is already on this edge');
         return;
       }
 
       takeSnapshot();
-      this._movePointToLine(this._firstPt, seg);
-      // Add OnLine constraint so the point stays on the target line
-      state.scene.addConstraint(new OnLine(this._firstPt, seg));
+      if (seg.type === 'segment') {
+        this._movePointToLine(this._firstPt, seg);
+        state.scene.addConstraint(new OnLine(this._firstPt, seg));
+      } else {
+        this._movePointToCircle(this._firstPt, seg);
+        state.scene.addConstraint(new OnCircle(this._firstPt, seg));
+      }
       state.emit('change');
       this._firstPt = null;
       this.step = 0;
-      this.setStatus('Point moved onto line. Click first point for next, or switch tool.');
+      this.setStatus('Point moved onto edge. Click first point for next, or switch tool.');
     }
   }
 

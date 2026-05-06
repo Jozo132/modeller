@@ -2035,8 +2035,8 @@ export class WasmRenderer {
       const numSegs = 16;
       const startA = arc.startAngle || 0;
       const endA = arc.endAngle || Math.PI;
-      let sweep = endA - startA;
-      if (sweep < 0) sweep += Math.PI * 2;
+      let sweep = Number.isFinite(arc.sweepAngle) ? arc.sweepAngle : (endA - startA);
+      if (!Number.isFinite(arc.sweepAngle) && sweep < 0) sweep += Math.PI * 2;
       for (let i = 0; i < numSegs; i++) {
         const a1 = startA + (i / numSegs) * sweep;
         const a2 = startA + ((i + 1) / numSegs) * sweep;
@@ -2560,7 +2560,11 @@ export class WasmRenderer {
       const ptRefs = new Map();
       for (const s of scene.segments) { ptRefs.set(s.p1, (ptRefs.get(s.p1) || 0) + 1); ptRefs.set(s.p2, (ptRefs.get(s.p2) || 0) + 1); }
       for (const c of scene.circles) { ptRefs.set(c.center, (ptRefs.get(c.center) || 0) + 1); }
-      for (const a of scene.arcs) { ptRefs.set(a.center, (ptRefs.get(a.center) || 0) + 1); }
+      for (const a of scene.arcs) {
+        ptRefs.set(a.center, (ptRefs.get(a.center) || 0) + 1);
+        if (a.startPoint) ptRefs.set(a.startPoint, (ptRefs.get(a.startPoint) || 0) + 1);
+        if (a.endPoint) ptRefs.set(a.endPoint, (ptRefs.get(a.endPoint) || 0) + 1);
+      }
       for (const spl of scene.splines) { for (const p of spl.points) ptRefs.set(p, (ptRefs.get(p) || 0) + 1); }
       if (scene.beziers) { for (const bez of scene.beziers) { for (const p of bez.points) ptRefs.set(p, (ptRefs.get(p) || 0) + 1); } }
 
@@ -2571,7 +2575,7 @@ export class WasmRenderer {
         // Show points that are: referenced by 2+ entities (junction), selected, fixed,
         // hovered, or fully constrained. Also always show spline/bezier endpoints
         // (p1/p2) so the user can see and drag them.
-        if (refs < 1 && !point.selected && !point.fixed && !isHover && !isFCPt) return;
+        if (refs < 1 && !point.standalone && !point.selected && !point.fixed && !isHover && !isFCPt) return;
         // For single-reference points, only show if they are spline/bezier endpoints
         // (interior control points stay hidden until the spline is selected)
         if (refs === 1 && !point.selected && !point.fixed && !isHover && !isFCPt) {
@@ -3245,8 +3249,8 @@ export class WasmRenderer {
       const steps = TOP_WIREFRAME_ARC_TESSELLATION_STEPS;
       let start = arc.startAngle || 0;
       let end = arc.endAngle || Math.PI;
-      let sweep = end - start;
-      if (sweep < 0) sweep += Math.PI * 2;
+      let sweep = Number.isFinite(arc.sweepAngle) ? arc.sweepAngle : (end - start);
+      if (!Number.isFinite(arc.sweepAngle) && sweep < 0) sweep += Math.PI * 2;
       for (let step = 0; step <= steps; step++) {
         const angle = start + (step / steps) * sweep;
         points.push({
@@ -4085,8 +4089,8 @@ export class WasmRenderer {
         const numSegs = 16;
         let startA = arc.startAngle || 0;
         let endA = arc.endAngle || Math.PI;
-        let sweep = endA - startA;
-        if (sweep < 0) sweep += Math.PI * 2;
+        let sweep = Number.isFinite(arc.sweepAngle) ? arc.sweepAngle : (endA - startA);
+        if (!Number.isFinite(arc.sweepAngle) && sweep < 0) sweep += Math.PI * 2;
         for (let i = 0; i < numSegs; i++) {
           const a1 = startA + (i / numSegs) * sweep;
           const a2 = startA + ((i + 1) / numSegs) * sweep;
@@ -4155,8 +4159,8 @@ export class WasmRenderer {
           const numSegs = 16;
           let startA = entity.startAngle || 0;
           let endA = entity.endAngle || Math.PI;
-          let sweep = endA - startA;
-          if (sweep < 0) sweep += Math.PI * 2;
+          let sweep = Number.isFinite(entity.sweepAngle) ? entity.sweepAngle : (endA - startA);
+          if (!Number.isFinite(entity.sweepAngle) && sweep < 0) sweep += Math.PI * 2;
           for (let i = 0; i < numSegs; i++) {
             const a1 = startA + (i / numSegs) * sweep;
             const a2 = startA + ((i + 1) / numSegs) * sweep;
@@ -5783,6 +5787,23 @@ function _drawSnapIndicator(ctx, screenPt, snapType) {
       ctx.lineTo(sx, sy + sz);
       ctx.lineTo(sx - sz, sy);
       ctx.closePath();
+      ctx.stroke();
+      break;
+    case 'edge':
+    case 'circle_edge':
+    case 'arc_edge':
+      ctx.beginPath();
+      ctx.moveTo(sx - sz, sy);
+      ctx.lineTo(sx, sy - sz);
+      ctx.lineTo(sx + sz, sy);
+      ctx.lineTo(sx, sy + sz);
+      ctx.closePath();
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(sx - sz * 0.7, sy - sz * 0.7);
+      ctx.lineTo(sx + sz * 0.7, sy + sz * 0.7);
+      ctx.moveTo(sx + sz * 0.7, sy - sz * 0.7);
+      ctx.lineTo(sx - sz * 0.7, sy + sz * 0.7);
       ctx.stroke();
       break;
     case 'origin':
