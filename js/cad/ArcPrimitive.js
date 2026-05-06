@@ -41,7 +41,9 @@ export class PArc extends Primitive {
     this._syncEndpointRadius();
   }
   get startAngle() {
-    return this.startPoint ? Math.atan2(this.startPoint.y - this.cy, this.startPoint.x - this.cx) : this._startAngle;
+    return this.startPoint
+      ? _angleNear(Math.atan2(this.startPoint.y - this.cy, this.startPoint.x - this.cx), this._startAngle)
+      : this._startAngle;
   }
   set startAngle(value) {
     this._startAngle = value;
@@ -52,7 +54,9 @@ export class PArc extends Primitive {
     }
   }
   get endAngle() {
-    return this.endPoint ? Math.atan2(this.endPoint.y - this.cy, this.endPoint.x - this.cx) : this._endAngle;
+    return this.endPoint
+      ? _angleNear(Math.atan2(this.endPoint.y - this.cy, this.endPoint.x - this.cx), this._endAngle)
+      : this._endAngle;
   }
   set endAngle(value) {
     this._endAngle = value;
@@ -110,16 +114,18 @@ export class PArc extends Primitive {
     const sp = this.startPt;
     const ep = this.endPt;
     const mid = this.startAngle + this.sweepAngle / 2;
-    return [
+    const points = [
       { ...sp, type: 'endpoint' },
       { ...ep, type: 'endpoint' },
-      { x: this.cx + this.radius * Math.cos(mid), y: this.cy + this.radius * Math.sin(mid), type: 'midpoint' },
       { x: this.cx, y: this.cy, type: 'center' },
-      { x: this.cx + this.radius, y: this.cy, type: 'quadrant' },
-      { x: this.cx - this.radius, y: this.cy, type: 'quadrant' },
-      { x: this.cx, y: this.cy + this.radius, type: 'quadrant' },
-      { x: this.cx, y: this.cy - this.radius, type: 'quadrant' },
     ];
+    for (const angle of [0, Math.PI, Math.PI / 2, -Math.PI / 2]) {
+      if (this._angleInArc(angle)) {
+        points.push({ x: this.cx + this.radius * Math.cos(angle), y: this.cy + this.radius * Math.sin(angle), type: 'quadrant' });
+      }
+    }
+    points.push({ x: this.cx + this.radius * Math.cos(mid), y: this.cy + this.radius * Math.sin(mid), type: 'midpoint' });
+    return points;
   }
 
   distanceTo(px, py) {
@@ -200,4 +206,10 @@ export class PArc extends Primitive {
       endPoint: this.endPoint?.id ?? null,
     };
   }
+}
+
+function _angleNear(angle, reference) {
+  while (angle - reference > Math.PI) angle -= Math.PI * 2;
+  while (angle - reference < -Math.PI) angle += Math.PI * 2;
+  return angle;
 }

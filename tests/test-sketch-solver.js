@@ -19,6 +19,8 @@ import {
 import { computeFullyConstrained } from '../js/cad/ConstraintAnalysis.js';
 import { chamferSketchCorner, filletSketchCorner } from '../js/cad/Operations.js';
 import { state } from '../js/state.js';
+import { findSnap, invalidateSnapGrid } from '../js/snap.js';
+import { CoincidentTool } from '../js/tools/CoincidentTool.js';
 import { SelectTool } from '../js/tools/SelectTool.js';
 import { formatTimingSuffix, startTiming } from './test-timing.js';
 
@@ -287,6 +289,17 @@ test('arcs expose draggable start and end points through scene serialization', (
   approx(restoredArc.endAngle, Math.PI, 1e-6, 'restored arc end angle');
 });
 
+test('clockwise arcs preserve negative sweep across the angle wrap boundary', () => {
+  const scene = new Scene();
+  const start = -170 * Math.PI / 180;
+  const end = -190 * Math.PI / 180;
+  const arc = scene.addArc(0, 0, 5, start, end, { merge: false });
+
+  approx(arc.startAngle, start, 1e-12, 'wrapped clockwise arc start angle');
+  approx(arc.endAngle, end, 1e-12, 'wrapped clockwise arc end angle');
+  approx(arc.sweepAngle, -20 * Math.PI / 180, 1e-12, 'wrapped clockwise arc keeps short negative sweep');
+});
+
 test('equal and tangent constraints support circle-like arc/circle pairs', () => {
   const scene = new Scene();
   const arc = scene.addArc(0, 0, 3, 0, Math.PI / 2, { merge: false });
@@ -317,6 +330,78 @@ test('on-circle constraint can keep standalone points on arc and circle edges', 
   point.y = 0;
   scene.solve({ maxIter: 400, relaxation: 1, tolerance: 1e-4 });
   approx(Math.hypot(point.x - circle.cx, point.y - circle.cy), 5, 1e-6, 'standalone point on circle');
+});
+
+test('circle and arc quadrant snaps carry targets and only expose arc quadrants on the arc span', () => {
+  const originalScene = state.scene;
+  const originalSnapEnabled = state.snapEnabled;
+  const originalGridSize = state.gridSize;
+  try {
+    const scene = new Scene();
+    const circle = scene.addCircle(0, 0, 5, { merge: false });
+    const arc = scene.addArc(20, 0, 5, Math.PI / 4, 3 * Math.PI / 4, { merge: false });
+    state.scene = scene;
+    state.snapEnabled = true;
+    state.gridSize = 1000;
+    invalidateSnapGrid();
+
+    const viewport = {
+      zoom: 10,
+      worldToScreen: (x, y) => ({ x: x * 10, y: y * 10 }),
+      screenToWorld: (x, y) => ({ x: x / 10, y: y / 10 }),
+    };
+
+    const circleSnap = findSnap(50, 0, viewport, { ignoreGridSnap: true });
+    assert.equal(circleSnap?.type, 'quadrant', 'circle right quadrant should snap');
+    assert.equal(circleSnap?.target, circle, 'circle quadrant snap carries target');
+
+    const arcIncludedSnap = findSnap(200, 50, viewport, { ignoreGridSnap: true });
+    assert.equal(arcIncludedSnap?.type, 'quadrant', 'arc top quadrant should snap');
+    assert.equal(arcIncludedSnap?.target, arc, 'arc quadrant snap carries target');
+
+    const arcExcludedSnap = findSnap(250, 0, viewport, { ignoreGridSnap: true });
+    assert.equal(arcExcludedSnap, null, 'arc right quadrant outside the sweep should not snap');
+  } finally {
+    state.scene = originalScene;
+    state.snapEnabled = originalSnapEnabled;
+    state.gridSize = originalGridSize;
+    invalidateSnapGrid();
+  }
+});
+
+test('coincident tool projects points to the clicked circle or arc edge location', () => {
+  const originalScene = state.scene;
+  try {
+    const scene = new Scene();
+    const circle = scene.addCircle(0, 0, 5, { merge: false });
+    const point = scene.addPoint(0, 5);
+    point.standalone = true;
+    state.scene = scene;
+
+    const tool = new CoincidentTool({ renderer: { hoverEntity: null }, setStatus() {}, viewport: { zoom: 10 } });
+    tool._firstPt = point;
+    tool.step = 1;
+    tool.onClick(5, 0);
+
+    approx(point.x, 5, 1e-9, 'point projected to clicked circle edge x');
+    approx(point.y, 0, 1e-9, 'point projected to clicked circle edge y');
+    assert.equal(scene.constraints.some(c => c.type === 'on_circle' && c.pt === point && c.circle === circle), true, 'on-circle constraint added');
+
+    const arc = scene.addArc(20, 0, 5, 0, Math.PI / 2, { merge: false });
+    const arcPoint = scene.addPoint(20, 5);
+    arcPoint.standalone = true;
+    tool._firstPt = arcPoint;
+    tool.step = 1;
+    const arcClickX = 20 + 5 / Math.sqrt(2);
+    const arcClickY = 5 / Math.sqrt(2);
+    tool.onClick(arcClickX, arcClickY);
+
+    approx(arcPoint.x, arcClickX, 1e-9, 'point projected to clicked arc edge x');
+    approx(arcPoint.y, arcClickY, 1e-9, 'point projected to clicked arc edge y');
+    assert.equal(scene.constraints.some(c => c.type === 'on_circle' && c.pt === arcPoint && c.circle === arc), true, 'on-arc constraint added');
+  } finally {
+    state.scene = originalScene;
+  }
 });
 
 test('circle and arc edge drags edit radius without moving center', () => {

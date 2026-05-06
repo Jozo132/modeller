@@ -4058,6 +4058,7 @@ class App {
   _bindStateEvents() {
     state.on('change', () => {
       this._sceneVersion += 1;
+      invalidateSnapGrid();
       this._updatePerspectiveEditModeLockUi();
       this._scheduleRender();
       this._scheduleLeftPanelRebuild();

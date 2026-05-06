@@ -79,8 +79,17 @@ export class CoincidentTool extends BaseTool {
     pt.y = targetSeg.y1 + t * dy;
   }
 
-  _movePointToCircle(pt, circle) {
-    const angle = Math.atan2(pt.y - circle.cy, pt.x - circle.cx);
+  _movePointToCircle(pt, circle, wx = pt.x, wy = pt.y) {
+    let angle = Math.atan2(wy - circle.cy, wx - circle.cx);
+    if (circle.type === 'arc' && !circle._angleInArc(angle)) {
+      const start = circle.startPt;
+      const end = circle.endPt;
+      if (Math.hypot(wx - end.x, wy - end.y) < Math.hypot(wx - start.x, wy - start.y)) {
+        angle = circle.endAngle;
+      } else {
+        angle = circle.startAngle;
+      }
+    }
     pt.x = circle.cx + Math.cos(angle) * circle.radius;
     pt.y = circle.cy + Math.sin(angle) * circle.radius;
   }
@@ -131,7 +140,7 @@ export class CoincidentTool extends BaseTool {
         this._movePointToLine(this._firstPt, seg);
         state.scene.addConstraint(new OnLine(this._firstPt, seg));
       } else {
-        this._movePointToCircle(this._firstPt, seg);
+        this._movePointToCircle(this._firstPt, seg, wx, wy);
         state.scene.addConstraint(new OnCircle(this._firstPt, seg));
       }
       state.emit('change');
