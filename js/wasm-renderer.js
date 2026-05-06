@@ -13,7 +13,7 @@ import {
 import { renderBaseMeshOverlay } from './render/mesh-overlay-renderer.js';
 import { LodManager } from './render/lod-manager.js';
 import { GpuTessPipeline } from './render/gpu-tess-pipeline.js';
-import { buildProjectiveGridGuides } from './render/projective-quad.js';
+import { buildProjectiveGridGuides, getUnitSquareToQuadMatrix, applyProjectiveMatrix } from './render/projective-quad.js';
 import { SketchFeature } from './cad/SketchFeature.js';
 import { constrainedTriangulate } from './cad/Tessellator2/CDT.js';
 import { loadReleaseWasmModule } from './load-release-wasm.js';
@@ -216,6 +216,14 @@ function _bilinearQuadPoint(quad, u, v) {
   const bottom = _lerpPoint(bl, br, u);
   const top = _lerpPoint(tl, tr, u);
   return _lerpPoint(bottom, top, v);
+}
+
+function _projectiveQuadPoint(matrix, quad, u, v) {
+  if (matrix) {
+    const result = applyProjectiveMatrix(matrix, u, v);
+    if (result) return result;
+  }
+  return _bilinearQuadPoint(quad, u, v);
 }
 
 function _sourceQuadToPixels(sourceQuad, width, height) {
@@ -3630,6 +3638,7 @@ export class WasmRenderer {
     const canvas = this._createOffscreenCanvas(rasterSize.width, rasterSize.height);
     const rasterCtx = canvas.getContext('2d');
     const sourceQuadPixels = _sourceQuadToPixels(normalizedSourceQuad, renderSourceWidth, renderSourceHeight);
+    const sourceMatrix = getUnitSquareToQuadMatrix(sourceQuadPixels);
     const destQuadPixels = [
       { x: 0, y: canvas.height },
       { x: canvas.width, y: canvas.height },
@@ -3643,10 +3652,10 @@ export class WasmRenderer {
       for (let ix = 0; ix < subdivisions; ix++) {
         const u0 = ix / subdivisions;
         const u1 = (ix + 1) / subdivisions;
-        const src00 = _bilinearQuadPoint(sourceQuadPixels, u0, v0);
-        const src10 = _bilinearQuadPoint(sourceQuadPixels, u1, v0);
-        const src11 = _bilinearQuadPoint(sourceQuadPixels, u1, v1);
-        const src01 = _bilinearQuadPoint(sourceQuadPixels, u0, v1);
+        const src00 = _projectiveQuadPoint(sourceMatrix, sourceQuadPixels, u0, v0);
+        const src10 = _projectiveQuadPoint(sourceMatrix, sourceQuadPixels, u1, v0);
+        const src11 = _projectiveQuadPoint(sourceMatrix, sourceQuadPixels, u1, v1);
+        const src01 = _projectiveQuadPoint(sourceMatrix, sourceQuadPixels, u0, v1);
         const dst00 = _bilinearQuadPoint(destQuadPixels, u0, v0);
         const dst10 = _bilinearQuadPoint(destQuadPixels, u1, v0);
         const dst11 = _bilinearQuadPoint(destQuadPixels, u1, v1);
@@ -3689,6 +3698,7 @@ export class WasmRenderer {
     const renderSource = resolvedSource.source;
     const normalizedRenderSourceQuad = resolvedSource.normalizedQuad;
     const sourceQuadPixels = _sourceQuadToPixels(normalizedRenderSourceQuad, renderSource.width || renderSource.naturalWidth, renderSource.height || renderSource.naturalHeight);
+    const sourceMatrix = getUnitSquareToQuadMatrix(sourceQuadPixels);
     const hasAppliedPerspectiveOutput = !!(primitive.perspectiveOutputQuad && !(typeof primitive.isPerspectiveEditing === 'function' && primitive.isPerspectiveEditing()));
     const useWarp = hasAppliedPerspectiveOutput
       || primitive.rotation
@@ -3716,10 +3726,10 @@ export class WasmRenderer {
         for (let ix = 0; ix < subdivisions; ix++) {
           const u0 = ix / subdivisions;
           const u1 = (ix + 1) / subdivisions;
-          const src00 = _bilinearQuadPoint(sourceQuadPixels, u0, v0);
-          const src10 = _bilinearQuadPoint(sourceQuadPixels, u1, v0);
-          const src11 = _bilinearQuadPoint(sourceQuadPixels, u1, v1);
-          const src01 = _bilinearQuadPoint(sourceQuadPixels, u0, v1);
+          const src00 = _projectiveQuadPoint(sourceMatrix, sourceQuadPixels, u0, v0);
+          const src10 = _projectiveQuadPoint(sourceMatrix, sourceQuadPixels, u1, v0);
+          const src11 = _projectiveQuadPoint(sourceMatrix, sourceQuadPixels, u1, v1);
+          const src01 = _projectiveQuadPoint(sourceMatrix, sourceQuadPixels, u0, v1);
           const dst00 = _bilinearQuadPoint(destQuadScreen, u0, v0);
           const dst10 = _bilinearQuadPoint(destQuadScreen, u1, v0);
           const dst11 = _bilinearQuadPoint(destQuadScreen, u1, v1);
@@ -3884,6 +3894,7 @@ export class WasmRenderer {
     const renderSource = resolvedSource.source;
     const normalizedRenderSourceQuad = resolvedSource.normalizedQuad;
     const sourceQuadPixels = _sourceQuadToPixels(normalizedRenderSourceQuad, renderSource.width || renderSource.naturalWidth, renderSource.height || renderSource.naturalHeight);
+    const sourceMatrix = getUnitSquareToQuadMatrix(sourceQuadPixels);
     ctx.save();
     if (cropQuadScreen && cropQuadScreen.every((point) => point && Number.isFinite(point.x) && Number.isFinite(point.y))) {
       _traceQuadPath(ctx, cropQuadScreen);
@@ -3897,10 +3908,10 @@ export class WasmRenderer {
       for (let ix = 0; ix < subdivisions; ix++) {
         const u0 = ix / subdivisions;
         const u1 = (ix + 1) / subdivisions;
-        const src00 = _bilinearQuadPoint(sourceQuadPixels, u0, v0);
-        const src10 = _bilinearQuadPoint(sourceQuadPixels, u1, v0);
-        const src11 = _bilinearQuadPoint(sourceQuadPixels, u1, v1);
-        const src01 = _bilinearQuadPoint(sourceQuadPixels, u0, v1);
+        const src00 = _projectiveQuadPoint(sourceMatrix, sourceQuadPixels, u0, v0);
+        const src10 = _projectiveQuadPoint(sourceMatrix, sourceQuadPixels, u1, v0);
+        const src11 = _projectiveQuadPoint(sourceMatrix, sourceQuadPixels, u1, v1);
+        const src01 = _projectiveQuadPoint(sourceMatrix, sourceQuadPixels, u0, v1);
         const dst00 = _bilinearQuadPoint(destQuadScreen, u0, v0);
         const dst10 = _bilinearQuadPoint(destQuadScreen, u1, v0);
         const dst11 = _bilinearQuadPoint(destQuadScreen, u1, v1);
