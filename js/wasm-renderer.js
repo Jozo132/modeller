@@ -22,7 +22,7 @@ import { computeFullyConstrained } from './cad/ConstraintAnalysis.js';
 const MIN_ORBIT_RADIUS = 0.001;
 const MAX_ORBIT_RADIUS = 100000;
 const MAX_EXPANDED_IMAGE_CACHE_ENTRIES = 12;
-const FULLY_CONSTRAINED_COLOR = [0.035, 0.227, 0.612, 1.0]; // dark blue
+const FULLY_CONSTRAINED_COLOR = [0.035, 0.227, 0.612, 1.0]; // dark blue for fully constrained sketch geometry
 
 function _clampOrbitRadius(radius) {
   return Math.max(MIN_ORBIT_RADIUS, Math.min(MAX_ORBIT_RADIUS, radius || MIN_ORBIT_RADIUS));
@@ -3193,6 +3193,7 @@ export class WasmRenderer {
         const ok = (typeof constraint.error === 'function') ? constraint.error() < 1e-4 : false;
         ctx.fillStyle = ok ? '#00e676' : '#ff643c';
         ctx.font = '13px Consolas, monospace';
+        // Keep icons close to their owning primitive without covering the constraint point.
         const cpt = sketchPtToScreen(cx + 5 * wpp, cy + 4 * wpp);
         ctx.fillText(icon, cpt.x, cpt.y);
       });

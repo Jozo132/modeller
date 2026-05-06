@@ -472,21 +472,6 @@ export class SelectTool extends BaseTool {
     return null;
   }
 
-  _arcCenterDragPoints(point) {
-    const pts = [];
-    const seen = new Set();
-    for (const arc of state.scene.arcs || []) {
-      if (arc.center !== point) continue;
-      for (const p of [arc.center, arc.startPoint, arc.endPoint]) {
-        if (p && !p.fixed && !seen.has(p)) {
-          seen.add(p);
-          pts.push(p);
-        }
-      }
-    }
-    return pts;
-  }
-
   _restoreSceneDragState(snapshot) {
     state.scene = Scene.deserialize(snapshot.sceneData);
     const selectedIds = new Set(snapshot.selectedEntityIds || []);

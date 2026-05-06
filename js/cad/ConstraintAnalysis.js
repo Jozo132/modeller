@@ -222,5 +222,5 @@ export function computeFullyConstrained(scene) {
     if (bez.points.every(p => fcPoints.has(p))) fcEntities.add(bez);
   }
 
-  return { points: fcPoints, entities: fcEntities, circleStates: cs };
+  return { points: fcPoints, entities: fcEntities };
 }

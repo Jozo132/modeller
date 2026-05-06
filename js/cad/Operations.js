@@ -10,6 +10,7 @@ import { PArc } from './ArcPrimitive.js';
 
 const TWO_PI = Math.PI * 2;
 const MAX_CORNER_TRIM_RATIO = 0.95;
+const MIN_CORNER_ANGLE_TOLERANCE = 1e-6;
 
 /**
  * Disconnect a point from coincident points — duplicate it so shapes no longer share.
@@ -245,7 +246,7 @@ export function filletSketchCorner(scene, selection, radius, options = {}) {
   if (!corner || !Number.isFinite(r) || r <= 0) return null;
 
   const theta = _cornerAngle(corner);
-  if (theta <= 1e-6 || Math.abs(Math.PI - theta) <= 1e-6) return null;
+  if (theta <= MIN_CORNER_ANGLE_TOLERANCE || Math.abs(Math.PI - theta) <= MIN_CORNER_ANGLE_TOLERANCE) return null;
   const trimDistance = r / Math.tan(theta / 2);
   const geom = _cornerTrimGeometry(corner, trimDistance);
   const bisector = _normalize({ x: corner.uA.x + corner.uB.x, y: corner.uA.y + corner.uB.y });
