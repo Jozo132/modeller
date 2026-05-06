@@ -22,7 +22,7 @@ import { computeFullyConstrained } from './cad/ConstraintAnalysis.js';
 const MIN_ORBIT_RADIUS = 0.001;
 const MAX_ORBIT_RADIUS = 100000;
 const MAX_EXPANDED_IMAGE_CACHE_ENTRIES = 12;
-const FULLY_CONSTRAINED_COLOR = [0.035, 0.227, 0.612, 1.0]; // #093A9C
+const FULLY_CONSTRAINED_COLOR = [0.035, 0.227, 0.612, 1.0]; // dark blue
 
 function _clampOrbitRadius(radius) {
   return Math.max(MIN_ORBIT_RADIUS, Math.min(MAX_ORBIT_RADIUS, radius || MIN_ORBIT_RADIUS));
