@@ -8410,6 +8410,8 @@ class App {
       const id = `${type}-${Date.now().toString(36)}`;
       const operationIndex = draft.operations.length + 1;
       const stock = draft.stock;
+      const operationTool = draft.tools.find((tool) => tool.id === (draft.activeToolId || draft.tools[0]?.id)) || draft.tools[0] || null;
+      const operationToolDiameter = operationTool?.diameter || 6;
       const operation = {
         id,
         name: `${type === 'profile' ? 'Profile' : 'Pocket'} ${operationIndex}`,
@@ -8424,15 +8426,14 @@ class App {
         enabled: true,
         leadInEnabled: false,
         leadInLength: 0,
-        leadInZigZagAmplitude: (draft.tools.find((tool) => tool.id === (draft.activeToolId || draft.tools[0]?.id))?.diameter || 6) * 0.15,
+        leadInZigZagAmplitude: operationToolDiameter * 0.15,
         leadInZigZagCount: 3,
         leadInPosition: 0,
       };
-      const operationTool = draft.tools.find((tool) => tool.id === operation.toolId) || draft.tools[0] || null;
       if (type === 'profile') operation.side = 'outside';
       else {
         operation.stepoverPercent = 40;
-        operation.stepover = Math.max((operationTool?.diameter || 6) * 0.4, 0.1);
+        operation.stepover = Math.max(operationToolDiameter * 0.4, 0.1);
       }
       draft.operations.push(operation);
       draft.activeOperationId = id;
@@ -8569,7 +8570,7 @@ class App {
         if (Number.isFinite(source.tolerance) && source.tolerance > 0) draft.tolerance = source.tolerance;
         if (Number.isFinite(faceHit.point?.z)) operation.bottomZ = this._faceHitZ(faceHit);
       }, { render: false });
-      this.setStatus(`CAM source set to ${source.label || `face ${faceHit.faceIndex}`}.`);
+      this.setStatus(`CAM source set to ${source.label || `face ${faceHit.faceIndex}`}; bottom height inferred as Z${this._formatCamNumber(this._faceHitZ(faceHit))}.`);
       return;
     }
     const z = this._faceHitZ(faceHit);

@@ -52,12 +52,7 @@ export function generateProfileToolpath(operation, tool, loops = getOperationLoo
 
 export function generatePocketToolpath(operation, tool, loops = getOperationLoops(operation)) {
   const radius = tool.diameter / 2;
-  const stepover = Math.max(
-    EPSILON,
-    Number.isFinite(Number(operation.stepoverPercent))
-      ? tool.diameter * Math.max(1, Math.min(100, Number(operation.stepoverPercent))) / 100
-      : (operation.stepover || tool.diameter * 0.4),
-  );
+  const stepover = pocketStepover(operation, tool);
   const passes = depthPasses(operation.topZ, operation.bottomZ, operation.stepDown);
   const moves = operationHeader(operation, tool);
 
@@ -123,6 +118,14 @@ function appendClosedPathPass(moves, path, depth, operation) {
   }
   moves.push({ type: 'feed', x: first.x, y: first.y, feed: operation.feedRate });
   moves.push({ type: 'rapid', z: operation.clearanceZ });
+}
+
+function pocketStepover(operation, tool) {
+  const percent = Number(operation.stepoverPercent);
+  if (Number.isFinite(percent)) {
+    return Math.max(EPSILON, tool.diameter * Math.max(1, Math.min(100, percent)) / 100);
+  }
+  return Math.max(EPSILON, operation.stepover || tool.diameter * 0.4);
 }
 
 function rotateClosedPath(path, position = 0) {
