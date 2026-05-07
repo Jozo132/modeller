@@ -69,7 +69,37 @@ export function offsetPolygon(points, distance) {
   if (cleaned.length < 3) return [];
   const newArea = polygonArea(cleaned);
   if (Math.abs(newArea) <= EPSILON || Math.sign(newArea) !== Math.sign(area)) return [];
+  if (distance < -EPSILON) {
+    if (Math.abs(newArea) >= Math.abs(area) - EPSILON) return [];
+    if (!cleaned.every((point) => pointInsideOrOnPolygon(point, loop))) return [];
+  }
   return cleaned;
+}
+
+function pointInsideOrOnPolygon(point, polygon) {
+  let inside = false;
+  for (let index = 0, previousIndex = polygon.length - 1; index < polygon.length; previousIndex = index++) {
+    const a = polygon[index];
+    const b = polygon[previousIndex];
+    if (pointOnSegment(point, a, b)) return true;
+    const intersects = ((a.y > point.y) !== (b.y > point.y))
+      && (point.x < ((b.x - a.x) * (point.y - a.y)) / (b.y - a.y) + a.x);
+    if (intersects) inside = !inside;
+  }
+  return inside;
+}
+
+function pointOnSegment(point, a, b) {
+  const abx = b.x - a.x;
+  const aby = b.y - a.y;
+  const apx = point.x - a.x;
+  const apy = point.y - a.y;
+  const cross = abx * apy - aby * apx;
+  if (Math.abs(cross) > EPSILON) return false;
+  const dot = apx * abx + apy * aby;
+  if (dot < -EPSILON) return false;
+  const lenSq = abx * abx + aby * aby;
+  return dot <= lenSq + EPSILON;
 }
 
 function intersectLines(a, b) {

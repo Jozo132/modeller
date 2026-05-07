@@ -31,6 +31,8 @@ test('stock simulation creates a height grid and lowers cut samples', () => {
   assert.ok(simulation.rows > 0);
   assert.ok(simulation.feedSegmentCount > 0);
   assert.equal(simulation.processedSegmentCount, simulation.feedSegmentCount);
+  assert.ok(simulation.totalCutSeconds > 0);
+  assert.equal(simulation.processedCutSeconds, simulation.totalCutSeconds);
   assert.ok(simulation.removedVertexCount > 0);
   assert.ok(simulation.minHeight <= -2);
 });
