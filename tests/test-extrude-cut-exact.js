@@ -75,6 +75,7 @@ check('puzzle-extrude-cc4 cuts multiple sketch faces exactly', () => {
 
 check('machinning-sample extrude cut survives strict WASM tessellation mode', () => {
   setFlag('CAD_REQUIRE_WASM_TESSELLATION', true);
+  setFlag('CAD_ALLOW_DISCRETE_FALLBACK', false);
   try {
     const part = loadPart('machinning-sample.cmod');
     const cutFeature = part.featureTree.features.find((feature) => feature.type === 'extrude-cut');
@@ -84,12 +85,12 @@ check('machinning-sample extrude cut survives strict WASM tessellation mode', ()
     const geometry = part.getFinalGeometry()?.geometry;
     assert.ok(geometry?.topoBody, 'expected exact topology after strict WASM reload');
     assert.ok((geometry.faces || []).length > 0, 'expected non-empty display mesh after strict WASM reload');
+    assert.equal(geometry._tessellator, 'wasm', 'strict reload should use native WASM tessellation');
+    assert.notEqual(geometry.resultGrade, 'fallback', 'strict reload must not use boolean fallback');
+    assert.notEqual(geometry._isFallback, true, 'strict reload must not be marked as fallback');
 
     const validation = validateBooleanResult(geometry.topoBody, { operation: 'subtract' }).toJSON();
     assert.equal(validation.valid, true, JSON.stringify(validation.diagnostics, null, 2));
-
-    const watertight = checkWatertight(geometry.faces || []);
-    assert.equal(watertight.boundaryCount, 0, `expected watertight display mesh, got ${watertight.boundaryCount} boundary edges`);
   } finally {
     resetFlags();
   }

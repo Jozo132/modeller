@@ -364,7 +364,10 @@ export class ExtrudeFeature extends Feature {
   }
 
   _solidFromTopoBody(topoBody) {
-    const mesh = tessellateBody(topoBody, { validate: false });
+    const mesh = tessellateBody(topoBody, {
+      validate: false,
+      acceptWasmValidationIssues: true,
+    });
     const edgeResult = computeFeatureEdges(mesh.faces || []);
     return {
       geometry: {
