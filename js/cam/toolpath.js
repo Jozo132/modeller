@@ -123,7 +123,8 @@ function appendClosedPathPass(moves, path, depth, operation) {
 function pocketStepover(operation, tool) {
   const percent = Number(operation.stepoverPercent);
   if (Number.isFinite(percent)) {
-    return Math.max(EPSILON, tool.diameter * Math.max(1, Math.min(100, percent)) / 100);
+    const clampedPercent = Math.max(1, Math.min(100, percent));
+    return Math.max(EPSILON, tool.diameter * (clampedPercent / 100));
   }
   return Math.max(EPSILON, operation.stepover || tool.diameter * 0.4);
 }

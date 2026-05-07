@@ -176,6 +176,7 @@ class App {
     this._camSimulationPlaying = false;
     this._camSimulationFrame = null;
     this._camSimulationLastTime = null;
+    this._camSimulationTotalSeconds = 10;
     this._camVisualizationWarnings = [];
     this._sceneManagerOpen = false;
     this._recordingBarVisible = localStorage.getItem(RECORDING_BAR_VISIBLE_KEY) === 'true';
@@ -8320,13 +8321,7 @@ class App {
 
   _advanceCamSimulationPlayback(time) {
     if (!this._camSimulationPlaying) return;
-    const camConfig = this._ensureCamConfig();
-    const generation = this._getCamToolpathGeneration(camConfig);
-    const simulation = simulateStockRemoval(camConfig, generation.toolpaths, {
-      progress: this._camSimulationProgress,
-      resolution: 32,
-    });
-    const totalSeconds = Math.max(0.001, Number(simulation?.totalCutSeconds) || 10);
+    const totalSeconds = Math.max(0.001, Number(this._camSimulationTotalSeconds) || 10);
     const elapsedSeconds = Math.max(0, (time - (this._camSimulationLastTime || time)) / 1000);
     this._camSimulationLastTime = time;
     const speed = Math.max(0, Math.min(100, Number(this._camSimulationSpeed) || 0));
@@ -8504,6 +8499,7 @@ class App {
         progress: this._camSimulationProgress,
         resolution: 128,
       });
+      this._camSimulationTotalSeconds = Math.max(0.001, Number(simulation?.totalCutSeconds) || this._camSimulationTotalSeconds || 10);
       this._camVisualizationWarnings = generation.warnings || [];
       this._renderer3d.setCamVisualization({
         stock: camConfig.stock,
