@@ -387,6 +387,9 @@ function _approximateShellVolume(shell) {
   return volume;
 }
 
+/**
+ * Return loop points with winding aligned to the face's effective normal.
+ */
 function _orientedLoopPoints(face, loop) {
   const pts = loop?.points?.() || [];
   if (pts.length < 3) return pts;
@@ -397,6 +400,10 @@ function _orientedLoopPoints(face, loop) {
   const dot = polyNormal.x * desired.x + polyNormal.y * desired.y + polyNormal.z * desired.z;
   return dot < 0 ? [...pts].reverse() : pts;
 }
+
+/**
+ * Signed volume of the tetrahedron formed by the origin and triangle abc.
+ */
 function _signedTetraVolume(a, b, c) {
   return (
     a.x * (b.y * c.z - b.z * c.y) -
