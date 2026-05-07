@@ -172,6 +172,10 @@ class App {
     this._camPickMode = null;
     this._camPreviewMode = 'active';
     this._camSimulationProgress = 1;
+    this._camSimulationSpeed = 1;
+    this._camSimulationPlaying = false;
+    this._camSimulationFrame = null;
+    this._camSimulationLastTime = null;
     this._camVisualizationWarnings = [];
     this._sceneManagerOpen = false;
     this._recordingBarVisible = localStorage.getItem(RECORDING_BAR_VISIBLE_KEY) === 'true';
@@ -8037,8 +8041,12 @@ class App {
           { value: 'along', label: 'Along' },
         ]));
       } else {
-        section.appendChild(this._createParamRow('Stepover', 'number', activeOperation.stepover, (value) => this._setActiveCamOperationField('stepover', value)));
+        section.appendChild(this._createParamRow('Step Over %', 'number', activeOperation.stepoverPercent, (value) => this._setActiveCamOperationField('stepoverPercent', value)));
       }
+      section.appendChild(this._createParamRow('Lead-in Zig-zag', 'checkbox', activeOperation.leadInEnabled, (value) => this._setActiveCamOperationField('leadInEnabled', value)));
+      section.appendChild(this._createParamRow('Lead-in Length', 'number', activeOperation.leadInLength, (value) => this._setActiveCamOperationField('leadInLength', value)));
+      section.appendChild(this._createParamRow('Lead-in Amplitude', 'number', activeOperation.leadInZigZagAmplitude, (value) => this._setActiveCamOperationField('leadInZigZagAmplitude', value)));
+      section.appendChild(this._createParamRow('Lead-in Position %', 'number', Math.round((activeOperation.leadInPosition || 0) * 100), (value) => this._setActiveCamOperationField('leadInPosition', Number(value) / 100)));
     }
 
     const actions = this._createCamActionRow();
@@ -8103,7 +8111,7 @@ class App {
     const generation = this._getCamToolpathGeneration(camConfig);
     const simulation = simulateStockRemoval(camConfig, generation.toolpaths, {
       progress: this._camSimulationProgress,
-      resolution: 48,
+      resolution: 128,
     });
 
     const slider = document.createElement('label');
@@ -8127,6 +8135,25 @@ class App {
     slider.append(label, input, value);
     section.appendChild(slider);
 
+    const speedRow = document.createElement('label');
+    speedRow.className = 'cam-slider-row';
+    const speedLabel = document.createElement('span');
+    speedLabel.textContent = 'Speed';
+    const speedInput = document.createElement('input');
+    speedInput.type = 'range';
+    speedInput.min = '0';
+    speedInput.max = '100';
+    speedInput.step = '1';
+    speedInput.value = String(Math.round(this._camSimulationSpeed));
+    const speedValue = document.createElement('output');
+    speedValue.textContent = `${speedInput.value}x`;
+    speedInput.addEventListener('input', () => {
+      this._camSimulationSpeed = Math.max(0, Math.min(100, Number(speedInput.value) || 0));
+      speedValue.textContent = `${Math.round(this._camSimulationSpeed)}x`;
+    });
+    speedRow.append(speedLabel, speedInput, speedValue);
+    section.appendChild(speedRow);
+
     const stats = document.createElement('div');
     stats.className = 'cam-panel-summary';
     stats.innerHTML = simulation
@@ -8135,13 +8162,18 @@ class App {
     section.appendChild(stats);
 
     const actions = this._createCamActionRow();
+    actions.appendChild(this._createCamButton(this._camSimulationPlaying ? 'Pause' : 'Play', () => {
+      this._toggleCamSimulationPlayback();
+    }, { primary: !this._camSimulationPlaying }));
     actions.appendChild(this._createCamButton('Start', () => {
+      this._stopCamSimulationPlayback();
       this._camSimulationProgress = 0;
       this._refreshCamVisualization();
       this._renderCamPanel();
       this._scheduleRender();
     }));
     actions.appendChild(this._createCamButton('Complete', () => {
+      this._stopCamSimulationPlayback();
       this._camSimulationProgress = 1;
       this._refreshCamVisualization();
       this._renderCamPanel();
@@ -8268,10 +8300,56 @@ class App {
     this._updateCamConfig((draft) => {
       const operation = draft.operations.find((candidate) => candidate.id === draft.activeOperationId);
       if (!operation) return;
-      if (field === 'enabled') operation[field] = !!value;
+      if (field === 'enabled' || field === 'leadInEnabled') operation[field] = !!value;
       else if (field === 'toolId' || field === 'side' || field === 'name') operation[field] = value;
       else operation[field] = Number(value);
     });
+  }
+
+  _toggleCamSimulationPlayback() {
+    if (this._camSimulationPlaying) {
+      this._stopCamSimulationPlayback();
+      return;
+    }
+    if (this._camSimulationProgress >= 1) this._camSimulationProgress = 0;
+    this._camSimulationPlaying = true;
+    this._camSimulationLastTime = performance.now();
+    this._camSimulationFrame = requestAnimationFrame((time) => this._advanceCamSimulationPlayback(time));
+    if (this._workspaceMode === 'cam') this._renderCamPanel();
+  }
+
+  _advanceCamSimulationPlayback(time) {
+    if (!this._camSimulationPlaying) return;
+    const camConfig = this._ensureCamConfig();
+    const generation = this._getCamToolpathGeneration(camConfig);
+    const simulation = simulateStockRemoval(camConfig, generation.toolpaths, {
+      progress: this._camSimulationProgress,
+      resolution: 32,
+    });
+    const totalSeconds = Math.max(0.001, Number(simulation?.totalCutSeconds) || 10);
+    const elapsedSeconds = Math.max(0, (time - (this._camSimulationLastTime || time)) / 1000);
+    this._camSimulationLastTime = time;
+    const speed = Math.max(0, Math.min(100, Number(this._camSimulationSpeed) || 0));
+    if (speed > 0) {
+      this._camSimulationProgress = Math.min(1, this._camSimulationProgress + (elapsedSeconds * speed) / totalSeconds);
+      this._refreshCamVisualization();
+      this._scheduleRender();
+    }
+    if (this._camSimulationProgress >= 1) {
+      this._stopCamSimulationPlayback();
+      if (this._workspaceMode === 'cam') this._renderCamPanel();
+      return;
+    }
+    this._camSimulationFrame = requestAnimationFrame((nextTime) => this._advanceCamSimulationPlayback(nextTime));
+  }
+
+  _stopCamSimulationPlayback() {
+    this._camSimulationPlaying = false;
+    this._camSimulationLastTime = null;
+    if (this._camSimulationFrame != null) {
+      cancelAnimationFrame(this._camSimulationFrame);
+      this._camSimulationFrame = null;
+    }
   }
 
   _moveCamOperation(operationId, direction) {
@@ -8344,10 +8422,18 @@ class App {
         safeZ: stock.max.z + 10,
         clearanceZ: stock.max.z + 5,
         enabled: true,
+        leadInEnabled: false,
+        leadInLength: 0,
+        leadInZigZagAmplitude: (draft.tools.find((tool) => tool.id === (draft.activeToolId || draft.tools[0]?.id))?.diameter || 6) * 0.15,
+        leadInZigZagCount: 3,
+        leadInPosition: 0,
       };
       const operationTool = draft.tools.find((tool) => tool.id === operation.toolId) || draft.tools[0] || null;
       if (type === 'profile') operation.side = 'outside';
-      else operation.stepover = Math.max((operationTool?.diameter || 6) * 0.4, 0.1);
+      else {
+        operation.stepoverPercent = 40;
+        operation.stepover = Math.max((operationTool?.diameter || 6) * 0.4, 0.1);
+      }
       draft.operations.push(operation);
       draft.activeOperationId = id;
     });
@@ -8415,7 +8501,7 @@ class App {
       const generation = generateToolpaths(camConfig);
       const simulation = simulateStockRemoval(camConfig, generation.toolpaths, {
         progress: this._camSimulationProgress,
-        resolution: 48,
+        resolution: 128,
       });
       this._camVisualizationWarnings = generation.warnings || [];
       this._renderer3d.setCamVisualization({
@@ -8481,7 +8567,7 @@ class App {
         if (!operation) return;
         operation.source = source;
         if (Number.isFinite(source.tolerance) && source.tolerance > 0) draft.tolerance = source.tolerance;
-        if (Number.isFinite(faceHit.point?.z)) operation.topZ = this._faceHitZ(faceHit);
+        if (Number.isFinite(faceHit.point?.z)) operation.bottomZ = this._faceHitZ(faceHit);
       }, { render: false });
       this.setStatus(`CAM source set to ${source.label || `face ${faceHit.faceIndex}`}.`);
       return;
@@ -10182,6 +10268,7 @@ class App {
         this._partManager.createPart('Part1');
       }
       this._camPickMode = null;
+      this._stopCamSimulationPlayback();
       this._renderer3d?.clearCamVisualization?.();
       this._3dMode = true;
       if (this._renderer3d) {

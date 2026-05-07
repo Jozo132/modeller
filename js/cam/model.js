@@ -130,13 +130,24 @@ export function normalizeOperation(input = {}, index = 0, context = {}) {
     feedRate: positiveNumber(data.feedRate, tool?.feedRate || 400),
     plungeRate: positiveNumber(data.plungeRate, tool?.plungeRate || 120),
     spindleRpm: Math.round(positiveNumber(data.spindleRpm, tool?.spindleRpm || 10000)),
+    leadInEnabled: data.leadInEnabled === true,
+    leadInLength: nonNegativeNumber(data.leadInLength, 0),
+    leadInZigZagAmplitude: nonNegativeNumber(data.leadInZigZagAmplitude, tool ? tool.diameter * 0.15 : 0.9),
+    leadInZigZagCount: Math.max(1, Math.round(positiveNumber(data.leadInZigZagCount, 3))),
+    leadInPosition: clamp(numberOr(data.leadInPosition, 0), 0, 1),
   };
 
   if (type === 'profile') {
     operation.side = CAM_PROFILE_SIDES.includes(data.side) ? data.side : 'outside';
   } else {
     const defaultStepover = tool ? roundCamNumber(Math.max(tool.diameter * 0.4, 0.1)) : 2.4;
-    operation.stepover = roundCamNumber(positiveNumber(data.stepover, defaultStepover));
+    const stepover = roundCamNumber(positiveNumber(data.stepover, defaultStepover));
+    operation.stepover = stepover;
+    operation.stepoverPercent = clamp(
+      positiveNumber(data.stepoverPercent, tool?.diameter ? (stepover / tool.diameter) * 100 : 40),
+      1,
+      100,
+    );
   }
 
   return operation;
@@ -156,7 +167,7 @@ function normalizeStock(input = null, bounds = null) {
     enabled: data.enabled !== false,
     material: typeof data.material === 'string' && data.material.trim() ? data.material.trim() : 'stock',
     color: typeof data.color === 'string' && data.color.trim() ? data.color.trim() : '#68a7ff',
-    opacity: clamp(numberOr(data.opacity, 0.22), 0.02, 0.9),
+    opacity: clamp(numberOr(data.opacity, 0.42), 0.02, 0.9),
     min: {
       x: Math.min(min.x, max.x),
       y: Math.min(min.y, max.y),

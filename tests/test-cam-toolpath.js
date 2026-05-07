@@ -20,6 +20,7 @@ test('polygon offset grows and shrinks a rectangle by tool radius', () => {
   const inside = offsetPolygon(rect, -1);
   assert.deepEqual(outside[0], { x: -1, y: -1 });
   assert.deepEqual(inside[0], { x: 1, y: 1 });
+  assert.deepEqual(offsetPolygon(rect, -6), []);
 });
 
 test('profile toolpaths offset outside contours and cut requested depth passes', () => {
@@ -47,7 +48,7 @@ test('pocket toolpaths create inward stepover loops', () => {
   ];
   const cam = normalizeCamConfig({
     tools: [{ id: 'tool-a', type: 'endmill', diameter: 2 }],
-    operations: [{ id: 'pocket-a', type: 'pocket', toolId: 'tool-a', source: { loops: [square] }, topZ: 0, bottomZ: -1, stepDown: 1, stepover: 1.5 }],
+    operations: [{ id: 'pocket-a', type: 'pocket', toolId: 'tool-a', source: { loops: [square] }, topZ: 0, bottomZ: -1, stepDown: 1, stepoverPercent: 75 }],
   });
   const { toolpaths } = generateToolpaths(cam);
   const xyRapids = toolpaths[0].moves.filter((move) => move.type === 'rapid' && move.x != null && move.y != null);
@@ -56,6 +57,35 @@ test('pocket toolpaths create inward stepover loops', () => {
   assert.deepEqual({ x: xyRapids[0].x, y: xyRapids[0].y }, { x: 1, y: 1 });
   assert.ok(xyRapids[1].x > xyRapids[0].x);
   assert.ok(xyRapids[1].y > xyRapids[0].y);
+  for (const rapid of xyRapids) {
+    assert.ok(rapid.x >= 0 && rapid.x <= 10);
+    assert.ok(rapid.y >= 0 && rapid.y <= 10);
+  }
+});
+
+test('lead-in parameters add a zig-zag before the selected path start', () => {
+  const cam = normalizeCamConfig({
+    tools: [{ id: 'tool-a', type: 'endmill', diameter: 2 }],
+    operations: [{
+      id: 'profile-a',
+      type: 'profile',
+      toolId: 'tool-a',
+      side: 'along',
+      source: { loops: [rect] },
+      topZ: 0,
+      bottomZ: -1,
+      stepDown: 1,
+      leadInEnabled: true,
+      leadInLength: 2,
+      leadInZigZagAmplitude: 0.5,
+      leadInZigZagCount: 2,
+      leadInPosition: 0.5,
+    }],
+  });
+  const { toolpaths } = generateToolpaths(cam);
+  const xyFeeds = toolpaths[0].moves.filter((move) => move.type === 'feed' && move.x != null && move.y != null);
+  assert.ok(xyFeeds.length > rect.length);
+  assert.deepEqual({ x: xyFeeds[1].x, y: xyFeeds[1].y }, { x: 10, y: 5 });
 });
 
 test('operation order controls generated toolpath execution order', () => {

@@ -52,7 +52,12 @@ export function generateProfileToolpath(operation, tool, loops = getOperationLoo
 
 export function generatePocketToolpath(operation, tool, loops = getOperationLoops(operation)) {
   const radius = tool.diameter / 2;
-  const stepover = Math.max(EPSILON, operation.stepover || tool.diameter * 0.4);
+  const stepover = Math.max(
+    EPSILON,
+    Number.isFinite(Number(operation.stepoverPercent))
+      ? tool.diameter * Math.max(1, Math.min(100, Number(operation.stepoverPercent))) / 100
+      : (operation.stepover || tool.diameter * 0.4),
+  );
   const passes = depthPasses(operation.topZ, operation.bottomZ, operation.stepDown);
   const moves = operationHeader(operation, tool);
 
@@ -103,15 +108,58 @@ function operationHeader(operation, tool) {
 
 function appendClosedPathPass(moves, path, depth, operation) {
   if (!Array.isArray(path) || path.length < 2) return;
-  const first = path[0];
+  const orderedPath = rotateClosedPath(path, operation.leadInPosition);
+  const first = orderedPath[0];
+  const leadInPath = buildLeadInPath(orderedPath, operation);
+  const rapidTarget = leadInPath[0] || first;
   moves.push({ type: 'rapid', z: operation.clearanceZ });
-  moves.push({ type: 'rapid', x: first.x, y: first.y });
+  moves.push({ type: 'rapid', x: rapidTarget.x, y: rapidTarget.y });
   moves.push({ type: 'feed', z: depth, feed: operation.plungeRate });
-  for (let index = 1; index < path.length; index++) {
-    moves.push({ type: 'feed', x: path[index].x, y: path[index].y, feed: operation.feedRate });
+  for (let index = 1; index < leadInPath.length; index++) {
+    moves.push({ type: 'feed', x: leadInPath[index].x, y: leadInPath[index].y, feed: operation.feedRate });
+  }
+  for (let index = 1; index < orderedPath.length; index++) {
+    moves.push({ type: 'feed', x: orderedPath[index].x, y: orderedPath[index].y, feed: operation.feedRate });
   }
   moves.push({ type: 'feed', x: first.x, y: first.y, feed: operation.feedRate });
   moves.push({ type: 'rapid', z: operation.clearanceZ });
+}
+
+function rotateClosedPath(path, position = 0) {
+  if (!Array.isArray(path) || path.length < 2) return path || [];
+  const clamped = Math.max(0, Math.min(1, Number(position) || 0));
+  const startIndex = Math.min(path.length - 1, Math.round(clamped * (path.length - 1)));
+  if (startIndex <= 0) return path;
+  return path.slice(startIndex).concat(path.slice(0, startIndex));
+}
+
+function buildLeadInPath(path, operation) {
+  if (!operation?.leadInEnabled || !Array.isArray(path) || path.length < 2) return [];
+  const length = Math.max(0, Number(operation.leadInLength) || 0);
+  if (length <= EPSILON) return [];
+  const first = path[0];
+  const second = path[1];
+  const dx = second.x - first.x;
+  const dy = second.y - first.y;
+  const segmentLength = Math.hypot(dx, dy);
+  if (segmentLength <= EPSILON) return [];
+  const ux = dx / segmentLength;
+  const uy = dy / segmentLength;
+  const px = -uy;
+  const py = ux;
+  const amplitude = Math.max(0, Number(operation.leadInZigZagAmplitude) || 0);
+  const count = Math.max(1, Math.round(Number(operation.leadInZigZagCount) || 3));
+  const points = [];
+  for (let index = 0; index <= count; index++) {
+    const t = index / count;
+    const along = -length * (1 - t);
+    const side = index === count ? 0 : (index % 2 === 0 ? -amplitude : amplitude);
+    points.push({
+      x: first.x + ux * along + px * side,
+      y: first.y + uy * along + py * side,
+    });
+  }
+  return points;
 }
 
 function makeToolpath(operation, tool, moves) {

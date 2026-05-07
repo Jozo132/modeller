@@ -148,6 +148,21 @@ function _appendSolidTriangle(out, first, second, third, normal) {
   _appendSolidVertex(out, third, normal);
 }
 
+function _triangleNormal(first, second, third) {
+  const ux = second.x - first.x;
+  const uy = second.y - first.y;
+  const uz = second.z - first.z;
+  const vx = third.x - first.x;
+  const vy = third.y - first.y;
+  const vz = third.z - first.z;
+  const nx = uy * vz - uz * vy;
+  const ny = uz * vx - ux * vz;
+  const nz = ux * vy - uy * vx;
+  const len = Math.hypot(nx, ny, nz);
+  if (len <= 1e-12) return { x: 0, y: 0, z: 1 };
+  return { x: nx / len, y: ny / len, z: nz / len };
+}
+
 function _appendLineSegment(out, first, second) {
   out.push(first.x, first.y, first.z, second.x, second.y, second.z);
 }
@@ -439,7 +454,6 @@ function _buildCamSimulationSurface(simulation) {
   const rows = simulation.rows;
   const heights = simulation.heights;
   const vertices = [];
-  const normal = { x: 0, y: 0, z: 1 };
   const pointAt = (column, row) => ({
     x: stock.min.x + ((stock.max.x - stock.min.x) * column) / columns,
     y: stock.min.y + ((stock.max.y - stock.min.y) * row) / rows,
@@ -452,8 +466,8 @@ function _buildCamSimulationSurface(simulation) {
       const lowerRight = pointAt(column + 1, row);
       const upperRight = pointAt(column + 1, row + 1);
       const upperLeft = pointAt(column, row + 1);
-      _appendSolidTriangle(vertices, lowerLeft, lowerRight, upperRight, normal);
-      _appendSolidTriangle(vertices, lowerLeft, upperRight, upperLeft, normal);
+      _appendSolidTriangle(vertices, lowerLeft, lowerRight, upperRight, _triangleNormal(lowerLeft, lowerRight, upperRight));
+      _appendSolidTriangle(vertices, lowerLeft, upperRight, upperLeft, _triangleNormal(lowerLeft, upperRight, upperLeft));
     }
   }
 
@@ -5233,11 +5247,10 @@ export class WasmRenderer {
     }
 
     if (this._camSimulationTriangles && this._camSimulationTriangleCount > 0) {
-      exec.drawTriangleBuffer(this._camSimulationTriangles, this._camSimulationTriangleCount, {
+      exec.drawTriangleBufferNormalColor(this._camSimulationTriangles, this._camSimulationTriangleCount, {
         mvp,
-        color: [0.44, 0.78, 0.38, 0.34],
         depthFunc: 'lequal',
-        depthWrite: false,
+        depthWrite: true,
         polygonOffset: [-0.5, -0.5],
       });
     }

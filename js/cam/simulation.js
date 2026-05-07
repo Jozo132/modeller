@@ -15,7 +15,7 @@ export function simulateStockRemoval(camConfig, toolpathsOrOptions = null, maybe
     return null;
   }
 
-  const resolution = Math.max(8, Math.min(96, Math.round(options.resolution || 48)));
+  const resolution = Math.max(8, Math.min(256, Math.round(options.resolution || 128)));
   const columns = Math.max(1, Math.round(resolution));
   const rows = Math.max(1, Math.round(resolution * Math.max(0.25, Math.min(4, depth / width))));
   const heights = new Float32Array((columns + 1) * (rows + 1));
@@ -24,9 +24,29 @@ export function simulateStockRemoval(camConfig, toolpathsOrOptions = null, maybe
   const toolById = new Map(config.tools.map((tool) => [tool.id, tool]));
   const feedSegments = collectFeedSegments(toolpaths, toolById);
   const progress = Math.max(0, Math.min(1, Number(options.progress ?? 1)));
-  const limit = Math.floor(feedSegments.length * progress + EPSILON);
-  for (let segmentIndex = 0; segmentIndex < limit; segmentIndex++) {
-    carveSegment(heights, columns, rows, stock, feedSegments[segmentIndex]);
+  const totalCutSeconds = feedSegments.reduce((sum, segment) => sum + segment.durationSeconds, 0);
+  const targetCutSeconds = totalCutSeconds * progress;
+  let processedSegmentCount = 0;
+  let processedCutSeconds = 0;
+  for (const segment of feedSegments) {
+    if (processedCutSeconds >= targetCutSeconds - EPSILON) break;
+    const remainingSeconds = targetCutSeconds - processedCutSeconds;
+    if (remainingSeconds + EPSILON >= segment.durationSeconds) {
+      carveSegment(heights, columns, rows, stock, segment);
+      processedCutSeconds += segment.durationSeconds;
+      processedSegmentCount += 1;
+      continue;
+    }
+    const ratio = Math.max(0, Math.min(1, remainingSeconds / segment.durationSeconds));
+    if (ratio > EPSILON) {
+      carveSegment(heights, columns, rows, stock, {
+        ...segment,
+        end: interpolatePoint(segment.start, segment.end, ratio),
+      });
+      processedCutSeconds += remainingSeconds;
+      processedSegmentCount += ratio;
+    }
+    break;
   }
 
   let minHeight = stock.max.z;
@@ -46,7 +66,9 @@ export function simulateStockRemoval(camConfig, toolpathsOrOptions = null, maybe
     heights,
     progress,
     feedSegmentCount: feedSegments.length,
-    processedSegmentCount: limit,
+    processedSegmentCount,
+    totalCutSeconds,
+    processedCutSeconds,
     removedVertexCount,
     minHeight,
   };
@@ -68,7 +90,14 @@ function collectFeedSegments(toolpaths, toolById) {
       const hasCurrentPoint = Number.isFinite(current.x) && Number.isFinite(current.y) && Number.isFinite(current.z);
       const hasNextPoint = Number.isFinite(next.x) && Number.isFinite(next.y) && Number.isFinite(next.z);
       if (move.type === 'feed' && hasCurrentPoint && hasNextPoint) {
-        segments.push({ start: { ...current }, end: next, radius });
+        const length = Math.hypot(next.x - current.x, next.y - current.y, next.z - current.z);
+        const feedRate = Math.max(EPSILON, Number(move.feed) || Number(tool?.feedRate) || 1);
+        segments.push({
+          start: { ...current },
+          end: next,
+          radius,
+          durationSeconds: Math.max(EPSILON, (length / feedRate) * 60),
+        });
       }
       current = next;
     }
@@ -90,6 +119,14 @@ function carveSegment(heights, columns, rows, stock, segment) {
     const z = Math.min(segment.start.z, segment.end.z);
     carvePoint(heights, columns, rows, stock, x, y, z, segment.radius);
   }
+}
+
+function interpolatePoint(start, end, ratio) {
+  return {
+    x: start.x + (end.x - start.x) * ratio,
+    y: start.y + (end.y - start.y) * ratio,
+    z: start.z + (end.z - start.z) * ratio,
+  };
 }
 
 function carvePoint(heights, columns, rows, stock, x, y, z, radius) {
