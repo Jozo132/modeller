@@ -2917,7 +2917,8 @@ select.parameter-input {
 }
 
 /* In Part mode, hide the right sidebar parameters panel (it lives in the left panel now) */
-body.workspace-part #parameters-panel {
+body.workspace-part #parameters-panel,
+body.workspace-cam #parameters-panel {
   display: none !important;
 }
 
@@ -3640,18 +3641,29 @@ body.console-view-open .console-view {
   display: none;
 }
 
+.cam-mode-only {
+  display: none;
+}
+
 body.workspace-part .part-mode-only {
+  display: flex;
+}
+
+body.workspace-cam .cam-mode-only {
   display: flex;
 }
 
 /* In Part workspace (not sketching): hide layers section (sketch-specific) */
 body.workspace-part #layers-section,
-body.workspace-part #layers-separator {
+body.workspace-part #layers-separator,
+body.workspace-cam #layers-section,
+body.workspace-cam #layers-separator {
   display: none;
 }
 
 /* In Part workspace (not sketching): hide sketch-only left panel sections */
-body.workspace-part .sketch-only-section {
+body.workspace-part .sketch-only-section,
+body.workspace-cam .sketch-only-section {
   display: none !important;
 }
 /* Feature properties section (Part mode only, hidden by default) */
@@ -3659,6 +3671,13 @@ body.workspace-part .sketch-only-section {
   display: none;
 }
 body.workspace-part #left-feature-params {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 60px;
+  overflow-y: auto;
+}
+body.workspace-cam #left-feature-params {
   display: flex;
   flex-direction: column;
   flex: 1;
@@ -3699,6 +3718,215 @@ body.workspace-part .sketch-tool-only {
   background: rgba(255, 152, 0, 0.25);
   color: #FFB74D;
   border: 1px solid rgba(255, 152, 0, 0.4);
+}
+
+.status-mode.cam-mode {
+  background: rgba(76, 175, 80, 0.22);
+  color: #9be29f;
+  border: 1px solid rgba(76, 175, 80, 0.42);
+}
+
+.cam-panel-section {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 10px 0;
+}
+
+.cam-panel-section:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+
+.cam-stage-nav {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.cam-stage-nav button {
+  min-height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.cam-stage-nav button.active,
+.cam-panel-button.active {
+  border-color: var(--accent);
+  background: rgba(0, 122, 204, 0.22);
+  color: var(--text-primary);
+}
+
+.cam-panel-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.cam-panel-note {
+  margin: 6px 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.cam-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.cam-action-row button,
+.cam-panel-button {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 11px;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+
+.cam-action-row button:hover,
+.cam-panel-button:hover {
+  border-color: var(--accent);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.cam-panel-button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.cam-panel-button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.cam-panel-summary {
+  margin: 8px 0;
+  padding: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.cam-panel-note.warning {
+  color: #ffcc80;
+}
+
+.cam-slider-row {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) 38px;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.cam-slider-row input[type="range"] {
+  width: 100%;
+}
+
+.cam-operation-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cam-operation-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  cursor: pointer;
+}
+
+.cam-operation-item.active {
+  border-color: var(--accent);
+  background: rgba(0, 122, 204, 0.18);
+}
+
+.cam-operation-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.cam-operation-controls {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 4px;
+}
+
+.cam-operation-control {
+  min-width: 28px;
+  max-width: 58px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 10px;
+  padding: 4px 5px;
+  cursor: pointer;
+}
+
+.cam-operation-control:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
+.cam-operation-control.danger {
+  color: #ffb4a8;
+}
+
+.cam-operation-control:disabled {
+  cursor: default;
+  opacity: 0.42;
+}
+
+.cam-operation-title {
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.cam-operation-meta {
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+
+.cam-pill {
+  border-radius: 999px;
+  padding: 2px 6px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-secondary);
+  font-size: 10px;
+  white-space: nowrap;
 }
 
 /* In Part workspace, re-enable sketch tools during sketch-on-plane */

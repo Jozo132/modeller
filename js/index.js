@@ -86,6 +86,9 @@ export {
   getScenesFromCMOD,
 } from './cmod.js';
 
+// --- CAM setup, toolpath generation, and G-code export ---
+export * from './cam/index.js';
+
 // --- Part manager (high-level part workflow helper) ---
 export { PartManager } from './part-manager.js';
 

@@ -40,6 +40,7 @@
     "test:ir": "node tests/test-ir-determinism.js",
     "test:exact-revolve": "node tests/test-exact-revolve.js",
     "test:stable-hash": "node tests/test-stable-hash.js",
+    "test:cam": "bun tests/test-cam-config.js && bun tests/test-cam-toolpath.js && bun tests/test-cam-simulation.js && bun tests/test-cam-linuxcnc-export.js && bun tests/test-cmod-cam-persistence.js",
     "test:tess-sweep": "node tests/test-tess-dihedral-sweep.js",
     "lint:evaluator": "node tools/check-evaluator-bypass.js",
     "cli": "node tools/cad-cli.mjs",
@@ -88,6 +89,9 @@
     },
     "./cmod": {
       "import": "./js/cmod.js"
+    },
+    "./cam": {
+      "import": "./js/cam/index.js"
     },
     "./logger": {
       "import": "./js/logger.js"

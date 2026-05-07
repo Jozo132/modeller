@@ -47,6 +47,7 @@ let _renderer3d = null;
 let _getWorkspaceMode = null;
 let _getSessionState = null;
 let _getScenes = null;
+let _getCamConfig = null;
 
 /** Register viewport for persistence. */
 export function setCmodViewport(vp) { _viewport = vp; }
@@ -65,6 +66,9 @@ export function setCmodSessionStateGetter(fn) { _getSessionState = fn; }
 
 /** Register scenes getter (returns array of named camera presets). */
 export function setCmodScenesGetter(fn) { _getScenes = fn; }
+
+/** Register CAM config getter. */
+export function setCmodCamConfigGetter(fn) { _getCamConfig = fn; }
 
 // -----------------------------------------------------------------------
 // Metadata computation
@@ -167,6 +171,9 @@ export function projectToCMOD() {
   if (_getSessionState) {
     cmod.sessionState = _getSessionState();
   }
+  if (_getCamConfig) {
+    cmod.cam = _getCamConfig();
+  }
 
   // Named camera scenes (for repeatable renders)
   if (_getScenes) {
@@ -234,7 +241,7 @@ function _validateCMOD(data) {
  * Restore project state from a .cmod object.
  * Returns structured result so the caller can finish restoring 3D state.
  * @param {Object} data - Parsed .cmod JSON.
- * @returns {{ ok: boolean, error?: string, hasViewport: boolean, part?: Object, orbit?: Object, workspaceMode?: string, sessionState?: Object, metadata?: Object, finalCbrepPayload?: string|null, finalCbrepHash?: string|null }}
+ * @returns {{ ok: boolean, error?: string, hasViewport: boolean, part?: Object, orbit?: Object, workspaceMode?: string, sessionState?: Object, cam?: Object, metadata?: Object, finalCbrepPayload?: string|null, finalCbrepHash?: string|null }}
  */
 export function projectFromCMOD(data) {
   const check = _validateCMOD(data);
@@ -281,6 +288,7 @@ export function projectFromCMOD(data) {
     scenes: Array.isArray(data.scenes) ? data.scenes : [],
     workspaceMode: data.workspaceMode || null,
     sessionState: data.sessionState || null,
+    cam: data.cam || null,
     metadata: data.metadata || null,
     finalCbrepPayload: data._cbrepPayload || null,
     finalCbrepHash: data._cbrepHash || null,
@@ -350,6 +358,7 @@ export function buildCMOD(part, options = {}) {
     scenes: options.scenes || [],
     workspaceMode: 'part',
     sessionState: null,
+    cam: options.cam || null,
     metadata: _computeMetadata(part),
   };
 

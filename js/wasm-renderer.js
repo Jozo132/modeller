@@ -138,6 +138,331 @@ function _appendEdgePolylineVertices(out, edge) {
   }
 }
 
+function _appendSolidVertex(out, point, normal) {
+  out.push(point.x, point.y, point.z, normal.x, normal.y, normal.z);
+}
+
+function _appendSolidTriangle(out, first, second, third, normal) {
+  _appendSolidVertex(out, first, normal);
+  _appendSolidVertex(out, second, normal);
+  _appendSolidVertex(out, third, normal);
+}
+
+function _appendLineSegment(out, first, second) {
+  out.push(first.x, first.y, first.z, second.x, second.y, second.z);
+}
+
+function _parseCamColor(color, fallback = [0.407, 0.655, 1.0, 0.18]) {
+  if (typeof color !== 'string') return fallback;
+  const hex = color.trim().replace(/^#/, '');
+  if (!/^[0-9a-fA-F]{6}$/.test(hex)) return fallback;
+  return [
+    parseInt(hex.slice(0, 2), 16) / 255,
+    parseInt(hex.slice(2, 4), 16) / 255,
+    parseInt(hex.slice(4, 6), 16) / 255,
+    fallback[3],
+  ];
+}
+
+function _buildCamStockBuffers(stock) {
+  if (!stock?.min || !stock?.max || stock.enabled === false) return null;
+  const min = stock.min;
+  const max = stock.max;
+  if (max.x <= min.x || max.y <= min.y || max.z <= min.z) return null;
+
+  const corners = [
+    { x: min.x, y: min.y, z: min.z },
+    { x: max.x, y: min.y, z: min.z },
+    { x: max.x, y: max.y, z: min.z },
+    { x: min.x, y: max.y, z: min.z },
+    { x: min.x, y: min.y, z: max.z },
+    { x: max.x, y: min.y, z: max.z },
+    { x: max.x, y: max.y, z: max.z },
+    { x: min.x, y: max.y, z: max.z },
+  ];
+  const faces = [
+    { indices: [0, 3, 2, 1], normal: { x: 0, y: 0, z: -1 } },
+    { indices: [4, 5, 6, 7], normal: { x: 0, y: 0, z: 1 } },
+    { indices: [0, 1, 5, 4], normal: { x: 0, y: -1, z: 0 } },
+    { indices: [1, 2, 6, 5], normal: { x: 1, y: 0, z: 0 } },
+    { indices: [2, 3, 7, 6], normal: { x: 0, y: 1, z: 0 } },
+    { indices: [3, 0, 4, 7], normal: { x: -1, y: 0, z: 0 } },
+  ];
+  const triangles = [];
+  for (const face of faces) {
+    const first = corners[face.indices[0]];
+    const second = corners[face.indices[1]];
+    const third = corners[face.indices[2]];
+    const fourth = corners[face.indices[3]];
+    _appendSolidTriangle(triangles, first, second, third, face.normal);
+    _appendSolidTriangle(triangles, first, third, fourth, face.normal);
+  }
+
+  const edgePairs = [
+    [0, 1], [1, 2], [2, 3], [3, 0],
+    [4, 5], [5, 6], [6, 7], [7, 4],
+    [0, 4], [1, 5], [2, 6], [3, 7],
+  ];
+  const edges = [];
+  for (const [firstIndex, secondIndex] of edgePairs) {
+    _appendLineSegment(edges, corners[firstIndex], corners[secondIndex]);
+  }
+
+  return {
+    triangles: new Float32Array(triangles),
+    triangleCount: triangles.length / 6,
+    edges: new Float32Array(edges),
+    edgeVertexCount: edges.length / 3,
+    color: _parseCamColor(stock.color, [0.407, 0.655, 1.0, Math.max(0.02, Math.min(0.9, stock.opacity ?? 0.18))]),
+  };
+}
+
+const CAM_PREVIEW_EPSILON = 1e-7;
+
+function _buildCamToolpathBuffers(toolpaths, activeOperationId, progress = 1, options = {}) {
+  const inactiveEdges = [];
+  const activeEdges = [];
+  const completedEdges = [];
+  const directionEdges = [];
+  const visibleTimelineSegments = [];
+  const previewMode = options.previewMode === 'all' ? 'all' : 'active';
+  const effectiveActiveOperationId = activeOperationId || (toolpaths || [])[0]?.operationId || null;
+
+  for (const toolpath of toolpaths || []) {
+    const isActive = toolpath.operationId === effectiveActiveOperationId;
+    if (!isActive && previewMode !== 'all') continue;
+
+    const groups = _sampleCamPathGroups(
+      _collapseCamPathGroups(_collectCamPathGroups(toolpath, isActive)),
+      _camPathGroupPreviewLimit(toolpath, isActive),
+    );
+
+    for (const group of groups) {
+      for (const segment of group) {
+        visibleTimelineSegments.push(segment);
+        if (segment.active) _appendLineSegment(activeEdges, segment.first, segment.second);
+        else _appendLineSegment(inactiveEdges, segment.first, segment.second);
+      }
+      if (isActive) _appendCamDirectionArrowsForGroup(directionEdges, group);
+    }
+  }
+
+  const completedLimit = Math.floor(visibleTimelineSegments.length * Math.max(0, Math.min(1, Number(progress ?? 1))) + 1e-9);
+  for (let segmentIndex = 0; segmentIndex < completedLimit; segmentIndex++) {
+    const segment = visibleTimelineSegments[segmentIndex];
+    _appendLineSegment(completedEdges, segment.first, segment.second);
+  }
+
+  return {
+    allEdges: inactiveEdges.length > 0 ? new Float32Array(inactiveEdges) : null,
+    allEdgeVertexCount: inactiveEdges.length / 3,
+    activeEdges: activeEdges.length > 0 ? new Float32Array(activeEdges) : null,
+    activeEdgeVertexCount: activeEdges.length / 3,
+    completedEdges: completedEdges.length > 0 ? new Float32Array(completedEdges) : null,
+    completedEdgeVertexCount: completedEdges.length / 3,
+    directionEdges: directionEdges.length > 0 ? new Float32Array(directionEdges) : null,
+    directionEdgeVertexCount: directionEdges.length / 3,
+  };
+}
+
+function _collectCamPathGroups(toolpath, active) {
+  const groups = [];
+  let current = { x: null, y: null, z: null };
+  let currentGroup = [];
+  const flushGroup = () => {
+    if (currentGroup.length > 0) groups.push(currentGroup);
+    currentGroup = [];
+  };
+
+  for (const move of toolpath.moves || []) {
+    if (move.type !== 'rapid' && move.type !== 'feed') continue;
+    const next = {
+      x: Number.isFinite(Number(move.x)) ? Number(move.x) : current.x,
+      y: Number.isFinite(Number(move.y)) ? Number(move.y) : current.y,
+      z: Number.isFinite(Number(move.z)) ? Number(move.z) : current.z,
+    };
+    const hasCurrentPoint = Number.isFinite(current.x) && Number.isFinite(current.y) && Number.isFinite(current.z);
+    const hasNextPoint = Number.isFinite(next.x) && Number.isFinite(next.y) && Number.isFinite(next.z);
+
+    if (move.type === 'rapid') {
+      flushGroup();
+      current = next;
+      continue;
+    }
+
+    if (hasCurrentPoint && hasNextPoint) {
+      const xyLength = Math.hypot(next.x - current.x, next.y - current.y);
+      if (xyLength > CAM_PREVIEW_EPSILON) {
+        currentGroup.push({
+          first: { ...current },
+          second: { ...next },
+          active,
+        });
+      }
+    }
+    current = next;
+  }
+  flushGroup();
+  return groups;
+}
+
+function _collapseCamPathGroups(groups) {
+  const records = [];
+  const byKey = new Map();
+  for (const group of groups || []) {
+    const key = _camPathGroupKey(group);
+    if (!key) continue;
+    const depth = _camPathGroupDepth(group);
+    const existing = byKey.get(key);
+    if (!existing) {
+      const record = { key, group: _cloneCamPathGroup(group), depth };
+      byKey.set(key, record);
+      records.push(record);
+      continue;
+    }
+    if (depth < existing.depth) {
+      existing.group = _cloneCamPathGroup(group);
+      existing.depth = depth;
+    }
+  }
+  return records.map((record) => record.group);
+}
+
+function _sampleCamPathGroups(groups, limit) {
+  const maxGroups = Math.max(1, Math.round(limit || 1));
+  if (!Array.isArray(groups) || groups.length <= maxGroups) return groups || [];
+  if (maxGroups === 1) return [groups[groups.length - 1]];
+  const sampled = [];
+  const usedIndices = new Set();
+  for (let previewIndex = 0; previewIndex < maxGroups; previewIndex++) {
+    const sourceIndex = Math.round((previewIndex * (groups.length - 1)) / (maxGroups - 1));
+    if (usedIndices.has(sourceIndex)) continue;
+    usedIndices.add(sourceIndex);
+    sampled.push(groups[sourceIndex]);
+  }
+  return sampled;
+}
+
+function _camPathGroupPreviewLimit(toolpath, active) {
+  if (toolpath.operationType === 'pocket') return active ? 36 : 8;
+  return active ? 80 : 18;
+}
+
+function _camPathGroupKey(group) {
+  if (!Array.isArray(group) || group.length === 0) return null;
+  const keyParts = [_camPointKey(group[0].first)];
+  for (const segment of group) keyParts.push(_camPointKey(segment.second));
+  return keyParts.join('|');
+}
+
+function _camPointKey(point) {
+  const precision = 100000;
+  return `${Math.round(point.x * precision)},${Math.round(point.y * precision)}`;
+}
+
+function _camPathGroupDepth(group) {
+  let depth = Infinity;
+  for (const segment of group || []) {
+    depth = Math.min(depth, segment.first.z, segment.second.z);
+  }
+  return Number.isFinite(depth) ? depth : 0;
+}
+
+function _cloneCamPathGroup(group) {
+  return group.map((segment) => ({
+    first: { ...segment.first },
+    second: { ...segment.second },
+    active: segment.active,
+  }));
+}
+
+function _appendCamDirectionArrowsForGroup(out, group) {
+  const segment = _pickCamArrowSegment(group);
+  if (!segment) return;
+  _appendCamArrowHead(out, segment.first, segment.second);
+}
+
+function _pickCamArrowSegment(group) {
+  let totalLength = 0;
+  for (const segment of group || []) totalLength += Math.hypot(segment.second.x - segment.first.x, segment.second.y - segment.first.y);
+  if (totalLength <= CAM_PREVIEW_EPSILON) return null;
+  const targetLength = totalLength * 0.58;
+  let accumulatedLength = 0;
+  for (const segment of group) {
+    const segmentLength = Math.hypot(segment.second.x - segment.first.x, segment.second.y - segment.first.y);
+    if (segmentLength <= CAM_PREVIEW_EPSILON) continue;
+    accumulatedLength += segmentLength;
+    if (accumulatedLength >= targetLength) return segment;
+  }
+  return group.find((segment) => Math.hypot(segment.second.x - segment.first.x, segment.second.y - segment.first.y) > CAM_PREVIEW_EPSILON) || null;
+}
+
+function _appendCamArrowHead(out, first, second) {
+  const deltaX = second.x - first.x;
+  const deltaY = second.y - first.y;
+  const length = Math.hypot(deltaX, deltaY);
+  if (length <= CAM_PREVIEW_EPSILON) return;
+  const unitX = deltaX / length;
+  const unitY = deltaY / length;
+  const perpendicularX = -unitY;
+  const perpendicularY = unitX;
+  const arrowLength = Math.max(0.45, Math.min(2.6, length * 0.24));
+  const arrowWidth = arrowLength * 0.46;
+  const tip = {
+    x: first.x + deltaX * 0.68,
+    y: first.y + deltaY * 0.68,
+    z: first.z + (second.z - first.z) * 0.68 + 0.04,
+  };
+  const base = {
+    x: tip.x - unitX * arrowLength,
+    y: tip.y - unitY * arrowLength,
+    z: tip.z,
+  };
+  const left = {
+    x: base.x + perpendicularX * arrowWidth,
+    y: base.y + perpendicularY * arrowWidth,
+    z: tip.z,
+  };
+  const right = {
+    x: base.x - perpendicularX * arrowWidth,
+    y: base.y - perpendicularY * arrowWidth,
+    z: tip.z,
+  };
+  _appendLineSegment(out, tip, left);
+  _appendLineSegment(out, tip, right);
+}
+
+function _buildCamSimulationSurface(simulation) {
+  if (!simulation?.stock || !simulation.heights || simulation.columns <= 0 || simulation.rows <= 0) return null;
+  const stock = simulation.stock;
+  const columns = simulation.columns;
+  const rows = simulation.rows;
+  const heights = simulation.heights;
+  const vertices = [];
+  const normal = { x: 0, y: 0, z: 1 };
+  const pointAt = (column, row) => ({
+    x: stock.min.x + ((stock.max.x - stock.min.x) * column) / columns,
+    y: stock.min.y + ((stock.max.y - stock.min.y) * row) / rows,
+    z: heights[row * (columns + 1) + column],
+  });
+
+  for (let row = 0; row < rows; row++) {
+    for (let column = 0; column < columns; column++) {
+      const lowerLeft = pointAt(column, row);
+      const lowerRight = pointAt(column + 1, row);
+      const upperRight = pointAt(column + 1, row + 1);
+      const upperLeft = pointAt(column, row + 1);
+      _appendSolidTriangle(vertices, lowerLeft, lowerRight, upperRight, normal);
+      _appendSolidTriangle(vertices, lowerLeft, upperRight, upperLeft, normal);
+    }
+  }
+
+  return {
+    triangles: vertices.length > 0 ? new Float32Array(vertices) : null,
+    triangleCount: vertices.length / 6,
+  };
+}
+
 function _buildFaceGroupHighlightVertices(meshTriangles, meshTriangleCount, meshFaces, triFaceMap, targetGroups) {
   if (!meshTriangles || !meshFaces || !triFaceMap || !targetGroups || targetGroups.size === 0) return [];
   const highlightVerts = [];
@@ -470,6 +795,23 @@ export class WasmRenderer {
     this._meshDashedFeatureEdgeVertexCount = 0;
     this._meshTriangleOverlayEdges = null;
     this._meshTriangleOverlayEdgeVertexCount = 0;
+
+    // CAM visualization overlays: stock, toolpath traces, and rough removal preview.
+    this._camStockTriangles = null;
+    this._camStockTriangleCount = 0;
+    this._camStockEdges = null;
+    this._camStockEdgeVertexCount = 0;
+    this._camStockColor = [0.407, 0.655, 1.0, 0.18];
+    this._camToolpathEdges = null;
+    this._camToolpathEdgeVertexCount = 0;
+    this._camActiveToolpathEdges = null;
+    this._camActiveToolpathEdgeVertexCount = 0;
+    this._camToolpathDirectionEdges = null;
+    this._camToolpathDirectionEdgeVertexCount = 0;
+    this._camCompletedToolpathEdges = null;
+    this._camCompletedToolpathEdgeVertexCount = 0;
+    this._camSimulationTriangles = null;
+    this._camSimulationTriangleCount = 0;
 
     // Sketch wireframe data for rendering sketch primitives in 3D
     this._sketchEdges = null;     // Float32Array: [x,y,z, x,y,z, ...] line pairs (active sketch)
@@ -1388,6 +1730,25 @@ export class WasmRenderer {
   getSelectedEdges() {
     if (!this._meshEdgeSegments) return [];
     return [...this._selectedEdgeIndices].map(i => this._meshEdgeSegments[i]).filter(Boolean);
+  }
+
+  getEdgePathPoints(edgeIndex) {
+    if (!this._meshEdgeSegments) return [];
+    const pathIndex = this._edgeToPath ? this._edgeToPath.get(edgeIndex) : undefined;
+    const edgeIndices = pathIndex !== undefined && this._meshEdgePaths
+      ? this._meshEdgePaths[pathIndex].edgeIndices
+      : [edgeIndex];
+    const points = [];
+    for (const candidateIndex of edgeIndices) {
+      const edge = this._meshEdgeSegments[candidateIndex];
+      const edgePoints = _getEdgePolylinePoints(edge);
+      for (const point of edgePoints) {
+        const previous = points[points.length - 1];
+        if (previous && Math.hypot(previous.x - point.x, previous.y - point.y, previous.z - point.z) < 1e-8) continue;
+        points.push({ x: point.x, y: point.y, z: point.z });
+      }
+    }
+    return points;
   }
 
   /** Set edge selection mode. */
@@ -3977,6 +4338,56 @@ export class WasmRenderer {
     this._meshTriangleOverlayMode = mode === 'outline' ? 'outline' : 'off';
   }
 
+  setCamVisualization(visualization = null) {
+    if (!visualization) {
+      this.clearCamVisualization();
+      return;
+    }
+
+    const stockBuffers = _buildCamStockBuffers(visualization.stock);
+    this._camStockTriangles = stockBuffers?.triangles || null;
+    this._camStockTriangleCount = stockBuffers?.triangleCount || 0;
+    this._camStockEdges = stockBuffers?.edges || null;
+    this._camStockEdgeVertexCount = stockBuffers?.edgeVertexCount || 0;
+    this._camStockColor = stockBuffers?.color || [0.407, 0.655, 1.0, 0.18];
+
+    const toolpathBuffers = _buildCamToolpathBuffers(
+      visualization.toolpaths || [],
+      visualization.activeOperationId || null,
+      visualization.simulationProgress ?? 1,
+      { previewMode: visualization.previewMode },
+    );
+    this._camToolpathEdges = toolpathBuffers.allEdges;
+    this._camToolpathEdgeVertexCount = toolpathBuffers.allEdgeVertexCount;
+    this._camActiveToolpathEdges = toolpathBuffers.activeEdges;
+    this._camActiveToolpathEdgeVertexCount = toolpathBuffers.activeEdgeVertexCount;
+    this._camToolpathDirectionEdges = toolpathBuffers.directionEdges;
+    this._camToolpathDirectionEdgeVertexCount = toolpathBuffers.directionEdgeVertexCount;
+    this._camCompletedToolpathEdges = toolpathBuffers.completedEdges;
+    this._camCompletedToolpathEdgeVertexCount = toolpathBuffers.completedEdgeVertexCount;
+
+    const simulationSurface = _buildCamSimulationSurface(visualization.simulation);
+    this._camSimulationTriangles = simulationSurface?.triangles || null;
+    this._camSimulationTriangleCount = simulationSurface?.triangleCount || 0;
+  }
+
+  clearCamVisualization() {
+    this._camStockTriangles = null;
+    this._camStockTriangleCount = 0;
+    this._camStockEdges = null;
+    this._camStockEdgeVertexCount = 0;
+    this._camToolpathEdges = null;
+    this._camToolpathEdgeVertexCount = 0;
+    this._camActiveToolpathEdges = null;
+    this._camActiveToolpathEdgeVertexCount = 0;
+    this._camToolpathDirectionEdges = null;
+    this._camToolpathDirectionEdgeVertexCount = 0;
+    this._camCompletedToolpathEdges = null;
+    this._camCompletedToolpathEdgeVertexCount = 0;
+    this._camSimulationTriangles = null;
+    this._camSimulationTriangleCount = 0;
+  }
+
   /**
    * Triangulate polygon faces and build Float32Arrays for WebGL rendering.
    * Stores face metadata for selection/identification.
@@ -4398,7 +4809,16 @@ export class WasmRenderer {
     const hasSelectedEdges = this._sketchSelectedEdges && this._sketchSelectedEdgeVertexCount > 0;
     const hasActiveScene = this._activeSceneEdges && this._activeSceneEdgeVertexCount > 0;
     const hasSketchFaces = this._sketchFaceTriangles && this._sketchFaceTriangleCount > 0;
-    if (!hasMesh && !hasGhost && !hasArrow && !hasSketchEdges && !hasInactiveEdges && !hasSelectedEdges && !hasActiveScene && !hasSketchFaces) return;
+    const hasCamVisualization = !!(
+      (this._camStockTriangles && this._camStockTriangleCount > 0)
+      || (this._camStockEdges && this._camStockEdgeVertexCount > 0)
+      || (this._camToolpathEdges && this._camToolpathEdgeVertexCount > 0)
+      || (this._camActiveToolpathEdges && this._camActiveToolpathEdgeVertexCount > 0)
+      || (this._camToolpathDirectionEdges && this._camToolpathDirectionEdgeVertexCount > 0)
+      || (this._camCompletedToolpathEdges && this._camCompletedToolpathEdgeVertexCount > 0)
+      || (this._camSimulationTriangles && this._camSimulationTriangleCount > 0)
+    );
+    if (!hasMesh && !hasGhost && !hasArrow && !hasSketchEdges && !hasInactiveEdges && !hasSelectedEdges && !hasActiveScene && !hasSketchFaces && !hasCamVisualization) return;
 
     // Compute the same MVP as the WASM camera
     const mvp = this._computeMVP();
@@ -4569,6 +4989,10 @@ export class WasmRenderer {
         }
       }
 
+    }
+
+    if (hasCamVisualization) {
+      this._renderCamVisualizationOverlay(mvp);
     }
 
     // Draw ghost preview (semi-transparent extrude preview)
@@ -4760,6 +5184,82 @@ export class WasmRenderer {
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     exec.setDepthFunc(gl.LESS);
     exec.setCullFace(false);
+  }
+
+  _renderCamVisualizationOverlay(mvp) {
+    const exec = this.executor;
+    if (!exec || !mvp) return;
+    const stockColor = this._camStockColor || [0.407, 0.655, 1.0, 0.18];
+
+    if (this._camStockTriangles && this._camStockTriangleCount > 0) {
+      exec.drawTriangleBuffer(this._camStockTriangles, this._camStockTriangleCount, {
+        mvp,
+        color: stockColor,
+        depthFunc: 'lequal',
+        depthWrite: false,
+        polygonOffset: [1, 1],
+      });
+    }
+
+    if (this._camSimulationTriangles && this._camSimulationTriangleCount > 0) {
+      exec.drawTriangleBuffer(this._camSimulationTriangles, this._camSimulationTriangleCount, {
+        mvp,
+        color: [0.44, 0.78, 0.38, 0.34],
+        depthFunc: 'lequal',
+        depthWrite: false,
+        polygonOffset: [-0.5, -0.5],
+      });
+    }
+
+    if (this._camStockEdges && this._camStockEdgeVertexCount > 0) {
+      exec.drawLineBuffer(this._camStockEdges, this._camStockEdgeVertexCount, {
+        mvp,
+        color: [stockColor[0], stockColor[1], stockColor[2], 0.82],
+        depthTest: false,
+        depthWrite: false,
+        lineWidth: 1.0,
+      });
+    }
+
+    if (this._camToolpathEdges && this._camToolpathEdgeVertexCount > 0) {
+      exec.drawLineBuffer(this._camToolpathEdges, this._camToolpathEdgeVertexCount, {
+        mvp,
+        color: [0.72, 0.78, 0.85, 0.55],
+        depthTest: false,
+        depthWrite: false,
+        lineWidth: 1.0,
+      });
+    }
+
+    if (this._camActiveToolpathEdges && this._camActiveToolpathEdgeVertexCount > 0) {
+      exec.drawLineBuffer(this._camActiveToolpathEdges, this._camActiveToolpathEdgeVertexCount, {
+        mvp,
+        color: [1.0, 0.72, 0.22, 0.95],
+        depthTest: false,
+        depthWrite: false,
+        lineWidth: 2.0,
+      });
+    }
+
+    if (this._camCompletedToolpathEdges && this._camCompletedToolpathEdgeVertexCount > 0) {
+      exec.drawLineBuffer(this._camCompletedToolpathEdges, this._camCompletedToolpathEdgeVertexCount, {
+        mvp,
+        color: [0.28, 0.88, 0.48, 0.95],
+        depthTest: false,
+        depthWrite: false,
+        lineWidth: 2.5,
+      });
+    }
+
+    if (this._camToolpathDirectionEdges && this._camToolpathDirectionEdgeVertexCount > 0) {
+      exec.drawLineBuffer(this._camToolpathDirectionEdges, this._camToolpathDirectionEdgeVertexCount, {
+        mvp,
+        color: [1.0, 0.96, 0.55, 0.98],
+        depthTest: false,
+        depthWrite: false,
+        lineWidth: 1.5,
+      });
+    }
   }
 
   /**

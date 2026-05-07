@@ -20,6 +20,7 @@ let _renderer3d = null;
 let _getWorkspaceMode = null;
 let _getSessionState = null;
 let _getScenes = null;
+let _getCamConfig = null;
 let _cbrepStoreFactory = null;
 
 /** Register the viewport instance for persistence. */
@@ -39,6 +40,9 @@ export function setSessionStateGetter(fn) { _getSessionState = fn; }
 
 /** Register a callback that returns named camera scenes. */
 export function setScenesGetter(fn) { _getScenes = fn; }
+
+/** Register a callback that returns the top-level CAM config. */
+export function setCamConfigGetter(fn) { _getCamConfig = fn; }
 
 /** Register a factory for the external CBREP payload store. */
 export function setCbrepPersistStoreFactory(factory) { _cbrepStoreFactory = factory; }
@@ -397,6 +401,11 @@ function projectToJSON() {
     json.sessionState = _getSessionState();
   }
 
+  // CAM setup and operations are file data, not transient session state.
+  if (_getCamConfig) {
+    json.cam = _getCamConfig();
+  }
+
   // Named camera scenes
   if (_getScenes) {
     json.scenes = _getScenes();
@@ -458,6 +467,7 @@ async function projectFromJSON(data) {
     scenes: Array.isArray(data.scenes) ? data.scenes : [],
     workspaceMode: data.workspaceMode || null,
     sessionState: data.sessionState || null,
+    cam: data.cam || null,
     finalCbrepPayload: finalCbrep.payload,
     finalCbrepHash: finalCbrep.hash,
     finalCbrepContainer: finalCbrep.manifest,
