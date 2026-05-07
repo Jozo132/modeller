@@ -8,7 +8,6 @@
 
 import { TopoShell, TopoBody, TopoVertex, TopoEdge, TopoCoEdge, TopoLoop, TopoFace } from './BRepTopology.js';
 import { DEFAULT_TOLERANCE } from './Tolerance.js';
-import { tessellateBody } from './Tessellation.js';
 
 /**
  * Stitch face fragments into one or more closed shells.
@@ -375,19 +374,29 @@ function _desiredFaceNormal(face) {
 }
 
 function _approximateShellVolume(shell) {
-  // Volume sign only — skip O(n\u00b2) mesh validation.
-  const mesh = tessellateBody(new TopoBody([shell]), { validate: false });
   let volume = 0;
-  for (const face of mesh.faces || []) {
-    const verts = face.vertices || [];
-    if (verts.length < 3) continue;
-    for (let i = 1; i < verts.length - 1; i++) {
-      volume += _signedTetraVolume(verts[0], verts[i], verts[i + 1]);
+  for (const face of shell.faces || []) {
+    for (const loop of face.allLoops()) {
+      const verts = _orientedLoopPoints(face, loop);
+      if (verts.length < 3) continue;
+      for (let i = 1; i < verts.length - 1; i++) {
+        volume += _signedTetraVolume(verts[0], verts[i], verts[i + 1]);
+      }
     }
   }
   return volume;
 }
 
+function _orientedLoopPoints(face, loop) {
+  const pts = loop?.points?.() || [];
+  if (pts.length < 3) return pts;
+  const polyNormal = _polygonNormal(pts);
+  if (!polyNormal) return pts;
+  const desired = _desiredFaceNormal(face);
+  if (!desired) return pts;
+  const dot = polyNormal.x * desired.x + polyNormal.y * desired.y + polyNormal.z * desired.z;
+  return dot < 0 ? [...pts].reverse() : pts;
+}
 function _signedTetraVolume(a, b, c) {
   return (
     a.x * (b.y * c.z - b.z * c.y) -
