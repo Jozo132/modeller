@@ -28,6 +28,7 @@ export function normalizeCamConfig(input = {}, options = {}) {
   return {
     version: CAM_CONFIG_VERSION,
     units: data.units === 'inch' ? 'inch' : 'mm',
+    tolerance: positiveNumber(data.tolerance, positiveNumber(options.tolerance, 0.001)),
     postprocessorId: typeof data.postprocessorId === 'string' && data.postprocessorId.trim()
       ? data.postprocessorId.trim()
       : 'linuxcnc',
@@ -215,7 +216,9 @@ function normalizeSource(input = {}) {
     referenceId: typeof data.referenceId === 'string' ? data.referenceId : null,
     label: typeof data.label === 'string' && data.label.trim() ? data.label.trim() : null,
     faceIndex: integerOrNull(data.faceIndex),
+    topoFaceId: integerOrNull(data.topoFaceId),
     edgeIndex: integerOrNull(data.edgeIndex),
+    tolerance: positiveNumberOrNull(data.tolerance),
     loops: loops.map(normalizeLoop).filter((loop) => loop.length >= 3),
   };
 }
@@ -306,6 +309,11 @@ function integerOrNull(value) {
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
+}
+
+function positiveNumberOrNull(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : null;
 }
 
 function roundCamNumber(value) {

@@ -7830,15 +7830,38 @@ class App {
   }
 
   _getCamDefaultOptions() {
-    const part = this._partManager?.getPart?.();
-    const finalGeometry = part?.getFinalGeometry?.();
-    const geometry = finalGeometry?.geometry || finalGeometry;
+    const geometry = this._getCamReferenceGeometry();
     if (!geometry) return {};
     try {
-      return { bounds: boundsFromGeometry(geometry) };
+      return {
+        bounds: boundsFromGeometry(geometry),
+        tolerance: this._getCamReferenceTolerance(geometry),
+      };
     } catch {
       return {};
     }
+  }
+
+  _getCamReferenceGeometry() {
+    const part = this._partManager?.getPart?.();
+    const finalGeometry = part?.getFinalGeometry?.();
+    return finalGeometry?.geometry || finalGeometry || null;
+  }
+
+  _getCamReferenceTolerance(geometry = this._getCamReferenceGeometry()) {
+    const values = [];
+    const topoFaces = typeof geometry?.topoBody?.faces === 'function' ? geometry.topoBody.faces() : [];
+    for (const face of topoFaces) {
+      if (Number.isFinite(face?.tolerance) && face.tolerance > 0) values.push(face.tolerance);
+      const loops = typeof face?.allLoops === 'function' ? face.allLoops() : [];
+      for (const loop of loops) {
+        for (const coedge of loop?.coedges || []) {
+          if (Number.isFinite(coedge?.edge?.tolerance) && coedge.edge.tolerance > 0) values.push(coedge.edge.tolerance);
+        }
+      }
+    }
+    if (values.length === 0) return 0.001;
+    return Math.max(1e-6, Math.min(...values));
   }
 
   _renderCamPanel() {
@@ -8448,24 +8471,19 @@ class App {
   _applyCamFacePick(faceHit, pickMode) {
     const targetOperationId = pickMode.operationId;
     if (pickMode.mode === 'source-face') {
-      const loop = this._faceHitToCamLoop(faceHit);
-      if (!loop) {
+      const source = this._faceHitToCamSource(faceHit);
+      if (!source || !Array.isArray(source.loops) || source.loops.length === 0) {
         this.setStatus('Selected face does not have a usable planar boundary for 2.5D CAM.');
         return;
       }
       this._updateCamConfig((draft) => {
         const operation = draft.operations.find((candidate) => candidate.id === targetOperationId);
         if (!operation) return;
-        operation.source = {
-          type: 'face',
-          referenceId: `face-${faceHit.faceIndex}`,
-          label: `Face ${faceHit.faceIndex}`,
-          faceIndex: faceHit.faceIndex,
-          loops: [loop],
-        };
+        operation.source = source;
+        if (Number.isFinite(source.tolerance) && source.tolerance > 0) draft.tolerance = source.tolerance;
         if (Number.isFinite(faceHit.point?.z)) operation.topZ = this._faceHitZ(faceHit);
       }, { render: false });
-      this.setStatus(`CAM source set to face ${faceHit.faceIndex}.`);
+      this.setStatus(`CAM source set to ${source.label || `face ${faceHit.faceIndex}`}.`);
       return;
     }
     const z = this._faceHitZ(faceHit);
@@ -8505,6 +8523,130 @@ class App {
       if (Math.hypot(first.x - last.x, first.y - last.y) < 1e-8) loop.pop();
     }
     return loop.length >= 3 ? loop : null;
+  }
+
+  _faceHitToCamSource(faceHit) {
+    const geometry = this._getCamReferenceGeometry();
+    const topoFaceId = faceHit?.face?.topoFaceId;
+    if (Number.isFinite(topoFaceId) && typeof geometry?.topoBody?.faces === 'function') {
+      const topoFace = geometry.topoBody.faces().find((candidate) => candidate.id === topoFaceId);
+      const loops = this._topoFaceToCamLoops(topoFace, this._getCamReferenceTolerance(geometry));
+      if (loops.length > 0) {
+        return {
+          type: 'face',
+          referenceId: `topoface-${topoFaceId}`,
+          label: `Face ${topoFaceId}`,
+          faceIndex: faceHit.faceIndex,
+          topoFaceId,
+          loops,
+          tolerance: this._getCamToleranceForTopoFace(topoFace, geometry),
+        };
+      }
+    }
+    const fallbackLoop = this._faceHitToCamLoop(faceHit);
+    if (!fallbackLoop) return null;
+    return {
+      type: 'face',
+      referenceId: `face-${faceHit.faceIndex}`,
+      label: `Face ${faceHit.faceIndex}`,
+      faceIndex: faceHit.faceIndex,
+      loops: [fallbackLoop],
+      tolerance: this._getCamReferenceTolerance(geometry),
+    };
+  }
+
+  _getCamToleranceForTopoFace(topoFace, geometry = this._getCamReferenceGeometry()) {
+    const values = [];
+    if (Number.isFinite(topoFace?.tolerance) && topoFace.tolerance > 0) values.push(topoFace.tolerance);
+    for (const loop of topoFace?.allLoops?.() || []) {
+      for (const coedge of loop?.coedges || []) {
+        if (Number.isFinite(coedge?.edge?.tolerance) && coedge.edge.tolerance > 0) values.push(coedge.edge.tolerance);
+      }
+    }
+    if (values.length === 0) return this._getCamReferenceTolerance(geometry);
+    return Math.max(1e-6, Math.min(...values));
+  }
+
+  _topoFaceToCamLoops(topoFace, tolerance) {
+    if (!topoFace || typeof topoFace.allLoops !== 'function') return [];
+    const loops = [];
+    const tol = Number.isFinite(tolerance) && tolerance > 0 ? tolerance : 0.001;
+    for (const loop of topoFace.allLoops()) {
+      const points = [];
+      for (const coedge of loop?.coedges || []) {
+        const coedgePoints = this._sampleCamCoedge(coedge, tol);
+        for (let index = 0; index < coedgePoints.length; index++) {
+          const point = coedgePoints[index];
+          if (!Number.isFinite(point?.x) || !Number.isFinite(point?.y)) continue;
+          const previous = points[points.length - 1];
+          if (previous && Math.hypot(previous.x - point.x, previous.y - point.y) <= Math.max(tol, 1e-8)) continue;
+          points.push({ x: point.x, y: point.y });
+        }
+      }
+      if (points.length > 1) {
+        const first = points[0];
+        const last = points[points.length - 1];
+        if (Math.hypot(first.x - last.x, first.y - last.y) <= Math.max(tol, 1e-8)) points.pop();
+      }
+      if (points.length >= 3) loops.push(points);
+    }
+    return loops;
+  }
+
+  _sampleCamCoedge(coedge, tolerance) {
+    const MIN_CURVE_DOMAIN_RANGE = 1e-12;
+    const start = coedge?.startVertex?.()?.point;
+    const end = coedge?.endVertex?.()?.point;
+    const edgeCurve = coedge?.edge?.curve;
+    if (!edgeCurve || typeof edgeCurve.evaluate !== 'function') {
+      return [start, end].filter(Boolean);
+    }
+    let curve = edgeCurve;
+    if (coedge?.sameSense === false && typeof edgeCurve.reversed === 'function') {
+      curve = edgeCurve.reversed();
+    }
+    const domainStart = Number.isFinite(curve.uMin) ? curve.uMin : curve.knots?.[0];
+    const domainEnd = Number.isFinite(curve.uMax) ? curve.uMax : curve.knots?.[curve.knots.length - 1];
+    if (!Number.isFinite(domainStart) || !Number.isFinite(domainEnd) || Math.abs(domainEnd - domainStart) <= MIN_CURVE_DOMAIN_RANGE) {
+      return [start, end].filter(Boolean);
+    }
+    return this._sampleCamCurve(curve, domainStart, domainEnd, tolerance);
+  }
+
+  _sampleCamCurve(curve, tStart, tEnd, tolerance) {
+    const MIN_SEGMENT_LENGTH_SQUARED = 1e-24;
+    const pStart = curve.evaluate(tStart);
+    const pEnd = curve.evaluate(tEnd);
+    const points = [pStart];
+    const maxDepth = 12;
+    const tol = Math.max(1e-6, Number(tolerance) || 0.001);
+    const distancePointToSegment = (point, a, b) => {
+      const abx = b.x - a.x;
+      const aby = b.y - a.y;
+      const abz = b.z - a.z;
+      const apx = point.x - a.x;
+      const apy = point.y - a.y;
+      const apz = point.z - a.z;
+      const denom = abx * abx + aby * aby + abz * abz;
+      if (denom <= MIN_SEGMENT_LENGTH_SQUARED) return Math.hypot(apx, apy, apz);
+      const ratio = Math.max(0, Math.min(1, (apx * abx + apy * aby + apz * abz) / denom));
+      const px = a.x + abx * ratio;
+      const py = a.y + aby * ratio;
+      const pz = a.z + abz * ratio;
+      return Math.hypot(point.x - px, point.y - py, point.z - pz);
+    };
+    const append = (aT, aP, bT, bP, depth) => {
+      const midT = (aT + bT) * 0.5;
+      const midP = curve.evaluate(midT);
+      if (depth < maxDepth && distancePointToSegment(midP, aP, bP) > tol) {
+        append(aT, aP, midT, midP, depth + 1);
+        append(midT, midP, bT, bP, depth + 1);
+        return;
+      }
+      points.push(bP);
+    };
+    append(tStart, pStart, tEnd, pEnd, 0);
+    return points;
   }
 
   _faceHitZ(faceHit) {

@@ -59,3 +59,25 @@ test('postprocessor registry supports future custom processors', () => {
   assert.ok(listPostprocessors().some((entry) => entry.id === 'unit-test-custom'));
   assert.throws(() => getPostprocessor('missing-custom-post'), /Unknown postprocessor/);
 });
+
+test('LinuxCNC coordinates use CAM tolerance-based precision', () => {
+  const cam = normalizeCamConfig({
+    ...sampleCam(),
+    tolerance: 0.01,
+    operations: [{
+      id: 'profile-a',
+      name: 'Precision check',
+      type: 'profile',
+      toolId: 'tool-7',
+      side: 'along',
+      source: { loops: [[{ x: 0, y: 0 }, { x: 1.23456, y: 0 }, { x: 1.23456, y: 1.23456 }, { x: 0, y: 1.23456 }]] },
+      topZ: 0,
+      bottomZ: -1.23456,
+      stepDown: 1,
+    }],
+  });
+  const { gcode } = exportGCode(cam);
+  assert.match(gcode, /G1 Z-1\.23 F87/);
+  assert.match(gcode, /G1 X1\.23 Y0 F321/);
+  assert.doesNotMatch(gcode, /1\.2346/);
+});
