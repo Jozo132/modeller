@@ -70,3 +70,26 @@ test('operation normalization rejects invalid enum values conservatively', () =>
   assert.equal(operation.side, 'outside');
   assert.equal(operation.toolId, 't1');
 });
+
+test('face-derived source metadata keeps topobody references and tolerance', () => {
+  const cam = normalizeCamConfig({
+    tools: [{ id: 't1', type: 'endmill', diameter: 6 }],
+    operations: [{
+      id: 'profile-a',
+      type: 'profile',
+      toolId: 't1',
+      source: {
+        type: 'face',
+        referenceId: 'topoface-42',
+        faceIndex: 7,
+        topoFaceId: 42,
+        tolerance: 0.0005,
+        loops: [rect],
+      },
+    }],
+  });
+  assert.equal(cam.operations[0].source.referenceId, 'topoface-42');
+  assert.equal(cam.operations[0].source.faceIndex, 7);
+  assert.equal(cam.operations[0].source.topoFaceId, 42);
+  assert.equal(cam.operations[0].source.tolerance, 0.0005);
+});

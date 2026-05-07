@@ -7,6 +7,10 @@ export const linuxCncPostprocessor = Object.freeze({
 export function postprocess(toolpaths, options = {}) {
   const paths = Array.isArray(toolpaths) ? toolpaths : [];
   const programName = sanitizeComment(options.programName || options.camConfig?.name || 'CAM program');
+  const coordinateTolerance = Number.isFinite(Number(options.tolerance))
+    ? Number(options.tolerance)
+    : Number(options.camConfig?.tolerance);
+  const decimalPlaces = toleranceToDecimals(coordinateTolerance);
   const lines = [
     '%',
     `(${programName})`,
@@ -32,11 +36,11 @@ export function postprocess(toolpaths, options = {}) {
       } else if (move.type === 'coolant') {
         lines.push(move.on ? 'M8' : 'M9');
       } else if (move.type === 'rapid') {
-        lines.push(formatMotion('G0', move));
+        lines.push(formatMotion('G0', move, null, decimalPlaces));
       } else if (move.type === 'feed') {
         const feedChanged = Number.isFinite(Number(move.feed)) && Number(move.feed) !== activeFeed;
         if (feedChanged) activeFeed = Number(move.feed);
-        lines.push(formatMotion('G1', move, feedChanged ? activeFeed : null));
+        lines.push(formatMotion('G1', move, feedChanged ? activeFeed : null, decimalPlaces));
       }
     }
   }
@@ -48,17 +52,24 @@ export function postprocess(toolpaths, options = {}) {
   return `${lines.join('\n')}\n`;
 }
 
-function formatMotion(code, move, feed = null) {
+function formatMotion(code, move, feed = null, decimals = 4) {
   const words = [code];
-  if (Number.isFinite(Number(move.x))) words.push(`X${formatNumber(move.x)}`);
-  if (Number.isFinite(Number(move.y))) words.push(`Y${formatNumber(move.y)}`);
-  if (Number.isFinite(Number(move.z))) words.push(`Z${formatNumber(move.z)}`);
-  if (Number.isFinite(Number(feed))) words.push(`F${formatNumber(feed)}`);
+  if (Number.isFinite(Number(move.x))) words.push(`X${formatNumber(move.x, decimals)}`);
+  if (Number.isFinite(Number(move.y))) words.push(`Y${formatNumber(move.y, decimals)}`);
+  if (Number.isFinite(Number(move.z))) words.push(`Z${formatNumber(move.z, decimals)}`);
+  if (Number.isFinite(Number(feed))) words.push(`F${formatNumber(feed, decimals)}`);
   return words.join(' ');
 }
 
-function formatNumber(value) {
-  return Number(value).toFixed(4).replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1');
+function formatNumber(value, decimals = 4) {
+  return Number(value).toFixed(decimals).replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1');
+}
+
+function toleranceToDecimals(tolerance) {
+  const numeric = Number(tolerance);
+  if (!Number.isFinite(numeric) || numeric <= 0) return 4;
+  const decimals = Math.ceil(-Math.log10(numeric));
+  return Math.max(0, Math.min(9, decimals));
 }
 
 function sanitizeComment(text = '') {
