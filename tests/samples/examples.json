@@ -188,6 +188,15 @@
     ]
   },
   {
+    "file": "machinning-sample.cmod",
+    "label": "Machinning Sample",
+    "featureTypes": [
+      "sketch",
+      "extrude",
+      "extrude-cut"
+    ]
+  },
+  {
     "file": "puzzle-extrude-cc.cmod",
     "label": "Puzzle Extrude Cc",
     "featureTypes": [
