@@ -403,7 +403,6 @@ export class ExtrudeFeature extends Feature {
         return false;
       }
     } else {
-      this._flipFaceOrientation(terminalCap);
       terminalCap.shared = { sourceFeatureId: this.id };
       if (terminalCap.stableHash) terminalCap.stableHash = `${this.id}_Cut_${terminalCap.stableHash}`;
       shell.addFace(terminalCap);
@@ -411,7 +410,6 @@ export class ExtrudeFeature extends Feature {
 
     for (const sideFace of toolFaces) {
       if (sideFace === entryCap || sideFace === terminalCap) continue;
-      this._flipFaceOrientation(sideFace);
       sideFace.shared = { sourceFeatureId: this.id };
       if (sideFace.stableHash) sideFace.stableHash = `${this.id}_Cut_${sideFace.stableHash}`;
       shell.addFace(sideFace);
