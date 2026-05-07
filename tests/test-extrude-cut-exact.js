@@ -7,11 +7,15 @@ import { Part } from '../js/cad/Part.js';
 import { calculateMeshVolume } from '../js/cad/toolkit/MeshAnalysis.js';
 import { checkWatertight } from '../js/cad/MeshValidator.js';
 import { validateBooleanResult } from '../js/cad/BooleanInvariantValidator.js';
+import { ensureWasmReady } from '../js/cad/StepImportWasm.js';
+import { resetFlags, setFlag } from '../js/featureFlags.js';
 
 function loadPart(sampleName) {
   const sample = JSON.parse(readFileSync(new URL(`./samples/${sampleName}`, import.meta.url), 'utf8'));
   return Part.deserialize(sample.part);
 }
+
+await ensureWasmReady();
 
 let passed = 0;
 let failed = 0;
@@ -67,6 +71,28 @@ check('puzzle-extrude-cc4 cuts multiple sketch faces exactly', () => {
 
   const watertight = checkWatertight(geometry.faces || []);
   assert.equal(watertight.boundaryCount, 0, `expected watertight display mesh, got ${watertight.boundaryCount} boundary edges`);
+});
+
+check('machinning-sample extrude cut survives strict WASM tessellation mode', () => {
+  setFlag('CAD_REQUIRE_WASM_TESSELLATION', true);
+  try {
+    const part = loadPart('machinning-sample.cmod');
+    const cutFeature = part.featureTree.features.find((feature) => feature.type === 'extrude-cut');
+    assert.ok(cutFeature, 'expected sample to contain an extrude-cut feature');
+    assert.equal(cutFeature.error, null, `strict WASM reload should not fail the cut: ${cutFeature.error}`);
+
+    const geometry = part.getFinalGeometry()?.geometry;
+    assert.ok(geometry?.topoBody, 'expected exact topology after strict WASM reload');
+    assert.ok((geometry.faces || []).length > 0, 'expected non-empty display mesh after strict WASM reload');
+
+    const validation = validateBooleanResult(geometry.topoBody, { operation: 'subtract' }).toJSON();
+    assert.equal(validation.valid, true, JSON.stringify(validation.diagnostics, null, 2));
+
+    const watertight = checkWatertight(geometry.faces || []);
+    assert.equal(watertight.boundaryCount, 0, `expected watertight display mesh, got ${watertight.boundaryCount} boundary edges`);
+  } finally {
+    resetFlags();
+  }
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

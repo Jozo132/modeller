@@ -80,7 +80,8 @@ export class ExtrudeFeature extends Feature {
       this.generateGeometry([group.outer], plane, group.holes));
 
     if (solid && this.operation === 'subtract') {
-      const directCut = this._tryApplyPlanarThroughCut(solid, profileGroups, plane);
+      const directCut = this._tryApplyPlanarThroughCut(solid, profileGroups, plane)
+        || this._tryApplyPlanarBlindCut(solid, profileGroups, plane);
       if (directCut) {
         solid = directCut;
         const finalGeometry = solid.geometry;
@@ -286,7 +287,8 @@ export class ExtrudeFeature extends Feature {
       const exitFace = this._findPlanarFaceAtPoint(resultBody, endPoint, resolvedPlane.normal);
       if (!entryFace || !exitFace || entryFace === exitFace) return null;
 
-      for (const group of profileGroups) {
+      for (let groupIndex = 0; groupIndex < profileGroups.length; groupIndex++) {
+        const group = profileGroups[groupIndex];
         const toolBody = this.buildExactBrep(
           [group.outer],
           resolvedPlane,
@@ -296,25 +298,65 @@ export class ExtrudeFeature extends Feature {
           { x: 0, y: 0, z: 0 },
           group.holes,
         );
-        const toolFaces = toolBody.faces();
-        const entryCap = toolFaces.find(face => face.stableHash?.includes('_Face_Bottom_'));
-        const exitCap = toolFaces.find(face => face.stableHash?.includes('_Face_Top_'));
-        if (!entryCap?.outerLoop || !exitCap?.outerLoop) return null;
-
-        this._orientLoopAsInner(entryFace, entryCap.outerLoop);
-        this._orientLoopAsInner(exitFace, exitCap.outerLoop);
-        entryFace.addInnerLoop(entryCap.outerLoop);
-        exitFace.addInnerLoop(exitCap.outerLoop);
-
-        for (const sideFace of toolFaces) {
-          if (sideFace === entryCap || sideFace === exitCap) continue;
-          this._flipFaceOrientation(sideFace);
-          sideFace.shared = { sourceFeatureId: this.id };
-          if (sideFace.stableHash) sideFace.stableHash = `${this.id}_Cut_${sideFace.stableHash}`;
-          shell.addFace(sideFace);
+        this._clearTopoHashes(toolBody);
+        if (!this._splicePlanarCutGroup(shell, entryFace, exitFace, toolBody, groupIndex)) {
+          return null;
         }
       }
 
+      deriveEdgeAndVertexHashes(resultBody);
+      return this._solidFromTopoBody(resultBody);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  _tryApplyPlanarBlindCut(solid, profileGroups, plane) {
+    if (!Array.isArray(profileGroups) || profileGroups.length === 0) return null;
+    if (this.symmetric || this.taper || this.extrudeType !== 'distance') return null;
+    const sourceBody = solid?.geometry?.topoBody;
+    if (!sourceBody || !sourceBody.shells || sourceBody.shells.length === 0) return null;
+
+    try {
+      const planeFrame = this.resolvePlaneFrame(plane);
+      const resolvedPlane = planeFrame.plane;
+      const extrusionVector = {
+        x: resolvedPlane.normal.x * this.distance * this.direction,
+        y: resolvedPlane.normal.y * this.distance * this.direction,
+        z: resolvedPlane.normal.z * this.distance * this.direction,
+      };
+      const endPoint = {
+        x: resolvedPlane.origin.x + extrusionVector.x,
+        y: resolvedPlane.origin.y + extrusionVector.y,
+        z: resolvedPlane.origin.z + extrusionVector.z,
+      };
+
+      const resultBody = TopoBody.deserialize(sourceBody.serialize());
+      const shell = resultBody.outerShell();
+      if (!shell) return null;
+
+      const entryFace = this._findPlanarFaceAtPoint(resultBody, resolvedPlane.origin, resolvedPlane.normal);
+      const exitFace = this._findPlanarFaceAtPoint(resultBody, endPoint, resolvedPlane.normal);
+      if (!entryFace || exitFace) return null;
+
+      for (let groupIndex = 0; groupIndex < profileGroups.length; groupIndex++) {
+        const group = profileGroups[groupIndex];
+        const toolBody = this.buildExactBrep(
+          [group.outer],
+          resolvedPlane,
+          extrusionVector,
+          planeFrame,
+          { x: 0, y: 0, z: 0 },
+          { x: 0, y: 0, z: 0 },
+          group.holes,
+        );
+        this._clearTopoHashes(toolBody);
+        if (!this._splicePlanarCutGroup(shell, entryFace, null, toolBody, groupIndex)) {
+          return null;
+        }
+      }
+
+      deriveEdgeAndVertexHashes(resultBody);
       return this._solidFromTopoBody(resultBody);
     } catch (_) {
       return null;
@@ -333,6 +375,79 @@ export class ExtrudeFeature extends Feature {
         topoBody,
       },
     };
+  }
+
+  _clearTopoHashes(body) {
+    if (!body) return;
+    for (const edge of body.edges ? body.edges() : []) {
+      edge.stableHash = null;
+    }
+    for (const vertex of body.vertices ? body.vertices() : []) {
+      vertex.stableHash = null;
+    }
+  }
+
+  _splicePlanarCutGroup(shell, entryFace, exitFace, toolBody, groupIndex) {
+    if (!shell || !entryFace || !toolBody) return false;
+    const toolFaces = toolBody.faces();
+    const entryCap = toolFaces.find((face) => face.stableHash?.includes('_Face_Bottom_'));
+    const terminalCap = toolFaces.find((face) => face.stableHash?.includes('_Face_Top_'));
+    if (!entryCap?.outerLoop || !terminalCap?.outerLoop) return false;
+
+    if (!this._splicePlanarCutLoops(entryFace, entryCap, shell, `${this.id}_Face_EntryIsland_g${groupIndex}`)) {
+      return false;
+    }
+
+    if (exitFace) {
+      if (!this._splicePlanarCutLoops(exitFace, terminalCap, shell, `${this.id}_Face_ExitIsland_g${groupIndex}`)) {
+        return false;
+      }
+    } else {
+      this._flipFaceOrientation(terminalCap);
+      terminalCap.shared = { sourceFeatureId: this.id };
+      if (terminalCap.stableHash) terminalCap.stableHash = `${this.id}_Cut_${terminalCap.stableHash}`;
+      shell.addFace(terminalCap);
+    }
+
+    for (const sideFace of toolFaces) {
+      if (sideFace === entryCap || sideFace === terminalCap) continue;
+      this._flipFaceOrientation(sideFace);
+      sideFace.shared = { sourceFeatureId: this.id };
+      if (sideFace.stableHash) sideFace.stableHash = `${this.id}_Cut_${sideFace.stableHash}`;
+      shell.addFace(sideFace);
+    }
+
+    return true;
+  }
+
+  _splicePlanarCutLoops(hostFace, capFace, shell, islandHashPrefix) {
+    if (!hostFace || !capFace?.outerLoop || !shell) return false;
+    const hostNormal = this._faceLoopNormal(hostFace);
+    if (!hostNormal) return false;
+
+    this._orientLoopAsInner(hostFace, capFace.outerLoop);
+    hostFace.addInnerLoop(capFace.outerLoop);
+
+    for (let holeIndex = 0; holeIndex < (capFace.innerLoops || []).length; holeIndex++) {
+      const islandLoop = capFace.innerLoops[holeIndex];
+      if (!islandLoop) return false;
+      this._orientLoopAsOuter(hostNormal, islandLoop);
+
+      const islandFace = new TopoFace(
+        hostFace.surface ? hostFace.surface.clone() : null,
+        hostFace.surfaceType,
+        hostFace.sameSense,
+      );
+      islandFace.shared = { sourceFeatureId: this.id };
+      islandFace.tolerance = hostFace.tolerance;
+      islandFace.surfaceInfo = hostFace.surfaceInfo ? { ...hostFace.surfaceInfo } : null;
+      islandFace.fusedGroupId = hostFace.fusedGroupId || null;
+      islandFace.stableHash = `${islandHashPrefix}_h${holeIndex}`;
+      islandFace.setOuterLoop(islandLoop);
+      shell.addFace(islandFace);
+    }
+
+    return true;
   }
 
   _findPlanarFaceAtPoint(body, point, normal) {
@@ -358,6 +473,12 @@ export class ExtrudeFeature extends Feature {
     const loopNormal = this._polygonNormal(loop.points());
     if (!outerNormal || !loopNormal) return;
     if (_dot(outerNormal, loopNormal) > 0) this._reverseLoop(loop);
+  }
+
+  _orientLoopAsOuter(normal, loop) {
+    const loopNormal = this._polygonNormal(loop.points());
+    if (!normal || !loopNormal) return;
+    if (_dot(normal, loopNormal) < 0) this._reverseLoop(loop);
   }
 
   _flipFaceOrientation(face) {
@@ -1233,12 +1354,6 @@ export class ExtrudeFeature extends Feature {
             NurbsCurve.createLine(tStart, bStart),
           ];
 
-          if (this.direction < 0) {
-            const reversed = _reverseFaceGeometry(vertices, edgeCurves);
-            vertices = reversed.vertices;
-            edgeCurves = reversed.edgeCurves;
-          }
-
           faceDescs.push({
             surface: info.cylSurf,
             surfaceType: SurfaceType.CYLINDER,
@@ -1267,12 +1382,6 @@ export class ExtrudeFeature extends Feature {
             NurbsCurve.createLine(tStart, bStart),
           ];
 
-          if (this.direction < 0) {
-            const reversed = _reverseFaceGeometry(vertices, edgeCurves);
-            vertices = reversed.vertices;
-            edgeCurves = reversed.edgeCurves;
-          }
-
           faceDescs.push({
             surface: info.extrudedSurf,
             surfaceType: SurfaceType.BSPLINE,
@@ -1288,13 +1397,12 @@ export class ExtrudeFeature extends Feature {
         for (let si = 0; si < segmentCount; si++) {
           const i0 = info.spanIndices[si];
           const i1 = info.spanIndices[(si + 1) % info.spanIndices.length];
-          let vertices = [
+          const vertices = [
             profileData.bottomVerts[i0],
             profileData.bottomVerts[i1],
             profileData.topVerts[i1],
             profileData.topVerts[i0],
           ];
-          if (this.direction < 0) vertices = [...vertices].reverse();
 
           const segSuffix = segmentCount > 1 ? `_s${si}` : '';
           faceDescs.push({

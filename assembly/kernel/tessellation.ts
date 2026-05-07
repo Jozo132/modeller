@@ -1551,6 +1551,110 @@ function _tessBoundaryFanEarClippedFace(faceId: u32, off: u32, nPts: i32): i32 {
   return <i32>(outTriCount - startTriCount);
 }
 
+function _tessLoopVertPathFace(faceId: u32, nx: f64, ny: f64, nz: f64, start: u32, end: u32): i32 {
+  if (loopVertCount < 3 || start >= loopVertCount || end >= loopVertCount) return -2;
+  _planarPointCount = 0;
+  _planarLoopCount = 0;
+  _planarPathCount = 0;
+  let index = start;
+  let guard: u32 = 0;
+  while (true) {
+    if (!_planarAppendVertex(unchecked(loopVerts[index]), 0)) return -2;
+    if (index == end) break;
+    index = (index + 1) % loopVertCount;
+    guard++;
+    if (guard > loopVertCount) return -2;
+  }
+  if (_planarPointCount > 1) {
+    const last = _planarPointCount - 1;
+    const dx = unchecked(_planarX[last]) - unchecked(_planarX[0]);
+    const dy = unchecked(_planarY[last]) - unchecked(_planarY[0]);
+    const dz = unchecked(_planarZ[last]) - unchecked(_planarZ[0]);
+    if (dx * dx + dy * dy + dz * dz < 1e-20) _planarPointCount--;
+  }
+  if (_planarPointCount < 3) return -2;
+  unchecked(_planarLoopStart[0] = 0);
+  unchecked(_planarLoopEnd[0] = _planarPointCount);
+  _planarLoopCount = 1;
+  if (!_planarBuildBridgedPath()) return -2;
+  if (!_buildTrimBaseTrianglesFromPath()) return -2;
+
+  const startTriCount = outTriCount;
+  for (let i: u32 = 0; i < _planarPointCount; i++) {
+    const id = _emitVert(
+      unchecked(_planarX[i]),
+      unchecked(_planarY[i]),
+      unchecked(_planarZ[i]),
+      nx, ny, nz,
+    );
+    if (id == INVALID_ID) return -1;
+    unchecked(_planarOutVert[i] = id);
+  }
+  for (let i: u32 = 0; i < _trimTriCount; i++) {
+    const a = unchecked(_planarOutVert[unchecked(_trimTriA[i])]);
+    const b = unchecked(_planarOutVert[unchecked(_trimTriB[i])]);
+    const c = unchecked(_planarOutVert[unchecked(_trimTriC[i])]);
+    if (_emitPlaneTriOriented(a, b, c, nx, ny, nz, faceId) < 0) return -1;
+  }
+  return <i32>(outTriCount - startTriCount);
+}
+
+function _tessLoopVertEarClippedFace(faceId: u32, nx: f64, ny: f64, nz: f64): i32 {
+  if (loopVertCount < 3 || loopVertCount > MAX_PLANAR_PTS) return -2;
+
+  let duplicateEdgeFirst: i32 = -1;
+  let duplicateEdgeSecond: i32 = -1;
+  if (loopVertCount >= 4) {
+    const seenEdges = new Map<u64,u32>();
+    for (let i: u32 = 0; i < loopVertCount; i++) {
+      const next = (i + 1) % loopVertCount;
+      const a = unchecked(loopVerts[i]);
+      const b = unchecked(loopVerts[next]);
+      const key = _trimEdgeKey(a, b);
+      if (seenEdges.has(key)) {
+        const first = seenEdges.get(key);
+        const firstA = unchecked(loopVerts[first]);
+        const firstB = unchecked(loopVerts[(first + 1) % loopVertCount]);
+        if (firstA == b && firstB == a) {
+          duplicateEdgeFirst = <i32>first;
+          duplicateEdgeSecond = <i32>i;
+          break;
+        }
+      } else {
+        seenEdges.set(key, i);
+      }
+    }
+  }
+
+  if (duplicateEdgeFirst >= 0 && duplicateEdgeSecond >= 0) {
+    const baseVert = outVertCount;
+    const baseTri = outTriCount;
+    const firstLobe = _tessLoopVertPathFace(
+      faceId,
+      nx,
+      ny,
+      nz,
+      (<u32>duplicateEdgeFirst + 1) % loopVertCount,
+      <u32>duplicateEdgeSecond,
+    );
+    if (firstLobe >= 0) {
+      const secondLobe = _tessLoopVertPathFace(
+        faceId,
+        nx,
+        ny,
+        nz,
+        (<u32>duplicateEdgeSecond + 1) % loopVertCount,
+        <u32>duplicateEdgeFirst,
+      );
+      if (secondLobe >= 0) return firstLobe + secondLobe;
+    }
+    outVertCount = baseVert;
+    outTriCount = baseTri;
+  }
+
+  return _tessLoopVertPathFace(faceId, nx, ny, nz, 0, loopVertCount - 1);
+}
+
 function _tessBoundaryFanFace(faceId: u32): i32 {
   const off = faceGetGeomOffset(faceId);
   const nPts = <i32>geomPoolRead(off);
@@ -2540,6 +2644,7 @@ function _collectPlanarLoops(faceId: u32, segsU: i32): bool {
     if (_planarLoopCount >= MAX_PLANAR_LOOPS) return false;
     const loopId = firstLoop + l;
     const loopStart = _planarPointCount;
+    const seenEdges = new Map<u32,u8>();
     const firstCE = loopGetFirstCoedge(loopId);
     let ce = firstCE;
     let guard: u32 = 0;
@@ -2548,6 +2653,17 @@ function _collectPlanarLoops(faceId: u32, segsU: i32): bool {
       const eid = coedgeGetEdge(ce);
       const orient = coedgeGetOrient(ce);
       _cacheEdgeSamples(eid);
+      // Exact planar booleans can leave a face loop that retraces the same
+      // topological edge later in the loop. Keeping the second visit turns the
+      // projected polygon self-touching and produces zero-area retry triangles
+      // in the ear-clipped planar path. The repeated coedge contributes no new
+      // area, so skip it for tessellation and keep the loop simple.
+      if (seenEdges.has(eid)) {
+        ce = coedgeGetNext(ce);
+        guard++;
+        continue;
+      }
+      seenEdges.set(eid, 1);
       const geomType = edgeGetGeomType(eid);
       if (geomType == GEOM_CIRCLE) {
         if (!_planarAppendCircleCoedge(eid, orient, segsU, loopStart)) return false;
@@ -3342,6 +3458,9 @@ function _tessPlaneFace(faceId: u32, segsU: i32): i32 {
   if (polygon != -2) return polygon;
 
   if (loopVertCount < 3) return 0;
+
+  const clippedLoop = _tessLoopVertEarClippedFace(faceId, nx, ny, nz);
+  if (clippedLoop != -2) return clippedLoop;
 
   // Emit vertices
   const baseVert = outVertCount;

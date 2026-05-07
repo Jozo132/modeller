@@ -196,6 +196,16 @@ function _exactBooleanOpInner(bodyA, bodyB, operation, tol) {
   const ixValidation = validateIntersections(intersections, tol);
   const diagnostics = { intersectionValidation: ixValidation.toJSON() };
   if (!ixValidation.isValid) {
+    diagnostics.originalIntersectionValidation = diagnostics.intersectionValidation;
+    const invalidIntersections = new Map();
+    for (const diag of ixValidation.diagnostics) {
+      const match = /^intersection\[(\d+)\]/.exec(diag.detail || '');
+      if (!match) continue;
+      const index = Number(match[1]);
+      if (!invalidIntersections.has(index)) invalidIntersections.set(index, new Set());
+      invalidIntersections.get(index).add(diag.invariant);
+    }
+
     // Route to discrete fallback: skip invalid exact intersections and
     // proceed with only the valid subset (non-empty-curves entries that passed).
     // Attach diagnostic report for downstream inspection.
@@ -204,18 +214,29 @@ function _exactBooleanOpInner(bodyA, bodyB, operation, tol) {
       return !ixValidation.diagnostics.some(d => d.detail.startsWith(`intersection[${i}]`));
     });
     if (validIx.length === 0 && intersections.length > 0) {
-      // All intersections failed validation.  Rather than discarding the
-      // entire boolean result (which produces a union-like merge of all
-      // faces), proceed with the original intersections.  The 3D curves
-      // are typically still correct even when surface UV parameters are
-      // inaccurate, and the downstream face splitter for planar faces
-      // only uses the 3D curve geometry, not the UV params.
-      diagnostics.allIntersectionsInvalid = true;
+      const allInvalidEntriesHaveSurfaceMismatch = invalidIntersections.size === intersections.length
+        && [...invalidIntersections.values()].every((invariants) => invariants.has('sample-on-both-surfaces'));
+
+      if (allInvalidEntriesHaveSurfaceMismatch) {
+        // When every candidate face-pair also fails the surface agreement
+        // check, the 3D intersection curves are not trustworthy enough to
+        // split on. Treat them as spurious hits from infinite-surface
+        // intersection and continue as if there were no intersections.
+        intersections.length = 0;
+        diagnostics.discardedInvalidIntersections = true;
+        diagnostics.intersectionValidation = validateIntersections(intersections, tol).toJSON();
+      } else {
+        // All intersections failed validation, but only due to parameter-domain
+        // issues. In that case the 3D curves are often still usable for the
+        // planar splitter, so keep them and let later stages decide.
+        diagnostics.allIntersectionsInvalid = true;
+      }
     } else {
       // Use only valid intersections
       intersections.length = 0;
       intersections.push(...validIx);
       diagnostics.filteredIntersections = true;
+      diagnostics.intersectionValidation = validateIntersections(intersections, tol).toJSON();
     }
   }
 
@@ -732,13 +753,30 @@ function _classifyAndSelect(fragmentsA, fragmentsB, bodyA, bodyB, operation, tol
     if (keep) {
       // For subtract, reverse face orientation for B fragments kept inside A
       if (operation === 'subtract' && cls === 'inside') {
-        frag.sameSense = !frag.sameSense;
+        _reverseFragmentOrientation(frag);
       }
       kept.push(frag);
     }
   }
 
   return kept;
+}
+
+function _reverseFragmentOrientation(face) {
+  if (!face) return;
+  face.sameSense = !face.sameSense;
+  if (face.outerLoop) _reverseLoopOrientation(face.outerLoop);
+  for (const innerLoop of face.innerLoops || []) {
+    _reverseLoopOrientation(innerLoop);
+  }
+}
+
+function _reverseLoopOrientation(loop) {
+  if (!loop || !Array.isArray(loop.coedges)) return;
+  loop.coedges.reverse();
+  for (const coedge of loop.coedges) {
+    coedge.sameSense = !coedge.sameSense;
+  }
 }
 
 /**

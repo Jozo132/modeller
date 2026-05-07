@@ -277,6 +277,19 @@ function _isShellClosed(shell) {
  */
 function _orientShell(shell) {
   if (shell.faces.length === 0) return;
+
+  if (_shellHasConsistentCoedgeOrientation(shell)) {
+    if (shell.closed) {
+      const signedVolume = _approximateShellVolume(shell);
+      if (signedVolume < -1e-8) {
+        for (const face of shell.faces) {
+          _flipFaceOrientation(face);
+        }
+      }
+    }
+    return;
+  }
+
   const baseDirections = shell.faces.map(face => _faceEdgeDirections(face));
   const edgeUses = new Map();
 
@@ -317,12 +330,33 @@ function _orientShell(shell) {
     if (flip[fi]) _flipFaceOrientation(shell.faces[fi]);
   }
 
-  const signedVolume = _approximateShellVolume(shell);
-  if (signedVolume < -1e-8) {
-    for (const face of shell.faces) {
-      _flipFaceOrientation(face);
+  if (shell.closed) {
+    const signedVolume = _approximateShellVolume(shell);
+    if (signedVolume < -1e-8) {
+      for (const face of shell.faces) {
+        _flipFaceOrientation(face);
+      }
     }
   }
+}
+
+function _shellHasConsistentCoedgeOrientation(shell) {
+  const edgeUses = new Map();
+  for (const face of shell.faces || []) {
+    for (const loop of face.allLoops()) {
+      for (const coedge of loop.coedges) {
+        if (!edgeUses.has(coedge.edge.id)) edgeUses.set(coedge.edge.id, []);
+        edgeUses.get(coedge.edge.id).push(coedge.sameSense !== false);
+      }
+    }
+  }
+
+  for (const uses of edgeUses.values()) {
+    if (uses.length !== 2) return false;
+    if (uses[0] === uses[1]) return false;
+  }
+
+  return true;
 }
 
 function _flipFaceOrientation(face) {
