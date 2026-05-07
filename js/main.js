@@ -8594,6 +8594,7 @@ class App {
   }
 
   _sampleCamCoedge(coedge, tolerance) {
+    const MIN_CURVE_DOMAIN_RANGE = 1e-12;
     const start = coedge?.startVertex?.()?.point;
     const end = coedge?.endVertex?.()?.point;
     const edgeCurve = coedge?.edge?.curve;
@@ -8606,13 +8607,14 @@ class App {
     }
     const domainStart = Number.isFinite(curve.uMin) ? curve.uMin : curve.knots?.[0];
     const domainEnd = Number.isFinite(curve.uMax) ? curve.uMax : curve.knots?.[curve.knots.length - 1];
-    if (!Number.isFinite(domainStart) || !Number.isFinite(domainEnd) || Math.abs(domainEnd - domainStart) <= 1e-12) {
+    if (!Number.isFinite(domainStart) || !Number.isFinite(domainEnd) || Math.abs(domainEnd - domainStart) <= MIN_CURVE_DOMAIN_RANGE) {
       return [start, end].filter(Boolean);
     }
     return this._sampleCamCurve(curve, domainStart, domainEnd, tolerance);
   }
 
   _sampleCamCurve(curve, tStart, tEnd, tolerance) {
+    const MIN_SEGMENT_LENGTH_SQUARED = 1e-24;
     const pStart = curve.evaluate(tStart);
     const pEnd = curve.evaluate(tEnd);
     const points = [pStart];
@@ -8626,7 +8628,7 @@ class App {
       const apy = point.y - a.y;
       const apz = point.z - a.z;
       const denom = abx * abx + aby * aby + abz * abz;
-      if (denom <= 1e-24) return Math.hypot(apx, apy, apz);
+      if (denom <= MIN_SEGMENT_LENGTH_SQUARED) return Math.hypot(apx, apy, apz);
       const ratio = Math.max(0, Math.min(1, (apx * abx + apy * aby + apz * abz) / denom));
       const px = a.x + abx * ratio;
       const py = a.y + aby * ratio;

@@ -67,7 +67,9 @@ function formatNumber(value, decimals = 4) {
 
 function toleranceToDecimals(tolerance) {
   const numeric = Number(tolerance);
-  if (!Number.isFinite(numeric) || numeric <= 0) return 4;
+  if (!Number.isFinite(numeric)) return 4;
+  if (numeric === 0) return 4;
+  if (numeric < 0) return 4;
   const decimals = Math.ceil(-Math.log10(numeric));
   return Math.max(0, Math.min(9, decimals));
 }
