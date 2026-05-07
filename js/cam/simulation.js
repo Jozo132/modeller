@@ -2,6 +2,9 @@ import { normalizeCamConfig } from './model.js';
 import { generateToolpaths } from './toolpath.js';
 
 const EPSILON = 1e-9;
+export const CAM_SIMULATION_MIN_RESOLUTION = 8;
+export const CAM_SIMULATION_DEFAULT_RESOLUTION = 128;
+export const CAM_SIMULATION_MAX_RESOLUTION = 256;
 
 export function simulateStockRemoval(camConfig, toolpathsOrOptions = null, maybeOptions = {}) {
   const config = normalizeCamConfig(camConfig);
@@ -15,7 +18,10 @@ export function simulateStockRemoval(camConfig, toolpathsOrOptions = null, maybe
     return null;
   }
 
-  const resolution = Math.max(8, Math.min(256, Math.round(options.resolution || 128)));
+  const resolution = Math.max(
+    CAM_SIMULATION_MIN_RESOLUTION,
+    Math.min(CAM_SIMULATION_MAX_RESOLUTION, Math.round(options.resolution || CAM_SIMULATION_DEFAULT_RESOLUTION)),
+  );
   const columns = Math.max(1, Math.round(resolution));
   const rows = Math.max(1, Math.round(resolution * Math.max(0.25, Math.min(4, depth / width))));
   const heights = new Float32Array((columns + 1) * (rows + 1));

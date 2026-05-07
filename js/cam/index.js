@@ -12,7 +12,12 @@ export {
 } from './model.js';
 export { cleanLoop, offsetPolygon, polygonArea } from './geometry/polygonOffset.js';
 export { depthPasses, generatePocketToolpath, generateProfileToolpath, generateToolpaths } from './toolpath.js';
-export { simulateStockRemoval } from './simulation.js';
+export {
+  CAM_SIMULATION_DEFAULT_RESOLUTION,
+  CAM_SIMULATION_MAX_RESOLUTION,
+  CAM_SIMULATION_MIN_RESOLUTION,
+  simulateStockRemoval,
+} from './simulation.js';
 export { exportGCode, downloadGCode } from './export.js';
 export {
   getPostprocessor,

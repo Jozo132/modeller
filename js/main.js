@@ -61,7 +61,15 @@ import { expandPathEdgeKeys, makeEdgeKey } from './cad/EdgeAnalysis.js';
 import { applyBRepChamfer as applyChamfer } from './cad/BRepChamfer.js';
 import { applyBRepFillet as applyFillet } from './cad/BRepFillet.js';
 import { calculateMeshVolume, calculateBoundingBox, calculateSurfaceArea, detectDisconnectedBodies, calculateWallThickness, countInvertedFaces } from './cad/toolkit/MeshAnalysis.js';
-import { boundsFromGeometry, createDefaultCamConfig, downloadGCode, generateToolpaths, normalizeCamConfig, simulateStockRemoval } from './cam/index.js';
+import {
+  CAM_SIMULATION_DEFAULT_RESOLUTION,
+  boundsFromGeometry,
+  createDefaultCamConfig,
+  downloadGCode,
+  generateToolpaths,
+  normalizeCamConfig,
+  simulateStockRemoval,
+} from './cam/index.js';
 
 const DIAGNOSTIC_HATCH_STORAGE_KEY = 'cad-modeller-diagnostic-backface-hatch';
 const DIAGNOSTIC_HATCH_MODE_AUTO = 'auto';
@@ -8112,7 +8120,7 @@ class App {
     const generation = this._getCamToolpathGeneration(camConfig);
     const simulation = simulateStockRemoval(camConfig, generation.toolpaths, {
       progress: this._camSimulationProgress,
-      resolution: 128,
+      resolution: CAM_SIMULATION_DEFAULT_RESOLUTION,
     });
 
     const slider = document.createElement('label');
@@ -8497,7 +8505,7 @@ class App {
       const generation = generateToolpaths(camConfig);
       const simulation = simulateStockRemoval(camConfig, generation.toolpaths, {
         progress: this._camSimulationProgress,
-        resolution: 128,
+        resolution: CAM_SIMULATION_DEFAULT_RESOLUTION,
       });
       this._camSimulationTotalSeconds = Math.max(0.001, Number(simulation?.totalCutSeconds) || this._camSimulationTotalSeconds || 10);
       this._camVisualizationWarnings = generation.warnings || [];
