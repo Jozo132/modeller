@@ -550,6 +550,309 @@ function _computePlaneUV(planeSurface, point3D) {
   };
 }
 
+function _trimPlanarIntersectionCurves(faceA, faceB, curves, tol) {
+  if (faceA?.surfaceType !== SurfaceType.PLANE || faceB?.surfaceType !== SurfaceType.PLANE) return curves;
+  const trimmed = [];
+  for (const entry of curves || []) {
+    const curve = entry?.curve;
+    if (!curve) continue;
+    let p0;
+    let p1;
+    try {
+      p0 = GeometryEvaluator.evalCurve(curve, curve.uMin).p;
+      p1 = GeometryEvaluator.evalCurve(curve, curve.uMax).p;
+    } catch {
+      continue;
+    }
+    const dirVec = _sub3(p1, p0);
+    const dirLen = _length3(dirVec);
+    if (dirLen <= 1e-9) continue;
+    const dir = _scale3(dirVec, 1 / dirLen);
+    const segmentsA = _clipInfiniteLineToPlanarFace(faceA, p0, dir, tol);
+    const segmentsB = _clipInfiniteLineToPlanarFace(faceB, p0, dir, tol);
+    if (!segmentsA.length || !segmentsB.length) continue;
+    for (const segA of segmentsA) {
+      for (const segB of segmentsB) {
+        const t0 = Math.max(segA.t0, segB.t0);
+        const t1 = Math.min(segA.t1, segB.t1);
+        if (t1 - t0 <= Math.max(tol?.pointCoincidence ?? 1e-6, 1e-6)) continue;
+        const start = _add3(p0, _scale3(dir, t0));
+        const end = _add3(p0, _scale3(dir, t1));
+        trimmed.push({
+          curve: NurbsCurve.createLine(start, end),
+          paramsA: [_computePlaneUV(faceA.surface, start), _computePlaneUV(faceA.surface, end)],
+          paramsB: [_computePlaneUV(faceB.surface, start), _computePlaneUV(faceB.surface, end)],
+        });
+      }
+    }
+  }
+  return trimmed.length > 0 ? _dedupeTrimmedPlanarCurves(trimmed, tol) : [];
+}
+
+function _clipInfiniteLineToPlanarFace(face, lineOrigin, lineDir, tol) {
+  const outerLoop = face?.outerLoop?.points?.() || [];
+  if (outerLoop.length < 3) return [];
+  const normal = _facePlaneNormal(face);
+  if (!normal) return [];
+  const frame = _buildPlanarFrame(normal);
+  const lineA = _projectPointToFrame(lineOrigin, frame);
+  const lineB = _projectPointToFrame(_add3(lineOrigin, lineDir), frame);
+  const intervals = _lineIntervalsInPlanarLoop(outerLoop, face?.innerLoops || [], lineOrigin, lineDir, lineA, lineB, frame, tol);
+  return intervals;
+}
+
+function _lineIntervalsInPlanarLoop(outerLoop, innerLoops, lineOrigin, lineDir, lineA, lineB, frame, tol) {
+  const ts = [];
+  _collectLinePolygonTs(ts, outerLoop, lineOrigin, lineDir, lineA, lineB, frame, tol);
+  for (const hole of innerLoops) {
+    const points = hole?.points?.() || [];
+    if (points.length >= 3) _collectLinePolygonTs(ts, points, lineOrigin, lineDir, lineA, lineB, frame, tol);
+  }
+  const sortedTs = [...new Set(ts.map((t) => _roundParam(t, tol)))].sort((a, b) => a - b);
+  if (sortedTs.length < 2) return [];
+  const result = [];
+  for (let i = 0; i < sortedTs.length - 1; i++) {
+    const t0 = sortedTs[i];
+    const t1 = sortedTs[i + 1];
+    if (t1 - t0 <= Math.max(tol?.pointCoincidence ?? 1e-6, 1e-6)) continue;
+    const mid = _add3(lineOrigin, _scale3(lineDir, (t0 + t1) * 0.5));
+    if (_pointInsidePlanarFace(mid, outerLoop, innerLoops, frame, tol)) {
+      result.push({ t0, t1 });
+    }
+  }
+  return _mergeLineIntervals(result, tol);
+}
+
+function _collectLinePolygonTs(target, polygon3D, lineOrigin, lineDir, lineA, lineB, frame, tol) {
+  const polygon2D = polygon3D.map((point) => _projectPointToFrame(point, frame));
+  for (let i = 0; i < polygon2D.length; i++) {
+    const segA2 = polygon2D[i];
+    const segB2 = polygon2D[(i + 1) % polygon2D.length];
+    const segA3 = polygon3D[i];
+    const segB3 = polygon3D[(i + 1) % polygon3D.length];
+    const hit = _intersectInfiniteLineWithSegment2D(lineA, lineB, segA2, segB2, tol);
+    if (hit) {
+      target.push(_lineParamForPoint(_lerpPoint(segA3, segB3, hit.segT), lineOrigin, lineDir));
+      continue;
+    }
+    if (_segmentCollinearWithLine2D(lineA, lineB, segA2, segB2, tol)) {
+      target.push(_lineParamForPoint(segA3, lineOrigin, lineDir));
+      target.push(_lineParamForPoint(segB3, lineOrigin, lineDir));
+    }
+  }
+}
+
+function _pointInsidePlanarFace(point3D, outerLoop, innerLoops, frame, tol) {
+  const pt2D = _projectPointToFrame(point3D, frame);
+  const outer2D = outerLoop.map((point) => _projectPointToFrame(point, frame));
+  if (!_pointInPolygon2D(pt2D, outer2D) && !_pointNearPolygonBoundary2D(pt2D, outer2D, tol)) return false;
+  for (const hole of innerLoops) {
+    const hole3D = hole?.points?.() || [];
+    if (hole3D.length < 3) continue;
+    const hole2D = hole3D.map((point) => _projectPointToFrame(point, frame));
+    if (_pointInPolygon2D(pt2D, hole2D) && !_pointNearPolygonBoundary2D(pt2D, hole2D, tol)) return false;
+  }
+  return true;
+}
+
+function _mergeLineIntervals(intervals, tol) {
+  if (!intervals.length) return [];
+  const sorted = [...intervals].sort((a, b) => a.t0 - b.t0 || a.t1 - b.t1);
+  const merged = [sorted[0]];
+  const eps = Math.max(tol?.pointCoincidence ?? 1e-6, 1e-6);
+  for (let i = 1; i < sorted.length; i++) {
+    const prev = merged[merged.length - 1];
+    const curr = sorted[i];
+    if (curr.t0 <= prev.t1 + eps) {
+      prev.t1 = Math.max(prev.t1, curr.t1);
+    } else {
+      merged.push({ ...curr });
+    }
+  }
+  return merged;
+}
+
+function _dedupeTrimmedPlanarCurves(curves, tol) {
+  const deduped = [];
+  const eps = Math.max(tol?.pointCoincidence ?? 1e-6, 1e-6);
+  for (const candidate of curves) {
+    let duplicate = false;
+    let c0;
+    let c1;
+    try {
+      c0 = GeometryEvaluator.evalCurve(candidate.curve, candidate.curve.uMin).p;
+      c1 = GeometryEvaluator.evalCurve(candidate.curve, candidate.curve.uMax).p;
+    } catch {
+      continue;
+    }
+    for (const kept of deduped) {
+      const k0 = GeometryEvaluator.evalCurve(kept.curve, kept.curve.uMin).p;
+      const k1 = GeometryEvaluator.evalCurve(kept.curve, kept.curve.uMax).p;
+      const sameForward = _distance3(c0, k0) <= eps && _distance3(c1, k1) <= eps;
+      const sameReverse = _distance3(c0, k1) <= eps && _distance3(c1, k0) <= eps;
+      if (sameForward || sameReverse) {
+        duplicate = true;
+        break;
+      }
+    }
+    if (!duplicate) deduped.push(candidate);
+  }
+  return deduped;
+}
+
+function _facePlaneNormal(face) {
+  if (face?.surface) {
+    try {
+      return GeometryEvaluator.evalSurface(face.surface, 0.5, 0.5).n;
+    } catch {
+      // Fall through to polygon normal.
+    }
+  }
+  const points = face?.outerLoop?.points?.() || [];
+  if (points.length < 3) return null;
+  let nx = 0;
+  let ny = 0;
+  let nz = 0;
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i];
+    const b = points[(i + 1) % points.length];
+    nx += (a.y - b.y) * (a.z + b.z);
+    ny += (a.z - b.z) * (a.x + b.x);
+    nz += (a.x - b.x) * (a.y + b.y);
+  }
+  const len = Math.hypot(nx, ny, nz);
+  if (len <= 1e-12) return null;
+  return { x: nx / len, y: ny / len, z: nz / len };
+}
+
+function _buildPlanarFrame(normal) {
+  const reference = Math.abs(normal.z) < 0.9
+    ? { x: 0, y: 0, z: 1 }
+    : { x: 0, y: 1, z: 0 };
+  let xAxis = _cross3(reference, normal);
+  const xLen = _length3(xAxis) || 1;
+  xAxis = _scale3(xAxis, 1 / xLen);
+  const yAxis = _cross3(normal, xAxis);
+  return { xAxis, yAxis };
+}
+
+function _projectPointToFrame(point, frame) {
+  return {
+    x: point.x * frame.xAxis.x + point.y * frame.xAxis.y + point.z * frame.xAxis.z,
+    y: point.x * frame.yAxis.x + point.y * frame.yAxis.y + point.z * frame.yAxis.z,
+  };
+}
+
+function _pointInPolygon2D(pt, polygon) {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = polygon[i].x, yi = polygon[i].y;
+    const xj = polygon[j].x, yj = polygon[j].y;
+    const intersects = ((yi > pt.y) !== (yj > pt.y))
+      && (pt.x < ((xj - xi) * (pt.y - yi)) / ((yj - yi) || 1e-20) + xi);
+    if (intersects) inside = !inside;
+  }
+  return inside;
+}
+
+function _pointNearPolygonBoundary2D(point, polygon, tol) {
+  const eps = Math.max(tol?.pointCoincidence ?? 1e-6, 1e-6);
+  for (let i = 0; i < polygon.length; i++) {
+    const a = polygon[i];
+    const b = polygon[(i + 1) % polygon.length];
+    if (_distancePointToSegment2D(point, a, b) <= eps) return true;
+  }
+  return false;
+}
+
+function _distancePointToSegment2D(point, a, b) {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len2 = dx * dx + dy * dy;
+  if (len2 <= 1e-20) return Math.hypot(point.x - a.x, point.y - a.y);
+  const t = Math.max(0, Math.min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / len2));
+  const projX = a.x + dx * t;
+  const projY = a.y + dy * t;
+  return Math.hypot(point.x - projX, point.y - projY);
+}
+
+function _intersectInfiniteLineWithSegment2D(lineA, lineB, segA, segB, tol) {
+  const lineDx = lineB.x - lineA.x;
+  const lineDy = lineB.y - lineA.y;
+  const segDx = segB.x - segA.x;
+  const segDy = segB.y - segA.y;
+  const denom = lineDx * segDy - lineDy * segDx;
+  if (Math.abs(denom) <= Math.max(tol?.angularParallelism ?? 1e-12, 1e-12)) return null;
+  const ax = segA.x - lineA.x;
+  const ay = segA.y - lineA.y;
+  const lineT = (ax * segDy - ay * segDx) / denom;
+  const segT = (ax * lineDy - ay * lineDx) / denom;
+  const eps = Math.max(tol?.pointCoincidence ?? 1e-8, 1e-8);
+  if (segT < -eps || segT > 1 + eps) return null;
+  return {
+    lineT,
+    segT: Math.max(0, Math.min(1, segT)),
+    point: {
+      x: lineA.x + lineDx * lineT,
+      y: lineA.y + lineDy * lineT,
+    },
+  };
+}
+
+function _segmentCollinearWithLine2D(lineA, lineB, segA, segB, tol) {
+  const lineDx = lineB.x - lineA.x;
+  const lineDy = lineB.y - lineA.y;
+  const crossA = lineDx * (segA.y - lineA.y) - lineDy * (segA.x - lineA.x);
+  const crossB = lineDx * (segB.y - lineA.y) - lineDy * (segB.x - lineA.x);
+  const eps = Math.max(tol?.pointCoincidence ?? 1e-8, 1e-8);
+  return Math.abs(crossA) <= eps && Math.abs(crossB) <= eps;
+}
+
+function _lineParamForPoint(point, origin, dir) {
+  return (point.x - origin.x) * dir.x + (point.y - origin.y) * dir.y + (point.z - origin.z) * dir.z;
+}
+
+function _roundParam(value, tol) {
+  const eps = Math.max(tol?.pointCoincidence ?? 1e-8, 1e-8);
+  return Math.round(value / eps) * eps;
+}
+
+function _lerpPoint(a, b, t) {
+  return {
+    x: a.x + (b.x - a.x) * t,
+    y: a.y + (b.y - a.y) * t,
+    z: a.z + (b.z - a.z) * t,
+  };
+}
+
+function _add3(a, b) {
+  return { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z };
+}
+
+function _sub3(a, b) {
+  return { x: a.x - b.x, y: a.y - b.y, z: a.z - b.z };
+}
+
+function _scale3(v, scalar) {
+  return { x: v.x * scalar, y: v.y * scalar, z: v.z * scalar };
+}
+
+function _cross3(a, b) {
+  return {
+    x: a.y * b.z - a.z * b.y,
+    y: a.z * b.x - a.x * b.z,
+    z: a.x * b.y - a.y * b.x,
+  };
+}
+
+function _length3(v) {
+  return Math.hypot(v.x, v.y, v.z);
+}
+
+function _distance3(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+}
+
 /**
  * Intersect all candidate face pairs from two bodies.
  * Uses WASM octree broadphase when available, falling back to AABB
@@ -593,9 +896,10 @@ export function intersectBodies(bodyA, bodyB, tol = DEFAULT_TOLERANCE) {
       fB.surface, fB.surfaceType,
       tol,
     );
+    const boundedCurves = _trimPlanarIntersectionCurves(fA, fB, curves, tol);
 
-    if (curves.length > 0) {
-      results.push({ faceA: fA, faceB: fB, curves });
+    if (boundedCurves.length > 0) {
+      results.push({ faceA: fA, faceB: fB, curves: boundedCurves });
     }
   }
 
