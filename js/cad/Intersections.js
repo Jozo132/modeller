@@ -748,8 +748,10 @@ function _pointInPolygon2D(pt, polygon) {
   for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
     const xi = polygon[i].x, yi = polygon[i].y;
     const xj = polygon[j].x, yj = polygon[j].y;
+    const dy = yj - yi;
+    if (Math.abs(dy) <= 1e-20) continue;
     const intersects = ((yi > pt.y) !== (yj > pt.y))
-      && (pt.x < ((xj - xi) * (pt.y - yi)) / ((yj - yi) || 1e-20) + xi);
+      && (pt.x < ((xj - xi) * (pt.y - yi)) / dy + xi);
     if (intersects) inside = !inside;
   }
   return inside;
