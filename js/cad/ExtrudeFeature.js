@@ -423,6 +423,9 @@ export class ExtrudeFeature extends Feature {
       const area2 = _dot(areaNormal, areaNormal);
       if (area2 <= eps * eps) continue;
       const planarArea = Math.abs(areaNormal.z) * 0.5;
+      // The native fallback fan for a failed trimmed top face emits two
+      // rectangle-sized triangles; remove those so cuts cannot visually cover
+      // the host opening. Real trim triangles are much smaller than 25%.
       if (topArea > 0
           && vertices.every((vertex) => Math.abs(vertex.z - bounds.max.z) <= 1e-5)
           && planarArea > topArea * 0.25) {
@@ -474,6 +477,8 @@ export class ExtrudeFeature extends Feature {
   }
 
   _fromResolvedPlanePoint(planeFrame) {
+    // resolvePlaneFrame mirrors local Y for legacy left-handed sketch planes;
+    // probe the basis mapping so clipped points can be converted back.
     const yProbe = planeFrame.toPlanePoint({ x: 0, y: 1 });
     const flipsY = yProbe.y < 0;
     return (point) => ({ x: point.x, y: flipsY ? -point.y : point.y });
