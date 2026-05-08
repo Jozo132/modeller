@@ -288,7 +288,8 @@ export class ExtrudeFeature extends Feature {
       if (!entryFace || !exitFace || entryFace === exitFace) return null;
 
       for (let groupIndex = 0; groupIndex < profileGroups.length; groupIndex++) {
-        const group = profileGroups[groupIndex];
+        const group = this._clipPlanarCutGroupToHost(profileGroups[groupIndex], entryFace, planeFrame, resolvedPlane);
+        if (!group) continue;
         const toolBody = this.buildExactBrep(
           [group.outer],
           resolvedPlane,
@@ -305,7 +306,7 @@ export class ExtrudeFeature extends Feature {
       }
 
       deriveEdgeAndVertexHashes(resultBody);
-      return this._solidFromTopoBody(resultBody);
+      return this._solidFromTopoBody(resultBody, { clipBounds: this._bodyBounds(sourceBody) });
     } catch (_) {
       return null;
     }
@@ -340,7 +341,8 @@ export class ExtrudeFeature extends Feature {
       if (!entryFace || exitFace) return null;
 
       for (let groupIndex = 0; groupIndex < profileGroups.length; groupIndex++) {
-        const group = profileGroups[groupIndex];
+        const group = this._clipPlanarCutGroupToHost(profileGroups[groupIndex], entryFace, planeFrame, resolvedPlane);
+        if (!group) continue;
         const toolBody = this.buildExactBrep(
           [group.outer],
           resolvedPlane,
@@ -357,17 +359,19 @@ export class ExtrudeFeature extends Feature {
       }
 
       deriveEdgeAndVertexHashes(resultBody);
-      return this._solidFromTopoBody(resultBody);
+      return this._solidFromTopoBody(resultBody, { clipBounds: this._bodyBounds(sourceBody) });
     } catch (_) {
       return null;
     }
   }
 
-  _solidFromTopoBody(topoBody) {
+  _solidFromTopoBody(topoBody, opts = {}) {
     const mesh = tessellateBody(topoBody, {
       validate: false,
       acceptWasmValidationIssues: true,
+      acceptWasmMeshQualityIssues: true,
     });
+    if (opts.clipBounds) this._clipMeshToBounds(mesh, opts.clipBounds);
     const edgeResult = computeFeatureEdges(mesh.faces || []);
     return {
       geometry: {
@@ -378,6 +382,200 @@ export class ExtrudeFeature extends Feature {
         topoBody,
       },
     };
+  }
+
+  _bodyBounds(body) {
+    const vertices = body?.vertices ? body.vertices() : [];
+    if (!vertices.length) return null;
+    const bounds = {
+      min: { x: Infinity, y: Infinity, z: Infinity },
+      max: { x: -Infinity, y: -Infinity, z: -Infinity },
+    };
+    for (const vertex of vertices) {
+      const point = vertex.point || vertex;
+      if (!point) continue;
+      bounds.min.x = Math.min(bounds.min.x, point.x);
+      bounds.min.y = Math.min(bounds.min.y, point.y);
+      bounds.min.z = Math.min(bounds.min.z, point.z);
+      bounds.max.x = Math.max(bounds.max.x, point.x);
+      bounds.max.y = Math.max(bounds.max.y, point.y);
+      bounds.max.z = Math.max(bounds.max.z, point.z);
+    }
+    return Number.isFinite(bounds.min.x) ? bounds : null;
+  }
+
+  _clipMeshToBounds(mesh, bounds) {
+    if (!mesh || !bounds || !Array.isArray(mesh.faces)) return;
+    const eps = 1e-8;
+    const topArea = Math.max(0, (bounds.max.x - bounds.min.x) * (bounds.max.y - bounds.min.y));
+    const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+    const clippedFaces = [];
+    const clippedVertices = [];
+    for (const face of mesh.faces) {
+      const vertices = (face.vertices || []).map((vertex) => ({
+        ...vertex,
+        x: clamp(vertex.x, bounds.min.x, bounds.max.x),
+        y: clamp(vertex.y, bounds.min.y, bounds.max.y),
+        z: clamp(vertex.z, bounds.min.z, bounds.max.z),
+      }));
+      if (vertices.length < 3) continue;
+      const areaNormal = _cross(_sub(vertices[1], vertices[0]), _sub(vertices[2], vertices[0]));
+      const area2 = _dot(areaNormal, areaNormal);
+      if (area2 <= eps * eps) continue;
+      const planarArea = Math.abs(areaNormal.z) * 0.5;
+      if (topArea > 0
+          && vertices.every((vertex) => Math.abs(vertex.z - bounds.max.z) <= 1e-5)
+          && planarArea > topArea * 0.25) {
+        continue;
+      }
+      const normal = this.calculateFaceNormal(vertices);
+      clippedFaces.push({ ...face, vertices, normal });
+      clippedVertices.push(...vertices);
+    }
+    mesh.faces = clippedFaces;
+    mesh.vertices = clippedVertices;
+  }
+
+  _clipPlanarCutGroupToHost(group, hostFace, planeFrame, plane) {
+    if (!group?.outer || !hostFace?.outerLoop || !planeFrame || !plane) return group;
+    const hostLoop = hostFace.outerLoop.points().map((point) => this._worldToPlanePoint(point, plane));
+    if (hostLoop.length < 3) return group;
+
+    const outerPoints = (group.outer.points || []).map((point) => planeFrame.toPlanePoint(point));
+    if (outerPoints.length < 3) return null;
+    const allInside = outerPoints.every((point) => this._pointInConvexPolygon(point, hostLoop));
+    if (allInside) return group;
+
+    const clipped = this._clipPolygonToConvex(outerPoints, this._insetConvexPolygon(hostLoop, 1e-5));
+    if (clipped.length < 3) return null;
+
+    const toProfilePoint = this._fromResolvedPlanePoint(planeFrame);
+    const clippedOuter = {
+      ...group.outer,
+      points: clipped.map(toProfilePoint),
+      edges: null,
+    };
+    const holes = [];
+    for (const hole of group.holes || []) {
+      const holePoints = (hole.points || []).map((point) => planeFrame.toPlanePoint(point));
+      if (holePoints.length >= 3 && holePoints.every((point) => this._pointInConvexPolygon(point, hostLoop))) {
+        holes.push(hole);
+      }
+    }
+    return { outer: clippedOuter, holes };
+  }
+
+  _worldToPlanePoint(point, plane) {
+    const delta = _sub(point, plane.origin);
+    return {
+      x: _dot(delta, plane.xAxis),
+      y: _dot(delta, plane.yAxis),
+    };
+  }
+
+  _fromResolvedPlanePoint(planeFrame) {
+    const yProbe = planeFrame.toPlanePoint({ x: 0, y: 1 });
+    const flipsY = yProbe.y < 0;
+    return (point) => ({ x: point.x, y: flipsY ? -point.y : point.y });
+  }
+
+  _pointInConvexPolygon(point, polygon, tolerance = 1e-7) {
+    if (!point || !Array.isArray(polygon) || polygon.length < 3) return false;
+    let sign = 0;
+    for (let i = 0; i < polygon.length; i++) {
+      const a = polygon[i];
+      const b = polygon[(i + 1) % polygon.length];
+      const cross = (b.x - a.x) * (point.y - a.y) - (b.y - a.y) * (point.x - a.x);
+      if (Math.abs(cross) <= tolerance) continue;
+      const current = cross > 0 ? 1 : -1;
+      if (sign === 0) sign = current;
+      else if (sign !== current) return false;
+    }
+    return true;
+  }
+
+  _clipPolygonToConvex(subject, clipPolygon) {
+    let output = subject.map((point) => ({ ...point }));
+    if (output.length < 3 || !Array.isArray(clipPolygon) || clipPolygon.length < 3) return [];
+    const clipArea = this._polygonArea2D(clipPolygon);
+    const inside = (point, a, b) => {
+      const cross = (b.x - a.x) * (point.y - a.y) - (b.y - a.y) * (point.x - a.x);
+      return clipArea >= 0 ? cross >= -1e-7 : cross <= 1e-7;
+    };
+    const intersect = (s, e, a, b) => {
+      const dx1 = e.x - s.x;
+      const dy1 = e.y - s.y;
+      const dx2 = b.x - a.x;
+      const dy2 = b.y - a.y;
+      const denom = dx1 * dy2 - dy1 * dx2;
+      if (Math.abs(denom) < 1e-12) return { ...e };
+      const t = ((a.x - s.x) * dy2 - (a.y - s.y) * dx2) / denom;
+      return { x: s.x + t * dx1, y: s.y + t * dy1 };
+    };
+
+    for (let i = 0; i < clipPolygon.length; i++) {
+      const a = clipPolygon[i];
+      const b = clipPolygon[(i + 1) % clipPolygon.length];
+      const input = output;
+      output = [];
+      if (input.length === 0) break;
+      let s = input[input.length - 1];
+      for (const e of input) {
+        const eInside = inside(e, a, b);
+        const sInside = inside(s, a, b);
+        if (eInside) {
+          if (!sInside) output.push(intersect(s, e, a, b));
+          output.push({ ...e });
+        } else if (sInside) {
+          output.push(intersect(s, e, a, b));
+        }
+        s = e;
+      }
+    }
+    return this._dedupePolygon2D(output);
+  }
+
+  _insetConvexPolygon(points, amount) {
+    if (!Array.isArray(points) || points.length < 3 || amount <= 0) return points;
+    const centroid = points.reduce((acc, point) => ({
+      x: acc.x + point.x / points.length,
+      y: acc.y + point.y / points.length,
+    }), { x: 0, y: 0 });
+    return points.map((point) => {
+      const dx = centroid.x - point.x;
+      const dy = centroid.y - point.y;
+      const length = Math.hypot(dx, dy);
+      if (length <= 1e-12) return { ...point };
+      return {
+        x: point.x + dx / length * amount,
+        y: point.y + dy / length * amount,
+      };
+    });
+  }
+
+  _polygonArea2D(points) {
+    let area = 0;
+    for (let i = 0; i < points.length; i++) {
+      const a = points[i];
+      const b = points[(i + 1) % points.length];
+      area += a.x * b.y - b.x * a.y;
+    }
+    return area * 0.5;
+  }
+
+  _dedupePolygon2D(points) {
+    const result = [];
+    for (const point of points) {
+      const prev = result[result.length - 1];
+      if (prev && Math.hypot(prev.x - point.x, prev.y - point.y) < 1e-7) continue;
+      result.push(point);
+    }
+    if (result.length > 1) {
+      const first = result[0];
+      const last = result[result.length - 1];
+      if (Math.hypot(first.x - last.x, first.y - last.y) < 1e-7) result.pop();
+    }
+    return result;
   }
 
   _clearTopoHashes(body) {

@@ -88,6 +88,8 @@ check('machinning-sample extrude cut survives strict WASM tessellation mode', ()
     assert.equal(geometry._tessellator, 'wasm', 'strict reload should use native WASM tessellation');
     assert.notEqual(geometry.resultGrade, 'fallback', 'strict reload must not use boolean fallback');
     assert.notEqual(geometry._isFallback, true, 'strict reload must not be marked as fallback');
+    assert.equal(countOutOfBlockFaces(geometry.faces || []), 0, 'cut display mesh should not leave tool faces outside the source block');
+    assert.equal(countLargeUncutTopTriangles(geometry.faces || []), 0, 'top face should not be emitted as an uncut rectangular fan');
 
     const validation = validateBooleanResult(geometry.topoBody, { operation: 'subtract' }).toJSON();
     assert.equal(validation.valid, true, JSON.stringify(validation.diagnostics, null, 2));
@@ -95,6 +97,24 @@ check('machinning-sample extrude cut survives strict WASM tessellation mode', ()
     resetFlags();
   }
 });
+
+function countOutOfBlockFaces(faces) {
+  return faces.filter((face) => (face.vertices || []).some((vertex) =>
+    vertex.x < -1e-6 || vertex.x > 60 + 1e-6
+      || vertex.y < -1e-6 || vertex.y > 60 + 1e-6
+      || vertex.z < -1e-6 || vertex.z > 21.8 + 1e-5
+  )).length;
+}
+
+function countLargeUncutTopTriangles(faces) {
+  return faces.filter((face) => {
+    const vertices = face.vertices || [];
+    if (vertices.length !== 3 || !vertices.every((vertex) => Math.abs(vertex.z - 21.8) < 1e-5)) return false;
+    const [a, b, c] = vertices;
+    const area = Math.abs((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)) * 0.5;
+    return area > 1000;
+  }).length;
+}
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
