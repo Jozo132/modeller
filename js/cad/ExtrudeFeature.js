@@ -1636,11 +1636,7 @@ export class ExtrudeFeature extends Feature {
       const topOuterLoop = buildCapLoop(outerData, 'topCurve', false);
 
       faceDescs.push({
-        surface: NurbsSurface.createPlane(
-          bottomOuterLoop.vertices[0],
-          _sub(bottomOuterLoop.vertices[1] || bottomOuterLoop.vertices[0], bottomOuterLoop.vertices[0]),
-          _sub(bottomOuterLoop.vertices[bottomOuterLoop.vertices.length - 1] || bottomOuterLoop.vertices[0], bottomOuterLoop.vertices[0]),
-        ),
+        surface: _polygonBoundingSurface(bottomOuterLoop.vertices),
         surfaceType: SurfaceType.PLANE,
         vertices: bottomOuterLoop.vertices,
         edgeCurves: bottomOuterLoop.edgeCurves,
@@ -1650,11 +1646,7 @@ export class ExtrudeFeature extends Feature {
       });
 
       faceDescs.push({
-        surface: NurbsSurface.createPlane(
-          topOuterLoop.vertices[0],
-          _sub(topOuterLoop.vertices[1] || topOuterLoop.vertices[0], topOuterLoop.vertices[0]),
-          _sub(topOuterLoop.vertices[topOuterLoop.vertices.length - 1] || topOuterLoop.vertices[0], topOuterLoop.vertices[0]),
-        ),
+        surface: _polygonBoundingSurface(topOuterLoop.vertices),
         surfaceType: SurfaceType.PLANE,
         vertices: topOuterLoop.vertices,
         edgeCurves: topOuterLoop.edgeCurves,
@@ -1940,6 +1932,76 @@ export class ExtrudeFeature extends Feature {
     
     return feature;
   }
+}
+
+/**
+ * Build a NurbsSurface plane that fully spans a polygon defined by `vertices`.
+ *
+ * `NurbsSurface.createPlane(origin, uDir, vDir)` defines the UV domain as the
+ * parallelogram spanned by `uDir` and `vDir` from `origin`. For cap faces whose
+ * outer loop has many vertices, using only the first two edges as the basis
+ * vectors leaves much of the face outside the [0,1]×[0,1] domain. This helper
+ * computes orthogonal in-plane axes and stretches them to tightly bound every
+ * vertex, so every point on the face maps into the support surface domain.
+ * @param {Array<{x:number,y:number,z:number}>} vertices
+ */
+function _polygonBoundingSurface(vertices) {
+  if (!vertices || vertices.length < 2) {
+    const o = vertices?.[0] ?? { x: 0, y: 0, z: 0 };
+    return NurbsSurface.createPlane(o, { x: 1, y: 0, z: 0 }, { x: 0, y: 1, z: 0 });
+  }
+
+  let uAxis = { x: 0, y: 0, z: 1 };
+  for (let i = 0; i < vertices.length - 1; i++) {
+    const candidate = _normalize(_sub(vertices[i + 1], vertices[i]));
+    if (candidate.x * candidate.x + candidate.y * candidate.y + candidate.z * candidate.z > 0.5) {
+      uAxis = candidate;
+      break;
+    }
+  }
+
+  let nx = 0, ny = 0, nz = 0;
+  for (let i = 0; i < vertices.length; i++) {
+    const a = vertices[i];
+    const b = vertices[(i + 1) % vertices.length];
+    nx += (a.y - b.y) * (a.z + b.z);
+    ny += (a.z - b.z) * (a.x + b.x);
+    nz += (a.x - b.x) * (a.y + b.y);
+  }
+  const nLen = Math.sqrt(nx * nx + ny * ny + nz * nz);
+  const normal = nLen > 1e-14
+    ? { x: nx / nLen, y: ny / nLen, z: nz / nLen }
+    : { x: 0, y: 0, z: 1 };
+  let vAxis = _normalize(_cross(normal, uAxis));
+  if (Math.abs(_dot(uAxis, vAxis)) > 0.99) {
+    const ref = Math.abs(uAxis.z) < 0.9 ? { x: 0, y: 0, z: 1 } : { x: 0, y: 1, z: 0 };
+    vAxis = _normalize(_cross(ref, uAxis));
+  }
+
+  const origin = vertices[0];
+  let uMin = 0, uMax = 0, vMin = 0, vMax = 0;
+  for (const vtx of vertices) {
+    const delta = _sub(vtx, origin);
+    const u = _dot(uAxis, delta);
+    const v = _dot(vAxis, delta);
+    if (u < uMin) uMin = u;
+    if (u > uMax) uMax = u;
+    if (v < vMin) vMin = v;
+    if (v > vMax) vMax = v;
+  }
+
+  const uSpan = uMax - uMin || 1;
+  const vSpan = vMax - vMin || 1;
+  const surfOrigin = {
+    x: origin.x + uAxis.x * uMin + vAxis.x * vMin,
+    y: origin.y + uAxis.y * uMin + vAxis.y * vMin,
+    z: origin.z + uAxis.z * uMin + vAxis.z * vMin,
+  };
+  return NurbsSurface.createPlane(
+    surfOrigin,
+    { x: uAxis.x * uSpan, y: uAxis.y * uSpan, z: uAxis.z * uSpan },
+    { x: vAxis.x * vSpan, y: vAxis.y * vSpan, z: vAxis.z * vSpan },
+  );
 }
 
 // Vector helper for B-Rep construction

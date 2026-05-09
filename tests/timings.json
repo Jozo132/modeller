@@ -78,7 +78,7 @@
     "test-face-selection.js": 0.175,
     "test-sketch-solver.js": 0.138,
     "test-cmod-cam-persistence.js": 0.102,
-    "test-wasm-tessellation-policy.js": 0.091,
+    "test-wasm-tessellation-policy.js": 0.085,
     "test-containment.js": 0.079,
     "test-feature-tree-incremental-tess.js": 0.062,
     "test-sketch-preview-fill.js": 0.058,
