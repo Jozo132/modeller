@@ -441,10 +441,13 @@ export class ExtrudeFeature extends Feature {
 
   _clipPlanarCutGroupToHost(group, hostFace, planeFrame, plane) {
     if (!group?.outer || !hostFace?.outerLoop || !planeFrame || !plane) return group;
-    const hostLoop = hostFace.outerLoop.points().map((point) => this._worldToPlanePoint(point, plane));
+    const toProfilePoint = this._fromResolvedPlanePoint(planeFrame);
+    const hostLoop = hostFace.outerLoop.points()
+      .map((point) => this._worldToPlanePoint(point, plane))
+      .map(toProfilePoint);
     if (hostLoop.length < 3) return group;
 
-    const outerPoints = (group.outer.points || []).map((point) => planeFrame.toPlanePoint(point));
+    const outerPoints = group.outer.points || [];
     if (outerPoints.length < 3) return null;
     const allInside = outerPoints.every((point) => this._pointInConvexPolygon(point, hostLoop));
     if (allInside) return group;
@@ -452,15 +455,15 @@ export class ExtrudeFeature extends Feature {
     const clipped = this._clipPolygonToConvex(outerPoints, this._insetConvexPolygon(hostLoop, 1e-5));
     if (clipped.length < 3) return null;
 
-    const toProfilePoint = this._fromResolvedPlanePoint(planeFrame);
+    const clippedProfile = this._buildClippedProfileEdges(group.outer, clipped);
     const clippedOuter = {
       ...group.outer,
-      points: clipped.map(toProfilePoint),
-      edges: null,
+      points: clippedProfile?.points || clipped,
+      edges: clippedProfile?.edges || null,
     };
     const holes = [];
     for (const hole of group.holes || []) {
-      const holePoints = (hole.points || []).map((point) => planeFrame.toPlanePoint(point));
+      const holePoints = hole.points || [];
       if (holePoints.length >= 3 && holePoints.every((point) => this._pointInConvexPolygon(point, hostLoop))) {
         holes.push(hole);
       }
@@ -538,6 +541,200 @@ export class ExtrudeFeature extends Feature {
       }
     }
     return this._dedupePolygon2D(output);
+  }
+
+  _buildClippedProfileEdges(profile, clippedPoints) {
+    if (!profile || !Array.isArray(profile.points) || !Array.isArray(clippedPoints) || clippedPoints.length < 3) {
+      return null;
+    }
+
+    const ranges = _buildEdgeRanges(profile.edges, profile.points.length);
+    if (!ranges || ranges.length === 0) return null;
+
+    const segments = [];
+    for (let i = 0; i < clippedPoints.length; i++) {
+      const a = clippedPoints[i];
+      const b = clippedPoints[(i + 1) % clippedPoints.length];
+      segments.push(this._clippedEdgeMetaForSegment(profile, ranges, a, b));
+    }
+
+    const runs = [];
+    for (const segment of segments) {
+      const previous = runs[runs.length - 1];
+      if (previous && this._canMergeClippedEdgeRuns(previous, segment)) {
+        previous.end = segment.end;
+        previous.uEnd = segment.uEnd;
+      } else {
+        runs.push({ ...segment });
+      }
+    }
+    if (runs.length > 1 && this._canMergeClippedEdgeRuns(runs[runs.length - 1], runs[0])) {
+      const first = runs.shift();
+      runs[runs.length - 1].end = first.end;
+      runs[runs.length - 1].uEnd = first.uEnd;
+    }
+
+    const points = runs.map((run) => ({ ...run.start }));
+    const edges = runs.map((run, index) => ({
+      ...this._edgeMetaForClippedRun(run),
+      pointStartIndex: index,
+      pointCount: 2,
+    }));
+    return points.length >= 3 && edges.length >= 3 ? { points, edges } : null;
+  }
+
+  _clippedEdgeMetaForSegment(profile, ranges, a, b) {
+    const tol = 1e-4;
+    for (let rangeIndex = 0; rangeIndex < ranges.length; rangeIndex++) {
+      const range = ranges[rangeIndex];
+      if (range.type === 'spline' && range.controlPoints2D && range.knots) {
+        const curve = _spline2Dto3D(
+          range.controlPoints2D,
+          range.degree,
+          range.knots,
+          (point) => ({ x: point.x, y: point.y, z: 0 }),
+        );
+        const ua = this._closestCurveParameter2D(curve, a);
+        const ub = this._closestCurveParameter2D(curve, b);
+        if (!ua || !ub || ua.distance > tol || ub.distance > tol) continue;
+        return {
+          kind: 'curve',
+          rangeIndex,
+          curve,
+          start: a,
+          end: b,
+          uStart: ua.u,
+          uEnd: ub.u,
+        };
+      }
+
+      if (range.type === 'bezier' && range.bezierVertices) {
+        const curve = _bezierVertices2Dto3D(
+          range.bezierVertices,
+          (point) => ({ x: point.x, y: point.y, z: 0 }),
+        );
+        const ua = this._closestCurveParameter2D(curve, a);
+        const ub = this._closestCurveParameter2D(curve, b);
+        if (!ua || !ub || ua.distance > tol || ub.distance > tol) continue;
+        return {
+          kind: 'curve',
+          rangeIndex,
+          curve,
+          start: a,
+          end: b,
+          uStart: ua.u,
+          uEnd: ub.u,
+        };
+      }
+
+      const rangePoints = this._rangePoints(profile.points, range);
+      if (rangePoints.length >= 2 && this._pointsOnPolyline2D([a, b], rangePoints, tol)) {
+        return { kind: 'segment', start: a, end: b };
+      }
+    }
+    return { kind: 'segment', start: a, end: b };
+  }
+
+  _canMergeClippedEdgeRuns(a, b) {
+    if (!a || !b || a.kind !== 'curve' || b.kind !== 'curve') return false;
+    if (a.rangeIndex !== b.rangeIndex) return false;
+    const aDir = Math.sign(a.uEnd - a.uStart);
+    const bDir = Math.sign(b.uEnd - b.uStart);
+    if (aDir === 0 || bDir === 0 || aDir !== bDir) return false;
+    return _distanceSq2D(a.end, b.start) <= 1e-10;
+  }
+
+  _edgeMetaForClippedRun(run) {
+    if (run.kind === 'curve') {
+      const trimmed = this._trimCurve2D(run.curve, run.uStart, run.uEnd);
+      if (trimmed) {
+        return {
+          type: 'spline',
+          controlPoints2D: trimmed.controlPoints.map((point) => ({ x: point.x, y: point.y })),
+          degree: trimmed.degree,
+          knots: [...trimmed.knots],
+        };
+      }
+    }
+    return { type: 'segment' };
+  }
+
+  _rangePoints(points, range) {
+    const result = [];
+    for (let index = range.startIdx; ; index = (index + 1) % points.length) {
+      result.push(points[index]);
+      if (index === range.endIdx) break;
+    }
+    return result;
+  }
+
+  _pointsOnPolyline2D(points, polyline, tol) {
+    return points.every((point) => {
+      for (let i = 0; i + 1 < polyline.length; i++) {
+        if (this._pointSegmentDistance2D(point, polyline[i], polyline[i + 1]) <= tol) return true;
+      }
+      return false;
+    });
+  }
+
+  _closestCurveParameter2D(curve, point) {
+    if (!curve) return null;
+    let best = { u: curve.uMin, distance: Infinity };
+    const samples = 64;
+    let prevU = curve.uMin;
+    let prev = curve.evaluate(prevU);
+    for (let i = 1; i <= samples; i++) {
+      const u = curve.uMin + (curve.uMax - curve.uMin) * (i / samples);
+      const curr = curve.evaluate(u);
+      const projection = this._projectPointToSegment2D(point, prev, curr);
+      const candidateU = prevU + (u - prevU) * projection.t;
+      if (projection.distance < best.distance) best = { u: candidateU, distance: projection.distance };
+      prevU = u;
+      prev = curr;
+    }
+    return best;
+  }
+
+  _trimCurve2D(curve, uStart, uEnd) {
+    const eps = 1e-10;
+    if (!curve || Math.abs(uEnd - uStart) <= eps) return null;
+    const reversed = uEnd < uStart;
+    let u0 = reversed ? uEnd : uStart;
+    let u1 = reversed ? uStart : uEnd;
+    u0 = Math.max(curve.uMin, Math.min(curve.uMax, u0));
+    u1 = Math.max(curve.uMin, Math.min(curve.uMax, u1));
+    if (u1 - u0 <= eps) return null;
+
+    let trimmed = curve;
+    if (u0 > curve.uMin + eps) {
+      const split = trimmed.splitAt(u0);
+      if (!split) return null;
+      trimmed = split[1];
+    }
+    if (u1 < trimmed.uMax - eps) {
+      const split = trimmed.splitAt(u1);
+      if (!split) return null;
+      trimmed = split[0];
+    }
+    return reversed ? trimmed.reversed() : trimmed;
+  }
+
+  _projectPointToSegment2D(point, start, end) {
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const lenSq = dx * dx + dy * dy;
+    const rawT = lenSq > 1e-20 ? ((point.x - start.x) * dx + (point.y - start.y) * dy) / lenSq : 0;
+    const t = Math.max(0, Math.min(1, rawT));
+    const x = start.x + dx * t;
+    const y = start.y + dy * t;
+    return {
+      t,
+      distance: Math.hypot(point.x - x, point.y - y),
+    };
+  }
+
+  _pointSegmentDistance2D(point, start, end) {
+    return this._projectPointToSegment2D(point, start, end).distance;
   }
 
   _insetConvexPolygon(points, amount) {
@@ -2031,6 +2228,12 @@ function _distanceSq(a, b) {
   const dy = a.y - b.y;
   const dz = a.z - b.z;
   return dx * dx + dy * dy + dz * dz;
+}
+
+function _distanceSq2D(a, b) {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  return dx * dx + dy * dy;
 }
 
 function _augmentNativeCurvedSelectableEdges(edges, faces) {

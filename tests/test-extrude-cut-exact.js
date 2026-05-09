@@ -90,6 +90,9 @@ check('machinning-sample extrude cut survives strict WASM tessellation mode', ()
     assert.notEqual(geometry._isFallback, true, 'strict reload must not be marked as fallback');
     assert.equal(countOutOfBlockFaces(geometry.faces || []), 0, 'cut display mesh should not leave tool faces outside the source block');
     assert.equal(countLargeUncutTopTriangles(geometry.faces || []), 0, 'top face should not be emitted as an uncut rectangular fan');
+    const sideSurfaceCounts = countCutSideSurfaceTypes(geometry.topoBody);
+    assert.ok(sideSurfaceCounts.bspline >= 200, `clipped spline cut profiles should retain B-spline side faces: ${JSON.stringify(sideSurfaceCounts)}`);
+    assert.ok((sideSurfaceCounts.plane || 0) <= 32, `clipped spline cut profiles should not be flattened into planar side strips: ${JSON.stringify(sideSurfaceCounts)}`);
 
     const validation = validateBooleanResult(geometry.topoBody, { operation: 'subtract' }).toJSON();
     assert.equal(validation.valid, true, JSON.stringify(validation.diagnostics, null, 2));
@@ -114,6 +117,16 @@ function countLargeUncutTopTriangles(faces) {
     const area = Math.abs((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)) * 0.5;
     return area > 1000;
   }).length;
+}
+
+function countCutSideSurfaceTypes(body) {
+  const counts = {};
+  for (const face of body?.faces?.() || []) {
+    const stableHash = face.stableHash || '';
+    if (!stableHash.includes('feature_12_Cut_feature_12_Face_Side')) continue;
+    counts[face.surfaceType] = (counts[face.surfaceType] || 0) + 1;
+  }
+  return counts;
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
