@@ -10,6 +10,13 @@ import { validateBooleanResult } from '../js/cad/BooleanInvariantValidator.js';
 import { ensureWasmReady } from '../js/cad/StepImportWasm.js';
 import { resetFlags, setFlag } from '../js/featureFlags.js';
 
+const MACHINNING_BLOCK_MAX_X = 60;
+const MACHINNING_BLOCK_MAX_Y = 60;
+const MACHINNING_BLOCK_HEIGHT = 21.8;
+const MACHINNING_MIN_CLIPPED_SPLINE_SIDE_FACES = 200;
+const MACHINNING_MAX_PLANAR_SIDE_STRIPS = 32;
+const LARGE_UNCUT_TOP_TRIANGLE_AREA = 1000;
+
 function loadPart(sampleName) {
   const sample = JSON.parse(readFileSync(new URL(`./samples/${sampleName}`, import.meta.url), 'utf8'));
   return Part.deserialize(sample.part);
@@ -91,8 +98,14 @@ check('machinning-sample extrude cut survives strict WASM tessellation mode', ()
     assert.equal(countOutOfBlockFaces(geometry.faces || []), 0, 'cut display mesh should not leave tool faces outside the source block');
     assert.equal(countLargeUncutTopTriangles(geometry.faces || []), 0, 'top face should not be emitted as an uncut rectangular fan');
     const sideSurfaceCounts = countCutSideSurfaceTypes(geometry.topoBody, cutFeature.id);
-    assert.ok(sideSurfaceCounts.bspline >= 200, `clipped spline cut profiles should retain B-spline side faces: ${JSON.stringify(sideSurfaceCounts)}`);
-    assert.ok((sideSurfaceCounts.plane || 0) <= 32, `clipped spline cut profiles should not be flattened into planar side strips: ${JSON.stringify(sideSurfaceCounts)}`);
+    assert.ok(
+      sideSurfaceCounts.bspline >= MACHINNING_MIN_CLIPPED_SPLINE_SIDE_FACES,
+      `clipped spline cut profiles should retain B-spline side faces: ${JSON.stringify(sideSurfaceCounts)}`,
+    );
+    assert.ok(
+      (sideSurfaceCounts.plane || 0) <= MACHINNING_MAX_PLANAR_SIDE_STRIPS,
+      `clipped spline cut profiles should not be flattened into planar side strips: ${JSON.stringify(sideSurfaceCounts)}`,
+    );
 
     const validation = validateBooleanResult(geometry.topoBody, { operation: 'subtract' }).toJSON();
     assert.equal(validation.valid, true, JSON.stringify(validation.diagnostics, null, 2));
@@ -103,19 +116,19 @@ check('machinning-sample extrude cut survives strict WASM tessellation mode', ()
 
 function countOutOfBlockFaces(faces) {
   return faces.filter((face) => (face.vertices || []).some((vertex) =>
-    vertex.x < -1e-6 || vertex.x > 60 + 1e-6
-      || vertex.y < -1e-6 || vertex.y > 60 + 1e-6
-      || vertex.z < -1e-6 || vertex.z > 21.8 + 1e-5
+    vertex.x < -1e-6 || vertex.x > MACHINNING_BLOCK_MAX_X + 1e-6
+      || vertex.y < -1e-6 || vertex.y > MACHINNING_BLOCK_MAX_Y + 1e-6
+      || vertex.z < -1e-6 || vertex.z > MACHINNING_BLOCK_HEIGHT + 1e-5
   )).length;
 }
 
 function countLargeUncutTopTriangles(faces) {
   return faces.filter((face) => {
     const vertices = face.vertices || [];
-    if (vertices.length !== 3 || !vertices.every((vertex) => Math.abs(vertex.z - 21.8) < 1e-5)) return false;
+    if (vertices.length !== 3 || !vertices.every((vertex) => Math.abs(vertex.z - MACHINNING_BLOCK_HEIGHT) < 1e-5)) return false;
     const [a, b, c] = vertices;
     const area = Math.abs((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)) * 0.5;
-    return area > 1000;
+    return area > LARGE_UNCUT_TOP_TRIANGLE_AREA;
   }).length;
 }
 

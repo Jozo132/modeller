@@ -21,6 +21,9 @@ import {
 
 /** Monotonically increasing ID for fused half-cylinder face groups. */
 let _nextFusedId = 1;
+const PLANAR_CUT_HOST_CLIP_INSET = 1e-5;
+const CLIPPED_CURVE_MATCH_TOLERANCE = 1e-4;
+const LARGE_TOP_FACE_AREA_RATIO = 0.25;
 
 /**
  * ExtrudeFeature extrudes a 2D sketch profile along its normal to create 3D geometry.
@@ -425,10 +428,11 @@ export class ExtrudeFeature extends Feature {
       const planarArea = Math.abs(areaNormal.z) * 0.5;
       // The native fallback fan for a failed trimmed top face emits two
       // rectangle-sized triangles; remove those so cuts cannot visually cover
-      // the host opening. Real trim triangles are much smaller than 25%.
+      // the host opening. Real trim triangles are much smaller than
+      // LARGE_TOP_FACE_AREA_RATIO of the host top face.
       if (topArea > 0
           && vertices.every((vertex) => Math.abs(vertex.z - bounds.max.z) <= 1e-5)
-          && planarArea > topArea * 0.25) {
+          && planarArea > topArea * LARGE_TOP_FACE_AREA_RATIO) {
         continue;
       }
       const normal = this.calculateFaceNormal(vertices);
@@ -452,7 +456,7 @@ export class ExtrudeFeature extends Feature {
     const allInside = outerPoints.every((point) => this._pointInConvexPolygon(point, hostLoop));
     if (allInside) return group;
 
-    const clipped = this._clipPolygonToConvex(outerPoints, this._insetConvexPolygon(hostLoop, 1e-5));
+    const clipped = this._clipPolygonToConvex(outerPoints, this._insetConvexPolygon(hostLoop, PLANAR_CUT_HOST_CLIP_INSET));
     if (clipped.length < 3) return null;
 
     const clippedProfile = this._buildClippedProfileEdges(group.outer, clipped);
@@ -584,7 +588,7 @@ export class ExtrudeFeature extends Feature {
   }
 
   _clippedEdgeMetaForSegment(profile, ranges, a, b) {
-    const tol = 1e-4;
+    const tol = CLIPPED_CURVE_MATCH_TOLERANCE;
     for (let rangeIndex = 0; rangeIndex < ranges.length; rangeIndex++) {
       const range = ranges[rangeIndex];
       if (range.type === 'spline' && range.controlPoints2D && range.knots) {
