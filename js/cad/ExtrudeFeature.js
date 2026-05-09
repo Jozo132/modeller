@@ -428,7 +428,7 @@ export class ExtrudeFeature extends Feature {
       const areaNormal = _cross(_sub(vertices[1], vertices[0]), _sub(vertices[2], vertices[0]));
       const area2 = _dot(areaNormal, areaNormal);
       if (area2 <= eps * eps) continue;
-      const planarArea = Math.abs(areaNormal.z) * 0.5;
+      const planarArea = Math.sqrt(area2) * 0.5;
       // The native fallback fan for a failed trimmed top face emits two
       // rectangle-sized triangles; remove those so cuts cannot visually cover
       // the opening in the host's top face. Real trim triangles are much smaller than
@@ -633,8 +633,10 @@ export class ExtrudeFeature extends Feature {
     for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
       const a = polygon[i];
       const b = polygon[j];
+      const dy = b.y - a.y;
+      if (Math.abs(dy) < 1e-20) continue;
       const intersects = ((a.y > point.y) !== (b.y > point.y))
-        && (point.x < ((b.x - a.x) * (point.y - a.y)) / ((b.y - a.y) || 1e-20) + a.x);
+        && (point.x < ((b.x - a.x) * (point.y - a.y)) / dy + a.x);
       if (intersects) inside = !inside;
     }
     return inside;
@@ -2375,9 +2377,9 @@ function _polygonBoundingSurface(vertices) {
 
   let uAxis = { x: 0, y: 0, z: 1 };
   for (let i = 0; i < vertices.length - 1; i++) {
-    const candidate = _normalize(_sub(vertices[i + 1], vertices[i]));
-    if (candidate.x * candidate.x + candidate.y * candidate.y + candidate.z * candidate.z > 0.5) {
-      uAxis = candidate;
+    const delta = _sub(vertices[i + 1], vertices[i]);
+    if (_dot(delta, delta) > 1e-12) {
+      uAxis = _normalize(delta);
       break;
     }
   }
