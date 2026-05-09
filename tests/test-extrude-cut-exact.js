@@ -99,6 +99,9 @@ check('machinning-sample extrude cut survives strict WASM tessellation mode', ()
     assert.equal(countLargeUncutTopTriangles(geometry.faces || []), 0, 'top face should not be emitted as an uncut rectangular fan');
     assert.equal(countDisplayedClipBoundaryFaces(geometry.faces || []), 0, 'artificial clipped-boundary tool planes should not be displayed');
     assert.ok(countDisplaySideOpeningFragments(geometry.faces || []) > 0, 'target side faces should be opened where clipped cut profiles exit the block');
+    assert.ok(countDisplayTopClosureFragments(geometry.faces || []) > 0, 'target top face should be closed around clipped cut openings');
+    assert.equal(countTinyDisplaySideOpeningFragments(geometry.faces || []), 0, 'clipped target-corner inset slivers should not be displayed');
+    assert.equal(countBadDisplayOpeningNormals(geometry.faces || []), 0, 'display side opening normals should point outward');
     const sideSurfaceCounts = countCutSideSurfaceTypes(geometry.topoBody, cutFeature.id);
     assert.ok(
       sideSurfaceCounts.bspline >= MACHINNING_MIN_CLIPPED_SPLINE_SIDE_FACES,
@@ -151,6 +154,40 @@ function countDisplayedClipBoundaryFaces(faces) {
 
 function countDisplaySideOpeningFragments(faces) {
   return faces.filter((face) => face.shared?.sourceFeatureId === 'display-side-opening').length;
+}
+
+function countDisplayTopClosureFragments(faces) {
+  return faces.filter((face) => face.shared?.sourceFeatureId === 'display-top-closure').length;
+}
+
+function countTinyDisplaySideOpeningFragments(faces) {
+  return faces.filter((face) => {
+    if (face.shared?.sourceFeatureId !== 'display-side-opening') return false;
+    const vertices = face.vertices || [];
+    const xs = vertices.map((vertex) => vertex.x);
+    const ys = vertices.map((vertex) => vertex.y);
+    const xSpan = Math.max(...xs) - Math.min(...xs);
+    const ySpan = Math.max(...ys) - Math.min(...ys);
+    return (xSpan > 0 && xSpan < 1e-3) || (ySpan > 0 && ySpan < 1e-3);
+  }).length;
+}
+
+function countBadDisplayOpeningNormals(faces) {
+  return faces.filter((face) => {
+    if (face.shared?.sourceFeatureId !== 'display-side-opening') return false;
+    const vertices = face.vertices || [];
+    const normal = face.normal || {};
+    const target = displaySideTargetNormal(vertices);
+    return target && normal.x * target.x + normal.y * target.y + normal.z * target.z < 0.9;
+  }).length;
+}
+
+function displaySideTargetNormal(vertices) {
+  if (vertices.every((vertex) => Math.abs(vertex.x) < 1e-4)) return { x: -1, y: 0, z: 0 };
+  if (vertices.every((vertex) => Math.abs(vertex.x - MACHINNING_BLOCK_MAX_X) < 1e-4)) return { x: 1, y: 0, z: 0 };
+  if (vertices.every((vertex) => Math.abs(vertex.y) < 1e-4)) return { x: 0, y: -1, z: 0 };
+  if (vertices.every((vertex) => Math.abs(vertex.y - MACHINNING_BLOCK_MAX_Y) < 1e-4)) return { x: 0, y: 1, z: 0 };
+  return null;
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

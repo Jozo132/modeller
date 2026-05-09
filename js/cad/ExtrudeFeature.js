@@ -377,7 +377,7 @@ export class ExtrudeFeature extends Feature {
       acceptWasmMeshQualityIssues: true,
     });
     if (opts.clipBounds) this._clipMeshToBounds(mesh, opts.clipBounds);
-    if (opts.clipBounds && opts.sideOpenings?.length) this._applyDisplaySideOpenings(mesh, opts.clipBounds, opts.sideOpenings);
+    if (opts.clipBounds && opts.sideOpenings?.length) this._applyDisplaySideOpenings(mesh, opts.clipBounds, opts.sideOpenings, topoBody);
     const edgeResult = computeFeatureEdges(mesh.faces || []);
     return {
       geometry: {
@@ -446,7 +446,7 @@ export class ExtrudeFeature extends Feature {
     mesh.vertices = clippedVertices;
   }
 
-  _applyDisplaySideOpenings(mesh, bounds, sideOpenings) {
+  _applyDisplaySideOpenings(mesh, bounds, sideOpenings, topoBody = null) {
     const groups = new Map();
     const snapTol = 1e-3;
     const addOpening = (axis, side, value, sMin, sMax, zMin, zMax) => {
@@ -501,6 +501,10 @@ export class ExtrudeFeature extends Feature {
       for (const fragment of fragments) retainedVertices.push(...fragment.vertices);
     }
 
+    const topFragments = this._buildDisplayTopClosureFragments(topoBody, bounds);
+    retainedFaces.push(...topFragments);
+    for (const fragment of topFragments) retainedVertices.push(...fragment.vertices);
+
     mesh.faces = retainedFaces;
     mesh.vertices = retainedVertices;
   }
@@ -538,7 +542,7 @@ export class ExtrudeFeature extends Feature {
       for (let zi = 0; zi + 1 < zs.length; zi++) {
         const s0 = ss[si], s1 = ss[si + 1];
         const z0 = zs[zi], z1 = zs[zi + 1];
-        if (s1 - s0 <= 1e-6 || z1 - z0 <= 1e-6) continue;
+        if (s1 - s0 <= 1e-3 || z1 - z0 <= 1e-6) continue;
         if (insideOpening((s0 + s1) * 0.5, (z0 + z1) * 0.5)) continue;
         let vertices = [toPoint(s0, z0), toPoint(s1, z0), toPoint(s1, z1), toPoint(s0, z1)];
         let normal = this.calculateFaceNormal(vertices);
@@ -554,6 +558,86 @@ export class ExtrudeFeature extends Feature {
       }
     }
     return faces;
+  }
+
+  _buildDisplayTopClosureFragments(topoBody, bounds) {
+    const topFace = this._findDisplayTopClosureFace(topoBody, bounds);
+    if (!topFace?.outerLoop || !topFace.innerLoops?.length) return [];
+
+    const outer = topFace.outerLoop.points().map((point) => ({ x: point.x, y: point.y }));
+    const holes = topFace.innerLoops
+      .map((loop) => loop.points().map((point) => ({ x: point.x, y: point.y })))
+      .filter((loop) => loop.length >= 3);
+    if (outer.length < 3 || holes.length === 0) return [];
+
+    const steinerPoints = this._buildTopClosureSteinerPoints(bounds, outer, holes);
+    const triangles = constrainedTriangulate(outer, holes, steinerPoints);
+    const all2D = [...outer, ...holes.flat(), ...steinerPoints];
+    const targetNormal = { x: 0, y: 0, z: 1 };
+    const faces = [];
+    for (const [ia, ib, ic] of triangles) {
+      let vertices = [all2D[ia], all2D[ib], all2D[ic]].map((point) => ({
+        x: point.x,
+        y: point.y,
+        z: bounds.max.z,
+      }));
+      if (vertices.some((vertex) => !Number.isFinite(vertex.x) || !Number.isFinite(vertex.y))) continue;
+      let normal = this.calculateFaceNormal(vertices);
+      if (_dot(normal, targetNormal) < 0) {
+        vertices = [vertices[0], vertices[2], vertices[1]];
+        normal = this.calculateFaceNormal(vertices);
+      }
+      faces.push({
+        vertices,
+        normal,
+        shared: { sourceFeatureId: 'display-top-closure' },
+      });
+    }
+    return faces;
+  }
+
+  _findDisplayTopClosureFace(topoBody, bounds) {
+    let best = null;
+    let bestArea = 0;
+    for (const face of topoBody?.faces?.() || []) {
+      if (face.surfaceType !== SurfaceType.PLANE || !face.outerLoop) continue;
+      const points = face.outerLoop.points();
+      if (points.length < 3 || !points.every((point) => Math.abs(point.z - bounds.max.z) <= 1e-5)) continue;
+      if (!face.innerLoops?.length) continue;
+      const area = Math.abs(this._polygonArea2D(points.map((point) => ({ x: point.x, y: point.y }))));
+      if (area > bestArea) {
+        best = face;
+        bestArea = area;
+      }
+    }
+    return best;
+  }
+
+  _buildTopClosureSteinerPoints(bounds, outer, holes) {
+    const points = [];
+    const step = Math.max(4, Math.min(bounds.max.x - bounds.min.x, bounds.max.y - bounds.min.y) / 8);
+    for (let x = bounds.min.x + step; x < bounds.max.x - 1e-6; x += step) {
+      for (let y = bounds.min.y + step; y < bounds.max.y - 1e-6; y += step) {
+        const point = { x, y };
+        if (!this._pointInPolygon2D(point, outer)) continue;
+        if (holes.some((hole) => this._pointInPolygon2D(point, hole))) continue;
+        points.push(point);
+      }
+    }
+    return points;
+  }
+
+  _pointInPolygon2D(point, polygon) {
+    if (!point || !Array.isArray(polygon) || polygon.length < 3) return false;
+    let inside = false;
+    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+      const a = polygon[i];
+      const b = polygon[j];
+      const intersects = ((a.y > point.y) !== (b.y > point.y))
+        && (point.x < ((b.x - a.x) * (point.y - a.y)) / ((b.y - a.y) || 1e-20) + a.x);
+      if (intersects) inside = !inside;
+    }
+    return inside;
   }
 
   _clipPlanarCutGroupToHost(group, hostFace, planeFrame, plane) {
