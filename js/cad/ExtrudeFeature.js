@@ -431,7 +431,7 @@ export class ExtrudeFeature extends Feature {
       const planarArea = Math.abs(areaNormal.z) * 0.5;
       // The native fallback fan for a failed trimmed top face emits two
       // rectangle-sized triangles; remove those so cuts cannot visually cover
-      // the host opening. Real trim triangles are much smaller than
+      // the opening in the host's top face. Real trim triangles are much smaller than
       // LARGE_TOP_FACE_AREA_RATIO of the host top face.
       if (topArea > 0
           && vertices.every((vertex) => Math.abs(vertex.z - bounds.max.z) <= 1e-5)

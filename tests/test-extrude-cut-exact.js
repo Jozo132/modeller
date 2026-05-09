@@ -10,11 +10,11 @@ import { validateBooleanResult } from '../js/cad/BooleanInvariantValidator.js';
 import { ensureWasmReady } from '../js/cad/StepImportWasm.js';
 import { resetFlags, setFlag } from '../js/featureFlags.js';
 
-const MACHINNING_BLOCK_MAX_X = 60;
-const MACHINNING_BLOCK_MAX_Y = 60;
-const MACHINNING_BLOCK_HEIGHT = 21.8;
-const MACHINNING_MIN_CLIPPED_SPLINE_SIDE_FACES = 200;
-const MACHINNING_MAX_PLANAR_SIDE_STRIPS = 32;
+const MACHINING_BLOCK_MAX_X = 60;
+const MACHINING_BLOCK_MAX_Y = 60;
+const MACHINING_BLOCK_HEIGHT = 21.8;
+const MACHINING_MIN_CLIPPED_SPLINE_SIDE_FACES = 200;
+const MACHINING_MAX_PLANAR_SIDE_STRIPS = 32;
 const LARGE_UNCUT_TOP_TRIANGLE_AREA = 1000;
 
 function loadPart(sampleName) {
@@ -80,7 +80,7 @@ check('puzzle-extrude-cc4 cuts multiple sketch faces exactly', () => {
   assert.equal(watertight.boundaryCount, 0, `expected watertight display mesh, got ${watertight.boundaryCount} boundary edges`);
 });
 
-check('machinning-sample extrude cut survives strict WASM tessellation mode', () => {
+check('machining sample extrude cut survives strict WASM tessellation mode', () => {
   setFlag('CAD_REQUIRE_WASM_TESSELLATION', true);
   setFlag('CAD_ALLOW_DISCRETE_FALLBACK', false);
   try {
@@ -104,11 +104,11 @@ check('machinning-sample extrude cut survives strict WASM tessellation mode', ()
     assert.equal(countBadDisplayOpeningNormals(geometry.faces || []), 0, 'display side opening normals should point outward');
     const sideSurfaceCounts = countCutSideSurfaceTypes(geometry.topoBody, cutFeature.id);
     assert.ok(
-      sideSurfaceCounts.bspline >= MACHINNING_MIN_CLIPPED_SPLINE_SIDE_FACES,
+      sideSurfaceCounts.bspline >= MACHINING_MIN_CLIPPED_SPLINE_SIDE_FACES,
       `clipped spline cut profiles should retain B-spline side faces: ${JSON.stringify(sideSurfaceCounts)}`,
     );
     assert.ok(
-      (sideSurfaceCounts.plane || 0) <= MACHINNING_MAX_PLANAR_SIDE_STRIPS,
+      (sideSurfaceCounts.plane || 0) <= MACHINING_MAX_PLANAR_SIDE_STRIPS,
       `clipped spline cut profiles should not be flattened into planar side strips: ${JSON.stringify(sideSurfaceCounts)}`,
     );
 
@@ -121,16 +121,16 @@ check('machinning-sample extrude cut survives strict WASM tessellation mode', ()
 
 function countOutOfBlockFaces(faces) {
   return faces.filter((face) => (face.vertices || []).some((vertex) =>
-    vertex.x < -1e-6 || vertex.x > MACHINNING_BLOCK_MAX_X + 1e-6
-      || vertex.y < -1e-6 || vertex.y > MACHINNING_BLOCK_MAX_Y + 1e-6
-      || vertex.z < -1e-6 || vertex.z > MACHINNING_BLOCK_HEIGHT + 1e-5
+    vertex.x < -1e-6 || vertex.x > MACHINING_BLOCK_MAX_X + 1e-6
+      || vertex.y < -1e-6 || vertex.y > MACHINING_BLOCK_MAX_Y + 1e-6
+      || vertex.z < -1e-6 || vertex.z > MACHINING_BLOCK_HEIGHT + 1e-5
   )).length;
 }
 
 function countLargeUncutTopTriangles(faces) {
   return faces.filter((face) => {
     const vertices = face.vertices || [];
-    if (vertices.length !== 3 || !vertices.every((vertex) => Math.abs(vertex.z - MACHINNING_BLOCK_HEIGHT) < 1e-5)) return false;
+    if (vertices.length !== 3 || !vertices.every((vertex) => Math.abs(vertex.z - MACHINING_BLOCK_HEIGHT) < 1e-5)) return false;
     const [a, b, c] = vertices;
     const area = Math.abs((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)) * 0.5;
     return area > LARGE_UNCUT_TOP_TRIANGLE_AREA;
@@ -184,9 +184,9 @@ function countBadDisplayOpeningNormals(faces) {
 
 function displaySideTargetNormal(vertices) {
   if (vertices.every((vertex) => Math.abs(vertex.x) < 1e-4)) return { x: -1, y: 0, z: 0 };
-  if (vertices.every((vertex) => Math.abs(vertex.x - MACHINNING_BLOCK_MAX_X) < 1e-4)) return { x: 1, y: 0, z: 0 };
+  if (vertices.every((vertex) => Math.abs(vertex.x - MACHINING_BLOCK_MAX_X) < 1e-4)) return { x: 1, y: 0, z: 0 };
   if (vertices.every((vertex) => Math.abs(vertex.y) < 1e-4)) return { x: 0, y: -1, z: 0 };
-  if (vertices.every((vertex) => Math.abs(vertex.y - MACHINNING_BLOCK_MAX_Y) < 1e-4)) return { x: 0, y: 1, z: 0 };
+  if (vertices.every((vertex) => Math.abs(vertex.y - MACHINING_BLOCK_MAX_Y) < 1e-4)) return { x: 0, y: 1, z: 0 };
   return null;
 }
 
