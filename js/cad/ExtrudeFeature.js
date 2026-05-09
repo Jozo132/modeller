@@ -290,6 +290,7 @@ export class ExtrudeFeature extends Feature {
       const exitFace = this._findPlanarFaceAtPoint(resultBody, endPoint, resolvedPlane.normal);
       if (!entryFace || !exitFace || entryFace === exitFace) return null;
 
+      const sideOpenings = [];
       for (let groupIndex = 0; groupIndex < profileGroups.length; groupIndex++) {
         const group = this._clipPlanarCutGroupToHost(profileGroups[groupIndex], entryFace, planeFrame, resolvedPlane);
         if (!group) continue;
@@ -303,13 +304,13 @@ export class ExtrudeFeature extends Feature {
           group.holes,
         );
         this._clearTopoHashes(toolBody);
-        if (!this._splicePlanarCutGroup(shell, entryFace, exitFace, toolBody, groupIndex)) {
+        if (!this._splicePlanarCutGroup(shell, entryFace, exitFace, toolBody, groupIndex, sideOpenings)) {
           return null;
         }
       }
 
       deriveEdgeAndVertexHashes(resultBody);
-      return this._solidFromTopoBody(resultBody, { clipBounds: this._bodyBounds(sourceBody) });
+      return this._solidFromTopoBody(resultBody, { clipBounds: this._bodyBounds(sourceBody), sideOpenings });
     } catch (_) {
       return null;
     }
@@ -343,6 +344,7 @@ export class ExtrudeFeature extends Feature {
       const exitFace = this._findPlanarFaceAtPoint(resultBody, endPoint, resolvedPlane.normal);
       if (!entryFace || exitFace) return null;
 
+      const sideOpenings = [];
       for (let groupIndex = 0; groupIndex < profileGroups.length; groupIndex++) {
         const group = this._clipPlanarCutGroupToHost(profileGroups[groupIndex], entryFace, planeFrame, resolvedPlane);
         if (!group) continue;
@@ -356,13 +358,13 @@ export class ExtrudeFeature extends Feature {
           group.holes,
         );
         this._clearTopoHashes(toolBody);
-        if (!this._splicePlanarCutGroup(shell, entryFace, null, toolBody, groupIndex)) {
+        if (!this._splicePlanarCutGroup(shell, entryFace, null, toolBody, groupIndex, sideOpenings)) {
           return null;
         }
       }
 
       deriveEdgeAndVertexHashes(resultBody);
-      return this._solidFromTopoBody(resultBody, { clipBounds: this._bodyBounds(sourceBody) });
+      return this._solidFromTopoBody(resultBody, { clipBounds: this._bodyBounds(sourceBody), sideOpenings });
     } catch (_) {
       return null;
     }
@@ -375,6 +377,7 @@ export class ExtrudeFeature extends Feature {
       acceptWasmMeshQualityIssues: true,
     });
     if (opts.clipBounds) this._clipMeshToBounds(mesh, opts.clipBounds);
+    if (opts.clipBounds && opts.sideOpenings?.length) this._applyDisplaySideOpenings(mesh, opts.clipBounds, opts.sideOpenings);
     const edgeResult = computeFeatureEdges(mesh.faces || []);
     return {
       geometry: {
@@ -443,6 +446,116 @@ export class ExtrudeFeature extends Feature {
     mesh.vertices = clippedVertices;
   }
 
+  _applyDisplaySideOpenings(mesh, bounds, sideOpenings) {
+    const groups = new Map();
+    const snapTol = 1e-3;
+    const addOpening = (axis, side, value, sMin, sMax, zMin, zMax) => {
+      if (sMax - sMin <= 1e-6 || zMax - zMin <= 1e-6) return;
+      const key = `${axis}:${side}`;
+      if (!groups.has(key)) groups.set(key, { axis, side, value, openings: [] });
+      groups.get(key).openings.push({ sMin, sMax, zMin, zMax });
+    };
+
+    for (const opening of sideOpenings || []) {
+      if (!Array.isArray(opening) || opening.length < 4) continue;
+      const xs = opening.map((point) => point.x);
+      const ys = opening.map((point) => point.y);
+      const zs = opening.map((point) => point.z);
+      const minX = Math.min(...xs), maxX = Math.max(...xs);
+      const minY = Math.min(...ys), maxY = Math.max(...ys);
+      const minZ = Math.max(bounds.min.z, Math.min(...zs));
+      const maxZ = Math.min(bounds.max.z, Math.max(...zs));
+      if (Math.abs(minX - bounds.min.x) <= snapTol && Math.abs(maxX - bounds.min.x) <= snapTol) {
+        addOpening('x', 'min', bounds.min.x, Math.max(bounds.min.y, minY), Math.min(bounds.max.y, maxY), minZ, maxZ);
+      } else if (Math.abs(minX - bounds.max.x) <= snapTol && Math.abs(maxX - bounds.max.x) <= snapTol) {
+        addOpening('x', 'max', bounds.max.x, Math.max(bounds.min.y, minY), Math.min(bounds.max.y, maxY), minZ, maxZ);
+      } else if (Math.abs(minY - bounds.min.y) <= snapTol && Math.abs(maxY - bounds.min.y) <= snapTol) {
+        addOpening('y', 'min', bounds.min.y, Math.max(bounds.min.x, minX), Math.min(bounds.max.x, maxX), minZ, maxZ);
+      } else if (Math.abs(minY - bounds.max.y) <= snapTol && Math.abs(maxY - bounds.max.y) <= snapTol) {
+        addOpening('y', 'max', bounds.max.y, Math.max(bounds.min.x, minX), Math.min(bounds.max.x, maxX), minZ, maxZ);
+      }
+    }
+    if (groups.size === 0) return;
+
+    const onAffectedSide = (face) => {
+      const vertices = face.vertices || [];
+      if (vertices.length < 3) return false;
+      for (const group of groups.values()) {
+        if (vertices.every((vertex) => Math.abs(vertex[group.axis] - group.value) <= snapTol)) return true;
+      }
+      return false;
+    };
+
+    const retainedFaces = [];
+    const retainedVertices = [];
+    for (const face of mesh.faces || []) {
+      if (face.shared?.clipBoundary === true) continue;
+      if (onAffectedSide(face) && face.shared?.sourceFeatureId !== this.id) continue;
+      retainedFaces.push(face);
+      retainedVertices.push(...(face.vertices || []));
+    }
+
+    for (const group of groups.values()) {
+      const fragments = this._buildDisplaySideFragments(bounds, group);
+      retainedFaces.push(...fragments);
+      for (const fragment of fragments) retainedVertices.push(...fragment.vertices);
+    }
+
+    mesh.faces = retainedFaces;
+    mesh.vertices = retainedVertices;
+  }
+
+  _buildDisplaySideFragments(bounds, group) {
+    const axis = group.axis;
+    const sBounds = axis === 'x'
+      ? { min: bounds.min.y, max: bounds.max.y }
+      : { min: bounds.min.x, max: bounds.max.x };
+    const sCuts = [sBounds.min, sBounds.max];
+    const zCuts = [bounds.min.z, bounds.max.z];
+    for (const opening of group.openings) {
+      sCuts.push(opening.sMin, opening.sMax);
+      zCuts.push(opening.zMin, opening.zMax);
+    }
+    const uniqueSorted = (values) => [...values]
+      .filter((value) => Number.isFinite(value))
+      .sort((a, b) => a - b)
+      .filter((value, index, arr) => index === 0 || Math.abs(value - arr[index - 1]) > 1e-6);
+    const ss = uniqueSorted(sCuts);
+    const zs = uniqueSorted(zCuts);
+    const targetNormal = axis === 'x'
+      ? { x: group.side === 'min' ? -1 : 1, y: 0, z: 0 }
+      : { x: 0, y: group.side === 'min' ? -1 : 1, z: 0 };
+    const toPoint = (s, z) => axis === 'x'
+      ? { x: group.value, y: s, z }
+      : { x: s, y: group.value, z };
+    const insideOpening = (s, z) => group.openings.some((opening) =>
+      s > opening.sMin + 1e-6 && s < opening.sMax - 1e-6
+        && z > opening.zMin + 1e-6 && z < opening.zMax - 1e-6
+    );
+
+    const faces = [];
+    for (let si = 0; si + 1 < ss.length; si++) {
+      for (let zi = 0; zi + 1 < zs.length; zi++) {
+        const s0 = ss[si], s1 = ss[si + 1];
+        const z0 = zs[zi], z1 = zs[zi + 1];
+        if (s1 - s0 <= 1e-6 || z1 - z0 <= 1e-6) continue;
+        if (insideOpening((s0 + s1) * 0.5, (z0 + z1) * 0.5)) continue;
+        let vertices = [toPoint(s0, z0), toPoint(s1, z0), toPoint(s1, z1), toPoint(s0, z1)];
+        let normal = this.calculateFaceNormal(vertices);
+        if (_dot(normal, targetNormal) < 0) {
+          vertices = [vertices[0], vertices[3], vertices[2], vertices[1]];
+          normal = this.calculateFaceNormal(vertices);
+        }
+        faces.push({
+          vertices,
+          normal,
+          shared: { sourceFeatureId: 'display-side-opening' },
+        });
+      }
+    }
+    return faces;
+  }
+
   _clipPlanarCutGroupToHost(group, hostFace, planeFrame, plane) {
     if (!group?.outer || !hostFace?.outerLoop || !planeFrame || !plane) return group;
     const toProfilePoint = this._fromResolvedPlanePoint(planeFrame);
@@ -459,7 +572,7 @@ export class ExtrudeFeature extends Feature {
     const clipped = this._clipPolygonToConvex(outerPoints, this._insetConvexPolygon(hostLoop, PLANAR_CUT_HOST_CLIP_INSET));
     if (clipped.length < 3) return null;
 
-    const clippedProfile = this._buildClippedProfileEdges(group.outer, clipped);
+    const clippedProfile = this._buildClippedProfileEdges(group.outer, clipped, hostLoop);
     const clippedOuter = {
       ...group.outer,
       points: clippedProfile?.points || clipped,
@@ -547,7 +660,7 @@ export class ExtrudeFeature extends Feature {
     return this._dedupePolygon2D(output);
   }
 
-  _buildClippedProfileEdges(profile, clippedPoints) {
+  _buildClippedProfileEdges(profile, clippedPoints, hostLoop = null) {
     if (!profile || !Array.isArray(profile.points) || !Array.isArray(clippedPoints) || clippedPoints.length < 3) {
       return null;
     }
@@ -559,7 +672,7 @@ export class ExtrudeFeature extends Feature {
     for (let i = 0; i < clippedPoints.length; i++) {
       const a = clippedPoints[i];
       const b = clippedPoints[(i + 1) % clippedPoints.length];
-      segments.push(this._clippedEdgeMetaForSegment(profile, ranges, a, b));
+      segments.push(this._clippedEdgeMetaForSegment(profile, ranges, a, b, hostLoop));
     }
 
     const runs = [];
@@ -587,7 +700,7 @@ export class ExtrudeFeature extends Feature {
     return points.length >= 3 && edges.length >= 3 ? { points, edges } : null;
   }
 
-  _clippedEdgeMetaForSegment(profile, ranges, a, b) {
+  _clippedEdgeMetaForSegment(profile, ranges, a, b, hostLoop = null) {
     const tol = CLIPPED_CURVE_MATCH_TOLERANCE;
     for (let rangeIndex = 0; rangeIndex < ranges.length; rangeIndex++) {
       const range = ranges[rangeIndex];
@@ -636,6 +749,9 @@ export class ExtrudeFeature extends Feature {
         return { kind: 'segment', start: a, end: b };
       }
     }
+    if (Array.isArray(hostLoop) && hostLoop.length >= 3 && this._pointsOnClosedPolyline2D([a, b], hostLoop, tol)) {
+      return { kind: 'clipBoundary', start: a, end: b };
+    }
     return { kind: 'segment', start: a, end: b };
   }
 
@@ -649,6 +765,9 @@ export class ExtrudeFeature extends Feature {
   }
 
   _edgeMetaForClippedRun(run) {
+    if (run.kind === 'clipBoundary') {
+      return { type: 'segment', isClipBoundary: true };
+    }
     if (run.kind === 'curve') {
       const trimmed = this._trimCurve2D(run.curve, run.uStart, run.uEnd);
       if (trimmed) {
@@ -661,6 +780,15 @@ export class ExtrudeFeature extends Feature {
       }
     }
     return { type: 'segment' };
+  }
+
+  _pointsOnClosedPolyline2D(points, polygon, tol) {
+    return points.every((point) => {
+      for (let i = 0; i < polygon.length; i++) {
+        if (this._pointSegmentDistance2D(point, polygon[i], polygon[(i + 1) % polygon.length]) <= tol) return true;
+      }
+      return false;
+    });
   }
 
   _rangePoints(points, range) {
@@ -794,7 +922,7 @@ export class ExtrudeFeature extends Feature {
     }
   }
 
-  _splicePlanarCutGroup(shell, entryFace, exitFace, toolBody, groupIndex) {
+  _splicePlanarCutGroup(shell, entryFace, exitFace, toolBody, groupIndex, sideOpenings = []) {
     if (!shell || !entryFace || !toolBody) return false;
     const toolFaces = toolBody.faces();
     const entryCap = toolFaces.find((face) => face.stableHash?.includes('_Face_Bottom_'));
@@ -817,7 +945,13 @@ export class ExtrudeFeature extends Feature {
 
     for (const sideFace of toolFaces) {
       if (sideFace === entryCap || sideFace === terminalCap) continue;
-      sideFace.shared = { sourceFeatureId: this.id };
+      const isClipBoundary = sideFace.shared?.clipBoundary === true;
+      if (isClipBoundary) {
+        sideOpenings.push(sideFace.outerLoop?.points?.() || []);
+      }
+      sideFace.shared = isClipBoundary
+        ? { sourceFeatureId: this.id, clipBoundary: true }
+        : { sourceFeatureId: this.id };
       if (sideFace.stableHash) sideFace.stableHash = `${this.id}_Cut_${sideFace.stableHash}`;
       shell.addFace(sideFace);
     }
@@ -1709,6 +1843,7 @@ export class ExtrudeFeature extends Feature {
             spanIndices,
             isArc: false,
             isClosedRange: type === 'circle',
+            isClipBoundary: range.isClipBoundary === true,
           });
         }
       }
@@ -1820,7 +1955,9 @@ export class ExtrudeFeature extends Feature {
               NurbsCurve.createLine(vertices[2], vertices[3]),
               NurbsCurve.createLine(vertices[3], vertices[0]),
             ],
-            shared: { sourceFeatureId: this.id },
+            shared: info.isClipBoundary
+              ? { sourceFeatureId: this.id, clipBoundary: true }
+              : { sourceFeatureId: this.id },
             stableHash: `${this.id}_Face_Side_${hashPrefix}_${ei}${segSuffix}`,
           });
         }
@@ -2494,6 +2631,7 @@ function _buildEdgeRanges(profileEdges, totalPoints) {
       knots: edge.knots,
       // Propagate exact bezier data
       bezierVertices: edge.bezierVertices,
+      isClipBoundary: edge.isClipBoundary === true,
     });
 
     currentIdx = endIdx;

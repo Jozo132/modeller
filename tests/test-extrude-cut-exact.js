@@ -97,6 +97,8 @@ check('machinning-sample extrude cut survives strict WASM tessellation mode', ()
     assert.notEqual(geometry._isFallback, true, 'strict reload must not be marked as fallback');
     assert.equal(countOutOfBlockFaces(geometry.faces || []), 0, 'cut display mesh should not leave tool faces outside the source block');
     assert.equal(countLargeUncutTopTriangles(geometry.faces || []), 0, 'top face should not be emitted as an uncut rectangular fan');
+    assert.equal(countDisplayedClipBoundaryFaces(geometry.faces || []), 0, 'artificial clipped-boundary tool planes should not be displayed');
+    assert.ok(countDisplaySideOpeningFragments(geometry.faces || []) > 0, 'target side faces should be opened where clipped cut profiles exit the block');
     const sideSurfaceCounts = countCutSideSurfaceTypes(geometry.topoBody, cutFeature.id);
     assert.ok(
       sideSurfaceCounts.bspline >= MACHINNING_MIN_CLIPPED_SPLINE_SIDE_FACES,
@@ -141,6 +143,14 @@ function countCutSideSurfaceTypes(body, featureId) {
     counts[face.surfaceType] = (counts[face.surfaceType] || 0) + 1;
   }
   return counts;
+}
+
+function countDisplayedClipBoundaryFaces(faces) {
+  return faces.filter((face) => face.shared?.clipBoundary === true).length;
+}
+
+function countDisplaySideOpeningFragments(faces) {
+  return faces.filter((face) => face.shared?.sourceFeatureId === 'display-side-opening').length;
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
