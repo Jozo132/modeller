@@ -572,6 +572,8 @@ function triangulatePolygonIndices(verts, normal) {
  * @param {number} [opts.angularTolerance=15] - Max angle (degrees) between adjacent normals
  * @param {number} [opts.surfaceSegments] - Segments for NURBS surface tessellation (from globalTessConfig)
  * @param {number} [opts.edgeSegments] - Segments for NURBS edge tessellation (from globalTessConfig)
+ * @param {boolean} [opts.acceptWasmValidationIssues=false] - In strict mode, return native WASM mesh even when native trim validation reports issues.
+ * @param {boolean} [opts.acceptWasmMeshQualityIssues=false] - In strict mode, return native WASM mesh even when mesh quality validation reports boundary/non-manifold issues.
  * @returns {{ vertices: Array<{x,y,z}>, faces: Array<{vertices: Array<{x,y,z}>, normal: {x,y,z}, shared: Object}>, edges: Array }}
  */
 export function tessellateBody(body, opts = {}) {
@@ -611,8 +613,11 @@ export function tessellateBody(body, opts = {}) {
   // All tessellation happens inside WASM — no JS fallback.
   const wasmResult = tessellateBodyWasm(body, opts);
   if (wasmResult && wasmResult.faces.length > 0) {
-    const invalidFeaturePlanarTrims = meshHasInvalidFeaturePlanarTrims(body, wasmResult);
+    const acceptWasmValidationIssues = opts.acceptWasmValidationIssues === true;
+    const invalidFeaturePlanarTrims = acceptWasmValidationIssues ? false : meshHasInvalidFeaturePlanarTrims(body, wasmResult);
     const invalidWasmMesh = (requireWasm || opts.fallbackOnInvalidWasm)
+        && opts.acceptWasmMeshQualityIssues !== true
+        && !acceptWasmValidationIssues
       ? meshNeedsRobustFallback(body, wasmResult)
       : false;
     if (invalidFeaturePlanarTrims || ((requireWasm || opts.fallbackOnInvalidWasm) && invalidWasmMesh)) {

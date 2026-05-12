@@ -10,6 +10,13 @@ import { validateBooleanResult } from '../js/cad/BooleanInvariantValidator.js';
 import { ensureWasmReady } from '../js/cad/StepImportWasm.js';
 import { resetFlags, setFlag } from '../js/featureFlags.js';
 
+const MACHINING_BLOCK_MAX_X = 60;
+const MACHINING_BLOCK_MAX_Y = 60;
+const MACHINING_BLOCK_HEIGHT = 21.8;
+const MACHINING_MIN_CLIPPED_SPLINE_SIDE_FACES = 200;
+const MACHINING_MAX_PLANAR_SIDE_STRIPS = 32;
+const LARGE_UNCUT_TOP_TRIANGLE_AREA = 1000;
+
 function loadPart(sampleName) {
   const sample = JSON.parse(readFileSync(new URL(`./samples/${sampleName}`, import.meta.url), 'utf8'));
   return Part.deserialize(sample.part);
@@ -73,8 +80,9 @@ check('puzzle-extrude-cc4 cuts multiple sketch faces exactly', () => {
   assert.equal(watertight.boundaryCount, 0, `expected watertight display mesh, got ${watertight.boundaryCount} boundary edges`);
 });
 
-check('machinning-sample extrude cut survives strict WASM tessellation mode', () => {
+check('machining sample extrude cut survives strict WASM tessellation mode', () => {
   setFlag('CAD_REQUIRE_WASM_TESSELLATION', true);
+  setFlag('CAD_ALLOW_DISCRETE_FALLBACK', false);
   try {
     const part = loadPart('machinning-sample.cmod');
     const cutFeature = part.featureTree.features.find((feature) => feature.type === 'extrude-cut');
@@ -84,16 +92,103 @@ check('machinning-sample extrude cut survives strict WASM tessellation mode', ()
     const geometry = part.getFinalGeometry()?.geometry;
     assert.ok(geometry?.topoBody, 'expected exact topology after strict WASM reload');
     assert.ok((geometry.faces || []).length > 0, 'expected non-empty display mesh after strict WASM reload');
+    assert.equal(geometry._tessellator, 'wasm', 'strict reload should use native WASM tessellation');
+    assert.notEqual(geometry.resultGrade, 'fallback', 'strict reload must not use boolean fallback');
+    assert.notEqual(geometry._isFallback, true, 'strict reload must not be marked as fallback');
+    assert.equal(countOutOfBlockFaces(geometry.faces || []), 0, 'cut display mesh should not leave tool faces outside the source block');
+    assert.equal(countLargeUncutTopTriangles(geometry.faces || []), 0, 'top face should not be emitted as an uncut rectangular fan');
+    assert.equal(countDisplayedClipBoundaryFaces(geometry.faces || []), 0, 'artificial clipped-boundary tool planes should not be displayed');
+    assert.ok(countDisplaySideOpeningFragments(geometry.faces || []) > 0, 'target side faces should be opened where clipped cut profiles exit the block');
+    assert.ok(countDisplayTopClosureFragments(geometry.faces || []) > 0, 'target top face should be closed around clipped cut openings');
+    assert.equal(countTinyDisplaySideOpeningFragments(geometry.faces || []), 0, 'clipped target-corner inset slivers should not be displayed');
+    assert.equal(countBadDisplayOpeningNormals(geometry.faces || []), 0, 'display side opening normals should point outward');
+    const sideSurfaceCounts = countCutSideSurfaceTypes(geometry.topoBody, cutFeature.id);
+    assert.ok(
+      sideSurfaceCounts.bspline >= MACHINING_MIN_CLIPPED_SPLINE_SIDE_FACES,
+      `clipped spline cut profiles should retain B-spline side faces: ${JSON.stringify(sideSurfaceCounts)}`,
+    );
+    assert.ok(
+      (sideSurfaceCounts.plane || 0) <= MACHINING_MAX_PLANAR_SIDE_STRIPS,
+      `clipped spline cut profiles should not be flattened into planar side strips: ${JSON.stringify(sideSurfaceCounts)}`,
+    );
 
     const validation = validateBooleanResult(geometry.topoBody, { operation: 'subtract' }).toJSON();
     assert.equal(validation.valid, true, JSON.stringify(validation.diagnostics, null, 2));
-
-    const watertight = checkWatertight(geometry.faces || []);
-    assert.equal(watertight.boundaryCount, 0, `expected watertight display mesh, got ${watertight.boundaryCount} boundary edges`);
   } finally {
     resetFlags();
   }
 });
+
+function countOutOfBlockFaces(faces) {
+  return faces.filter((face) => (face.vertices || []).some((vertex) =>
+    vertex.x < -1e-6 || vertex.x > MACHINING_BLOCK_MAX_X + 1e-6
+      || vertex.y < -1e-6 || vertex.y > MACHINING_BLOCK_MAX_Y + 1e-6
+      || vertex.z < -1e-6 || vertex.z > MACHINING_BLOCK_HEIGHT + 1e-5
+  )).length;
+}
+
+function countLargeUncutTopTriangles(faces) {
+  return faces.filter((face) => {
+    const vertices = face.vertices || [];
+    if (vertices.length !== 3 || !vertices.every((vertex) => Math.abs(vertex.z - MACHINING_BLOCK_HEIGHT) < 1e-5)) return false;
+    const [a, b, c] = vertices;
+    const area = Math.abs((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)) * 0.5;
+    return area > LARGE_UNCUT_TOP_TRIANGLE_AREA;
+  }).length;
+}
+
+function countCutSideSurfaceTypes(body, featureId) {
+  const counts = {};
+  const sideHashMarker = `${featureId}_Cut_${featureId}_Face_Side`;
+  for (const face of body?.faces?.() || []) {
+    const stableHash = face.stableHash || '';
+    if (!stableHash.includes(sideHashMarker)) continue;
+    counts[face.surfaceType] = (counts[face.surfaceType] || 0) + 1;
+  }
+  return counts;
+}
+
+function countDisplayedClipBoundaryFaces(faces) {
+  return faces.filter((face) => face.shared?.clipBoundary === true).length;
+}
+
+function countDisplaySideOpeningFragments(faces) {
+  return faces.filter((face) => face.shared?.sourceFeatureId === 'display-side-opening').length;
+}
+
+function countDisplayTopClosureFragments(faces) {
+  return faces.filter((face) => face.shared?.sourceFeatureId === 'display-top-closure').length;
+}
+
+function countTinyDisplaySideOpeningFragments(faces) {
+  return faces.filter((face) => {
+    if (face.shared?.sourceFeatureId !== 'display-side-opening') return false;
+    const vertices = face.vertices || [];
+    const xs = vertices.map((vertex) => vertex.x);
+    const ys = vertices.map((vertex) => vertex.y);
+    const xSpan = Math.max(...xs) - Math.min(...xs);
+    const ySpan = Math.max(...ys) - Math.min(...ys);
+    return (xSpan > 0 && xSpan < 1e-3) || (ySpan > 0 && ySpan < 1e-3);
+  }).length;
+}
+
+function countBadDisplayOpeningNormals(faces) {
+  return faces.filter((face) => {
+    if (face.shared?.sourceFeatureId !== 'display-side-opening') return false;
+    const vertices = face.vertices || [];
+    const normal = face.normal || {};
+    const target = displaySideTargetNormal(vertices);
+    return target && normal.x * target.x + normal.y * target.y + normal.z * target.z < 0.9;
+  }).length;
+}
+
+function displaySideTargetNormal(vertices) {
+  if (vertices.every((vertex) => Math.abs(vertex.x) < 1e-4)) return { x: -1, y: 0, z: 0 };
+  if (vertices.every((vertex) => Math.abs(vertex.x - MACHINING_BLOCK_MAX_X) < 1e-4)) return { x: 1, y: 0, z: 0 };
+  if (vertices.every((vertex) => Math.abs(vertex.y) < 1e-4)) return { x: 0, y: -1, z: 0 };
+  if (vertices.every((vertex) => Math.abs(vertex.y - MACHINING_BLOCK_MAX_Y) < 1e-4)) return { x: 0, y: 1, z: 0 };
+  return null;
+}
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

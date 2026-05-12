@@ -209,9 +209,28 @@ function _exactBooleanOpInner(bodyA, bodyB, operation, tol) {
     // Route to discrete fallback: skip invalid exact intersections and
     // proceed with only the valid subset (non-empty-curves entries that passed).
     // Attach diagnostic report for downstream inspection.
+    //
+    // For plane×plane pairs, face splitting uses only the trimmed 3D curve.
+    // UV parameters are diagnostic-only for that path, and polygonal planar
+    // faces may legitimately report UVs outside the support surface domain
+    // even when the 3D split curve is valid.
+    const uvOnlyInvariants = new Set([
+      'paramsA-in-domain', 'paramsB-in-domain',
+      'paramsA-finite', 'paramsB-finite',
+      'paramsA-monotone', 'paramsB-monotone',
+      'sample-on-both-surfaces',
+    ]);
     const validIx = intersections.filter((ix, i) => {
-      // Keep entries that didn't produce diagnostics referencing their index
-      return !ixValidation.diagnostics.some(d => d.detail.startsWith(`intersection[${i}]`));
+      const isPlanePlane =
+        ix.faceA?.surfaceType === SurfaceType.PLANE &&
+        ix.faceB?.surfaceType === SurfaceType.PLANE;
+      // Keep entries that didn't produce diagnostics referencing their index,
+      // and keep plane×plane entries whose failures are only UV-related.
+      return !ixValidation.diagnostics.some(d => {
+        if (!d.detail.startsWith(`intersection[${i}]`)) return false;
+        if (isPlanePlane && uvOnlyInvariants.has(d.invariant)) return false;
+        return true;
+      });
     });
     if (validIx.length === 0 && intersections.length > 0) {
       const allInvalidEntriesHaveSurfaceMismatch = invalidIntersections.size === intersections.length

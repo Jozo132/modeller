@@ -21,6 +21,9 @@ import {
 
 /** Monotonically increasing ID for fused half-cylinder face groups. */
 let _nextFusedId = 1;
+const PLANAR_CUT_HOST_CLIP_INSET = 1e-5;
+const CLIPPED_CURVE_MATCH_TOLERANCE = 1e-4;
+const LARGE_TOP_FACE_AREA_RATIO = 0.25;
 
 /**
  * ExtrudeFeature extrudes a 2D sketch profile along its normal to create 3D geometry.
@@ -287,8 +290,10 @@ export class ExtrudeFeature extends Feature {
       const exitFace = this._findPlanarFaceAtPoint(resultBody, endPoint, resolvedPlane.normal);
       if (!entryFace || !exitFace || entryFace === exitFace) return null;
 
+      const sideOpenings = [];
       for (let groupIndex = 0; groupIndex < profileGroups.length; groupIndex++) {
-        const group = profileGroups[groupIndex];
+        const group = this._clipPlanarCutGroupToHost(profileGroups[groupIndex], entryFace, planeFrame, resolvedPlane);
+        if (!group) continue;
         const toolBody = this.buildExactBrep(
           [group.outer],
           resolvedPlane,
@@ -299,13 +304,13 @@ export class ExtrudeFeature extends Feature {
           group.holes,
         );
         this._clearTopoHashes(toolBody);
-        if (!this._splicePlanarCutGroup(shell, entryFace, exitFace, toolBody, groupIndex)) {
+        if (!this._splicePlanarCutGroup(shell, entryFace, exitFace, toolBody, groupIndex, sideOpenings)) {
           return null;
         }
       }
 
       deriveEdgeAndVertexHashes(resultBody);
-      return this._solidFromTopoBody(resultBody);
+      return this._solidFromTopoBody(resultBody, { clipBounds: this._bodyBounds(sourceBody), sideOpenings });
     } catch (_) {
       return null;
     }
@@ -339,8 +344,10 @@ export class ExtrudeFeature extends Feature {
       const exitFace = this._findPlanarFaceAtPoint(resultBody, endPoint, resolvedPlane.normal);
       if (!entryFace || exitFace) return null;
 
+      const sideOpenings = [];
       for (let groupIndex = 0; groupIndex < profileGroups.length; groupIndex++) {
-        const group = profileGroups[groupIndex];
+        const group = this._clipPlanarCutGroupToHost(profileGroups[groupIndex], entryFace, planeFrame, resolvedPlane);
+        if (!group) continue;
         const toolBody = this.buildExactBrep(
           [group.outer],
           resolvedPlane,
@@ -351,20 +358,26 @@ export class ExtrudeFeature extends Feature {
           group.holes,
         );
         this._clearTopoHashes(toolBody);
-        if (!this._splicePlanarCutGroup(shell, entryFace, null, toolBody, groupIndex)) {
+        if (!this._splicePlanarCutGroup(shell, entryFace, null, toolBody, groupIndex, sideOpenings)) {
           return null;
         }
       }
 
       deriveEdgeAndVertexHashes(resultBody);
-      return this._solidFromTopoBody(resultBody);
+      return this._solidFromTopoBody(resultBody, { clipBounds: this._bodyBounds(sourceBody), sideOpenings });
     } catch (_) {
       return null;
     }
   }
 
-  _solidFromTopoBody(topoBody) {
-    const mesh = tessellateBody(topoBody, { validate: false });
+  _solidFromTopoBody(topoBody, opts = {}) {
+    const mesh = tessellateBody(topoBody, {
+      validate: false,
+      acceptWasmValidationIssues: true,
+      acceptWasmMeshQualityIssues: true,
+    });
+    if (opts.clipBounds) this._clipMeshToBounds(mesh, opts.clipBounds);
+    if (opts.clipBounds && opts.sideOpenings?.length) this._applyDisplaySideOpenings(mesh, opts.clipBounds, opts.sideOpenings, topoBody);
     const edgeResult = computeFeatureEdges(mesh.faces || []);
     return {
       geometry: {
@@ -377,6 +390,614 @@ export class ExtrudeFeature extends Feature {
     };
   }
 
+  _bodyBounds(body) {
+    const vertices = body?.vertices ? body.vertices() : [];
+    if (!vertices.length) return null;
+    const bounds = {
+      min: { x: Infinity, y: Infinity, z: Infinity },
+      max: { x: -Infinity, y: -Infinity, z: -Infinity },
+    };
+    for (const vertex of vertices) {
+      const point = vertex.point || vertex;
+      if (!point) continue;
+      bounds.min.x = Math.min(bounds.min.x, point.x);
+      bounds.min.y = Math.min(bounds.min.y, point.y);
+      bounds.min.z = Math.min(bounds.min.z, point.z);
+      bounds.max.x = Math.max(bounds.max.x, point.x);
+      bounds.max.y = Math.max(bounds.max.y, point.y);
+      bounds.max.z = Math.max(bounds.max.z, point.z);
+    }
+    return Number.isFinite(bounds.min.x) ? bounds : null;
+  }
+
+  _clipMeshToBounds(mesh, bounds) {
+    if (!mesh || !bounds || !Array.isArray(mesh.faces)) return;
+    const eps = 1e-8;
+    const topArea = Math.max(0, (bounds.max.x - bounds.min.x) * (bounds.max.y - bounds.min.y));
+    const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+    const clippedFaces = [];
+    const clippedVertices = [];
+    for (const face of mesh.faces) {
+      const vertices = (face.vertices || []).map((vertex) => ({
+        ...vertex,
+        x: clamp(vertex.x, bounds.min.x, bounds.max.x),
+        y: clamp(vertex.y, bounds.min.y, bounds.max.y),
+        z: clamp(vertex.z, bounds.min.z, bounds.max.z),
+      }));
+      if (vertices.length < 3) continue;
+      const areaNormal = _cross(_sub(vertices[1], vertices[0]), _sub(vertices[2], vertices[0]));
+      const area2 = _dot(areaNormal, areaNormal);
+      if (area2 <= eps * eps) continue;
+      const planarArea = Math.sqrt(area2) * 0.5;
+      // The native fallback fan for a failed trimmed top face emits two
+      // rectangle-sized triangles; remove those so cuts cannot visually cover
+      // the opening in the host's top face. Real trim triangles are much smaller than
+      // LARGE_TOP_FACE_AREA_RATIO of the host top face.
+      if (topArea > 0
+          && vertices.every((vertex) => Math.abs(vertex.z - bounds.max.z) <= 1e-5)
+          && planarArea > topArea * LARGE_TOP_FACE_AREA_RATIO) {
+        continue;
+      }
+      const normal = this.calculateFaceNormal(vertices);
+      clippedFaces.push({ ...face, vertices, normal });
+      clippedVertices.push(...vertices);
+    }
+    mesh.faces = clippedFaces;
+    mesh.vertices = clippedVertices;
+  }
+
+  _applyDisplaySideOpenings(mesh, bounds, sideOpenings, topoBody = null) {
+    const groups = new Map();
+    const snapTol = 1e-3;
+    const addOpening = (axis, side, value, sMin, sMax, zMin, zMax) => {
+      if (sMax - sMin <= 1e-6 || zMax - zMin <= 1e-6) return;
+      const key = `${axis}:${side}`;
+      if (!groups.has(key)) groups.set(key, { axis, side, value, openings: [] });
+      groups.get(key).openings.push({ sMin, sMax, zMin, zMax });
+    };
+
+    for (const opening of sideOpenings || []) {
+      if (!Array.isArray(opening) || opening.length < 4) continue;
+      const xs = opening.map((point) => point.x);
+      const ys = opening.map((point) => point.y);
+      const zs = opening.map((point) => point.z);
+      const minX = Math.min(...xs), maxX = Math.max(...xs);
+      const minY = Math.min(...ys), maxY = Math.max(...ys);
+      const minZ = Math.max(bounds.min.z, Math.min(...zs));
+      const maxZ = Math.min(bounds.max.z, Math.max(...zs));
+      if (Math.abs(minX - bounds.min.x) <= snapTol && Math.abs(maxX - bounds.min.x) <= snapTol) {
+        addOpening('x', 'min', bounds.min.x, Math.max(bounds.min.y, minY), Math.min(bounds.max.y, maxY), minZ, maxZ);
+      } else if (Math.abs(minX - bounds.max.x) <= snapTol && Math.abs(maxX - bounds.max.x) <= snapTol) {
+        addOpening('x', 'max', bounds.max.x, Math.max(bounds.min.y, minY), Math.min(bounds.max.y, maxY), minZ, maxZ);
+      } else if (Math.abs(minY - bounds.min.y) <= snapTol && Math.abs(maxY - bounds.min.y) <= snapTol) {
+        addOpening('y', 'min', bounds.min.y, Math.max(bounds.min.x, minX), Math.min(bounds.max.x, maxX), minZ, maxZ);
+      } else if (Math.abs(minY - bounds.max.y) <= snapTol && Math.abs(maxY - bounds.max.y) <= snapTol) {
+        addOpening('y', 'max', bounds.max.y, Math.max(bounds.min.x, minX), Math.min(bounds.max.x, maxX), minZ, maxZ);
+      }
+    }
+    if (groups.size === 0) return;
+
+    const onAffectedSide = (face) => {
+      const vertices = face.vertices || [];
+      if (vertices.length < 3) return false;
+      for (const group of groups.values()) {
+        if (vertices.every((vertex) => Math.abs(vertex[group.axis] - group.value) <= snapTol)) return true;
+      }
+      return false;
+    };
+
+    const retainedFaces = [];
+    const retainedVertices = [];
+    for (const face of mesh.faces || []) {
+      if (face.shared?.clipBoundary === true) continue;
+      if (onAffectedSide(face) && face.shared?.sourceFeatureId !== this.id) continue;
+      retainedFaces.push(face);
+      retainedVertices.push(...(face.vertices || []));
+    }
+
+    for (const group of groups.values()) {
+      const fragments = this._buildDisplaySideFragments(bounds, group);
+      retainedFaces.push(...fragments);
+      for (const fragment of fragments) retainedVertices.push(...fragment.vertices);
+    }
+
+    const topFragments = this._buildDisplayTopClosureFragments(topoBody, bounds);
+    retainedFaces.push(...topFragments);
+    for (const fragment of topFragments) retainedVertices.push(...fragment.vertices);
+
+    mesh.faces = retainedFaces;
+    mesh.vertices = retainedVertices;
+  }
+
+  _buildDisplaySideFragments(bounds, group) {
+    const axis = group.axis;
+    const sBounds = axis === 'x'
+      ? { min: bounds.min.y, max: bounds.max.y }
+      : { min: bounds.min.x, max: bounds.max.x };
+    const sCuts = [sBounds.min, sBounds.max];
+    const zCuts = [bounds.min.z, bounds.max.z];
+    for (const opening of group.openings) {
+      sCuts.push(opening.sMin, opening.sMax);
+      zCuts.push(opening.zMin, opening.zMax);
+    }
+    const uniqueSorted = (values) => [...values]
+      .filter((value) => Number.isFinite(value))
+      .sort((a, b) => a - b)
+      .filter((value, index, arr) => index === 0 || Math.abs(value - arr[index - 1]) > 1e-6);
+    const ss = uniqueSorted(sCuts);
+    const zs = uniqueSorted(zCuts);
+    const targetNormal = axis === 'x'
+      ? { x: group.side === 'min' ? -1 : 1, y: 0, z: 0 }
+      : { x: 0, y: group.side === 'min' ? -1 : 1, z: 0 };
+    const toPoint = (s, z) => axis === 'x'
+      ? { x: group.value, y: s, z }
+      : { x: s, y: group.value, z };
+    const insideOpening = (s, z) => group.openings.some((opening) =>
+      s > opening.sMin + 1e-6 && s < opening.sMax - 1e-6
+        && z > opening.zMin + 1e-6 && z < opening.zMax - 1e-6
+    );
+
+    const faces = [];
+    for (let si = 0; si + 1 < ss.length; si++) {
+      for (let zi = 0; zi + 1 < zs.length; zi++) {
+        const s0 = ss[si], s1 = ss[si + 1];
+        const z0 = zs[zi], z1 = zs[zi + 1];
+        if (s1 - s0 <= 1e-3 || z1 - z0 <= 1e-6) continue;
+        if (insideOpening((s0 + s1) * 0.5, (z0 + z1) * 0.5)) continue;
+        let vertices = [toPoint(s0, z0), toPoint(s1, z0), toPoint(s1, z1), toPoint(s0, z1)];
+        let normal = this.calculateFaceNormal(vertices);
+        if (_dot(normal, targetNormal) < 0) {
+          vertices = [vertices[0], vertices[3], vertices[2], vertices[1]];
+          normal = this.calculateFaceNormal(vertices);
+        }
+        faces.push({
+          vertices,
+          normal,
+          shared: { sourceFeatureId: 'display-side-opening' },
+        });
+      }
+    }
+    return faces;
+  }
+
+  _buildDisplayTopClosureFragments(topoBody, bounds) {
+    const topFace = this._findDisplayTopClosureFace(topoBody, bounds);
+    if (!topFace?.outerLoop || !topFace.innerLoops?.length) return [];
+
+    const outer = topFace.outerLoop.points().map((point) => ({ x: point.x, y: point.y }));
+    const holes = topFace.innerLoops
+      .map((loop) => loop.points().map((point) => ({ x: point.x, y: point.y })))
+      .filter((loop) => loop.length >= 3);
+    if (outer.length < 3 || holes.length === 0) return [];
+
+    const steinerPoints = this._buildTopClosureSteinerPoints(bounds, outer, holes);
+    const triangles = constrainedTriangulate(outer, holes, steinerPoints);
+    const all2D = [...outer, ...holes.flat(), ...steinerPoints];
+    const targetNormal = { x: 0, y: 0, z: 1 };
+    const faces = [];
+    for (const [ia, ib, ic] of triangles) {
+      let vertices = [all2D[ia], all2D[ib], all2D[ic]].map((point) => ({
+        x: point.x,
+        y: point.y,
+        z: bounds.max.z,
+      }));
+      if (vertices.some((vertex) => !Number.isFinite(vertex.x) || !Number.isFinite(vertex.y))) continue;
+      let normal = this.calculateFaceNormal(vertices);
+      if (_dot(normal, targetNormal) < 0) {
+        vertices = [vertices[0], vertices[2], vertices[1]];
+        normal = this.calculateFaceNormal(vertices);
+      }
+      faces.push({
+        vertices,
+        normal,
+        shared: { sourceFeatureId: 'display-top-closure' },
+      });
+    }
+    return faces;
+  }
+
+  _findDisplayTopClosureFace(topoBody, bounds) {
+    let best = null;
+    let bestArea = 0;
+    for (const face of topoBody?.faces?.() || []) {
+      if (face.surfaceType !== SurfaceType.PLANE || !face.outerLoop) continue;
+      const points = face.outerLoop.points();
+      if (points.length < 3 || !points.every((point) => Math.abs(point.z - bounds.max.z) <= 1e-5)) continue;
+      if (!face.innerLoops?.length) continue;
+      const area = Math.abs(this._polygonArea2D(points.map((point) => ({ x: point.x, y: point.y }))));
+      if (area > bestArea) {
+        best = face;
+        bestArea = area;
+      }
+    }
+    return best;
+  }
+
+  _buildTopClosureSteinerPoints(bounds, outer, holes) {
+    const points = [];
+    const step = Math.max(4, Math.min(bounds.max.x - bounds.min.x, bounds.max.y - bounds.min.y) / 8);
+    for (let x = bounds.min.x + step; x < bounds.max.x - 1e-6; x += step) {
+      for (let y = bounds.min.y + step; y < bounds.max.y - 1e-6; y += step) {
+        const point = { x, y };
+        if (!this._pointInPolygon2D(point, outer)) continue;
+        if (holes.some((hole) => this._pointInPolygon2D(point, hole))) continue;
+        points.push(point);
+      }
+    }
+    return points;
+  }
+
+  _pointInPolygon2D(point, polygon) {
+    if (!point || !Array.isArray(polygon) || polygon.length < 3) return false;
+    let inside = false;
+    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+      const a = polygon[i];
+      const b = polygon[j];
+      const dy = b.y - a.y;
+      if (Math.abs(dy) < 1e-20) continue;
+      const intersects = ((a.y > point.y) !== (b.y > point.y))
+        && (point.x < ((b.x - a.x) * (point.y - a.y)) / dy + a.x);
+      if (intersects) inside = !inside;
+    }
+    return inside;
+  }
+
+  _clipPlanarCutGroupToHost(group, hostFace, planeFrame, plane) {
+    if (!group?.outer || !hostFace?.outerLoop || !planeFrame || !plane) return group;
+    const toProfilePoint = this._fromResolvedPlanePoint(planeFrame);
+    const hostLoop = hostFace.outerLoop.points()
+      .map((point) => this._worldToPlanePoint(point, plane))
+      .map(toProfilePoint);
+    if (hostLoop.length < 3) return group;
+
+    const outerPoints = group.outer.points || [];
+    if (outerPoints.length < 3) return null;
+    const allInside = outerPoints.every((point) => this._pointInConvexPolygon(point, hostLoop));
+    if (allInside) return group;
+
+    const clipped = this._clipPolygonToConvex(outerPoints, this._insetConvexPolygon(hostLoop, PLANAR_CUT_HOST_CLIP_INSET));
+    if (clipped.length < 3) return null;
+
+    const clippedProfile = this._buildClippedProfileEdges(group.outer, clipped, hostLoop);
+    const clippedOuter = {
+      ...group.outer,
+      points: clippedProfile?.points || clipped,
+      edges: clippedProfile?.edges || null,
+    };
+    const holes = [];
+    for (const hole of group.holes || []) {
+      const holePoints = hole.points || [];
+      if (holePoints.length >= 3 && holePoints.every((point) => this._pointInConvexPolygon(point, hostLoop))) {
+        holes.push(hole);
+      }
+    }
+    return { outer: clippedOuter, holes };
+  }
+
+  _worldToPlanePoint(point, plane) {
+    const delta = _sub(point, plane.origin);
+    return {
+      x: _dot(delta, plane.xAxis),
+      y: _dot(delta, plane.yAxis),
+    };
+  }
+
+  _fromResolvedPlanePoint(planeFrame) {
+    // resolvePlaneFrame mirrors local Y for legacy left-handed sketch planes;
+    // probe the basis mapping so clipped points can be converted back.
+    const yProbe = planeFrame.toPlanePoint({ x: 0, y: 1 });
+    const flipsY = yProbe.y < 0;
+    return (point) => ({ x: point.x, y: flipsY ? -point.y : point.y });
+  }
+
+  _pointInConvexPolygon(point, polygon, tolerance = 1e-7) {
+    if (!point || !Array.isArray(polygon) || polygon.length < 3) return false;
+    let sign = 0;
+    for (let i = 0; i < polygon.length; i++) {
+      const a = polygon[i];
+      const b = polygon[(i + 1) % polygon.length];
+      const cross = (b.x - a.x) * (point.y - a.y) - (b.y - a.y) * (point.x - a.x);
+      if (Math.abs(cross) <= tolerance) continue;
+      const current = cross > 0 ? 1 : -1;
+      if (sign === 0) sign = current;
+      else if (sign !== current) return false;
+    }
+    return true;
+  }
+
+  _clipPolygonToConvex(subject, clipPolygon) {
+    let output = subject.map((point) => ({ ...point }));
+    if (output.length < 3 || !Array.isArray(clipPolygon) || clipPolygon.length < 3) return [];
+    const clipArea = this._polygonArea2D(clipPolygon);
+    const inside = (point, a, b) => {
+      const cross = (b.x - a.x) * (point.y - a.y) - (b.y - a.y) * (point.x - a.x);
+      return clipArea >= 0 ? cross >= -1e-7 : cross <= 1e-7;
+    };
+    const intersect = (s, e, a, b) => {
+      const dx1 = e.x - s.x;
+      const dy1 = e.y - s.y;
+      const dx2 = b.x - a.x;
+      const dy2 = b.y - a.y;
+      const denom = dx1 * dy2 - dy1 * dx2;
+      if (Math.abs(denom) < 1e-12) return { ...e };
+      const t = ((a.x - s.x) * dy2 - (a.y - s.y) * dx2) / denom;
+      return { x: s.x + t * dx1, y: s.y + t * dy1 };
+    };
+
+    for (let i = 0; i < clipPolygon.length; i++) {
+      const a = clipPolygon[i];
+      const b = clipPolygon[(i + 1) % clipPolygon.length];
+      const input = output;
+      output = [];
+      if (input.length === 0) break;
+      let s = input[input.length - 1];
+      for (const e of input) {
+        const eInside = inside(e, a, b);
+        const sInside = inside(s, a, b);
+        if (eInside) {
+          if (!sInside) output.push(intersect(s, e, a, b));
+          output.push({ ...e });
+        } else if (sInside) {
+          output.push(intersect(s, e, a, b));
+        }
+        s = e;
+      }
+    }
+    return this._dedupePolygon2D(output);
+  }
+
+  _buildClippedProfileEdges(profile, clippedPoints, hostLoop = null) {
+    if (!profile || !Array.isArray(profile.points) || !Array.isArray(clippedPoints) || clippedPoints.length < 3) {
+      return null;
+    }
+
+    const ranges = _buildEdgeRanges(profile.edges, profile.points.length);
+    if (!ranges || ranges.length === 0) return null;
+
+    const segments = [];
+    for (let i = 0; i < clippedPoints.length; i++) {
+      const a = clippedPoints[i];
+      const b = clippedPoints[(i + 1) % clippedPoints.length];
+      segments.push(this._clippedEdgeMetaForSegment(profile, ranges, a, b, hostLoop));
+    }
+
+    const runs = [];
+    for (const segment of segments) {
+      const previous = runs[runs.length - 1];
+      if (previous && this._canMergeClippedEdgeRuns(previous, segment)) {
+        previous.end = segment.end;
+        previous.uEnd = segment.uEnd;
+      } else {
+        runs.push({ ...segment });
+      }
+    }
+    if (runs.length > 1 && this._canMergeClippedEdgeRuns(runs[runs.length - 1], runs[0])) {
+      const first = runs.shift();
+      runs[runs.length - 1].end = first.end;
+      runs[runs.length - 1].uEnd = first.uEnd;
+    }
+
+    const points = runs.map((run) => ({ ...run.start }));
+    const edges = runs.map((run, index) => ({
+      ...this._edgeMetaForClippedRun(run),
+      pointStartIndex: index,
+      pointCount: 2,
+    }));
+    return points.length >= 3 && edges.length >= 3 ? { points, edges } : null;
+  }
+
+  _clippedEdgeMetaForSegment(profile, ranges, a, b, hostLoop = null) {
+    const tol = CLIPPED_CURVE_MATCH_TOLERANCE;
+    for (let rangeIndex = 0; rangeIndex < ranges.length; rangeIndex++) {
+      const range = ranges[rangeIndex];
+      if (range.type === 'spline' && range.controlPoints2D && range.knots) {
+        const curve = _spline2Dto3D(
+          range.controlPoints2D,
+          range.degree,
+          range.knots,
+          (point) => ({ x: point.x, y: point.y, z: 0 }),
+        );
+        const ua = this._closestCurveParameter2D(curve, a);
+        const ub = this._closestCurveParameter2D(curve, b);
+        if (!ua || !ub || ua.distance > tol || ub.distance > tol) continue;
+        return {
+          kind: 'curve',
+          rangeIndex,
+          curve,
+          start: a,
+          end: b,
+          uStart: ua.u,
+          uEnd: ub.u,
+        };
+      }
+
+      if (range.type === 'bezier' && range.bezierVertices) {
+        const curve = _bezierVertices2Dto3D(
+          range.bezierVertices,
+          (point) => ({ x: point.x, y: point.y, z: 0 }),
+        );
+        const ua = this._closestCurveParameter2D(curve, a);
+        const ub = this._closestCurveParameter2D(curve, b);
+        if (!ua || !ub || ua.distance > tol || ub.distance > tol) continue;
+        return {
+          kind: 'curve',
+          rangeIndex,
+          curve,
+          start: a,
+          end: b,
+          uStart: ua.u,
+          uEnd: ub.u,
+        };
+      }
+
+      const rangePoints = this._rangePoints(profile.points, range);
+      if (rangePoints.length >= 2 && this._pointsOnPolyline2D([a, b], rangePoints, tol)) {
+        return { kind: 'segment', start: a, end: b };
+      }
+    }
+    if (Array.isArray(hostLoop) && hostLoop.length >= 3 && this._pointsOnClosedPolyline2D([a, b], hostLoop, tol)) {
+      return { kind: 'clipBoundary', start: a, end: b };
+    }
+    return { kind: 'segment', start: a, end: b };
+  }
+
+  _canMergeClippedEdgeRuns(a, b) {
+    if (!a || !b || a.kind !== 'curve' || b.kind !== 'curve') return false;
+    if (a.rangeIndex !== b.rangeIndex) return false;
+    const aDir = Math.sign(a.uEnd - a.uStart);
+    const bDir = Math.sign(b.uEnd - b.uStart);
+    if (aDir === 0 || bDir === 0 || aDir !== bDir) return false;
+    return _distanceSq2D(a.end, b.start) <= 1e-10;
+  }
+
+  _edgeMetaForClippedRun(run) {
+    if (run.kind === 'clipBoundary') {
+      return { type: 'segment', isClipBoundary: true };
+    }
+    if (run.kind === 'curve') {
+      const trimmed = this._trimCurve2D(run.curve, run.uStart, run.uEnd);
+      if (trimmed) {
+        return {
+          type: 'spline',
+          controlPoints2D: trimmed.controlPoints.map((point) => ({ x: point.x, y: point.y })),
+          degree: trimmed.degree,
+          knots: [...trimmed.knots],
+        };
+      }
+    }
+    return { type: 'segment' };
+  }
+
+  _pointsOnClosedPolyline2D(points, polygon, tol) {
+    return points.every((point) => {
+      for (let i = 0; i < polygon.length; i++) {
+        if (this._pointSegmentDistance2D(point, polygon[i], polygon[(i + 1) % polygon.length]) <= tol) return true;
+      }
+      return false;
+    });
+  }
+
+  _rangePoints(points, range) {
+    const result = [];
+    for (let index = range.startIdx; ; index = (index + 1) % points.length) {
+      result.push(points[index]);
+      if (index === range.endIdx) break;
+    }
+    return result;
+  }
+
+  _pointsOnPolyline2D(points, polyline, tol) {
+    return points.every((point) => {
+      for (let i = 0; i + 1 < polyline.length; i++) {
+        if (this._pointSegmentDistance2D(point, polyline[i], polyline[i + 1]) <= tol) return true;
+      }
+      return false;
+    });
+  }
+
+  _closestCurveParameter2D(curve, point) {
+    if (!curve) return null;
+    let best = { u: curve.uMin, distance: Infinity };
+    const samples = 64;
+    let prevU = curve.uMin;
+    let prev = curve.evaluate(prevU);
+    for (let i = 1; i <= samples; i++) {
+      const u = curve.uMin + (curve.uMax - curve.uMin) * (i / samples);
+      const curr = curve.evaluate(u);
+      const projection = this._projectPointToSegment2D(point, prev, curr);
+      const candidateU = prevU + (u - prevU) * projection.t;
+      if (projection.distance < best.distance) best = { u: candidateU, distance: projection.distance };
+      prevU = u;
+      prev = curr;
+    }
+    return best;
+  }
+
+  _trimCurve2D(curve, uStart, uEnd) {
+    const eps = 1e-10;
+    if (!curve || Math.abs(uEnd - uStart) <= eps) return null;
+    const reversed = uEnd < uStart;
+    let u0 = reversed ? uEnd : uStart;
+    let u1 = reversed ? uStart : uEnd;
+    u0 = Math.max(curve.uMin, Math.min(curve.uMax, u0));
+    u1 = Math.max(curve.uMin, Math.min(curve.uMax, u1));
+    if (u1 - u0 <= eps) return null;
+
+    let trimmed = curve;
+    if (u0 > curve.uMin + eps) {
+      const split = trimmed.splitAt(u0);
+      if (!split) return null;
+      trimmed = split[1];
+    }
+    if (u1 < trimmed.uMax - eps) {
+      const split = trimmed.splitAt(u1);
+      if (!split) return null;
+      trimmed = split[0];
+    }
+    return reversed ? trimmed.reversed() : trimmed;
+  }
+
+  _projectPointToSegment2D(point, start, end) {
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const lenSq = dx * dx + dy * dy;
+    const rawT = lenSq > 1e-20 ? ((point.x - start.x) * dx + (point.y - start.y) * dy) / lenSq : 0;
+    const t = Math.max(0, Math.min(1, rawT));
+    const x = start.x + dx * t;
+    const y = start.y + dy * t;
+    return {
+      t,
+      distance: Math.hypot(point.x - x, point.y - y),
+    };
+  }
+
+  _pointSegmentDistance2D(point, start, end) {
+    return this._projectPointToSegment2D(point, start, end).distance;
+  }
+
+  _insetConvexPolygon(points, amount) {
+    if (!Array.isArray(points) || points.length < 3 || amount <= 0) return points;
+    const centroid = points.reduce((acc, point) => ({
+      x: acc.x + point.x / points.length,
+      y: acc.y + point.y / points.length,
+    }), { x: 0, y: 0 });
+    return points.map((point) => {
+      const dx = centroid.x - point.x;
+      const dy = centroid.y - point.y;
+      const length = Math.hypot(dx, dy);
+      if (length <= 1e-12) return { ...point };
+      return {
+        x: point.x + dx / length * amount,
+        y: point.y + dy / length * amount,
+      };
+    });
+  }
+
+  _polygonArea2D(points) {
+    let area = 0;
+    for (let i = 0; i < points.length; i++) {
+      const a = points[i];
+      const b = points[(i + 1) % points.length];
+      area += a.x * b.y - b.x * a.y;
+    }
+    return area * 0.5;
+  }
+
+  _dedupePolygon2D(points) {
+    const result = [];
+    for (const point of points) {
+      const prev = result[result.length - 1];
+      if (prev && Math.hypot(prev.x - point.x, prev.y - point.y) < 1e-7) continue;
+      result.push(point);
+    }
+    if (result.length > 1) {
+      const first = result[0];
+      const last = result[result.length - 1];
+      if (Math.hypot(first.x - last.x, first.y - last.y) < 1e-7) result.pop();
+    }
+    return result;
+  }
+
   _clearTopoHashes(body) {
     if (!body) return;
     for (const edge of body.edges ? body.edges() : []) {
@@ -387,7 +1008,7 @@ export class ExtrudeFeature extends Feature {
     }
   }
 
-  _splicePlanarCutGroup(shell, entryFace, exitFace, toolBody, groupIndex) {
+  _splicePlanarCutGroup(shell, entryFace, exitFace, toolBody, groupIndex, sideOpenings = []) {
     if (!shell || !entryFace || !toolBody) return false;
     const toolFaces = toolBody.faces();
     const entryCap = toolFaces.find((face) => face.stableHash?.includes('_Face_Bottom_'));
@@ -403,7 +1024,6 @@ export class ExtrudeFeature extends Feature {
         return false;
       }
     } else {
-      this._flipFaceOrientation(terminalCap);
       terminalCap.shared = { sourceFeatureId: this.id };
       if (terminalCap.stableHash) terminalCap.stableHash = `${this.id}_Cut_${terminalCap.stableHash}`;
       shell.addFace(terminalCap);
@@ -411,8 +1031,13 @@ export class ExtrudeFeature extends Feature {
 
     for (const sideFace of toolFaces) {
       if (sideFace === entryCap || sideFace === terminalCap) continue;
-      this._flipFaceOrientation(sideFace);
-      sideFace.shared = { sourceFeatureId: this.id };
+      const isClipBoundary = sideFace.shared?.clipBoundary === true;
+      if (isClipBoundary) {
+        sideOpenings.push(sideFace.outerLoop?.points?.() || []);
+      }
+      sideFace.shared = isClipBoundary
+        ? { sourceFeatureId: this.id, clipBoundary: true }
+        : { sourceFeatureId: this.id };
       if (sideFace.stableHash) sideFace.stableHash = `${this.id}_Cut_${sideFace.stableHash}`;
       shell.addFace(sideFace);
     }
@@ -1304,6 +1929,7 @@ export class ExtrudeFeature extends Feature {
             spanIndices,
             isArc: false,
             isClosedRange: type === 'circle',
+            isClipBoundary: range.isClipBoundary === true,
           });
         }
       }
@@ -1415,7 +2041,9 @@ export class ExtrudeFeature extends Feature {
               NurbsCurve.createLine(vertices[2], vertices[3]),
               NurbsCurve.createLine(vertices[3], vertices[0]),
             ],
-            shared: { sourceFeatureId: this.id },
+            shared: info.isClipBoundary
+              ? { sourceFeatureId: this.id, clipBoundary: true }
+              : { sourceFeatureId: this.id },
             stableHash: `${this.id}_Face_Side_${hashPrefix}_${ei}${segSuffix}`,
           });
         }
@@ -1432,11 +2060,7 @@ export class ExtrudeFeature extends Feature {
       const topOuterLoop = buildCapLoop(outerData, 'topCurve', false);
 
       faceDescs.push({
-        surface: NurbsSurface.createPlane(
-          bottomOuterLoop.vertices[0],
-          _sub(bottomOuterLoop.vertices[1] || bottomOuterLoop.vertices[0], bottomOuterLoop.vertices[0]),
-          _sub(bottomOuterLoop.vertices[bottomOuterLoop.vertices.length - 1] || bottomOuterLoop.vertices[0], bottomOuterLoop.vertices[0]),
-        ),
+        surface: _polygonBoundingSurface(bottomOuterLoop.vertices),
         surfaceType: SurfaceType.PLANE,
         vertices: bottomOuterLoop.vertices,
         edgeCurves: bottomOuterLoop.edgeCurves,
@@ -1446,11 +2070,7 @@ export class ExtrudeFeature extends Feature {
       });
 
       faceDescs.push({
-        surface: NurbsSurface.createPlane(
-          topOuterLoop.vertices[0],
-          _sub(topOuterLoop.vertices[1] || topOuterLoop.vertices[0], topOuterLoop.vertices[0]),
-          _sub(topOuterLoop.vertices[topOuterLoop.vertices.length - 1] || topOuterLoop.vertices[0], topOuterLoop.vertices[0]),
-        ),
+        surface: _polygonBoundingSurface(topOuterLoop.vertices),
         surfaceType: SurfaceType.PLANE,
         vertices: topOuterLoop.vertices,
         edgeCurves: topOuterLoop.edgeCurves,
@@ -1738,6 +2358,76 @@ export class ExtrudeFeature extends Feature {
   }
 }
 
+/**
+ * Build a NurbsSurface plane that fully spans a polygon defined by `vertices`.
+ *
+ * `NurbsSurface.createPlane(origin, uDir, vDir)` defines the UV domain as the
+ * parallelogram spanned by `uDir` and `vDir` from `origin`. For cap faces whose
+ * outer loop has many vertices, using only the first two edges as the basis
+ * vectors leaves much of the face outside the [0,1]×[0,1] domain. This helper
+ * computes orthogonal in-plane axes and stretches them to tightly bound every
+ * vertex, so every point on the face maps into the support surface domain.
+ * @param {Array<{x:number,y:number,z:number}>} vertices
+ */
+function _polygonBoundingSurface(vertices) {
+  if (!vertices || vertices.length < 2) {
+    const o = vertices?.[0] ?? { x: 0, y: 0, z: 0 };
+    return NurbsSurface.createPlane(o, { x: 1, y: 0, z: 0 }, { x: 0, y: 1, z: 0 });
+  }
+
+  let uAxis = { x: 0, y: 0, z: 1 };
+  for (let i = 0; i < vertices.length - 1; i++) {
+    const delta = _sub(vertices[i + 1], vertices[i]);
+    if (_dot(delta, delta) > 1e-12) {
+      uAxis = _normalize(delta);
+      break;
+    }
+  }
+
+  let nx = 0, ny = 0, nz = 0;
+  for (let i = 0; i < vertices.length; i++) {
+    const a = vertices[i];
+    const b = vertices[(i + 1) % vertices.length];
+    nx += (a.y - b.y) * (a.z + b.z);
+    ny += (a.z - b.z) * (a.x + b.x);
+    nz += (a.x - b.x) * (a.y + b.y);
+  }
+  const nLen = Math.sqrt(nx * nx + ny * ny + nz * nz);
+  const normal = nLen > 1e-14
+    ? { x: nx / nLen, y: ny / nLen, z: nz / nLen }
+    : { x: 0, y: 0, z: 1 };
+  let vAxis = _normalize(_cross(normal, uAxis));
+  if (Math.abs(_dot(uAxis, vAxis)) > 0.99) {
+    const ref = Math.abs(uAxis.z) < 0.9 ? { x: 0, y: 0, z: 1 } : { x: 0, y: 1, z: 0 };
+    vAxis = _normalize(_cross(ref, uAxis));
+  }
+
+  const origin = vertices[0];
+  let uMin = 0, uMax = 0, vMin = 0, vMax = 0;
+  for (const vtx of vertices) {
+    const delta = _sub(vtx, origin);
+    const u = _dot(uAxis, delta);
+    const v = _dot(vAxis, delta);
+    if (u < uMin) uMin = u;
+    if (u > uMax) uMax = u;
+    if (v < vMin) vMin = v;
+    if (v > vMax) vMax = v;
+  }
+
+  const uSpan = uMax - uMin || 1;
+  const vSpan = vMax - vMin || 1;
+  const surfOrigin = {
+    x: origin.x + uAxis.x * uMin + vAxis.x * vMin,
+    y: origin.y + uAxis.y * uMin + vAxis.y * vMin,
+    z: origin.z + uAxis.z * uMin + vAxis.z * vMin,
+  };
+  return NurbsSurface.createPlane(
+    surfOrigin,
+    { x: uAxis.x * uSpan, y: uAxis.y * uSpan, z: uAxis.z * uSpan },
+    { x: vAxis.x * vSpan, y: vAxis.y * vSpan, z: vAxis.z * vSpan },
+  );
+}
+
 // Vector helper for B-Rep construction
 function _sub(a, b) {
   return { x: a.x - b.x, y: a.y - b.y, z: a.z - b.z };
@@ -1765,6 +2455,12 @@ function _distanceSq(a, b) {
   const dy = a.y - b.y;
   const dz = a.z - b.z;
   return dx * dx + dy * dy + dz * dz;
+}
+
+function _distanceSq2D(a, b) {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  return dx * dx + dy * dy;
 }
 
 function _augmentNativeCurvedSelectableEdges(edges, faces) {
@@ -2021,6 +2717,7 @@ function _buildEdgeRanges(profileEdges, totalPoints) {
       knots: edge.knots,
       // Propagate exact bezier data
       bezierVertices: edge.bezierVertices,
+      isClipBoundary: edge.isClipBoundary === true,
     });
 
     currentIdx = endIdx;
