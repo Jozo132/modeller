@@ -12,6 +12,7 @@ import { constrainedTriangulate } from './Tessellator2/CDT.js';
 import { tessellateBody } from './Tessellation.js';
 import { chainEdgePaths } from './toolkit/EdgePathUtils.js';
 import { tryBuildNativeExtrude } from './wasm/NativeExtrude.js';
+import { tryBuildOcctExtrudeGeometrySync } from './occt/OcctSketchModeling.js';
 import { NurbsCurve } from './NurbsCurve.js';
 import { NurbsSurface } from './NurbsSurface.js';
 import {
@@ -78,9 +79,10 @@ export class ExtrudeFeature extends Feature {
     let solid = this.getPreviousSolid(context);
 
     const profileGroups = this.groupProfilesForExtrusion(profiles);
+    const allowOcctModeling = this.operation === 'new' && profileGroups.length === 1;
 
     const profileGeometries = profileGroups.map((group) =>
-      this.generateGeometry([group.outer], plane, group.holes));
+      this.generateGeometry([group.outer], plane, group.holes, { allowOcctModeling }));
 
     if (solid && this.operation === 'subtract') {
       const directCut = this._tryApplyPlanarThroughCut(solid, profileGroups, plane)
@@ -166,10 +168,15 @@ export class ExtrudeFeature extends Feature {
           if (!f.shared) f.shared = { sourceFeatureId: this.id };
         }
         const edgeResult = computeFeatureEdges(geometry.faces);
+        const useOcctEdges = geometry._occtModeling?.authoritative === true
+          && Array.isArray(geometry.edges)
+          && geometry.edges.length > 0;
         geometry.edges = geometry.nativeExtrude
           ? _augmentNativeCurvedSelectableEdges(edgeResult.edges, geometry.faces)
-          : edgeResult.edges;
-        geometry.paths = geometry.nativeExtrude ? chainEdgePaths(geometry.edges) : edgeResult.paths;
+          : useOcctEdges
+            ? geometry.edges
+            : edgeResult.edges;
+        geometry.paths = geometry.nativeExtrude || useOcctEdges ? chainEdgePaths(geometry.edges) : edgeResult.paths;
         geometry.visualEdges = edgeResult.visualEdges;
       }
       return { geometry };
@@ -1397,6 +1404,22 @@ export class ExtrudeFeature extends Feature {
       geometry.topoBody = null;
     }
 
+    const occtGeometry = options.allowOcctModeling === true
+      ? tryBuildOcctExtrudeGeometrySync({
+        profile: profiles[0] || null,
+        plane,
+        distance: effectiveDistance,
+        direction: this.direction,
+        symmetric: this.symmetric,
+        extrudeType: this.extrudeType,
+        taper: this.taper,
+        holes,
+        topoBody: geometry.topoBody,
+        sketchToWorld: (point, planeDef) => this.sketchToWorld(point, planeDef),
+      })
+      : null;
+    if (occtGeometry) return occtGeometry;
+
     const nativeGeometry = this._tryBuildNativeExtrudeGeometry(
       profiles,
       resolvedPlane,
@@ -2218,10 +2241,15 @@ export class ExtrudeFeature extends Feature {
         }
         // Compute feature edges and face groups for the initial geometry
         const edgeResult = computeFeatureEdges(geometry.faces);
+        const useOcctEdges = geometry._occtModeling?.authoritative === true
+          && Array.isArray(geometry.edges)
+          && geometry.edges.length > 0;
         geometry.edges = geometry.nativeExtrude
           ? _augmentNativeCurvedSelectableEdges(edgeResult.edges, geometry.faces)
-          : edgeResult.edges;
-        geometry.paths = geometry.nativeExtrude ? chainEdgePaths(geometry.edges) : edgeResult.paths;
+          : useOcctEdges
+            ? geometry.edges
+            : edgeResult.edges;
+        geometry.paths = geometry.nativeExtrude || useOcctEdges ? chainEdgePaths(geometry.edges) : edgeResult.paths;
         geometry.visualEdges = edgeResult.visualEdges;
       }
       return { geometry };

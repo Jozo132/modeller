@@ -83,6 +83,24 @@ const FLAG_DEFS = [
     defaultValue: '',
     description: 'Directory path for writing diagnostic JSON files (empty = disabled).',
   },
+  {
+    name: 'CAD_USE_OCCT_STEP_SHADOW',
+    type: 'boolean',
+    defaultValue: false,
+    description: 'Run the optional OCCT STEP import shadow path when the OCCT module has been preloaded.',
+  },
+  {
+    name: 'CAD_USE_OCCT_BOOLEAN_SHADOW',
+    type: 'boolean',
+    defaultValue: false,
+    description: 'Run the optional OCCT boolean shadow path when the OCCT module has been preloaded.',
+  },
+  {
+    name: 'CAD_USE_OCCT_SKETCH_SOLIDS',
+    type: 'boolean',
+    defaultValue: false,
+    description: 'Use OCCT as the authoritative builder for supported sketch-to-solid features after the sketch interface.',
+  },
 ];
 
 // ── Runtime state ───────────────────────────────────────────────────

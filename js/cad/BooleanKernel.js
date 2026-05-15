@@ -44,6 +44,14 @@ import { meshBooleanOp } from './fallback/MeshBoolean.js';
 import { warnOnceForFallback, FallbackKind } from './fallback/warnOnce.js';
 import { validateBooleanResult } from './BooleanInvariantValidator.js';
 import { getFlag } from '../featureFlags.js';
+import {
+  buildOcctBooleanShadowSync,
+  ensureOcctBooleanShadowReady as _ensureOcctBooleanShadowReady,
+} from './occt/OcctBooleanShadow.js';
+
+export async function ensureOcctBooleanShadowReady(opts = {}) {
+  return _ensureOcctBooleanShadowReady(opts);
+}
 
 /**
  * Perform an exact boolean operation on two TopoBody operands.
@@ -76,12 +84,12 @@ export function exactBooleanOp(bodyA, bodyB, operation, tol = DEFAULT_TOLERANCE,
   const policy = resolvePolicy(opts.policy);
 
   if (policy === OperationPolicy.FORCE_FALLBACK) {
-    return _runDiscreteFallback(bodyA, bodyB, operation, tol, {
+    return _finalizeBooleanResultWithOcctShadow(bodyA, bodyB, operation, _runDiscreteFallback(bodyA, bodyB, operation, tol, {
       policy,
       triggerReason: 'policy_force_fallback',
       failingStage: 'policy',
       reason: 'explicit force-fallback policy requested discrete boolean lane',
-    });
+    }), opts);
   }
 
   try {
@@ -89,13 +97,13 @@ export function exactBooleanOp(bodyA, bodyB, operation, tol = DEFAULT_TOLERANCE,
     const fallbackDecision = evaluateExactResult(result.diagnostics);
     if (fallbackDecision.shouldFallback) {
       if (shouldTriggerFallback(fallbackDecision.trigger, { policy })) {
-        return _runDiscreteFallback(bodyA, bodyB, operation, tol, {
+        return _finalizeBooleanResultWithOcctShadow(bodyA, bodyB, operation, _runDiscreteFallback(bodyA, bodyB, operation, tol, {
           policy,
           triggerReason: fallbackDecision.trigger,
           failingStage: fallbackDecision.stage,
           exactDiagnostics: result.diagnostics,
           reason: `exact boolean diagnostics triggered discrete fallback at ${fallbackDecision.stage}`,
-        });
+        }), opts);
       }
       const error = new Error(
         `Exact boolean produced invalid ${fallbackDecision.stage}; fallback disabled by policy=${policy}`
@@ -103,12 +111,18 @@ export function exactBooleanOp(bodyA, bodyB, operation, tol = DEFAULT_TOLERANCE,
       error.diagnostics = result.diagnostics;
       throw error;
     }
-    return wrapResult(result, ResultGrade.EXACT, FallbackDiagnostics.exact(result.diagnostics));
+    return _finalizeBooleanResultWithOcctShadow(
+      bodyA,
+      bodyB,
+      operation,
+      wrapResult(result, ResultGrade.EXACT, FallbackDiagnostics.exact(result.diagnostics)),
+      opts,
+    );
   } catch (error) {
     if (!shouldTriggerFallback(FallbackTrigger.UNCAUGHT_EXCEPTION, { policy })) {
       throw error;
     }
-    return _runDiscreteFallback(bodyA, bodyB, operation, tol, {
+    return _finalizeBooleanResultWithOcctShadow(bodyA, bodyB, operation, _runDiscreteFallback(bodyA, bodyB, operation, tol, {
       policy,
       triggerReason: FallbackTrigger.UNCAUGHT_EXCEPTION,
       failingStage: 'exact_pipeline',
@@ -116,8 +130,28 @@ export function exactBooleanOp(bodyA, bodyB, operation, tol = DEFAULT_TOLERANCE,
       reason: error?.message
         ? `exact boolean threw before completion: ${error.message}`
         : 'exact boolean threw before producing diagnostics',
-    });
+    }), opts);
   }
+}
+
+function _finalizeBooleanResultWithOcctShadow(bodyA, bodyB, operation, result, opts) {
+  const shadow = buildOcctBooleanShadowSync(bodyA, bodyB, operation, result, opts);
+  if (!shadow) return result;
+
+  result._occtShadow = shadow;
+  if (result.diagnostics && typeof result.diagnostics === 'object' && !Array.isArray(result.diagnostics)) {
+    result.diagnostics.occtShadow = {
+      ok: shadow.ok,
+      ready: shadow.ready,
+      operation: shadow.operation,
+      valid: shadow.valid ?? null,
+      skippedReason: shadow.skippedReason ?? null,
+      error: shadow.error ?? null,
+      timings: shadow.timings ?? null,
+      summary: shadow.summary ?? null,
+    };
+  }
+  return result;
 }
 
 function _runDiscreteFallback(bodyA, bodyB, operation, tol, opts = {}) {

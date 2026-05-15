@@ -9,6 +9,8 @@ import { resolveSketchRevolveAxis } from './SketchFeature.js';
 import { booleanOp } from './BooleanDispatch.js';
 import { computeFeatureEdges } from './EdgeAnalysis.js';
 import { calculateMeshVolume, calculateBoundingBox } from './toolkit/MeshAnalysis.js';
+import { chainEdgePaths } from './toolkit/EdgePathUtils.js';
+import { tryBuildOcctRevolveGeometrySync } from './occt/OcctSketchModeling.js';
 import { NurbsCurve } from './NurbsCurve.js';
 import { NurbsSurface } from './NurbsSurface.js';
 import {
@@ -69,6 +71,7 @@ export class RevolveFeature extends Feature {
     }
 
     this._refreshAxisFromSketch(sketch);
+    const allowOcctModeling = this.operation === 'new' && profiles.length === 1;
     
     // Get the current solid (if any)
     let solid = this.getPreviousSolid(context);
@@ -76,7 +79,7 @@ export class RevolveFeature extends Feature {
     // Process each profile individually so multi-body sketches each get
     // a proper boolean operation against the accumulating solid.
     for (let pi = 0; pi < profiles.length; pi++) {
-      const bodyGeom = this.generateGeometry([profiles[pi]], plane);
+      const bodyGeom = this.generateGeometry([profiles[pi]], plane, { allowOcctModeling });
       if (pi === 0) {
         solid = this.applyOperation(solid, bodyGeom);
       } else {
@@ -99,9 +102,10 @@ export class RevolveFeature extends Feature {
    * Generate 3D geometry from sketch profiles by revolution.
    * @param {Array} profiles - Sketch profiles to revolve
    * @param {Object} plane - Sketch plane definition
+   * @param {Object} options - Generation options
    * @returns {Object} 3D geometry data
    */
-  generateGeometry(profiles, plane) {
+  generateGeometry(profiles, plane, options = {}) {
     const geometry = {
       vertices: [],
       faces: [],
@@ -178,6 +182,20 @@ export class RevolveFeature extends Feature {
     } catch (_) {
       geometry.topoBody = null;
     }
+
+    const occtGeometry = options.allowOcctModeling === true
+      ? tryBuildOcctRevolveGeometrySync({
+        profile: profiles[0] || null,
+        plane,
+        angleRadians: this.angle,
+        axisOrigin: this.axis.origin,
+        axisDirection: this.getNormalizedAxisDirection2D(),
+        topoBody: geometry.topoBody,
+        sketchToWorld: (point, planeDef) => this.sketchToWorld(point, planeDef),
+        sketchVectorToWorld: (vector, planeDef) => this.sketchVectorToWorld(vector, planeDef),
+      })
+      : null;
+    if (occtGeometry) return occtGeometry;
 
     return geometry;
   }
@@ -1147,8 +1165,11 @@ export class RevolveFeature extends Feature {
       // Compute feature edges and face groups for the initial geometry
       if (geometry && geometry.faces) {
         const edgeResult = computeFeatureEdges(geometry.faces);
-        geometry.edges = edgeResult.edges;
-        geometry.paths = edgeResult.paths;
+        const useOcctEdges = geometry._occtModeling?.authoritative === true
+          && Array.isArray(geometry.edges)
+          && geometry.edges.length > 0;
+        geometry.edges = useOcctEdges ? geometry.edges : edgeResult.edges;
+        geometry.paths = useOcctEdges ? chainEdgePaths(geometry.edges) : edgeResult.paths;
         geometry.visualEdges = edgeResult.visualEdges;
       }
       return { geometry };

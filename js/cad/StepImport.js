@@ -33,6 +33,7 @@ import {
   stepTopologyReadySync as _stepTopologyReadySync,
   importStepNativeSync as _importStepNativeSync,
 } from './StepTopologyWasm.js';
+import { buildOcctStepShadowSync, ensureOcctStepShadowReady as _ensureOcctStepShadowReady, isOcctStepShadowEnabled } from './occt/OcctStepShadow.js';
 
 // Re-export for callers that need to pre-load WASM before sync importSTEP.
 // The UI calls this before StepImportFeature executes synchronously, so it
@@ -43,6 +44,10 @@ export async function ensureWasmReady() {
     try { await _ensureStepTopologyReady(); } catch (_err) { /* non-fatal */ }
   }
   return ready;
+}
+
+export async function ensureOcctStepShadowReady(opts = {}) {
+  return _ensureOcctStepShadowReady(opts);
 }
 
 // Native STEP→topology→mesh pipeline (Stage F).  Default ON — override
@@ -422,6 +427,7 @@ export function importSTEP(stepString, opts = {}) {
   const timings = {};
   const totalStart = _now();
   let body = null;
+  const finalizeResult = (result) => _finalizeStepImportResult(stepString, result, opts);
 
   // Stage F fast path: native STEP→WASM topology + tessellation.  Zero
   // JS TopoBody allocation on the hot path; the legacy path still runs
@@ -450,7 +456,7 @@ export function importSTEP(stepString, opts = {}) {
         timings.faceCount = native.faceCount;
         timings.meshVertexCount = native.vertices.length;
         timings.meshFaceCount = native.faces.length;
-        return { body: null, vertices: native.vertices, faces: native.faces, timings };
+        return finalizeResult({ body: null, vertices: native.vertices, faces: native.faces, timings });
       }
 
       // We still build a JS TopoBody because downstream code (bounds,
@@ -467,7 +473,7 @@ export function importSTEP(stepString, opts = {}) {
         timings.faceCount = body.faces().length;
         timings.meshVertexCount = native.vertices.length;
         timings.meshFaceCount = native.faces.length;
-        return { body, vertices: native.vertices, faces: native.faces, timings };
+        return finalizeResult({ body, vertices: native.vertices, faces: native.faces, timings });
       }
       timings.nativeRejectedReason = rejectReason;
     }
@@ -563,7 +569,23 @@ export function importSTEP(stepString, opts = {}) {
   timings.meshVertexCount = mesh.vertices.length;
   timings.meshFaceCount = mesh.faces.length;
 
-  return { body, vertices: mesh.vertices, faces: mesh.faces, timings };
+  return finalizeResult({ body, vertices: mesh.vertices, faces: mesh.faces, timings });
+}
+
+function _finalizeStepImportResult(stepString, result, opts) {
+  const shadow = buildOcctStepShadowSync(stepString, result, opts);
+  if (!shadow) return result;
+
+  result._occtShadow = shadow;
+  const timings = result.timings || (result.timings = {});
+  if (shadow.timings?.importMs != null) timings.occtShadowImportMs = shadow.timings.importMs;
+  if (shadow.timings?.topologyMs != null) timings.occtShadowTopologyMs = shadow.timings.topologyMs;
+  if (shadow.timings?.tessellateMs != null) timings.occtShadowTessellateMs = shadow.timings.tessellateMs;
+  if (shadow.timings?.totalMs != null) timings.occtShadowTotalMs = shadow.timings.totalMs;
+  if (shadow.skippedReason) timings.occtShadowSkippedReason = shadow.skippedReason;
+  if (shadow.error?.message) timings.occtShadowError = shadow.error.message;
+  if (shadow.topology?.faceCount != null) timings.occtShadowFaceCount = shadow.topology.faceCount;
+  return result;
 }
 
 function _stampMeshTopoFaceIds(body, mesh) {
@@ -1250,6 +1272,9 @@ export async function importSTEPAsync(stepString, opts = {}) {
   await _ensureWasmReady();
   if (_nativePipelineEnabled()) {
     try { await _ensureStepTopologyReady(); } catch (_err) { /* non-fatal */ }
+  }
+  if (isOcctStepShadowEnabled(opts)) {
+    try { await _ensureOcctStepShadowReady(opts); } catch (_err) { /* non-fatal */ }
   }
   return importSTEP(stepString, opts);
 }

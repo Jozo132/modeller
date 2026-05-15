@@ -8,6 +8,7 @@
 import { Feature } from './Feature.js';
 import { arrayBufferToBase64, base64ToArrayBuffer } from './CbrepEncoding.js';
 import { DirtyFaceTracker, stampDirtyFieldsOnResult } from './DirtyFaceTracker.js';
+import { disposeOcctSketchModelingShape } from './occt/OcctSketchModeling.js';
 import { canonicalize } from '../../packages/ir/canonicalize.js';
 import { writeCbrep } from '../../packages/ir/writer.js';
 import { hashCbrep } from '../../packages/ir/hash.js';
@@ -550,6 +551,12 @@ export class FeatureTree {
         this._handleToFeatureId.delete(oldResult.wasmHandleId);
         oldResult.wasmHandleId = 0;
       }
+    }
+    const occtHandle = oldResult.occtShapeHandle || oldResult.geometry?.occtShapeHandle || 0;
+    if (occtHandle) {
+      disposeOcctSketchModelingShape(occtHandle);
+      oldResult.occtShapeHandle = 0;
+      if (oldResult.geometry) oldResult.geometry.occtShapeHandle = 0;
     }
     if (featureId && this._residencyManager) {
       this._residencyManager.remove(featureId);

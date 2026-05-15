@@ -60,6 +60,9 @@
     "test:nist-step:gate": "node tests/test-step-import-nist.js --regression-gate --allow-failures",
     "test:nist-step:scorecard": "node tests/test-step-import-nist.js --write-scorecard tests/step-import-nist-scorecard.md --allow-failures",
     "test:nist-step:roundtrip": "node tests/test-step-roundtrip-nist.js",
+    "test:occt": "node tests/test-occt-feasibility.js",
+    "test:occt:boolean-shadow": "node tests/test-occt-boolean-shadow.js",
+    "test:occt:step-shadow": "node tests/test-occt-step-shadow.js",
     "test:e2e": "npx playwright test",
     "download": "node tests/download-public-nist-samples.js",
     "report:nurbs-variants": "node tests/report-nurbs-variants.js"
@@ -111,6 +114,9 @@
     },
     "./workers": {
       "import": "./js/workers/index.js"
+    },
+    "./occt": {
+      "import": "./js/cad/occt/index.js"
     },
     "./telemetry": {
       "import": "./js/telemetry.js"

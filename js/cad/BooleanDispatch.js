@@ -197,7 +197,16 @@ export function booleanOp(geomA, geomB, operation, sharedA = null, sharedB = nul
   if (geomA && geomA.topoBody && geomB && geomB.topoBody &&
       hasExactTopology(geomA.topoBody) && hasExactTopology(geomB.topoBody)) {
     const opName = (operation === 'add') ? 'union' : operation;
-    const { body, mesh } = exactBooleanOp(geomA.topoBody, geomB.topoBody, opName);
+    const result = exactBooleanOp(geomA.topoBody, geomB.topoBody, opName);
+    const {
+      body,
+      mesh,
+      diagnostics,
+      resultGrade,
+      _isFallback,
+      fallbackDiagnostics,
+      _occtShadow,
+    } = result;
     const displayFaces = _compactExactPlanarDisplayFaces(mesh.faces || []);
     const displayMesh = {
       ...mesh,
@@ -210,6 +219,11 @@ export function booleanOp(geomA, geomB, operation, sharedA = null, sharedB = nul
       paths: edgeResult.paths,
       visualEdges: edgeResult.visualEdges,
       topoBody: body,
+      diagnostics,
+      resultGrade,
+      _isFallback,
+      fallbackDiagnostics,
+      _occtShadow,
     };
   }
 

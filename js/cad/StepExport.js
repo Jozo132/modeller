@@ -85,7 +85,7 @@ export function exportSTEPDetailed(body, opts = {}) {
   // Write body
   if (body && body.shells.length > 0) {
     _measureStepExportPhase(timings, 'writeBodyMs', 'step:export:write-body', () => {
-      _writeBody(writer, body);
+      _writeBody(writer, body, { filename });
     });
   }
 
@@ -168,9 +168,10 @@ class StepWriter {
 /**
  * Write a complete body to STEP.
  */
-function _writeBody(writer, body) {
+function _writeBody(writer, body, opts = {}) {
   // Write geometric context
   const ctxId = _writeGeometricContext(writer);
+  const paramCtxId = _writeParametricContext(writer);
 
   // Write all vertices first
   const vertexIds = new Map();
@@ -181,10 +182,18 @@ function _writeBody(writer, body) {
     vertexIds.set(v.id, vpId);
   }
 
+  // Precompute support surfaces so shared edge curves can emit per-face p-curves.
+  const surfaceIds = new Map();
+  for (const shell of body.shells) {
+    for (const face of shell.faces) {
+      surfaceIds.set(face.id, _writeSurface(writer, face));
+    }
+  }
+
   // Write all edges
   const edgeIds = new Map();
   for (const e of body.edges()) {
-    const curveId = _writeEdgeCurve(writer, e);
+    const curveId = _writeEdgeCurve(writer, e, { surfaceIds, paramCtxId });
     const svId = vertexIds.get(e.startVertex.id);
     const evId = vertexIds.get(e.endVertex.id);
     const ecId = writer.newId();
@@ -198,7 +207,7 @@ function _writeBody(writer, body) {
     const faceIds = [];
 
     for (const face of shell.faces) {
-      const faceId = _writeFace(writer, face, edgeIds, vertexIds);
+      const faceId = _writeFace(writer, face, edgeIds, surfaceIds);
       faceIds.push(faceId);
     }
 
@@ -212,15 +221,55 @@ function _writeBody(writer, body) {
   if (shellIds.length > 0) {
     const brepId = writer.newId();
     writer.addEntity(brepId, `MANIFOLD_SOLID_BREP('',#${shellIds[0]})`);
+    _writeShapeDefinition(writer, ctxId, brepId, opts.filename);
   }
+}
+
+function _writeShapeDefinition(writer, ctxId, brepId, filename) {
+  const appCtxId = writer.newId();
+  writer.addEntity(appCtxId, `APPLICATION_CONTEXT('core data for automotive mechanical design processes')`);
+
+  const appProtoId = writer.newId();
+  writer.addEntity(appProtoId,
+    `APPLICATION_PROTOCOL_DEFINITION('international standard','automotive_design',2000,#${appCtxId})`);
+
+  const productCtxId = writer.newId();
+  writer.addEntity(productCtxId, `PRODUCT_CONTEXT('',#${appCtxId},'mechanical')`);
+
+  const productName = _stepString(filename || 'Body');
+  const productId = writer.newId();
+  writer.addEntity(productId, `PRODUCT('${productName}','${productName}','',(#${productCtxId}))`);
+
+  const formationId = writer.newId();
+  writer.addEntity(formationId, `PRODUCT_DEFINITION_FORMATION('','',#${productId})`);
+
+  const defContextId = writer.newId();
+  writer.addEntity(defContextId, `PRODUCT_DEFINITION_CONTEXT('part definition',#${appCtxId},'design')`);
+
+  const defId = writer.newId();
+  writer.addEntity(defId, `PRODUCT_DEFINITION('design','',#${formationId},#${defContextId})`);
+
+  const defShapeId = writer.newId();
+  writer.addEntity(defShapeId, `PRODUCT_DEFINITION_SHAPE('','',#${defId})`);
+
+  const originId = _writeCartesianPoint(writer, { x: 0, y: 0, z: 0 });
+  const axisDirId = _writeDirection(writer, { x: 0, y: 0, z: 1 });
+  const refDirId = _writeDirection(writer, { x: 1, y: 0, z: 0 });
+  const axisId = writer.newId();
+  writer.addEntity(axisId, `AXIS2_PLACEMENT_3D('',#${originId},#${axisDirId},#${refDirId})`);
+
+  const repId = writer.newId();
+  writer.addEntity(repId, `ADVANCED_BREP_SHAPE_REPRESENTATION('',(#${axisId},#${brepId}),#${ctxId})`);
+
+  const repLinkId = writer.newId();
+  writer.addEntity(repLinkId, `SHAPE_DEFINITION_REPRESENTATION(#${defShapeId},#${repId})`);
 }
 
 /**
  * Write a face (advanced_face) to STEP.
  */
-function _writeFace(writer, face, edgeIds, vertexIds) {
-  // Write the support surface
-  const surfaceId = _writeSurface(writer, face);
+function _writeFace(writer, face, edgeIds, surfaceIds) {
+  const surfaceId = surfaceIds.get(face.id) ?? _writeSurface(writer, face);
 
   // Write loops
   const loopIds = [];
@@ -298,28 +347,10 @@ function _writeSurface(writer, face) {
  * Write a plane to STEP.
  */
 function _writePlane(writer, face) {
-  const info = face.surfaceInfo && face.surfaceInfo.type === 'plane' ? face.surfaceInfo : null;
-  if (!face.surface) {
-    const origin = info?.origin || _faceReferencePoint(face);
-    const normal = _normalizeDirection(info?.normal) || { x: 0, y: 0, z: 1 };
-    const refDir = _referenceDirection(info, normal);
-    const ptId = _writeCartesianPoint(writer, origin);
-    const dirId = _writeDirection(writer, normal);
-    const refId = _writeDirection(writer, refDir);
-    const axisId = writer.newId();
-    writer.addEntity(axisId, `AXIS2_PLACEMENT_3D('',#${ptId},#${dirId},#${refId})`);
-    const planeId = writer.newId();
-    writer.addEntity(planeId, `PLANE('',#${axisId})`);
-    return planeId;
-  }
-
-  // Get plane data from surface evaluation
-  const origin = face.surface.evaluate(0, 0);
-  const normal = _normalizeDirection(face.surface.normal(0.5, 0.5)) || { x: 0, y: 0, z: 1 };
-
-  const ptId = _writeCartesianPoint(writer, origin);
-  const dirId = _writeDirection(writer, normal);
-  const refId = _writeDirection(writer, _referenceDirection(info, normal));
+  const plane = _planeFrame(face);
+  const ptId = _writeCartesianPoint(writer, plane.origin);
+  const dirId = _writeDirection(writer, plane.normal);
+  const refId = _writeDirection(writer, plane.refDir);
   const axisId = writer.newId();
   writer.addEntity(axisId, `AXIS2_PLACEMENT_3D('',#${ptId},#${dirId},#${refId})`);
   const planeId = writer.newId();
@@ -495,7 +526,13 @@ function _writeBSplineSurface(writer, face) {
 /**
  * Write an edge curve to STEP.
  */
-function _writeEdgeCurve(writer, edge) {
+function _writeEdgeCurve(writer, edge, options = {}) {
+  const curve3dId = _writeCurve3d(writer, edge);
+  const surfaceCurveId = _writeSurfaceCurve(writer, edge, curve3dId, options);
+  return surfaceCurveId || curve3dId;
+}
+
+function _writeCurve3d(writer, edge) {
   if (edge.curve) {
     return _writeBSplineCurve(writer, edge.curve);
   }
@@ -519,6 +556,67 @@ function _writeEdgeCurve(writer, edge) {
   return lineId;
 }
 
+function _writeSurfaceCurve(writer, edge, curve3dId, options = {}) {
+  const { surfaceIds, paramCtxId } = options;
+  if (!(surfaceIds instanceof Map) || !Number.isInteger(paramCtxId)) return null;
+
+  const pcurveIds = [];
+  const seenFaces = new Set();
+  for (const coedge of edge.coedges || []) {
+    const face = coedge?.face;
+    if (!face || seenFaces.has(face.id)) continue;
+    seenFaces.add(face.id);
+    const pcurveId = _writePlanarPCurve(writer, edge, face, surfaceIds.get(face.id), paramCtxId);
+    if (pcurveId != null) pcurveIds.push(pcurveId);
+  }
+
+  if (pcurveIds.length === 0) return null;
+
+  const surfaceCurveId = writer.newId();
+  const pcurveRefs = pcurveIds.map((id) => `#${id}`).join(',');
+  writer.addEntity(surfaceCurveId, `SURFACE_CURVE('',#${curve3dId},(${pcurveRefs}),.PCURVE_S1.)`);
+  return surfaceCurveId;
+}
+
+function _writePlanarPCurve(writer, edge, face, surfaceId, paramCtxId) {
+  if (surfaceId == null || paramCtxId == null) return null;
+  if (face?.surfaceType !== SurfaceType.PLANE) return null;
+  if (edge?.curve) return null;
+
+  const plane = _planeFrame(face);
+  if (!plane) return null;
+
+  const start = _projectPointToPlaneUV(plane, edge.startVertex?.point);
+  const end = _projectPointToPlaneUV(plane, edge.endVertex?.point);
+  const defId = _write2DLineDefinition(writer, start, end, paramCtxId);
+  if (defId == null) return null;
+
+  const pcurveId = writer.newId();
+  writer.addEntity(pcurveId, `PCURVE('',#${surfaceId},#${defId})`);
+  return pcurveId;
+}
+
+function _write2DLineDefinition(writer, start, end, paramCtxId) {
+  if (!_isFinitePoint2(start) || !_isFinitePoint2(end)) return null;
+
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const len = Math.sqrt(dx * dx + dy * dy);
+  if (len < 1e-14) return null;
+
+  const ptId = _writeCartesianPoint2D(writer, start);
+  const dirId = _writeDirection2D(writer, { x: dx / len, y: dy / len });
+  const vecId = writer.newId();
+  writer.addEntity(vecId, `VECTOR('',#${dirId},1.)`);
+
+  const lineId = writer.newId();
+  writer.addEntity(lineId, `LINE('',#${ptId},#${vecId})`);
+
+  const defId = writer.newId();
+  writer.addEntity(defId, `DEFINITIONAL_REPRESENTATION('',(#${lineId}),#${paramCtxId})`);
+  return defId;
+}
+
 /**
  * Write a B-spline curve to STEP.
  */
@@ -537,7 +635,8 @@ function _writeBSplineCurve(writer, curve) {
       curveId,
       `(BOUNDED_CURVE() B_SPLINE_CURVE(${curve.degree},(${cpRefs}),.UNSPECIFIED.,.F.,.F.) ` +
       `B_SPLINE_CURVE_WITH_KNOTS((${mults}),(${knots}),.UNSPECIFIED.) ` +
-      `RATIONAL_B_SPLINE_CURVE((${weights})) CURVE())`,
+      `CURVE() GEOMETRIC_REPRESENTATION_ITEM() ` +
+      `RATIONAL_B_SPLINE_CURVE((${weights})) REPRESENTATION_ITEM(''))`,
     );
     return curveId;
   }
@@ -591,9 +690,97 @@ function _writeGeometricContext(writer) {
   return ctxId;
 }
 
+function _writeParametricContext(writer) {
+  const ctxId = writer.newId();
+  writer.addEntity(ctxId,
+    `(GEOMETRIC_REPRESENTATION_CONTEXT(2)PARAMETRIC_REPRESENTATION_CONTEXT()` +
+    `REPRESENTATION_CONTEXT('2D SPACE',''))`);
+  return ctxId;
+}
+
+function _writeCartesianPoint2D(writer, pt) {
+  const id = writer.newId();
+  writer.addEntity(id, `CARTESIAN_POINT('',(${_real(pt.x)},${_real(pt.y)}))`);
+  return id;
+}
+
+function _writeDirection2D(writer, dir) {
+  const id = writer.newId();
+  writer.addEntity(id, `DIRECTION('',(${_real(dir.x)},${_real(dir.y)}))`);
+  return id;
+}
+
 function _faceReferencePoint(face) {
-  const vertex = face?.outerLoop?.coedges?.[0]?.edge?.startVertex?.point;
-  return vertex ? { x: vertex.x, y: vertex.y, z: vertex.z } : { x: 0, y: 0, z: 0 };
+  const point = _loopPoints(face?.outerLoop)[0];
+  return point ? { x: point.x, y: point.y, z: point.z } : { x: 0, y: 0, z: 0 };
+}
+
+function _planeFrame(face) {
+  const info = face?.surfaceInfo && face.surfaceInfo.type === 'plane' ? face.surfaceInfo : null;
+  if (!face?.surface) {
+    const origin = info?.origin || _faceReferencePoint(face);
+    const normal = _normalizeDirection(info?.normal || _faceLoopNormal(face)) || { x: 0, y: 0, z: 1 };
+    return { origin, normal, refDir: _referenceDirection(info, normal) };
+  }
+
+  const origin = face.surface.evaluate(0, 0);
+  const normal = _normalizeDirection(face.surface.normal(0.5, 0.5)) || { x: 0, y: 0, z: 1 };
+  return { origin, normal, refDir: _referenceDirection(info, normal) };
+}
+
+function _projectPointToPlaneUV(plane, point) {
+  if (!plane || !point) return null;
+  const yDir = _normalizeDirection(_cross3(plane.normal, plane.refDir));
+  if (!yDir) return null;
+
+  const dx = point.x - plane.origin.x;
+  const dy = point.y - plane.origin.y;
+  const dz = point.z - plane.origin.z;
+  return {
+    x: _dot3({ x: dx, y: dy, z: dz }, plane.refDir),
+    y: _dot3({ x: dx, y: dy, z: dz }, yDir),
+  };
+}
+
+function _loopPoints(loop) {
+  const points = [];
+  for (const coedge of loop?.coedges || []) {
+    const vertex = typeof coedge?.startVertex === 'function'
+      ? coedge.startVertex()
+      : coedge?.edge?.startVertex;
+    const point = vertex?.point;
+    if (!point) continue;
+    const previous = points[points.length - 1];
+    if (previous &&
+        Math.abs(previous.x - point.x) < 1e-12 &&
+        Math.abs(previous.y - point.y) < 1e-12 &&
+        Math.abs(previous.z - point.z) < 1e-12) {
+      continue;
+    }
+    points.push(point);
+  }
+  return points;
+}
+
+function _faceLoopNormal(face) {
+  const points = _loopPoints(face?.outerLoop);
+  if (points.length < 3) return null;
+
+  let ax = 0;
+  let ay = 0;
+  let az = 0;
+  for (let i = 0; i < points.length; i++) {
+    const current = points[i];
+    const next = points[(i + 1) % points.length];
+    ax += (current.y - next.y) * (current.z + next.z);
+    ay += (current.z - next.z) * (current.x + next.x);
+    az += (current.x - next.x) * (current.y + next.y);
+  }
+  return {
+    x: ax,
+    y: ay,
+    z: az,
+  };
 }
 
 function _normalizeDirection(dir) {
@@ -601,6 +788,22 @@ function _normalizeDirection(dir) {
   const len = Math.sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
   if (len < 1e-14) return null;
   return { x: dir.x / len, y: dir.y / len, z: dir.z / len };
+}
+
+function _dot3(a, b) {
+  return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+function _cross3(a, b) {
+  return {
+    x: a.y * b.z - a.z * b.y,
+    y: a.z * b.x - a.x * b.z,
+    z: a.x * b.y - a.y * b.x,
+  };
+}
+
+function _isFinitePoint2(point) {
+  return !!point && Number.isFinite(point.x) && Number.isFinite(point.y);
 }
 
 function _referenceDirection(surfaceInfo, normal) {
@@ -619,6 +822,10 @@ function _referenceDirection(surfaceInfo, normal) {
 function _real(n) {
   if (Number.isInteger(n)) return `${n}.`;
   return n.toExponential(10).toUpperCase().replace('+', '');
+}
+
+function _stepString(value) {
+  return String(value ?? '').replace(/'/g, "''");
 }
 
 /**
