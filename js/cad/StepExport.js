@@ -12,6 +12,10 @@
 //   - face_bound, edge_loop
 
 import { SurfaceType } from './BRepTopology.js';
+import {
+  exportOcctSketchModelingStep,
+  getOcctSketchModelingTopology,
+} from './occt/OcctSketchModeling.js';
 import { telemetry } from '../telemetry.js';
 
 const _now = typeof performance !== 'undefined' && performance.now
@@ -27,53 +31,112 @@ function _measureStepExportPhase(timings, key, label, fn) {
   }
 }
 
-function _assertStepExportable(body, opts) {
+function _readExportCandidate(source, key) {
+  return source?.[key]
+    ?? source?.body?.[key]
+    ?? source?.topoBody?.[key]
+    ?? source?.solid?.body?.[key]
+    ?? source?.solid?.topoBody?.[key]
+    ?? source?.geometry?.[key]
+    ?? source?.geometry?.topoBody?.[key]
+    ?? null;
+}
+
+function _extractStepExportBody(source) {
+  if (source && Array.isArray(source.shells) && typeof source.faces === 'function') return source;
+  return source?.body
+    || source?.topoBody
+    || source?.solid?.body
+    || source?.solid?.topoBody
+    || source?.geometry?.topoBody
+    || null;
+}
+
+function _extractOcctShapeHandle(source) {
+  const handle = source?.occtShapeHandle
+    || source?.solid?.occtShapeHandle
+    || source?.geometry?.occtShapeHandle
+    || 0;
+  return Number.isInteger(handle) && handle > 0 ? handle : 0;
+}
+
+function _assertStepExportable(source, opts) {
   // Block STEP export for fallback solids — they are discrete representations
   // and cannot be faithfully serialized as exact B-Rep STEP geometry.
-  if (opts._isFallback || (body && body._isFallback)) {
+  if (opts._isFallback || _readExportCandidate(source, '_isFallback')) {
     throw new Error('STEP export is not supported for fallback (discrete) solids. Fallback results are mesh-only representations.');
   }
   // Also block when resultGrade explicitly marks a non-exact result
-  if (opts.resultGrade && opts.resultGrade !== 'exact') {
-    throw new Error(`STEP export is not supported for results with grade '${opts.resultGrade}'. Only exact results may be exported as STEP.`);
-  }
-  if (body && body.resultGrade && body.resultGrade !== 'exact') {
-    throw new Error(`STEP export is not supported for results with grade '${body.resultGrade}'. Only exact results may be exported as STEP.`);
+  const resultGrade = opts.resultGrade ?? _readExportCandidate(source, 'resultGrade');
+  if (resultGrade && resultGrade !== 'exact') {
+    throw new Error(`STEP export is not supported for results with grade '${resultGrade}'. Only exact results may be exported as STEP.`);
   }
 }
 
 /**
- * Export a TopoBody to STEP format string.
+ * Export a TopoBody or resident OCCT-backed solid to STEP format string.
  *
- * @param {import('./BRepTopology.js').TopoBody} body
+ * @param {Object|import('./BRepTopology.js').TopoBody} source
  * @param {Object} [opts]
  * @param {string} [opts.filename='export'] - File description
  * @param {string} [opts.author='CAD Modeller'] - Author name
  * @param {string} [opts.schema='AUTOMOTIVE_DESIGN'] - STEP schema
  * @returns {string} STEP file contents
  */
-export function exportSTEP(body, opts = {}) {
-  return exportSTEPDetailed(body, opts).stepString;
+export function exportSTEP(source, opts = {}) {
+  return exportSTEPDetailed(source, opts).stepString;
 }
 
 /**
- * Export a TopoBody to STEP format string with timing metadata.
+ * Export a TopoBody or resident OCCT-backed solid to STEP format string with timing metadata.
  *
- * @param {import('./BRepTopology.js').TopoBody} body
+ * @param {Object|import('./BRepTopology.js').TopoBody} source
  * @param {Object} [opts]
  * @param {string} [opts.filename='export'] - File description
  * @param {string} [opts.author='CAD Modeller'] - Author name
  * @param {string} [opts.schema='AUTOMOTIVE_DESIGN'] - STEP schema
  * @returns {{ stepString: string, timings: Object }}
  */
-export function exportSTEPDetailed(body, opts = {}) {
-  _assertStepExportable(body, opts);
+export function exportSTEPDetailed(source, opts = {}) {
+  _assertStepExportable(source, opts);
+
+  const body = _extractStepExportBody(source);
+  const occtShapeHandle = _extractOcctShapeHandle(source);
 
   const timings = {};
   const totalStart = _now();
   const filename = opts.filename ?? 'export';
   const author = opts.author ?? 'CAD Modeller';
   const schema = opts.schema ?? 'AUTOMOTIVE_DESIGN';
+
+  if (occtShapeHandle > 0) {
+    try {
+      const stepString = _measureStepExportPhase(timings, 'occtExportMs', 'step:export:occt', () =>
+        exportOcctSketchModelingStep(occtShapeHandle),
+      );
+      if (typeof stepString === 'string' && stepString.length > 0) {
+        const topology = _measureStepExportPhase(timings, 'occtTopologyMs', 'step:export:occt-topology', () =>
+          getOcctSketchModelingTopology(occtShapeHandle),
+        ) || null;
+        timings.totalMs = telemetry.recordTimer('step:export:total', _now() - totalStart, totalStart);
+        timings.entityCount = 0;
+        timings.outputBytes = stepString.length;
+        timings.shellCount = body ? body.shells.length : 0;
+        timings.faceCount = topology?.faceCount ?? (body ? body.faces().length : 0);
+        timings.edgeCount = topology?.edgeCount ?? (body ? body.edges().length : 0);
+        timings.vertexCount = topology?.vertexCount ?? (body ? body.vertices().length : 0);
+        timings.exporter = 'occt';
+        return { stepString, timings };
+      }
+    } catch {
+      // Fall back to the JS TopoBody writer when the OCCT resident export path
+      // is unavailable for the current handle/session.
+    }
+  }
+
+  if (occtShapeHandle > 0 && !body) {
+    throw new Error('Resident OCCT shape is available but could not be exported in the current session.');
+  }
 
   const writer = new StepWriter();
 
@@ -99,6 +162,7 @@ export function exportSTEPDetailed(body, opts = {}) {
   timings.faceCount = body ? body.faces().length : 0;
   timings.edgeCount = body ? body.edges().length : 0;
   timings.vertexCount = body ? body.vertices().length : 0;
+  timings.exporter = body ? 'js-topobody' : 'js-empty';
 
   return { stepString, timings };
 }

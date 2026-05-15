@@ -16,6 +16,12 @@ function isBrowserRuntime() {
   return typeof document !== 'undefined' && typeof document.createElement === 'function';
 }
 
+function isWorkerRuntime() {
+  return typeof WorkerGlobalScope !== 'undefined'
+    && typeof self !== 'undefined'
+    && self instanceof WorkerGlobalScope;
+}
+
 function readEnv(keys, env = undefined) {
   const source = env || (typeof process !== 'undefined' ? process.env : null);
   if (!source) return null;
@@ -74,6 +80,11 @@ async function loadBrowserFactory(jsUrl) {
     return globalThis.createOcctKernelModule;
   }
   if (!jsUrl) throw new Error('OCCT loader requires jsUrl or OCCT_KERNEL_DIST in the browser');
+  if (isWorkerRuntime()) {
+    const imported = await import(/* @vite-ignore */ jsUrl);
+    const factory = imported?.default || imported?.createOcctKernelModule || globalThis.createOcctKernelModule || imported;
+    return normalizeFactory(factory);
+  }
   if (!isBrowserRuntime()) throw new Error('OCCT browser script loading is unavailable outside a DOM runtime');
 
   await new Promise((resolve, reject) => {
@@ -88,7 +99,7 @@ async function loadBrowserFactory(jsUrl) {
   if (typeof globalThis.createOcctKernelModule !== 'function') {
     throw new Error('OCCT script loaded but did not expose createOcctKernelModule');
   }
-  return globalThis.createOcctKernelModule;
+    return globalThis.createOcctKernelModule;
 }
 
 function normalizeFactory(factory) {

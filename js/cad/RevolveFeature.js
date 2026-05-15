@@ -10,7 +10,10 @@ import { booleanOp } from './BooleanDispatch.js';
 import { computeFeatureEdges } from './EdgeAnalysis.js';
 import { calculateMeshVolume, calculateBoundingBox } from './toolkit/MeshAnalysis.js';
 import { chainEdgePaths } from './toolkit/EdgePathUtils.js';
-import { tryBuildOcctRevolveGeometrySync } from './occt/OcctSketchModeling.js';
+import {
+  disposeOcctSketchModelingShape,
+  tryBuildOcctRevolveGeometrySync,
+} from './occt/OcctSketchModeling.js';
 import { NurbsCurve } from './NurbsCurve.js';
 import { NurbsSurface } from './NurbsSurface.js';
 import {
@@ -71,7 +74,7 @@ export class RevolveFeature extends Feature {
     }
 
     this._refreshAxisFromSketch(sketch);
-    const allowOcctModeling = this.operation === 'new' && profiles.length === 1;
+  const allowOcctModeling = profiles.length === 1;
     
     // Get the current solid (if any)
     let solid = this.getPreviousSolid(context);
@@ -1182,8 +1185,10 @@ export class RevolveFeature extends Feature {
 
     try {
       const resultGeom = booleanOp(prevGeom, geometry, this.operation);
+      this._disposeTemporaryOcctGeometry(geometry, resultGeom.occtShapeHandle || 0);
       return { geometry: resultGeom };
     } catch (err) {
+      this._disposeTemporaryOcctGeometry(geometry);
       console.warn(`Boolean operation '${this.operation}' failed:`, err.message);
       // Preserve the previous solid rather than replacing it with the new geometry
       return solid;
@@ -1205,11 +1210,21 @@ export class RevolveFeature extends Feature {
     }
     try {
       const resultGeom = booleanOp(solid.geometry, geometry, 'union');
+      this._disposeTemporaryOcctGeometry(geometry, resultGeom.occtShapeHandle || 0);
       return { geometry: resultGeom };
     } catch (err) {
+      this._disposeTemporaryOcctGeometry(geometry);
       console.warn('Multi-profile union failed:', err.message);
       return solid;
     }
+  }
+
+  _disposeTemporaryOcctGeometry(geometry, keepHandle = 0) {
+    const handle = geometry?.occtShapeHandle || 0;
+    if (!handle || handle === keepHandle) return;
+    disposeOcctSketchModelingShape(handle);
+    geometry.occtShapeHandle = 0;
+    geometry.occtShapeResident = false;
   }
 
   /**

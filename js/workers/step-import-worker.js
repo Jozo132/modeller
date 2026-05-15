@@ -15,6 +15,7 @@
 //   worker.onmessage = (e) => { /* e.data = { vertices, faces, body, ... } */ };
 
 import { importSTEP, ensureWasmReady } from '../cad/StepImport.js';
+import { loadOcctKernelModule } from '../cad/occt/index.js';
 import { telemetry } from '../telemetry.js';
 import { getFlag } from '../featureFlags.js';
 import { warnOnceForFallback } from '../cad/fallback/warnOnce.js';
@@ -108,6 +109,14 @@ self.onmessage = async function (e) {
 
     // Ensure WASM tessellator is loaded before parsing
     await ensureWasmReady();
+    if (getFlag('CAD_USE_OCCT_SKETCH_SOLIDS') === true) {
+      try {
+        await loadOcctKernelModule();
+      } catch {
+        // Best-effort preload for the OCCT STEP path in worker contexts.
+        // importSTEP() will still fall back to the legacy path if OCCT cannot load here.
+      }
+    }
 
     // Run the full STEP import pipeline (parse + tessellate)
     const result = importSTEP(stepData, { curveSegments });

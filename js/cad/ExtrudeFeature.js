@@ -12,7 +12,10 @@ import { constrainedTriangulate } from './Tessellator2/CDT.js';
 import { tessellateBody } from './Tessellation.js';
 import { chainEdgePaths } from './toolkit/EdgePathUtils.js';
 import { tryBuildNativeExtrude } from './wasm/NativeExtrude.js';
-import { tryBuildOcctExtrudeGeometrySync } from './occt/OcctSketchModeling.js';
+import {
+  disposeOcctSketchModelingShape,
+  tryBuildOcctExtrudeGeometrySync,
+} from './occt/OcctSketchModeling.js';
 import { NurbsCurve } from './NurbsCurve.js';
 import { NurbsSurface } from './NurbsSurface.js';
 import {
@@ -79,10 +82,6 @@ export class ExtrudeFeature extends Feature {
     let solid = this.getPreviousSolid(context);
 
     const profileGroups = this.groupProfilesForExtrusion(profiles);
-    const allowOcctModeling = this.operation === 'new' && profileGroups.length === 1;
-
-    const profileGeometries = profileGroups.map((group) =>
-      this.generateGeometry([group.outer], plane, group.holes, { allowOcctModeling }));
 
     if (solid && this.operation === 'subtract') {
       const directCut = this._tryApplyPlanarThroughCut(solid, profileGroups, plane)
@@ -99,6 +98,11 @@ export class ExtrudeFeature extends Feature {
         };
       }
     }
+
+    const allowOcctModeling = profileGroups.length === 1;
+
+    const profileGeometries = profileGroups.map((group) =>
+      this.generateGeometry([group.outer], plane, group.holes, { allowOcctModeling }));
 
     // When adding/subtracting/intersecting against an existing solid, combine
     // all bodies from this feature first and run a single boolean. Sequential
@@ -187,8 +191,10 @@ export class ExtrudeFeature extends Feature {
     try {
       const resultGeom = booleanOp(solid.geometry, geometry, 'union',
         null, { sourceFeatureId: this.id });
+      this._disposeTemporaryOcctGeometry(geometry, resultGeom.occtShapeHandle || 0);
       return { geometry: resultGeom };
     } catch (err) {
+      this._disposeTemporaryOcctGeometry(geometry);
       console.warn('Multi-profile union failed:', err.message);
       if (this.operation === 'new') {
         return this._appendBodyGeometry(solid, geometry);
@@ -2266,8 +2272,10 @@ export class ExtrudeFeature extends Feature {
       const resultGeom = booleanOp(prevGeom, geometry, this.operation,
         null, // keep existing shared on prevGeom faces
         { sourceFeatureId: this.id });
+      this._disposeTemporaryOcctGeometry(geometry, resultGeom.occtShapeHandle || 0);
       return { geometry: resultGeom };
     } catch (err) {
+      this._disposeTemporaryOcctGeometry(geometry);
       const message = this._formatBooleanError(err);
       const error = new Error(message);
       error.cause = err;
@@ -2287,6 +2295,14 @@ export class ExtrudeFeature extends Feature {
       ? ` (${count > 1 ? `${count} issues; ` : ''}${detail})`
       : '';
     return `Boolean ${this.operation} failed: ${base}${suffix}`;
+  }
+
+  _disposeTemporaryOcctGeometry(geometry, keepHandle = 0) {
+    const handle = geometry?.occtShapeHandle || 0;
+    if (!handle || handle === keepHandle) return;
+    disposeOcctSketchModelingShape(handle);
+    geometry.occtShapeHandle = 0;
+    geometry.occtShapeResident = false;
   }
 
   /**

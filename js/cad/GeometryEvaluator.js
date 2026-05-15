@@ -11,7 +11,6 @@
 //   - Piegl & Tiller, "The NURBS Book" (1997), Algorithms A2.2, A2.3, A3.2, A4.4
 //   - ISO 10303-42 (STEP geometry)
 
-import { warnOnceForFallback } from './fallback/warnOnce.js';
 import { loadReleaseWasmModule } from '../load-release-wasm.js';
 
 // ─── Tolerances ──────────────────────────────────────────────────────
@@ -32,6 +31,7 @@ const FALLBACK_NORMAL = { x: 0, y: 0, z: 1 };
 
 let _wasm = null;
 let _wasmMem = null;
+let _wasmInitPromise = null;
 
 /**
  * Initialize the WASM backend. Safe to call multiple times.
@@ -39,20 +39,25 @@ let _wasmMem = null;
  */
 async function initWasm() {
   if (_wasm) return true;
-  try {
-    const mod = await loadReleaseWasmModule();
-    _wasm = mod;
-    _wasmMem = mod.memory;
-    return true;
-  } catch (_e) {
-    return false;
-  }
+  if (_wasmInitPromise) return _wasmInitPromise;
+  _wasmInitPromise = loadReleaseWasmModule()
+    .then((mod) => {
+      _wasm = mod;
+      _wasmMem = mod.memory;
+      return true;
+    })
+    .catch(() => false);
+  return _wasmInitPromise;
 }
 
 /** Check if WASM backend is available. */
 function isWasmAvailable() {
   return _wasm !== null;
 }
+
+// Start loading the evaluator backend eagerly so hot paths are less likely to
+// observe the JS compatibility lane during normal OCCT-driven execution.
+initWasm().catch(() => {});
 
 // ─── JS-side B-spline basis functions ────────────────────────────────
 
@@ -525,12 +530,6 @@ function evalCurve(curve, t, opts) {
     const result = _wasmEvalCurve(curve, t);
     if (result) return result;
   }
-  warnOnceForFallback({
-    id: 'evaluator:wasm-to-js',
-    policy: 'allow-fallback',
-    reason: 'WASM evaluator unavailable; using pure JS NURBS evaluation',
-    kind: 'new-stack-fallback',
-  });
   return _jsEvalCurve(curve, t);
 }
 
@@ -552,12 +551,6 @@ function evalSurface(surface, u, v, opts) {
     const result = _wasmEvalSurface(surface, u, v);
     if (result) return result;
   }
-  warnOnceForFallback({
-    id: 'evaluator:wasm-to-js',
-    policy: 'allow-fallback',
-    reason: 'WASM evaluator unavailable; using pure JS NURBS evaluation',
-    kind: 'new-stack-fallback',
-  });
   return _jsEvalSurface(surface, u, v);
 }
 
@@ -599,12 +592,6 @@ function evalCurveBatch(curve, params, opts) {
   }
 
   // JS fallback
-  warnOnceForFallback({
-    id: 'evaluator:wasm-to-js',
-    policy: 'allow-fallback',
-    reason: 'WASM evaluator unavailable; using pure JS NURBS evaluation',
-    kind: 'new-stack-fallback',
-  });
   for (let i = 0; i < count; i++) {
     const r = _jsEvalCurve(curve, params[i]);
     const off = i * 9;
@@ -655,12 +642,6 @@ function evalSurfaceBatch(surface, params, opts) {
   }
 
   // JS fallback
-  warnOnceForFallback({
-    id: 'evaluator:wasm-to-js',
-    policy: 'allow-fallback',
-    reason: 'WASM evaluator unavailable; using pure JS NURBS evaluation',
-    kind: 'new-stack-fallback',
-  });
   for (let i = 0; i < count; i++) {
     const u = params[i * 2];
     const v = params[i * 2 + 1];

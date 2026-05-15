@@ -290,6 +290,134 @@ export function tryBuildOcctRevolveGeometrySync(options = {}) {
   }
 }
 
+export function tryBuildOcctBooleanMetadataSync(options = {}) {
+  if (getFlag(OCCT_SKETCH_SOLID_FLAG) !== true) return null;
+
+  const { handleA, handleB, operation } = options;
+  if (!Number.isInteger(handleA) || handleA <= 0) return null;
+  if (!Number.isInteger(handleB) || handleB <= 0) return null;
+
+  const adapter = getSharedAdapterSync();
+  if (!adapter) return null;
+
+  let resultHandle = 0;
+  try {
+    switch (operation) {
+      case 'union':
+        resultHandle = adapter.booleanUnion(handleA, handleB);
+        break;
+      case 'subtract':
+        resultHandle = adapter.booleanSubtract(handleA, handleB);
+        break;
+      case 'intersect':
+        resultHandle = adapter.booleanIntersect(handleA, handleB);
+        break;
+      default:
+        return null;
+    }
+
+    if (!(resultHandle > 0) || adapter.checkValidity(resultHandle) !== true) {
+      if (resultHandle > 0) adapter.disposeShape(resultHandle);
+      return null;
+    }
+
+    const mesh = adapter.tessellate(resultHandle);
+    if (!mesh?.faces?.length) {
+      adapter.disposeShape(resultHandle);
+      return null;
+    }
+
+    return {
+      ...mesh,
+      occtShapeHandle: resultHandle,
+      occtShapeResident: true,
+      _occtModeling: {
+        authoritative: true,
+        operation,
+        source: 'resident-boolean',
+        topology: adapter.getTopology(resultHandle),
+      },
+    };
+  } catch {
+    if (resultHandle > 0) adapter.disposeShape(resultHandle);
+    return null;
+  }
+}
+
+export function tryImportOcctStepResidencySync(options = {}) {
+  if (getFlag(OCCT_SKETCH_SOLID_FLAG) !== true) return null;
+
+  const {
+    stepData,
+    heal = true,
+    sew = true,
+    fixSameParameter = true,
+    fixSolid = true,
+    includeMesh = false,
+    tessellationOptions = null,
+  } = options;
+  if (typeof stepData !== 'string' || stepData.length === 0) return null;
+
+  const adapter = getSharedAdapterSync();
+  if (!adapter) return null;
+
+  let importResult = null;
+  try {
+    importResult = adapter.importStepDetailed(stepData, {
+      heal,
+      sew,
+      fixSameParameter,
+      fixSolid,
+    });
+    const handle = importResult?.shapeHandle || 0;
+    if (!(handle > 0) || adapter.checkValidity(handle) !== true) {
+      if (handle > 0) adapter.disposeShape(handle);
+      return null;
+    }
+
+    let mesh = null;
+    if (includeMesh) {
+      mesh = adapter.tessellate(handle, tessellationOptions || {});
+      if (!mesh?.faces?.length) mesh = null;
+    }
+
+    return {
+      occtShapeHandle: handle,
+      occtShapeResident: true,
+      mesh,
+      _occtModeling: {
+        authoritative: !!mesh,
+        source: 'step-import',
+        topology: adapter.getTopology(handle),
+        import: {
+          readStatus: importResult.readStatus ?? null,
+          transferStatus: importResult.transferStatus ?? null,
+          rootCount: importResult.rootCount ?? 0,
+          transferredRootCount: importResult.transferredRootCount ?? 0,
+          isValid: importResult.isValid === true,
+          wasValidBeforeHealing: importResult.wasValidBeforeHealing === true,
+          healed: importResult.healed === true,
+          messageCount: Array.isArray(importResult.messageList) ? importResult.messageList.length : 0,
+        },
+      },
+    };
+  } catch {
+    const handle = importResult?.shapeHandle || 0;
+    if (handle > 0) adapter.disposeShape(handle);
+    return null;
+  }
+}
+
+export function exportOcctSketchModelingStep(handle) {
+  if (!sharedAdapter || !Number.isInteger(handle) || handle <= 0) return null;
+  return sharedAdapter.exportStep(handle);
+}
+
+export function getOcctSketchModelingTopology(handle) {
+  if (!sharedAdapter || !Number.isInteger(handle) || handle <= 0) return null;
+  return sharedAdapter.getTopology(handle);
+}
+
 export function disposeOcctSketchModelingShape(handle) {
   if (!sharedAdapter || !Number.isInteger(handle) || handle <= 0) return;
   try {

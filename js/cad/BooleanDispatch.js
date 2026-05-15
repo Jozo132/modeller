@@ -10,6 +10,8 @@
 
 import { exactBooleanOp, hasExactTopology } from './BooleanKernel.js';
 import { computeFeatureEdges } from './EdgeAnalysis.js';
+import { tryBuildOcctBooleanMetadataSync } from './occt/OcctSketchModeling.js';
+import { chainEdgePaths } from './toolkit/EdgePathUtils.js';
 
 import {
   vec3Sub as _vec3Sub,
@@ -207,16 +209,28 @@ export function booleanOp(geomA, geomB, operation, sharedA = null, sharedB = nul
       fallbackDiagnostics,
       _occtShadow,
     } = result;
-    const displayFaces = _compactExactPlanarDisplayFaces(mesh.faces || []);
-    const displayMesh = {
-      ...mesh,
-      faces: displayFaces,
-    };
+    const occtModeling = tryBuildOcctBooleanMetadataSync({
+      handleA: geomA.occtShapeHandle || 0,
+      handleB: geomB.occtShapeHandle || 0,
+      operation: opName,
+    });
+    const useOcctDisplay = Array.isArray(occtModeling?.faces) && occtModeling.faces.length > 0;
+    const exactDisplayFaces = _compactExactPlanarDisplayFaces(mesh.faces || []);
+    const displayFaces = useOcctDisplay ? occtModeling.faces : exactDisplayFaces;
+    const displayMesh = useOcctDisplay
+      ? occtModeling
+      : {
+        ...mesh,
+        faces: displayFaces,
+      };
     const edgeResult = computeFeatureEdges(displayFaces);
+    const useOcctEdges = useOcctDisplay
+      && Array.isArray(displayMesh.edges)
+      && displayMesh.edges.length > 0;
     return {
       ...displayMesh,
-      edges: edgeResult.edges,
-      paths: edgeResult.paths,
+      edges: useOcctEdges ? displayMesh.edges : edgeResult.edges,
+      paths: useOcctEdges ? chainEdgePaths(displayMesh.edges) : edgeResult.paths,
       visualEdges: edgeResult.visualEdges,
       topoBody: body,
       diagnostics,
@@ -224,6 +238,7 @@ export function booleanOp(geomA, geomB, operation, sharedA = null, sharedB = nul
       _isFallback,
       fallbackDiagnostics,
       _occtShadow,
+      ...(occtModeling || {}),
     };
   }
 

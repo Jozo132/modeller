@@ -9410,20 +9410,21 @@ class App {
     }
 
     const finalGeo = part.getFinalGeometry?.();
+    const occtShapeHandle = finalGeo?.occtShapeHandle || finalGeo?.geometry?.occtShapeHandle || 0;
     const body = finalGeo?.body
       || finalGeo?.topoBody
       || finalGeo?.solid?.topoBody
       || finalGeo?.solid?.body
       || finalGeo?.geometry?.topoBody
       || null;
-    if (!body) {
-      this.setStatus('No exact body available for STEP export');
+    if (!body && !occtShapeHandle) {
+      this.setStatus('No exact body or resident OCCT shape available for STEP export');
       return;
     }
 
     try {
       const name = part?.name || 'part';
-      const { stepString, timings } = exportSTEPDetailed(body, {
+      const { stepString, timings } = exportSTEPDetailed(finalGeo, {
         filename: name,
         resultGrade: finalGeo?.resultGrade || finalGeo?.geometry?.resultGrade || body?.resultGrade,
         _isFallback: !!(finalGeo?._isFallback || finalGeo?.geometry?._isFallback || body?._isFallback),

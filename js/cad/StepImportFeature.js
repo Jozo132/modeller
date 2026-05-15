@@ -13,6 +13,7 @@ import { getFlag } from '../featureFlags.js';
 import { telemetry } from '../telemetry.js';
 import { globalTessConfig } from './TessellationConfig.js';
 import { arrayBufferToBase64, base64ToArrayBuffer } from './CbrepEncoding.js';
+import { tryImportOcctStepResidencySync } from './occt/OcctSketchModeling.js';
 
 const _now = typeof performance !== 'undefined' && performance.now
   ? () => performance.now()
@@ -113,6 +114,7 @@ export class StepImportFeature extends Feature {
       const buildTimings = {};
       const buildStart = _now();
       const result = importSTEP(this.stepData, currentTessellation);
+
       const edgeResult = _measureSync(buildTimings, 'edgeAnalysisMs', 'step:feature:edge-analysis', () =>
         computeFeatureEdges(result.faces),
       );
@@ -162,6 +164,24 @@ export class StepImportFeature extends Feature {
       paths: this._cachedMesh.edgeResult?.paths || [],
       visualEdges: this._cachedMesh.edgeResult?.visualEdges || [],
     };
+    if (this._cachedMesh._tessellator) geometry._tessellator = this._cachedMesh._tessellator;
+    if (this._cachedMesh._occt) geometry._occt = this._cachedMesh._occt;
+
+    const occtResidencyTimings = {};
+    const occtResidency = _measureSync(
+      occtResidencyTimings,
+      'occtResidencyMs',
+      'step:feature:occt-residency',
+      () => tryImportOcctStepResidencySync({ stepData: this.stepData }),
+    );
+    if (occtResidency) {
+      geometry.occtShapeHandle = occtResidency.occtShapeHandle;
+      geometry.occtShapeResident = true;
+      geometry._occtModeling = {
+        ...occtResidency._occtModeling,
+        authoritative: this._cachedMesh._tessellator === 'occt' || occtResidency._occtModeling?.authoritative === true,
+      };
+    }
 
     // Tag mesh faces with this feature's id
     for (const f of geometry.faces) {
@@ -175,12 +195,14 @@ export class StepImportFeature extends Feature {
       edgeAnalysisMs: this._cachedMesh.featureTimings?.edgeAnalysisMs ?? 0,
       volumeMs: this._cachedMesh.featureTimings?.volumeMs ?? 0,
       boundsMs: this._cachedMesh.featureTimings?.boundsMs ?? 0,
+      occtResidencyMs: occtResidencyTimings.occtResidencyMs ?? 0,
       import: this._cachedMesh.timings ? { ...this._cachedMesh.timings } : null,
+      occtResidency: geometry._occtModeling?.import ? { ...geometry._occtModeling.import } : null,
       irCache: this._lastIrCacheTimings ? { ...this._lastIrCacheTimings } : null,
     };
     this._lastExecuteTimings = timings;
 
-    return {
+    const result = {
       type: 'solid',
       geometry,
       solid: { geometry, body },
@@ -191,6 +213,14 @@ export class StepImportFeature extends Feature {
       cbrepBuffer: this._irBytes || null,
       timings,
     };
+
+    if (geometry.occtShapeHandle) {
+      result.occtShapeHandle = geometry.occtShapeHandle;
+      result.occtShapeResident = true;
+      result._occtModeling = geometry._occtModeling;
+    }
+
+    return result;
   }
 
   _applyIrCachePayload(hash, buf) {

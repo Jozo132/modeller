@@ -99,7 +99,7 @@ const FLAG_DEFS = [
     name: 'CAD_USE_OCCT_SKETCH_SOLIDS',
     type: 'boolean',
     defaultValue: false,
-    description: 'Use OCCT as the authoritative builder for supported sketch-to-solid features after the sketch interface.',
+    description: 'Use OCCT residency for supported sketch solids, STEP imports, and direct booleans between resident shapes.',
   },
 ];
 
