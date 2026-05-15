@@ -1,4 +1,5 @@
 // For each non-manifold edge, list all incident triangles with their topoFaceIds.
+// Diagnostic-only: intentionally uses Tessellator2 compatibility code.
 import './_watchdog.mjs';
 import fs from 'node:fs';
 import { Part } from '../js/cad/Part.js';

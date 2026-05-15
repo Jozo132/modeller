@@ -2,15 +2,19 @@
 
 ## Overview
 
-The modeller provides two tessellation pipelines, selectable via
-`TessellationConfig.tessellator`:
+The live tessellation path is native WASM / OCCT-first:
 
-| Mode     | Module                    | Description                              |
-|----------|---------------------------|------------------------------------------|
-| `legacy` | `js/cad/Tessellation.js`  | Independent per-face tessellation (default) |
-| `robust` | `js/cad/Tessellator2/`    | Edge-first shared-boundary pipeline      |
+- `js/cad/Tessellation.js` routes body display and STL tessellation to the native WASM kernel.
+- `js/cad/StepImportWasm.js` and STEP import use the same native trimming and mesh-validation path.
+- `js/cad/TessellationConfig.js` controls tessellation density only. Its serialized `tessellator` field is retained for backward compatibility and diagnostics; it does not switch the live runtime path.
 
-Both pipelines produce the same mesh format:
+`js/cad/Tessellator2/` is retained only as a compatibility / forensic stack. It is no longer exported from the public CAD barrels, no longer exercised by default package test scripts, and is only imported by dedicated diagnostics such as:
+
+- `tools/diagnose-cmod-faces.js`
+- `tests/debug-step-tessellation.js`
+- `tests/diag-*.js`
+
+All tessellation paths still produce the same mesh format:
 ```js
 { vertices: [{x,y,z}, ...], faces: [{vertices, normal, shared}, ...], edges: [...] }
 ```
@@ -18,7 +22,7 @@ Both pipelines produce the same mesh format:
 ## TessellationConfig
 
 `js/cad/TessellationConfig.js` is the single public interface for
-tessellation quality control.
+live tessellation quality control.
 
 ### Fields
 
@@ -28,7 +32,7 @@ tessellation quality control.
 | `surfaceSegments`    | number  | 8          | Surface U/V subdivisions             |
 | `edgeSegments`       | number  | 16         | Edge wireframe segments              |
 | `adaptiveSubdivision`| boolean | true       | Enable adaptive refinement           |
-| `tessellator`        | string  | `'legacy'` | Pipeline selection: `'legacy'` or `'robust'` |
+| `tessellator`        | string  | `'legacy'` | Compatibility-only serialized field; ignored by the live WASM path |
 
 ### Presets
 
@@ -39,7 +43,11 @@ tessellation quality control.
 | fine    | 32    | 16      | 32   |
 | ultra   | 64    | 32      | 64   |
 
-## Robust Tessellator (Tessellator2)
+## Compatibility Tessellator (Tessellator2)
+
+Tessellator2 is preserved for forensic debugging and historical incident
+reproduction. It is not part of `tessellateBody()` or the OCCT / WASM-first
+runtime route.
 
 ### Pipeline Stages
 
@@ -75,20 +83,19 @@ js/cad/Tessellator2/
 
 3. **GeometryEvaluator is authoritative**: All NURBS curve/surface
    evaluation goes through `GeometryEvaluator`, which is WASM-first
-   with JS fallback. The robust tessellator evaluates point-by-point,
-   bypassing WASM tessellation buffer caps.
+   with JS fallback. The compatibility tessellator evaluates point-by-point,
+   bypassing native tessellation buffer caps for debugging.
 
-4. **Legacy fallback**: If robust tessellation fails for a body, the
-   `tessellateBodyRouted()` function falls back to the legacy path and
-   records a diagnostic payload.
+4. **Debug-only surface**: `robustTessellateBody()`, `tessellateBodyRouted()`,
+   `shadowTessellateBody()`, and `FaceTriangulator` are compatibility helpers
+   for diagnostics. They are not part of the live product path.
 
 ### WASM Buffer Limits
 
-The WASM surface tessellation path (`nurbsSurfaceTessellate`) has a
-fixed buffer of (128+1)² = 16641 vertices. Requests exceeding this
-return -1, and the JS side falls back to pure JS evaluation. The
-robust tessellator bypasses this cap by evaluating through
-`GeometryEvaluator` point-by-point.
+The native surface tessellation path (`nurbsSurfaceTessellate`) has a
+fixed buffer of (128+1)² = 16641 vertices. Compatibility diagnostics can
+bypass this cap by evaluating through `GeometryEvaluator` point-by-point,
+but the live route stays on the native tessellation path.
 
 ## Mesh Validation
 
@@ -100,12 +107,9 @@ robust tessellator bypasses this cap by evaluating through
 
 ## Testing
 
-`tests/test-mesh-quality.js` covers:
-- Watertightness on closed bodies (box, prism)
-- Shared-edge consistency (same point objects)
-- No self-intersections
-- Deterministic mesh hashing
-- Trimmed-face correctness (planar face with hole)
-- Config routing (legacy/robust)
-- Legacy regression
-- STEP corpus validation
+The active tessellation path is now covered by:
+- `tests/test-wasm-tessellation-policy.js` for WASM-only routing policy
+- `tests/test-wasm-tessellation.js` for native tessellation behavior
+- `tests/test-lod-retess.js` for live LoD retessellation
+- `tests/test-api-migration.js` for package-level migration contracts
+- `tests/test-step-import-nist.js` for STEP import regression

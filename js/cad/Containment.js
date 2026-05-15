@@ -19,7 +19,6 @@
 import { DEFAULT_TOLERANCE } from './Tolerance.js';
 import { GeometryEvaluator } from './GeometryEvaluator.js';
 import { getFlag } from '../featureFlags.js';
-import { warnOnceForFallback } from './fallback/warnOnce.js';
 import { SurfaceType } from './BRepTopology.js';
 import { loadBodyIntoWasm } from './wasm/TopoSerializer.js';
 import { loadReleaseWasmModule } from '../load-release-wasm.js';
@@ -268,12 +267,6 @@ export function classifyPoint(body, p, opts = {}) {
       });
     }
     if (chosen.state !== 'uncertain') return chosen;
-    warnOnceForFallback({
-      id: 'containment:uncertain',
-      policy: 'allow-fallback',
-      reason: 'GWN and ray-cast containment both uncertain; returning ambiguous result',
-      kind: 'degraded-result',
-    });
     return { state: 'uncertain', confidence: chosen.confidence, detail: 'shadow-ambiguous' };
   }
 
@@ -294,12 +287,6 @@ export function classifyPoint(body, p, opts = {}) {
     return fastResult;
   }
 
-  warnOnceForFallback({
-    id: 'containment:uncertain',
-    policy: 'allow-fallback',
-    reason: 'all containment paths returned low confidence; returning ambiguous result',
-    kind: 'degraded-result',
-  });
   return {
     state: 'uncertain',
     confidence: fastResult.confidence,

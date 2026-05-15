@@ -1,4 +1,5 @@
 // Dump all triangles for face 17 and the non-manifold edges with their tri indices.
+// Diagnostic-only: intentionally uses Tessellator2 compatibility code.
 import './_watchdog.mjs';
 import fs from 'node:fs';
 import { Part } from '../js/cad/Part.js';

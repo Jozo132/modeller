@@ -3,12 +3,10 @@
 // Generates renderable triangle/quad meshes from exact B-Rep data.
 // Supports tolerance-controlled tessellation for both display and STL export.
 //
-// The default tessellation path now uses the robust Tessellator2 pipeline
-// when CAD_USE_ROBUST_TESSELLATOR is enabled (the new default).  The legacy
-// ear-clipping path is retained as _legacyTessellateBody() for fallback and
-// backward compatibility but should not be used directly by new code.
+// The active tessellation path is now native WASM-only. The legacy
+// ear-clipping path is retained as _legacyTessellateBody() only as an
+// explicit compatibility API and is not used by the live routing path.
 
-import { robustTessellateBody } from './Tessellator2/index.js';
 import { tessellateBodyWasm, ensureWasmReady } from './StepImportWasm.js';
 import { globalTessConfig } from './TessellationConfig.js';
 import { getFlag } from '../featureFlags.js';
@@ -17,7 +15,7 @@ import { getFlag } from '../featureFlags.js';
 // by the time tessellateBody() is first called.  Safe to call multiple times.
 ensureWasmReady().catch(() => { /* WASM optional */ });
 
-function meshNeedsRobustFallback(body, mesh) {
+function meshHasInvalidWasmQuality(body, mesh) {
   if (!body || !mesh || !Array.isArray(mesh.faces) || mesh.faces.length === 0) return true;
 
   const topoFaces = body.faces();
@@ -561,10 +559,9 @@ function triangulatePolygonIndices(verts, normal) {
  * Tessellate a TopoBody into a mesh geometry object compatible with the
  * existing rendering pipeline.
  *
- * When CAD_USE_ROBUST_TESSELLATOR is enabled (the default), this delegates
- * to the robust Tessellator2 pipeline.  If the robust path fails or
- * produces an empty mesh, the legacy ear-clipping path is used as a
- * fallback and the result is tagged with `_tessellator = 'legacy-fallback'`.
+ * The live routing path is native WASM-only. Callers that still need the
+ * older JS tessellators must opt into them explicitly via the compatibility
+ * APIs in Tessellator2 or `_legacyTessellateBody()`.
  *
  * @param {import('./BRepTopology.js').TopoBody} body
  * @param {Object} [opts]
@@ -590,83 +587,42 @@ export function tessellateBody(body, opts = {}) {
     return { vertices: [], faces: [], edges: [], _tessellator: 'empty' };
   }
 
-  // Validation honours caller intent: kernel paths (fillet/chamfer,
-  // boolean) pass `validate: false` because they tessellate thousands of
-  // times per operation and the O(n²) self-intersection check in
-  // MeshValidator would dominate runtime. Default is true so callers that
-  // just want "a mesh" still get a sanity check.
-  const validate = opts.validate !== false;
   const requireWasm = opts.requireWasm === true
     || opts.throwOnJsFallback === true
     || getFlag('CAD_REQUIRE_WASM_TESSELLATION') === true;
 
-  if (opts.incrementalCache && !requireWasm && opts.preferWasm !== true) {
-    const incrementalResult = robustTessellateBody(body, { ...opts, validate });
-    if (incrementalResult.faces.length > 0) {
-      incrementalResult._tessellator = 'js-incremental';
-      return applyBodyRenderMetadata(body, incrementalResult);
-    }
-  }
-
   // Primary path: native WASM tessellation pipeline (boundary-trimmed,
   // cross-parametric edge mapping, full kernel topology access).
-  // All tessellation happens inside WASM — no JS fallback.
+  // All tessellation happens inside WASM — the JS robust fallback has
+  // been removed from the live path.
   const wasmResult = tessellateBodyWasm(body, opts);
-  if (wasmResult && wasmResult.faces.length > 0) {
-    const acceptWasmValidationIssues = opts.acceptWasmValidationIssues === true;
-    const invalidFeaturePlanarTrims = acceptWasmValidationIssues ? false : meshHasInvalidFeaturePlanarTrims(body, wasmResult);
-    const invalidWasmMesh = (requireWasm || opts.fallbackOnInvalidWasm)
-        && opts.acceptWasmMeshQualityIssues !== true
-        && !acceptWasmValidationIssues
-      ? meshNeedsRobustFallback(body, wasmResult)
-      : false;
-    if (invalidFeaturePlanarTrims || ((requireWasm || opts.fallbackOnInvalidWasm) && invalidWasmMesh)) {
-      if (requireWasm) {
-        throw new Error(
-          `[BRep-only] tessellateBody: WASM tessellation rejected (${invalidFeaturePlanarTrims ? 'invalid planar trim' : 'mesh quality'}); JS robust fallback is disabled.`
-        );
-      }
-      const robustFallbackOpts = invalidFeaturePlanarTrims
-        ? {
-            ...opts,
-            validate,
-            edgeSegments: Math.max(opts.edgeSegments || 0, 64),
-            surfaceSegments: Math.max(opts.surfaceSegments || 0, 16),
-          }
-        : { ...opts, validate };
-      const robustFallback = robustTessellateBody(body, robustFallbackOpts);
-      if (robustFallback.faces.length > 0) {
-        robustFallback._tessellator = invalidFeaturePlanarTrims
-          ? 'js-wasm-planar-trim-fallback'
-          : 'js-wasm-quality-fallback';
-        return applyBodyRenderMetadata(body, robustFallback);
-      }
-    }
-    wasmResult._tessellator = 'wasm';
-    return applyBodyRenderMetadata(body, wasmResult);
+  if (!wasmResult) {
+    throw new Error(
+      '[BRep-only] tessellateBody: WASM tessellation is unavailable or not initialized. ' +
+      'Preload the module with ensureWasmReady() before synchronous tessellation.'
+    );
   }
 
-  // WASM module not loaded or returned empty — use JS Tessellator2 as
-  // a cold-start fallback only (WASM init is async, first call may miss).
-  if (requireWasm) {
-    throw new Error('[BRep-only] tessellateBody: WASM tessellation produced no mesh; JS robust fallback is disabled.');
-  }
-  const result = robustTessellateBody(body, { ...opts, validate });
-  if (result.faces.length > 0) {
-    result._tessellator = 'js-cold-start-fallback';
-    return applyBodyRenderMetadata(body, result);
+  if (wasmResult.faces.length === 0) {
+    throw new Error('[BRep-only] tessellateBody: WASM tessellation produced an empty mesh.');
   }
 
-  // If JS also fails but WASM had faces, use the WASM result.
-  if (wasmResult && wasmResult.faces.length > 0) {
-    wasmResult._tessellator = 'wasm';
-    return applyBodyRenderMetadata(body, wasmResult);
+  const acceptWasmValidationIssues = opts.acceptWasmValidationIssues === true;
+  const invalidFeaturePlanarTrims = acceptWasmValidationIssues
+    ? false
+    : meshHasInvalidFeaturePlanarTrims(body, wasmResult);
+  const invalidWasmMesh = opts.acceptWasmMeshQualityIssues === true || acceptWasmValidationIssues
+    ? false
+    : meshHasInvalidWasmQuality(body, wasmResult);
+  if (invalidFeaturePlanarTrims || invalidWasmMesh) {
+    throw new Error(
+      `[BRep-only] tessellateBody: WASM tessellation rejected (${invalidFeaturePlanarTrims ? 'invalid planar trim' : 'mesh quality'}); ` +
+      'JS fallback has been removed from the live path.'
+    );
   }
 
-  throw new Error(
-    '[BRep-only] tessellateBody: both WASM and JS tessellators produced empty meshes. ' +
-    'Fix the TopoBody input or the tessellation pipeline.'
-  );
+  wasmResult._tessellator = 'wasm';
+  return applyBodyRenderMetadata(body, wasmResult);
 }
 
 /**
@@ -722,8 +678,7 @@ export function _hasInvertedNormals(faces) {
 /**
  * Legacy ear-clipping tessellation path.
  *
- * @deprecated Prefer the robust Tessellator2 pipeline via tessellateBody()
- *             with CAD_USE_ROBUST_TESSELLATOR enabled (now the default).
+ * @deprecated Prefer the native WASM tessellation path via tessellateBody().
  * @param {import('./BRepTopology.js').TopoBody} body
  * @param {Object} [opts]
  * @returns {{ vertices: Array, faces: Array, edges: Array }}
@@ -834,9 +789,8 @@ export function tessellateFace(face, segments = 8) {
 /**
  * Tessellate a TopoBody for STL export with controlled tolerance.
  *
- * When CAD_USE_ROBUST_TESSELLATOR is enabled (the default), the robust
- * tessellator runs first with validation.  If its mesh passes validation
- * it is used; otherwise the legacy tessellator provides the fallback.
+ * Uses the same native WASM routing as tessellateBody(), with STL-specific
+ * segment selection derived from chordal deviation.
  *
  * @param {import('./BRepTopology.js').TopoBody} body
  * @param {Object} [opts]
@@ -850,22 +804,18 @@ export function tessellateForSTL(body, opts = {}) {
   // Determine segment count based on tolerance
   const segments = Math.max(4, Math.min(64, Math.ceil(1.0 / chordalDev)));
 
-  // BRep-only: use robust tessellator, no legacy fallback
-  const robustMesh = robustTessellateBody(body, {
+  const mesh = tessellateBody(body, {
+    ...opts,
     surfaceSegments: segments,
     validate: true,
+    requireWasm: true,
   });
-  if (robustMesh.faces.length > 0) {
-    const triangles = _meshToTriangles(robustMesh);
-    if (triangles.length > 0) {
-      triangles._tessellator = 'robust';
-      return triangles;
-    }
+  const triangles = _meshToTriangles(mesh);
+  if (triangles.length === 0) {
+    throw new Error('[BRep-only] tessellateForSTL: WASM tessellation produced an empty triangle set.');
   }
-  throw new Error(
-    '[BRep-only] tessellateForSTL: robust tessellator produced an empty mesh. ' +
-    'Legacy ear-clipping fallback is no longer available.'
-  );
+  triangles._tessellator = mesh._tessellator || 'wasm';
+  return triangles;
 }
 
 /**

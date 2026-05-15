@@ -3,9 +3,9 @@
 // Wires `LodManager.onRetessellate(segsU, segsV)` → feature tree. When the
 // camera-distance band crosses a threshold, every solid feature result in
 // the active part needs its mesh re-triangulated at the new density. This
-// is the consumer half of H21; the producer side (`DirtyFaceTracker`,
-// `robustTessellateBody`'s `incrementalCache`/`dirtyFaceIds` contract) has
-// been in place since steps 22/26/32.
+// is the consumer half of H21; the active path now always re-runs native
+// tessellation at the new density instead of carrying JS incremental state
+// across bands.
 //
 // Design choices:
 // - DO NOT call `featureTree.executeAll()`. A band crossing changes only
@@ -16,10 +16,8 @@
 // - `globalTessConfig` is updated BEFORE retessellating so downstream
 //   consumers (`Tessellation.tessellateBody` default opts, StepImportWasm,
 //   etc.) see the new segment count on their next call.
-// - Cache reuse is automatic: `robustTessellateBody`'s configKey includes
-//   `surfaceSegments` and `edgeSegments`, so a density change naturally
-//   invalidates every cached face mesh on the next call. No explicit
-//   `_incrementalTessellationCache = null` needed.
+// - Density changes always retessellate from exact topology. No incremental
+//   cache is carried across LoD bands on the live WASM path.
 // - Failure is non-fatal per-feature: a thrown tessellator is logged and
 //   the old geometry is preserved. This mirrors the defensive behavior of
 //   `executeAll()`'s try/catch.
@@ -99,11 +97,6 @@ export function retessellateForLod(part, segsU, segsV, deps = {}) {
       // `geometry` and the `solid.geometry` alias should change on LoD.
       r.geometry = mesh;
       if (r.solid) r.solid.geometry = mesh;
-      // The incremental cache travels with geometry so downstream fillet
-      // /chamfer retries after the band change reuse the new density.
-      if (mesh && mesh._incrementalTessellationCache) {
-        r._incrementalTessellationCache = mesh._incrementalTessellationCache;
-      }
       result.retessellated.push(feature.id);
     } catch (err) {
       // Non-fatal: keep the old geometry, let the next executeAll fix it.

@@ -14,7 +14,7 @@ import './_watchdog.mjs';
 //   3. Suppressed / errored / bodiless results are skipped.
 //   4. The new mesh replaces `result.geometry` (and `result.solid.geometry`
 //      alias) — CBREP buffer, handle metadata, volume, boundingBox stay
-//      untouched.
+//      untouched, and no JS incremental cache blob is persisted.
 //   5. Invalid inputs (NaN, zero, negative) are rejected without side
 //      effects.
 //   6. A throwing tessellator leaves the old geometry in place and records
@@ -112,7 +112,7 @@ test('stamps new geometry on the result + preserves metadata', () => {
     boundingBox: { min: {}, max: {} },
   };
   const part = makePart({ f1: r });
-  const newMesh = { faces: [{ vertices: [] }], _incrementalTessellationCache: { configKey: '24|32' } };
+  const newMesh = { faces: [{ vertices: [] }] };
   const outcome = retessellateForLod(part, 24, 32, {
     tessellateBody: () => newMesh,
     globalTessConfig: { curveSegments: 8, edgeSegments: 8, surfaceSegments: 8 },
@@ -124,7 +124,7 @@ test('stamps new geometry on the result + preserves metadata', () => {
   assert.equal(r.wasmHandleId, 'h_42', 'handle id untouched');
   assert.equal(r.exactBodyRevisionId, 7, 'revision id untouched');
   assert.equal(r.volume, 1234.5, 'volume untouched');
-  assert.equal(r._incrementalTessellationCache, newMesh._incrementalTessellationCache);
+  assert.equal(r._incrementalTessellationCache, undefined);
 });
 
 test('skips suppressed, errored, and bodiless results', () => {

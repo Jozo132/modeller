@@ -505,7 +505,7 @@ npm run test:parametric   # Parametric feature tests
 
 | Area | Tests |
 |------|-------|
-| Geometry | test-nurbs, test-wasm-tessellation, test-mesh-quality (85 tests) |
+| Geometry | test-nurbs, test-wasm-tessellation, test-wasm-tessellation-policy |
 | Features | test-exact-extrude, test-exact-revolve, test-multi-body-chamfer-fillet |
 | Chamfer/Fillet | test-brep-chamfer, test-spline-chamfer (17), test-nurbs-fillet-chamfer-variants (52) |
 | Booleans | test-boolean-analytic, test-boolean-nurbs, test-boolean-hardening |

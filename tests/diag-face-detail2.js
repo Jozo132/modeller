@@ -1,5 +1,6 @@
 // For a target topoFaceId, list all triangles AND edge-uses, flagging which
 // edges are 1-used (boundary), 2-used (interior manifold), or >2 (bug).
+// Diagnostic-only: intentionally uses Tessellator2 compatibility code.
 import './_watchdog.mjs';
 import fs from 'node:fs';
 import { Part } from '../js/cad/Part.js';

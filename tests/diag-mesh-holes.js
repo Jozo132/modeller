@@ -5,6 +5,7 @@
 import './_watchdog.mjs';
 import fs from 'node:fs';
 import { Part } from '../js/cad/Part.js';
+// Diagnostic-only: intentionally uses Tessellator2 compatibility code.
 import { parseCMOD } from '../js/cmod.js';
 import { robustTessellateBody } from '../js/cad/Tessellator2/index.js';
 

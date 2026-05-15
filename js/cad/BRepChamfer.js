@@ -2803,18 +2803,8 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
 
   let mesh;
   try {
-    // H21: forward invalidatedFaceIds as dirtyFaceIds. See BRepFillet for
-    // the parallel rationale — content-key invalidation is automatic but
-    // identity-based eviction needs an explicit signal.
-    const inputDirty = geometry && !geometry.allFacesDirty && Array.isArray(geometry.invalidatedFaceIds) && geometry.invalidatedFaceIds.length > 0
-      ? geometry.invalidatedFaceIds
-      : null;
     mesh = tessellateBody(newTopoBody, {
       validate: true,
-      incrementalCache: geometry && geometry._incrementalTessellationCache
-        ? geometry._incrementalTessellationCache
-        : null,
-      dirtyFaceIds: inputDirty,
     });
   } catch (error) {
     _debugBRepChamfer('tessellate-failed', error?.message || String(error));
@@ -2882,21 +2872,7 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
     }
   }
 
-  const canReuseEdgeAnalysis = !!(
-    geometry &&
-    geometry.edges &&
-    geometry.paths &&
-    geometry.visualEdges &&
-    mesh.incrementalTessellation &&
-    mesh.incrementalTessellation.dirtyFaceKeys.length === 0
-  );
-  const edgeResult = canReuseEdgeAnalysis
-    ? {
-        edges: geometry.edges,
-        paths: geometry.paths,
-        visualEdges: geometry.visualEdges,
-      }
-    : computeFeatureEdges(mesh.faces);
+  const edgeResult = computeFeatureEdges(mesh.faces);
 
   return {
     vertices: mesh.vertices || [],
@@ -2905,8 +2881,6 @@ export function applyBRepChamfer(geometry, edgeKeys, distance) {
     paths: edgeResult.paths,
     visualEdges: edgeResult.visualEdges,
     topoBody: newTopoBody,
-    incrementalTessellation: mesh.incrementalTessellation || null,
-    _incrementalTessellationCache: mesh._incrementalTessellationCache || null,
   };
 }
 

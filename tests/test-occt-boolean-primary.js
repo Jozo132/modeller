@@ -4,11 +4,12 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 
+import { exactBooleanOp } from '../js/cad/BooleanKernel.js';
 import { booleanOp } from '../js/cad/BooleanDispatch.js';
-import { ensureOcctBooleanShadowReady, exactBooleanOp } from '../js/cad/BooleanKernel.js';
 import { buildTopoBody, SurfaceType } from '../js/cad/BRepTopology.js';
 import { tryBuildOcctExtrudeGeometrySync } from '../js/cad/occt/OcctSketchModeling.js';
-import { invalidateOcctKernelModuleCache } from '../js/cad/occt/index.js';
+import { loadOcctKernelModule } from '../js/cad/occt/OcctKernelLoader.js';
+import { ensureWasmReady as ensureTessellationWasmReady } from '../js/cad/StepImportWasm.js';
 import { resetFlags, setFlag } from '../js/featureFlags.js';
 
 const LOCAL_DIST_CANDIDATES = [
@@ -22,8 +23,8 @@ const LOCAL_DIST_CANDIDATES = [
 
 function resolveDistPath() {
   for (const candidate of LOCAL_DIST_CANDIDATES) {
-    if (existsSync(path.join(candidate, 'occt-kernel.js')) &&
-        existsSync(path.join(candidate, 'occt-kernel.wasm'))) {
+    if (existsSync(path.join(candidate, 'occt-kernel.js'))
+        && existsSync(path.join(candidate, 'occt-kernel.wasm'))) {
       return candidate;
     }
   }
@@ -68,7 +69,7 @@ function makeRectProfile(width = 10, height = 10) {
   };
 }
 
-console.log('OCCT boolean shadow integration\n');
+console.log('OCCT boolean primary integration\n');
 
 const distPath = resolveDistPath();
 if (!distPath) {
@@ -76,8 +77,10 @@ if (!distPath) {
   process.exit(0);
 }
 
-const previousOcctDist = process.env.OCCT_KERNEL_DIST;
-process.env.OCCT_KERNEL_DIST = distPath;
+await Promise.all([
+  loadOcctKernelModule({ distPath }),
+  ensureTessellationWasmReady().catch(() => false),
+]);
 
 let passed = 0;
 let failed = 0;
@@ -93,50 +96,13 @@ async function check(name, fn) {
   }
 }
 
-setFlag('CAD_USE_OCCT_BOOLEAN_SHADOW', true);
-setFlag('CAD_USE_OCCT_SKETCH_SOLIDS', true);
-
-await check('exactBooleanOp reports shadow not ready before preload', async () => {
-  invalidateOcctKernelModuleCache();
-  const boxA = makeBox(0, 0, 0, 10, 10, 10);
-  const boxB = makeBox(20, 0, 0, 10, 10, 10);
-  const result = exactBooleanOp(boxA, boxB, 'union');
-  assert.equal(result._occtShadow?.enabled, true, 'shadow metadata should be attached');
-  assert.equal(result._occtShadow?.ready, false, 'shadow should be skipped before preload');
-  assert.equal(result._occtShadow?.skippedReason, 'occt-not-ready');
-});
-
-await check('explicit preload enables exact boolean OCCT shadow summaries', async () => {
-  const ready = await ensureOcctBooleanShadowReady({ occtBooleanShadow: true, occtDistPath: distPath });
-  assert.equal(ready, true, 'preload should resolve successfully');
-
-  const boxA = makeBox(0, 0, 0, 10, 10, 10);
-  const boxB = makeBox(20, 0, 0, 10, 10, 10);
-  const result = exactBooleanOp(boxA, boxB, 'union');
-  const operandA = result._occtShadow?.imports?.operandA;
-  const operandB = result._occtShadow?.imports?.operandB;
-  assert.equal(result._occtShadow?.ok, true, 'shadow boolean should succeed');
-  assert.equal(result._occtShadow?.valid, true, 'shadow boolean should now validate in OCCT');
-  assert.equal(operandA?.transferStatus, 'DONE', 'operand A STEP transfer should succeed');
-  assert.equal(operandB?.transferStatus, 'DONE', 'operand B STEP transfer should succeed');
-  assert.ok(operandA?.shapeHandle > 0, 'operand A should produce an OCCT shape handle');
-  assert.ok(operandB?.shapeHandle > 0, 'operand B should produce an OCCT shape handle');
-  assert.equal(operandA?.isValid, true, 'operand A import should now validate in OCCT');
-  assert.equal(operandB?.isValid, true, 'operand B import should now validate in OCCT');
-  assert.equal(operandA?.messageList?.some((message) => message.phase === 'validation'), false,
-    'operand A import should not emit validation warnings');
-  assert.equal(operandB?.messageList?.some((message) => message.phase === 'validation'), false,
-    'operand B import should not emit validation warnings');
-  assert.ok(result._occtShadow?.summary?.occt?.meshFaceCount > 0, 'shadow mesh should contain faces');
-  assert.ok(result._occtShadow?.summary?.comparison?.boundingBoxDelta?.maxAbsDelta < 0.1,
-    'shadow bounding box should remain close to the primary boolean result');
-  assert.ok(result.diagnostics?.occtShadow?.timings?.totalMs >= 0, 'shadow timings should be recorded in diagnostics');
-});
-
-await check('exactBooleanOp attaches resident OCCT primary payload for shared-adapter handles', async () => {
+await check('exactBooleanOp promotes resident OCCT boolean authority into the result contract', async () => {
   const profile = makeRectProfile();
   const plane = { normal: { x: 0, y: 0, z: 1 } };
   const sketchToWorld = (point) => ({ x: point.x, y: point.y, z: 0 });
+
+  resetFlags();
+  setFlag('CAD_USE_OCCT_SKETCH_SOLIDS', true);
 
   const geomA = tryBuildOcctExtrudeGeometrySync({
     profile,
@@ -169,8 +135,6 @@ await check('exactBooleanOp attaches resident OCCT primary payload for shared-ad
   );
 
   assert.ok(result._occtPrimary?.occtShapeHandle > 0, 'resident OCCT primary payload should be attached');
-  assert.equal(result._occtPrimary?._occtModeling?.source, 'resident-boolean');
-  assert.ok(result._occtPrimary?.faces?.length > 0, 'resident OCCT primary payload should include mesh faces');
   assert.equal(result.occtShapeHandle, result._occtPrimary.occtShapeHandle,
     'kernel result should promote the resident OCCT handle to the top-level contract');
   assert.equal(result.occtShapeResident, true,
@@ -179,22 +143,45 @@ await check('exactBooleanOp attaches resident OCCT primary payload for shared-ad
     'kernel result mesh should be promoted to the resident OCCT mesh');
   assert.ok(result.mesh?.faces?.length > 0,
     'kernel result mesh should remain populated after OCCT promotion');
-  assert.ok(result._compatMesh?.faces?.length >= 0,
+  assert.ok(Array.isArray(result._compatMesh?.faces),
     'kernel result should preserve the compatibility mesh shadow when OCCT is primary');
 });
 
-await check('BooleanDispatch preserves OCCT shadow metadata', async () => {
-  const boxA = makeBox(0, 0, 0, 10, 10, 10);
-  const boxB = makeBox(20, 0, 0, 10, 10, 10);
-  const geom = booleanOp({ topoBody: boxA }, { topoBody: boxB }, 'union');
-  assert.equal(geom._occtShadow?.ok, true, 'dispatcher result should preserve shadow metadata');
-  assert.ok(geom.diagnostics?.occtShadow?.summary, 'dispatcher result should preserve diagnostics');
-  assert.ok(geom.resultGrade, 'dispatcher result should preserve boolean result grade');
+await check('BooleanDispatch consumes the promoted OCCT boolean contract directly', async () => {
+  const profile = makeRectProfile();
+  const plane = { normal: { x: 0, y: 0, z: 1 } };
+  const sketchToWorld = (point) => ({ x: point.x, y: point.y, z: 0 });
+
+  resetFlags();
+  setFlag('CAD_USE_OCCT_SKETCH_SOLIDS', true);
+
+  const geomA = tryBuildOcctExtrudeGeometrySync({
+    profile,
+    plane,
+    distance: 10,
+    sketchToWorld,
+    topoBody: makeBox(0, 0, 0, 10, 10, 10),
+  });
+  const geomB = tryBuildOcctExtrudeGeometrySync({
+    profile,
+    plane,
+    distance: 10,
+    sketchToWorld,
+    topoBody: makeBox(0, 0, 0, 10, 10, 10),
+  });
+
+  const result = booleanOp(
+    { topoBody: makeBox(0, 0, 0, 10, 10, 10), occtShapeHandle: geomA.occtShapeHandle },
+    { topoBody: makeBox(0, 0, 0, 10, 10, 10), occtShapeHandle: geomB.occtShapeHandle },
+    'union',
+  );
+
+  assert.ok(result.occtShapeHandle > 0, 'dispatcher result should preserve the promoted OCCT handle');
+  assert.equal(result.occtShapeResident, true,
+    'dispatcher result should preserve resident OCCT authority');
+  assert.ok(result.faces?.length > 0,
+    'dispatcher result should expose the promoted OCCT mesh faces');
 });
 
-resetFlags();
-if (previousOcctDist == null) delete process.env.OCCT_KERNEL_DIST;
-else process.env.OCCT_KERNEL_DIST = previousOcctDist;
-
-console.log(`\nOCCT boolean shadow: ${passed} passed, ${failed} failed`);
+console.log(`\nOCCT boolean primary: ${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

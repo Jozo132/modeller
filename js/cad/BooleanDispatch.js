@@ -1,6 +1,9 @@
 // js/cad/BooleanDispatch.js — Boolean operation dispatcher
 //
-// Routes boolean operations through the exact B-Rep kernel.
+// Routes boolean operations through the exact B-Rep compatibility kernel.
+// When both operands already carry resident OCCT handles, the returned
+// geometry prefers a resident OCCT boolean result for display/authority
+// while preserving TopoBody as the compatibility shadow.
 // Legacy mesh BSP booleans have been removed — operands MUST carry
 // exact topology (TopoBody).
 //
@@ -10,7 +13,6 @@
 
 import { exactBooleanOp, hasExactTopology } from './BooleanKernel.js';
 import { computeFeatureEdges } from './EdgeAnalysis.js';
-import { tryBuildOcctBooleanMetadataSync } from './occt/OcctSketchModeling.js';
 import { chainEdgePaths } from './toolkit/EdgePathUtils.js';
 
 import {
@@ -192,14 +194,17 @@ function _compactExactPlanarDisplayFaces(inputFaces) {
  * @param {Object} geomA - First geometry with .topoBody
  * @param {Object} geomB - Second geometry with .topoBody
  * @param {string} operation - 'union', 'subtract', or 'intersect'
- * @returns {Object} Resulting geometry with topoBody, faces, edges, paths
+ * @returns {Object} Resulting geometry with topoBody shadow, faces, edges, paths
  */
 export function booleanOp(geomA, geomB, operation, sharedA = null, sharedB = null) {
   // --- Exact B-Rep dispatch ---
   if (geomA && geomA.topoBody && geomB && geomB.topoBody &&
       hasExactTopology(geomA.topoBody) && hasExactTopology(geomB.topoBody)) {
     const opName = (operation === 'add') ? 'union' : operation;
-    const result = exactBooleanOp(geomA.topoBody, geomB.topoBody, opName);
+    const result = exactBooleanOp(geomA.topoBody, geomB.topoBody, opName, undefined, {
+      occtHandleA: geomA.occtShapeHandle || 0,
+      occtHandleB: geomB.occtShapeHandle || 0,
+    });
     const {
       body,
       mesh,
@@ -208,17 +213,16 @@ export function booleanOp(geomA, geomB, operation, sharedA = null, sharedB = nul
       _isFallback,
       fallbackDiagnostics,
       _occtShadow,
+      _occtPrimary,
+      occtShapeHandle,
+      occtShapeResident,
     } = result;
-    const occtModeling = tryBuildOcctBooleanMetadataSync({
-      handleA: geomA.occtShapeHandle || 0,
-      handleB: geomB.occtShapeHandle || 0,
-      operation: opName,
-    });
-    const useOcctDisplay = Array.isArray(occtModeling?.faces) && occtModeling.faces.length > 0;
-    const exactDisplayFaces = _compactExactPlanarDisplayFaces(mesh.faces || []);
-    const displayFaces = useOcctDisplay ? occtModeling.faces : exactDisplayFaces;
+    const useOcctDisplay = occtShapeResident === true && Array.isArray(mesh?.faces) && mesh.faces.length > 0;
+    const displayFaces = useOcctDisplay
+      ? (mesh.faces || [])
+      : _compactExactPlanarDisplayFaces(mesh.faces || []);
     const displayMesh = useOcctDisplay
-      ? occtModeling
+      ? mesh
       : {
         ...mesh,
         faces: displayFaces,
@@ -238,7 +242,9 @@ export function booleanOp(geomA, geomB, operation, sharedA = null, sharedB = nul
       _isFallback,
       fallbackDiagnostics,
       _occtShadow,
-      ...(occtModeling || {}),
+      _occtPrimary,
+      occtShapeHandle: occtShapeHandle || displayMesh.occtShapeHandle || 0,
+      occtShapeResident: occtShapeResident === true || displayMesh.occtShapeResident === true,
     };
   }
 

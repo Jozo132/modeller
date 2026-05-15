@@ -17,20 +17,6 @@
 // --- Tessellation ---
 export { tessellateBody, tessellateFace, tessellateForSTL } from './Tessellation.js';
 
-// --- Robust tessellator components ---
-export {
-  robustTessellateBody,
-  tessellateBodyRouted,
-  shadowTessellateBody,
-  getShadowTessDisagreements,
-  clearShadowTessDisagreements,
-  EdgeSampler,
-  FaceTriangulator,
-  MeshStitcher,
-  computeMeshHash,
-  meshSummary,
-} from './Tessellator2/index.js';
-
 // --- Mesh analysis (post-tessellation) ---
 export {
   countInvertedFaces,

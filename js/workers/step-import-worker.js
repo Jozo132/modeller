@@ -18,7 +18,6 @@ import { importSTEP, ensureWasmReady } from '../cad/StepImport.js';
 import { loadOcctKernelModule } from '../cad/occt/index.js';
 import { telemetry } from '../telemetry.js';
 import { getFlag } from '../featureFlags.js';
-import { warnOnceForFallback } from '../cad/fallback/warnOnce.js';
 
 /**
  * Pack vertex data from faces into a flat Float32Array for GPU upload.
@@ -79,24 +78,13 @@ async function produceCbrep(body, writeToIdb) {
           telemetry.recordCacheHit();
         }
       } catch {
-        warnOnceForFallback({
-          id: 'cache:ir-recompute',
-          policy: 'allow-fallback',
-          reason: 'IR cache write to IndexedDB failed; import proceeds without caching',
-          kind: 'degraded-result',
-        });
+        // Cache persistence is best-effort. Import still succeeds without it.
       }
     }
 
     return { hash, cbrep: buf };
   } catch {
-    // CBREP production must never break the import path
-    warnOnceForFallback({
-      id: 'cache:ir-recompute',
-      policy: 'allow-fallback',
-      reason: 'CBREP production failed; import proceeds without CBREP',
-      kind: 'degraded-result',
-    });
+    // CBREP production must never break the import path.
     return null;
   }
 }
@@ -114,7 +102,7 @@ self.onmessage = async function (e) {
         await loadOcctKernelModule();
       } catch {
         // Best-effort preload for the OCCT STEP path in worker contexts.
-        // importSTEP() will still fall back to the legacy path if OCCT cannot load here.
+        // importSTEP() will continue on its non-OCCT path if the preload fails here.
       }
     }
 

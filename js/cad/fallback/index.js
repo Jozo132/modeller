@@ -17,4 +17,3 @@ export {
 export { buildConformingMesh, mergeVertexSpaces } from './ConformingSurfaceMesh.js';
 export { meshBooleanOp } from './MeshBoolean.js';
 export { reconstructAdjacency, extractFeatureEdges } from './AdjacencyReconstruction.js';
-export { FallbackKind, warnOnceForFallback, _resetWarnOnce, getWarnedFallbackIds } from './warnOnce.js';

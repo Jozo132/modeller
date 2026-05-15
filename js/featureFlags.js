@@ -1,9 +1,9 @@
 // js/featureFlags.js — Centralized feature-flag module
 //
 // All CAD-kernel feature flags live here. Flags that correspond to the
-// new integrated kernel stack default to ON so the robust pipeline is
-// used by default. Safety/diagnostics-only flags default to OFF, and
-// failure-masking escape hatches stay opt-in.
+// integrated WASM/OCCT stack default to ON where applicable. Safety /
+// diagnostics-only flags default to OFF, and failure-masking escape
+// hatches stay opt-in.
 //
 // Flags can be set via:
 //   1. Environment variables  (Node.js: process.env.CAD_*)
@@ -57,7 +57,7 @@ const FLAG_DEFS = [
     name: 'CAD_USE_ROBUST_TESSELLATOR',
     type: 'boolean',
     defaultValue: true,
-    description: 'Use the Tessellator2 robust tessellation pipeline.',
+    description: 'Compatibility flag retained for older tests and tools; the live tessellation path no longer reads it.',
   },
   {
     name: 'CAD_REQUIRE_WASM_TESSELLATION',

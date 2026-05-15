@@ -56,7 +56,7 @@ test('CAD_USE_GWN_CONTAINMENT defaults to true', () => {
   assert.strictEqual(getFlag('CAD_USE_GWN_CONTAINMENT'), true);
 });
 
-test('CAD_USE_ROBUST_TESSELLATOR defaults to true', () => {
+test('CAD_USE_ROBUST_TESSELLATOR compatibility flag defaults to true', () => {
   resetFlags();
   assert.strictEqual(getFlag('CAD_USE_ROBUST_TESSELLATOR'), true);
 });

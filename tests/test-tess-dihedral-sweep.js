@@ -809,7 +809,7 @@ for (const axis of ['X', 'Y', 'Z']) {
 // (C,F) × ordering × pair = enough coverage without blowing up runtime.
 // NOTE: the previous `fillet→chamfer` defect on concurrent edges was fixed
 // by filtering degenerate zero-length self-loop coedges in
-// `_collectLoopPoints` (Tessellator2/index.js) — chamfer trim of a
+// the former `_collectLoopPoints` helper in Tessellator2 compatibility code — chamfer trim of a
 // previously-filleted face was leaving a zero-length stub coedge at the
 // junction corner, producing folded/overlapping triangulation.
 const PAIRS = [['X', 'Y'], ['X', 'Z'], ['Y', 'Z']];

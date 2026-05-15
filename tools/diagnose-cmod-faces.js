@@ -1,3 +1,4 @@
+// Diagnostic-only: intentionally uses Tessellator2 compatibility code.
 import fs from 'node:fs';
 import path from 'node:path';
 

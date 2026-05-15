@@ -220,7 +220,7 @@ node tests/test-multi-body-chamfer-fillet.js  # Chamfer/fillet operations (25+ t
 node tests/test-nurbs-fillet-chamfer-variants.js  # NURBS intersection edge cases (52 tests)
 node tests/test-spline-chamfer.js             # Spline/bezier chamfer (17 tests)
 node tests/test-toolkit.js                    # Toolkit utilities (82 tests)
-node tests/test-mesh-quality.js               # Mesh quality validation (85 tests)
+node tests/test-wasm-tessellation-policy.js   # WASM tessellation routing policy
 node tests/test-nurbs.js                      # NURBS curve/surface (25+ tests)
 node tests/test-boolean-analytic.js           # Exact boolean kernel (18+ tests)
 ```

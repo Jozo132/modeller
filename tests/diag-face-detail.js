@@ -1,3 +1,4 @@
+// Diagnostic-only: intentionally uses Tessellator2 compatibility code.
 import './_watchdog.mjs';
 import fs from 'node:fs';
 import { Part } from '../js/cad/Part.js';

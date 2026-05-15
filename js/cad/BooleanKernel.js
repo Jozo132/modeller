@@ -41,13 +41,13 @@ import {
   FallbackTrigger, OperationPolicy,
 } from './fallback/FallbackPolicy.js';
 import { meshBooleanOp } from './fallback/MeshBoolean.js';
-import { warnOnceForFallback, FallbackKind } from './fallback/warnOnce.js';
 import { validateBooleanResult } from './BooleanInvariantValidator.js';
 import { getFlag } from '../featureFlags.js';
 import {
   buildOcctBooleanShadowSync,
   ensureOcctBooleanShadowReady as _ensureOcctBooleanShadowReady,
 } from './occt/OcctBooleanShadow.js';
+import { tryBuildOcctBooleanMetadataSync } from './occt/OcctSketchModeling.js';
 
 export async function ensureOcctBooleanShadowReady(opts = {}) {
   return _ensureOcctBooleanShadowReady(opts);
@@ -71,6 +71,8 @@ export async function ensureOcctBooleanShadowReady(opts = {}) {
  * @param {import('./Tolerance.js').Tolerance} [tol]
  * @param {Object} [opts]
  * @param {string} [opts.policy] - One of OperationPolicy values
+ * @param {number} [opts.occtHandleA] - Resident OCCT operand handle for A when available
+ * @param {number} [opts.occtHandleB] - Resident OCCT operand handle for B when available
  * @returns {{
  *   body: import('./BRepTopology.js').TopoBody|null,
  *   mesh: {vertices: Array, faces: Array, edges: Array},
@@ -78,13 +80,17 @@ export async function ensureOcctBooleanShadowReady(opts = {}) {
  *   resultGrade?: string,
  *   _isFallback?: boolean,
  *   fallbackDiagnostics?: Object,
+ *   occtShapeHandle?: number,
+ *   occtShapeResident?: boolean,
+ *   _occtPrimary?: Object,
+ *   _compatMesh?: Object,
  * }}
  */
 export function exactBooleanOp(bodyA, bodyB, operation, tol = DEFAULT_TOLERANCE, opts = {}) {
   const policy = resolvePolicy(opts.policy);
 
   if (policy === OperationPolicy.FORCE_FALLBACK) {
-    return _finalizeBooleanResultWithOcctShadow(bodyA, bodyB, operation, _runDiscreteFallback(bodyA, bodyB, operation, tol, {
+    return _finalizeBooleanResultWithOcctAttachments(bodyA, bodyB, operation, _runDiscreteFallback(bodyA, bodyB, operation, tol, {
       policy,
       triggerReason: 'policy_force_fallback',
       failingStage: 'policy',
@@ -97,7 +103,7 @@ export function exactBooleanOp(bodyA, bodyB, operation, tol = DEFAULT_TOLERANCE,
     const fallbackDecision = evaluateExactResult(result.diagnostics);
     if (fallbackDecision.shouldFallback) {
       if (shouldTriggerFallback(fallbackDecision.trigger, { policy })) {
-        return _finalizeBooleanResultWithOcctShadow(bodyA, bodyB, operation, _runDiscreteFallback(bodyA, bodyB, operation, tol, {
+        return _finalizeBooleanResultWithOcctAttachments(bodyA, bodyB, operation, _runDiscreteFallback(bodyA, bodyB, operation, tol, {
           policy,
           triggerReason: fallbackDecision.trigger,
           failingStage: fallbackDecision.stage,
@@ -111,7 +117,7 @@ export function exactBooleanOp(bodyA, bodyB, operation, tol = DEFAULT_TOLERANCE,
       error.diagnostics = result.diagnostics;
       throw error;
     }
-    return _finalizeBooleanResultWithOcctShadow(
+    return _finalizeBooleanResultWithOcctAttachments(
       bodyA,
       bodyB,
       operation,
@@ -122,7 +128,7 @@ export function exactBooleanOp(bodyA, bodyB, operation, tol = DEFAULT_TOLERANCE,
     if (!shouldTriggerFallback(FallbackTrigger.UNCAUGHT_EXCEPTION, { policy })) {
       throw error;
     }
-    return _finalizeBooleanResultWithOcctShadow(bodyA, bodyB, operation, _runDiscreteFallback(bodyA, bodyB, operation, tol, {
+    return _finalizeBooleanResultWithOcctAttachments(bodyA, bodyB, operation, _runDiscreteFallback(bodyA, bodyB, operation, tol, {
       policy,
       triggerReason: FallbackTrigger.UNCAUGHT_EXCEPTION,
       failingStage: 'exact_pipeline',
@@ -134,7 +140,41 @@ export function exactBooleanOp(bodyA, bodyB, operation, tol = DEFAULT_TOLERANCE,
   }
 }
 
-function _finalizeBooleanResultWithOcctShadow(bodyA, bodyB, operation, result, opts) {
+function _buildOcctPrimaryBooleanMetadata(operation, opts = {}) {
+  const handleA = Number.isInteger(opts.occtHandleA) ? opts.occtHandleA : 0;
+  const handleB = Number.isInteger(opts.occtHandleB) ? opts.occtHandleB : 0;
+  if (!(handleA > 0) || !(handleB > 0)) return null;
+  return tryBuildOcctBooleanMetadataSync({
+    handleA,
+    handleB,
+    operation,
+  });
+}
+
+function _promoteOcctPrimaryResult(result, primary) {
+  if (!result || !primary) return result;
+
+  const compatibilityMesh = result.mesh || null;
+  if (compatibilityMesh) {
+    result._compatMesh = compatibilityMesh;
+  }
+
+  result.mesh = {
+    ...primary,
+    topoBody: result.body ?? compatibilityMesh?.topoBody ?? null,
+  };
+  result.occtShapeHandle = primary.occtShapeHandle || 0;
+  result.occtShapeResident = primary.occtShapeResident === true;
+  return result;
+}
+
+function _finalizeBooleanResultWithOcctAttachments(bodyA, bodyB, operation, result, opts) {
+  const primary = _buildOcctPrimaryBooleanMetadata(operation, opts);
+  if (primary) {
+    result._occtPrimary = primary;
+    _promoteOcctPrimaryResult(result, primary);
+  }
+
   const shadow = buildOcctBooleanShadowSync(bodyA, bodyB, operation, result, opts);
   if (!shadow) return result;
 
@@ -155,14 +195,6 @@ function _finalizeBooleanResultWithOcctShadow(bodyA, bodyB, operation, result, o
 }
 
 function _runDiscreteFallback(bodyA, bodyB, operation, tol, opts = {}) {
-  const policy = opts.policy ?? OperationPolicy.ALLOW_FALLBACK;
-  warnOnceForFallback({
-    id: 'boolean:exact-to-discrete',
-    policy,
-    reason: opts.reason ?? 'boolean exact path routed to discrete fallback',
-    kind: FallbackKind.NEW_STACK_FALLBACK,
-  });
-
   try {
     const fallback = meshBooleanOp(bodyA, bodyB, operation, {
       snapTolerance: tol?.pointCoincidence ?? DEFAULT_TOLERANCE.pointCoincidence,

@@ -3796,12 +3796,6 @@ function _finalizePlaneCylinderArcFillet(geometry, newTopoBody, segments = 8) {
       surfaceSegments: Math.max(segments * 4, 32),
       preferWasm: true,
       requireWasm: true,
-      incrementalCache: geometry && geometry._incrementalTessellationCache
-        ? geometry._incrementalTessellationCache
-        : null,
-      dirtyFaceIds: geometry && !geometry.allFacesDirty && Array.isArray(geometry.invalidatedFaceIds)
-        ? geometry.invalidatedFaceIds
-        : null,
       fallbackOnInvalidWasm: false,
     });
   } catch (error) {
@@ -3834,8 +3828,6 @@ function _finalizePlaneCylinderArcFillet(geometry, newTopoBody, segments = 8) {
     topoBody: newTopoBody,
     brep: { faces: brepFaces },
     _tessellator: mesh._tessellator || null,
-    incrementalTessellation: mesh.incrementalTessellation || null,
-    _incrementalTessellationCache: mesh._incrementalTessellationCache || null,
   };
 }
 
@@ -5243,15 +5235,6 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
   // Step 7: Tessellate
   let mesh;
   try {
-    // H21: when the input geometry carries DirtyFaceTracker-stamped
-    // `invalidatedFaceIds`, forward them as explicit cache-eviction hints
-    // so the tessellator re-triangulates those faces even if their content
-    // key happens to match a cached mesh. `allFacesDirty: true` collapses
-    // to "ignore the whole cache" which the tessellator handles by just
-    // not hitting it.
-    const inputDirty = geometry && !geometry.allFacesDirty && Array.isArray(geometry.invalidatedFaceIds) && geometry.invalidatedFaceIds.length > 0
-      ? geometry.invalidatedFaceIds
-      : null;
     const requireWasmTessellation = edgeDataList.some((edgeData) => edgeData && Array.isArray(edgeData._rollingRail0));
     const stableEdgeSegments = Math.max(segments, 32);
     const stableSurfaceSegments = Math.max(Math.ceil(segments / 2), 16);
@@ -5262,10 +5245,6 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
       surfaceSegments: stableSurfaceSegments,
       preferWasm: true,
       requireWasm: requireWasmTessellation,
-      incrementalCache: geometry && geometry._incrementalTessellationCache
-        ? geometry._incrementalTessellationCache
-        : null,
-      dirtyFaceIds: inputDirty,
       fallbackOnInvalidWasm: !requireWasmTessellation,
     });
     _debugBRepFillet('after-tessellate', { triangles: mesh?.faces?.length || 0 });
@@ -5295,21 +5274,7 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
     recomputeFaceNormals(mesh.faces);
   }
 
-  const canReuseEdgeAnalysis = !!(
-    geometry &&
-    geometry.edges &&
-    geometry.paths &&
-    geometry.visualEdges &&
-    mesh.incrementalTessellation &&
-    mesh.incrementalTessellation.dirtyFaceKeys.length === 0
-  );
-  const edgeResult = canReuseEdgeAnalysis
-    ? {
-        edges: geometry.edges,
-        paths: geometry.paths,
-        visualEdges: geometry.visualEdges,
-      }
-    : computeFeatureEdges(mesh.faces);
+  const edgeResult = computeFeatureEdges(mesh.faces);
 
   // Build a lightweight BRep view from the TopoBody so downstream code
   // (tests, export) can inspect exact surface data.
@@ -5348,8 +5313,6 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
     topoBody: newTopoBody,
     brep,
     _tessellator: mesh._tessellator || null,
-    incrementalTessellation: mesh.incrementalTessellation || null,
-    _incrementalTessellationCache: mesh._incrementalTessellationCache || null,
   };
 }
 // Exports

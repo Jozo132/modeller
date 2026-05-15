@@ -17,7 +17,6 @@ import { Sketch } from '../js/cad/Sketch.js';
 import { parseCMOD } from '../js/cmod.js';
 import { resetFeatureIds } from '../js/cad/Feature.js';
 import { resetTopoIds, buildTopoBody } from '../js/cad/BRepTopology.js';
-import { robustTessellateBody } from '../js/cad/Tessellator2/index.js';
 import { tessellateBody } from '../js/cad/Tessellation.js';
 import { ensureWasmReady, tessellateBodyWasm } from '../js/cad/StepImportWasm.js';
 import { TessellationConfig } from '../js/cad/TessellationConfig.js';

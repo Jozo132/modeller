@@ -1,4 +1,5 @@
 // tests/debug-step-tessellation.js — Debug the actual STEP file tessellation
+// Diagnostic-only: intentionally uses Tessellator2 compatibility code.
 // Run: node tests/debug-step-tessellation.js
 
 import { readFileSync } from 'node:fs';

@@ -104,12 +104,6 @@ export {
   detectDegenerateFaces, checkWatertight,
 } from './MeshValidator.js';
 export {
-  robustTessellateBody, tessellateBodyRouted, shadowTessellateBody,
-  getShadowTessDisagreements, clearShadowTessDisagreements,
-  EdgeSampler, FaceTriangulator, MeshStitcher,
-  computeMeshHash, meshSummary,
-} from './Tessellator2/index.js';
-export {
   IntersectionValidation, validateIntersections, validateFragments, validateFinalBody,
 } from './IntersectionValidator.js';
 export { HealingReport, healFragments } from './Healing.js';
@@ -125,7 +119,6 @@ export {
 export { buildConformingMesh, mergeVertexSpaces } from './fallback/ConformingSurfaceMesh.js';
 export { meshBooleanOp } from './fallback/MeshBoolean.js';
 export { reconstructAdjacency, extractFeatureEdges } from './fallback/AdjacencyReconstruction.js';
-export { FallbackKind, warnOnceForFallback, _resetWarnOnce, getWarnedFallbackIds } from './fallback/warnOnce.js';
 
 // --- Diagnostic / result schemas ---
 export { BooleanResult, TessellationResult, ContainmentResult } from './diagnostics.js';

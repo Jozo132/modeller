@@ -29,9 +29,6 @@ const CORE_GLOBS = [
   'js/cad/SurfaceSurfaceIntersect.js',
   'js/cad/Containment.js',
   'js/cad/FaceSplitter.js',
-  'js/cad/Tessellator2/EdgeSampler.js',
-  'js/cad/Tessellator2/FaceTriangulator.js',
-  'js/cad/Tessellator2/Refinement.js',
 ];
 
 // Patterns that indicate direct bypass (when found in core files)

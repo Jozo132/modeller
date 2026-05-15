@@ -1,32 +1,30 @@
-name: mesh-quality
+name: tessellation-policy
 
 on:
   push:
     paths:
-      - 'js/cad/Tessellator2/**'
       - 'js/cad/Tessellation.js'
       - 'js/cad/TessellationConfig.js'
       - 'js/cad/MeshValidator.js'
       - 'js/cad/WasmTessellation.js'
       - 'js/cad/diagnostics.js'
-      - 'tests/test-mesh-quality.js'
+      - 'tests/test-wasm-tessellation-policy.js'
       - 'tests/step/**'
   pull_request:
     paths:
-      - 'js/cad/Tessellator2/**'
       - 'js/cad/Tessellation.js'
       - 'js/cad/TessellationConfig.js'
       - 'js/cad/MeshValidator.js'
       - 'js/cad/WasmTessellation.js'
       - 'js/cad/diagnostics.js'
-      - 'tests/test-mesh-quality.js'
+      - 'tests/test-wasm-tessellation-policy.js'
       - 'tests/step/**'
 
 permissions:
   contents: read
 
 jobs:
-  mesh-quality:
+  tessellation-policy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -35,8 +33,8 @@ jobs:
           node-version: 20
       - run: npm ci
       - run: npx asc assembly/index.ts --target debug && npx asc assembly/index.ts --target release
-      - name: Mesh quality tests (includes shadow + canary)
-        run: node tests/test-mesh-quality.js
+      - name: WASM tessellation policy tests
+        run: node tests/test-wasm-tessellation-policy.js
       - name: STEP import regression
         run: node tests/test-step-import.js
       - name: WASM tessellation regression

@@ -5,23 +5,38 @@
 // so the UI thread stays responsive.
 //
 // Message protocol:
-//   Request:  { op: 'boolean', a: <body>, b: <body>, operation: 'union'|'subtract'|'intersect', _dispatchId }
+//   Request:  {
+//     op: 'boolean',
+//     a: <body>,
+//     b: <body>,
+//     operation: 'union'|'subtract'|'intersect',
+//     tolerance?: <Tolerance>,
+//     options?: <exactBooleanOp opts>,
+//     _dispatchId,
+//   }
 //   Response: { type: 'result', body: <resultBody>, _dispatchId }
 //   Error:    { type: 'error', message, stack, _dispatchId }
 
 import { exactBooleanOp } from '../cad/BooleanKernel.js';
+import { Tolerance } from '../cad/Tolerance.js';
 import { telemetry } from '../telemetry.js';
 
-self.onmessage = function (e) {
-  const { op, _dispatchId } = e.data;
+function normalizeTolerance(tolerance) {
+  if (!tolerance || typeof tolerance !== 'object') return tolerance;
+  if (typeof tolerance.distance === 'function') return tolerance;
+  return Tolerance.deserialize(tolerance);
+}
+
+export function handleKernelWorkerMessage(data) {
+  const { op, _dispatchId } = data || {};
 
   try {
     let result;
     switch (op) {
       case 'boolean': {
-        const { a, b, operation, options } = e.data;
+        const { a, b, operation, tolerance, options } = data;
         telemetry.startTimer('kernel:boolean');
-        const body = exactBooleanOp(a, b, operation, options);
+        const body = exactBooleanOp(a, b, operation, normalizeTolerance(tolerance), options || {});
         const duration = telemetry.endTimer('kernel:boolean');
         result = { type: 'result', body, duration, _dispatchId };
         break;
@@ -30,13 +45,19 @@ self.onmessage = function (e) {
         result = { type: 'error', message: `Unknown kernel op: ${op}`, _dispatchId };
     }
 
-    self.postMessage(result);
+    return result;
   } catch (err) {
-    self.postMessage({
+    return {
       type: 'error',
       message: err.message || String(err),
       stack: err.stack || '',
       _dispatchId,
-    });
+    };
   }
-};
+}
+
+if (typeof self !== 'undefined') {
+  self.onmessage = function (e) {
+    self.postMessage(handleKernelWorkerMessage(e.data));
+  };
+}

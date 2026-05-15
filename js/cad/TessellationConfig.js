@@ -9,9 +9,9 @@
 //   const segs = globalTessConfig.surfaceSegments; // always current
 //   globalTessConfig.applyPreset('fine');           // updates everywhere
 //
-// Tessellator modes:
-//   - 'legacy'  — Independent per-face tessellation (default, original behavior)
-//   - 'robust'  — Edge-first shared-boundary pipeline (Tessellator2)
+// The serialized `tessellator` field is retained for backward compatibility
+// with older configs and diagnostics. The live runtime path is always
+// native WASM / OCCT-first.
 //
 // Quality presets: draft, normal, fine, ultra
 
@@ -27,9 +27,9 @@ export class TessellationConfig {
    * @param {Object} [opts]
    * @param {number} [opts.curveSegments=64]   - Arc/circle/ellipse/B-spline curve segments
    * @param {number} [opts.surfaceSegments=16]  - NURBS surface U/V subdivisions
-   * @param {number} [opts.edgeSegments=64]    - Edge wireframe tessellation segments
-   * @param {boolean} [opts.adaptiveSubdivision=true] - Enable adaptive refinement
-   * @param {'legacy'|'robust'} [opts.tessellator='legacy'] - Tessellation pipeline selection
+  * @param {number} [opts.edgeSegments=64]    - Edge wireframe tessellation segments
+  * @param {boolean} [opts.adaptiveSubdivision=true] - Enable adaptive refinement
+  * @param {'legacy'|'robust'} [opts.tessellator='legacy'] - Compatibility-only serialized field; ignored by the live runtime route.
    */
   constructor(opts = {}) {
     this.curveSegments = opts.curveSegments ?? 64;

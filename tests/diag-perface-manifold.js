@@ -2,6 +2,7 @@
 //   - boundary edges: should count ~= outer + inner loop boundary segments
 //   - interior edges: should all be used by exactly 2 triangles
 //   - non-manifold (>2): PER-FACE BUG
+// Diagnostic-only: intentionally uses Tessellator2 compatibility code.
 //
 // If per-face mesh is clean but stitched mesh has issues, the bug is in
 // the stitcher / edge-sampling agreement between adjacent faces.

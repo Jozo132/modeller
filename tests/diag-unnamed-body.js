@@ -3,6 +3,7 @@
 // Goal: find which faces are mis-trimmed / mis-tessellated, and classify
 // the root cause (topology missing shared edge vs tessellator ignoring
 // the trim loop).
+// Diagnostic-only: intentionally uses Tessellator2 compatibility code.
 //
 // Outputs a CSV-ish report to stdout.
 

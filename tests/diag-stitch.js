@@ -1,6 +1,7 @@
 // Diagnose cross-face mesh stitching. For every shared edge, sample both
 // adjacent faces' mesh boundary along that edge and compare 3D positions.
 // Gaps indicate tessellation inconsistency -> visible holes.
+// Diagnostic-only: intentionally uses Tessellator2 compatibility code.
 
 import './_watchdog.mjs';
 import fs from 'node:fs';

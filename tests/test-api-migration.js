@@ -14,7 +14,7 @@ import './_watchdog.mjs';
 //   - Tessellation output and viewer API behavior
 //   - Cache hit/miss behavior
 //   - Assembly API flows
-//   - Legacy compatibility shim behavior
+//   - Explicit compatibility shim behavior
 
 import { strict as assert } from 'node:assert';
 import fs from 'node:fs';
@@ -28,11 +28,7 @@ import {
 import {
   tessellateBody, tessellateFace, tessellateForSTL, _legacyTessellateBody,
 } from '../js/cad/Tessellation.js';
-
-import {
-  robustTessellateBody, tessellateBodyRouted, shadowTessellateBody,
-  getShadowTessDisagreements, clearShadowTessDisagreements,
-} from '../js/cad/Tessellator2/index.js';
+import { ensureWasmReady } from '../js/cad/StepImportWasm.js';
 
 import {
   classifyPoint, classifyPoints, getShadowDisagreements, clearShadowDisagreements,
@@ -63,6 +59,8 @@ import {
 
 import { telemetry, Telemetry } from '../js/telemetry.js';
 import { formatTimingSuffix, startTiming } from './test-timing.js';
+
+await ensureWasmReady();
 
 // ── Test harness ────────────────────────────────────────────────────
 
@@ -138,7 +136,7 @@ test('safety flags still default to OFF', () => {
   assert.strictEqual(getFlag('CAD_DIAGNOSTICS_DIR'), '');
 });
 
-test('flags can be overridden to legacy behavior', () => {
+test('compatibility flags can still be overridden explicitly', () => {
   resetFlags();
   setFlag('CAD_USE_ROBUST_TESSELLATOR', false);
   assert.strictEqual(getFlag('CAD_USE_ROBUST_TESSELLATOR'), false);
@@ -150,21 +148,17 @@ test('flags can be overridden to legacy behavior', () => {
 console.log('\n=== API Migration: Tessellation Default Path ===\n');
 // ====================================================================
 
-test('tessellateBody uses robust tessellator by default for clean models', () => {
+test('tessellateBody uses native WASM tessellator by default for clean models', () => {
   resetFlags();
   resetTopoIds();
   const box = makeBox(0, 0, 0, 10, 10, 10);
   const mesh = tessellateBody(box);
   assert.ok(mesh.faces.length > 0, 'Should produce faces');
-  assert.ok(
-    mesh._tessellator === 'robust' || mesh._tessellator === 'js-cold-start-fallback',
-    `Tessellator should stay on the integrated path, got: ${mesh._tessellator}`
-  );
+  assert.strictEqual(mesh._tessellator, 'wasm', `Expected native WASM tessellation, got: ${mesh._tessellator}`);
 });
 
-test('tessellateBody falls back to legacy when robust fails', () => {
+test('tessellateBody returns an empty mesh for a null body', () => {
   resetFlags();
-  // Empty body should fall back gracefully
   const mesh = tessellateBody(null);
   assert.ok(mesh.faces.length === 0, 'Null body produces empty mesh');
 });
@@ -178,37 +172,13 @@ test('_legacyTessellateBody is available as explicit fallback', () => {
   assert.ok(mesh._tessellator === undefined, 'Legacy path has no _tessellator tag');
 });
 
-test('tessellateForSTL uses robust path by default', () => {
+test('tessellateForSTL uses WASM path by default', () => {
   resetFlags();
   resetTopoIds();
   const box = makeBox(0, 0, 0, 10, 10, 10);
   const triangles = tessellateForSTL(box);
   assert.ok(triangles.length > 0, 'Should produce triangles');
-  // Robust STL uses 'robust' tag; may be undefined if legacy was needed
-  assert.ok(
-    triangles._tessellator === 'robust' || triangles._tessellator === undefined,
-    `STL tessellator tag should be robust or undefined, got: ${triangles._tessellator}`
-  );
-});
-
-test('tessellateBodyRouted defaults to robust mode', () => {
-  resetFlags();
-  resetTopoIds();
-  const box = makeBox(0, 0, 0, 10, 10, 10);
-  const mesh = tessellateBodyRouted(box);
-  assert.ok(mesh.faces.length > 0, 'Should produce faces');
-  assert.ok(
-    mesh._tessellator === 'robust' || mesh._tessellator === 'legacy-fallback',
-    `Routed tessellator should default to robust, got: ${mesh._tessellator}`
-  );
-});
-
-test('tessellateBodyRouted ignores legacy requests and stays robust-only', () => {
-  resetFlags();
-  resetTopoIds();
-  const box = makeBox(0, 0, 0, 10, 10, 10);
-  const mesh = tessellateBodyRouted(box, { tessellator: 'legacy' });
-  assert.strictEqual(mesh._tessellator, 'robust');
+  assert.strictEqual(triangles._tessellator, 'wasm', `Expected WASM STL tessellation, got: ${triangles._tessellator}`);
 });
 
 // ====================================================================
@@ -496,11 +466,7 @@ test('default tessellateBody does NOT use legacy path for clean box', () => {
   resetTopoIds();
   const box = makeBox(0, 0, 0, 10, 10, 10);
   const mesh = tessellateBody(box);
-  // For a clean box, robust tessellator should succeed
-  assert.ok(
-    mesh._tessellator === 'robust' || mesh._tessellator === 'js-cold-start-fallback',
-    `Expected integrated-path tessellation, got: ${mesh._tessellator}`
-  );
+  assert.strictEqual(mesh._tessellator, 'wasm', `Expected native WASM tessellation, got: ${mesh._tessellator}`);
 });
 
 test('default boolean policy is exact-only unless explicitly enabled', () => {
@@ -535,13 +501,6 @@ test('boolean diagnostics include intersection validation', () => {
     'Diagnostics should include intersection validation');
 });
 
-test('tessellation shadow mode disagreement log works', () => {
-  clearShadowTessDisagreements();
-  const d = getShadowTessDisagreements();
-  assert.ok(Array.isArray(d), 'Should return array');
-  assert.ok(Object.isFrozen(d), 'Should be frozen');
-});
-
 test('containment shadow mode disagreement log works', () => {
   clearShadowDisagreements();
   const d = getShadowDisagreements();
@@ -570,9 +529,7 @@ await asyncTest('package export "modeller/cad" resolves', async () => {
   assert.ok(typeof mod.classifyPoint === 'function', 'classifyPoint');
   assert.ok(typeof mod.importSTEP === 'function', 'importSTEP');
   assert.ok(typeof mod.exportSTEP === 'function', 'exportSTEP');
-  // New APIs
-  assert.ok(typeof mod.robustTessellateBody === 'function', 'robustTessellateBody');
-  assert.ok(typeof mod.tessellateBodyRouted === 'function', 'tessellateBodyRouted');
+  // Remaining public APIs
   assert.ok(typeof mod.isFallbackEnabled === 'function', 'isFallbackEnabled');
   assert.ok(typeof mod.resolvePolicy === 'function', 'resolvePolicy');
   assert.ok(mod.ResultGrade, 'ResultGrade');
