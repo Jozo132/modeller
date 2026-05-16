@@ -40,6 +40,7 @@ import {
 import { chamferSketchCorner, filletSketchCorner, union } from './cad/Operations.js';
 import { motionAnalysis } from './motion.js';
 import { setFlag } from './featureFlags.js';
+import { loadOcctKernelModule } from './cad/occt/index.js';
 import { traceImageDataContours } from './image/trace-raster.js';
 import { buildFittedTraceEntities, buildHybridTraceEntities } from './image/trace-fitting.js';
 import { PPoint } from './cad/Point.js';
@@ -13999,6 +14000,7 @@ class App {
 // Bootstrap — ensure WASM is ready before the app starts restoring saved
 // projects (which triggers tessellation).
 setFlag('CAD_REQUIRE_WASM_TESSELLATION', true);
+setFlag('CAD_USE_OCCT_SKETCH_SOLIDS', true);
 const wasmReady = Promise.all([
   wasmTessellation.init()
     .then(() => console.log('[WASM] tessellation module loaded'))
@@ -14009,7 +14011,12 @@ const wasmReady = Promise.all([
   GeometryEvaluator.initWasm()
     .then(ok => ok
       ? console.log('[WASM] geometry evaluator loaded')
-      : console.warn('[WASM] geometry evaluator unavailable — using JS fallback'))
+      : console.warn('[WASM] geometry evaluator unavailable — using JS fallback')),
+  loadOcctKernelModule()
+    .catch((err) => {
+      console.warn('[OCCT] kernel preload failed — sketch-solid replay will stay on the compatibility exact path', err?.message || String(err));
+      return null;
+    }),
 ]);
 window.addEventListener('DOMContentLoaded', async () => {
   await wasmReady;

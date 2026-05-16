@@ -21,7 +21,7 @@ export default defineConfig({
 
   /* Start the static file server before running tests */
   webServer: {
-    command: 'npx serve . -l 3000',
+    command: 'node tools/dev-static-server.mjs --port 3000',
     port: 3000,
     reuseExistingServer: !process.env.CI,
   },

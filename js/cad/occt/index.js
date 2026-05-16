@@ -1,6 +1,7 @@
 export {
   getCachedOcctKernelModule,
   getOcctKernelStatus,
+  getOcctKernelRuntimeStatus,
   invalidateOcctKernelModuleCache,
   loadOcctKernelModule,
   occtKernelReadySync,

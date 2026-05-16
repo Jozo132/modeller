@@ -73,6 +73,7 @@ export async function ensureOcctBooleanShadowReady(opts = {}) {
  * @param {string} [opts.policy] - One of OperationPolicy values
  * @param {number} [opts.occtHandleA] - Resident OCCT operand handle for A when available
  * @param {number} [opts.occtHandleB] - Resident OCCT operand handle for B when available
+ * @param {boolean} [opts.preferOcctPrimary] - When true, return the resident OCCT boolean result immediately instead of computing the compatibility exact-body shadow.
  * @returns {{
  *   body: import('./BRepTopology.js').TopoBody|null,
  *   mesh: {vertices: Array, faces: Array, edges: Array},
@@ -88,6 +89,36 @@ export async function ensureOcctBooleanShadowReady(opts = {}) {
  */
 export function exactBooleanOp(bodyA, bodyB, operation, tol = DEFAULT_TOLERANCE, opts = {}) {
   const policy = resolvePolicy(opts.policy);
+  const primary = opts.preferOcctPrimary === true
+    ? _buildOcctPrimaryBooleanMetadata(operation, opts)
+    : null;
+
+  if (primary) {
+    const diagnostics = {
+      occtPrimaryOnly: true,
+      operation,
+      acceptedInvalidShape: primary?._occtModeling?.acceptedInvalidShape === true,
+      topology: primary?._occtModeling?.topology || null,
+    };
+    return {
+      ...wrapResult(
+        {
+          body: null,
+          mesh: {
+            ...primary,
+            topoBody: null,
+          },
+          diagnostics,
+        },
+        ResultGrade.EXACT,
+        FallbackDiagnostics.exact(diagnostics),
+      ),
+      occtShapeHandle: primary.occtShapeHandle || 0,
+      occtShapeResident: primary.occtShapeResident === true,
+      _occtPrimary: primary,
+      _compatMesh: null,
+    };
+  }
 
   if (policy === OperationPolicy.FORCE_FALLBACK) {
     return _finalizeBooleanResultWithOcctAttachments(bodyA, bodyB, operation, _runDiscreteFallback(bodyA, bodyB, operation, tol, {

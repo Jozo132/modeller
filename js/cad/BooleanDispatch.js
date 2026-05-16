@@ -14,6 +14,7 @@
 import { exactBooleanOp, hasExactTopology } from './BooleanKernel.js';
 import { computeFeatureEdges } from './EdgeAnalysis.js';
 import { chainEdgePaths } from './toolkit/EdgePathUtils.js';
+import { tryBuildOcctBooleanMetadataSync } from './occt/OcctSketchModeling.js';
 
 import {
   vec3Sub as _vec3Sub,
@@ -187,65 +188,105 @@ function _compactExactPlanarDisplayFaces(inputFaces) {
 // booleanOp — Dispatches to exact B-Rep boolean kernel
 // -----------------------------------------------------------------------
 
+function _finalizeBooleanDisplayGeometry(result) {
+  const {
+    body,
+    mesh,
+    diagnostics,
+    resultGrade,
+    _isFallback,
+    fallbackDiagnostics,
+    _occtShadow,
+    _occtPrimary,
+    occtShapeHandle,
+    occtShapeResident,
+  } = result;
+  const useOcctDisplay = occtShapeResident === true && Array.isArray(mesh?.faces) && mesh.faces.length > 0;
+  const displayFaces = useOcctDisplay
+    ? (mesh.faces || [])
+    : _compactExactPlanarDisplayFaces(mesh.faces || []);
+  const displayMesh = useOcctDisplay
+    ? mesh
+    : {
+      ...mesh,
+      faces: displayFaces,
+    };
+  const edgeResult = computeFeatureEdges(displayFaces);
+  const useOcctEdges = useOcctDisplay
+    && Array.isArray(displayMesh.edges)
+    && displayMesh.edges.length > 0;
+  return {
+    ...displayMesh,
+    edges: useOcctEdges ? displayMesh.edges : edgeResult.edges,
+    paths: useOcctEdges ? chainEdgePaths(displayMesh.edges) : edgeResult.paths,
+    visualEdges: edgeResult.visualEdges,
+    topoBody: body,
+    diagnostics,
+    resultGrade,
+    _isFallback,
+    fallbackDiagnostics,
+    _occtShadow,
+    _occtPrimary,
+    occtShapeHandle: occtShapeHandle || displayMesh.occtShapeHandle || 0,
+    occtShapeResident: occtShapeResident === true || displayMesh.occtShapeResident === true,
+  };
+}
+
 /**
  * Perform a boolean operation between two geometries.
- * Both operands MUST carry exact B-Rep topology (topoBody).
+ * Prefers the resident OCCT lane when explicitly requested and both
+ * operands already carry resident OCCT handles; otherwise both operands
+ * MUST carry exact B-Rep topology (topoBody).
  *
  * @param {Object} geomA - First geometry with .topoBody
  * @param {Object} geomB - Second geometry with .topoBody
  * @param {string} operation - 'union', 'subtract', or 'intersect'
- * @returns {Object} Resulting geometry with topoBody shadow, faces, edges, paths
+ * @param {Object|null} [booleanOpts] - Optional exact-boolean routing overrides
+ * @returns {Object} Resulting geometry with topoBody shadow when available, faces, edges, paths
  */
-export function booleanOp(geomA, geomB, operation, sharedA = null, sharedB = null) {
+export function booleanOp(geomA, geomB, operation, sharedA = null, sharedB = null, booleanOpts = null) {
+  const opName = (operation === 'add') ? 'union' : operation;
+  const preferOcctPrimary = booleanOpts?.preferOcctPrimary === true;
+  if (preferOcctPrimary && geomA?.occtShapeHandle > 0 && geomB?.occtShapeHandle > 0) {
+    const primary = tryBuildOcctBooleanMetadataSync({
+      handleA: geomA.occtShapeHandle,
+      handleB: geomB.occtShapeHandle,
+      operation: opName,
+    });
+    if (primary) {
+      const diagnostics = {
+        occtPrimaryOnly: true,
+        operation: opName,
+        acceptedInvalidShape: primary?._occtModeling?.acceptedInvalidShape === true,
+        topology: primary?._occtModeling?.topology || null,
+      };
+      return _finalizeBooleanDisplayGeometry({
+        body: null,
+        mesh: {
+          ...primary,
+          topoBody: null,
+        },
+        diagnostics,
+        resultGrade: 'exact',
+        _isFallback: false,
+        fallbackDiagnostics: null,
+        _occtShadow: null,
+        _occtPrimary: primary,
+        occtShapeHandle: primary.occtShapeHandle || 0,
+        occtShapeResident: primary.occtShapeResident === true,
+      });
+    }
+  }
+
   // --- Exact B-Rep dispatch ---
   if (geomA && geomA.topoBody && geomB && geomB.topoBody &&
       hasExactTopology(geomA.topoBody) && hasExactTopology(geomB.topoBody)) {
-    const opName = (operation === 'add') ? 'union' : operation;
     const result = exactBooleanOp(geomA.topoBody, geomB.topoBody, opName, undefined, {
       occtHandleA: geomA.occtShapeHandle || 0,
       occtHandleB: geomB.occtShapeHandle || 0,
+      ...(booleanOpts || {}),
     });
-    const {
-      body,
-      mesh,
-      diagnostics,
-      resultGrade,
-      _isFallback,
-      fallbackDiagnostics,
-      _occtShadow,
-      _occtPrimary,
-      occtShapeHandle,
-      occtShapeResident,
-    } = result;
-    const useOcctDisplay = occtShapeResident === true && Array.isArray(mesh?.faces) && mesh.faces.length > 0;
-    const displayFaces = useOcctDisplay
-      ? (mesh.faces || [])
-      : _compactExactPlanarDisplayFaces(mesh.faces || []);
-    const displayMesh = useOcctDisplay
-      ? mesh
-      : {
-        ...mesh,
-        faces: displayFaces,
-      };
-    const edgeResult = computeFeatureEdges(displayFaces);
-    const useOcctEdges = useOcctDisplay
-      && Array.isArray(displayMesh.edges)
-      && displayMesh.edges.length > 0;
-    return {
-      ...displayMesh,
-      edges: useOcctEdges ? displayMesh.edges : edgeResult.edges,
-      paths: useOcctEdges ? chainEdgePaths(displayMesh.edges) : edgeResult.paths,
-      visualEdges: edgeResult.visualEdges,
-      topoBody: body,
-      diagnostics,
-      resultGrade,
-      _isFallback,
-      fallbackDiagnostics,
-      _occtShadow,
-      _occtPrimary,
-      occtShapeHandle: occtShapeHandle || displayMesh.occtShapeHandle || 0,
-      occtShapeResident: occtShapeResident === true || displayMesh.occtShapeResident === true,
-    };
+    return _finalizeBooleanDisplayGeometry(result);
   }
 
   // --- BRep-only: no fallback to legacy mesh BSP ---

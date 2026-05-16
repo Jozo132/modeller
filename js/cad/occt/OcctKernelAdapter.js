@@ -132,6 +132,31 @@ function parseEdgeSegments(edgeSegments) {
   return edges;
 }
 
+function normalizeExtrudeOptions(options) {
+  if (Number.isFinite(options)) {
+    return { height: Number(options) };
+  }
+  if (!options || typeof options !== 'object') {
+    return {};
+  }
+  return { ...options };
+}
+
+function normalizeRevolveOptions(options) {
+  if (Number.isFinite(options)) {
+    return { angleDegrees: Number(options) * 180 / Math.PI };
+  }
+  if (!options || typeof options !== 'object') {
+    return {};
+  }
+  const normalized = { ...options };
+  if (!Number.isFinite(normalized.angleDegrees) && Number.isFinite(normalized.angleRadians)) {
+    normalized.angleDegrees = Number(normalized.angleRadians) * 180 / Math.PI;
+  }
+  delete normalized.angleRadians;
+  return normalized;
+}
+
 export function occtTessellationToMesh(tessellation, opts = {}) {
   const data = parseJson(tessellation, 'tessellate') || {};
   const positions = Array.isArray(data.positions) ? data.positions : [];
@@ -261,18 +286,16 @@ export class OcctKernelAdapter {
     return this.rememberShape(this.requireReady().createSphere(radius));
   }
 
-  extrudeProfile(profileJson, distance) {
+  extrudeProfile(profileJson, options = {}) {
     const payload = typeof profileJson === 'string' ? profileJson : JSON.stringify(profileJson);
-    return this.rememberShape(this.requireReady().extrudeProfile(payload, distance));
+    const optionsPayload = JSON.stringify(normalizeExtrudeOptions(options));
+    return this.rememberShape(this.requireReady().extrudeProfile(payload, optionsPayload));
   }
 
-  revolveProfile(profileJson, angleRadians) {
+  revolveProfile(profileJson, options = {}) {
     const payload = typeof profileJson === 'string' ? profileJson : JSON.stringify(profileJson);
-    const angle = Number(angleRadians);
-    if (!Number.isFinite(angle)) {
-      throw new Error('OCCT revolveProfile requires a finite angle in radians');
-    }
-    return this.rememberShape(this.requireReady().revolveProfile(payload, angle * 180 / Math.PI));
+    const optionsPayload = JSON.stringify(normalizeRevolveOptions(options));
+    return this.rememberShape(this.requireReady().revolveProfile(payload, optionsPayload));
   }
 
   booleanUnion(firstHandle, secondHandle) {
@@ -295,6 +318,15 @@ export class OcctKernelAdapter {
   chamferEdges(shapeHandle, edgeSelectionJson) {
     const payload = typeof edgeSelectionJson === 'string' ? edgeSelectionJson : JSON.stringify(edgeSelectionJson);
     return this.rememberShape(this.requireReady().chamferEdges(shapeHandle, payload));
+  }
+
+  transformShape(shapeHandle, transformJson) {
+    const kernel = this.requireReady();
+    if (typeof kernel.transformShape !== 'function') {
+      throw new Error('OCCT transformShape is unavailable in this build');
+    }
+    const payload = typeof transformJson === 'string' ? transformJson : JSON.stringify(transformJson);
+    return this.rememberShape(kernel.transformShape(shapeHandle, payload));
   }
 
   importStepDetailed(stepText, opts = {}) {

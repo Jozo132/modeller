@@ -5,6 +5,7 @@
 // enabling STEP-quality export and exact boolean operations.
 
 import { Feature } from './Feature.js';
+import { getFlag } from '../featureFlags.js';
 import { booleanOp } from './BooleanDispatch.js';
 import { computeFeatureEdges } from './EdgeAnalysis.js';
 import { calculateMeshVolume, calculateBoundingBox } from './toolkit/MeshAnalysis.js';
@@ -28,6 +29,7 @@ let _nextFusedId = 1;
 const PLANAR_CUT_HOST_CLIP_INSET = 1e-5;
 const CLIPPED_CURVE_MATCH_TOLERANCE = 1e-4;
 const LARGE_TOP_FACE_AREA_RATIO = 0.25;
+const OCCT_SKETCH_SOLID_FLAG = 'CAD_USE_OCCT_SKETCH_SOLIDS';
 
 /**
  * ExtrudeFeature extrudes a 2D sketch profile along its normal to create 3D geometry.
@@ -83,7 +85,7 @@ export class ExtrudeFeature extends Feature {
 
     const profileGroups = this.groupProfilesForExtrusion(profiles);
 
-    if (solid && this.operation === 'subtract') {
+    if (solid && this.operation === 'subtract' && getFlag(OCCT_SKETCH_SOLID_FLAG) !== true) {
       const directCut = this._tryApplyPlanarThroughCut(solid, profileGroups, plane)
         || this._tryApplyPlanarBlindCut(solid, profileGroups, plane);
       if (directCut) {
@@ -99,10 +101,8 @@ export class ExtrudeFeature extends Feature {
       }
     }
 
-    const allowOcctModeling = profileGroups.length === 1;
-
     const profileGeometries = profileGroups.map((group) =>
-      this.generateGeometry([group.outer], plane, group.holes, { allowOcctModeling }));
+      this.generateGeometry([group.outer], plane, group.holes, { allowOcctModeling: true }));
 
     // When adding/subtracting/intersecting against an existing solid, combine
     // all bodies from this feature first and run a single boolean. Sequential
@@ -189,8 +189,11 @@ export class ExtrudeFeature extends Feature {
       return this._appendBodyGeometry(solid, geometry);
     }
     try {
+      const booleanOpts = getFlag(OCCT_SKETCH_SOLID_FLAG) === true
+        ? { preferOcctPrimary: true }
+        : null;
       const resultGeom = booleanOp(solid.geometry, geometry, 'union',
-        null, { sourceFeatureId: this.id });
+        null, { sourceFeatureId: this.id }, booleanOpts);
       this._disposeTemporaryOcctGeometry(geometry, resultGeom.occtShapeHandle || 0);
       return { geometry: resultGeom };
     } catch (err) {
@@ -259,9 +262,13 @@ export class ExtrudeFeature extends Feature {
         combined = geometry;
         continue;
       }
+      const booleanOpts = getFlag(OCCT_SKETCH_SOLID_FLAG) === true
+        ? { preferOcctPrimary: true }
+        : null;
       combined = booleanOp(combined, geometry, 'union',
         combined.faces?.[0]?.shared || null,
-        { sourceFeatureId: this.id });
+        { sourceFeatureId: this.id },
+        booleanOpts);
     }
 
     if (!combined) {
@@ -1420,6 +1427,8 @@ export class ExtrudeFeature extends Feature {
         extrudeType: this.extrudeType,
         taper: this.taper,
         holes,
+        baseOffset,
+        tipOffset,
         topoBody: geometry.topoBody,
         sketchToWorld: (point, planeDef) => this.sketchToWorld(point, planeDef),
       })
@@ -2268,10 +2277,14 @@ export class ExtrudeFeature extends Feature {
     }
 
     try {
+      const booleanOpts = getFlag(OCCT_SKETCH_SOLID_FLAG) === true
+        ? { preferOcctPrimary: true }
+        : null;
       // Pass feature ids as shared metadata so faces track their source feature
       const resultGeom = booleanOp(prevGeom, geometry, this.operation,
         null, // keep existing shared on prevGeom faces
-        { sourceFeatureId: this.id });
+        { sourceFeatureId: this.id },
+        booleanOpts);
       this._disposeTemporaryOcctGeometry(geometry, resultGeom.occtShapeHandle || 0);
       return { geometry: resultGeom };
     } catch (err) {

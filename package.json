@@ -28,7 +28,7 @@
   "type": "module",
   "main": "./js/index.js",
   "scripts": {
-    "start": "npx serve .",
+    "start": "node tools/dev-static-server.mjs",
     "test:parametric": "node test-parametric.js",
     "test:workflow": "node tests/test-workflow-recordings.js",
     "test:cmod": "node tests/test-cmod-import-export.js",

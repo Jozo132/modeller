@@ -9,6 +9,7 @@ import { ExtrudeFeature } from './ExtrudeFeature.js';
 import { booleanOp } from './BooleanDispatch.js';
 import { computeFeatureEdges } from './EdgeAnalysis.js';
 import { calculateMeshVolume, calculateBoundingBox } from './toolkit/MeshAnalysis.js';
+import { getFlag } from '../featureFlags.js';
 
 /**
  * MultiSketchExtrudeFeature extrudes multiple sketch profiles on independent
@@ -104,9 +105,12 @@ export class MultiSketchExtrudeFeature extends Feature {
         combinedSolid = { geometry: bodyGeom };
       } else {
         try {
+          const booleanOpts = getFlag('CAD_USE_OCCT_SKETCH_SOLIDS') === true
+            ? { preferOcctPrimary: true }
+            : null;
           const resultGeom = booleanOp(
             combinedSolid.geometry, bodyGeom, 'union',
-            null, { sourceFeatureId: this.id });
+            null, { sourceFeatureId: this.id }, booleanOpts);
           combinedSolid = { geometry: resultGeom };
         } catch (err) {
           console.warn('Multi-sketch extrude union failed:', err.message);
@@ -122,9 +126,12 @@ export class MultiSketchExtrudeFeature extends Feature {
     let solid = this._getPreviousSolid(context);
     if (solid && this.operation !== 'new') {
       try {
+        const booleanOpts = getFlag('CAD_USE_OCCT_SKETCH_SOLIDS') === true
+          ? { preferOcctPrimary: true }
+          : null;
         const resultGeom = booleanOp(
           solid.geometry, combinedSolid.geometry, this.operation,
-          null, { sourceFeatureId: this.id });
+          null, { sourceFeatureId: this.id }, booleanOpts);
         combinedSolid = { geometry: resultGeom };
       } catch (err) {
         console.warn(`Multi-sketch boolean '${this.operation}' failed:`, err.message);

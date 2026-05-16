@@ -5,6 +5,7 @@
 // enabling STEP-quality export and exact boolean operations.
 
 import { Feature } from './Feature.js';
+import { getFlag } from '../featureFlags.js';
 import { resolveSketchRevolveAxis } from './SketchFeature.js';
 import { booleanOp } from './BooleanDispatch.js';
 import { computeFeatureEdges } from './EdgeAnalysis.js';
@@ -1184,7 +1185,10 @@ export class RevolveFeature extends Feature {
     }
 
     try {
-      const resultGeom = booleanOp(prevGeom, geometry, this.operation);
+      const booleanOpts = getFlag('CAD_USE_OCCT_SKETCH_SOLIDS') === true
+        ? { preferOcctPrimary: true }
+        : null;
+      const resultGeom = booleanOp(prevGeom, geometry, this.operation, null, null, booleanOpts);
       this._disposeTemporaryOcctGeometry(geometry, resultGeom.occtShapeHandle || 0);
       return { geometry: resultGeom };
     } catch (err) {
@@ -1209,7 +1213,10 @@ export class RevolveFeature extends Feature {
       return { geometry };
     }
     try {
-      const resultGeom = booleanOp(solid.geometry, geometry, 'union');
+      const booleanOpts = getFlag('CAD_USE_OCCT_SKETCH_SOLIDS') === true
+        ? { preferOcctPrimary: true }
+        : null;
+      const resultGeom = booleanOp(solid.geometry, geometry, 'union', null, null, booleanOpts);
       this._disposeTemporaryOcctGeometry(geometry, resultGeom.occtShapeHandle || 0);
       return { geometry: resultGeom };
     } catch (err) {
