@@ -130,7 +130,7 @@ export function exactBooleanOp(bodyA, bodyB, operation, tol = DEFAULT_TOLERANCE,
   }
 
   try {
-    const result = _exactBooleanOpInner(bodyA, bodyB, operation, tol);
+    const result = _exactBooleanOpInner(bodyA, bodyB, operation, tol, opts);
     const fallbackDecision = evaluateExactResult(result.diagnostics);
     if (fallbackDecision.shouldFallback) {
       if (shouldTriggerFallback(fallbackDecision.trigger, { policy })) {
@@ -273,17 +273,28 @@ function _runDiscreteFallback(bodyA, bodyB, operation, tol, opts = {}) {
   }
 }
 
+function _booleanTessellationOptions(opts = {}) {
+  const tessellationOpts = { validate: false };
+  if (opts.acceptWasmValidationIssues === true) {
+    tessellationOpts.acceptWasmValidationIssues = true;
+  }
+  if (opts.acceptWasmMeshQualityIssues === true) {
+    tessellationOpts.acceptWasmMeshQualityIssues = true;
+  }
+  return tessellationOpts;
+}
+
 /**
  * Inner exact boolean pipeline (original logic, extracted for fallback wrapping).
  * @private
  */
-function _exactBooleanOpInner(bodyA, bodyB, operation, tol) {
+function _exactBooleanOpInner(bodyA, bodyB, operation, tol, opts = {}) {
   if (_isPlanarBody(bodyA) && _isPlanarBody(bodyB)) {
-    const planar = _exactPlanarBoolean(bodyA, bodyB, operation, tol);
+    const planar = _exactPlanarBoolean(bodyA, bodyB, operation, tol, opts);
     if (planar) return { ...planar, diagnostics: planar.diagnostics || {} };
   }
 
-  const contactUnion = _tryCoplanarContactUnion(bodyA, bodyB, operation, tol);
+  const contactUnion = _tryCoplanarContactUnion(bodyA, bodyB, operation, tol, opts);
   if (contactUnion) return contactUnion;
 
   // Step 1-2: Intersect candidate face pairs and compute intersection curves
@@ -414,7 +425,7 @@ function _exactBooleanOpInner(bodyA, bodyB, operation, tol) {
   // already ran face/body/invariant validators on the exact B-rep above;
   // repeating it on the triangulation would dominate runtime for large
   // bodies without catching anything those structural checks missed.
-  const mesh = tessellateBody(resultBody, { validate: false });
+  const mesh = tessellateBody(resultBody, _booleanTessellationOptions(opts));
 
   // Step 11: Compute content hashes for auditability
   const hashes = _computeBodyHashes(bodyA, bodyB, resultBody);
@@ -432,7 +443,7 @@ function _isPlanarBody(body) {
   );
 }
 
-function _exactPlanarBoolean(bodyA, bodyB, operation, tol) {
+function _exactPlanarBoolean(bodyA, bodyB, operation, tol, opts = {}) {
   const diagnostics = {
     intersectionValidation: { isValid: true, diagnostics: [] },
     fragmentValidationA: { isValid: true, diagnostics: [] },
@@ -485,18 +496,18 @@ function _exactPlanarBoolean(bodyA, bodyB, operation, tol) {
     throw err;
   }
 
-  const mesh = tessellateBody(resultBody, { validate: false });
+  const mesh = tessellateBody(resultBody, _booleanTessellationOptions(opts));
   diagnostics.hashes = _computeBodyHashes(bodyA, bodyB, resultBody);
   return { body: resultBody, mesh, diagnostics };
 }
 
-function _tryCoplanarContactUnion(bodyA, bodyB, operation, tol) {
+function _tryCoplanarContactUnion(bodyA, bodyB, operation, tol, opts = {}) {
   if (operation !== 'union') return null;
-  return _tryAttachCoplanarContactUnion(bodyA, bodyB, tol)
-    || _tryAttachCoplanarContactUnion(bodyB, bodyA, tol);
+  return _tryAttachCoplanarContactUnion(bodyA, bodyB, tol, opts)
+    || _tryAttachCoplanarContactUnion(bodyB, bodyA, tol, opts);
 }
 
-function _tryAttachCoplanarContactUnion(supportBody, attachBody, tol) {
+function _tryAttachCoplanarContactUnion(supportBody, attachBody, tol, opts = {}) {
   if (!supportBody || !attachBody) return null;
   if (!Array.isArray(supportBody.shells) || !Array.isArray(attachBody.shells)) return null;
   if (supportBody.shells.length !== 1 || attachBody.shells.length !== 1) return null;
@@ -556,7 +567,7 @@ function _tryAttachCoplanarContactUnion(supportBody, attachBody, tol) {
       invariantValidation: invariantValidation.toJSON(),
       hashes: _computeBodyHashes(supportBody, attachBody, resultBody),
     };
-    const mesh = tessellateBody(resultBody, { validate: false });
+    const mesh = tessellateBody(resultBody, _booleanTessellationOptions(opts));
     return { body: resultBody, mesh, diagnostics };
   } catch (_) {
     return null;

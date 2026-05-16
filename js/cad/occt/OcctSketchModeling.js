@@ -562,7 +562,8 @@ function finalizeOcctGeometry(adapter, handle, topoBody, operation) {
     );
   }
 
-  const geometry = adapter.tessellate(handle);
+  const topology = adapter.getTopology(handle);
+  const geometry = adapter.tessellate(handle, { topology });
   if (!geometry?.faces?.length) {
     reportOcctSketchFallbackOnce(
       `occt-${operation}-empty-tessellation`,
@@ -572,7 +573,6 @@ function finalizeOcctGeometry(adapter, handle, topoBody, operation) {
     return null;
   }
 
-  const topology = adapter.getTopology(handle);
   geometry.topoBody = topoBody || null;
   geometry.occtShapeHandle = handle;
   geometry.occtShapeResident = true;
@@ -776,7 +776,8 @@ export function tryBuildOcctBooleanMetadataSync(options = {}) {
       );
     }
 
-    const mesh = adapter.tessellate(resultHandle);
+    const topology = adapter.getTopology(resultHandle);
+    const mesh = adapter.tessellate(resultHandle, { topology });
     if (!mesh?.faces?.length) {
       adapter.disposeShape(resultHandle);
       return null;
@@ -791,11 +792,148 @@ export function tryBuildOcctBooleanMetadataSync(options = {}) {
         acceptedInvalidShape: valid !== true,
         operation,
         source: 'resident-boolean',
-        topology: adapter.getTopology(resultHandle),
+        topology,
       },
     };
   } catch {
     if (resultHandle > 0) adapter.disposeShape(resultHandle);
+    return null;
+  }
+}
+
+function _normalizeBlendCapabilities(capabilities) {
+  const operations = capabilities?.operations && typeof capabilities.operations === 'object'
+    ? capabilities.operations
+    : null;
+  const fillet = capabilities?.fillet && typeof capabilities.fillet === 'object'
+    ? capabilities.fillet
+    : null;
+  const chamfer = capabilities?.chamfer && typeof capabilities.chamfer === 'object'
+    ? capabilities.chamfer
+    : null;
+  return {
+    fillet: operations?.fillet === true
+      || operations?.nativeExactBlendOpsV1 === true
+      || capabilities?.fillet === true
+      || fillet?.nativeExact === true,
+    chamfer: operations?.chamfer === true
+      || operations?.nativeExactBlendOpsV1 === true
+      || capabilities?.chamfer === true
+      || chamfer?.nativeExact === true,
+  };
+}
+
+function _normalizeBlendEdgeRef(edge) {
+  if (!edge || typeof edge !== 'object') return null;
+  const stableHash = typeof edge.stableHash === 'string' && edge.stableHash.length > 0
+    ? edge.stableHash
+    : null;
+  const topoId = Number.isInteger(edge.topoId) ? edge.topoId : null;
+  if (!stableHash && topoId == null) return null;
+  return {
+    ...(stableHash ? { stableHash } : {}),
+    ...(topoId != null ? { topoId } : {}),
+  };
+}
+
+function _buildBlendFeatureSpec(kind, edgeRefs, params = {}) {
+  const edges = edgeRefs.map((edgeRef) => ({
+    edge: edgeRef,
+    ...(params.perEdge || {}),
+  }));
+  return {
+    schemaVersion: 1,
+    unit: { length: 'model', angle: 'radians' },
+    ...params.spec,
+    edges,
+  };
+}
+
+function _finalizeOcctBlendResult(adapter, operation, blendResult, topoBody) {
+  const handle = blendResult?.shape?.id || blendResult?.shapeId || blendResult?.shapeHandle || 0;
+  const geometry = finalizeOcctGeometry(adapter, handle, topoBody, operation);
+  if (!geometry) return null;
+  geometry._occtBlend = {
+    blendFaces: Array.isArray(blendResult?.blendFaces) ? blendResult.blendFaces : [],
+    lineage: blendResult?.lineage || null,
+    status: blendResult?.status || null,
+    revision: blendResult?.revision || null,
+  };
+  if (blendResult?.topology) {
+    geometry._occtModeling = {
+      ...(geometry._occtModeling || {}),
+      topology: blendResult.topology,
+    };
+  }
+  return geometry;
+}
+
+export function tryBuildOcctFilletMetadataSync(options = {}) {
+  if (getFlag(OCCT_SKETCH_SOLID_FLAG) !== true) return null;
+
+  const {
+    handle,
+    edgeRefs = [],
+    topoBody = null,
+    radius = null,
+    spec = null,
+  } = options;
+  if (!Number.isInteger(handle) || handle <= 0) return null;
+  if (!Array.isArray(edgeRefs) || edgeRefs.length === 0) return null;
+
+  const adapter = getSharedAdapterSync();
+  if (!adapter) return null;
+  const capabilities = _normalizeBlendCapabilities(adapter.getCapabilities());
+  if (capabilities.fillet !== true) return null;
+
+  const normalizedEdgeRefs = edgeRefs.map(_normalizeBlendEdgeRef).filter(Boolean);
+  if (normalizedEdgeRefs.length === 0) return null;
+
+  try {
+    const blendResult = adapter.filletEdges(handle, spec || _buildBlendFeatureSpec('fillet', normalizedEdgeRefs, {
+      spec: {
+        radiusMode: 'constant',
+        radius: Number(radius) || 0,
+      },
+    }));
+    if (!blendResult || typeof blendResult !== 'object') return null;
+    return _finalizeOcctBlendResult(adapter, 'fillet', blendResult, topoBody);
+  } catch {
+    return null;
+  }
+}
+
+export function tryBuildOcctChamferMetadataSync(options = {}) {
+  if (getFlag(OCCT_SKETCH_SOLID_FLAG) !== true) return null;
+
+  const {
+    handle,
+    edgeRefs = [],
+    topoBody = null,
+    distance = null,
+    spec = null,
+  } = options;
+  if (!Number.isInteger(handle) || handle <= 0) return null;
+  if (!Array.isArray(edgeRefs) || edgeRefs.length === 0) return null;
+
+  const adapter = getSharedAdapterSync();
+  if (!adapter) return null;
+  const capabilities = _normalizeBlendCapabilities(adapter.getCapabilities());
+  if (capabilities.chamfer !== true) return null;
+
+  const normalizedEdgeRefs = edgeRefs.map(_normalizeBlendEdgeRef).filter(Boolean);
+  if (normalizedEdgeRefs.length === 0) return null;
+
+  try {
+    const blendResult = adapter.chamferEdges(handle, spec || _buildBlendFeatureSpec('chamfer', normalizedEdgeRefs, {
+      spec: {
+        mode: 'symmetric',
+        distance: Number(distance) || 0,
+      },
+    }));
+    if (!blendResult || typeof blendResult !== 'object') return null;
+    return _finalizeOcctBlendResult(adapter, 'chamfer', blendResult, topoBody);
+  } catch {
     return null;
   }
 }
@@ -831,9 +969,13 @@ export function tryImportOcctStepResidencySync(options = {}) {
       return null;
     }
 
+    const topology = adapter.getTopology(handle);
     let mesh = null;
     if (includeMesh) {
-      mesh = adapter.tessellate(handle, tessellationOptions || {});
+      mesh = adapter.tessellate(handle, {
+        ...(tessellationOptions || {}),
+        topology,
+      });
       if (!mesh?.faces?.length) mesh = null;
     }
 
@@ -844,7 +986,7 @@ export function tryImportOcctStepResidencySync(options = {}) {
       _occtModeling: {
         authoritative: !!mesh,
         source: 'step-import',
-        topology: adapter.getTopology(handle),
+        topology,
         import: {
           readStatus: importResult.readStatus ?? null,
           transferStatus: importResult.transferStatus ?? null,
@@ -872,6 +1014,63 @@ export function exportOcctSketchModelingStep(handle) {
 export function getOcctSketchModelingTopology(handle) {
   if (!sharedAdapter || !Number.isInteger(handle) || handle <= 0) return null;
   return sharedAdapter.getTopology(handle);
+}
+
+export function createOcctSketchModelingCheckpoint(handle) {
+  const adapter = getSharedAdapterSync();
+  if (!adapter || !Number.isInteger(handle) || handle <= 0) return null;
+  return adapter.createCheckpoint(handle);
+}
+
+export function restoreOcctSketchModelingCheckpoint(checkpoint, tessellationOptions = null) {
+  const adapter = getSharedAdapterSync();
+  if (!adapter || !checkpoint || typeof checkpoint !== 'object') return null;
+
+  let handle = 0;
+  try {
+    handle = adapter.hydrateCheckpoint(checkpoint);
+    if (!(handle > 0)) return null;
+
+    const valid = adapter.checkValidity(handle);
+    const topology = adapter.getTopology(handle);
+    const geometry = adapter.tessellate(handle, {
+      ...(tessellationOptions || {}),
+      topology,
+    });
+    if (!geometry?.faces?.length) {
+      adapter.disposeShape(handle);
+      return null;
+    }
+
+    geometry.topoBody = null;
+    geometry.occtShapeHandle = handle;
+    geometry.occtShapeResident = true;
+    geometry._occtModeling = {
+      authoritative: true,
+      acceptedInvalidShape: valid !== true,
+      operation: topology?.operationType || null,
+      source: 'checkpoint-restore',
+      topology,
+    };
+
+    return {
+      geometry,
+      mesh: geometry,
+      occtShapeHandle: handle,
+      occtShapeResident: true,
+      topology,
+      _occtModeling: geometry._occtModeling,
+    };
+  } catch (error) {
+    if (handle > 0) {
+      try {
+        adapter.disposeShape(handle);
+      } catch {
+        // Best-effort cleanup after failed checkpoint restore.
+      }
+    }
+    throw error;
+  }
 }
 
 export function disposeOcctSketchModelingShape(handle) {

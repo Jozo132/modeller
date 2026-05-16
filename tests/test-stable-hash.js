@@ -9,6 +9,8 @@ import './_watchdog.mjs';
 //   5) Hashes survive parameter changes (different extrusion distance)
 //   6) Hashes survive serialization/deserialization roundtrip
 //   7) Multi-profile and circle-profile extrusions produce correct hashes
+//   8) OCCT tessellation can carry stable face hashes and feature edge chains
+//   9) OCCT triangle normals can override misleading vertex averages
 
 import { strict as assert } from 'node:assert';
 import { Part } from '../js/cad/Part.js';
@@ -18,6 +20,7 @@ import {
   resetTopoIds, deriveEdgeAndVertexHashes,
   TopoBody, TopoShell, TopoFace, TopoLoop, TopoCoEdge, TopoEdge, TopoVertex,
 } from '../js/cad/BRepTopology.js';
+import { occtTessellationToMesh } from '../js/cad/occt/OcctKernelAdapter.js';
 import { formatTimingSuffix, startTiming } from './test-timing.js';
 
 // -----------------------------------------------------------------------
@@ -474,6 +477,84 @@ test('revolve face hashes are deterministic across independent builds', () => {
   for (const hash of hashes1) {
     assert.ok(hashes2.has(hash), `Revolve hash "${hash}" missing from second build`);
   }
+});
+
+// -----------------------------------------------------------------------
+// 8) OCCT stable hash contract
+// -----------------------------------------------------------------------
+
+group('8) OCCT stable hash contract');
+
+test('occt tessellation contract applies stable face hashes and feature edge chains', () => {
+  const mesh = occtTessellationToMesh({
+    positions: [
+      0, 0, 0,
+      1, 0, 0,
+      1, 1, 0,
+      0, 1, 0,
+    ],
+    indices: [0, 1, 2, 0, 2, 3],
+    triangleNormals: [0, 0, 1, 0, 0, 1],
+    triangleTopoFaceIds: [101, 101],
+    featureEdges: [
+      {
+        points: [
+          [0, 0, 0],
+          [1, 0, 0],
+          [1, 1, 0],
+        ],
+        topoFaceIds: [101],
+        stableHash: 'E:feature_7_Face_Top_p0',
+      },
+    ],
+  }, {
+    topology: {
+      faces: [
+        {
+          id: 101,
+          stableHash: 'feature_7_Face_Top_p0',
+          shared: { sourceFeatureId: 'feature_7' },
+        },
+      ],
+    },
+  });
+
+  assert.strictEqual(mesh.faces.length, 2, 'expected two triangles');
+  assert.ok(mesh.faces.every((face) => face.topoFaceId === 101), 'triangles should share the OCCT topoFaceId');
+  assert.ok(mesh.faces.every((face) => face.faceGroup === 101), 'triangles should share the OCCT face group');
+  assert.ok(mesh.faces.every((face) => face.stableHash === 'feature_7_Face_Top_p0'), 'triangles should inherit the stable face hash');
+  assert.ok(mesh.faces.every((face) => face.shared?.sourceFeatureId === 'feature_7'), 'triangles should inherit source feature metadata');
+  assert.strictEqual(mesh.edges.length, 2, 'feature edge chain should expand to two segments');
+  assert.strictEqual(mesh.paths.length, 1, 'feature edge chain should remain one selectable path');
+  assert.deepStrictEqual(mesh.paths[0].edgeIndices, [0, 1], 'path should reference the generated edge segments');
+  assert.strictEqual(mesh.paths[0].stableHash, 'E:feature_7_Face_Top_p0');
+  assert.deepStrictEqual(mesh.edges[0].faceIndices, [0, 1], 'feature edges should expand topoFaceIds to triangle indices');
+  assert.strictEqual(mesh.edges[0].stableHash, 'E:feature_7_Face_Top_p0');
+  assert.deepStrictEqual(mesh.edges[0].normals, [{ x: 0, y: 0, z: 1 }], 'feature edge normals should derive from adjacent triangles');
+});
+
+test('occt tessellation contract prefers triangle normals over conflicting vertex averages', () => {
+  const mesh = occtTessellationToMesh({
+    positions: [
+      0, 0, 0,
+      1, 0, 0,
+      0, 1, 0,
+    ],
+    normals: [
+      0, 0, -1,
+      0, 0, -1,
+      0, 0, -1,
+    ],
+    indices: [0, 1, 2],
+    triangleNormals: [0, 0, 1],
+  });
+
+  assert.deepStrictEqual(mesh.faces[0].normal, { x: 0, y: 0, z: 1 }, 'triangle normal should override misleading vertex normals');
+  assert.deepStrictEqual(mesh.faces[0].vertexNormals, [
+    { x: 0, y: 0, z: 1 },
+    { x: 0, y: 0, z: 1 },
+    { x: 0, y: 0, z: 1 },
+  ], 'triangle normal should seed per-vertex normals when supplied by OCCT');
 });
 
 // -----------------------------------------------------------------------

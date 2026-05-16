@@ -257,7 +257,7 @@ export function buildOcctBooleanShadowSync(bodyA, bodyB, operation, primaryResul
 
     stage = 'tessellate';
     const tessellateStartedAt = now();
-    const mesh = adapter.tessellate(resultHandle, tessellationOptions);
+    const mesh = adapter.tessellate(resultHandle, { ...tessellationOptions, topology });
     timings.tessellateMs = now() - tessellateStartedAt;
     timings.totalMs = now() - startedAt;
 

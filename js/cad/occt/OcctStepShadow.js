@@ -149,7 +149,7 @@ export function buildOcctStepShadowSync(stepString, primaryResult, options = {})
     timings.topologyMs = now() - topologyStartedAt;
 
     const tessellateStartedAt = now();
-    const mesh = adapter.tessellate(handle, tessellationOptions);
+    const mesh = adapter.tessellate(handle, { ...tessellationOptions, topology });
     timings.tessellateMs = now() - tessellateStartedAt;
     timings.totalMs = now() - startedAt;
 

@@ -215,10 +215,13 @@ function _finalizeBooleanDisplayGeometry(result) {
   const useOcctEdges = useOcctDisplay
     && Array.isArray(displayMesh.edges)
     && displayMesh.edges.length > 0;
+  const useOcctPaths = useOcctEdges
+    && Array.isArray(displayMesh.paths)
+    && displayMesh.paths.length > 0;
   return {
     ...displayMesh,
     edges: useOcctEdges ? displayMesh.edges : edgeResult.edges,
-    paths: useOcctEdges ? chainEdgePaths(displayMesh.edges) : edgeResult.paths,
+    paths: useOcctEdges ? (useOcctPaths ? displayMesh.paths : chainEdgePaths(displayMesh.edges)) : edgeResult.paths,
     visualEdges: edgeResult.visualEdges,
     topoBody: body,
     diagnostics,

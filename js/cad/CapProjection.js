@@ -1,6 +1,7 @@
 // js/cad/CapProjection.js — Shared helpers for exact fillet/chamfer cap projection.
 
 import { SurfaceType } from './BRepTopology.js';
+import { EdgeSampler } from './Tessellator2/EdgeSampler.js';
 import {
   vec3Sub,
   vec3Add,
@@ -12,6 +13,7 @@ import {
 } from './toolkit/Vec3Utils.js';
 
 const DEFAULT_TOL = 1e-6;
+const _capProjectionEdgeSampler = new EdgeSampler();
 
 export function topoPointsClose(a, b, tol = 1e-5) {
   if (!a || !b) return false;
@@ -166,10 +168,9 @@ function _loopPoints(loop, samples = 12) {
   const points = [];
   for (const coedge of loop.coedges) {
     if (!coedge || !coedge.edge) continue;
-    let edgePoints = typeof coedge.edge.tessellate === 'function'
-      ? coedge.edge.tessellate(samples)
-      : [coedge.startVertex().point, coedge.endVertex().point];
-    if (coedge.sameSense === false) edgePoints = edgePoints.reverse();
+    let edgePoints = _capProjectionEdgeSampler.sampleEdge(coedge.edge, samples);
+    if (coedge.sameSense === false) edgePoints = [...edgePoints].reverse();
+    else edgePoints = [...edgePoints];
     if (points.length > 0 && edgePoints.length > 0) edgePoints = edgePoints.slice(1);
     points.push(...edgePoints.map((point) => ({ ...point })));
   }

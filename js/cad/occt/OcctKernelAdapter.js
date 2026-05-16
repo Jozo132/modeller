@@ -10,6 +10,17 @@ function cleanNumber(value) {
   return Math.abs(value) < 1e-12 ? 0 : value;
 }
 
+function integerOrNull(value) {
+  if (!Number.isFinite(value)) return null;
+  return Math.trunc(Number(value));
+}
+
+function stringOrNull(value) {
+  if (value == null) return null;
+  const text = String(value);
+  return text.length > 0 ? text : null;
+}
+
 function readVec3(flat, index) {
   const offset = index * 3;
   return {
@@ -17,6 +28,39 @@ function readVec3(flat, index) {
     y: cleanNumber(Number(flat[offset + 1] ?? 0)),
     z: cleanNumber(Number(flat[offset + 2] ?? 0)),
   };
+}
+
+function readVec3ish(value) {
+  if (Array.isArray(value) && value.length >= 3) {
+    return {
+      x: cleanNumber(Number(value[0] ?? 0)),
+      y: cleanNumber(Number(value[1] ?? 0)),
+      z: cleanNumber(Number(value[2] ?? 0)),
+    };
+  }
+  if (value && typeof value === 'object') {
+    return {
+      x: cleanNumber(Number(value.x ?? 0)),
+      y: cleanNumber(Number(value.y ?? 0)),
+      z: cleanNumber(Number(value.z ?? 0)),
+    };
+  }
+  return null;
+}
+
+function firstArray(source, keys) {
+  for (const key of keys) {
+    if (Array.isArray(source?.[key])) return source[key];
+  }
+  return null;
+}
+
+function firstObject(source, keys) {
+  for (const key of keys) {
+    const value = source?.[key];
+    if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  }
+  return null;
 }
 
 function normalize(vector) {
@@ -46,6 +90,57 @@ function averageNormal(normals, i0, i1, i2) {
     y: Number(normals[i0 * 3 + 1] ?? 0) + Number(normals[i1 * 3 + 1] ?? 0) + Number(normals[i2 * 3 + 1] ?? 0),
     z: Number(normals[i0 * 3 + 2] ?? 0) + Number(normals[i1 * 3 + 2] ?? 0) + Number(normals[i2 * 3 + 2] ?? 0),
   });
+}
+
+function dot(a, b) {
+  if (!a || !b) return 0;
+  return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+function vectorKey(vector) {
+  return `${Math.round(vector.x * 1e6)},${Math.round(vector.y * 1e6)},${Math.round(vector.z * 1e6)}`;
+}
+
+function uniqueVectors(vectors) {
+  const out = [];
+  const seen = new Set();
+  for (const vector of vectors || []) {
+    if (!vector) continue;
+    const normalized = normalize(vector);
+    const key = vectorKey(normalized);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(normalized);
+  }
+  return out;
+}
+
+function normalizeVec3List(value) {
+  if (!Array.isArray(value)) {
+    const vector = readVec3ish(value);
+    return vector ? [normalize(vector)] : [];
+  }
+  if (value.length === 0) return [];
+  if (typeof value[0] === 'number') {
+    const out = [];
+    for (let offset = 0; offset + 2 < value.length; offset += 3) {
+      out.push(normalize(readVec3(value, offset / 3)));
+    }
+    return out;
+  }
+  const out = [];
+  for (const entry of value) {
+    const vector = readVec3ish(entry);
+    if (vector) out.push(normalize(vector));
+  }
+  return out;
+}
+
+function pointsCoincident(a, b) {
+  if (!a || !b) return false;
+  return Math.abs(a.x - b.x) < 1e-6
+    && Math.abs(a.y - b.y) < 1e-6
+    && Math.abs(a.z - b.z) < 1e-6;
 }
 
 function parseJson(value, label) {
@@ -111,8 +206,143 @@ function formatStepImportFailure(result) {
   return `OCCT STEP import failed (${readStatus}/${transferStatus})`;
 }
 
-function parseEdgeSegments(edgeSegments) {
-  if (!Array.isArray(edgeSegments) || edgeSegments.length < 6) return [];
+function readTriangleVector(vectors, triangleIndex) {
+  if (!Array.isArray(vectors) || vectors.length === 0) return null;
+  if (typeof vectors[0] === 'number') {
+    if (vectors.length < triangleIndex * 3 + 3) return null;
+    return normalize(readVec3(vectors, triangleIndex));
+  }
+  const vector = readVec3ish(vectors[triangleIndex]);
+  return vector ? normalize(vector) : null;
+}
+
+function buildOcctFaceMetadataIndex(topology) {
+  const faces = firstArray(topology, ['faces', 'topoFaces']);
+  const byId = new Map();
+  if (!faces) return byId;
+
+  for (let index = 0; index < faces.length; index++) {
+    const face = faces[index];
+    if (!face || typeof face !== 'object') continue;
+    const topoFaceId = integerOrNull(face.topoFaceId ?? face.faceId ?? face.id) ?? index;
+    let shared = face.shared && typeof face.shared === 'object' && !Array.isArray(face.shared)
+      ? { ...face.shared }
+      : null;
+    const sourceFeatureId = stringOrNull(face.sourceFeatureId ?? face.featureId ?? shared?.sourceFeatureId);
+    if (sourceFeatureId) {
+      if (!shared) shared = { sourceFeatureId };
+      else if (!shared.sourceFeatureId) shared.sourceFeatureId = sourceFeatureId;
+    }
+    byId.set(topoFaceId, {
+      topoFaceId,
+      faceGroup: integerOrNull(face.faceGroup ?? face.groupId) ?? topoFaceId,
+      stableHash: stringOrNull(face.stableHash ?? face.hash ?? face.faceHash),
+      shared,
+    });
+  }
+
+  return byId;
+}
+
+function normalizeEdgeNormals(value, faceIndices, faces) {
+  const explicit = uniqueVectors(normalizeVec3List(value));
+  if (explicit.length > 0) return explicit;
+  if (!Array.isArray(faceIndices) || !Array.isArray(faces)) return [];
+  return uniqueVectors(faceIndices.map((faceIndex) => faces[faceIndex]?.normal));
+}
+
+function normalizePointSequence(entry) {
+  const rawPoints = Array.isArray(entry?.points)
+    ? entry.points
+    : Array.isArray(entry?.polyline)
+      ? entry.polyline
+      : null;
+  if (rawPoints) {
+    const points = rawPoints.map((point) => readVec3ish(point)).filter(Boolean);
+    return points.length >= 2 ? points : [];
+  }
+  const start = readVec3ish(entry?.start);
+  const end = readVec3ish(entry?.end);
+  return start && end ? [start, end] : [];
+}
+
+function resolveEdgeMetadata(entry, triangleIndicesByTopoFaceId, faces) {
+  const topoFaceIds = [];
+  if (Array.isArray(entry?.topoFaceIds)) {
+    for (const topoFaceId of entry.topoFaceIds) {
+      const normalized = integerOrNull(topoFaceId);
+      if (normalized != null) topoFaceIds.push(normalized);
+    }
+  } else {
+    const topoFaceId = integerOrNull(entry?.topoFaceId);
+    if (topoFaceId != null) topoFaceIds.push(topoFaceId);
+  }
+
+  const faceIndices = [];
+  if (Array.isArray(entry?.faceIndices)) {
+    for (const faceIndex of entry.faceIndices) {
+      const normalized = integerOrNull(faceIndex);
+      if (normalized != null && normalized >= 0 && normalized < faces.length) faceIndices.push(normalized);
+    }
+  }
+  if (faceIndices.length === 0) {
+    for (const topoFaceId of topoFaceIds) {
+      const indices = triangleIndicesByTopoFaceId.get(topoFaceId) || [];
+      for (const faceIndex of indices) faceIndices.push(faceIndex);
+    }
+  }
+
+  return {
+    stableHash: stringOrNull(entry?.stableHash ?? entry?.hash ?? entry?.edgeHash),
+    topoFaceIds: [...new Set(topoFaceIds)],
+    faceIndices: [...new Set(faceIndices)],
+    normals: normalizeEdgeNormals(entry?.normals ?? entry?.normal, faceIndices, faces),
+  };
+}
+
+function buildEdgeSegmentsFromEntries(entries, triangleIndicesByTopoFaceId, faces, includePaths) {
+  const edges = [];
+  const paths = [];
+  if (!Array.isArray(entries)) return { edges, paths };
+
+  for (const entry of entries) {
+    if (!entry || typeof entry !== 'object') continue;
+    const points = normalizePointSequence(entry);
+    if (points.length < 2) continue;
+    const metadata = resolveEdgeMetadata(entry, triangleIndicesByTopoFaceId, faces);
+    const edgeIndices = [];
+    for (let index = 0; index + 1 < points.length; index++) {
+      const edge = {
+        start: points[index],
+        end: points[index + 1],
+        source: 'occt',
+      };
+      if (metadata.faceIndices.length > 0) edge.faceIndices = metadata.faceIndices;
+      if (metadata.normals.length > 0) edge.normals = metadata.normals;
+      if (metadata.topoFaceIds.length > 0) edge.topoFaceIds = metadata.topoFaceIds;
+      if (metadata.stableHash) edge.stableHash = metadata.stableHash;
+      edges.push(edge);
+      edgeIndices.push(edges.length - 1);
+    }
+    if (!includePaths || edgeIndices.length === 0) continue;
+    const path = {
+      edgeIndices,
+      isClosed: entry.isClosed === true || pointsCoincident(points[0], points[points.length - 1]),
+    };
+    if (metadata.stableHash) path.stableHash = metadata.stableHash;
+    if (metadata.topoFaceIds.length > 0) path.topoFaceIds = metadata.topoFaceIds;
+    paths.push(path);
+  }
+
+  return { edges, paths };
+}
+
+function parseEdgeSegments(edgeSegments, triangleIndicesByTopoFaceId, faces) {
+  if (!Array.isArray(edgeSegments) || edgeSegments.length === 0) return [];
+  if (typeof edgeSegments[0] === 'object') {
+    return buildEdgeSegmentsFromEntries(edgeSegments, triangleIndicesByTopoFaceId, faces, false).edges;
+  }
+  if (edgeSegments.length < 6) return [];
   const edges = [];
   for (let offset = 0; offset + 5 < edgeSegments.length; offset += 6) {
     edges.push({
@@ -157,11 +387,92 @@ function normalizeRevolveOptions(options) {
   return normalized;
 }
 
+function normalizeEdgeRef(ref) {
+  if (!ref || typeof ref !== 'object') return null;
+  const topoId = integerOrNull(ref.topoId ?? ref.id);
+  const stableHash = stringOrNull(ref.stableHash ?? ref.hash);
+  if (topoId == null && !stableHash) return null;
+  return {
+    ...(topoId != null ? { topoId } : {}),
+    ...(stableHash ? { stableHash } : {}),
+  };
+}
+
+function normalizeFaceRef(ref) {
+  if (!ref || typeof ref !== 'object') return null;
+  const topoId = integerOrNull(ref.topoId ?? ref.id);
+  const stableHash = stringOrNull(ref.stableHash ?? ref.hash);
+  if (topoId == null && !stableHash) return null;
+  return {
+    ...(topoId != null ? { topoId } : {}),
+    ...(stableHash ? { stableHash } : {}),
+  };
+}
+
+function normalizeFilletSpec(spec = {}) {
+  if (!spec || typeof spec !== 'object') return { schemaVersion: 1 };
+  const normalized = { ...spec };
+  normalized.schemaVersion = integerOrNull(spec.schemaVersion) ?? 1;
+  if (Array.isArray(spec.edges)) {
+    normalized.edges = spec.edges.map((edge) => {
+      if (!edge || typeof edge !== 'object') return edge;
+      const normalizedEdge = { ...edge };
+      const edgeRef = normalizeEdgeRef(edge.edgeRef ?? edge.edge ?? edge);
+      if (edgeRef) normalizedEdge.edge = edgeRef;
+      delete normalizedEdge.edgeRef;
+      delete normalizedEdge.topoId;
+      delete normalizedEdge.stableHash;
+      if (edge.referenceFace) {
+        const faceRef = normalizeFaceRef(edge.referenceFace);
+        if (faceRef) normalizedEdge.referenceFace = faceRef;
+      }
+      return normalizedEdge;
+    });
+  }
+  return normalized;
+}
+
+function normalizeChamferSpec(spec = {}) {
+  if (!spec || typeof spec !== 'object') return { schemaVersion: 1 };
+  const normalized = { ...spec };
+  normalized.schemaVersion = integerOrNull(spec.schemaVersion) ?? 1;
+  if (Array.isArray(spec.edges)) {
+    normalized.edges = spec.edges.map((edge) => {
+      if (!edge || typeof edge !== 'object') return edge;
+      const normalizedEdge = { ...edge };
+      const edgeRef = normalizeEdgeRef(edge.edgeRef ?? edge.edge ?? edge);
+      if (edgeRef) normalizedEdge.edge = edgeRef;
+      delete normalizedEdge.edgeRef;
+      delete normalizedEdge.topoId;
+      delete normalizedEdge.stableHash;
+      if (edge.referenceFace) {
+        const faceRef = normalizeFaceRef(edge.referenceFace);
+        if (faceRef) normalizedEdge.referenceFace = faceRef;
+      }
+      return normalizedEdge;
+    });
+  }
+  if (normalized.referenceFace) {
+    const faceRef = normalizeFaceRef(normalized.referenceFace);
+    if (faceRef) normalized.referenceFace = faceRef;
+  }
+  return normalized;
+}
+
 export function occtTessellationToMesh(tessellation, opts = {}) {
   const data = parseJson(tessellation, 'tessellate') || {};
+  const topology = firstObject(opts, ['topology', 'occtTopology'])
+    || firstObject(data, ['topology', 'occtTopology']);
   const positions = Array.isArray(data.positions) ? data.positions : [];
   const normals = Array.isArray(data.normals) ? data.normals : [];
   const indices = Array.isArray(data.indices) ? data.indices : [];
+  const triangleNormals = firstArray(data, ['triangleNormals', 'faceNormals']);
+  const triangleTopoFaceIds = firstArray(data, ['triangleTopoFaceIds', 'topoFaceIds', 'faceIds']);
+  const triangleFaceGroups = firstArray(data, ['triangleFaceGroups', 'faceGroups']);
+  const triangleStableHashes = firstArray(data, ['triangleStableHashes', 'faceStableHashes']);
+  const triangleSharedValues = firstArray(data, ['triangleShared', 'faceShared']);
+  const triangleSourceFeatureIds = firstArray(data, ['triangleSourceFeatureIds', 'sourceFeatureIds']);
+  const faceMetadataById = buildOcctFaceMetadataIndex(topology);
   const vertexCount = Math.floor(positions.length / 3);
   const vertices = new Array(vertexCount);
 
@@ -170,38 +481,84 @@ export function occtTessellationToMesh(tessellation, opts = {}) {
   }
 
   const faces = [];
+  const triangleIndicesByTopoFaceId = new Map();
   for (let offset = 0; offset + 2 < indices.length; offset += 3) {
     const i0 = Number(indices[offset] ?? 0);
     const i1 = Number(indices[offset + 1] ?? 0);
     const i2 = Number(indices[offset + 2] ?? 0);
     if (!vertices[i0] || !vertices[i1] || !vertices[i2]) continue;
     const faceVertices = [vertices[i0], vertices[i1], vertices[i2]];
-    const normal = averageNormal(normals, i0, i1, i2) || triangleNormal(faceVertices[0], faceVertices[1], faceVertices[2]);
     const triangleIndex = faces.length;
-    faces.push({
+    const fallbackTopoFaceId = opts.topoFaceIdOffset != null ? opts.topoFaceIdOffset + triangleIndex : triangleIndex;
+    const declaredTopoFaceId = integerOrNull(triangleTopoFaceIds?.[triangleIndex]);
+    const faceMeta = faceMetadataById.get(declaredTopoFaceId ?? fallbackTopoFaceId) || null;
+    const topoFaceId = faceMeta?.topoFaceId ?? declaredTopoFaceId ?? fallbackTopoFaceId;
+    const fallbackFaceGroup = opts.faceGroupOffset != null ? opts.faceGroupOffset + triangleIndex : triangleIndex;
+    const faceGroup = integerOrNull(triangleFaceGroups?.[triangleIndex]) ?? faceMeta?.faceGroup ?? topoFaceId ?? fallbackFaceGroup;
+    const explicitTriangleNormal = readTriangleVector(triangleNormals, triangleIndex);
+    const analyticNormal = triangleNormal(faceVertices[0], faceVertices[1], faceVertices[2]);
+    const smoothNormal = explicitTriangleNormal ? null : averageNormal(normals, i0, i1, i2);
+    const normal = explicitTriangleNormal || (smoothNormal && dot(analyticNormal, smoothNormal) < 0
+      ? { x: -analyticNormal.x, y: -analyticNormal.y, z: -analyticNormal.z }
+      : analyticNormal);
+    let shared = triangleSharedValues?.[triangleIndex] && typeof triangleSharedValues[triangleIndex] === 'object' && !Array.isArray(triangleSharedValues[triangleIndex])
+      ? { ...triangleSharedValues[triangleIndex] }
+      : (faceMeta?.shared ? { ...faceMeta.shared } : undefined);
+    const sourceFeatureId = stringOrNull(
+      triangleSharedValues?.[triangleIndex]?.sourceFeatureId
+      ?? triangleSourceFeatureIds?.[triangleIndex]
+      ?? shared?.sourceFeatureId
+    );
+    if (sourceFeatureId) {
+      if (!shared) shared = { sourceFeatureId };
+      else if (!shared.sourceFeatureId) shared.sourceFeatureId = sourceFeatureId;
+    }
+    const face = {
       vertices: faceVertices,
       normal,
-      vertexNormals: normals.length >= vertexCount * 3
-        ? [readVec3(normals, i0), readVec3(normals, i1), readVec3(normals, i2)]
-        : undefined,
-      faceGroup: opts.faceGroupOffset != null ? opts.faceGroupOffset + triangleIndex : triangleIndex,
-      topoFaceId: opts.topoFaceIdOffset != null ? opts.topoFaceIdOffset + triangleIndex : triangleIndex,
+      vertexNormals: explicitTriangleNormal
+        ? [normal, normal, normal]
+        : (normals.length >= vertexCount * 3
+          ? [readVec3(normals, i0), readVec3(normals, i1), readVec3(normals, i2)]
+          : undefined),
+      faceGroup,
+      topoFaceId,
       faceType: 'occt-triangle',
       source: 'occt',
-    });
+    };
+    const stableHash = stringOrNull(triangleStableHashes?.[triangleIndex]) ?? faceMeta?.stableHash ?? null;
+    if (stableHash) face.stableHash = stableHash;
+    if (shared) face.shared = shared;
+    faces.push(face);
+    if (Number.isInteger(topoFaceId)) {
+      if (!triangleIndicesByTopoFaceId.has(topoFaceId)) triangleIndicesByTopoFaceId.set(topoFaceId, []);
+      triangleIndicesByTopoFaceId.get(topoFaceId).push(triangleIndex);
+    }
   }
+
+  const featureEdgeEntries = firstArray(data, ['featureEdges', 'edgeChains', 'featureEdgeChains', 'stableEdges', 'sanitizedEdges']);
+  const featureEdgeData = buildEdgeSegmentsFromEntries(featureEdgeEntries, triangleIndicesByTopoFaceId, faces, true);
+  const edges = featureEdgeData.edges.length > 0
+    ? featureEdgeData.edges
+    : parseEdgeSegments(data.edgeSegments, triangleIndicesByTopoFaceId, faces);
+  const rawEdgeSegmentCount = Array.isArray(data.edgeSegments)
+    ? (typeof data.edgeSegments[0] === 'number' ? data.edgeSegments.length / 6 : data.edgeSegments.length)
+    : 0;
 
   return {
     vertices,
     faces,
-    edges: parseEdgeSegments(data.edgeSegments),
+    edges,
+    paths: featureEdgeData.paths,
     _tessellator: 'occt',
     _occt: {
       positionCount: positions.length,
       normalCount: normals.length,
       indexCount: indices.length,
-      edgeSegmentCount: Array.isArray(data.edgeSegments) ? data.edgeSegments.length / 6 : 0,
-      hasStableFaceMap: false,
+      edgeSegmentCount: rawEdgeSegmentCount,
+      hasStableFaceMap: Array.isArray(triangleTopoFaceIds) || faceMetadataById.size > 0,
+      hasStableHashes: faces.some((face) => !!face.stableHash),
+      featureEdgeChainCount: featureEdgeData.paths.length,
     },
   };
 }
@@ -311,13 +668,29 @@ export class OcctKernelAdapter {
   }
 
   filletEdges(shapeHandle, edgeSelectionJson) {
-    const payload = typeof edgeSelectionJson === 'string' ? edgeSelectionJson : JSON.stringify(edgeSelectionJson);
-    return this.rememberShape(this.requireReady().filletEdges(shapeHandle, payload));
+    const kernel = this.requireReady();
+    if (edgeSelectionJson && typeof edgeSelectionJson === 'object' && typeof kernel.filletEdgesWithSpec === 'function') {
+      const payload = normalizeFilletSpec(edgeSelectionJson);
+      return parseJson(kernel.filletEdgesWithSpec(shapeHandle, JSON.stringify(payload)), 'filletEdgesWithSpec');
+    }
+    if (typeof kernel.filletEdges === 'function' && !Number.isFinite(edgeSelectionJson)) {
+      const payload = typeof edgeSelectionJson === 'string' ? edgeSelectionJson : JSON.stringify(edgeSelectionJson);
+      return this.rememberShape(kernel.filletEdges(shapeHandle, payload));
+    }
+    return this.rememberShape(kernel.filletEdges(shapeHandle, Number(edgeSelectionJson) || 0));
   }
 
   chamferEdges(shapeHandle, edgeSelectionJson) {
-    const payload = typeof edgeSelectionJson === 'string' ? edgeSelectionJson : JSON.stringify(edgeSelectionJson);
-    return this.rememberShape(this.requireReady().chamferEdges(shapeHandle, payload));
+    const kernel = this.requireReady();
+    if (edgeSelectionJson && typeof edgeSelectionJson === 'object' && typeof kernel.chamferEdgesWithSpec === 'function') {
+      const payload = normalizeChamferSpec(edgeSelectionJson);
+      return parseJson(kernel.chamferEdgesWithSpec(shapeHandle, JSON.stringify(payload)), 'chamferEdgesWithSpec');
+    }
+    if (typeof kernel.chamferEdges === 'function' && !Number.isFinite(edgeSelectionJson)) {
+      const payload = typeof edgeSelectionJson === 'string' ? edgeSelectionJson : JSON.stringify(edgeSelectionJson);
+      return this.rememberShape(kernel.chamferEdges(shapeHandle, payload));
+    }
+    return this.rememberShape(kernel.chamferEdges(shapeHandle, Number(edgeSelectionJson) || 0));
   }
 
   transformShape(shapeHandle, transformJson) {
@@ -382,6 +755,117 @@ export class OcctKernelAdapter {
 
   getTopology(shapeHandle) {
     return parseJson(this.requireReady().getTopology(shapeHandle), 'getTopology');
+  }
+
+  getRevisionInfo(shapeHandle) {
+    const kernel = this.requireReady();
+    if (typeof kernel.getRevisionInfo !== 'function') {
+      throw new Error('OCCT getRevisionInfo is unavailable in this build');
+    }
+    return parseJson(kernel.getRevisionInfo(shapeHandle), 'getRevisionInfo');
+  }
+
+  resolveStableEntity(shapeHandle, stableHash) {
+    const kernel = this.requireReady();
+    if (typeof kernel.resolveStableEntity !== 'function') {
+      throw new Error('OCCT resolveStableEntity is unavailable in this build');
+    }
+    return parseJson(kernel.resolveStableEntity(shapeHandle, String(stableHash ?? '')), 'resolveStableEntity');
+  }
+
+  mapEntitiesAcrossRevisions(fromRevisionId, toRevisionId, stableHashes = []) {
+    const kernel = this.requireReady();
+    if (typeof kernel.mapEntitiesAcrossRevisions !== 'function') {
+      throw new Error('OCCT mapEntitiesAcrossRevisions is unavailable in this build');
+    }
+    const payload = typeof stableHashes === 'string' ? stableHashes : JSON.stringify(stableHashes);
+    return parseJson(
+      kernel.mapEntitiesAcrossRevisions(String(fromRevisionId ?? ''), String(toRevisionId ?? ''), payload),
+      'mapEntitiesAcrossRevisions',
+    );
+  }
+
+  getCapabilities() {
+    const kernel = this.requireReady();
+    if (typeof kernel.getCapabilities !== 'function') return {};
+    return parseJson(kernel.getCapabilities(), 'getCapabilities') || {};
+  }
+
+  getOperationSchema() {
+    const kernel = this.requireReady();
+    if (typeof kernel.getOperationSchema !== 'function') return null;
+    return parseJson(kernel.getOperationSchema(), 'getOperationSchema');
+  }
+
+  evaluateEdge(shapeHandle, edgeRef, t) {
+    const kernel = this.requireReady();
+    if (typeof kernel.evaluateEdge !== 'function') {
+      throw new Error('OCCT evaluateEdge is unavailable in this build');
+    }
+    return parseJson(kernel.evaluateEdge(shapeHandle, JSON.stringify(normalizeEdgeRef(edgeRef) || edgeRef || {}), Number(t) || 0), 'evaluateEdge');
+  }
+
+  sampleEdge(shapeHandle, edgeRef, options = {}) {
+    const kernel = this.requireReady();
+    if (typeof kernel.sampleEdge !== 'function') {
+      throw new Error('OCCT sampleEdge is unavailable in this build');
+    }
+    const payload = {
+      ...(options && typeof options === 'object' ? options : {}),
+      edge: normalizeEdgeRef(edgeRef) || edgeRef || {},
+    };
+    return parseJson(kernel.sampleEdge(shapeHandle, JSON.stringify(payload.edge), JSON.stringify(payload)), 'sampleEdge');
+  }
+
+  getEdgeCurve(shapeHandle, edgeRef) {
+    const kernel = this.requireReady();
+    if (typeof kernel.getEdgeCurve !== 'function') {
+      throw new Error('OCCT getEdgeCurve is unavailable in this build');
+    }
+    return parseJson(kernel.getEdgeCurve(shapeHandle, JSON.stringify(normalizeEdgeRef(edgeRef) || edgeRef || {})), 'getEdgeCurve');
+  }
+
+  evaluateFace(shapeHandle, faceRef, u, v) {
+    const kernel = this.requireReady();
+    if (typeof kernel.evaluateFace !== 'function') {
+      throw new Error('OCCT evaluateFace is unavailable in this build');
+    }
+    return parseJson(kernel.evaluateFace(shapeHandle, JSON.stringify(normalizeFaceRef(faceRef) || faceRef || {}), Number(u) || 0, Number(v) || 0), 'evaluateFace');
+  }
+
+  createCheckpoint(shapeHandle) {
+    const kernel = this.requireReady();
+    if (typeof kernel.createCheckpoint !== 'function') {
+      throw new Error('OCCT createCheckpoint is unavailable in this build');
+    }
+    return parseJson(kernel.createCheckpoint(shapeHandle), 'createCheckpoint');
+  }
+
+  hydrateCheckpoint(checkpoint) {
+    const kernel = this.requireReady();
+    if (typeof kernel.hydrateCheckpoint !== 'function') {
+      throw new Error('OCCT hydrateCheckpoint is unavailable in this build');
+    }
+    const payload = typeof checkpoint === 'string' ? checkpoint : JSON.stringify(checkpoint);
+    return this.rememberShape(kernel.hydrateCheckpoint(payload));
+  }
+
+  retainRevision(shapeHandle) {
+    const kernel = this.requireReady();
+    if (typeof kernel.retainRevision !== 'function') {
+      throw new Error('OCCT retainRevision is unavailable in this build');
+    }
+    return kernel.retainRevision(shapeHandle);
+  }
+
+  releaseRevision(shapeHandle) {
+    const kernel = this.requireReady();
+    if (typeof kernel.releaseRevision !== 'function') {
+      throw new Error('OCCT releaseRevision is unavailable in this build');
+    }
+    const disposed = !!kernel.releaseRevision(shapeHandle);
+    if (disposed) this._ownedShapes.delete(shapeHandle);
+    return disposed;
   }
 
   tessellateRaw(shapeHandle, opts = {}) {

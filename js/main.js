@@ -18,6 +18,7 @@ import { downloadSVG } from './svg/export.js';
 import { openDXFFile, pickDXFFile, addDXFToScene, dxfBounds, parseDXFGeometry } from './dxf/import.js';
 import { pickSVGFile, addSVGToScene, svgBounds, parseSVGGeometry } from './svg/import.js';
 import { importSTEP, importSTEPAsync, ensureWasmReady } from './cad/StepImport.js';
+import { preloadWasmGeometryOps } from './cad/WasmGeometryOps.js';
 import { exportSTEPDetailed } from './cad/StepExport.js';
 import { wasmTessellation } from './cad/WasmTessellation.js';
 import { globalTessConfig } from './cad/TessellationConfig.js';
@@ -8926,6 +8927,7 @@ class App {
 
     // Restore part
     if (result.part) {
+      await this._ensureReplayPreloads();
       this._partManager.deserialize(result.part, {
         finalCbrepPayload: result.finalCbrepPayload,
         finalCbrepHash: result.finalCbrepHash,
@@ -8999,6 +9001,7 @@ class App {
       if (!result.ok) { this.setStatus(result.error || 'Failed to load example'); return; }
 
       if (result.part) {
+        await this._ensureReplayPreloads();
         this._partManager.deserialize(result.part, {
           finalCbrepPayload: result.finalCbrepPayload,
           finalCbrepHash: result.finalCbrepHash,
@@ -13955,6 +13958,7 @@ class App {
 
       // Apply the loaded project (mirror _openCMODProject flow)
       if (result.part) {
+        await this._ensureReplayPreloads();
         this._partManager.deserialize(result.part, {
           finalCbrepPayload: result.finalCbrepPayload,
           finalCbrepHash: result.finalCbrepHash,

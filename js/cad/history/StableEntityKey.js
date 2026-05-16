@@ -19,6 +19,8 @@
 //
 // Versioning: keys start with "sek1:" to allow future schema changes.
 
+import { makeEdgeKey } from '../EdgeAnalysis.js';
+
 const KEY_VERSION = 'sek1';
 const PRECISION = 5;
 
@@ -32,6 +34,29 @@ function _snapCoord(v) {
 
 function _pointSig(p) {
   return `${_snapCoord(p.x)},${_snapCoord(p.y)},${_snapCoord(p.z)}`;
+}
+
+function _parsePointSig(text) {
+  if (typeof text !== 'string') return null;
+  const coords = text.split(',').map(Number);
+  if (coords.length !== 3 || coords.some((value) => Number.isNaN(value))) return null;
+  return { x: coords[0], y: coords[1], z: coords[2] };
+}
+
+function _normalizeGeomSig(entityType, geomSig) {
+  if (typeof geomSig !== 'string') return geomSig;
+  if (entityType === EntityType.VERTEX) {
+    const point = _parsePointSig(geomSig);
+    return point ? vertexGeomSig(point) : geomSig;
+  }
+  if (entityType === EntityType.EDGE) {
+    const parts = geomSig.split('|');
+    if (parts.length !== 2) return geomSig;
+    const start = _parsePointSig(parts[0]);
+    const end = _parsePointSig(parts[1]);
+    return start && end ? edgeGeomSig(start, end) : geomSig;
+  }
+  return geomSig;
 }
 
 /**
@@ -205,6 +230,104 @@ export function keyBody(topoBody, provenance = '') {
   return { faces, edges, vertices };
 }
 
+/**
+ * Compute a Map of stable edge keys for a geometry edge-segment array.
+ * Useful when an OCCT-native result has semantic edges but no JS TopoBody.
+ *
+ * @param {Array<{start:{x:number,y:number,z:number},end:{x:number,y:number,z:number}}>} edgeSegments
+ * @param {string} [provenance='']
+ * @returns {{ faces: Map<string,Object>, edges: Map<string,Object>, vertices: Map<string,Object> }}
+ */
+export function keyEdgeSegments(edgeSegments, provenance = '') {
+  const faces = new Map();
+  const edges = new Map();
+  const vertices = new Map();
+
+  if (!Array.isArray(edgeSegments)) return { faces, edges, vertices };
+
+  for (const edge of edgeSegments) {
+    if (!edge?.start || !edge?.end) continue;
+    const sig = edgeGeomSig(edge.start, edge.end);
+    const key = `${KEY_VERSION}:${EntityType.EDGE}:${sig}:${provenance}`;
+    if (!edges.has(key)) edges.set(key, edge);
+  }
+
+  return { faces, edges, vertices };
+}
+
+function _extractTopoBodyFromSelectionContext(selectionContext) {
+  if (!selectionContext) return null;
+  if (selectionContext.body) return selectionContext.body;
+  if (selectionContext.solid?.body) return selectionContext.solid.body;
+  if (selectionContext.brep?.shells) return selectionContext.brep;
+  return null;
+}
+
+function _extractGeometryFromSelectionContext(selectionContext) {
+  if (!selectionContext) return null;
+  if (selectionContext.geometry) return selectionContext.geometry;
+  if (selectionContext.solid?.geometry) return selectionContext.solid.geometry;
+  return null;
+}
+
+/**
+ * Build a stable-key lookup map for either a TopoBody-backed solid result or
+ * an OCCT-style geometry edge list.
+ *
+ * @param {Object|null} selectionContext
+ * @param {string} [provenance='']
+ * @returns {{ faces: Map<string,Object>, edges: Map<string,Object>, vertices: Map<string,Object> }|null}
+ */
+export function buildSelectionKeyMap(selectionContext, provenance = '') {
+  const topoBody = _extractTopoBodyFromSelectionContext(selectionContext) || selectionContext;
+  if (topoBody?.shells) {
+    return keyBody(topoBody, provenance);
+  }
+
+  const geometry = _extractGeometryFromSelectionContext(selectionContext) || selectionContext?.geometry || null;
+  if (Array.isArray(geometry?.edges) && geometry.edges.length > 0) {
+    return keyEdgeSegments(geometry.edges, provenance);
+  }
+
+  return null;
+}
+
+/**
+ * Convert a resolved edge entity back into the legacy edge-key string format
+ * expected by the exact chamfer/fillet kernels.
+ *
+ * @param {Object|null} entity
+ * @returns {string|null}
+ */
+export function edgeEntityToLegacyKey(entity) {
+  if (!entity) return null;
+  if (entity.startVertex?.point && entity.endVertex?.point) {
+    return makeEdgeKey(entity.startVertex.point, entity.endVertex.point);
+  }
+  if (entity.start && entity.end) {
+    return makeEdgeKey(entity.start, entity.end);
+  }
+  return null;
+}
+
+/**
+ * Convert a stable edge key back into the legacy edge-key string format using
+ * the stored geometry signature alone.
+ *
+ * @param {string} key
+ * @returns {string|null}
+ */
+export function selectionKeyToLegacyEdgeKey(key) {
+  const parsed = parseKey(key);
+  if (!parsed || parsed.entityType !== EntityType.EDGE) return null;
+  const parts = parsed.geomSig.split('|');
+  if (parts.length !== 2) return null;
+  const start = _parsePointSig(parts[0]);
+  const end = _parsePointSig(parts[1]);
+  if (!start || !end) return null;
+  return makeEdgeKey(start, end);
+}
+
 // -----------------------------------------------------------------------
 // Entity lookup / remap
 // -----------------------------------------------------------------------
@@ -237,6 +360,7 @@ export function resolveKey(storedKey, bodyKeyMap) {
   if (!parsed) {
     return { status: RemapStatus.MISSING, entity: null, key: null, reason: 'unparseable key' };
   }
+  const normalizedStoredGeomSig = _normalizeGeomSig(parsed.entityType, parsed.geomSig);
 
   // Choose the right map based on entity type
   let map;
@@ -250,20 +374,32 @@ export function resolveKey(storedKey, bodyKeyMap) {
     return { status: RemapStatus.EXACT, entity: map.get(storedKey), key: storedKey };
   }
 
-  // 2. Geometry-signature match (ignore provenance)
-  const candidates = [];
+  // 2. Geometry-signature match with normalized numeric formatting.
+  const exactCandidates = [];
+  const remapCandidates = [];
   for (const [k, ent] of map) {
     const kParsed = parseKey(k);
-    if (kParsed && kParsed.geomSig === parsed.geomSig) {
-      candidates.push({ key: k, entity: ent });
+    if (!kParsed) continue;
+    if (_normalizeGeomSig(kParsed.entityType, kParsed.geomSig) !== normalizedStoredGeomSig) continue;
+    if (kParsed.provenance === parsed.provenance) {
+      exactCandidates.push({ key: k, entity: ent });
+    } else {
+      remapCandidates.push({ key: k, entity: ent });
     }
   }
 
-  if (candidates.length === 1) {
-    return { status: RemapStatus.REMAPPED, entity: candidates[0].entity, key: candidates[0].key, reason: 'provenance changed' };
+  if (exactCandidates.length === 1) {
+    return { status: RemapStatus.EXACT, entity: exactCandidates[0].entity, key: exactCandidates[0].key };
   }
-  if (candidates.length > 1) {
-    return { status: RemapStatus.AMBIGUOUS, entity: null, key: null, reason: `${candidates.length} geometry matches` };
+  if (exactCandidates.length > 1) {
+    return { status: RemapStatus.AMBIGUOUS, entity: null, key: null, reason: `${exactCandidates.length} exact geometry matches` };
+  }
+
+  if (remapCandidates.length === 1) {
+    return { status: RemapStatus.REMAPPED, entity: remapCandidates[0].entity, key: remapCandidates[0].key, reason: 'provenance changed' };
+  }
+  if (remapCandidates.length > 1) {
+    return { status: RemapStatus.AMBIGUOUS, entity: null, key: null, reason: `${remapCandidates.length} geometry matches` };
   }
 
   return { status: RemapStatus.MISSING, entity: null, key: null, reason: 'no geometry match' };
@@ -278,10 +414,10 @@ export function resolveKey(storedKey, bodyKeyMap) {
 export function legacyEdgeKeyToStable(legacyKey, provenance = '') {
   const sep = legacyKey.indexOf('|');
   if (sep < 0) return null;
-  const a = legacyKey.slice(0, sep);
-  const b = legacyKey.slice(sep + 1);
-  // Re-sort for canonical order
-  const sig = a <= b ? `${a}|${b}` : `${b}|${a}`;
+  const start = _parsePointSig(legacyKey.slice(0, sep));
+  const end = _parsePointSig(legacyKey.slice(sep + 1));
+  if (!start || !end) return null;
+  const sig = edgeGeomSig(start, end);
   return `${KEY_VERSION}:${EntityType.EDGE}:${sig}:${provenance}`;
 }
 

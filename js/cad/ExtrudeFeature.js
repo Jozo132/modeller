@@ -82,14 +82,34 @@ export class ExtrudeFeature extends Feature {
     
     // Get the current solid (if any)
     let solid = this.getPreviousSolid(context);
+    const occtSketchSolidsEnabled = getFlag(OCCT_SKETCH_SOLID_FLAG) === true;
 
     const profileGroups = this.groupProfilesForExtrusion(profiles);
 
-    if (solid && this.operation === 'subtract' && getFlag(OCCT_SKETCH_SOLID_FLAG) !== true) {
+    if (solid && this.operation === 'subtract' && !occtSketchSolidsEnabled) {
       const directCut = this._tryApplyPlanarThroughCut(solid, profileGroups, plane)
         || this._tryApplyPlanarBlindCut(solid, profileGroups, plane);
       if (directCut) {
         solid = directCut;
+        const finalGeometry = solid.geometry;
+        return {
+          type: 'solid',
+          geometry: finalGeometry,
+          solid,
+          volume: this.calculateVolume(finalGeometry),
+          boundingBox: this.calculateBoundingBox(finalGeometry),
+        };
+      }
+    }
+
+    if (solid && this.operation === 'subtract' && occtSketchSolidsEnabled) {
+      const subtractPasses = this.buildSubtractProfilePasses(profiles);
+      if (subtractPasses.length > 0) {
+        for (const pass of subtractPasses) {
+          const bodyGeom = this.generateGeometry([pass.profile], plane, [], { allowOcctModeling: true });
+          solid = this.applyOperation(solid, bodyGeom, pass.operation);
+        }
+
         const finalGeometry = solid.geometry;
         return {
           type: 'solid',
@@ -162,6 +182,58 @@ export class ExtrudeFeature extends Feature {
     return groups;
   }
 
+  buildSubtractProfilePasses(profiles) {
+    if (!Array.isArray(profiles) || profiles.length === 0) return [];
+
+    const childrenByParent = new Map();
+    const areaByIndex = new Map();
+    const profileArea = (profile) => {
+      const points = profile?.points || [];
+      let area = 0;
+      for (let i = 0; i < points.length; i++) {
+        const next = points[(i + 1) % points.length];
+        area += points[i].x * next.y - next.x * points[i].y;
+      }
+      return Math.abs(area) * 0.5;
+    };
+
+    for (let index = 0; index < profiles.length; index++) {
+      const profile = profiles[index];
+      if (!profile || !Array.isArray(profile.points) || profile.points.length < 3) continue;
+      const parentIndex = Number.isInteger(profile.parentIndex) ? profile.parentIndex : -1;
+      if (!childrenByParent.has(parentIndex)) childrenByParent.set(parentIndex, []);
+      childrenByParent.get(parentIndex).push(index);
+      areaByIndex.set(index, profileArea(profile));
+    }
+
+    const sortIndices = (indices) => [...indices].sort((first, second) => {
+      const depthA = Number(profiles[first]?.nestingDepth || 0);
+      const depthB = Number(profiles[second]?.nestingDepth || 0);
+      if (depthA !== depthB) return depthA - depthB;
+      return (areaByIndex.get(second) || 0) - (areaByIndex.get(first) || 0);
+    });
+
+    const passes = [];
+    const visit = (profileIndex) => {
+      const profile = profiles[profileIndex];
+      if (!profile) return;
+      const depth = Number(profile.nestingDepth || 0);
+      passes.push({
+        profile,
+        operation: depth % 2 === 0 ? 'subtract' : 'add',
+      });
+      for (const childIndex of sortIndices(childrenByParent.get(profileIndex) || [])) {
+        visit(childIndex);
+      }
+    };
+
+    for (const rootIndex of sortIndices(childrenByParent.get(-1) || [])) {
+      visit(rootIndex);
+    }
+
+    return passes;
+  }
+
   /**
    * Union a new body into an existing solid (used for multi-profile merging).
    */
@@ -189,11 +261,13 @@ export class ExtrudeFeature extends Feature {
       return this._appendBodyGeometry(solid, geometry);
     }
     try {
-      const booleanOpts = getFlag(OCCT_SKETCH_SOLID_FLAG) === true
-        ? { preferOcctPrimary: true }
-        : null;
-      const resultGeom = booleanOp(solid.geometry, geometry, 'union',
-        null, { sourceFeatureId: this.id }, booleanOpts);
+      const resultGeom = this._runBooleanOp(
+        solid.geometry,
+        geometry,
+        'union',
+        null,
+        { sourceFeatureId: this.id },
+      );
       this._disposeTemporaryOcctGeometry(geometry, resultGeom.occtShapeHandle || 0);
       return { geometry: resultGeom };
     } catch (err) {
@@ -262,13 +336,13 @@ export class ExtrudeFeature extends Feature {
         combined = geometry;
         continue;
       }
-      const booleanOpts = getFlag(OCCT_SKETCH_SOLID_FLAG) === true
-        ? { preferOcctPrimary: true }
-        : null;
-      combined = booleanOp(combined, geometry, 'union',
+      combined = this._runBooleanOp(
+        combined,
+        geometry,
+        'union',
         combined.faces?.[0]?.shared || null,
         { sourceFeatureId: this.id },
-        booleanOpts);
+      );
     }
 
     if (!combined) {
@@ -2247,8 +2321,9 @@ export class ExtrudeFeature extends Feature {
    * @param {Object} geometry - New geometry to add
    * @returns {Object} Resulting solid
    */
-  applyOperation(solid, geometry) {
-    if (this.operation === 'new' || !solid) {
+  applyOperation(solid, geometry, operationOverride = null) {
+    const operation = operationOverride || this.operation;
+    if (operation === 'new' || !solid) {
       // Tag new faces with this feature's id so selection can link back
       if (geometry && geometry.faces) {
         for (const f of geometry.faces) {
@@ -2277,19 +2352,19 @@ export class ExtrudeFeature extends Feature {
     }
 
     try {
-      const booleanOpts = getFlag(OCCT_SKETCH_SOLID_FLAG) === true
-        ? { preferOcctPrimary: true }
-        : null;
       // Pass feature ids as shared metadata so faces track their source feature
-      const resultGeom = booleanOp(prevGeom, geometry, this.operation,
-        null, // keep existing shared on prevGeom faces
+      const resultGeom = this._runBooleanOp(
+        prevGeom,
+        geometry,
+        operation,
+        null,
         { sourceFeatureId: this.id },
-        booleanOpts);
+      );
       this._disposeTemporaryOcctGeometry(geometry, resultGeom.occtShapeHandle || 0);
       return { geometry: resultGeom };
     } catch (err) {
       this._disposeTemporaryOcctGeometry(geometry);
-      const message = this._formatBooleanError(err);
+      const message = this._formatBooleanError(err, operation);
       const error = new Error(message);
       error.cause = err;
       error.diagnostics = err?.diagnostics;
@@ -2297,7 +2372,7 @@ export class ExtrudeFeature extends Feature {
     }
   }
 
-  _formatBooleanError(err) {
+  _formatBooleanError(err, operation = this.operation) {
     const base = err?.message || String(err);
     const diagnostics = err?.diagnostics;
     const finalBody = diagnostics?.finalBodyValidation;
@@ -2307,7 +2382,45 @@ export class ExtrudeFeature extends Feature {
     const suffix = detail
       ? ` (${count > 1 ? `${count} issues; ` : ''}${detail})`
       : '';
-    return `Boolean ${this.operation} failed: ${base}${suffix}`;
+    return `Boolean ${operation} failed: ${base}${suffix}`;
+  }
+
+  _createBooleanOptions(extraOpts = null) {
+    const booleanOpts = getFlag(OCCT_SKETCH_SOLID_FLAG) === true
+      ? { preferOcctPrimary: true }
+      : {};
+    if (extraOpts && typeof extraOpts === 'object') {
+      Object.assign(booleanOpts, extraOpts);
+    }
+    return Object.keys(booleanOpts).length > 0 ? booleanOpts : null;
+  }
+
+  _isRelaxableWasmBooleanTessellationFailure(error) {
+    const message = error?.message || '';
+    return message.includes('[BRep-only] tessellateBody: WASM tessellation rejected (mesh quality)');
+  }
+
+  _runBooleanOp(geomA, geomB, operation, sharedA = null, sharedB = null) {
+    try {
+      return booleanOp(
+        geomA,
+        geomB,
+        operation,
+        sharedA,
+        sharedB,
+        this._createBooleanOptions(),
+      );
+    } catch (error) {
+      if (!this._isRelaxableWasmBooleanTessellationFailure(error)) throw error;
+      return booleanOp(
+        geomA,
+        geomB,
+        operation,
+        sharedA,
+        sharedB,
+        this._createBooleanOptions({ acceptWasmMeshQualityIssues: true }),
+      );
+    }
   }
 
   _disposeTemporaryOcctGeometry(geometry, keepHandle = 0) {

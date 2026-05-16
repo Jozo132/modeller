@@ -13,6 +13,7 @@ import { resetTopoIds } from '../js/cad/BRepTopology.js';
 import { validateBody, validateFull } from '../js/cad/BRepValidator.js';
 import { tessellateBody } from '../js/cad/Tessellation.js';
 import { globalTessConfig } from '../js/cad/TessellationConfig.js';
+import { ensureWasmReady } from '../js/cad/StepImportWasm.js';
 import { formatTimingSuffix, startTiming } from './test-timing.js';
 
 let passed = 0;
@@ -64,6 +65,8 @@ function pointInTriangle2D(point, vertices) {
   const hasPos = d1 > 1e-8 || d2 > 1e-8 || d3 > 1e-8;
   return !(hasNeg && hasPos);
 }
+
+await ensureWasmReady();
 
 // ============================================================
 console.log('=== Exact Extrude B-Rep Tests ===\n');
@@ -291,6 +294,40 @@ test('Extrude box: topoBody can be tessellated', () => {
     assert.ok(mesh.faces.length > 0, 'Tessellated mesh should have faces');
     assert.ok(mesh.vertices.length > 0, 'Tessellated mesh should have vertices');
   }
+});
+
+test('Arc add extrusion onto an exact box keeps exact topology', () => {
+  resetFeatureIds();
+  resetTopoIds();
+  const part = new Part('ArcAddExtrude');
+  const plane = {
+    origin: { x: 0, y: 0, z: 0 },
+    normal: { x: 0, y: 0, z: 1 },
+    xAxis: { x: 1, y: 0, z: 0 },
+    yAxis: { x: 0, y: 1, z: 0 },
+  };
+
+  part.addSketch(makeRectSketch(-5, -5, 5, 5), plane);
+  part.extrude(part.getSketches()[0].id, 10);
+
+  const topPlane = {
+    ...plane,
+    origin: { x: 0, y: 0, z: 10 },
+  };
+  const arcSketch = new Sketch();
+  arcSketch.addSegment(-2, -2, 2, -2);
+  arcSketch.addSegment(2, -2, 1, 1);
+  arcSketch.addArc(0, 1, 1, 0, Math.PI);
+  arcSketch.addSegment(-1, 1, -2, -2);
+  const sketchFeature = part.addSketch(arcSketch, topPlane);
+  const extrudeFeature = part.extrude(sketchFeature.id, 4, { operation: 'add' });
+
+  assert.ok(extrudeFeature.result?.geometry, 'Arc add extrusion should produce geometry');
+  assert.ok(extrudeFeature.result.geometry.topoBody, 'Arc add extrusion should keep exact topology');
+  assert.ok(extrudeFeature.result.geometry.faces.length > 0, 'Arc add extrusion should keep tessellated faces');
+
+  const validation = validateBody(extrudeFeature.result.geometry.topoBody);
+  assert.ok(validation.isValid, `Arc add extrusion topoBody should validate: ${validation.toString()}`);
 });
 
 test('Extrude box: shared metadata preserved on faces', () => {

@@ -3845,7 +3845,7 @@ function _tryApplyPlaneCylinderArcFillet(geometry, edgeKeys, radius, segments) {
   const plane = topoFacePlane(planeFace);
   if (!plane) return null;
 
-  const samples = selectedEdge.tessellate(Math.max(segments * 4, 64));
+  const samples = _sampleExactEdgePoints(selectedEdge, Math.max(segments * 4, 64));
   if (!Array.isArray(samples) || samples.length < 3) return null;
   const start = selectedEdge.startVertex.point;
   const end = selectedEdge.endVertex.point;

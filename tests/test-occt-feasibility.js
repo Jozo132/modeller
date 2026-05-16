@@ -4,13 +4,22 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 
-import { buildTopoBody, resetTopoIds, SurfaceType } from '../js/cad/BRepTopology.js';
+import {
+  TopoVertex, TopoEdge, TopoCoEdge, TopoLoop, TopoFace, TopoShell, TopoBody,
+  SurfaceType, buildTopoBody, resetTopoIds,
+} from '../js/cad/BRepTopology.js';
+import { NurbsCurve } from '../js/cad/NurbsCurve.js';
+import { NurbsSurface } from '../js/cad/NurbsSurface.js';
 import { Part } from '../js/cad/Part.js';
 import { Sketch } from '../js/cad/Sketch.js';
 import { resetFeatureIds } from '../js/cad/Feature.js';
 import { resetPrimitiveIds } from '../js/cad/Primitive.js';
 import { importSTEP } from '../js/cad/StepImport.js';
 import { exportSTEPDetailed } from '../js/cad/StepExport.js';
+import { tessellateBody } from '../js/cad/Tessellation.js';
+import { computeFeatureEdges } from '../js/cad/EdgeAnalysis.js';
+import { makeEdgeKey } from '../js/cad/EdgeAnalysis.js';
+import { calculateMeshVolume, calculateBoundingBox } from '../js/cad/toolkit/MeshAnalysis.js';
 import { resetFlags, setFlag } from '../js/featureFlags.js';
 import { StepImportFeature } from '../js/cad/StepImportFeature.js';
 import {
@@ -23,6 +32,12 @@ import {
   disposeOcctSketchModelingShape,
   invalidateOcctSketchModelingSession,
 } from '../js/cad/occt/OcctSketchModeling.js';
+import { readCbrep, setTopoDeps } from '../packages/ir/reader.js';
+
+setTopoDeps({
+  TopoVertex, TopoEdge, TopoCoEdge, TopoLoop, TopoFace, TopoShell, TopoBody,
+  NurbsCurve, NurbsSurface, SurfaceType,
+});
 
 const LOCAL_DIST_CANDIDATES = [
   process.env.OCCT_KERNEL_DIST,
@@ -109,6 +124,16 @@ function makeExactRevolvedCylinderBody() {
   return body;
 }
 
+function fastRestoreDeps() {
+  return {
+    readCbrep,
+    tessellateBody,
+    computeFeatureEdges,
+    calculateMeshVolume,
+    calculateBoundingBox,
+  };
+}
+
 function assertFiniteMesh(mesh) {
   assert.ok(mesh.vertices.length > 0, 'expected vertices');
   assert.ok(mesh.faces.length > 0, 'expected triangle faces');
@@ -135,8 +160,15 @@ function assertOcctBooleanGeometry(geometry, operation) {
   assert.equal(geometry._occtModeling?.authoritative, true, `${operation} should stay authoritative in OCCT`);
   assert.equal(geometry._occtModeling?.operation, operation, `${operation} seam should report the OCCT operation`);
   assert.equal(geometry._occtModeling?.source, 'resident-boolean', `${operation} seam should come from resident OCCT boolean`);
-  assert.ok(geometry._occtModeling?.topology?.faceCount > 0, `${operation} seam should capture OCCT topology`);
-  assert.ok(geometry.topoBody, `${operation} should preserve topoBody compatibility shadow`);
+  const topology = geometry._occtModeling?.topology;
+  assert.ok(topology?.faceCount > 0, `${operation} seam should capture OCCT topology`);
+  assert.ok(Array.isArray(topology?.faces) && topology.faces.length > 0, `${operation} seam should expose OCCT face metadata`);
+  assert.ok(topology.faces.some((face) => typeof face?.stableHash === 'string' && face.stableHash.length > 0), `${operation} seam should expose stable face hashes from OCCT`);
+  assert.ok(Array.isArray(topology?.edges) && topology.edges.length > 0, `${operation} seam should expose OCCT edge metadata`);
+  assert.ok(Array.isArray(topology?.vertices) && topology.vertices.length > 0, `${operation} seam should expose OCCT vertex metadata`);
+  assert.ok(geometry.faces.some((face) => typeof face?.stableHash === 'string' && face.stableHash.length > 0), `${operation} display mesh should carry stable face hashes`);
+  assert.ok(geometry.paths.some((path) => typeof path?.stableHash === 'string' && path.stableHash.length > 0), `${operation} feature-edge chains should carry stable edge hashes`);
+  assert.equal(geometry.topoBody ?? null, null, `${operation} seam should no longer require a JS topoBody compatibility shadow`);
 }
 
 console.log('OCCT WASM feasibility smoke\n');
@@ -174,6 +206,48 @@ await check('constructs adapter and box handle', async () => {
   assert.equal(topology.edgeCount, 12, 'box should have 12 edges');
   assert.equal(topology.vertexCount, 8, 'box should have 8 vertices');
   assert.equal(adapter.checkValidity(boxHandle), true, 'box should be valid');
+});
+
+await check('surfaces OCCT revision and checkpoint APIs through the adapter', async () => {
+  const capabilities = adapter.getCapabilities();
+  assert.equal(capabilities.historyV1, true, 'historyV1 capability should be advertised');
+  assert.equal(capabilities.revisionInfoV1, true, 'revisionInfoV1 capability should be advertised');
+  assert.equal(capabilities.entityResolutionV1, true, 'entityResolutionV1 capability should be advertised');
+  assert.equal(capabilities.entityRemapV1, true, 'entityRemapV1 capability should be advertised');
+  assert.equal(capabilities.checkpointV1, true, 'checkpointV1 capability should be advertised');
+
+  const topology = adapter.getTopology(boxHandle);
+  const stableHash = topology.faces?.[0]?.stableHash;
+  assert.ok(typeof stableHash === 'string' && stableHash.length > 0, 'box topology should expose a stable face hash');
+
+  const revisionInfo = adapter.getRevisionInfo(boxHandle);
+  assert.equal(revisionInfo.revisionId, topology.revisionId, 'revision info should match the topology revision id');
+  assert.equal(revisionInfo.topologyHash, topology.topologyHash, 'revision info should report the same topology hash');
+
+  const resolved = adapter.resolveStableEntity(boxHandle, stableHash);
+  assert.equal(resolved?.found, true, 'resolveStableEntity should find the queried face');
+  assert.equal(resolved?.stableHash, stableHash, 'resolveStableEntity should return the same stable hash');
+
+  const mapped = adapter.mapEntitiesAcrossRevisions(topology.revisionId, topology.revisionId, [stableHash]);
+  assert.ok(Array.isArray(mapped?.mappings) && mapped.mappings.length === 1, 'mapEntitiesAcrossRevisions should return one mapping');
+  assert.equal(mapped.mappings[0]?.mappedStableHash, stableHash, 'identity remap should preserve the stable hash');
+
+  const checkpoint = adapter.createCheckpoint(boxHandle);
+  assert.equal(checkpoint?.checkpointSchemaVersion, 1, 'checkpoint should advertise schema version 1');
+  assert.ok(typeof checkpoint?.brep === 'string' && checkpoint.brep.length > 0, 'checkpoint should contain serialized exact geometry');
+
+  const revivedHandle = adapter.hydrateCheckpoint(checkpoint);
+  assert.ok(revivedHandle > 0, 'hydrateCheckpoint should restore a positive OCCT handle');
+  try {
+    const revivedTopology = adapter.getTopology(revivedHandle);
+    assert.equal(revivedTopology.revisionId, topology.revisionId, 'checkpoint restore should preserve revision id');
+    assert.equal(revivedTopology.faces?.[0]?.stableHash, stableHash, 'checkpoint restore should preserve stable face hashes');
+    adapter.retainRevision(revivedHandle);
+    assert.equal(adapter.releaseRevision(revivedHandle), false, 'first release should keep a retained revision alive');
+    assert.equal(adapter.releaseRevision(revivedHandle), true, 'second release should drop the final revision reference');
+  } finally {
+    adapter.disposeShape(revivedHandle);
+  }
 });
 
 await check('normalizes OCCT tessellation into modeller mesh shape', async () => {
@@ -349,6 +423,78 @@ await check('builds supported sketch revolve through OCCT modeling seam', async 
   }
 });
 
+await check('keeps OCCT authority across supported fillet seam', async () => {
+  const previousOcctDist = process.env.OCCT_KERNEL_DIST;
+  process.env.OCCT_KERNEL_DIST = distPath;
+  setFlag('CAD_USE_OCCT_SKETCH_SOLIDS', true);
+  invalidateOcctKernelModuleCache();
+  invalidateOcctSketchModelingSession();
+  await loadOcctKernelModule({ fresh: true });
+
+  const part = new Part('OcctSketchFillet');
+  const sketchFeature = part.addSketch(makeRectSketch(0, 0, 10, 10), makeXYPlane());
+  const extrudeFeature = part.extrude(sketchFeature.id, 10, { operation: 'new' });
+  const baseGeometry = extrudeFeature.result?.geometry;
+  const edgeKey = baseGeometry?.edges?.[0]
+    ? makeEdgeKey(baseGeometry.edges[0].start, baseGeometry.edges[0].end)
+    : null;
+  assert.ok(edgeKey, 'base OCCT extrude should expose a selectable edge');
+  const filletFeature = part.fillet([edgeKey], 0.5);
+  const geometry = filletFeature.result?.geometry;
+
+  try {
+    assert.ok(extrudeFeature.result?.geometry?.occtShapeHandle > 0, 'base body should carry an OCCT handle');
+    assert.ok(geometry, 'fillet should produce geometry');
+    assert.equal(geometry._tessellator, 'occt', 'fillet should tessellate through OCCT');
+    assert.equal(geometry._occtModeling?.authoritative, true, 'fillet should mark OCCT authority');
+    assert.ok(geometry.occtShapeHandle > 0, 'fillet should retain an OCCT handle');
+    assert.ok(Array.isArray(geometry.paths) && geometry.paths.length > 0, 'fillet should keep OCCT feature-edge chains');
+  } finally {
+    disposeOcctSketchModelingShape(geometry?.occtShapeHandle || 0);
+    resetFlags();
+    invalidateOcctSketchModelingSession();
+    invalidateOcctKernelModuleCache();
+    if (previousOcctDist == null) delete process.env.OCCT_KERNEL_DIST;
+    else process.env.OCCT_KERNEL_DIST = previousOcctDist;
+  }
+});
+
+await check('keeps OCCT authority across supported chamfer seam', async () => {
+  const previousOcctDist = process.env.OCCT_KERNEL_DIST;
+  process.env.OCCT_KERNEL_DIST = distPath;
+  setFlag('CAD_USE_OCCT_SKETCH_SOLIDS', true);
+  invalidateOcctKernelModuleCache();
+  invalidateOcctSketchModelingSession();
+  await loadOcctKernelModule({ fresh: true });
+
+  const part = new Part('OcctSketchChamfer');
+  const sketchFeature = part.addSketch(makeRectSketch(0, 0, 10, 10), makeXYPlane());
+  const extrudeFeature = part.extrude(sketchFeature.id, 10, { operation: 'new' });
+  const baseGeometry = extrudeFeature.result?.geometry;
+  const edgeKey = baseGeometry?.edges?.[0]
+    ? makeEdgeKey(baseGeometry.edges[0].start, baseGeometry.edges[0].end)
+    : null;
+  assert.ok(edgeKey, 'base OCCT extrude should expose a selectable edge');
+  const chamferFeature = part.chamfer([edgeKey], 0.5);
+  const geometry = chamferFeature.result?.geometry;
+
+  try {
+    assert.ok(extrudeFeature.result?.geometry?.occtShapeHandle > 0, 'base body should carry an OCCT handle');
+    assert.ok(geometry, 'chamfer should produce geometry');
+    assert.equal(geometry._tessellator, 'occt', 'chamfer should tessellate through OCCT');
+    assert.equal(geometry._occtModeling?.authoritative, true, 'chamfer should mark OCCT authority');
+    assert.ok(geometry.occtShapeHandle > 0, 'chamfer should retain an OCCT handle');
+    assert.ok(Array.isArray(geometry.paths) && geometry.paths.length > 0, 'chamfer should keep OCCT feature-edge chains');
+  } finally {
+    disposeOcctSketchModelingShape(geometry?.occtShapeHandle || 0);
+    resetFlags();
+    invalidateOcctSketchModelingSession();
+    invalidateOcctKernelModuleCache();
+    if (previousOcctDist == null) delete process.env.OCCT_KERNEL_DIST;
+    else process.env.OCCT_KERNEL_DIST = previousOcctDist;
+  }
+});
+
 await check('keeps OCCT authority across supported union boolean seam', async () => {
   const previousOcctDist = process.env.OCCT_KERNEL_DIST;
   process.env.OCCT_KERNEL_DIST = distPath;
@@ -425,6 +571,98 @@ await check('keeps OCCT authority across supported intersect boolean seam', asyn
     assertOcctBooleanGeometry(geometry, 'intersect');
   } finally {
     disposeOcctSketchModelingShape(geometry?.occtShapeHandle || 0);
+    resetFlags();
+    invalidateOcctSketchModelingSession();
+    invalidateOcctKernelModuleCache();
+    if (previousOcctDist == null) delete process.env.OCCT_KERNEL_DIST;
+    else process.env.OCCT_KERNEL_DIST = previousOcctDist;
+  }
+});
+
+await check('serializes and fast-restores OCCT resident boolean checkpoints', async () => {
+  const previousOcctDist = process.env.OCCT_KERNEL_DIST;
+  process.env.OCCT_KERNEL_DIST = distPath;
+  setFlag('CAD_USE_OCCT_SKETCH_SOLIDS', true);
+  invalidateOcctKernelModuleCache();
+  invalidateOcctSketchModelingSession();
+  await loadOcctKernelModule({ fresh: true });
+
+  const part = new Part('OcctCheckpointRestore');
+  const firstSketch = part.addSketch(makeRectSketch(0, 0, 10, 10), makeXYPlane());
+  part.extrude(firstSketch.id, 10, { operation: 'new' });
+  const secondSketch = part.addSketch(makeRectSketch(5, 0, 15, 10), makeXYPlane());
+  const secondExtrude = part.extrude(secondSketch.id, 10, { operation: 'add' });
+  const geometry = secondExtrude.result?.geometry;
+  const serialized = part.serialize();
+  const checkpoint = serialized.featureTree?.checkpoints?.[secondExtrude.id];
+
+  try {
+    assertOcctBooleanGeometry(geometry, 'union');
+    assert.ok(checkpoint?.occt, 'serialized boolean result should include an OCCT checkpoint');
+    assert.equal(typeof checkpoint?.occt?.brep, 'string', 'serialized OCCT checkpoint should include a BREP payload');
+    assert.equal(checkpoint?.payload ?? null, null, 'resident OCCT boolean should not require a CBREP fallback payload');
+
+    const restoredPart = Part.deserialize(serialized, { fastRestoreDeps: fastRestoreDeps() });
+    const restoredResult = restoredPart.featureTree?.results?.[secondExtrude.id];
+    const restoredGeometry = restoredResult?.geometry;
+
+    assert.equal(restoredResult?._restoredFromCheckpoint, true, 'deserialize should fast-restore the OCCT boolean from checkpoint');
+    assert.ok(restoredGeometry?.occtShapeHandle > 0, 'restored OCCT boolean should retain a resident handle');
+    assert.equal(restoredGeometry?._tessellator, 'occt', 'restored OCCT boolean should keep OCCT tessellation');
+    assert.equal(restoredGeometry?.topoBody ?? null, null, 'restored OCCT boolean should not materialize a JS topoBody shadow');
+    assert.equal(restoredGeometry?._occtModeling?.source, 'checkpoint-restore', 'restored OCCT boolean should report checkpoint restore provenance');
+    assert.equal(restoredGeometry?._occtModeling?.topology?.revisionId, checkpoint.occt.revision?.revisionId, 'restored OCCT boolean should preserve revision identity');
+    assert.ok(Array.isArray(restoredGeometry?.paths) && restoredGeometry.paths.length > 0, 'restored OCCT boolean should keep feature-edge chains');
+  } finally {
+    disposeOcctSketchModelingShape(geometry?.occtShapeHandle || 0);
+    resetFlags();
+    invalidateOcctSketchModelingSession();
+    invalidateOcctKernelModuleCache();
+    if (previousOcctDist == null) delete process.env.OCCT_KERNEL_DIST;
+    else process.env.OCCT_KERNEL_DIST = previousOcctDist;
+  }
+});
+
+await check('rollback rehydrates active OCCT boolean results from resident checkpoints', async () => {
+  const previousOcctDist = process.env.OCCT_KERNEL_DIST;
+  process.env.OCCT_KERNEL_DIST = distPath;
+  setFlag('CAD_USE_OCCT_SKETCH_SOLIDS', true);
+  invalidateOcctKernelModuleCache();
+  invalidateOcctSketchModelingSession();
+  await loadOcctKernelModule({ fresh: true });
+
+  const part = new Part('OcctCheckpointRollback');
+  const baseSketch = part.addSketch(makeRectSketch(0, 0, 10, 10), makeXYPlane());
+  part.extrude(baseSketch.id, 10, { operation: 'new' });
+  const unionSketch = part.addSketch(makeRectSketch(5, 0, 15, 10), makeXYPlane());
+  const unionExtrude = part.extrude(unionSketch.id, 10, { operation: 'add' });
+  const trailingSketch = part.addSketch(makeRectSketch(12, 0, 18, 6), makeXYPlane());
+  part.extrude(trailingSketch.id, 8, { operation: 'add' });
+
+  const tree = part.featureTree;
+  const initialRevisionId = unionExtrude.result?.geometry?._occtModeling?.topology?.revisionId;
+
+  try {
+    assert.ok(unionExtrude.result?.occtCheckpoint, 'union result should capture an OCCT checkpoint during stamping');
+
+    const firstRollback = tree.applyRollbackSuppression(5, fastRestoreDeps());
+    const firstResult = tree.results[unionExtrude.id];
+    assert.equal(firstRollback.replayed, false, 'rollback should reuse checkpointed OCCT results without replay');
+    assert.ok(firstRollback.restored >= 2, 'rollback should restore active solid checkpoints');
+    assert.equal(firstResult?._restoredFromCheckpoint, true, 'active OCCT boolean should be restored from checkpoint during rollback');
+    assert.equal(firstResult?.geometry?._occtModeling?.source, 'checkpoint-restore', 'rollback should hydrate the OCCT checkpoint restore path');
+    assert.equal(firstResult?.geometry?._occtModeling?.topology?.revisionId, initialRevisionId, 'rollback should preserve the OCCT revision identity');
+
+    const rollForward = tree.applyRollbackSuppression(6, fastRestoreDeps());
+    assert.equal(rollForward.replayed, false, 'roll-forward should reuse cached OCCT results');
+
+    const secondRollback = tree.applyRollbackSuppression(5, fastRestoreDeps());
+    const secondResult = tree.results[unionExtrude.id];
+    assert.equal(secondRollback.replayed, false, 'second rollback should still avoid full replay');
+    assert.ok(secondRollback.restored >= 2, 'second rollback should restore checkpoints again');
+    assert.equal(secondResult?._restoredFromCheckpoint, true, 'second rollback should restore the OCCT boolean from checkpoint again');
+    assert.equal(secondResult?.geometry?._occtModeling?.topology?.revisionId, initialRevisionId, 'repeated rollback should keep the same OCCT revision id');
+  } finally {
     resetFlags();
     invalidateOcctSketchModelingSession();
     invalidateOcctKernelModuleCache();

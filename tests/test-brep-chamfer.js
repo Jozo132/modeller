@@ -797,6 +797,24 @@ test('box-fillet-2-s-1 curved tangent fillet rebuilds as one primitive-sectioned
   assertNativeWasmValidationClean(restoredRawWasmMesh, 'Restored native WASM rolling tangent mesh');
 }));
 
+test('box-fillet-2-s-1 fillet replay does not call NurbsCurve.tessellate', () => withTessPreset('normal', (tessellationConfigOverride) => {
+  const originalTessellate = NurbsCurve.prototype.tessellate;
+  let tessellateCalls = 0;
+  NurbsCurve.prototype.tessellate = function patchedTessellate(...args) {
+    tessellateCalls++;
+    return originalTessellate.apply(this, args);
+  };
+  try {
+    const part = loadSamplePart('box-fillet-2-s-1.cmod', { tessellationConfigOverride });
+    part.featureTree.executeAll();
+    const featureErrors = part.featureTree.features.filter((feature) => feature.error);
+    assert.strictEqual(featureErrors.length, 0, `Sample should load without fillet errors: ${featureErrors.map((feature) => feature.error?.message || feature.name).join('; ')}`);
+    assert.strictEqual(tessellateCalls, 0, 'Fillet replay should not call NurbsCurve.tessellate');
+  } finally {
+    NurbsCurve.prototype.tessellate = originalTessellate;
+  }
+}));
+
 test('puzzle-extrude-cc2 concave arc chamfer surface tessellates in native WASM', () => {
   const part = loadSamplePart('puzzle-extrude-cc2.cmod');
   const geometry = part.getFinalGeometry().geometry;

@@ -26,6 +26,15 @@ function parseFeatureIdNumber(featureId) {
   return match ? parseInt(match[1], 10) : null;
 }
 
+function refreshStableEdgeKeysForFeature(feature) {
+  if (!feature || !Array.isArray(feature.edgeKeys)) return;
+  if (feature.type !== 'chamfer' && feature.type !== 'fillet') return;
+  feature.stableEdgeKeys = feature.edgeKeys
+    .filter((key) => isLegacyEdgeKey(key))
+    .map((key) => legacyEdgeKeyToStable(key, feature.id))
+    .filter((key) => key !== null);
+}
+
 function normalizeFeatureTreeData(featureTreeData) {
   if (!featureTreeData || !Array.isArray(featureTreeData.features)) {
     return featureTreeData;
@@ -664,6 +673,7 @@ export class Part {
     if (feature) {
       const before = _featureParamFingerprint(feature);
       modifyFn(feature);
+      refreshStableEdgeKeysForFeature(feature);
       const after = _featureParamFingerprint(feature);
       if (before != null && before === after) return;
       this.featureTree.markModified(featureId);

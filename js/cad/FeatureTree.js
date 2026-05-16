@@ -8,7 +8,11 @@
 import { Feature } from './Feature.js';
 import { arrayBufferToBase64, base64ToArrayBuffer } from './CbrepEncoding.js';
 import { DirtyFaceTracker, stampDirtyFieldsOnResult } from './DirtyFaceTracker.js';
-import { disposeOcctSketchModelingShape } from './occt/OcctSketchModeling.js';
+import {
+  createOcctSketchModelingCheckpoint,
+  disposeOcctSketchModelingShape,
+  restoreOcctSketchModelingCheckpoint,
+} from './occt/OcctSketchModeling.js';
 import { canonicalize } from '../../packages/ir/canonicalize.js';
 import { writeCbrep } from '../../packages/ir/writer.js';
 import { hashCbrep } from '../../packages/ir/hash.js';
@@ -111,6 +115,58 @@ export class FeatureTree {
     const expectedVersion = this._getFeatureCbrepCacheVersion(feature);
     if (!expectedVersion) return true;
     return !!entry && entry.version === expectedVersion;
+  }
+
+  _hasOcctCheckpoint(entry) {
+    return !!entry?.occt &&
+      typeof entry.occt === 'object' &&
+      typeof entry.occt.brep === 'string' &&
+      entry.occt.brep.length > 0;
+  }
+
+  _getOcctCheckpointMeta(checkpoint) {
+    const revision = checkpoint?.revision && typeof checkpoint.revision === 'object'
+      ? checkpoint.revision
+      : null;
+    return {
+      revisionId: revision?.revisionId ?? null,
+      topologyHash: revision?.topologyHash ?? null,
+    };
+  }
+
+  _getResultOcctHandle(result) {
+    const handle = result?.occtShapeHandle || result?.geometry?.occtShapeHandle || 0;
+    return Number.isInteger(handle) && handle > 0 ? handle : 0;
+  }
+
+  _rememberOcctCheckpoint(result, checkpoint) {
+    if (!result || !checkpoint || typeof checkpoint !== 'object') return false;
+    result.occtCheckpoint = checkpoint;
+    const meta = this._getOcctCheckpointMeta(checkpoint);
+    const topology = result._occtModeling?.topology || result.geometry?._occtModeling?.topology || null;
+    const revisionId = meta.revisionId || topology?.revisionId || null;
+    const topologyHash = meta.topologyHash || topology?.topologyHash || null;
+    if (revisionId) result.occtRevisionId = revisionId;
+    if (topologyHash) result.occtTopologyHash = topologyHash;
+    return true;
+  }
+
+  _ensureSolidResultOcctCheckpoint(result) {
+    if (!result || result.type !== 'solid') return false;
+    if (this._hasOcctCheckpoint({ occt: result.occtCheckpoint })) {
+      return this._rememberOcctCheckpoint(result, result.occtCheckpoint);
+    }
+
+    const handle = this._getResultOcctHandle(result);
+    if (!handle) return false;
+
+    try {
+      const checkpoint = createOcctSketchModelingCheckpoint(handle);
+      return this._rememberOcctCheckpoint(result, checkpoint);
+    } catch (err) {
+      result._occtCheckpointError = err?.message || String(err);
+      return false;
+    }
   }
 
   /**
@@ -254,20 +310,20 @@ export class FeatureTree {
   }
 
   /**
-   * C1: Fast-restore solid results directly from serialized CBREP checkpoints
-   * without running `executeAll()`. Sketch features still execute (cheap —
-   * just constraint-solving) so downstream code that reads
-   * `context.results[sketchId].sketch` still works.
+  * C1: Fast-restore solid results directly from serialized checkpoints
+  * without running `executeAll()`. Sketch features still execute (cheap —
+  * just constraint-solving) so downstream code that reads
+  * `context.results[sketchId].sketch` still works.
    *
-   * Returns true when every non-sketch feature was restored from a
-   * hash-matching checkpoint and the tree is fully populated. Returns false
-   * (without mutating `this.results`) when any solid feature lacks a
-   * checkpoint, so the caller can fall back to `executeAll()`.
+  * Returns true when every non-sketch feature was restored from a compatible
+  * checkpoint and the tree is fully populated. Returns false (without
+  * mutating `this.results`) when any solid feature lacks a usable
+  * checkpoint, so the caller can fall back to `executeAll()`.
    *
    * Deps must be injected (synchronous I/O) — callers in the browser/UI
    * supply them via static imports; tests supply mocks.
    *
-   * @param {Object|null|undefined} checkpoints - serialized { [id]: { payload, hash? } }
+  * @param {Object|null|undefined} checkpoints - serialized { [id]: { payload?, hash?, version?, occt? } }
    * @param {{ readCbrep: Function, tessellateBody: Function, computeFeatureEdges: Function, calculateMeshVolume: Function, calculateBoundingBox: Function }} deps
    * @returns {boolean}
    */
@@ -283,16 +339,18 @@ export class FeatureTree {
     for (const feature of this.features) {
       if (feature.suppressed) continue;
       if (feature.type === 'sketch') continue;
-      // Per-feature opt-out: feature types whose geometry pipeline is known
-      // to be lossy through CBREP can force a full replay by exposing
-      // `canFastRestoreFromCbrep() === false`.
-      if (typeof feature.canFastRestoreFromCbrep === 'function' &&
-          feature.canFastRestoreFromCbrep() === false) {
-        return false;
-      }
       const entry = checkpoints[feature.id];
-      if (!entry || !entry.payload) return false;
-      if (!this._isCbrepCheckpointCompatible(feature, entry)) return false;
+      if (!entry || (!entry.payload && !this._hasOcctCheckpoint(entry))) return false;
+      if (!this._hasOcctCheckpoint(entry)) {
+        // Per-feature opt-out: feature types whose geometry pipeline is known
+        // to be lossy through CBREP can force a full replay by exposing
+        // `canFastRestoreFromCbrep() === false`.
+        if (typeof feature.canFastRestoreFromCbrep === 'function' &&
+            feature.canFastRestoreFromCbrep() === false) {
+          return false;
+        }
+        if (!this._isCbrepCheckpointCompatible(feature, entry)) return false;
+      }
     }
 
     // Build results in order. Sketch features run their execute(); solid
@@ -300,8 +358,6 @@ export class FeatureTree {
     // after restoring the pre-call state.
     const savedResults = this.results;
     this.results = {};
-
-    const buffersByFeatureId = {};
 
     try {
       for (const feature of this.features) {
@@ -324,20 +380,11 @@ export class FeatureTree {
           continue;
         }
 
-        // Solid feature — restore from CBREP.
         const entry = checkpoints[feature.id];
-        let buffer;
-        try {
-          buffer = base64ToArrayBuffer(entry.payload);
-        } catch {
-          throw new Error(`bad payload for ${feature.id}`);
-        }
-        if (!buffer) throw new Error(`empty payload for ${feature.id}`);
-
-        const result = this._buildSolidResultFromCbrep(
+        const result = this._buildSolidResultFromSerializedCheckpoint(
           feature.id,
-          buffer,
-          entry.hash ?? null,
+          feature,
+          entry,
           deps,
           this._getFeatureCbrepCacheVersion(feature),
         );
@@ -348,7 +395,6 @@ export class FeatureTree {
         }
         this._stampSolidResult(feature.id, result);
         this.results[feature.id] = result;
-        buffersByFeatureId[feature.id] = buffer;
       }
     } catch (err) {
       // Restore prior state and let caller fall back to executeAll().
@@ -442,31 +488,66 @@ export class FeatureTree {
     const cacheVersion = this._getFeatureCbrepCacheVersion(feature);
     if (cacheVersion) result.cbrepCacheVersion = cacheVersion;
 
+    let captured = false;
+
     if (result.cbrepBuffer) {
       if (!result.irHash) result.irHash = hashCbrep(result.cbrepBuffer);
       if (feature && !feature._irHash) feature._irHash = result.irHash;
-      return true;
+      captured = true;
+    } else if (!(typeof feature?.canFastRestoreFromCbrep === 'function' && feature.canFastRestoreFromCbrep() === false)) {
+      const body = result.body || result.solid?.topoBody || result.solid?.body || result.geometry?.topoBody;
+      if (body && typeof body.faces === 'function') {
+        try {
+          const cbrepBuffer = writeCbrep(canonicalize(body));
+          const irHash = hashCbrep(cbrepBuffer);
+          result.cbrepBuffer = cbrepBuffer;
+          result.irHash = irHash;
+          if (cacheVersion) result.cbrepCacheVersion = cacheVersion;
+          if (feature) feature._irHash = irHash;
+          captured = true;
+        } catch (err) {
+          result._cbrepCheckpointError = err?.message || String(err);
+        }
+      }
     }
 
-    if (typeof feature?.canFastRestoreFromCbrep === 'function' && feature.canFastRestoreFromCbrep() === false) {
-      return false;
+    if (this._ensureSolidResultOcctCheckpoint(result)) captured = true;
+    return captured;
+  }
+
+  _buildSolidResultFromSerializedCheckpoint(featureId, feature, entry, deps, cbrepCacheVersion = null) {
+    let occtError = null;
+    if (this._hasOcctCheckpoint(entry)) {
+      try {
+        return this._buildSolidResultFromOcctCheckpoint(featureId, entry.occt, deps, cbrepCacheVersion);
+      } catch (error) {
+        occtError = error;
+      }
     }
 
-    const body = result.body || result.solid?.topoBody || result.solid?.body || result.geometry?.topoBody;
-    if (!body || typeof body.faces !== 'function') return false;
-
-    try {
-      const cbrepBuffer = writeCbrep(canonicalize(body));
-      const irHash = hashCbrep(cbrepBuffer);
-      result.cbrepBuffer = cbrepBuffer;
-      result.irHash = irHash;
-      if (cacheVersion) result.cbrepCacheVersion = cacheVersion;
-      if (feature) feature._irHash = irHash;
-      return true;
-    } catch (err) {
-      result._cbrepCheckpointError = err?.message || String(err);
-      return false;
+    const cbrepAllowed = !(
+      typeof feature?.canFastRestoreFromCbrep === 'function' &&
+      feature.canFastRestoreFromCbrep() === false
+    );
+    if (cbrepAllowed && entry?.payload && this._isCbrepCheckpointCompatible(feature, entry)) {
+      let buffer;
+      try {
+        buffer = base64ToArrayBuffer(entry.payload);
+      } catch {
+        throw new Error(`bad payload for ${featureId}`);
+      }
+      if (!buffer) throw new Error(`empty payload for ${featureId}`);
+      return this._buildSolidResultFromCbrep(
+        featureId,
+        buffer,
+        entry.hash ?? null,
+        deps,
+        cbrepCacheVersion,
+      );
     }
+
+    if (occtError) throw occtError;
+    throw new Error(`missing compatible checkpoint for ${featureId}`);
   }
 
   _buildSolidResultFromCbrep(featureId, buffer, irHash, deps, cbrepCacheVersion = null) {
@@ -509,22 +590,72 @@ export class FeatureTree {
     return result;
   }
 
+  _buildSolidResultFromOcctCheckpoint(featureId, checkpoint, deps, cbrepCacheVersion = null) {
+    if (!this._hasValidFastRestoreDeps(deps)) {
+      throw new Error('missing checkpoint restore dependencies');
+    }
+
+    const restored = restoreOcctSketchModelingCheckpoint(checkpoint);
+    const geometry = restored?.geometry || restored?.mesh || null;
+    if (!geometry || !Array.isArray(geometry.faces) || geometry.faces.length === 0) {
+      throw new Error(`empty OCCT checkpoint restore for ${featureId}`);
+    }
+    if (!(restored?.occtShapeHandle > 0)) {
+      throw new Error(`missing OCCT handle after checkpoint restore for ${featureId}`);
+    }
+
+    const result = {
+      type: 'solid',
+      geometry,
+      solid: { geometry, topoBody: geometry.topoBody || null },
+      body: geometry.topoBody || null,
+      volume: deps.calculateMeshVolume(geometry),
+      boundingBox: deps.calculateBoundingBox(geometry),
+      occtShapeHandle: restored.occtShapeHandle,
+      occtShapeResident: true,
+      _occtModeling: restored._occtModeling || geometry._occtModeling || null,
+      occtCheckpoint: checkpoint,
+      _restoredFromCheckpoint: true,
+    };
+    if (cbrepCacheVersion) result.cbrepCacheVersion = cbrepCacheVersion;
+    this._rememberOcctCheckpoint(result, checkpoint);
+    return result;
+  }
+
   _restoreSolidResultFromCheckpoint(featureId, deps = this._fastRestoreDeps) {
     if (!this._hasValidFastRestoreDeps(deps)) return false;
     const feature = this.featureMap.get(featureId);
     const oldResult = this.results[featureId];
-    if (!feature || !oldResult || oldResult.type !== 'solid' || !oldResult.cbrepBuffer) return false;
-    if (typeof feature.canFastRestoreFromCbrep === 'function' && feature.canFastRestoreFromCbrep() === false) {
-      return false;
-    }
+    if (!feature || !oldResult || oldResult.type !== 'solid') return false;
     const cacheVersion = this._getFeatureCbrepCacheVersion(feature);
-    if (cacheVersion && oldResult.cbrepCacheVersion !== cacheVersion) return false;
+    const hasOcctCheckpoint = this._hasOcctCheckpoint({ occt: oldResult.occtCheckpoint });
+    const hasCbrepCheckpoint = !!oldResult.cbrepBuffer;
+    if (!hasOcctCheckpoint && !hasCbrepCheckpoint) return false;
+    if (!hasOcctCheckpoint) {
+      if (typeof feature.canFastRestoreFromCbrep === 'function' && feature.canFastRestoreFromCbrep() === false) {
+        return false;
+      }
+      if (cacheVersion && oldResult.cbrepCacheVersion !== cacheVersion) return false;
+    }
 
     let nextResult;
     try {
-      nextResult = this._buildSolidResultFromCbrep(featureId, oldResult.cbrepBuffer, oldResult.irHash ?? null, deps, cacheVersion);
+      if (hasOcctCheckpoint) {
+        try {
+          nextResult = this._buildSolidResultFromOcctCheckpoint(featureId, oldResult.occtCheckpoint, deps, cacheVersion);
+        } catch (error) {
+          if (!hasCbrepCheckpoint) throw error;
+        }
+      }
+      if (!nextResult) {
+        if (typeof feature.canFastRestoreFromCbrep === 'function' && feature.canFastRestoreFromCbrep() === false) {
+          return false;
+        }
+        if (cacheVersion && oldResult.cbrepCacheVersion !== cacheVersion) return false;
+        nextResult = this._buildSolidResultFromCbrep(featureId, oldResult.cbrepBuffer, oldResult.irHash ?? null, deps, cacheVersion);
+      }
     } catch (err) {
-      oldResult._cbrepRestoreError = err?.message || String(err);
+      oldResult._checkpointRestoreError = err?.message || String(err);
       return false;
     }
 
@@ -1158,7 +1289,7 @@ export class FeatureTree {
    * already carries a payload. This lets a later deserialize restore the
    * cached exact bodies into freshly allocated WASM handles without
    * re-running feature execution.
-   * @returns {Object|null} { [featureId]: { payload, hash } } or null when empty
+   * @returns {Object|null} { [featureId]: { payload?, hash?, version?, occt? } } or null when empty
    */
   _serializeCheckpoints() {
     const out = {};
@@ -1166,18 +1297,29 @@ export class FeatureTree {
     for (const feature of this.features) {
       const result = this.results[feature.id];
       if (!result || result.type !== 'solid') continue;
-      const cbrep = result.cbrepBuffer;
-      if (!cbrep) continue;
-      let payload;
-      try {
-        payload = arrayBufferToBase64(cbrep);
-      } catch {
-        continue;
+
+      if (this._getResultOcctHandle(result) > 0 && !this._hasOcctCheckpoint({ occt: result.occtCheckpoint })) {
+        this._ensureSolidResultOcctCheckpoint(result);
       }
-      if (!payload) continue;
-      const entry = { payload };
-      if (result.irHash) entry.hash = result.irHash;
-      if (result.cbrepCacheVersion) entry.version = result.cbrepCacheVersion;
+
+      const entry = {};
+      const cbrep = result.cbrepBuffer;
+      if (cbrep) {
+        try {
+          const payload = arrayBufferToBase64(cbrep);
+          if (payload) {
+            entry.payload = payload;
+            if (result.irHash) entry.hash = result.irHash;
+            if (result.cbrepCacheVersion) entry.version = result.cbrepCacheVersion;
+          }
+        } catch {
+          // Keep going — OCCT checkpoints may still make this result restorable.
+        }
+      }
+      if (this._hasOcctCheckpoint({ occt: result.occtCheckpoint })) {
+        entry.occt = result.occtCheckpoint;
+      }
+      if (!entry.payload && !entry.occt) continue;
       out[feature.id] = entry;
       count++;
     }
@@ -1243,23 +1385,34 @@ export class FeatureTree {
     if (!checkpoints || typeof checkpoints !== 'object') return;
     for (const feature of this.features) {
       const entry = checkpoints[feature.id];
-      if (!entry || !entry.payload) continue;
-      if (!this._isCbrepCheckpointCompatible(feature, entry)) continue;
+      if (!entry) continue;
       const result = this.results[feature.id];
       if (!result || result.type !== 'solid') continue;
-      // If the live replay produced an irHash and the checkpoint hash does
-      // not match, the replay result is authoritative and we drop the stale
-      // checkpoint.
-      if (result.irHash && entry.hash && result.irHash !== entry.hash) continue;
 
-      let buffer;
-      try {
-        buffer = base64ToArrayBuffer(entry.payload);
-      } catch {
-        continue;
+      if (entry.payload && this._isCbrepCheckpointCompatible(feature, entry)) {
+        // If the live replay produced an irHash and the checkpoint hash does
+        // not match, the replay result is authoritative and we drop the stale
+        // checkpoint.
+        if (!(result.irHash && entry.hash && result.irHash !== entry.hash)) {
+          let buffer;
+          try {
+            buffer = base64ToArrayBuffer(entry.payload);
+          } catch {
+            buffer = null;
+          }
+          if (buffer) {
+            this.attachCbrep(feature.id, buffer, entry.hash ?? result.irHash ?? null);
+          }
+        }
       }
-      if (!buffer) continue;
-      this.attachCbrep(feature.id, buffer, entry.hash ?? result.irHash ?? null);
+
+      if (this._hasOcctCheckpoint(entry) && this._getResultOcctHandle(result) > 0) {
+        const checkpointMeta = this._getOcctCheckpointMeta(entry.occt);
+        const liveTopologyHash = result.occtTopologyHash || result._occtModeling?.topology?.topologyHash || result.geometry?._occtModeling?.topology?.topologyHash || null;
+        if (!liveTopologyHash || !checkpointMeta.topologyHash || liveTopologyHash === checkpointMeta.topologyHash) {
+          this._rememberOcctCheckpoint(result, entry.occt);
+        }
+      }
     }
   }
 }

@@ -7,6 +7,7 @@ import { buildTopoBody, SurfaceType } from './BRepTopology.js';
 import { tessellateBody } from './Tessellation.js';
 import { computeFeatureEdges } from './EdgeAnalysis.js';
 import { sampleCylinderPlaneArcWasmReady } from './WasmGeometryOps.js';
+import { EdgeSampler } from './Tessellator2/EdgeSampler.js';
 import {
   findTerminalCapFace,
   projectLineToPlane,
@@ -52,6 +53,8 @@ import {
 // -----------------------------------------------------------------------
 // Internal helpers
 // -----------------------------------------------------------------------
+
+const _exactEdgeSampler = new EdgeSampler();
 
 function _collectFaceTopoFaceIds(face) {
   const ids = [];
@@ -1429,7 +1432,7 @@ function _debugBRepChamfer(...args) {
 // -----------------------------------------------------------------------
 
 function _sampleExactEdgePoints(edge, segments = 8) {
-  if (!edge || typeof edge.tessellate !== 'function') return [];
+  if (!edge) return [];
   const curve = edge.curve || null;
   const isLinearCurve = !curve || (
     curve.degree === 1 &&
@@ -1437,7 +1440,7 @@ function _sampleExactEdgePoints(edge, segments = 8) {
     curve.controlPoints.length === 2
   );
   const sampleCount = isLinearCurve ? 1 : segments;
-  return edge.tessellate(sampleCount).map((point) => canonicalPoint(point));
+  return _exactEdgeSampler.sampleEdge(edge, sampleCount).map((point) => canonicalPoint(point));
 }
 
 function _isLinearTopoEdge(edge) {

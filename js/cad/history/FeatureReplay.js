@@ -11,7 +11,7 @@
 
 import {
   isStableKey, isLegacyEdgeKey, legacyEdgeKeyToStable,
-  keyBody, resolveKey, RemapStatus,
+  buildSelectionKeyMap, resolveKey, RemapStatus,
 } from './StableEntityKey.js';
 
 import { buildCacheKey, HistoryCache } from './HistoryCache.js';
@@ -131,17 +131,17 @@ export class FeatureReplayResult {
  * Accepts both legacy position keys and stable entity keys.
  *
  * @param {string[]} storedKeys - Edge keys from the feature
- * @param {Object|null} topoBody - Current TopoBody to match against
+ * @param {Object|null} selectionContext - Current TopoBody or solid/result geometry context to match against
  * @param {string} featureId - Feature ID for provenance
  * @returns {{ resolvedKeys:string[], diagnostics:Object[], overallStatus:string }}
  */
-export function resolveEdgeSelections(storedKeys, topoBody, featureId) {
+export function resolveEdgeSelections(storedKeys, selectionContext, featureId) {
   if (!storedKeys || storedKeys.length === 0) {
     return { resolvedKeys: [], diagnostics: [], overallStatus: ReplayStatus.EXACT };
   }
 
-  // If no topoBody available, fall through to legacy path
-  if (!topoBody) {
+  const bodyKeys = _buildSelectionKeyMap(selectionContext, featureId);
+  if (!bodyKeys) {
     return {
       resolvedKeys: [...storedKeys],
       diagnostics: [],
@@ -149,7 +149,6 @@ export function resolveEdgeSelections(storedKeys, topoBody, featureId) {
     };
   }
 
-  const bodyKeys = keyBody(topoBody, featureId);
   const resolvedKeys = [];
   const diagnostics = [];
   let status = ReplayStatus.EXACT;
@@ -175,12 +174,12 @@ export function resolveEdgeSelections(storedKeys, topoBody, featureId) {
 
     switch (result.status) {
       case RemapStatus.EXACT:
-        resolvedKeys.push(key); // keep original key for downstream
+        resolvedKeys.push(result.key || key);
         diagnostics.push({ key, status: ReplayStatus.EXACT, reason: '' });
         break;
 
       case RemapStatus.REMAPPED:
-        resolvedKeys.push(key);
+        resolvedKeys.push(result.key || key);
         diagnostics.push({
           key, status: ReplayStatus.NON_EXACT,
           reason: `remapped: ${result.reason}`,
@@ -253,15 +252,16 @@ export function replayFeatureTree(featureTree, options = {}) {
     }
 
     // Check if this feature uses edge selections (chamfer/fillet)
-    const hasSelections = Array.isArray(feature.edgeKeys) && feature.edgeKeys.length > 0;
+    const selectionKeys = Array.isArray(feature.stableEdgeKeys) && feature.stableEdgeKeys.length > 0
+      ? feature.stableEdgeKeys
+      : (Array.isArray(feature.edgeKeys) ? feature.edgeKeys : []);
+    const hasSelections = selectionKeys.length > 0;
     let selectionStatus = ReplayStatus.EXACT;
     let selectionDiagnostics = [];
 
     if (hasSelections && !dryRun) {
-      // Get the current topoBody from the previous solid result
       const prevResult = _getPreviousSolidResult(featureTree, i);
-      const topoBody = _extractTopoBodyFromResult(prevResult);
-      const resolved = resolveEdgeSelections(feature.edgeKeys, topoBody, feature.id);
+      const resolved = resolveEdgeSelections(selectionKeys, prevResult, feature.id);
       selectionStatus = resolved.overallStatus;
       selectionDiagnostics = resolved.diagnostics;
     }
@@ -274,7 +274,7 @@ export function replayFeatureTree(featureTree, options = {}) {
         inputHash: lastSolidHash,
         featureType: feature.type,
         params,
-        selectionKeys: hasSelections ? feature.edgeKeys : [],
+        selectionKeys: hasSelections ? selectionKeys : [],
       });
 
       const cached = cache.get(cacheKey);
@@ -320,7 +320,7 @@ export function replayFeatureTree(featureTree, options = {}) {
       featureId: feature.id,
       featureType: feature.type,
       status: featureStatus,
-      selectionKeys: hasSelections ? [...feature.edgeKeys] : [],
+      selectionKeys: hasSelections ? [...selectionKeys] : [],
       remapOutcome: cacheHit ? 'cache' : (selectionStatus !== ReplayStatus.EXACT ? 'remap' : ''),
       reason,
     }));
@@ -351,12 +351,8 @@ function _getPreviousSolidResult(tree, featureIndex) {
   return null;
 }
 
-function _extractTopoBodyFromResult(result) {
-  if (!result) return null;
-  if (result.body) return result.body;
-  if (result.solid && result.solid.body) return result.solid.body;
-  if (result.brep && result.brep.shells) return result.brep;
-  return null;
+function _buildSelectionKeyMap(selectionContext, featureId) {
+  return buildSelectionKeyMap(selectionContext, featureId);
 }
 
 function _extractFeatureParams(feature) {

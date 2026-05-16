@@ -724,6 +724,236 @@ Undo/redo and `.cmod` load should restore exact revisions lazily:
 - lazily hydrate WASM handles from CBREP when the result becomes active or is
   required by an exact operation/export
 
+### 7a. OCCT WASM Library Addendum — Stable History, Naming, And Time-Travel
+
+If OCCT is going to replace the current JS exact-topology authority, it cannot
+stop at "resident shape handle + tessellated mesh". The OCCT WASM layer must
+become identity-authoritative as well as geometry-authoritative.
+
+Today a counts-only `getTopology()` payload and raw `edgeSegments` are not
+sufficient for parametric replay. They do not preserve semantic face/edge/
+vertex identity, they do not support deterministic remapping after boolean or
+fillet/chamfer edits, and they do not enable fast feature-tree rollback/
+forward without reconstructing a compatibility shadow. The library therefore
+needs an explicit history and stable-naming contract.
+
+#### Non-Negotiable Rules
+
+- Do not use `TopoDS_Shape::HashCode`, `TShape*`, transient explorer order,
+  tessellation order, or face/edge enumeration order as persistent ids.
+- Do not require JS to infer stable ids, history, or feature-edge chains from
+  triangles or raw edge segments.
+- Do not emit triangulation diagonals or duplicate mesh edges as selectable
+  feature edges.
+- Do not silently drop history on boolean, fillet, chamfer, transform, heal,
+  sew, split, or import steps. If identity cannot be proven, the library must
+  report that explicitly instead of renaming everything anonymously.
+- Do not persist process-local handles or raw pointers in `.cmod` or checkpoint
+  artifacts.
+
+#### Required Revision Model
+
+- Every output handle must represent an immutable exact revision.
+- Every revision must carry:
+  - `revisionId`
+  - `operationId`
+  - `sourceFeatureId`
+  - `operationType`
+  - `operandRevisionIds[]`
+  - `parameterHash`
+  - `topologyHash`
+  - `historySchemaVersion`
+  - `createdFromCheckpoint`
+- Revisions must be cacheable and reference-counted so undo/redo and direct
+  history jumps can move pointers without recomputing unchanged feature-tree
+  prefixes.
+- Copy-on-write sharing is preferred. Unchanged topology/geometry ranges should
+  be shared across revisions instead of cloned eagerly.
+
+#### Required Stable Subshape Identity
+
+- `getTopology()` must grow from summary counts into full subshape metadata.
+- Faces, edges, and vertices must each expose both:
+  - a transient runtime topo id for the current handle
+  - a deterministic stable id for replay, selection remap, and persistence
+- Stable ids must survive:
+  - repeated recompute of the same feature chain
+  - parameter edits that change geometry but not structural role
+  - serialization/deserialization and CBREP hydrate/dehydrate
+  - undo/redo and direct history jump
+  - extrude/revolve/boolean/chamfer/fillet result remapping
+- Sketch-driven operations must seed stable ids from feature semantics, not OCCT
+  traversal order. Examples: bottom cap, top cap, side face by source profile
+  edge, revolve side by source curve/span, boolean-generated cap/split faces by
+  deterministic lineage.
+- Edge and vertex stable ids may be derived from adjacent face stable ids only
+  if the derivation happens inside the library on exact topology after face ids
+  are finalized. JS must not reconstruct them from mesh adjacency.
+
+#### Required History Capture
+
+- The library must capture per-operation `generated`, `modified`, `retained`,
+  and `deleted` lineage.
+- That lineage must exist for:
+  - prism / extrude
+  - revolve
+  - boolean union / subtract / intersect
+  - fillet and chamfer
+  - transform / copy / mirror / pattern placement
+  - STEP import with heal/sew/fixup stages
+  - any operation that splits one subshape into multiple descendants
+- Deleted or consumed entities must not disappear without a trace. The library
+  must retain tombstones or equivalent history records so a stable id can be
+  mapped across revisions even when the original subshape no longer exists in
+  the latest topology.
+- If OCAF / TNaming is practical in WASM, it is an acceptable implementation
+  substrate. If it is not, build an explicit kernel-owned naming layer above
+  OCCT history APIs, but do not fall back to transient subshape hashes.
+
+#### Required OCCT API Additions
+
+The OCCT WASM build should extend existing methods additively where possible so
+older callers keep working.
+
+`getTopology(handle)` should evolve toward a payload of this shape:
+
+```json
+{
+  "revisionId": "rev_...",
+  "operationId": "feature_12@3",
+  "sourceFeatureId": "feature_12",
+  "operationType": "subtract",
+  "operandRevisionIds": ["rev_a", "rev_b"],
+  "topologyHash": "...",
+  "historySchemaVersion": 1,
+  "faceCount": 42,
+  "edgeCount": 96,
+  "vertexCount": 58,
+  "faces": [
+    {
+      "id": 101,
+      "stableHash": "feature_12_Face_Side_p0_e3",
+      "role": "side",
+      "sourceFeatureId": "feature_12",
+      "generatedFrom": ["feature_8_Face_Top_p0"],
+      "modifiedFrom": [],
+      "retainedFrom": [],
+      "status": "generated",
+      "shared": { "sourceFeatureId": "feature_12" }
+    }
+  ],
+  "edges": [
+    {
+      "id": 301,
+      "stableHash": "E:feature_12_Face_Side_p0_e3+feature_4_Face_Top_p0",
+      "generatedFrom": [],
+      "modifiedFrom": [201],
+      "status": "modified"
+    }
+  ],
+  "vertices": [
+    {
+      "id": 401,
+      "stableHash": "V:feature_12_Face_Side_p0_e3+feature_4_Face_Top_p0",
+      "status": "retained"
+    }
+  ],
+  "deletedEntities": [
+    {
+      "kind": "face",
+      "stableHash": "feature_9_Face_Top_p0",
+      "deletedBy": "feature_12"
+    }
+  ]
+}
+```
+
+`tessellate(handle, opts)` should evolve toward a payload of this shape:
+
+```json
+{
+  "positions": [...],
+  "indices": [...],
+  "triangleTopoFaceIds": [101, 101, 102],
+  "triangleFaceGroups": [101, 101, 102],
+  "triangleStableHashes": [
+    "feature_12_Face_Side_p0_e3",
+    "feature_12_Face_Side_p0_e3",
+    "feature_12_Face_Top_p0"
+  ],
+  "triangleNormals": [...],
+  "featureEdges": [
+    {
+      "points": [[0, 0, 0], [1, 0, 0], [1, 1, 0]],
+      "stableHash": "E:feature_12_Face_Side_p0_e3+feature_4_Face_Top_p0",
+      "topoFaceIds": [101, 205],
+      "isClosed": false
+    }
+  ]
+}
+```
+
+Additional library methods are required for time-travel and remapping:
+
+- `getRevisionInfo(handle)` or an equivalent additive extension of
+  `getTopology()`.
+- `resolveStableEntity(handle, stableHash)`.
+- `mapEntitiesAcrossRevisions(fromRevisionId, toRevisionId, stableHashes[])`.
+- `createCheckpoint(handle)` returning CBREP plus revision/history metadata.
+- `hydrateCheckpoint(checkpoint)` restoring the same revision and stable ids.
+- `retainRevision(handle)` / `releaseRevision(handle)` or equivalent ref-count
+  controls.
+- `getCapabilities()` with flags such as `historyV1`, `stableNamingV1`,
+  `featureEdgesV1`, and `checkpointV1`.
+
+#### Fast Rollback / Forward Requirements
+
+- Undo/redo must be pointer movement across immutable revisions, not an eager
+  geometric recompute when the target revision is still resident.
+- The native revision cache should be keyed by:
+  - `sourceFeatureId`
+  - normalized feature parameters
+  - operand revision ids
+  - operation type
+- Forward after rollback must reuse cached descendant revisions whenever the
+  upstream prefix hash is unchanged.
+- The library should keep a hot window of recent revisions resident and dehydrate
+  older revisions to CBREP plus metadata, preserving stable ids and history.
+- Tessellation and feature-edge results should be cached by
+  `(revisionId, tessellationSettings)` so history navigation does not re-mesh on
+  every step.
+
+#### Compatibility Contract With The Current JS Bridge
+
+The current JS bridge is already prepared to consume additive OCCT fields for:
+
+- `topology.faces[].stableHash`
+- `topology.faces[].shared.sourceFeatureId`
+- `triangleTopoFaceIds`
+- `triangleFaceGroups`
+- `triangleStableHashes`
+- `triangleNormals`
+- `featureEdges` / `edgeChains`
+
+That means the library should extend the current `getTopology()` and
+`tessellate()` payloads instead of inventing a parallel incompatible surface
+unless there is a strong reason to do so.
+
+#### Compliance Tests The Library Must Pass
+
+- Stable ids are identical across two independent builds of the same model.
+- Stable ids survive parameter edits that preserve structural role.
+- Stable ids survive checkpoint serialize/hydrate roundtrip.
+- Boolean operations preserve remappable lineage for retained/modified/generated
+  faces, edges, and vertices.
+- Fillet/chamfer preserve lineage or explicitly mark unresolved identity.
+- Undo/redo and arbitrary history jumps run without recomputing already-cached
+  revisions.
+- Tessellation output aligns triangles and feature-edge chains with stable face
+  ids.
+- Selection remap from one revision to another works without consulting a JS
+  compatibility shadow.
+
 ### 8. Disposal Policy
 
 Handle lifetime should be explicit and reference-counted by owner plus jobs:
@@ -1096,6 +1326,36 @@ tree clear. `_releaseResultHandle` accepts featureId for residency cleanup.
     the normal render path.
 25. Keep JS `TopoBody` materialization only for persistence tooling, debug views,
     legacy fallbacks, and explicit compatibility tests.
+26. Extend the OCCT WASM `getTopology()` contract from summary counts into full
+  revision metadata plus face/edge/vertex arrays with stable ids and lineage.
+27. Extend OCCT WASM `tessellate()` to emit `triangleTopoFaceIds`,
+  `triangleFaceGroups`, `triangleStableHashes`, `triangleNormals`, and
+  sanitized feature-edge chains instead of raw triangulation diagonals.
+28. Seed deterministic stable ids for sketch-driven primitives and operation
+  roles inside the OCCT library so prism/revolve outputs do not depend on
+  traversal order.
+29. Capture `generated` / `modified` / `retained` / `deleted` history for OCCT
+  extrude, revolve, boolean, fillet, chamfer, transform, and import/heal
+  stages.
+30. Preserve deleted-entity tombstones and implement explicit remap tables so
+  downstream selection and feature references survive rollback/forward.
+31. Make resident OCCT handles immutable revisions with reference-counted
+  retention and eviction semantics suitable for undo/redo and history jumps.
+32. Add checkpoint/hydrate APIs that round-trip CBREP plus revision/history
+  metadata without changing stable ids.
+33. Add `resolveStableEntity()` and `mapEntitiesAcrossRevisions()` so JS can
+  remap references without reconstructing a compatibility `TopoBody` shadow.
+34. Key the native revision cache by `(featureId, normalizedParamHash,
+  operandRevisionIds, operationType)` so rollback/forward can reuse exact
+  revisions directly.
+35. Preserve stable ids across topology-neutral transforms and instance
+  placement instead of opportunistically renaming transformed copies.
+36. Version the OCCT history/naming schema and advertise capability flags so the
+  JS bridge can feature-detect `historyV1`, `stableNamingV1`, and
+  `checkpointV1` safely.
+37. Add a dedicated OCCT regression suite covering determinism, parameter-edit
+  stability, checkpoint roundtrips, boolean lineage, feature-edge chain
+  quality, and fast multi-step rollback/forward.
 
 ## Expected Gains
 

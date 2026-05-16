@@ -26,7 +26,7 @@ import {
   vertexKey, edgeKey, faceKey,
   parseKey, isStableKey, isLegacyEdgeKey,
   legacyEdgeKeyToStable,
-  keyBody, resolveKey,
+  keyBody, keyEdgeSegments, resolveKey,
   serializeKeys, deserializeKeys,
 } from '../js/cad/history/StableEntityKey.js';
 
@@ -376,6 +376,200 @@ test('Part.chamfer with multiple edges populates matching stableEdgeKeys', () =>
   }
 });
 
+test('Part.modifyFeature refreshes chamfer stableEdgeKeys after edge edits', () => {
+  resetFeatureIds();
+  const part = makeBoxPart();
+  const edgeKeys = getEdgeKeysFromPart(part);
+  if (edgeKeys.length >= 2) {
+    const chamfer = part.chamfer([edgeKeys[0]], 0.5);
+    part.modifyFeature(chamfer.id, (feature) => {
+      feature.edgeKeys = [edgeKeys[1]];
+    });
+    assert.deepStrictEqual(chamfer.stableEdgeKeys, [legacyEdgeKeyToStable(edgeKeys[1], chamfer.id)]);
+  }
+});
+
+test('Part.modifyFeature refreshes fillet stableEdgeKeys after edge edits', () => {
+  resetFeatureIds();
+  const part = makeBoxPart();
+  const edgeKeys = getEdgeKeysFromPart(part);
+  if (edgeKeys.length >= 2) {
+    const fillet = part.fillet([edgeKeys[0]], 0.5);
+    part.modifyFeature(fillet.id, (feature) => {
+      feature.edgeKeys = [edgeKeys[1]];
+    });
+    assert.deepStrictEqual(fillet.stableEdgeKeys, [legacyEdgeKeyToStable(edgeKeys[1], fillet.id)]);
+  }
+});
+
+test('ChamferFeature resolves stableEdgeKeys to current execution edge keys', () => {
+  const chamfer = new ChamferFeature('Chamfer', 0.5);
+  chamfer.id = 'feature_300';
+  chamfer.edgeKeys = ['9.00000,9.00000,9.00000|10.00000,9.00000,9.00000'];
+  chamfer.stableEdgeKeys = [
+    legacyEdgeKeyToStable('0.00000,0.00000,0.00000|1.00000,0.00000,0.00000', chamfer.id),
+  ];
+
+  const resolved = chamfer._resolveSelectedEdgeKeys({
+    geometry: {
+      edges: [
+        {
+          start: { x: 0, y: 0, z: 0 },
+          end: { x: 1, y: 0, z: 0 },
+        },
+      ],
+    },
+  });
+
+  assert.deepStrictEqual(resolved, ['0.00000,0.00000,0.00000|1.00000,0.00000,0.00000']);
+  assert.deepStrictEqual(chamfer.edgeKeys, resolved);
+});
+
+test('ChamferFeature falls back to legacy edgeKeys when stableEdgeKeys are stale', () => {
+  const chamfer = new ChamferFeature('Chamfer', 0.5);
+  chamfer.id = 'feature_301';
+  chamfer.edgeKeys = ['0.00000,0.00000,0.00000|1.00000,0.00000,0.00000'];
+  chamfer.stableEdgeKeys = [
+    legacyEdgeKeyToStable('9.00000,9.00000,9.00000|10.00000,9.00000,9.00000', chamfer.id),
+  ];
+
+  const resolved = chamfer._resolveSelectedEdgeKeys({
+    geometry: {
+      edges: [
+        {
+          start: { x: 0, y: 0, z: 0 },
+          end: { x: 1, y: 0, z: 0 },
+        },
+      ],
+    },
+  });
+
+  assert.deepStrictEqual(resolved, ['0.00000,0.00000,0.00000|1.00000,0.00000,0.00000']);
+  assert.strictEqual(chamfer._legacySelectionFallback, 'no geometry match');
+});
+
+test('FilletFeature merge logic uses stableEdgeKeys when legacy edgeKeys are stale', () => {
+  const previousFillet = new FilletFeature('Fillet', 1);
+  previousFillet.id = 'feature_prev';
+  previousFillet.setSegments(8);
+  previousFillet.edgeKeys = ['20.00000,20.00000,20.00000|21.00000,20.00000,20.00000'];
+  previousFillet.stableEdgeKeys = [
+    legacyEdgeKeyToStable('0.00000,0.00000,0.00000|1.00000,0.00000,0.00000', previousFillet.id),
+  ];
+
+  const currentFillet = new FilletFeature('Fillet', 1);
+  currentFillet.id = 'feature_current';
+  currentFillet.setSegments(8);
+  currentFillet.edgeKeys = ['30.00000,30.00000,30.00000|31.00000,30.00000,30.00000'];
+  currentFillet.stableEdgeKeys = [
+    legacyEdgeKeyToStable('1.00000,0.00000,0.00000|1.00000,1.00000,0.00000', currentFillet.id),
+  ];
+
+  const selectionGeometry = {
+    edges: [
+      {
+        start: { x: 0, y: 0, z: 0 },
+        end: { x: 1, y: 0, z: 0 },
+      },
+      {
+        start: { x: 1, y: 0, z: 0 },
+        end: { x: 1, y: 1, z: 0 },
+      },
+    ],
+    faces: [{}],
+  };
+  const context = {
+    tree: {
+      features: [
+        { id: 'feature_base', type: 'extrude', suppressed: false },
+        previousFillet,
+        currentFillet,
+      ],
+      getFeatureIndex(featureId) {
+        return this.features.findIndex((feature) => feature.id === featureId);
+      },
+    },
+    results: {
+      feature_base: {
+        type: 'solid',
+        solid: {
+          geometry: selectionGeometry,
+          body: null,
+        },
+      },
+    },
+  };
+
+  const resolved = currentFillet._resolveFilletExecutionInput(context);
+  assert.deepStrictEqual(resolved.edgeKeys, [
+    '1.00000,0.00000,0.00000|1.00000,1.00000,0.00000',
+    '0.00000,0.00000,0.00000|1.00000,0.00000,0.00000',
+  ]);
+  assert.deepStrictEqual(currentFillet.edgeKeys, ['1.00000,0.00000,0.00000|1.00000,1.00000,0.00000']);
+  assert.deepStrictEqual(previousFillet.edgeKeys, ['0.00000,0.00000,0.00000|1.00000,0.00000,0.00000']);
+});
+
+test('FilletFeature merge logic falls back to legacy proximity when stableEdgeKeys are stale', () => {
+  const previousFillet = new FilletFeature('Fillet', 1);
+  previousFillet.id = 'feature_prev_legacy';
+  previousFillet.setSegments(8);
+  previousFillet.edgeKeys = ['0.00000,0.00000,0.00000|1.00000,0.00000,0.00000'];
+  previousFillet.stableEdgeKeys = [
+    legacyEdgeKeyToStable('20.00000,20.00000,20.00000|21.00000,20.00000,20.00000', previousFillet.id),
+  ];
+
+  const currentFillet = new FilletFeature('Fillet', 1);
+  currentFillet.id = 'feature_current_legacy';
+  currentFillet.setSegments(8);
+  currentFillet.edgeKeys = ['1.00000,0.00000,0.00000|1.00000,1.00000,0.00000'];
+  currentFillet.stableEdgeKeys = [
+    legacyEdgeKeyToStable('30.00000,30.00000,30.00000|31.00000,30.00000,30.00000', currentFillet.id),
+  ];
+
+  const selectionGeometry = {
+    edges: [
+      {
+        start: { x: 0, y: 0, z: 0 },
+        end: { x: 1, y: 0, z: 0 },
+      },
+      {
+        start: { x: 1, y: 0, z: 0 },
+        end: { x: 1, y: 1, z: 0 },
+      },
+    ],
+    faces: [{}],
+  };
+  const context = {
+    tree: {
+      features: [
+        { id: 'feature_base', type: 'extrude', suppressed: false },
+        previousFillet,
+        currentFillet,
+      ],
+      getFeatureIndex(featureId) {
+        return this.features.findIndex((feature) => feature.id === featureId);
+      },
+    },
+    results: {
+      feature_base: {
+        type: 'solid',
+        solid: {
+          geometry: selectionGeometry,
+          body: null,
+        },
+      },
+    },
+  };
+
+  const resolved = currentFillet._resolveFilletExecutionInput(context);
+  assert.deepStrictEqual(resolved.edgeKeys, [
+    '1.00000,0.00000,0.00000|1.00000,1.00000,0.00000',
+    '0.00000,0.00000,0.00000|1.00000,0.00000,0.00000',
+  ]);
+  assert.strictEqual(currentFillet._legacySelectionFallback, 'no geometry match');
+  assert.strictEqual(previousFillet._legacySelectionFallback, 'no geometry match');
+});
+
 test('ChamferFeature.deserialize marks legacy selection', () => {
   const feature = ChamferFeature.deserialize({
     id: 'feature_99',
@@ -444,6 +638,24 @@ group('6) Explicit failure/remap diagnostics');
 test('resolveEdgeSelections returns non-exact when no topoBody', () => {
   const result = resolveEdgeSelections(['0,0,0|1,0,0'], null, 'feat1');
   assert.strictEqual(result.overallStatus, ReplayStatus.NON_EXACT);
+  assert.strictEqual(result.resolvedKeys.length, 1);
+});
+
+test('resolveEdgeSelections resolves exact against OCCT-like edge geometry without topoBody', () => {
+  const stableKey = legacyEdgeKeyToStable('0.00000,0.00000,0.00000|1.00000,0.00000,0.00000', 'feat1');
+  const selectionContext = {
+    geometry: {
+      edges: [
+        {
+          start: { x: 0, y: 0, z: 0 },
+          end: { x: 1, y: 0, z: 0 },
+          stableHash: 'E:demo',
+        },
+      ],
+    },
+  };
+  const result = resolveEdgeSelections([stableKey], selectionContext, 'feat1');
+  assert.strictEqual(result.overallStatus, ReplayStatus.EXACT);
   assert.strictEqual(result.resolvedKeys.length, 1);
 });
 
@@ -681,6 +893,17 @@ test('keyBody on object without shells returns empty maps', () => {
   assert.strictEqual(result.faces.size, 0);
 });
 
+test('keyEdgeSegments keys OCCT-style edge geometry', () => {
+  const result = keyEdgeSegments([
+    {
+      start: { x: 0, y: 0, z: 0 },
+      end: { x: 1, y: 0, z: 0 },
+      stableHash: 'E:test',
+    },
+  ], 'feat1');
+  assert.strictEqual(result.edges.size, 1);
+});
+
 test('resolveKey with unknown entity type', () => {
   const bodyKeys = { faces: new Map(), edges: new Map(), vertices: new Map() };
   const result = resolveKey('sek1:X:sig:prov', bodyKeys);
@@ -722,6 +945,22 @@ test('replayFeatureTree with suppressed features', () => {
   if (extrudeFeature) {
     part.unsuppressFeature(extrudeFeature.id);
   }
+});
+
+test('replayFeatureTree prefers stableEdgeKeys when legacy edgeKeys are stale', () => {
+  resetFeatureIds();
+  const part = makeBoxPart();
+  const edgeKeys = getEdgeKeysFromPart(part);
+  assert.ok(edgeKeys.length > 0, 'expected at least one edge key');
+  const chamfer = part.chamfer([edgeKeys[0]], 0.5);
+  chamfer.edgeKeys = ['garbage'];
+  chamfer.stableEdgeKeys = [legacyEdgeKeyToStable(edgeKeys[0], chamfer.id)];
+
+  const result = replayFeatureTree(part.featureTree);
+  const diag = result.diagnostics.find((entry) => entry.featureId === chamfer.id);
+  assert.ok(diag, 'expected a replay diagnostic for the chamfer feature');
+  assert.strictEqual(diag.status, ReplayStatus.EXACT);
+  assert.deepStrictEqual(diag.selectionKeys, chamfer.stableEdgeKeys);
 });
 
 test('replayFeatureTree dryRun does not execute', () => {
