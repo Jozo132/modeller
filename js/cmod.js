@@ -10,32 +10,7 @@ import {
   calculateMeshVolume, calculateBoundingBox, calculateSurfaceArea,
   detectDisconnectedBodies, calculateWallThickness, countInvertedFaces,
 } from './cad/toolkit/MeshAnalysis.js';
-import { info, warn, error } from './logger.js';
-
-// ── Optional CBREP IR cache embedding (gated by CAD_USE_IR_CACHE=1) ──
-// When enabled, buildCMOD and projectToCMOD embed a base64-encoded CBREP
-// payload inside the .cmod JSON. On load, this payload is preferred over
-// live reconstruction when present and valid.
-
-let _irCacheEnabled = false;
-try {
-  // Safe check works in both Node.js and browsers (where process is undefined)
-  if (typeof process !== 'undefined' && process.env && process.env.CAD_USE_IR_CACHE === '1') {
-    _irCacheEnabled = true;
-  }
-} catch { /* browser or restricted env — default off */ }
-
-/**
- * Check if IR cache embedding is enabled.
- * @returns {boolean}
- */
-export function isIrCacheEnabled() { return _irCacheEnabled; }
-
-/**
- * Programmatically enable/disable IR cache embedding (for tests).
- * @param {boolean} enabled
- */
-export function setIrCacheEnabled(enabled) { _irCacheEnabled = enabled; }
+import { info, error } from './logger.js';
 
 const FORMAT_ID = 'CAD Modeller Open Design';
 const FORMAT_VERSION = 2; // v2 adds stable entity keys + replay metadata (backward-compat)
@@ -241,7 +216,7 @@ function _validateCMOD(data) {
  * Restore project state from a .cmod object.
  * Returns structured result so the caller can finish restoring 3D state.
  * @param {Object} data - Parsed .cmod JSON.
- * @returns {{ ok: boolean, error?: string, hasViewport: boolean, part?: Object, orbit?: Object, workspaceMode?: string, sessionState?: Object, cam?: Object, metadata?: Object, finalCbrepPayload?: string|null, finalCbrepHash?: string|null }}
+ * @returns {{ ok: boolean, error?: string, hasViewport: boolean, part?: Object, orbit?: Object, workspaceMode?: string, sessionState?: Object, cam?: Object, metadata?: Object }}
  */
 export function projectFromCMOD(data) {
   const check = _validateCMOD(data);
@@ -290,8 +265,6 @@ export function projectFromCMOD(data) {
     sessionState: data.sessionState || null,
     cam: data.cam || null,
     metadata: data.metadata || null,
-    finalCbrepPayload: data._cbrepPayload || null,
-    finalCbrepHash: data._cbrepHash || null,
   };
 }
 
@@ -370,11 +343,6 @@ export function buildCMOD(part, options = {}) {
     cmod._cacheStats = options.cacheStats;
   }
 
-  // Optionally embed CBREP payload (gated by CAD_USE_IR_CACHE=1)
-  if (_irCacheEnabled) {
-    _tryEmbedCbrep(cmod, part);
-  }
-
   return cmod;
 }
 
@@ -402,126 +370,4 @@ export function parseCMOD(input) {
  */
 export function getScenesFromCMOD(cmodData) {
   return Array.isArray(cmodData.scenes) ? cmodData.scenes : [];
-}
-
-// -----------------------------------------------------------------------
-// CBREP IR cache embedding (optional, gated by CAD_USE_IR_CACHE=1)
-// -----------------------------------------------------------------------
-
-/**
- * Try to embed a CBREP binary payload into a .cmod object.
- * Failures are logged but never block export.
- * @param {Object} cmod - The .cmod JSON object being built
- * @param {Object} part - Part instance (with getFinalGeometry / features)
- */
-function _tryEmbedCbrep(cmod, part) {
-  try {
-    // Lazy-import IR modules to avoid loading them when IR cache is off
-    const { canonicalize } = _requireIR('canonicalize');
-    const { writeCbrep } = _requireIR('writer');
-    const { hashCbrep } = _requireIR('hash');
-
-    // Extract the final TopoBody from the part's last feature
-    const body = _extractTopoBody(part);
-    if (!body) return;
-
-    const canon = canonicalize(body);
-    const buf = writeCbrep(canon);
-    const hash = hashCbrep(buf);
-
-    // Encode as base64 for JSON embedding
-    const b64 = _arrayBufferToBase64(buf);
-    cmod._cbrepPayload = b64;
-    cmod._cbrepHash = hash;
-  } catch (err) {
-    // Non-fatal: log and continue without CBREP payload
-    try { warn('CBREP embedding failed', err.message); } catch { /* no logger */ }
-  }
-}
-
-/**
- * Extract a TopoBody from a Part if available.
- * @param {Object} part
- * @returns {Object|null} TopoBody or null
- */
-function _extractTopoBody(part) {
-  if (!part) return null;
-  try {
-    const geo = part.getFinalGeometry();
-    if (geo && geo.body) return geo.body;
-    // Try solid.body path
-    if (geo && geo.solid && geo.solid.body) return geo.solid.body;
-  } catch { /* no geometry available */ }
-  return null;
-}
-
-/**
- * Lazy require for IR modules. Returns module exports.
- * Uses dynamic import() in ESM context.
- */
-let _irModules = {};
-function _requireIR(name) {
-  if (!_irModules[name]) {
-    throw new Error(
-      `IR module '${name}' not preloaded. Call preloadIrModules() first ` +
-      `(only needed when CAD_USE_IR_CACHE=1 is set).`
-    );
-  }
-  return _irModules[name];
-}
-
-/**
- * Preload IR modules for synchronous access. Call once at startup when
- * CAD_USE_IR_CACHE=1 is set. Returns a promise.
- * @returns {Promise<void>}
- */
-export async function preloadIrModules() {
-  if (Object.keys(_irModules).length > 0) return;
-  const [canonMod, writerMod, hashMod] = await Promise.all([
-    import('../packages/ir/canonicalize.js'),
-    import('../packages/ir/writer.js'),
-    import('../packages/ir/hash.js'),
-  ]);
-  _irModules.canonicalize = canonMod;
-  _irModules.writer = writerMod;
-  _irModules.hash = hashMod;
-}
-
-/**
- * Convert ArrayBuffer to base64 string (works in Node.js and browsers).
- * @param {ArrayBuffer} buf
- * @returns {string}
- */
-function _arrayBufferToBase64(buf) {
-  if (typeof Buffer !== 'undefined') {
-    // Node.js
-    return Buffer.from(buf).toString('base64');
-  }
-  // Browser
-  const bytes = new Uint8Array(buf);
-  let binary = '';
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary);
-}
-
-/**
- * Convert base64 string to ArrayBuffer.
- * @param {string} b64
- * @returns {ArrayBuffer}
- */
-export function base64ToArrayBuffer(b64) {
-  if (typeof Buffer !== 'undefined') {
-    // Node.js
-    const buf = Buffer.from(b64, 'base64');
-    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-  }
-  // Browser
-  const binary = atob(b64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes.buffer;
 }

@@ -88,6 +88,8 @@ const COMMAND_BAR_VISIBLE_KEY = 'cad-modeller-command-bar-visible';
 const TESS_QUALITY_STORAGE_KEY = 'cad-modeller-tessellation-quality-preset';
 const CLICK_DRAG_TOLERANCE_PX = 4;
 const TESS_QUALITY_PRESETS = new Set(['draft', 'normal', 'fine', 'ultra']);
+const STATUS_ERROR_RE = /\b(failed|error|exception|unavailable|invalid|missing|cannot|not a function)\b/i;
+const STATUS_WARN_RE = /\bwarn(?:ing)?\b/i;
 const IMAGE_PROPERTY_SECTIONS = [
   { key: 'overview', label: 'Overview' },
   { key: 'transform', label: 'Transform' },
@@ -369,10 +371,7 @@ class App {
           // Restore Part/CAM state if saved
           if (loaded.part && (loaded.workspaceMode === 'part' || loaded.workspaceMode === 'cam')) {
             try {
-              this._partManager.deserialize(loaded.part, {
-                finalCbrepPayload: loaded.finalCbrepPayload,
-                finalCbrepHash: loaded.finalCbrepHash,
-              });
+              this._partManager.deserialize(loaded.part);
               this._restoreCamConfig(loaded.cam);
               if (this._restoreUsedReplayFallback(this._partManager.getPart())) {
                 info('Browser restore replayed solid features; persisting refreshed checkpoints for faster subsequent reloads');
@@ -916,7 +915,21 @@ class App {
 
   // --- Status ---
   setStatus(msg) {
-    document.getElementById('status-message').textContent = msg;
+    const text = String(msg ?? '');
+    const statusEl = document.getElementById('status-message');
+    if (statusEl) statusEl.textContent = text;
+    if (STATUS_ERROR_RE.test(text)) {
+      error('Status:', text);
+    } else if (STATUS_WARN_RE.test(text)) {
+      warn('Status:', text);
+    }
+  }
+
+  async _ensureReplayPreloads() {
+    await Promise.all([
+      wasmReady,
+      preloadWasmGeometryOps(),
+    ]);
   }
 
   _toggleConstructionMode() {
@@ -9269,10 +9282,7 @@ class App {
     // Restore part
     if (result.part) {
       await this._ensureReplayPreloads();
-      this._partManager.deserialize(result.part, {
-        finalCbrepPayload: result.finalCbrepPayload,
-        finalCbrepHash: result.finalCbrepHash,
-      });
+      this._partManager.deserialize(result.part);
       this._restoreCamConfig(result.cam);
       const targetWorkspace = result.workspaceMode === 'cam' ? 'cam' : 'part';
       if (!this._workspaceMode || this._workspaceMode !== targetWorkspace) {
@@ -9343,10 +9353,7 @@ class App {
 
       if (result.part) {
         await this._ensureReplayPreloads();
-        this._partManager.deserialize(result.part, {
-          finalCbrepPayload: result.finalCbrepPayload,
-          finalCbrepHash: result.finalCbrepHash,
-        });
+        this._partManager.deserialize(result.part);
         this._restoreCamConfig(result.cam);
         const targetWorkspace = result.workspaceMode === 'cam' ? 'cam' : 'part';
         if (this._workspaceMode !== targetWorkspace) this._enterWorkspace(targetWorkspace);
@@ -14340,10 +14347,7 @@ class App {
       // Apply the loaded project (mirror _openCMODProject flow)
       if (result.part) {
         await this._ensureReplayPreloads();
-        this._partManager.deserialize(result.part, {
-          finalCbrepPayload: result.finalCbrepPayload,
-          finalCbrepHash: result.finalCbrepHash,
-        });
+        this._partManager.deserialize(result.part);
         this._restoreCamConfig(result.cam);
         const targetWorkspace = result.workspaceMode === 'cam' ? 'cam' : 'part';
         if (!this._workspaceMode || this._workspaceMode !== targetWorkspace) {

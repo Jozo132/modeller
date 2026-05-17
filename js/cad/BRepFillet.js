@@ -3792,8 +3792,8 @@ function _finalizePlaneCylinderArcFillet(geometry, newTopoBody, segments = 8) {
   try {
     mesh = tessellateBody(newTopoBody, {
       validate: false,
-      edgeSegments: Math.max(segments * 4, 32),
-      surfaceSegments: Math.max(segments * 4, 32),
+      edgeSegments: Math.max(segments * 6, 64),
+      surfaceSegments: Math.max(segments * 6, 64),
       preferWasm: true,
       requireWasm: true,
       fallbackOnInvalidWasm: false,
@@ -5236,8 +5236,8 @@ export function applyBRepFillet(geometry, edgeKeys, radius, segments = 8) {
   let mesh;
   try {
     const requireWasmTessellation = edgeDataList.some((edgeData) => edgeData && Array.isArray(edgeData._rollingRail0));
-    const stableEdgeSegments = Math.max(segments, 32);
-    const stableSurfaceSegments = Math.max(Math.ceil(segments / 2), 16);
+    const stableEdgeSegments = Math.max(segments * 4, 64);
+    const stableSurfaceSegments = Math.max(segments * 6, 64);
     _debugBRepFillet('before-tessellate', { faces: newTopoBody.faces().length });
     mesh = tessellateBody(newTopoBody, {
       validate: false,

@@ -21,6 +21,7 @@ import { NurbsCurve } from '../js/cad/NurbsCurve.js';
 import { NurbsSurface } from '../js/cad/NurbsSurface.js';
 import { readCbrep, setTopoDeps } from '../packages/ir/reader.js';
 import { hashCbrep } from '../packages/ir/hash.js';
+import { base64ToArrayBuffer } from '../js/cad/CbrepEncoding.js';
 import { ensureWasmReady } from '../js/cad/StepImportWasm.js';
 import { preloadWasmGeometryOps } from '../js/cad/WasmGeometryOps.js';
 
@@ -231,6 +232,39 @@ test('puzzle ff refresh and rollback ignore stale fillet CBREP payloads', () => 
     assert.equal(rollForward.replayed, false, `roll-forward ${iteration + 1} should use cached bodies`);
     assertValidFfFilletResult(tree.results[finalFillet.id], `ff roll-forward ${iteration + 1}`);
   }
+});
+
+test('puzzle ff second fillet resolves against restored first fillet checkpoint', () => {
+  const raw = readFileSync(new URL('./samples/puzzle-extrude-ff.cmod', import.meta.url), 'utf8');
+  const data = parseCMOD(raw).data.part;
+  const part = Part.deserialize(data, { fastRestoreDeps: fastRestoreDeps() });
+  const tree = part.featureTree;
+  const fillets = tree.features.filter((feature) => feature.type === 'fillet');
+  const firstFillet = fillets[fillets.length - 2];
+  const secondFillet = fillets[fillets.length - 1];
+  assert.ok(firstFillet, 'sample should contain the first ff fillet');
+  assert.ok(secondFillet, 'sample should contain the second ff fillet');
+
+  const checkpointEntry = data.featureTree?.checkpoints?.[firstFillet.id];
+  assert.ok(checkpointEntry?.payload, 'sample should carry a serialized checkpoint for the first fillet');
+  const topoBody = readCbrep(base64ToArrayBuffer(checkpointEntry.payload));
+  const restoredFirstGeometry = { topoBody, edges: [] };
+  const restoredFirstResult = {
+    type: 'solid',
+    geometry: restoredFirstGeometry,
+    solid: { geometry: restoredFirstGeometry, body: topoBody },
+    body: topoBody,
+  };
+  tree.results[firstFillet.id] = restoredFirstResult;
+  firstFillet.result = restoredFirstResult;
+  firstFillet.error = null;
+
+  const context = { tree, results: tree.results };
+  const preFirstResult = secondFillet._getPreviousSolidResultBeforeIndex(context, tree.getFeatureIndex(firstFillet.id));
+  const resolved = secondFillet._resolveFilletExecutionInput(context);
+
+  assert.equal(resolved.sourceResult, restoredFirstResult, 'second fillet should source from the restored first fillet result');
+  assert.notEqual(resolved.sourceResult, preFirstResult, 'second fillet should not back-merge onto the pre-first-fillet body');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

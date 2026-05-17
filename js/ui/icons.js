@@ -133,7 +133,7 @@ export const PATH = {
     <line x1="4" y1="10" x2="10" y2="4" stroke-width="2"/>
   `,
   'fillet': `
-    <path d="M4 16L4 12L16"/>
+    <path d="M4 16L4 12"/>
     <path d="M4 12 Q4 4 12 4" stroke-width="2"/>
     <line x1="12" y1="4" x2="16" y2="4"/>
   `,

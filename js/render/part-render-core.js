@@ -453,7 +453,9 @@ export function buildMeshRenderData(geometry) {
       ? face.vertexNormals
       : null;
     const topoFace = topoFaceById && face.topoFaceId != null ? topoFaceById.get(face.topoFaceId) : null;
-    const preferExactNormals = !!(face.shared?.isFillet && topoFace);
+    const preferExactNormals = !!(curved && topoFace?.surface
+      && typeof topoFace.surface.closestPointUV === 'function'
+      && typeof topoFace.surface.normal === 'function');
     if (verts.length < 3) continue;
 
     for (let i = 1; i < verts.length - 1; i++) {

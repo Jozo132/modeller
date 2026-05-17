@@ -692,14 +692,15 @@ test('StepImportFeature: restored cached IR skips the first shadow write', () =>
   }
 });
 
-test('Part: deserialize restores cached final CBREP payload', () => {
+test('Part: serialize omits cached final CBREP payload', () => {
   resetFeatureIds();
   const part = new Part('Test Part');
   const feature = part.importSTEP(boxFilletData);
   feature._applyIrCachePayload('deadbeefcafebabe', new Uint8Array([9, 8, 7, 6]).buffer);
 
   const serialized = part.serialize();
-  assert.ok(serialized._finalCbrepPayload, 'Serialized part should carry the final cached CBREP payload');
+  assert.ok(!serialized._finalCbrepPayload, 'Serialized part should not carry the final cached CBREP payload');
+  assert.ok(!serialized._finalCbrepHash, 'Serialized part should not carry the final cached CBREP hash');
 
   resetFeatureIds();
   const restored = Part.deserialize(serialized);

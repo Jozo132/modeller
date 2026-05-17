@@ -4,37 +4,6 @@ import { Part } from './cad/Part.js';
 import { Sketch } from './cad/Sketch.js';
 import { Scene } from './cad/Scene.js';
 import { globalTessConfig } from './cad/TessellationConfig.js';
-import { tessellateBody } from './cad/Tessellation.js';
-import { computeFeatureEdges } from './cad/EdgeAnalysis.js';
-import { calculateMeshVolume, calculateBoundingBox } from './cad/toolkit/MeshAnalysis.js';
-import { readCbrep, setTopoDeps } from '../packages/ir/reader.js';
-import {
-  TopoVertex, TopoEdge, TopoCoEdge, TopoLoop, TopoFace, TopoShell, TopoBody,
-  SurfaceType,
-} from './cad/BRepTopology.js';
-import { NurbsCurve } from './cad/NurbsCurve.js';
-import { NurbsSurface } from './cad/NurbsSurface.js';
-
-// Pre-register the topology class bundle with the CBREP reader. Browser
-// callers (FeatureTree fast-restore, WasmBrepHandleRegistry dehydration) go
-// through the deps-less `readCbrep(buf)` signature; without this call those
-// paths throw "readCbrep requires topology class dependencies" and fall back
-// to a full executeAll replay.
-setTopoDeps({
-  TopoVertex, TopoEdge, TopoCoEdge, TopoLoop, TopoFace, TopoShell, TopoBody,
-  NurbsCurve, NurbsSurface, SurfaceType,
-});
-
-// C1: dependency bundle for FeatureTree.tryFastRestoreFromCheckpoints. Built
-// once at module load so .cmod loads can skip the full executeAll replay when
-// every solid feature has a cached CBREP checkpoint.
-const FAST_RESTORE_DEPS = {
-  readCbrep,
-  tessellateBody,
-  computeFeatureEdges,
-  calculateMeshVolume,
-  calculateBoundingBox,
-};
 
 /**
  * PartManager - Handles 3D part creation and feature management
@@ -77,8 +46,7 @@ export class PartManager {
 
   /**
    * Configure the WASM handle/residency subsystem for current and future parts.
-   * If a part already exists, it is rewired and rebuilt once so current
-   * feature results receive handle metadata under the new subsystem.
+    * If a part already exists, it is rewired under the new subsystem.
    *
    * @param {import('./cad/WasmBrepHandleRegistry.js').WasmBrepHandleRegistry|null} handleRegistry
    * @param {import('./cad/HandleResidencyManager.js').HandleResidencyManager|null} residencyManager
@@ -95,20 +63,6 @@ export class PartManager {
     }
 
     this._wirePart(this.part);
-
-    if (hasSubsystem && this.part.featureTree?.features?.length) {
-      // H3/H4: Prefer hydrating cached CBREP payloads into fresh handles over
-      // a full replay. Only fall back to executeAll() if at least one solid
-      // result lacks a cached CBREP we can hydrate.
-      const tree = this.part.featureTree;
-      let restoredFromCache = false;
-      if (typeof tree.hydrateExistingResultsFromCbrep === 'function') {
-        restoredFromCache = tree.hydrateExistingResultsFromCbrep();
-      }
-      if (!restoredFromCache) {
-        tree.executeAll();
-      }
-    }
 
     this.notifyListeners();
   }
@@ -356,9 +310,6 @@ export class PartManager {
     this.part = Part.deserialize(data, {
       handleRegistry: this._handleRegistry,
       residencyManager: this._residencyManager,
-      finalCbrepPayload: options.finalCbrepPayload ?? null,
-      finalCbrepHash: options.finalCbrepHash ?? null,
-      fastRestoreDeps: FAST_RESTORE_DEPS,
       tessellationConfigOverride: options.tessellationConfigOverride || globalTessConfig.serialize(),
     });
     this._wirePart(this.part);
@@ -370,7 +321,7 @@ export class PartManager {
     if (!part || typeof part.setWasmHandleSubsystem !== 'function') return;
     part.setWasmHandleSubsystem(this._handleRegistry, this._residencyManager);
     if (part.featureTree && typeof part.featureTree.setFastRestoreDeps === 'function') {
-      part.featureTree.setFastRestoreDeps(FAST_RESTORE_DEPS);
+      part.featureTree.setFastRestoreDeps(null);
     }
   }
 

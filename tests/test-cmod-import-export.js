@@ -367,15 +367,15 @@ console.log('--- Test 2: JSON round-trip ---');
     assert.strictEqual(parsed.data.metadata.invertedFaceCount, 0);
   });
 
-  test('projectFromCMOD exposes embedded final CBREP payload', () => {
+  test('projectFromCMOD ignores embedded final CBREP payload', () => {
     parsed.data._cbrepPayload = 'AQID';
     parsed.data._cbrepHash = 'deadbeefcafebabe';
 
     const restored = projectFromCMOD(parsed.data);
 
     assert.strictEqual(restored.ok, true);
-    assert.strictEqual(restored.finalCbrepPayload, 'AQID');
-    assert.strictEqual(restored.finalCbrepHash, 'deadbeefcafebabe');
+    assert.strictEqual(restored.finalCbrepPayload, undefined);
+    assert.strictEqual(restored.finalCbrepHash, undefined);
   });
 }
 

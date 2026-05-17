@@ -19,6 +19,14 @@ import { chainEdgePaths } from './toolkit/EdgePathUtils.js';
 
 import { coplanarFacesTouch } from './toolkit/CoplanarUtils.js';
 
+function faceIsFillet(face) {
+  return !!(face?.isFillet || face?.shared?.isFillet);
+}
+
+function faceIsCorner(face) {
+  return !!(face?.isCorner || face?.shared?.isCorner);
+}
+
 export function assignCoplanarFaceGroups(faces) {
   // Build a plane key for grouping: quantized normal + plane distance
   function planeKey(normal, vertices) {
@@ -165,13 +173,13 @@ export function assignCoplanarFaceGroups(faces) {
         // Smooth but not coplanar: normals within 15° but not identical
         if (dot >= SMOOTH_COS && dot < 1 - 1e-6) {
           // Don't merge fillet strip faces with non-fillet faces
-          if (!!fa.isFillet !== !!fb.isFillet) continue;
+          if (faceIsFillet(fa) !== faceIsFillet(fb)) continue;
           // Don't merge corner faces with non-corner faces
-          if (!!fa.isCorner !== !!fb.isCorner) continue;
+          if (faceIsCorner(fa) !== faceIsCorner(fb)) continue;
           // Keep neighboring blends from different features independently selectable.
           const sourceA = fa.shared && fa.shared.sourceFeatureId ? fa.shared.sourceFeatureId : null;
           const sourceB = fb.shared && fb.shared.sourceFeatureId ? fb.shared.sourceFeatureId : null;
-          if ((fa.isFillet || fa.isCorner || fb.isFillet || fb.isCorner) && sourceA !== sourceB) continue;
+          if ((faceIsFillet(fa) || faceIsCorner(fa) || faceIsFillet(fb) || faceIsCorner(fb)) && sourceA !== sourceB) continue;
           // Don't merge faces from different STEP topology faces.
           // STEP import tags each mesh face with topoFaceId — these
           // represent distinct B-Rep surfaces that must remain
@@ -197,7 +205,7 @@ export function assignCoplanarFaceGroups(faces) {
     if (fis.length < 2) continue;
     for (let i = 0; i < fis.length - 1; i++) {
       for (let j = i + 1; j < fis.length; j++) {
-        if (faces[fis[i]].isCorner && faces[fis[j]].isCorner) {
+        if (faceIsCorner(faces[fis[i]]) && faceIsCorner(faces[fis[j]])) {
           unite(fis[i], fis[j]);
         }
       }
@@ -206,7 +214,7 @@ export function assignCoplanarFaceGroups(faces) {
   // Vertex-based merge for corner faces (base triangle ↔ spherical grid)
   const cornerVertFaces = new Map();
   for (let fi = 0; fi < faces.length; fi++) {
-    if (!faces[fi].isCorner) continue;
+    if (!faceIsCorner(faces[fi])) continue;
     for (const v of faces[fi].vertices) {
       const k = vKey(v);
       if (!cornerVertFaces.has(k)) cornerVertFaces.set(k, []);
@@ -400,6 +408,8 @@ export function computeFeatureEdges(faces) {
       const n0 = info.normals[0];
       let isFeature = false;
       let minDot = 1;
+      const hasFillet = info.faceIndices.some(fi => faceIsFillet(faces[fi]));
+      const hasNonFillet = info.faceIndices.some(fi => !faceIsFillet(faces[fi]));
       for (let i = 1; i < info.normals.length; i++) {
         const n1 = info.normals[i];
         const dot = n0.x * n1.x + n0.y * n1.y + n0.z * n1.z;
@@ -411,9 +421,7 @@ export function computeFeatureEdges(faces) {
       }
       // Force feature edge at fillet-to-flat face boundary
       if (!isFeature && info.faceIndices.length >= 2) {
-        const hasF = info.faceIndices.some(fi => faces[fi].isFillet);
-        const hasNF = info.faceIndices.some(fi => !faces[fi].isFillet);
-        if (hasF && hasNF) isFeature = true;
+        if (hasFillet && hasNonFillet) isFeature = true;
       }
       // Force feature edge at STEP topology face boundaries: edges between
       // different topoFaceId values represent B-Rep surface seams that should
@@ -431,8 +439,8 @@ export function computeFeatureEdges(faces) {
       // connecting the spherical corner to the trimmed box faces is a geometric
       // necessity for manifold closure but should not produce visible feature lines.
       if (isFeature && info.faceIndices.length >= 2) {
-        const hasCorner = info.faceIndices.some(fi => faces[fi].isCorner);
-        const allNonFillet = info.faceIndices.every(fi => !faces[fi].isFillet);
+        const hasCorner = info.faceIndices.some(fi => faceIsCorner(faces[fi]));
+        const allNonFillet = info.faceIndices.every(fi => !faceIsFillet(faces[fi]));
         if (hasCorner && allNonFillet) isFeature = false;
       }
       // Suppress feature edges between faces from the same STEP topology
@@ -455,7 +463,7 @@ export function computeFeatureEdges(faces) {
       }
       // Faces already merged into one logical coplanar face must never
       // expose their internal triangulation seam as a selectable feature edge.
-      if (isFeature && sameGroup) {
+      if (isFeature && sameGroup && !(hasFillet && hasNonFillet)) {
         isFeature = false;
       }
       if (isFeature) {
@@ -612,7 +620,7 @@ export function expandPathEdgeKeys(geometry, edgeKeys) {
       for (const fi of edge.faceIndices || []) {
         const face = geometry.faces && geometry.faces[fi];
         if (!face) continue;
-        if (face.isFillet) hasFillet = true;
+        if (faceIsFillet(face)) hasFillet = true;
         else hasNonFillet = true;
         const featureId = face.shared && face.shared.sourceFeatureId;
         if (featureId) featureIds.add(featureId);

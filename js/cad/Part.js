@@ -19,7 +19,6 @@ import { ChamferFeature } from './ChamferFeature.js';
 import { FilletFeature } from './FilletFeature.js';
 import { StepImportFeature } from './StepImportFeature.js';
 import { TessellationConfig, globalTessConfig } from './TessellationConfig.js';
-import { arrayBufferToBase64, base64ToArrayBuffer } from './CbrepEncoding.js';
 import { isLegacyEdgeKey, legacyEdgeKeyToStable } from './history/StableEntityKey.js';
 
 function parseFeatureIdNumber(featureId) {
@@ -118,25 +117,6 @@ function normalizeFeatureTreeData(featureTreeData) {
   };
 }
 
-function findFinalSolidFeature(featureTree) {
-  if (!featureTree || !Array.isArray(featureTree.features)) return null;
-
-  for (let index = featureTree.features.length - 1; index >= 0; index--) {
-    const feature = featureTree.features[index];
-    const result = feature && featureTree.results ? featureTree.results[feature.id] : null;
-    if (!feature || feature.suppressed || !result || result.type !== 'solid') continue;
-    return feature;
-  }
-
-  return null;
-}
-
-function getFeatureCbrepCacheVersion(feature) {
-  if (!feature || typeof feature.getCbrepCacheVersion !== 'function') return null;
-  const version = feature.getCbrepCacheVersion();
-  return version == null ? null : String(version);
-}
-
 function _featureParamFingerprint(feature) {
   if (!feature || typeof feature.serialize !== 'function') return null;
   try {
@@ -149,34 +129,6 @@ function _featureParamFingerprint(feature) {
   } catch {
     return null;
   }
-}
-
-function restoreFinalCbrepPayload(part, payload, irHash, cacheVersion = null) {
-  if (!part?.featureTree || !payload) return false;
-
-  const finalFeature = findFinalSolidFeature(part.featureTree);
-  if (!finalFeature) return false;
-
-  const expectedVersion = getFeatureCbrepCacheVersion(finalFeature);
-  if (expectedVersion && cacheVersion !== expectedVersion) return false;
-
-  const existingResult = part.featureTree.results?.[finalFeature.id] || null;
-  if (existingResult?.irHash && irHash && existingResult.irHash !== irHash) return false;
-  if (existingResult?.cbrepBuffer) return true;
-
-  let cbrepBuffer;
-  try {
-    cbrepBuffer = base64ToArrayBuffer(payload);
-  } catch {
-    return false;
-  }
-
-  if (irHash && typeof finalFeature._applyIrCachePayload === 'function') {
-    finalFeature._applyIrCachePayload(irHash, cbrepBuffer);
-    return true;
-  }
-
-  return part.featureTree.attachCbrep(finalFeature.id, cbrepBuffer, irHash || null);
 }
 
 /**
@@ -838,7 +790,7 @@ export class Part {
   // -----------------------------------------------------------------------
 
   serialize() {
-    const serialized = {
+    return {
       type: 'Part',
       name: this.name,
       description: this.description,
@@ -853,19 +805,6 @@ export class Part {
       centerOfMass: this.centerOfMass,
       tessellationConfig: this.tessellationConfig.serialize(),
     };
-
-    const finalResult = this.featureTree?.getFinalResult?.();
-    if (finalResult?.type === 'solid' && finalResult.cbrepBuffer) {
-      serialized._finalCbrepPayload = arrayBufferToBase64(finalResult.cbrepBuffer);
-      if (finalResult.irHash) {
-        serialized._finalCbrepHash = finalResult.irHash;
-      }
-      if (finalResult.cbrepCacheVersion) {
-        serialized._finalCbrepVersion = finalResult.cbrepCacheVersion;
-      }
-    }
-
-    return serialized;
   }
 
   static deserialize(data, options = {}) {
@@ -945,11 +884,6 @@ export class Part {
       : (part.featureTree.features.length > 0);
 
     part.setWasmHandleSubsystem(options.handleRegistry ?? null, options.residencyManager ?? null);
-
-    const finalCbrepPayload = options.finalCbrepPayload ?? data._finalCbrepPayload ?? null;
-    const finalCbrepHash = options.finalCbrepHash ?? data._finalCbrepHash ?? null;
-    const finalCbrepVersion = options.finalCbrepVersion ?? data._finalCbrepVersion ?? null;
-    restoreFinalCbrepPayload(part, finalCbrepPayload, finalCbrepHash, finalCbrepVersion);
 
     return part;
   }

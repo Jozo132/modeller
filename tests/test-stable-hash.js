@@ -533,7 +533,7 @@ test('occt tessellation contract applies stable face hashes and feature edge cha
   assert.deepStrictEqual(mesh.edges[0].normals, [{ x: 0, y: 0, z: 1 }], 'feature edge normals should derive from adjacent triangles');
 });
 
-test('occt tessellation contract prefers triangle normals over conflicting vertex averages', () => {
+test('occt tessellation contract keeps the face normal from triangle normals when vertex normals disagree', () => {
   const mesh = occtTessellationToMesh({
     positions: [
       0, 0, 0,
@@ -551,10 +551,34 @@ test('occt tessellation contract prefers triangle normals over conflicting verte
 
   assert.deepStrictEqual(mesh.faces[0].normal, { x: 0, y: 0, z: 1 }, 'triangle normal should override misleading vertex normals');
   assert.deepStrictEqual(mesh.faces[0].vertexNormals, [
+    { x: 0, y: 0, z: -1 },
+    { x: 0, y: 0, z: -1 },
+    { x: 0, y: 0, z: -1 },
+  ], 'supplied OCCT vertex normals should be preserved when present');
+});
+
+test('occt tessellation contract preserves smooth vertex normals when triangle normals are present', () => {
+  const mesh = occtTessellationToMesh({
+    positions: [
+      0, 0, 0,
+      1, 0, 0,
+      0, 1, 0,
+    ],
+    normals: [
+      0, 0.6, 0.8,
+      0.6, 0, 0.8,
+      0, 0, 1,
+    ],
+    indices: [0, 1, 2],
+    triangleNormals: [0, 0, 1],
+  });
+
+  assert.deepStrictEqual(mesh.faces[0].normal, { x: 0, y: 0, z: 1 }, 'triangle normal should remain the face-level normal');
+  assert.deepStrictEqual(mesh.faces[0].vertexNormals, [
+    { x: 0, y: 0.6, z: 0.8 },
+    { x: 0.6, y: 0, z: 0.8 },
     { x: 0, y: 0, z: 1 },
-    { x: 0, y: 0, z: 1 },
-    { x: 0, y: 0, z: 1 },
-  ], 'triangle normal should seed per-vertex normals when supplied by OCCT');
+  ], 'smooth OCCT vertex normals should survive import when they already match the face winding');
 });
 
 // -----------------------------------------------------------------------

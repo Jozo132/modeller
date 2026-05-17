@@ -401,26 +401,27 @@ console.log('\n=== Part lifecycle wiring ===');
 
   assert(wiredHandle === reg, 'late subsystem attach rewires existing part registry');
   assert(wiredResidency === residency, 'late subsystem attach rewires existing part residency');
-  assert(executeAllCalls === 1, 'late subsystem attach replays existing feature tree once');
+  assert(executeAllCalls === 0, 'late subsystem attach no longer replays the existing feature tree');
   assert(reg.resetCalls === 1, 'late subsystem attach resets shared topology before replay');
   assert(residency.clearCalls === 1, 'late subsystem attach clears residency before replay');
 }
 
 {
-  // H3/H4: late subsystem attach must hydrate cached CBREPs instead of
-  // forcing a full feature replay when every solid result already has a
-  // cached payload.
+  // Late subsystem attach should not drive the legacy CBREP hydrate path.
   const pm = new PartManager();
   const reg = new MockHandleRegistry();
   const residency = new MockResidencyManager();
   let executeAllCalls = 0;
-  let hydrateReturn = true;
+  let hydrateCalls = 0;
 
   pm.part = {
     featureTree: {
       features: [{ id: 'feature_1' }],
       executeAll() { executeAllCalls++; },
-      hydrateExistingResultsFromCbrep() { return hydrateReturn; },
+      hydrateExistingResultsFromCbrep() {
+        hydrateCalls++;
+        return true;
+      },
     },
     setWasmHandleSubsystem() { /* noop for this test */ },
   };
@@ -428,32 +429,40 @@ console.log('\n=== Part lifecycle wiring ===');
   pm.setWasmHandleSubsystem(reg, residency);
 
   assert(executeAllCalls === 0,
-    'late subsystem attach skips executeAll when cached CBREPs cover the tree');
+    'late subsystem attach skips executeAll when rewiring the subsystem');
+  assert(hydrateCalls === 0,
+    'late subsystem attach does not invoke legacy CBREP hydration');
   assert(reg.resetCalls === 1,
-    'late subsystem attach still resets shared topology before cached hydrate');
+    'late subsystem attach still resets shared topology before rewiring');
 }
 
 {
-  // H3/H4: if any solid result lacks a cached CBREP the manager must still
-  // fall back to the full replay path.
+  // Late subsystem attach should not fall back to a legacy replay path when
+  // cached CBREPs are missing.
   const pm = new PartManager();
   const reg = new MockHandleRegistry();
   const residency = new MockResidencyManager();
   let executeAllCalls = 0;
+  let hydrateCalls = 0;
 
   pm.part = {
     featureTree: {
       features: [{ id: 'feature_1' }, { id: 'feature_2' }],
       executeAll() { executeAllCalls++; },
-      hydrateExistingResultsFromCbrep() { return false; },
+      hydrateExistingResultsFromCbrep() {
+        hydrateCalls++;
+        return false;
+      },
     },
     setWasmHandleSubsystem() { /* noop for this test */ },
   };
 
   pm.setWasmHandleSubsystem(reg, residency);
 
-  assert(executeAllCalls === 1,
-    'late subsystem attach replays when cached CBREPs do not cover the tree');
+  assert(executeAllCalls === 0,
+    'late subsystem attach does not replay when cached CBREPs do not cover the tree');
+  assert(hydrateCalls === 0,
+    'late subsystem attach does not invoke legacy CBREP hydration when cached CBREPs do not cover the tree');
 }
 
 {
@@ -509,33 +518,39 @@ console.log('\n=== Part lifecycle wiring ===');
     'partial restore still hydrates the solids that do have cached CBREPs');
 }
 
-console.log('\n=== H5: per-feature CBREP checkpoints ===');
+console.log('\n=== H5: per-feature OCCT checkpoints ===');
 
 {
-  // serialize emits a checkpoint for every solid result with a cached CBREP.
+  // serialize emits a checkpoint for every solid result with an OCCT checkpoint.
   const tree = new FeatureTree();
   const featureA = new StubSolidWithHash('a', 'hash-a');
   const featureB = new StubSolid('b'); // no irHash
-  const featureC = new StubSolid('c'); // no CBREP — should be absent from checkpoints
+  const featureC = new StubSolid('c'); // no OCCT checkpoint — should be absent from checkpoints
   tree.addFeature(featureA);
   tree.addFeature(featureB);
   tree.addFeature(featureC);
-  tree.results[featureA.id].cbrepBuffer = new Uint8Array([10, 20, 30]).buffer;
-  tree.results[featureB.id].cbrepBuffer = new Uint8Array([40, 50]).buffer;
+  tree.results[featureA.id].occtCheckpoint = {
+    brep: 'checkpoint-a',
+    revision: { revisionId: 'rev-a', topologyHash: 'topo-a' },
+  };
+  tree.results[featureB.id].occtCheckpoint = {
+    brep: 'checkpoint-b',
+    revision: { revisionId: 'rev-b', topologyHash: 'topo-b' },
+  };
 
   const serialized = tree.serialize();
   assert(serialized.checkpoints && typeof serialized.checkpoints === 'object',
-    'serialize includes a checkpoints map when any solid has a cached CBREP');
-  assert(serialized.checkpoints[featureA.id] && typeof serialized.checkpoints[featureA.id].payload === 'string',
-    'feature with cbrepBuffer produces a base64 payload checkpoint');
-  assert(serialized.checkpoints[featureA.id].hash === 'hash-a',
-    'irHash is preserved in the checkpoint when the result carries one');
-  assert(serialized.checkpoints[featureB.id] && serialized.checkpoints[featureB.id].payload,
-    'feature without irHash still produces a payload checkpoint');
+    'serialize includes a checkpoints map when any solid has an OCCT checkpoint');
+  assert(serialized.checkpoints[featureA.id]?.occt?.brep === 'checkpoint-a',
+    'feature with an OCCT checkpoint preserves that checkpoint in serialization');
+  assert(serialized.checkpoints[featureA.id].payload === undefined,
+    'serialized OCCT checkpoints do not emit a legacy CBREP payload');
+  assert(serialized.checkpoints[featureB.id]?.occt?.revision?.topologyHash === 'topo-b',
+    'feature without irHash still produces an OCCT checkpoint entry');
   assert(serialized.checkpoints[featureB.id].hash === undefined,
-    'checkpoint omits hash when the result has none');
+    'serialized OCCT checkpoints do not emit a legacy hash');
   assert(serialized.checkpoints[featureC.id] === undefined,
-    'feature without cbrepBuffer is not present in the checkpoints map');
+    'feature without an OCCT checkpoint is not present in the checkpoints map');
 }
 
 {
@@ -548,11 +563,14 @@ console.log('\n=== H5: per-feature CBREP checkpoints ===');
 }
 
 {
-  // deserialize restores checkpoints onto live results via attachCbrep.
+  // deserialize reattaches serialized OCCT checkpoints onto live results.
   const original = new FeatureTree();
   const featureA = new StubSolidWithHash('a', 'hash-a');
   original.addFeature(featureA);
-  original.results[featureA.id].cbrepBuffer = new Uint8Array([7, 8, 9]).buffer;
+  original.results[featureA.id].occtCheckpoint = {
+    brep: 'checkpoint-a',
+    revision: { revisionId: 'rev-a', topologyHash: 'topo-a' },
+  };
   const serialized = original.serialize();
 
   const reg = new MockHandleRegistry();
@@ -566,30 +584,34 @@ console.log('\n=== H5: per-feature CBREP checkpoints ===');
 
   const restoredFeature = restored.features[0];
   const restoredResult = restored.results[restoredFeature.id];
-  assert(restoredResult && restoredResult.cbrepBuffer,
-    'deserialize reattaches the CBREP payload onto the restored solid result');
-  assert(restoredResult.cbrepBuffer.byteLength === 3,
-    'reattached CBREP payload has the original byte length');
-  assert(residency.storeCalls.some(c => c.featureId === restoredFeature.id),
-    'checkpoint restore mirrors the payload into the residency manager');
-  // attachCbrep also hydrates the live handle, so the result should be resident.
-  assert(restoredResult.wasmHandleResident === true,
-    'checkpoint restore hydrates the live WASM handle');
+  assert(restoredResult && restoredResult.occtCheckpoint,
+    'deserialize reattaches the OCCT checkpoint onto the restored solid result');
+  assert(restoredResult.occtCheckpoint.brep === 'checkpoint-a',
+    'reattached OCCT checkpoint preserves the serialized checkpoint payload');
+  assert(restoredResult.occtTopologyHash === 'topo-a',
+    'reattached OCCT checkpoint restores the serialized topology hash');
+  assert(residency.storeCalls.length === 0,
+    'reattaching an OCCT checkpoint does not mirror a legacy CBREP payload into residency');
 }
 
 {
-  // stale checkpoints (hash mismatch against a freshly replayed result) are dropped.
+  // stale checkpoints (topology hash mismatch against a freshly replayed result) are dropped.
   const tree = new FeatureTree();
   const featureA = new StubSolidWithHash('a', 'fresh-hash');
   tree.addFeature(featureA);
-  // Simulate serialized data with a stale hash and mismatched payload.
+  tree.results[featureA.id].occtTopologyHash = 'fresh-topology';
   const staleCheckpoint = {
-    [featureA.id]: { payload: 'AAECAw==' /* [0,1,2,3] */, hash: 'stale-hash' },
+    [featureA.id]: {
+      occt: {
+        brep: 'stale-checkpoint',
+        revision: { revisionId: 'rev-stale', topologyHash: 'stale-topology' },
+      },
+    },
   };
   tree._applySerializedCheckpoints(staleCheckpoint);
   const result = tree.results[featureA.id];
-  assert(!result.cbrepBuffer,
-    'stale checkpoint (hash mismatch) is dropped rather than overwriting the live result');
+  assert(!result.occtCheckpoint,
+    'stale checkpoint (topology hash mismatch) is dropped rather than overwriting the live result');
 }
 
 {
@@ -626,10 +648,10 @@ console.log('\n=== H5: per-feature CBREP checkpoints ===');
     'PartManager.deserialize passes handle registry into Part.deserialize');
   assert(seenOptions && seenOptions.residencyManager === residency,
     'PartManager.deserialize passes residency manager into Part.deserialize');
-  assert(seenOptions && seenOptions.finalCbrepPayload === 'AQID',
-    'PartManager.deserialize passes cached CBREP payload into Part.deserialize');
-  assert(seenOptions && seenOptions.finalCbrepHash === 'deadbeefcafebabe',
-    'PartManager.deserialize passes cached CBREP hash into Part.deserialize');
+  assert(seenOptions && seenOptions.finalCbrepPayload === undefined,
+    'PartManager.deserialize no longer forwards cached CBREP payload into Part.deserialize');
+  assert(seenOptions && seenOptions.finalCbrepHash === undefined,
+    'PartManager.deserialize no longer forwards cached CBREP hash into Part.deserialize');
   assert(wiredHandle === reg, 'deserialized part is rewired with handle registry');
   assert(wiredResidency === residency, 'deserialized part is rewired with residency manager');
   assert(reg.resetCalls === 1, 'deserialize resets shared topology before loading restored part');
@@ -638,12 +660,50 @@ console.log('\n=== H5: per-feature CBREP checkpoints ===');
 
 // ── C1: tryFastRestoreFromCheckpoints ────────────────────────────────────
 
-console.log('\n=== C1: fast-restore from serialized CBREP checkpoints ===');
+console.log('\n=== C1: fast-restore from serialized OCCT checkpoints ===');
+
+function makeOcctCheckpoint(label) {
+  return {
+    brep: `checkpoint-${label}`,
+    revision: {
+      revisionId: `rev-${label}`,
+      topologyHash: `topo-${label}`,
+    },
+  };
+}
+
+function makeOcctRestoredResult(checkpoint) {
+  const topology = {
+    revisionId: checkpoint.revision.revisionId,
+    topologyHash: checkpoint.revision.topologyHash,
+    boundingBox: { xMin: 0, yMin: 0, zMin: 0, xMax: 1, yMax: 1, zMax: 1 },
+    volume: 7,
+  };
+  const geometry = {
+    faces: [{ vertices: [], normal: { x: 0, y: 0, z: 1 } }],
+    edges: [],
+    paths: [],
+    visualEdges: [],
+    _occtModeling: { topology },
+  };
+  return {
+    type: 'solid',
+    geometry,
+    solid: { geometry, body: null },
+    body: null,
+    volume: topology.volume,
+    boundingBox: topology.boundingBox,
+    occtCheckpoint: checkpoint,
+    occtTopologyHash: topology.topologyHash,
+    _restoredFromCheckpoint: true,
+  };
+}
 
 {
-  // Happy path: every solid feature has a checkpoint → execute() is NOT called.
+  // Happy path: every solid feature has an OCCT checkpoint → execute() is NOT called.
   const tree = new FeatureTree();
   let executeCalls = 0;
+  let occtRestoreCalls = 0;
   class TracingSolid extends Feature {
     constructor(name) { super(name); this.type = 'stub-solid'; }
     execute(_ctx) { executeCalls++; return { type: 'solid', geometry: {}, solid: {}, volume: 1, boundingBox: {} }; }
@@ -653,33 +713,33 @@ console.log('\n=== C1: fast-restore from serialized CBREP checkpoints ===');
   tree.features.push(fa, fb);
   tree.featureMap.set(fa.id, fa);
   tree.featureMap.set(fb.id, fb);
-
-  const fakeMesh = () => ({ vertices: [{ x: 0, y: 0, z: 0 }], faces: [{ vertices: [], normal: { x: 0, y: 0, z: 1 } }], edges: [] });
-  let readCalls = 0;
-  let tessCalls = 0;
-  const deps = {
-    readCbrep: () => { readCalls++; return { shells: [{}] }; },
-    tessellateBody: () => { tessCalls++; return fakeMesh(); },
-    computeFeatureEdges: () => ({ edges: [], paths: [], visualEdges: [] }),
-    calculateMeshVolume: () => 42,
-    calculateBoundingBox: () => ({ min: { x: 0, y: 0, z: 0 }, max: { x: 1, y: 1, z: 1 } }),
+  tree._buildSolidResultFromOcctCheckpoint = (_featureId, checkpoint) => {
+    occtRestoreCalls++;
+    return makeOcctRestoredResult(checkpoint);
   };
-  // Payloads are base64 of anything — readCbrep is stubbed above.
+
+  let legacyDepCalls = 0;
+  const deps = {
+    readCbrep: () => { legacyDepCalls++; throw new Error('legacy restore should not run'); },
+    tessellateBody: () => { legacyDepCalls++; throw new Error('legacy restore should not run'); },
+    computeFeatureEdges: () => { legacyDepCalls++; throw new Error('legacy restore should not run'); },
+    calculateMeshVolume: () => { legacyDepCalls++; throw new Error('legacy restore should not run'); },
+    calculateBoundingBox: () => { legacyDepCalls++; throw new Error('legacy restore should not run'); },
+  };
   const checkpoints = {
-    [fa.id]: { payload: 'AQID', hash: 'h-a' },
-    [fb.id]: { payload: 'AQID', hash: 'h-b' },
+    [fa.id]: { occt: makeOcctCheckpoint('a') },
+    [fb.id]: { occt: makeOcctCheckpoint('b') },
   };
   const ok = tree.tryFastRestoreFromCheckpoints(checkpoints, deps);
-  assert(ok === true, 'fast-restore returns true when every solid has a checkpoint');
+  assert(ok === true, 'fast-restore returns true when every solid has an OCCT checkpoint');
   assert(executeCalls === 0, 'fast-restore does NOT call feature.execute() for solid features');
-  assert(readCalls === 2, 'fast-restore calls readCbrep once per solid feature');
-  assert(tessCalls === 2, 'fast-restore calls tessellateBody once per solid feature');
+  assert(occtRestoreCalls === 2, 'fast-restore restores each solid feature from its OCCT checkpoint');
+  assert(legacyDepCalls === 0, 'fast-restore ignores the legacy CBREP dependency bundle');
   const ra = tree.results[fa.id];
   assert(ra && ra.type === 'solid', 'restored result has type=solid');
   assert(ra._restoredFromCheckpoint === true, 'result is marked as restored from checkpoint');
-  assert(ra.volume === 42, 'result carries calculated volume');
-  assert(ra.geometry && Array.isArray(ra.geometry.faces), 'result.geometry has faces');
-  assert(ra.cbrepBuffer instanceof ArrayBuffer, 'result.cbrepBuffer preserved for downstream hydration');
+  assert(ra.volume === 7, 'result carries the OCCT-restored volume');
+  assert(ra.occtTopologyHash === 'topo-a', 'result preserves the OCCT topology hash');
 }
 
 {
@@ -690,17 +750,14 @@ console.log('\n=== C1: fast-restore from serialized CBREP checkpoints ===');
   tree.features.push(fa, fb);
   tree.featureMap.set(fa.id, fa);
   tree.featureMap.set(fb.id, fb);
-  const priorResults = tree.results; // {}
-  const checkpoints = { [fa.id]: { payload: 'AQID' } }; // fb missing
+  const priorResults = tree.results;
+  const checkpoints = { [fa.id]: { occt: makeOcctCheckpoint('a') } };
   const deps = {
-    readCbrep: () => { throw new Error('should not be called'); },
-    tessellateBody: () => ({}),
-    computeFeatureEdges: () => ({}),
-    calculateMeshVolume: () => 0,
-    calculateBoundingBox: () => ({}),
+    readCbrep: () => { throw new Error('legacy restore should not run'); },
+    tessellateBody: () => { throw new Error('legacy restore should not run'); },
   };
   const ok = tree.tryFastRestoreFromCheckpoints(checkpoints, deps);
-  assert(ok === false, 'fast-restore returns false when a solid feature has no checkpoint');
+  assert(ok === false, 'fast-restore returns false when a solid feature has no OCCT checkpoint');
   assert(tree.results === priorResults, 'fast-restore does not mutate results on coverage miss');
 }
 
@@ -717,53 +774,52 @@ console.log('\n=== C1: fast-restore from serialized CBREP checkpoints ===');
   tree.features.push(sk, fa);
   tree.featureMap.set(sk.id, sk);
   tree.featureMap.set(fa.id, fa);
-  const deps = {
-    readCbrep: () => ({}),
-    tessellateBody: () => ({ vertices: [], faces: [{ vertices: [], normal: { x: 0, y: 0, z: 1 } }] }),
-    computeFeatureEdges: () => ({ edges: [], paths: [], visualEdges: [] }),
-    calculateMeshVolume: () => 0,
-    calculateBoundingBox: () => ({}),
-  };
-  const ok = tree.tryFastRestoreFromCheckpoints(
-    { [fa.id]: { payload: 'AQID' } }, deps);
-  assert(ok === true, 'fast-restore succeeds when only solids need checkpoints');
+  tree._buildSolidResultFromOcctCheckpoint = (_featureId, checkpoint) => makeOcctRestoredResult(checkpoint);
+  const ok = tree.tryFastRestoreFromCheckpoints({ [fa.id]: { occt: makeOcctCheckpoint('a') } });
+  assert(ok === true, 'fast-restore succeeds when only solids need OCCT checkpoints');
   assert(sketchExecuted === 1, 'sketch feature.execute() is called during fast-restore');
   assert(tree.results[sk.id].type === 'sketch', 'sketch result stored');
-  assert(tree.results[fa.id].type === 'solid', 'solid result restored from checkpoint');
+  assert(tree.results[fa.id].type === 'solid', 'solid result restored from OCCT checkpoint');
 }
 
 {
-  // End-to-end via FeatureTree.deserialize + options.fastRestoreDeps.
+  // End-to-end via FeatureTree.deserialize + serialized OCCT checkpoint.
   class FT_Solid extends Feature {
     constructor(name) { super(name); this.type = 'stub-solid'; }
     serialize() { return { id: this.id, name: this.name, type: this.type }; }
   }
   let executeCalls = 0;
-  // Monkey-patch execute on the class so we can count replay attempts.
   FT_Solid.prototype.execute = function () { executeCalls++; return { type: 'solid', geometry: {}, solid: {}, volume: 0, boundingBox: {} }; };
 
   const data = {
     features: [{ id: 'f1', name: 'f1', type: 'stub-solid' }],
-    checkpoints: { f1: { payload: 'AQID', hash: 'h1' } },
+    checkpoints: { f1: { occt: makeOcctCheckpoint('1') } },
   };
-  const deps = {
-    readCbrep: () => ({}),
-    tessellateBody: () => ({ vertices: [], faces: [{ vertices: [], normal: { x: 0, y: 0, z: 1 } }] }),
-    computeFeatureEdges: () => ({ edges: [], paths: [], visualEdges: [] }),
-    calculateMeshVolume: () => 7,
-    calculateBoundingBox: () => ({}),
+  const originalBuild = FeatureTree.prototype._buildSolidResultFromOcctCheckpoint;
+  FeatureTree.prototype._buildSolidResultFromOcctCheckpoint = function (_featureId, checkpoint) {
+    return makeOcctRestoredResult(checkpoint);
   };
-  const tree = FeatureTree.deserialize(data,
-    (d) => { const f = new FT_Solid(d.name); f.id = d.id; return f; },
-    { fastRestoreDeps: deps });
-  assert(executeCalls === 0, 'deserialize with fastRestoreDeps does NOT call executeAll()');
-  assert(tree.results.f1 && tree.results.f1._restoredFromCheckpoint,
-    'deserialize fast path produces a restored result');
-  assert(tree.results.f1.volume === 7, 'restored result carries volume from fast-restore deps');
+  try {
+    const tree = FeatureTree.deserialize(data,
+      (d) => { const f = new FT_Solid(d.name); f.id = d.id; return f; },
+      {
+        fastRestoreDeps: {
+          readCbrep: () => { throw new Error('legacy restore should not run'); },
+          tessellateBody: () => { throw new Error('legacy restore should not run'); },
+        },
+      });
+    assert(executeCalls === 0, 'deserialize with OCCT checkpoints does NOT call executeAll()');
+    assert(tree.results.f1 && tree.results.f1._restoredFromCheckpoint,
+      'deserialize fast path produces a restored result');
+    assert(tree.results.f1.occtTopologyHash === 'topo-1',
+      'restored result carries the OCCT topology hash');
+  } finally {
+    FeatureTree.prototype._buildSolidResultFromOcctCheckpoint = originalBuild;
+  }
 }
 
 {
-  // Deserialize without deps → legacy executeAll path still runs.
+  // Payload-only checkpoints no longer fast-restore and therefore fall back to executeAll.
   class FT_Solid2 extends Feature {
     constructor(name) { super(name); this.type = 'stub-solid'; }
   }
@@ -775,10 +831,16 @@ console.log('\n=== C1: fast-restore from serialized CBREP checkpoints ===');
     checkpoints: { f1: { payload: 'AQID', hash: 'h1' } },
   };
   const tree = FeatureTree.deserialize(data,
-    (d) => { const f = new FT_Solid2(d.name); f.id = d.id; return f; });
-  assert(executeCalls === 1, 'deserialize WITHOUT fastRestoreDeps still runs executeAll');
+    (d) => { const f = new FT_Solid2(d.name); f.id = d.id; return f; },
+    {
+      fastRestoreDeps: {
+        readCbrep: () => { throw new Error('legacy restore should not run'); },
+        tessellateBody: () => { throw new Error('legacy restore should not run'); },
+      },
+    });
+  assert(executeCalls === 1, 'payload-only checkpoints fall back to executeAll');
   assert(tree.results.f1 && !tree.results.f1._restoredFromCheckpoint,
-    'legacy path produces executed result, not fast-restored');
+    'payload-only checkpoints produce an executed result, not a fast-restored one');
 }
 
 // ── Summary ──────────────────────────────────────────────────────────────

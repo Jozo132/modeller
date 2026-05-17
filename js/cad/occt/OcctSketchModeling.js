@@ -6,6 +6,7 @@ import {
   resolveOcctKernelEnv,
 } from './OcctKernelLoader.js';
 import { OcctKernelAdapter } from './OcctKernelAdapter.js';
+import { computeFeatureEdges } from '../EdgeAnalysis.js';
 
 const OCCT_SKETCH_SOLID_FLAG = 'CAD_USE_OCCT_SKETCH_SOLIDS';
 const WORLD_XY_TOLERANCE = 1e-6;
@@ -667,6 +668,70 @@ function finalizeOcctGeometry(adapter, handle, topoBody, operation) {
   return geometry;
 }
 
+function collectOcctBlendFaceSelectors(blendFaces) {
+  const topoFaceIds = new Set();
+  const stableHashes = new Set();
+  for (const face of blendFaces || []) {
+    if (Number.isInteger(face)) {
+      topoFaceIds.add(face);
+      continue;
+    }
+    if (typeof face === 'string') {
+      stableHashes.add(face);
+      continue;
+    }
+    if (!face || typeof face !== 'object') continue;
+    const topoFaceId = Number.isInteger(face.topoFaceId)
+      ? face.topoFaceId
+      : (Number.isInteger(face.faceId)
+        ? face.faceId
+        : (Number.isInteger(face.id) ? face.id : null));
+    if (topoFaceId != null) topoFaceIds.add(topoFaceId);
+    const stableHash = typeof face.stableHash === 'string'
+      ? face.stableHash
+      : (typeof face.hash === 'string'
+        ? face.hash
+        : (typeof face.faceHash === 'string' ? face.faceHash : null));
+    if (stableHash) stableHashes.add(stableHash);
+  }
+  return { topoFaceIds, stableHashes };
+}
+
+function applyOcctBlendFaceMetadata(geometry, operation, blendFaces) {
+  if (!geometry?.faces?.length || operation !== 'fillet') return;
+
+  const selectors = collectOcctBlendFaceSelectors(blendFaces);
+  const hasSelectors = selectors.topoFaceIds.size > 0 || selectors.stableHashes.size > 0;
+  for (const face of geometry.faces) {
+    const matched = face?.shared?.isFillet === true
+      || (hasSelectors && (
+        selectors.topoFaceIds.has(face.topoFaceId)
+        || (!!face.stableHash && selectors.stableHashes.has(face.stableHash))
+      ));
+    if (!matched) continue;
+    face.shared = { ...(face.shared || {}), isFillet: true, isFilletFace: true };
+    face.isFillet = true;
+  }
+}
+
+function attachOcctBlendFeatureEdges(geometry) {
+  if (!geometry?.faces?.length) return;
+  if (!Array.isArray(geometry._occtFeatureEdges)
+      && Array.isArray(geometry.edges)
+      && geometry.edges.some((edge) => !!edge?.stableHash)) {
+    geometry._occtFeatureEdges = geometry.edges;
+  }
+  if (!Array.isArray(geometry._occtFeaturePaths)
+      && Array.isArray(geometry.paths)
+      && geometry.paths.some((path) => !!path?.stableHash)) {
+    geometry._occtFeaturePaths = geometry.paths;
+  }
+  const edgeResult = computeFeatureEdges(geometry.faces);
+  geometry.edges = edgeResult.edges;
+  geometry.paths = edgeResult.paths;
+  geometry.visualEdges = edgeResult.visualEdges;
+}
+
 function buildStructuredExtrudeExtent({ distance, extrudeType, targetFaceRef, surfaceOffset }) {
   if (extrudeType === 'throughAll') return { type: 'throughAll' };
   if (extrudeType === 'upToNext') return { type: 'upToNext' };
@@ -1158,8 +1223,11 @@ function _finalizeOcctBlendResult(adapter, operation, blendResult, topoBody) {
   const handle = blendResult?.shape?.id || blendResult?.shapeId || blendResult?.shapeHandle || 0;
   const geometry = finalizeOcctGeometry(adapter, handle, topoBody, operation);
   if (!geometry) return null;
+  const blendFaces = Array.isArray(blendResult?.blendFaces) ? blendResult.blendFaces : [];
+  applyOcctBlendFaceMetadata(geometry, operation, blendFaces);
+  attachOcctBlendFeatureEdges(geometry);
   geometry._occtBlend = {
-    blendFaces: Array.isArray(blendResult?.blendFaces) ? blendResult.blendFaces : [],
+    blendFaces,
     lineage: blendResult?.lineage || null,
     status: blendResult?.status || null,
     revision: blendResult?.revision || null,

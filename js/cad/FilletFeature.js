@@ -5,11 +5,16 @@
 // outputs geometry that preserves the topology chain for downstream
 // features. Selection uses stable entity keys when present.
 
+import { getFlag } from '../featureFlags.js';
 import { Feature } from './Feature.js';
 import { applyBRepFillet } from './BRepFillet.js';
 import { expandPathEdgeKeys } from './EdgeAnalysis.js';
 import { calculateMeshVolume, calculateBoundingBox } from './toolkit/MeshAnalysis.js';
-import { tryBuildOcctFilletMetadataSync } from './occt/OcctSketchModeling.js';
+import {
+  disposeOcctSketchModelingShape,
+  restoreOcctSketchModelingCheckpoint,
+  tryBuildOcctFilletMetadataSync,
+} from './occt/OcctSketchModeling.js';
 import {
   buildSelectionKeyMap,
   edgeEntityToLegacyKey,
@@ -22,6 +27,8 @@ import {
   resolveKey,
   selectionKeyToLegacyEdgeKey,
 } from './history/StableEntityKey.js';
+
+const OCCT_SKETCH_SOLID_FLAG = 'CAD_USE_OCCT_SKETCH_SOLIDS';
 
 function resolveFeatureEdgeKeys(feature, selectionContext, options = {}) {
   const updateFeature = options.updateFeature !== false;
@@ -75,6 +82,79 @@ function resolveFeatureEdgeKeys(feature, selectionContext, options = {}) {
   return uniqueResolvedEdgeKeys;
 }
 
+function selectionKeysResolveAgainstContext(feature, selectionContext, keys) {
+  if (!Array.isArray(keys) || keys.length === 0) return false;
+
+  const bodyKeys = buildSelectionKeyMap(selectionContext, feature?.id);
+  if (!bodyKeys) return false;
+
+  for (const storedKey of keys) {
+    const stableKey = isLegacyEdgeKey(storedKey)
+      ? legacyEdgeKeyToStable(storedKey, feature?.id || '')
+      : storedKey;
+    if (!isStableKey(stableKey)) return false;
+    const result = resolveKey(stableKey, bodyKeys);
+    if (result.status === RemapStatus.AMBIGUOUS || result.status === RemapStatus.MISSING) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function canResolveFeatureSelectionAgainstContext(feature, selectionContext) {
+  const storedSelectionKeys = Array.isArray(feature?.stableEdgeKeys) && feature.stableEdgeKeys.length > 0
+    ? feature.stableEdgeKeys
+    : [];
+  if (selectionKeysResolveAgainstContext(feature, selectionContext, storedSelectionKeys)) {
+    return true;
+  }
+
+  const legacyKeys = Array.isArray(feature?.edgeKeys) ? feature.edgeKeys : [];
+  return selectionKeysResolveAgainstContext(feature, selectionContext, legacyKeys);
+}
+
+function uniqueOcctEdgeRefs(refs) {
+  return [...new Map(refs.map((ref) => [ref.stableHash || `id:${ref.topoId}`, ref])).values()];
+}
+
+function resolveOcctFeatureChainRefs(selectionContext, fallbackEdgeKeys) {
+  if (!Array.isArray(fallbackEdgeKeys) || fallbackEdgeKeys.length === 0) return [];
+
+  const geometry = selectionContext?.geometry;
+  const nativeEdges = Array.isArray(geometry?._occtFeatureEdges) ? geometry._occtFeatureEdges : [];
+  const nativePaths = Array.isArray(geometry?._occtFeaturePaths) ? geometry._occtFeaturePaths : [];
+  if (nativeEdges.length === 0) return [];
+
+  const nativeGeometry = nativePaths.length > 0
+    ? { edges: nativeEdges, paths: nativePaths }
+    : null;
+  const expandedKeys = nativeGeometry
+    ? expandPathEdgeKeys(nativeGeometry, fallbackEdgeKeys)
+    : fallbackEdgeKeys;
+  const wanted = new Set(expandedKeys.length > 0 ? expandedKeys : fallbackEdgeKeys);
+  const refs = [];
+
+  for (const path of nativePaths) {
+    if (!path?.stableHash || !Array.isArray(path.edgeIndices) || path.edgeIndices.length === 0) continue;
+    const matched = path.edgeIndices.some((edgeIndex) => {
+      const edge = nativeEdges[edgeIndex];
+      const legacyKey = edgeEntityToLegacyKey(edge);
+      return !!legacyKey && wanted.has(legacyKey);
+    });
+    if (matched) refs.push({ stableHash: path.stableHash });
+  }
+  if (refs.length > 0) return uniqueOcctEdgeRefs(refs);
+
+  for (const edge of nativeEdges) {
+    const legacyKey = edgeEntityToLegacyKey(edge);
+    if (!edge?.stableHash || !legacyKey || !wanted.has(legacyKey)) continue;
+    refs.push({ stableHash: edge.stableHash });
+  }
+
+  return uniqueOcctEdgeRefs(refs);
+}
+
 export class FilletFeature extends Feature {
   constructor(name = 'Fillet', radius = 1) {
     super(name);
@@ -95,7 +175,8 @@ export class FilletFeature extends Feature {
   }
 
   execute(context) {
-    const { solid, edgeKeys, edgeOwnerMap } = this._resolveFilletExecutionInput(context);
+    const requireOcct = getFlag(OCCT_SKETCH_SOLID_FLAG) === true;
+    const { solid, sourceResult, edgeKeys } = this._resolveFilletExecutionInput(context);
     if (!solid || !solid.geometry || !solid.geometry.faces) {
       throw new Error('No solid body found to fillet');
     }
@@ -105,15 +186,46 @@ export class FilletFeature extends Feature {
     }
 
     const inputTopoBody = solid.body || (solid.geometry && solid.geometry.topoBody) || null;
-    const occtGeometry = solid.geometry?.occtShapeHandle > 0
-      ? tryBuildOcctFilletMetadataSync({
-        handle: solid.geometry.occtShapeHandle,
-        edgeRefs: this._resolveSelectedOcctEdgeRefs(solid, edgeKeys),
-        radius: this.radius,
-        spec: this.occtSpec,
-        topoBody: inputTopoBody,
-      })
-      : null;
+    let selectionContext = solid;
+    let occtInputGeometry = solid.geometry;
+    let restoredOcctGeometry = null;
+    let occtRestoreError = null;
+
+    if (!(occtInputGeometry?.occtShapeHandle > 0) && sourceResult?.occtCheckpoint) {
+      try {
+        const restored = restoreOcctSketchModelingCheckpoint(sourceResult.occtCheckpoint);
+        if (restored?.geometry?.occtShapeHandle > 0) {
+          restoredOcctGeometry = restored.geometry;
+          occtInputGeometry = restored.geometry;
+          selectionContext = {
+            ...solid,
+            geometry: restored.geometry,
+            body: solid.body || restored.geometry.topoBody || null,
+          };
+        }
+      } catch (error) {
+        occtRestoreError = error;
+      }
+    }
+
+    const hadOcctInput = occtInputGeometry?.occtShapeHandle > 0;
+    let occtGeometry = null;
+    try {
+      occtGeometry = hadOcctInput
+        ? tryBuildOcctFilletMetadataSync({
+          handle: occtInputGeometry.occtShapeHandle,
+          edgeRefs: this._resolveSelectedOcctEdgeRefs(selectionContext, edgeKeys),
+          radius: this.radius,
+          spec: this.occtSpec,
+          topoBody: inputTopoBody,
+        })
+        : null;
+    } finally {
+      if (restoredOcctGeometry) {
+        this._disposeTemporaryOcctGeometry(restoredOcctGeometry, occtGeometry?.occtShapeHandle || 0);
+      }
+    }
+
     if (occtGeometry) {
       this._resultExact = !!(occtGeometry.topoBody || occtGeometry.occtShapeHandle);
       return {
@@ -127,6 +239,17 @@ export class FilletFeature extends Feature {
         occtShapeResident: occtGeometry.occtShapeResident === true,
         _exactTopology: this._resultExact,
       };
+    }
+
+    if (requireOcct) {
+      const restoreMessage = occtRestoreError
+        ? `Failed to restore the upstream OCCT checkpoint: ${occtRestoreError?.message || String(occtRestoreError)}`
+        : (hadOcctInput
+          ? 'The OCCT fillet operation did not produce a replacement shape for the selected edges.'
+          : 'No resident or restorable OCCT handle was available on the input solid.');
+      throw new Error(
+        `[OCCT-only] FilletFeature requires resident or restorable OCCT geometry. ${restoreMessage}`
+      );
     }
 
     if (!inputTopoBody) {
@@ -169,13 +292,23 @@ export class FilletFeature extends Feature {
     return this._getPreviousSolidBeforeIndex(context, thisIndex);
   }
 
+  _getPreviousSolidResult(context) {
+    const thisIndex = context.tree.getFeatureIndex(this.id);
+    return this._getPreviousSolidResultBeforeIndex(context, thisIndex);
+  }
+
   _getPreviousSolidBeforeIndex(context, featureIndex) {
+    const result = this._getPreviousSolidResultBeforeIndex(context, featureIndex);
+    return result?.solid || null;
+  }
+
+  _getPreviousSolidResultBeforeIndex(context, featureIndex) {
     for (let i = featureIndex - 1; i >= 0; i--) {
       const feature = context.tree.features[i];
       if (feature.suppressed) continue;
       const result = context.results[feature.id];
       if (result && result.type === 'solid' && !result.error) {
-        return result.solid;
+        return result;
       }
     }
     return null;
@@ -201,6 +334,11 @@ export class FilletFeature extends Feature {
       const candidateSolid = this._getPreviousSolidBeforeIndex(context, i);
       let stableNearby = false;
       if (candidateSolid) {
+        const currentCanResolve = canResolveFeatureSelectionAgainstContext(this, candidateSolid);
+        const featureCanResolve = canResolveFeatureSelectionAgainstContext(feature, candidateSolid);
+        if (!currentCanResolve || !featureCanResolve) {
+          break;
+        }
         try {
           const currentCandidateKeys = resolveFeatureEdgeKeys(this, candidateSolid, { updateFeature: false });
           const featureCandidateKeys = resolveFeatureEdgeKeys(feature, candidateSolid, { updateFeature: false });
@@ -218,9 +356,10 @@ export class FilletFeature extends Feature {
       mergedAny = true;
     }
 
-    const solid = mergedAny
-      ? this._getPreviousSolidBeforeIndex(context, earliestMergeIndex)
-      : this._getPreviousSolid(context);
+    const sourceResult = mergedAny
+      ? this._getPreviousSolidResultBeforeIndex(context, earliestMergeIndex)
+      : this._getPreviousSolidResult(context);
+    const solid = sourceResult?.solid || null;
 
     const mergedKeys = [];
     for (const feature of mergedFeatures) {
@@ -233,9 +372,18 @@ export class FilletFeature extends Feature {
 
     return {
       solid,
+      sourceResult,
       edgeKeys: [...new Set(mergedKeys)],
       edgeOwnerMap,
     };
+  }
+
+  _disposeTemporaryOcctGeometry(geometry, keepHandle = 0) {
+    const handle = geometry?.occtShapeHandle || 0;
+    if (!handle || handle === keepHandle) return;
+    disposeOcctSketchModelingShape(handle);
+    geometry.occtShapeHandle = 0;
+    geometry.occtShapeResident = false;
   }
 
   _getStoredSelectionKeys(feature = this) {
@@ -253,6 +401,9 @@ export class FilletFeature extends Feature {
     const fallbackEdgeKeys = Array.isArray(legacyKeys) && legacyKeys.length > 0
       ? [...new Set(legacyKeys)]
       : (Array.isArray(feature.edgeKeys) ? [...feature.edgeKeys] : []);
+    const nativeChainRefs = resolveOcctFeatureChainRefs(selectionContext, fallbackEdgeKeys);
+    if (nativeChainRefs.length > 0) return nativeChainRefs;
+
     const geometryEdges = Array.isArray(selectionContext?.geometry?.edges)
       ? selectionContext.geometry.edges
       : [];
@@ -288,7 +439,7 @@ export class FilletFeature extends Feature {
       }
     }
 
-    return [...new Map(refs.map((ref) => [ref.stableHash || `id:${ref.topoId}`, ref])).values()];
+    return uniqueOcctEdgeRefs(refs);
   }
 
   _edgeSetsNearby(edgeKeysA, edgeKeysB, tol) {
