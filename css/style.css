@@ -1355,6 +1355,41 @@ body.sketch-on-plane .toolbar-row-sketch {
   border-color: var(--accent);
 }
 
+.app-modal-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.app-modal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.app-modal-field-label {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.app-modal-select {
+  appearance: auto;
+}
+
+.app-modal-field-hint {
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.app-modal-error {
+  color: #ff8a80;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
 .app-modal-actions {
   display: flex;
   justify-content: flex-end;

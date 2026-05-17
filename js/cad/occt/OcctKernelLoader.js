@@ -111,7 +111,9 @@ async function resolveNodePaths(options = {}) {
     || (distPath ? path.join(distPath, 'occt-kernel.js') : null);
   const wasmPath = options.wasmPath || readEnv(WASM_ENV_KEYS)
     || (distPath ? path.join(distPath, 'occt-kernel.wasm') : null);
-  return { distPath, jsPath, wasmPath };
+  const apiPath = options.apiPath || options.wrapperPath
+    || (distPath ? path.join(distPath, 'index.js') : null);
+  return { distPath, jsPath, wasmPath, apiPath };
 }
 
 function resolveBrowserPaths(options = {}) {
@@ -120,20 +122,37 @@ function resolveBrowserPaths(options = {}) {
     || (distUrl ? `${String(distUrl).replace(/\/$/, '')}/occt-kernel.js` : null);
   const wasmUrl = options.wasmUrl || options.wasmPath || readEnv(WASM_ENV_KEYS)
     || (distUrl ? `${String(distUrl).replace(/\/$/, '')}/occt-kernel.wasm` : null);
-  return { distUrl, jsUrl, wasmUrl };
+  const apiUrl = options.apiUrl || options.wrapperUrl
+    || (distUrl ? `${String(distUrl).replace(/\/$/, '')}/index.mjs` : null);
+  return { distUrl, jsUrl, wasmUrl, apiUrl };
+}
+
+async function loadNodeModule(modulePath) {
+  if (!modulePath) throw new Error('OCCT loader requires a module path in Node.js');
+  const { createRequire, pathToFileURL } = await nodeDeps();
+  const require = createRequire(import.meta.url);
+  try {
+    return require(modulePath);
+  } catch (error) {
+    const message = String(error?.message || '');
+    if (error?.code !== 'ERR_REQUIRE_ESM' && !message.includes('ES Module')) throw error;
+    const imported = await import(pathToFileURL(modulePath).href);
+    return imported.default || imported;
+  }
 }
 
 async function loadNodeFactory(jsPath) {
   if (!jsPath) throw new Error('OCCT loader requires jsPath or OCCT_KERNEL_DIST in Node.js');
-  const { createRequire, pathToFileURL } = await nodeDeps();
-  const require = createRequire(import.meta.url);
+  const imported = await loadNodeModule(jsPath);
+  return imported.default || imported.createOcctKernelModule || imported;
+}
+
+async function loadNodeApiModule(apiPath) {
+  if (!apiPath) return null;
   try {
-    return require(jsPath);
-  } catch (error) {
-    const message = String(error?.message || '');
-    if (error?.code !== 'ERR_REQUIRE_ESM' && !message.includes('ES Module')) throw error;
-    const imported = await import(pathToFileURL(jsPath).href);
-    return imported.default || imported.createOcctKernelModule || imported;
+    return await loadNodeModule(apiPath);
+  } catch {
+    return null;
   }
 }
 
@@ -189,6 +208,15 @@ async function loadBrowserFactory(jsUrl) {
   return globalThis.createOcctKernelModule;
 }
 
+async function loadBrowserApiModule(apiUrl) {
+  if (!apiUrl) return null;
+  try {
+    return await import(/* @vite-ignore */ apiUrl);
+  } catch {
+    return null;
+  }
+}
+
 function normalizeFactory(factory) {
   if (typeof factory === 'function') return factory;
   if (typeof factory?.default === 'function') return factory.default;
@@ -204,6 +232,8 @@ function buildCacheKey(options = {}) {
     jsUrl: options.jsUrl || null,
     wasmPath: options.wasmPath || null,
     wasmUrl: options.wasmUrl || null,
+    apiPath: options.apiPath || options.wrapperPath || null,
+    apiUrl: options.apiUrl || options.wrapperUrl || null,
     hasFactory: !!options.factory,
     hasWasmBinary: !!options.wasmBinary,
   });
@@ -259,7 +289,11 @@ async function loadUncached(options = {}) {
     throw new Error('OCCT module loaded but OcctKernel class is unavailable');
   }
 
-  return { module, factory, paths };
+  const apiModule = options.apiModule || (isNodeRuntime()
+    ? await loadNodeApiModule(paths.apiPath)
+    : await loadBrowserApiModule(paths.apiUrl));
+
+  return { module, factory, apiModule, paths };
 }
 
 export async function loadOcctKernelModule(options = {}) {

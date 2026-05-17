@@ -212,6 +212,34 @@ function buildOcctPlaneFrame(planeFrame, originOverride = null) {
   };
 }
 
+function planeLocalPointToWorld(point, planeFrame) {
+  const resolvedPlane = planeFrame?.plane;
+  if (!point || !resolvedPlane?.origin || !resolvedPlane?.xAxis || !resolvedPlane?.yAxis) return null;
+  return {
+    x: cleanNumber(resolvedPlane.origin.x + resolvedPlane.xAxis.x * point.x + resolvedPlane.yAxis.x * point.y),
+    y: cleanNumber(resolvedPlane.origin.y + resolvedPlane.xAxis.y * point.x + resolvedPlane.yAxis.y * point.y),
+    z: cleanNumber(resolvedPlane.origin.z + resolvedPlane.xAxis.z * point.x + resolvedPlane.yAxis.z * point.y),
+  };
+}
+
+function planeLocalVectorToWorld(vector, planeFrame) {
+  const resolvedPlane = planeFrame?.plane;
+  if (!vector || !resolvedPlane?.xAxis || !resolvedPlane?.yAxis) return null;
+  return normalizeVector3({
+    x: resolvedPlane.xAxis.x * vector.x + resolvedPlane.yAxis.x * vector.y,
+    y: resolvedPlane.xAxis.y * vector.x + resolvedPlane.yAxis.y * vector.y,
+    z: resolvedPlane.xAxis.z * vector.x + resolvedPlane.yAxis.z * vector.y,
+  });
+}
+
+function adapterHasKernelMethod(adapter, methodName) {
+  try {
+    return typeof adapter?.requireReady?.()[methodName] === 'function';
+  } catch {
+    return false;
+  }
+}
+
 function buildLocalToWorldTransform(planeFrame) {
   const resolvedPlane = planeFrame?.plane;
   if (!resolvedPlane?.origin || !resolvedPlane?.xAxis || !resolvedPlane?.yAxis || !resolvedPlane?.normal) {
@@ -527,6 +555,60 @@ function buildOcctProfile(profile, holes = [], planeFrame) {
   };
 }
 
+function worldTupleFromSketchPoint(point, planeFrame) {
+  const local = localSketchPoint(point, planeFrame);
+  const world = local ? planeLocalPointToWorld(local, planeFrame) : null;
+  return world ? toTuple3(world) : null;
+}
+
+function buildWorldSketchWire(sketchResult) {
+  const sketch = sketchResult?.sketch?.scene || sketchResult?.sketch || null;
+  const planeFrame = resolvePlaneFrame(sketchResult?.plane);
+  if (!sketch || !planeFrame) return null;
+
+  const segments = [];
+  for (const seg of sketch.segments || []) {
+    if (seg?.construction || seg?.visible === false || !seg.p1 || !seg.p2) continue;
+    const start = worldTupleFromSketchPoint(seg.p1, planeFrame);
+    const end = worldTupleFromSketchPoint(seg.p2, planeFrame);
+    if (start && end) segments.push({ type: 'line', start, end });
+  }
+
+  for (const arc of sketch.arcs || []) {
+    if (arc?.construction || arc?.visible === false) continue;
+    const center = arc.center || { x: arc.cx, y: arc.cy };
+    const radius = Number(arc.radius);
+    const startAngle = Number(arc.startAngle);
+    const endAngle = Number(arc.endAngle);
+    if (!center || !Number.isFinite(radius) || !Number.isFinite(startAngle) || !Number.isFinite(endAngle)) continue;
+    let sweep = endAngle - startAngle;
+    if (sweep <= 0) sweep += Math.PI * 2;
+    const start = worldTupleFromSketchPoint({ x: center.x + Math.cos(startAngle) * radius, y: center.y + Math.sin(startAngle) * radius }, planeFrame);
+    const mid = worldTupleFromSketchPoint({ x: center.x + Math.cos(startAngle + sweep * 0.5) * radius, y: center.y + Math.sin(startAngle + sweep * 0.5) * radius }, planeFrame);
+    const end = worldTupleFromSketchPoint({ x: center.x + Math.cos(startAngle + sweep) * radius, y: center.y + Math.sin(startAngle + sweep) * radius }, planeFrame);
+    if (start && mid && end) segments.push({ type: 'arc', start, mid, end });
+  }
+
+  if (segments.length > 0) return { segments };
+
+  const profile = Array.isArray(sketchResult?.profiles) ? sketchResult.profiles[0] : null;
+  const profileWire = profile ? buildOcctWire(profile, planeFrame) : null;
+  if (!profileWire?.segments?.length) return null;
+  return {
+    segments: profileWire.segments.map((segment) => ({ ...segment, coordinateSpace: 'sketch', plane: buildOcctPlaneFrame(planeFrame) })),
+  };
+}
+
+function buildFirstSectionFromSketchResult(sketchResult) {
+  const planeFrame = resolvePlaneFrame(sketchResult?.plane);
+  const profile = Array.isArray(sketchResult?.profiles) ? sketchResult.profiles[0] : null;
+  if (!planeFrame || !profile) return null;
+  const occtProfile = buildOcctProfile(profile, [], planeFrame);
+  const occtPlane = buildOcctPlaneFrame(planeFrame);
+  if (!occtProfile || !occtPlane) return null;
+  return { type: 'profile', profile: occtProfile, plane: occtPlane };
+}
+
 function getSharedAdapterSync() {
   if (sharedAdapter) return sharedAdapter;
 
@@ -585,6 +667,57 @@ function finalizeOcctGeometry(adapter, handle, topoBody, operation) {
   return geometry;
 }
 
+function buildStructuredExtrudeExtent({ distance, extrudeType, targetFaceRef, surfaceOffset }) {
+  if (extrudeType === 'throughAll') return { type: 'throughAll' };
+  if (extrudeType === 'upToNext') return { type: 'upToNext' };
+  if (extrudeType === 'upToFace') {
+    return targetFaceRef
+      ? { type: 'upToFace', targetFace: targetFaceRef }
+      : { type: 'upToFace' };
+  }
+  if (extrudeType === 'offsetFromSurface') {
+    return targetFaceRef
+      ? { type: 'offsetFromSurface', targetFace: targetFaceRef, offset: cleanNumber(surfaceOffset) }
+      : { type: 'offsetFromSurface', offset: cleanNumber(surfaceOffset) };
+  }
+  return { type: 'blind', distance: cleanNumber(distance) };
+}
+
+function buildStructuredExtrudeSpec({ occtPlane, distance, taper, taperAngle, taperInward, extrudeType, targetFaceRef, surfaceOffset }) {
+  const spec = {
+    schemaVersion: 1,
+    plane: occtPlane,
+    extent: buildStructuredExtrudeExtent({ distance, extrudeType, targetFaceRef, surfaceOffset }),
+  };
+  if (taper && Number(taperAngle) > 0) {
+    const angle = Math.abs(Number(taperAngle));
+    spec.draftAngleDegrees = cleanNumber(taperInward ? -angle : angle);
+  }
+  return spec;
+}
+
+function buildStructuredRevolveExtent({ extentType, angleRadians, targetFaceRef, startFaceRef, endFaceRef, surfaceOffset }) {
+  if (extentType === 'throughAll') return { type: 'throughAll' };
+  if (extentType === 'upToFace') {
+    return targetFaceRef ? { type: 'upToFace', targetFace: targetFaceRef } : { type: 'upToFace' };
+  }
+  if (extentType === 'offsetFromSurface') {
+    return targetFaceRef
+      ? { type: 'offsetFromSurface', targetFace: targetFaceRef, offset: cleanNumber(surfaceOffset) }
+      : { type: 'offsetFromSurface', offset: cleanNumber(surfaceOffset) };
+  }
+  if (extentType === 'fromFaceToFace') {
+    const extent = { type: 'fromFaceToFace' };
+    if (startFaceRef) extent.startFace = startFaceRef;
+    if (endFaceRef) extent.endFace = endFaceRef;
+    return extent;
+  }
+  return {
+    type: 'angle',
+    angleDegrees: cleanNumber(Number(angleRadians) * 180 / Math.PI),
+  };
+}
+
 export function tryBuildOcctExtrudeGeometrySync(options = {}) {
   if (getFlag(OCCT_SKETCH_SOLID_FLAG) !== true) {
     reportOcctSketchFallbackOnce(
@@ -601,6 +734,8 @@ export function tryBuildOcctExtrudeGeometrySync(options = {}) {
     direction = 1,
     symmetric = false,
     extrudeType = 'distance',
+    targetFaceRef = null,
+    surfaceOffset = 0,
     taper = false,
     holes = [],
     baseOffset = null,
@@ -608,10 +743,11 @@ export function tryBuildOcctExtrudeGeometrySync(options = {}) {
     topoBody = null,
   } = options;
   if (!profile || !plane) return null;
-  if (symmetric || taper || (extrudeType !== 'distance' && extrudeType !== 'throughAll')) {
+  const structuredExtentTypes = new Set(['distance', 'throughAll', 'upToNext', 'upToFace', 'offsetFromSurface']);
+  if (symmetric || !structuredExtentTypes.has(extrudeType)) {
     reportOcctSketchFallbackOnce(
       'unsupported-extrude-options',
-      'OCCT sketch extrude currently supports distance and through-all style extrudes only, without symmetry or taper.',
+      'OCCT sketch extrude received unsupported extrude options.',
       { symmetric: !!symmetric, taper: !!taper, extrudeType },
     );
     return null;
@@ -646,6 +782,44 @@ export function tryBuildOcctExtrudeGeometrySync(options = {}) {
   );
   if (!(vectorLength3(extrusionVector) > WORLD_XY_TOLERANCE)) return null;
 
+  const canUseStructuredExtrude = Number(direction || 0) >= 0;
+  const structuredOnlyExtent = extrudeType !== 'distance' && extrudeType !== 'throughAll';
+  if (canUseStructuredExtrude && adapterHasKernelMethod(adapter, 'extrudeProfileWithSpec')) {
+    let structuredHandle = 0;
+    try {
+      structuredHandle = adapter.extrudeProfileWithSpec({
+        profile: occtProfile,
+        spec: buildStructuredExtrudeSpec({
+          occtPlane,
+          distance: vectorLength3(extrusionVector),
+          taper,
+          taperAngle: options.taperAngle,
+          taperInward: options.taperInward,
+          extrudeType,
+          targetFaceRef,
+          surfaceOffset,
+        }),
+      });
+      return finalizeOcctGeometry(adapter, structuredHandle, topoBody, 'extrude');
+    } catch (error) {
+      reportOcctSketchFallbackOnce(
+        'occt-structured-extrude-error',
+        'OCCT structured extrude rejected the translated sketch profile; falling back to the legacy OCCT profile extrude.',
+        { message: error?.message || String(error) },
+      );
+      if (structuredHandle > 0) adapter.disposeShape(structuredHandle);
+      if (taper || structuredOnlyExtent) return null;
+    }
+  } else if (taper || structuredOnlyExtent) {
+    reportOcctSketchFallbackOnce(
+      canUseStructuredExtrude ? 'unsupported-structured-extrude' : 'unsupported-reverse-structured-extrude',
+      canUseStructuredExtrude
+        ? 'OCCT sketch extrude draft and advanced extents require a kernel build with extrudeProfileWithSpec.'
+        : 'OCCT structured sketch extrude cannot encode the app reverse-direction advanced extent; using the compatibility path.',
+    );
+    return null;
+  }
+
   let handle = 0;
   try {
     handle = adapter.extrudeProfile(occtProfile, {
@@ -673,12 +847,20 @@ export function tryBuildOcctRevolveGeometrySync(options = {}) {
     angleRadians,
     axisOrigin,
     axisDirection,
+    extentType = 'angle',
+    targetFaceRef = null,
+    startFaceRef = null,
+    endFaceRef = null,
+    surfaceOffset = 0,
     topoBody = null,
+    sketchToWorld = null,
+    sketchVectorToWorld = null,
   } = options;
   if (!profile || !plane) {
     return null;
   }
-  if (!(Number(angleRadians) > 0)) return null;
+  const structuredOnlyExtent = extentType !== 'angle';
+  if (!structuredOnlyExtent && !(Number(angleRadians) > 0)) return null;
 
   const planeFrame = resolvePlaneFrame(plane);
   if (!planeFrame) return null;
@@ -708,6 +890,41 @@ export function tryBuildOcctRevolveGeometrySync(options = {}) {
     return null;
   }
 
+  if (adapterHasKernelMethod(adapter, 'revolveProfileWithSpec')) {
+    const occtPlane = buildOcctPlaneFrame(planeFrame);
+    const worldAxisOrigin = typeof sketchToWorld === 'function'
+      ? sketchToWorld(axisOrigin, planeFrame.plane)
+      : planeLocalPointToWorld(localAxisOrigin, planeFrame);
+    const worldAxisDirection = typeof sketchVectorToWorld === 'function'
+      ? normalizeVector3(sketchVectorToWorld(axisDirection, planeFrame.plane))
+      : planeLocalVectorToWorld(localAxisDirection, planeFrame);
+    if (occtPlane && worldAxisOrigin && worldAxisDirection) {
+      let structuredHandle = 0;
+      try {
+        structuredHandle = adapter.revolveProfileWithSpec({
+          profile: occtProfile,
+          spec: {
+            schemaVersion: 1,
+            plane: occtPlane,
+            axisOrigin: toTuple3(worldAxisOrigin),
+            axisDirection: toTuple3(worldAxisDirection),
+            extent: buildStructuredRevolveExtent({ extentType, angleRadians, targetFaceRef, startFaceRef, endFaceRef, surfaceOffset }),
+          },
+        });
+        return finalizeOcctGeometry(adapter, structuredHandle, topoBody, 'revolve');
+      } catch (error) {
+        reportOcctSketchFallbackOnce(
+          'occt-structured-revolve-error',
+          'OCCT structured revolve rejected the translated sketch profile; falling back to the legacy OCCT profile revolve.',
+          { message: error?.message || String(error) },
+        );
+        if (structuredHandle > 0) adapter.disposeShape(structuredHandle);
+      }
+    }
+  }
+
+  if (structuredOnlyExtent) return null;
+
   const localToWorldTransform = buildLocalToWorldTransform(planeFrame);
 
   let handle = 0;
@@ -733,6 +950,94 @@ export function tryBuildOcctRevolveGeometrySync(options = {}) {
       { message: error?.message || String(error) },
     );
     if (transformedHandle > 0 && transformedHandle !== handle) adapter.disposeShape(transformedHandle);
+    if (handle > 0) adapter.disposeShape(handle);
+    return null;
+  }
+}
+
+export function tryBuildOcctSweepGeometrySync(options = {}) {
+  if (getFlag(OCCT_SKETCH_SOLID_FLAG) !== true) return null;
+
+  const {
+    profileSketchResult,
+    pathSketchResult,
+    spec = {},
+    shapeHandle = 0,
+    topoBody = null,
+  } = options;
+  const section = buildFirstSectionFromSketchResult(profileSketchResult);
+  const spine = buildWorldSketchWire(pathSketchResult);
+  if (!section || !spine?.segments?.length) return null;
+
+  const adapter = getSharedAdapterSync();
+  if (!adapter || !adapterHasKernelMethod(adapter, 'sweepProfileWithSpec')) return null;
+
+  let handle = 0;
+  try {
+    const sweepSpec = {
+      schemaVersion: 1,
+      plane: section.plane,
+      spine,
+      solid: spec.makeSolid !== false,
+      trihedronMode: spec.mode === 'fixed'
+        ? { type: 'fixedBinormal', binormal: section.plane.normal }
+        : { type: 'frenet' },
+    };
+    const request = {
+      profile: section.profile,
+      spec: sweepSpec,
+    };
+    if (Number.isInteger(shapeHandle) && shapeHandle > 0) request.shape = shapeHandle;
+    if (spec.cut === true) request.cut = true;
+    handle = adapter.sweepProfileWithSpec(request);
+    return finalizeOcctGeometry(adapter, handle, topoBody, 'sweep');
+  } catch (error) {
+    reportOcctSketchFallbackOnce(
+      'occt-structured-sweep-error',
+      'OCCT structured sweep rejected the translated sketch profile/path.',
+      { message: error?.message || String(error) },
+    );
+    if (handle > 0) adapter.disposeShape(handle);
+    return null;
+  }
+}
+
+export function tryBuildOcctLoftGeometrySync(options = {}) {
+  if (getFlag(OCCT_SKETCH_SOLID_FLAG) !== true) return null;
+
+  const { sectionSketchResults = [], spec = {}, shapeHandle = 0, topoBody = null } = options;
+  const sections = [];
+  for (const sketchResult of sectionSketchResults || []) {
+    const section = buildFirstSectionFromSketchResult(sketchResult);
+    if (!section) return null;
+    sections.push(section);
+  }
+  if (sections.length < 2) return null;
+
+  const adapter = getSharedAdapterSync();
+  if (!adapter || !adapterHasKernelMethod(adapter, 'loftWithSpec')) return null;
+
+  let handle = 0;
+  try {
+    const request = {
+      sections,
+      spec: {
+        schemaVersion: 1,
+        solid: spec.makeSolid !== false,
+        ruled: spec.ruled === true,
+        continuity: spec.continuity || 'C2',
+      },
+    };
+    if (Number.isInteger(shapeHandle) && shapeHandle > 0) request.shape = shapeHandle;
+    if (spec.cut === true) request.cut = true;
+    handle = adapter.loftWithSpec(request);
+    return finalizeOcctGeometry(adapter, handle, topoBody, 'loft');
+  } catch (error) {
+    reportOcctSketchFallbackOnce(
+      'occt-structured-loft-error',
+      'OCCT structured loft rejected the translated sketch sections.',
+      { message: error?.message || String(error) },
+    );
     if (handle > 0) adapter.disposeShape(handle);
     return null;
   }

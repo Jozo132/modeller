@@ -13,6 +13,8 @@ import { ExtrudeFeature } from './ExtrudeFeature.js';
 import { ExtrudeCutFeature } from './ExtrudeCutFeature.js';
 import { MultiSketchExtrudeFeature } from './MultiSketchExtrudeFeature.js';
 import { RevolveFeature } from './RevolveFeature.js';
+import { SweepFeature } from './SweepFeature.js';
+import { LoftFeature } from './LoftFeature.js';
 import { ChamferFeature } from './ChamferFeature.js';
 import { FilletFeature } from './FilletFeature.js';
 import { StepImportFeature } from './StepImportFeature.js';
@@ -103,6 +105,15 @@ function normalizeFeatureTreeData(featureTreeData) {
       sketchFeatureId: featureData.sketchFeatureId
         ? resolveReference(featureData.sketchFeatureId, index, 'sketch')
         : featureData.sketchFeatureId,
+      profileSketchFeatureId: featureData.profileSketchFeatureId
+        ? resolveReference(featureData.profileSketchFeatureId, index, 'sketch')
+        : featureData.profileSketchFeatureId,
+      pathSketchFeatureId: featureData.pathSketchFeatureId
+        ? resolveReference(featureData.pathSketchFeatureId, index, 'sketch')
+        : featureData.pathSketchFeatureId,
+      sectionSketchFeatureIds: Array.isArray(featureData.sectionSketchFeatureIds)
+        ? featureData.sectionSketchFeatureIds.map((featureId) => resolveReference(featureId, index, 'sketch'))
+        : featureData.sectionSketchFeatureIds,
     })),
   };
 }
@@ -472,6 +483,8 @@ export class Part {
     if (options.direction) extrudeFeature.direction = options.direction;
     if (options.symmetric !== undefined) extrudeFeature.symmetric = options.symmetric;
     if (options.extrudeType) extrudeFeature.extrudeType = options.extrudeType;
+    if (options.targetFaceRef !== undefined) extrudeFeature.targetFaceRef = options.targetFaceRef;
+    if (options.surfaceOffset != null) extrudeFeature.surfaceOffset = options.surfaceOffset;
     if (options.taper !== undefined) extrudeFeature.taper = options.taper;
     if (options.taperAngle != null) extrudeFeature.taperAngle = options.taperAngle;
     if (options.taperInward !== undefined) extrudeFeature.taperInward = options.taperInward;
@@ -510,6 +523,8 @@ export class Part {
     if (options.direction) feature.direction = options.direction;
     if (options.symmetric !== undefined) feature.symmetric = options.symmetric;
     if (options.extrudeType) feature.extrudeType = options.extrudeType;
+    if (options.targetFaceRef !== undefined) feature.targetFaceRef = options.targetFaceRef;
+    if (options.surfaceOffset != null) feature.surfaceOffset = options.surfaceOffset;
     if (options.taper !== undefined) feature.taper = options.taper;
     if (options.taperAngle != null) feature.taperAngle = options.taperAngle;
     if (options.taperInward !== undefined) feature.taperInward = options.taperInward;
@@ -568,6 +583,11 @@ export class Part {
         revolveFeature.setAxis(axisResolution.axis.origin, axisResolution.axis.direction, 'construction');
       }
     }
+    if (options.extentType) revolveFeature.extentType = options.extentType;
+    if (options.targetFaceRef !== undefined) revolveFeature.targetFaceRef = options.targetFaceRef;
+    if (options.startFaceRef !== undefined) revolveFeature.startFaceRef = options.startFaceRef;
+    if (options.endFaceRef !== undefined) revolveFeature.endFaceRef = options.endFaceRef;
+    if (options.surfaceOffset != null) revolveFeature.surfaceOffset = options.surfaceOffset;
     
     // Link the sketch as a child of the revolve feature and hide it
     revolveFeature.addChild(sketchId);
@@ -578,6 +598,66 @@ export class Part {
     // Note: Physical properties are computed lazily when requested
     
     return revolveFeature;
+  }
+
+  sweep(profileSketchOrId, pathSketchOrId, options = {}) {
+    this.modified = new Date();
+
+    const profileSketchId = typeof profileSketchOrId === 'string' ? profileSketchOrId : profileSketchOrId?.id;
+    const pathSketchId = typeof pathSketchOrId === 'string' ? pathSketchOrId : pathSketchOrId?.id;
+    const profileSketch = this.featureTree.getFeature(profileSketchId);
+    const pathSketch = this.featureTree.getFeature(pathSketchId);
+    if (!profileSketch || profileSketch.type !== 'sketch') throw new Error('Invalid sweep profile sketch');
+    if (!pathSketch || pathSketch.type !== 'sketch') throw new Error('Invalid sweep path sketch');
+
+    const feature = new SweepFeature(this._nextTypeName('sweep', 'Sweep'), profileSketchId, pathSketchId);
+    if (options.operation) {
+      feature.operation = options.operation;
+    } else {
+      const existingSolid = this.featureTree.getLastSolidResult();
+      if (existingSolid && existingSolid.type === 'solid') feature.operation = 'add';
+    }
+    if (options.makeSolid !== undefined) feature.makeSolid = options.makeSolid;
+    if (options.mode) feature.mode = options.mode;
+
+    feature.addChild(profileSketchId);
+    feature.addChild(pathSketchId);
+    profileSketch.setVisible(false);
+    pathSketch.setVisible(false);
+    this.featureTree.addFeature(feature);
+    this._checkAutoHidePlanes();
+    return feature;
+  }
+
+  loft(sectionSketchesOrIds, options = {}) {
+    this.modified = new Date();
+
+    const sectionSketchIds = (sectionSketchesOrIds || []).map((section) => typeof section === 'string' ? section : section?.id).filter(Boolean);
+    if (sectionSketchIds.length < 2) throw new Error('Loft requires at least two section sketches');
+    for (const sketchId of sectionSketchIds) {
+      const sketchFeature = this.featureTree.getFeature(sketchId);
+      if (!sketchFeature || sketchFeature.type !== 'sketch') throw new Error('Invalid loft section sketch');
+    }
+
+    const feature = new LoftFeature(this._nextTypeName('loft', 'Loft'), sectionSketchIds);
+    if (options.operation) {
+      feature.operation = options.operation;
+    } else {
+      const existingSolid = this.featureTree.getLastSolidResult();
+      if (existingSolid && existingSolid.type === 'solid') feature.operation = 'add';
+    }
+    if (options.makeSolid !== undefined) feature.makeSolid = options.makeSolid;
+    if (options.ruled !== undefined) feature.ruled = options.ruled;
+    if (options.continuity) feature.continuity = options.continuity;
+
+    for (const sketchId of sectionSketchIds) {
+      feature.addChild(sketchId);
+      const sketchFeature = this.featureTree.getFeature(sketchId);
+      if (sketchFeature) sketchFeature.setVisible(false);
+    }
+    this.featureTree.addFeature(feature);
+    this._checkAutoHidePlanes();
+    return feature;
   }
 
   /**
@@ -822,6 +902,10 @@ export class Part {
             return MultiSketchExtrudeFeature.deserialize(featureData);
           case 'revolve':
             return RevolveFeature.deserialize(featureData);
+          case 'sweep':
+            return SweepFeature.deserialize(featureData);
+          case 'loft':
+            return LoftFeature.deserialize(featureData);
           case 'chamfer':
             return ChamferFeature.deserialize(featureData);
           case 'fillet':

@@ -177,6 +177,24 @@ export class PartManager {
     return feature;
   }
 
+  sweep(profileSketchFeatureId, pathSketchFeatureId, options = {}) {
+    if (!this.part) return null;
+
+    const feature = this.part.sweep(profileSketchFeatureId, pathSketchFeatureId, options);
+    this.activeFeature = feature;
+    this.notifyListeners();
+    return feature;
+  }
+
+  loft(sectionSketchFeatureIds, options = {}) {
+    if (!this.part) return null;
+
+    const feature = this.part.loft(sectionSketchFeatureIds, options);
+    this.activeFeature = feature;
+    this.notifyListeners();
+    return feature;
+  }
+
   chamfer(edgeKeys, distance) {
     if (!this.part) return null;
     const feature = this.part.chamfer(edgeKeys, distance);

@@ -40,6 +40,8 @@ export class ExtrudeCutFeature extends ExtrudeFeature {
     feature.symmetric = data.symmetric || false;
     feature.operation = data.operation || 'subtract';
     feature.extrudeType = data.extrudeType || 'distance';
+    feature.targetFaceRef = data.targetFaceRef || null;
+    feature.surfaceOffset = Number.isFinite(Number(data.surfaceOffset)) ? Number(data.surfaceOffset) : 0;
     feature.taper = data.taper || false;
     feature.taperAngle = data.taperAngle != null ? data.taperAngle : 5;
     feature.taperInward = data.taperInward != null ? data.taperInward : true;

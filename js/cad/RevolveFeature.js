@@ -47,6 +47,11 @@ export class RevolveFeature extends Feature {
     };
     this.axisSegmentId = null;
     this.axisSource = 'default';
+    this.extentType = 'angle';
+    this.targetFaceRef = null;
+    this.startFaceRef = null;
+    this.endFaceRef = null;
+    this.surfaceOffset = 0;
     
     // Operation mode
     this.operation = 'new'; // 'new', 'add', 'subtract', 'intersect'
@@ -194,6 +199,11 @@ export class RevolveFeature extends Feature {
         angleRadians: this.angle,
         axisOrigin: this.axis.origin,
         axisDirection: this.getNormalizedAxisDirection2D(),
+        extentType: this.extentType || 'angle',
+        targetFaceRef: this.targetFaceRef,
+        startFaceRef: this.startFaceRef,
+        endFaceRef: this.endFaceRef,
+        surfaceOffset: this.surfaceOffset,
         topoBody: geometry.topoBody,
         sketchToWorld: (point, planeDef) => this.sketchToWorld(point, planeDef),
         sketchVectorToWorld: (vector, planeDef) => this.sketchVectorToWorld(vector, planeDef),
@@ -1340,6 +1350,11 @@ export class RevolveFeature extends Feature {
       axis: this.axis,
       axisSegmentId: this.axisSegmentId,
       axisSource: this.axisSource,
+      extentType: this.extentType,
+      targetFaceRef: this.targetFaceRef,
+      startFaceRef: this.startFaceRef,
+      endFaceRef: this.endFaceRef,
+      surfaceOffset: this.surfaceOffset,
       operation: this.operation,
     };
   }
@@ -1362,6 +1377,11 @@ export class RevolveFeature extends Feature {
     feature.axis = data.axis || { origin: { x: 0, y: 0 }, direction: { x: 0, y: 1 } };
     feature.axisSegmentId = data.axisSegmentId ?? null;
     feature.axisSource = data.axisSource || (feature.axisSegmentId != null ? 'construction' : 'default');
+    feature.extentType = data.extentType || 'angle';
+    feature.targetFaceRef = data.targetFaceRef || null;
+    feature.startFaceRef = data.startFaceRef || null;
+    feature.endFaceRef = data.endFaceRef || null;
+    feature.surfaceOffset = Number.isFinite(Number(data.surfaceOffset)) ? Number(data.surfaceOffset) : 0;
     feature.operation = data.operation || 'new';
     
     return feature;

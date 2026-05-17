@@ -111,6 +111,34 @@ function makeRectSketch(x1, y1, x2, y2) {
   return sketch;
 }
 
+function makePolylineSketch(points) {
+  const sketch = new Sketch();
+  for (let index = 1; index < points.length; index++) {
+    const start = points[index - 1];
+    const end = points[index];
+    sketch.addSegment(start.x, start.y, end.x, end.y);
+  }
+  return sketch;
+}
+
+function makeXYPlaneAtZ(z) {
+  return {
+    origin: { x: 0, y: 0, z },
+    normal: { x: 0, y: 0, z: 1 },
+    xAxis: { x: 1, y: 0, z: 0 },
+    yAxis: { x: 0, y: 1, z: 0 },
+  };
+}
+
+function makeXZPlane() {
+  return {
+    origin: { x: 0, y: 0, z: 0 },
+    normal: { x: 0, y: 1, z: 0 },
+    xAxis: { x: 1, y: 0, z: 0 },
+    yAxis: { x: 0, y: 0, z: 1 },
+  };
+}
+
 function makeExactRevolvedCylinderBody() {
   resetFeatureIds();
   resetTopoIds();
@@ -169,6 +197,18 @@ function assertOcctBooleanGeometry(geometry, operation) {
   assert.ok(geometry.faces.some((face) => typeof face?.stableHash === 'string' && face.stableHash.length > 0), `${operation} display mesh should carry stable face hashes`);
   assert.ok(geometry.paths.some((path) => typeof path?.stableHash === 'string' && path.stableHash.length > 0), `${operation} feature-edge chains should carry stable edge hashes`);
   assert.equal(geometry.topoBody ?? null, null, `${operation} seam should no longer require a JS topoBody compatibility shadow`);
+}
+
+function assertOcctStructuredSketchGeometry(geometry, operation) {
+  assert.ok(geometry, `${operation} should produce geometry`);
+  assert.equal(geometry._tessellator, 'occt', `${operation} should tessellate through OCCT`);
+  assert.equal(geometry._occtModeling?.authoritative, true, `${operation} should mark OCCT authority`);
+  assert.equal(geometry._occtModeling?.operation, operation, `${operation} seam should report the operation name`);
+  assert.ok(geometry.occtShapeHandle > 0, `${operation} should retain an OCCT handle`);
+  assert.ok(Array.isArray(geometry.faces) && geometry.faces.length > 0, `${operation} should produce display faces`);
+  assert.ok(Array.isArray(geometry.edges) && geometry.edges.length > 0, `${operation} should preserve edge segments`);
+  assert.ok(Array.isArray(geometry.paths) && geometry.paths.length > 0, `${operation} should preserve feature-edge paths`);
+  assert.ok(geometry._occtModeling?.topology?.faceCount > 0, `${operation} should surface OCCT topology`);
 }
 
 console.log('OCCT WASM feasibility smoke\n');
@@ -413,6 +453,67 @@ await check('builds supported sketch revolve through OCCT modeling seam', async 
     assert.equal(geometry._occtModeling?.authoritative, true, 'supported revolve should mark OCCT authority');
     assert.ok(geometry.occtShapeHandle > 0, 'supported revolve should retain an OCCT handle');
     assert.ok(geometry.topoBody, 'supported revolve should preserve topoBody compatibility shadow');
+  } finally {
+    disposeOcctSketchModelingShape(geometry?.occtShapeHandle || 0);
+    resetFlags();
+    invalidateOcctSketchModelingSession();
+    invalidateOcctKernelModuleCache();
+    if (previousOcctDist == null) delete process.env.OCCT_KERNEL_DIST;
+    else process.env.OCCT_KERNEL_DIST = previousOcctDist;
+  }
+});
+
+await check('builds supported sketch sweep through OCCT modeling seam', async () => {
+  const previousOcctDist = process.env.OCCT_KERNEL_DIST;
+  process.env.OCCT_KERNEL_DIST = distPath;
+  setFlag('CAD_USE_OCCT_SKETCH_SOLIDS', true);
+  invalidateOcctKernelModuleCache();
+  invalidateOcctSketchModelingSession();
+  await loadOcctKernelModule({ fresh: true });
+
+  const part = new Part('OcctSketchSweep');
+  const baseSketch = part.addSketch(makeRectSketch(-6, -6, 6, 6), makeXYPlane());
+  const baseExtrude = part.extrude(baseSketch.id, 8, { operation: 'new' });
+  const profileSketch = part.addSketch(makeRectSketch(-2, -2, 2, 2), makeXYPlane());
+  const pathSketch = part.addSketch(makePolylineSketch([
+    { x: 0, y: 0 },
+    { x: 0, y: 20 },
+  ]), makeXZPlane());
+  const sweepFeature = part.sweep(profileSketch.id, pathSketch.id, { operation: 'add' });
+  const geometry = sweepFeature.result?.geometry;
+
+  try {
+    assert.ok(baseExtrude.result?.geometry?.occtShapeHandle > 0, 'base body should carry an OCCT handle');
+    assertOcctStructuredSketchGeometry(geometry, 'sweep');
+  } finally {
+    disposeOcctSketchModelingShape(geometry?.occtShapeHandle || 0);
+    resetFlags();
+    invalidateOcctSketchModelingSession();
+    invalidateOcctKernelModuleCache();
+    if (previousOcctDist == null) delete process.env.OCCT_KERNEL_DIST;
+    else process.env.OCCT_KERNEL_DIST = previousOcctDist;
+  }
+});
+
+await check('builds supported sketch loft through OCCT modeling seam', async () => {
+  const previousOcctDist = process.env.OCCT_KERNEL_DIST;
+  process.env.OCCT_KERNEL_DIST = distPath;
+  setFlag('CAD_USE_OCCT_SKETCH_SOLIDS', true);
+  invalidateOcctKernelModuleCache();
+  invalidateOcctSketchModelingSession();
+  await loadOcctKernelModule({ fresh: true });
+
+  const part = new Part('OcctSketchLoft');
+  const baseSketch = part.addSketch(makeRectSketch(-6, -6, 6, 6), makeXYPlane());
+  const baseExtrude = part.extrude(baseSketch.id, 8, { operation: 'new' });
+  const firstSection = part.addSketch(makeRectSketch(-4, -4, 4, 4), makeXYPlaneAtZ(8));
+  const secondSection = part.addSketch(makeRectSketch(-2, -2, 2, 2), makeXYPlaneAtZ(20));
+  const loftFeature = part.loft([firstSection.id, secondSection.id], { operation: 'add' });
+  const geometry = loftFeature.result?.geometry;
+
+  try {
+    assert.ok(baseExtrude.result?.geometry?.occtShapeHandle > 0, 'base body should carry an OCCT handle');
+    assertOcctStructuredSketchGeometry(geometry, 'loft');
   } finally {
     disposeOcctSketchModelingShape(geometry?.occtShapeHandle || 0);
     resetFlags();

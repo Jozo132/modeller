@@ -49,7 +49,9 @@ export class ExtrudeFeature extends Feature {
     this.distance = distance;
     this.direction = 1; // 1 = normal direction, -1 = reverse
     this.symmetric = false; // If true, extrude in both directions
-    this.extrudeType = 'distance'; // 'distance' | 'throughAll' | 'upToFace'
+    this.extrudeType = 'distance'; // distance | throughAll | upToNext | upToFace | offsetFromSurface
+    this.targetFaceRef = null;
+    this.surfaceOffset = 0;
     this.taper = false;
     this.taperAngle = 5; // degrees
     this.taperInward = true; // true = inward taper, false = outward
@@ -1500,6 +1502,10 @@ export class ExtrudeFeature extends Feature {
         symmetric: this.symmetric,
         extrudeType: this.extrudeType,
         taper: this.taper,
+        taperAngle: this.taperAngle,
+        taperInward: this.taperInward,
+        targetFaceRef: this.targetFaceRef,
+        surfaceOffset: this.surfaceOffset,
         holes,
         baseOffset,
         tipOffset,
@@ -2496,6 +2502,8 @@ export class ExtrudeFeature extends Feature {
       symmetric: this.symmetric,
       operation: this.operation,
       extrudeType: this.extrudeType,
+      targetFaceRef: this.targetFaceRef,
+      surfaceOffset: this.surfaceOffset,
       taper: this.taper,
       taperAngle: this.taperAngle,
       taperInward: this.taperInward,
@@ -2520,6 +2528,8 @@ export class ExtrudeFeature extends Feature {
     feature.symmetric = data.symmetric || false;
     feature.operation = data.operation || 'new';
     feature.extrudeType = data.extrudeType || 'distance';
+    feature.targetFaceRef = data.targetFaceRef || null;
+    feature.surfaceOffset = Number.isFinite(Number(data.surfaceOffset)) ? Number(data.surfaceOffset) : 0;
     feature.taper = data.taper || false;
     feature.taperAngle = data.taperAngle != null ? data.taperAngle : 5;
     feature.taperInward = data.taperInward != null ? data.taperInward : true;

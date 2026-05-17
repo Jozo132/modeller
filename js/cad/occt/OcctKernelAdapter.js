@@ -387,6 +387,222 @@ function normalizeRevolveOptions(options) {
   return normalized;
 }
 
+function normalizeBoxArgs(dx, dy, dz) {
+  if (dx && typeof dx === 'object') {
+    return {
+      dx: Number(dx.dx ?? dx.x ?? dx.width ?? 0),
+      dy: Number(dx.dy ?? dx.y ?? dx.depth ?? 0),
+      dz: Number(dx.dz ?? dx.z ?? dx.height ?? 0),
+    };
+  }
+  return {
+    dx: Number(dx || 0),
+    dy: Number(dy || 0),
+    dz: Number(dz || 0),
+  };
+}
+
+function shapeHandleFromResult(result, label) {
+  const value = typeof result === 'string' ? parseJson(result, label) : result;
+  if (Number.isInteger(value) && value > 0) return value;
+  if (!value || typeof value !== 'object') return 0;
+  const candidates = [
+    value.shapeHandle,
+    value.shapeId,
+    value.id,
+    value.shape,
+    value.shape?.id,
+    value.shape?.shapeHandle,
+  ];
+  for (const candidate of candidates) {
+    const handle = integerOrNull(Number(candidate));
+    if (handle != null && handle > 0) return handle;
+  }
+  return 0;
+}
+
+function normalizeShapeInput(shape) {
+  if (Number.isInteger(shape) && shape > 0) return shape;
+  if (shape && typeof shape === 'object') {
+    const handle = shapeHandleFromResult(shape, 'shape');
+    if (handle > 0) return handle;
+  }
+  return shape;
+}
+
+function normalizeStructuredSpec(spec = {}) {
+  const normalized = spec && typeof spec === 'object' ? { ...spec } : {};
+  normalized.schemaVersion = integerOrNull(normalized.schemaVersion) ?? 1;
+  if (Number.isFinite(normalized.draftAngleRadians) && !Number.isFinite(normalized.draftAngleDegrees)) {
+    normalized.draftAngleDegrees = Number(normalized.draftAngleRadians) * 180 / Math.PI;
+  }
+  delete normalized.draftAngleRadians;
+
+  if (normalized.extent && typeof normalized.extent === 'object') {
+    normalized.extent = { ...normalized.extent };
+    if (Number.isFinite(normalized.extent.angleRadians) && !Number.isFinite(normalized.extent.angleDegrees)) {
+      normalized.extent.angleDegrees = Number(normalized.extent.angleRadians) * 180 / Math.PI;
+    }
+    delete normalized.extent.angleRadians;
+  }
+  return normalized;
+}
+
+function normalizeStructuredFeatureRequest(request = {}, defaults = {}) {
+  if (!request || typeof request !== 'object') {
+    throw new Error('OCCT structured feature request must be an object');
+  }
+  const normalized = { ...request };
+  if (normalized.shape == null && normalized.shapeHandle != null) normalized.shape = normalized.shapeHandle;
+  if (normalized.shape != null) normalized.shape = normalizeShapeInput(normalized.shape);
+  delete normalized.shapeHandle;
+  normalized.spec = normalizeStructuredSpec(normalized.spec || defaults.spec || {});
+  if (defaults.cut != null && normalized.cut == null) normalized.cut = defaults.cut;
+  return normalized;
+}
+
+function buildRawSweepTrihedronMode(mode) {
+  if (!mode || typeof mode !== 'object') return null;
+  switch (mode.type) {
+    case 'correctedFrenet':
+    case 'frenet':
+    case 'discrete':
+      return { type: mode.type };
+    case 'fixedTrihedron':
+      return mode.frame ? { type: 'fixedTrihedron', frame: mode.frame } : null;
+    case 'fixedBinormal':
+      return Array.isArray(mode.binormal) ? { type: 'fixedBinormal', binormal: mode.binormal } : null;
+    case 'auxiliarySpine': {
+      if (!mode.spine) return null;
+      const normalized = {
+        type: 'auxiliarySpine',
+        spineJson: JSON.stringify(mode.spine),
+      };
+      if (mode.curvilinearEquivalence != null) normalized.curvilinearEquivalence = mode.curvilinearEquivalence;
+      if (mode.contact != null) normalized.contact = mode.contact;
+      return normalized;
+    }
+    default:
+      return null;
+  }
+}
+
+function buildRawSweepSpec(spec = {}, cut = false) {
+  const raw = {
+    schemaVersion: integerOrNull(spec.schemaVersion) ?? 1,
+    spineJson: JSON.stringify(spec.spine || { segments: [] }),
+  };
+  if (spec.allowUnknownFields != null) raw.allowUnknownFields = spec.allowUnknownFields;
+  if (spec.unit != null) raw.unit = spec.unit;
+  if (spec.plane != null) raw.plane = spec.plane;
+  const trihedronMode = buildRawSweepTrihedronMode(spec.trihedronMode);
+  if (trihedronMode) raw.trihedronMode = trihedronMode;
+  if (spec.sectionWithContact != null) raw.sectionWithContact = spec.sectionWithContact;
+  if (spec.sectionWithCorrection != null) raw.sectionWithCorrection = spec.sectionWithCorrection;
+  if (spec.solid != null) raw.solid = spec.solid;
+  if (spec.forceApproxC1 != null) raw.forceApproxC1 = spec.forceApproxC1;
+  if (spec.transitionMode != null) raw.transitionMode = spec.transitionMode;
+  if (spec.tolerance != null) raw.tolerance = spec.tolerance;
+  if (spec.maxDegree != null) raw.maxDegree = spec.maxDegree;
+  if (spec.maxSegments != null) raw.maxSegments = spec.maxSegments;
+  if (cut) raw.cut = true;
+  if (spec.metadata != null) raw.metadata = spec.metadata;
+  return raw;
+}
+
+function buildRawLoftSections(sections = []) {
+  return (sections || []).map((section) => {
+    if (!section || typeof section !== 'object') return section;
+    if (section.type === 'wire') {
+      return {
+        type: 'wire',
+        wireJson: JSON.stringify(section.wire),
+      };
+    }
+    if (section.type === 'point') {
+      return {
+        type: 'point',
+        point: section.point,
+      };
+    }
+    return {
+      type: 'profile',
+      profileJson: JSON.stringify(section.profile),
+      ...(section.plane ? { plane: section.plane } : {}),
+    };
+  });
+}
+
+function buildRawLoftSpec(spec = {}, cut = false) {
+  const raw = {
+    schemaVersion: integerOrNull(spec.schemaVersion) ?? 1,
+  };
+  if (spec.allowUnknownFields != null) raw.allowUnknownFields = spec.allowUnknownFields;
+  if (spec.solid != null) raw.solid = spec.solid;
+  if (spec.ruled != null) raw.ruled = spec.ruled;
+  if (spec.pres3d != null) raw.pres3d = spec.pres3d;
+  if (spec.checkCompatibility != null) raw.checkCompatibility = spec.checkCompatibility;
+  if (spec.smoothing != null) raw.smoothing = spec.smoothing;
+  if (spec.parametrization != null) raw.parametrization = spec.parametrization;
+  if (spec.continuity != null) raw.continuity = spec.continuity;
+  if (spec.criteriumWeight != null) raw.criteriumWeight = spec.criteriumWeight;
+  if (spec.maxDegree != null) raw.maxDegree = spec.maxDegree;
+  if (spec.mutableInput != null) raw.mutableInput = spec.mutableInput;
+  if (cut) raw.cut = true;
+  if (spec.metadata != null) raw.metadata = spec.metadata;
+  return raw;
+}
+
+function buildStructuredNativeArgs(methodName, request) {
+  const shape = integerOrNull(request?.shape);
+  if (shape == null || shape <= 0) return null;
+
+  switch (methodName) {
+    case 'extrudeProfileWithSpec':
+    case 'extrudeCutProfileWithSpec':
+    case 'revolveProfileWithSpec':
+    case 'revolveCutProfileWithSpec':
+      if (!request.profile) return null;
+      return [shape, JSON.stringify(request.profile), JSON.stringify(request.spec || {})];
+    case 'sweepProfileWithSpec': {
+      if (!request.profile) return null;
+      const spec = buildRawSweepSpec(request.spec, request.cut === true);
+      return [shape, JSON.stringify(request.profile), JSON.stringify(spec)];
+    }
+    case 'loftWithSpec': {
+      const sections = buildRawLoftSections(Array.isArray(request.sections) ? request.sections : []);
+      const spec = buildRawLoftSpec(request.spec, request.cut === true);
+      return [shape, JSON.stringify(sections), JSON.stringify(spec)];
+    }
+    default:
+      return null;
+  }
+}
+
+function invokeStructuredFeature(kernel, methodName, request) {
+  const method = kernel?.[methodName];
+  if (typeof method !== 'function') {
+    throw new Error(`OCCT ${methodName} is unavailable in this build`);
+  }
+  let firstError = null;
+  try {
+    return method.call(kernel, request);
+  } catch (error) {
+    firstError = error;
+  }
+
+  try {
+    return method.call(kernel, JSON.stringify(request));
+  } catch {}
+
+  const nativeArgs = buildStructuredNativeArgs(methodName, request);
+  if (nativeArgs) {
+    return method.call(kernel, ...nativeArgs);
+  }
+
+  throw firstError;
+}
+
 function normalizeEdgeRef(ref) {
   if (!ref || typeof ref !== 'object') return null;
   const topoId = integerOrNull(ref.topoId ?? ref.id);
@@ -567,9 +783,12 @@ export class OcctKernelAdapter {
   constructor(options = {}) {
     this.options = { ...options };
     this.module = options.module || null;
+    this.apiModule = options.apiModule || null;
     this.kernel = options.kernel || null;
     this.paths = null;
     this._ownsKernel = !options.kernel;
+    this._usesWrapperApi = options.wrapperApi === true
+      || (!!this.apiModule && !!this.kernel && typeof this.apiModule.OcctKernel === 'function' && this.kernel instanceof this.apiModule.OcctKernel);
     this._ownedShapes = new Set();
   }
 
@@ -582,14 +801,15 @@ export class OcctKernelAdapter {
   static createSync(options = {}) {
     const loaded = options.loaded || getCachedOcctKernelModule(options);
     const module = options.module || loaded?.module;
+    const apiModule = options.apiModule || loaded?.apiModule || null;
     if (!module || typeof module.OcctKernel !== 'function') {
       throw new Error('OCCT module is not ready for synchronous adapter creation');
     }
 
-    const adapter = new OcctKernelAdapter({ ...options, module });
+    const adapter = new OcctKernelAdapter({ ...options, module, apiModule });
     adapter.paths = options.paths || loaded?.paths || null;
     if (!adapter.kernel) {
-      adapter.kernel = new module.OcctKernel();
+      adapter.kernel = adapter._createKernelInstance(module);
       adapter._ownsKernel = true;
     }
     return adapter;
@@ -599,10 +819,11 @@ export class OcctKernelAdapter {
     if (!this.module) {
       const loaded = await loadOcctKernelModule(this.options);
       this.module = loaded.module;
+      this.apiModule = this.options.apiModule || loaded.apiModule || null;
       this.paths = loaded.paths;
     }
     if (!this.kernel) {
-      this.kernel = new this.module.OcctKernel();
+      this.kernel = this._createKernelInstance(this.module);
       this._ownsKernel = true;
     }
     return this;
@@ -616,8 +837,53 @@ export class OcctKernelAdapter {
     return {
       ...getOcctKernelStatus(this.module),
       ready: this.ready,
+      wrapperApi: this._usesWrapperApi,
       ownedShapeCount: this._ownedShapes.size,
       paths: this.paths,
+    };
+  }
+
+  _createKernelInstance(module = this.module) {
+    if (this.apiModule && typeof this.apiModule.OcctKernel === 'function') {
+      this._usesWrapperApi = true;
+      return new this.apiModule.OcctKernel(module);
+    }
+    this._usesWrapperApi = false;
+    return new module.OcctKernel();
+  }
+
+  _shapeHandleObject(shapeHandle) {
+    const handle = normalizeShapeInput(shapeHandle);
+    return { id: handle };
+  }
+
+  _wrapperResultHandle(result, label) {
+    return shapeHandleFromResult(result, label);
+  }
+
+  _wrapperStructuredRequest(request = {}) {
+    const payload = { ...request };
+    if (payload.shape != null) payload.shape = this._shapeHandleObject(payload.shape);
+    return payload;
+  }
+
+  _wrapperProfile(profile) {
+    return typeof profile === 'string' ? parseJson(profile, 'profile') : profile;
+  }
+
+  _wrapperTessellationResult(result) {
+    if (!result || typeof result !== 'object') return result;
+    const toArray = (value) => Array.isArray(value) ? value : (ArrayBuffer.isView(value) ? Array.from(value) : undefined);
+    return {
+      positions: toArray(result.positions) || [],
+      normals: toArray(result.normals) || [],
+      indices: toArray(result.indices) || [],
+      ...(toArray(result.triangleNormals) ? { triangleNormals: toArray(result.triangleNormals) } : {}),
+      ...(toArray(result.triangleTopoFaceIds) ? { triangleTopoFaceIds: toArray(result.triangleTopoFaceIds) } : {}),
+      ...(toArray(result.triangleFaceGroups) ? { triangleFaceGroups: toArray(result.triangleFaceGroups) } : {}),
+      ...(Array.isArray(result.triangleStableHashes) ? { triangleStableHashes: result.triangleStableHashes } : {}),
+      ...(Array.isArray(result.featureEdges) ? { featureEdges: result.featureEdges } : {}),
+      ...(toArray(result.rawEdgeSegments) ? { rawEdgeSegments: toArray(result.rawEdgeSegments) } : {}),
     };
   }
 
@@ -632,43 +898,148 @@ export class OcctKernelAdapter {
   }
 
   createBox(dx, dy, dz) {
-    return this.rememberShape(this.requireReady().createBox(dx, dy, dz));
+    const dimensions = normalizeBoxArgs(dx, dy, dz);
+    const kernel = this.requireReady();
+    const result = this._usesWrapperApi
+      ? kernel.createBox(dimensions)
+      : kernel.createBox(dimensions.dx, dimensions.dy, dimensions.dz);
+    return this.rememberShape(this._wrapperResultHandle(result, 'createBox'));
   }
 
   createCylinder(radius, height) {
-    return this.rememberShape(this.requireReady().createCylinder(radius, height));
+    const kernel = this.requireReady();
+    const result = this._usesWrapperApi
+      ? kernel.createCylinder({ radius, height })
+      : kernel.createCylinder(radius, height);
+    return this.rememberShape(this._wrapperResultHandle(result, 'createCylinder'));
   }
 
   createSphere(radius) {
-    return this.rememberShape(this.requireReady().createSphere(radius));
+    const kernel = this.requireReady();
+    const result = this._usesWrapperApi
+      ? kernel.createSphere({ radius })
+      : kernel.createSphere(radius);
+    return this.rememberShape(this._wrapperResultHandle(result, 'createSphere'));
   }
 
   extrudeProfile(profileJson, options = {}) {
-    const payload = typeof profileJson === 'string' ? profileJson : JSON.stringify(profileJson);
-    const optionsPayload = JSON.stringify(normalizeExtrudeOptions(options));
-    return this.rememberShape(this.requireReady().extrudeProfile(payload, optionsPayload));
+    const kernel = this.requireReady();
+    const normalizedOptions = normalizeExtrudeOptions(options);
+    const result = this._usesWrapperApi
+      ? kernel.extrudeProfile({ profile: this._wrapperProfile(profileJson), ...normalizedOptions })
+      : (() => {
+          const payload = typeof profileJson === 'string' ? profileJson : JSON.stringify(profileJson);
+          const optionsPayload = JSON.stringify(normalizedOptions);
+          return kernel.extrudeProfile(payload, optionsPayload);
+        })();
+    return this.rememberShape(this._wrapperResultHandle(result, 'extrudeProfile'));
   }
 
   revolveProfile(profileJson, options = {}) {
-    const payload = typeof profileJson === 'string' ? profileJson : JSON.stringify(profileJson);
-    const optionsPayload = JSON.stringify(normalizeRevolveOptions(options));
-    return this.rememberShape(this.requireReady().revolveProfile(payload, optionsPayload));
+    const kernel = this.requireReady();
+    const normalizedOptions = normalizeRevolveOptions(options);
+    const result = this._usesWrapperApi
+      ? kernel.revolveProfile({ profile: this._wrapperProfile(profileJson), ...normalizedOptions })
+      : (() => {
+          const payload = typeof profileJson === 'string' ? profileJson : JSON.stringify(profileJson);
+          const optionsPayload = JSON.stringify(normalizedOptions);
+          return kernel.revolveProfile(payload, optionsPayload);
+        })();
+    return this.rememberShape(this._wrapperResultHandle(result, 'revolveProfile'));
+  }
+
+  extrudeProfileWithSpec(request = {}) {
+    const kernel = this.requireReady();
+    const payload = normalizeStructuredFeatureRequest(request);
+    const result = this._usesWrapperApi
+      ? kernel.extrudeProfileWithSpec(this._wrapperStructuredRequest(payload))
+      : invokeStructuredFeature(kernel, 'extrudeProfileWithSpec', payload);
+    return this.rememberShape(shapeHandleFromResult(result, 'extrudeProfileWithSpec'));
+  }
+
+  extrudeCutProfileWithSpec(request = {}) {
+    const kernel = this.requireReady();
+    const payload = normalizeStructuredFeatureRequest(request, { cut: true });
+    const result = this._usesWrapperApi
+      ? kernel.extrudeCutProfileWithSpec(this._wrapperStructuredRequest(payload))
+      : invokeStructuredFeature(kernel, 'extrudeCutProfileWithSpec', payload);
+    return this.rememberShape(shapeHandleFromResult(result, 'extrudeCutProfileWithSpec'));
+  }
+
+  revolveProfileWithSpec(request = {}) {
+    const kernel = this.requireReady();
+    const payload = normalizeStructuredFeatureRequest(request);
+    const result = this._usesWrapperApi
+      ? kernel.revolveProfileWithSpec(this._wrapperStructuredRequest(payload))
+      : invokeStructuredFeature(kernel, 'revolveProfileWithSpec', payload);
+    return this.rememberShape(shapeHandleFromResult(result, 'revolveProfileWithSpec'));
+  }
+
+  revolveCutProfileWithSpec(request = {}) {
+    const kernel = this.requireReady();
+    const payload = normalizeStructuredFeatureRequest(request, { cut: true });
+    const result = this._usesWrapperApi
+      ? kernel.revolveCutProfileWithSpec(this._wrapperStructuredRequest(payload))
+      : invokeStructuredFeature(kernel, 'revolveCutProfileWithSpec', payload);
+    return this.rememberShape(shapeHandleFromResult(result, 'revolveCutProfileWithSpec'));
+  }
+
+  sweepProfileWithSpec(request = {}) {
+    const kernel = this.requireReady();
+    const payload = normalizeStructuredFeatureRequest(request);
+    const result = this._usesWrapperApi
+      ? kernel.sweepProfileWithSpec(this._wrapperStructuredRequest(payload))
+      : invokeStructuredFeature(kernel, 'sweepProfileWithSpec', payload);
+    return this.rememberShape(shapeHandleFromResult(result, 'sweepProfileWithSpec'));
+  }
+
+  loftWithSpec(request = {}) {
+    const kernel = this.requireReady();
+    const payload = normalizeStructuredFeatureRequest(request);
+    const result = this._usesWrapperApi
+      ? kernel.loftWithSpec(this._wrapperStructuredRequest(payload))
+      : invokeStructuredFeature(kernel, 'loftWithSpec', payload);
+    return this.rememberShape(shapeHandleFromResult(result, 'loftWithSpec'));
   }
 
   booleanUnion(firstHandle, secondHandle) {
-    return this.rememberShape(this.requireReady().booleanUnion(firstHandle, secondHandle));
+    const kernel = this.requireReady();
+    const result = this._usesWrapperApi
+      ? kernel.booleanUnion({ base: this._shapeHandleObject(firstHandle), tool: this._shapeHandleObject(secondHandle) })
+      : kernel.booleanUnion(firstHandle, secondHandle);
+    return this.rememberShape(this._wrapperResultHandle(result, 'booleanUnion'));
   }
 
   booleanSubtract(firstHandle, secondHandle) {
-    return this.rememberShape(this.requireReady().booleanSubtract(firstHandle, secondHandle));
+    const kernel = this.requireReady();
+    const result = this._usesWrapperApi
+      ? kernel.booleanSubtract({ base: this._shapeHandleObject(firstHandle), tool: this._shapeHandleObject(secondHandle) })
+      : kernel.booleanSubtract(firstHandle, secondHandle);
+    return this.rememberShape(this._wrapperResultHandle(result, 'booleanSubtract'));
   }
 
   booleanIntersect(firstHandle, secondHandle) {
-    return this.rememberShape(this.requireReady().booleanIntersect(firstHandle, secondHandle));
+    const kernel = this.requireReady();
+    const result = this._usesWrapperApi
+      ? kernel.booleanIntersect({ base: this._shapeHandleObject(firstHandle), tool: this._shapeHandleObject(secondHandle) })
+      : kernel.booleanIntersect(firstHandle, secondHandle);
+    return this.rememberShape(this._wrapperResultHandle(result, 'booleanIntersect'));
   }
 
   filletEdges(shapeHandle, edgeSelectionJson) {
     const kernel = this.requireReady();
+    if (this._usesWrapperApi) {
+      if (edgeSelectionJson && typeof edgeSelectionJson === 'object' && typeof kernel.filletEdgesWithSpec === 'function') {
+        return kernel.filletEdgesWithSpec({
+          shape: this._shapeHandleObject(shapeHandle),
+          spec: normalizeFilletSpec(edgeSelectionJson),
+        });
+      }
+      return this.rememberShape(this._wrapperResultHandle(kernel.filletEdges({
+        shape: this._shapeHandleObject(shapeHandle),
+        radius: Number(edgeSelectionJson) || 0,
+      }), 'filletEdges'));
+    }
     if (edgeSelectionJson && typeof edgeSelectionJson === 'object' && typeof kernel.filletEdgesWithSpec === 'function') {
       const payload = normalizeFilletSpec(edgeSelectionJson);
       return parseJson(kernel.filletEdgesWithSpec(shapeHandle, JSON.stringify(payload)), 'filletEdgesWithSpec');
@@ -682,6 +1053,18 @@ export class OcctKernelAdapter {
 
   chamferEdges(shapeHandle, edgeSelectionJson) {
     const kernel = this.requireReady();
+    if (this._usesWrapperApi) {
+      if (edgeSelectionJson && typeof edgeSelectionJson === 'object' && typeof kernel.chamferEdgesWithSpec === 'function') {
+        return kernel.chamferEdgesWithSpec({
+          shape: this._shapeHandleObject(shapeHandle),
+          spec: normalizeChamferSpec(edgeSelectionJson),
+        });
+      }
+      return this.rememberShape(this._wrapperResultHandle(kernel.chamferEdges({
+        shape: this._shapeHandleObject(shapeHandle),
+        distance: Number(edgeSelectionJson) || 0,
+      }), 'chamferEdges'));
+    }
     if (edgeSelectionJson && typeof edgeSelectionJson === 'object' && typeof kernel.chamferEdgesWithSpec === 'function') {
       const payload = normalizeChamferSpec(edgeSelectionJson);
       return parseJson(kernel.chamferEdgesWithSpec(shapeHandle, JSON.stringify(payload)), 'chamferEdgesWithSpec');
@@ -698,12 +1081,25 @@ export class OcctKernelAdapter {
     if (typeof kernel.transformShape !== 'function') {
       throw new Error('OCCT transformShape is unavailable in this build');
     }
+    if (this._usesWrapperApi) {
+      const result = kernel.transformShape({
+        shape: this._shapeHandleObject(shapeHandle),
+        transform: typeof transformJson === 'string' ? parseJson(transformJson, 'transformShape') : transformJson,
+      });
+      return this.rememberShape(this._wrapperResultHandle(result, 'transformShape'));
+    }
     const payload = typeof transformJson === 'string' ? transformJson : JSON.stringify(transformJson);
     return this.rememberShape(kernel.transformShape(shapeHandle, payload));
   }
 
   importStepDetailed(stepText, opts = {}) {
     const kernel = this.requireReady();
+    if (this._usesWrapperApi) {
+      const result = kernel.importStepDetailed({ content: stepText, options: opts });
+      const normalized = normalizeStepImportResult(result);
+      if (normalized.shapeHandle > 0) this.rememberShape(normalized.shapeHandle);
+      return normalized;
+    }
     if (typeof kernel.importStepDetailed !== 'function') {
       const shapeHandle = this.rememberShape(kernel.importStep(stepText));
       const isValid = this.checkValidity(shapeHandle);
@@ -742,19 +1138,33 @@ export class OcctKernelAdapter {
       if (result.shapeHandle > 0) return result.shapeHandle;
       throw new Error(formatStepImportFailure(result));
     }
-    return this.rememberShape(this.requireReady().importStep(stepText));
+    const kernel = this.requireReady();
+    const result = this._usesWrapperApi
+      ? kernel.importStep({ content: stepText })
+      : kernel.importStep(stepText);
+    return this.rememberShape(this._wrapperResultHandle(result, 'importStep'));
   }
 
   exportStep(shapeHandle) {
-    return this.requireReady().exportStep(shapeHandle);
+    const kernel = this.requireReady();
+    return this._usesWrapperApi
+      ? kernel.exportStep({ shape: this._shapeHandleObject(shapeHandle) })
+      : kernel.exportStep(shapeHandle);
   }
 
   checkValidity(shapeHandle) {
-    return !!this.requireReady().checkValidity(shapeHandle);
+    const kernel = this.requireReady();
+    return this._usesWrapperApi
+      ? !!kernel.checkValidity(this._shapeHandleObject(shapeHandle))
+      : !!kernel.checkValidity(shapeHandle);
   }
 
   getTopology(shapeHandle) {
-    return parseJson(this.requireReady().getTopology(shapeHandle), 'getTopology');
+    const kernel = this.requireReady();
+    const result = this._usesWrapperApi
+      ? kernel.getTopology(this._shapeHandleObject(shapeHandle))
+      : kernel.getTopology(shapeHandle);
+    return parseJson(result, 'getTopology');
   }
 
   getRevisionInfo(shapeHandle) {
@@ -762,7 +1172,10 @@ export class OcctKernelAdapter {
     if (typeof kernel.getRevisionInfo !== 'function') {
       throw new Error('OCCT getRevisionInfo is unavailable in this build');
     }
-    return parseJson(kernel.getRevisionInfo(shapeHandle), 'getRevisionInfo');
+    const result = this._usesWrapperApi
+      ? kernel.getRevisionInfo(this._shapeHandleObject(shapeHandle))
+      : kernel.getRevisionInfo(shapeHandle);
+    return parseJson(result, 'getRevisionInfo');
   }
 
   resolveStableEntity(shapeHandle, stableHash) {
@@ -770,13 +1183,23 @@ export class OcctKernelAdapter {
     if (typeof kernel.resolveStableEntity !== 'function') {
       throw new Error('OCCT resolveStableEntity is unavailable in this build');
     }
-    return parseJson(kernel.resolveStableEntity(shapeHandle, String(stableHash ?? '')), 'resolveStableEntity');
+    const result = this._usesWrapperApi
+      ? kernel.resolveStableEntity({ shape: this._shapeHandleObject(shapeHandle), stableHash: String(stableHash ?? '') })
+      : kernel.resolveStableEntity(shapeHandle, String(stableHash ?? ''));
+    return parseJson(result, 'resolveStableEntity');
   }
 
   mapEntitiesAcrossRevisions(fromRevisionId, toRevisionId, stableHashes = []) {
     const kernel = this.requireReady();
     if (typeof kernel.mapEntitiesAcrossRevisions !== 'function') {
       throw new Error('OCCT mapEntitiesAcrossRevisions is unavailable in this build');
+    }
+    if (this._usesWrapperApi) {
+      return parseJson(kernel.mapEntitiesAcrossRevisions({
+        fromRevisionId: String(fromRevisionId ?? ''),
+        toRevisionId: String(toRevisionId ?? ''),
+        stableHashes: Array.isArray(stableHashes) ? stableHashes : parseJson(stableHashes, 'stableHashes') || [],
+      }), 'mapEntitiesAcrossRevisions');
     }
     const payload = typeof stableHashes === 'string' ? stableHashes : JSON.stringify(stableHashes);
     return parseJson(
@@ -802,7 +1225,11 @@ export class OcctKernelAdapter {
     if (typeof kernel.evaluateEdge !== 'function') {
       throw new Error('OCCT evaluateEdge is unavailable in this build');
     }
-    return parseJson(kernel.evaluateEdge(shapeHandle, JSON.stringify(normalizeEdgeRef(edgeRef) || edgeRef || {}), Number(t) || 0), 'evaluateEdge');
+    const normalizedEdge = normalizeEdgeRef(edgeRef) || edgeRef || {};
+    const result = this._usesWrapperApi
+      ? kernel.evaluateEdge({ shape: this._shapeHandleObject(shapeHandle), edge: normalizedEdge, t: Number(t) || 0 })
+      : kernel.evaluateEdge(shapeHandle, JSON.stringify(normalizedEdge), Number(t) || 0);
+    return parseJson(result, 'evaluateEdge');
   }
 
   sampleEdge(shapeHandle, edgeRef, options = {}) {
@@ -814,7 +1241,10 @@ export class OcctKernelAdapter {
       ...(options && typeof options === 'object' ? options : {}),
       edge: normalizeEdgeRef(edgeRef) || edgeRef || {},
     };
-    return parseJson(kernel.sampleEdge(shapeHandle, JSON.stringify(payload.edge), JSON.stringify(payload)), 'sampleEdge');
+    const result = this._usesWrapperApi
+      ? kernel.sampleEdge({ shape: this._shapeHandleObject(shapeHandle), ...payload })
+      : kernel.sampleEdge(shapeHandle, JSON.stringify(payload.edge), JSON.stringify(payload));
+    return parseJson(result, 'sampleEdge');
   }
 
   getEdgeCurve(shapeHandle, edgeRef) {
@@ -822,7 +1252,11 @@ export class OcctKernelAdapter {
     if (typeof kernel.getEdgeCurve !== 'function') {
       throw new Error('OCCT getEdgeCurve is unavailable in this build');
     }
-    return parseJson(kernel.getEdgeCurve(shapeHandle, JSON.stringify(normalizeEdgeRef(edgeRef) || edgeRef || {})), 'getEdgeCurve');
+    const normalizedEdge = normalizeEdgeRef(edgeRef) || edgeRef || {};
+    const result = this._usesWrapperApi
+      ? kernel.getEdgeCurve({ shape: this._shapeHandleObject(shapeHandle), edge: normalizedEdge })
+      : kernel.getEdgeCurve(shapeHandle, JSON.stringify(normalizedEdge));
+    return parseJson(result, 'getEdgeCurve');
   }
 
   evaluateFace(shapeHandle, faceRef, u, v) {
@@ -830,7 +1264,11 @@ export class OcctKernelAdapter {
     if (typeof kernel.evaluateFace !== 'function') {
       throw new Error('OCCT evaluateFace is unavailable in this build');
     }
-    return parseJson(kernel.evaluateFace(shapeHandle, JSON.stringify(normalizeFaceRef(faceRef) || faceRef || {}), Number(u) || 0, Number(v) || 0), 'evaluateFace');
+    const normalizedFace = normalizeFaceRef(faceRef) || faceRef || {};
+    const result = this._usesWrapperApi
+      ? kernel.evaluateFace({ shape: this._shapeHandleObject(shapeHandle), face: normalizedFace, u: Number(u) || 0, v: Number(v) || 0 })
+      : kernel.evaluateFace(shapeHandle, JSON.stringify(normalizedFace), Number(u) || 0, Number(v) || 0);
+    return parseJson(result, 'evaluateFace');
   }
 
   createCheckpoint(shapeHandle) {
@@ -838,7 +1276,10 @@ export class OcctKernelAdapter {
     if (typeof kernel.createCheckpoint !== 'function') {
       throw new Error('OCCT createCheckpoint is unavailable in this build');
     }
-    return parseJson(kernel.createCheckpoint(shapeHandle), 'createCheckpoint');
+    const result = this._usesWrapperApi
+      ? kernel.createCheckpoint({ shape: this._shapeHandleObject(shapeHandle) })
+      : kernel.createCheckpoint(shapeHandle);
+    return parseJson(result, 'createCheckpoint');
   }
 
   hydrateCheckpoint(checkpoint) {
@@ -846,8 +1287,10 @@ export class OcctKernelAdapter {
     if (typeof kernel.hydrateCheckpoint !== 'function') {
       throw new Error('OCCT hydrateCheckpoint is unavailable in this build');
     }
-    const payload = typeof checkpoint === 'string' ? checkpoint : JSON.stringify(checkpoint);
-    return this.rememberShape(kernel.hydrateCheckpoint(payload));
+    const result = this._usesWrapperApi
+      ? kernel.hydrateCheckpoint({ checkpoint })
+      : kernel.hydrateCheckpoint(typeof checkpoint === 'string' ? checkpoint : JSON.stringify(checkpoint));
+    return this.rememberShape(this._wrapperResultHandle(result, 'hydrateCheckpoint'));
   }
 
   retainRevision(shapeHandle) {
@@ -855,7 +1298,9 @@ export class OcctKernelAdapter {
     if (typeof kernel.retainRevision !== 'function') {
       throw new Error('OCCT retainRevision is unavailable in this build');
     }
-    return kernel.retainRevision(shapeHandle);
+    return this._usesWrapperApi
+      ? kernel.retainRevision({ shape: this._shapeHandleObject(shapeHandle) })
+      : kernel.retainRevision(shapeHandle);
   }
 
   releaseRevision(shapeHandle) {
@@ -863,7 +1308,9 @@ export class OcctKernelAdapter {
     if (typeof kernel.releaseRevision !== 'function') {
       throw new Error('OCCT releaseRevision is unavailable in this build');
     }
-    const disposed = !!kernel.releaseRevision(shapeHandle);
+    const disposed = this._usesWrapperApi
+      ? !!kernel.releaseRevision({ shape: this._shapeHandleObject(shapeHandle) })
+      : !!kernel.releaseRevision(shapeHandle);
     if (disposed) this._ownedShapes.delete(shapeHandle);
     return disposed;
   }
@@ -871,7 +1318,15 @@ export class OcctKernelAdapter {
   tessellateRaw(shapeHandle, opts = {}) {
     const linearDeflection = opts.linearDeflection ?? opts.chordalDeviation ?? DEFAULT_LINEAR_DEFLECTION;
     const angularDeflection = opts.angularDeflection ?? opts.angularTolerance ?? DEFAULT_ANGULAR_DEFLECTION;
-    return this.requireReady().tessellate(shapeHandle, linearDeflection, angularDeflection);
+    const kernel = this.requireReady();
+    if (this._usesWrapperApi) {
+      return this._wrapperTessellationResult(kernel.tessellate({
+        shape: this._shapeHandleObject(shapeHandle),
+        linearDeflection,
+        angularDeflection,
+      }));
+    }
+    return kernel.tessellate(shapeHandle, linearDeflection, angularDeflection);
   }
 
   tessellate(shapeHandle, opts = {}) {
@@ -880,7 +1335,8 @@ export class OcctKernelAdapter {
 
   disposeShape(shapeHandle) {
     if (!shapeHandle || !this.kernel) return;
-    this.kernel.disposeShape(shapeHandle);
+    if (this._usesWrapperApi) this.kernel.disposeShape({ shape: this._shapeHandleObject(shapeHandle) });
+    else this.kernel.disposeShape(shapeHandle);
     this._ownedShapes.delete(shapeHandle);
   }
 
@@ -892,8 +1348,12 @@ export class OcctKernelAdapter {
 
   dispose() {
     this.disposeAllShapes();
-    if (this._ownsKernel && this.kernel && typeof this.kernel.delete === 'function') {
-      this.kernel.delete();
+    if (this._ownsKernel && this.kernel) {
+      if (typeof this.kernel.delete === 'function') {
+        this.kernel.delete();
+      } else if (typeof this.kernel._native?.delete === 'function') {
+        this.kernel._native.delete();
+      }
     }
     this.kernel = null;
     this.module = null;

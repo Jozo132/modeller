@@ -1,5 +1,6 @@
 {
     "test-cbrep-tess-roundtrip.js": 24.075,
+    "test-occt-feasibility.js": 23.147,
     "test-featuretree-checkpoints-rollback.js": 21.26,
     "test-brep-chamfer.js": 16.466,
     "test-part-deserialize-tess-config.js": 14.766,
@@ -21,7 +22,6 @@
     "test-step-import.js": 2.313,
     "test-multi-body-chamfer-fillet.js": 2.252,
     "test-occt-boolean-primary.js": 1.602,
-    "test-occt-feasibility.js": 1.552,
     "test-step-export.js": 1.486,
     "test-brep-arc.js": 1.181,
     "test-geometry-persistence.js": 1.159,

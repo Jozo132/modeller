@@ -184,6 +184,153 @@ export function showPrompt({
   });
 }
 
+export function showFormDialog({
+  title = 'Dialog',
+  message = '',
+  fields = [],
+  okText = 'OK',
+  cancelText = 'Cancel',
+  validate = null,
+} = {}) {
+  return new Promise((resolve) => {
+    const ui = buildBase({ title, message });
+    if (!ui) {
+      resolve(null);
+      return;
+    }
+
+    const { root, backdrop, modal } = ui;
+    const form = document.createElement('div');
+    form.className = 'app-modal-form';
+    const inputs = new Map();
+
+    for (const field of fields) {
+      if (!field || !field.key) continue;
+
+      const fieldRow = document.createElement('label');
+      fieldRow.className = 'app-modal-field';
+
+      const labelEl = document.createElement('span');
+      labelEl.className = 'app-modal-field-label';
+      labelEl.textContent = field.label || field.key;
+      fieldRow.appendChild(labelEl);
+
+      let input;
+      if (field.type === 'select') {
+        input = document.createElement('select');
+        input.className = 'app-modal-input app-modal-select';
+        for (const option of field.options || []) {
+          const optionEl = document.createElement('option');
+          optionEl.value = option.value;
+          optionEl.textContent = option.label;
+          if (String(option.value) === String(field.value)) optionEl.selected = true;
+          input.appendChild(optionEl);
+        }
+      } else if (field.type === 'checkbox') {
+        input = document.createElement('input');
+        input.type = 'checkbox';
+        input.className = 'app-modal-checkbox';
+        input.checked = !!field.value;
+      } else {
+        input = document.createElement('input');
+        input.type = field.type || 'text';
+        input.className = 'app-modal-input';
+        input.value = field.value ?? '';
+      }
+
+      input.addEventListener('keydown', (e) => e.stopPropagation());
+      input.addEventListener('keypress', (e) => e.stopPropagation());
+      input.addEventListener('keyup', (e) => e.stopPropagation());
+
+      inputs.set(field.key, { field, input });
+      fieldRow.appendChild(input);
+
+      if (field.hint) {
+        const hintEl = document.createElement('span');
+        hintEl.className = 'app-modal-field-hint';
+        hintEl.textContent = field.hint;
+        fieldRow.appendChild(hintEl);
+      }
+
+      form.appendChild(fieldRow);
+    }
+
+    const errorEl = document.createElement('div');
+    errorEl.className = 'app-modal-error';
+    errorEl.hidden = true;
+    form.appendChild(errorEl);
+
+    const actions = document.createElement('div');
+    actions.className = 'app-modal-actions';
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'app-modal-btn';
+    cancelBtn.textContent = cancelText;
+
+    const okBtn = document.createElement('button');
+    okBtn.type = 'button';
+    okBtn.className = 'app-modal-btn primary';
+    okBtn.textContent = okText;
+
+    actions.appendChild(cancelBtn);
+    actions.appendChild(okBtn);
+    modal.appendChild(form);
+    modal.appendChild(actions);
+
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      document.removeEventListener('keydown', onKeyDown);
+      closeModal(root);
+      resolve(value);
+    };
+
+    const readValues = () => {
+      const values = {};
+      for (const [key, entry] of inputs.entries()) {
+        if (entry.field.type === 'checkbox') values[key] = entry.input.checked;
+        else values[key] = entry.input.value;
+      }
+      return values;
+    };
+
+    const trySubmit = () => {
+      const values = readValues();
+      const validationMessage = typeof validate === 'function' ? validate(values) : null;
+      if (validationMessage) {
+        errorEl.hidden = false;
+        errorEl.textContent = validationMessage;
+        return;
+      }
+      finish(values);
+    };
+
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        finish(null);
+      }
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        trySubmit();
+      }
+    };
+
+    document.addEventListener('keydown', onKeyDown);
+    backdrop.addEventListener('click', () => finish(null));
+    cancelBtn.addEventListener('click', () => finish(null));
+    okBtn.addEventListener('click', trySubmit);
+
+    const firstInput = [...inputs.values()].map((entry) => entry.input).find(Boolean);
+    if (firstInput) firstInput.focus();
+    else okBtn.focus();
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Inline dimension input — floating widget anchored near the canvas
 // ---------------------------------------------------------------------------

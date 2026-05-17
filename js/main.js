@@ -28,7 +28,7 @@ import { HandleResidencyManager } from './cad/HandleResidencyManager.js';
 import { downloadCMOD, openCMODFile, projectFromCMOD, setCmodViewport, setCmodPartManager, setCmodRenderer, setCmodWorkspaceModeGetter, setCmodSessionStateGetter, setCmodScenesGetter, setCmodCamConfigGetter } from './cmod.js';
 import { debug, info, warn, error } from './logger.js';
 import { loadProject, debouncedSave, clearSavedProject, setViewport, setPartManagerForPersist, setRendererForPersist, setWorkspaceModeGetter, setSessionStateGetter, setScenesGetter, setCamConfigGetter } from './persist.js';
-import { showConfirm, showPrompt, showDimensionInput, isModalOpen, showCustomDialog } from './ui/popup.js';
+import { showConfirm, showPrompt, showDimensionInput, isModalOpen, showCustomDialog, showFormDialog } from './ui/popup.js';
 import { DxfExportPanel } from './ui/dxfExportPanel.js';
 import { showContextMenu, closeContextMenu, isContextMenuOpen } from './ui/contextMenu.js';
 import { getOrCreateConsoleViewController } from './console-view.js';
@@ -3406,6 +3406,27 @@ class App {
     return this._getPartFeatureById(this._getSelectedSidebarFeatureId());
   }
 
+  _captureSelectedFaceReference() {
+    if (!this._selectedFaces || this._selectedFaces.size === 0) return null;
+    const hit = this._selectedFaces.values().next().value;
+    if (!hit) return null;
+    const faceIndex = Number.isFinite(Number(hit.faceIndex)) ? Number(hit.faceIndex) : null;
+    const topoFaceId = Number.isFinite(Number(hit.face?.topoFaceId)) ? Number(hit.face.topoFaceId) : null;
+    const faceGroup = Number.isFinite(Number(hit.face?.faceGroup)) ? Number(hit.face.faceGroup) : null;
+    const label = topoFaceId != null
+      ? `Face ${topoFaceId}`
+      : faceIndex != null
+        ? `Face ${faceIndex}`
+        : 'Selected face';
+    return {
+      type: 'face',
+      label,
+      faceIndex,
+      topoFaceId,
+      faceGroup,
+    };
+  }
+
   _getInlineFeatureEditMode(featureId) {
     if (!featureId) {
       return null;
@@ -5179,16 +5200,82 @@ class App {
       container.appendChild(editBtn);
     } else if (feature.type === 'revolve') {
       const angleDeg = (feature.angle * 180 / Math.PI).toFixed(1);
-      container.appendChild(this._createParamRow('Angle (°)', 'number', angleDeg, (v) => {
-        const rad = parseFloat(v) * Math.PI / 180;
+      const extentType = feature.extentType || 'angle';
+      container.appendChild(this._createParamRow('Extent', 'select', extentType, (v) => {
         this._partManager.modifyFeature(feature.id, (f) => {
-          f.setAngle(rad);
+          f.extentType = v;
           if (Object.prototype.hasOwnProperty.call(f, 'segments')) {
             f.segments = this._getTessellationDrivenCurveSegments();
           }
         });
-        if (this._parametersPanel && this._parametersPanel.onParameterChange) this._parametersPanel.onParameterChange(feature.id, 'angle', rad);
-      }));
+        if (this._parametersPanel && this._parametersPanel.onParameterChange) this._parametersPanel.onParameterChange(feature.id, 'extentType', v);
+        this._refreshFeaturePanels(feature);
+      }, [
+        { value: 'angle', label: 'Angle' },
+        { value: 'throughAll', label: 'Through All' },
+        { value: 'upToFace', label: 'Up to Face' },
+        { value: 'offsetFromSurface', label: 'Offset from Surface' },
+        { value: 'fromFaceToFace', label: 'From Face to Face' },
+      ]));
+
+      if (extentType === 'angle') {
+        container.appendChild(this._createParamRow('Angle (°)', 'number', angleDeg, (v) => {
+          const rad = parseFloat(v) * Math.PI / 180;
+          this._partManager.modifyFeature(feature.id, (f) => {
+            f.setAngle(rad);
+            if (Object.prototype.hasOwnProperty.call(f, 'segments')) {
+              f.segments = this._getTessellationDrivenCurveSegments();
+            }
+          });
+          if (this._parametersPanel && this._parametersPanel.onParameterChange) this._parametersPanel.onParameterChange(feature.id, 'angle', rad);
+        }));
+      }
+
+      if (extentType === 'upToFace' || extentType === 'offsetFromSurface') {
+        container.appendChild(this._createSelectionFieldRow('Target', feature.targetFaceRef?.label || 'None', () => {
+          const faceRef = this._captureSelectedFaceReference();
+          if (!faceRef) {
+            this.setStatus('Select a target face in the 3D view first.');
+            return;
+          }
+          this._partManager.modifyFeature(feature.id, (f) => { f.targetFaceRef = faceRef; });
+          this._refreshFeaturePanels(feature);
+        }, { hint: 'Use selected face' }));
+      }
+
+      if (extentType === 'fromFaceToFace') {
+        container.appendChild(this._createSelectionFieldRow('Start', feature.startFaceRef?.label || 'None', () => {
+          const faceRef = this._captureSelectedFaceReference();
+          if (!faceRef) { this.setStatus('Select a start face in the 3D view first.'); return; }
+          this._partManager.modifyFeature(feature.id, (f) => { f.startFaceRef = faceRef; });
+          this._refreshFeaturePanels(feature);
+        }, { hint: 'Use selected face' }));
+        container.appendChild(this._createSelectionFieldRow('End', feature.endFaceRef?.label || 'None', () => {
+          const faceRef = this._captureSelectedFaceReference();
+          if (!faceRef) { this.setStatus('Select an end face in the 3D view first.'); return; }
+          this._partManager.modifyFeature(feature.id, (f) => { f.endFaceRef = faceRef; });
+          this._refreshFeaturePanels(feature);
+        }, { hint: 'Use selected face' }));
+      }
+
+      if (extentType === 'offsetFromSurface') {
+        container.appendChild(this._createParamRow('Offset', 'number', feature.surfaceOffset || 0, (v) => {
+          const parsed = parseFloat(v);
+          if (Number.isFinite(parsed)) {
+            this._partManager.modifyFeature(feature.id, (f) => { f.surfaceOffset = parsed; });
+          }
+        }));
+      }
+
+      container.appendChild(this._createParamRow('Operation', 'select', feature.operation || 'new', (v) => {
+        this._partManager.modifyFeature(feature.id, (f) => { f.operation = v; });
+        if (this._parametersPanel && this._parametersPanel.onParameterChange) this._parametersPanel.onParameterChange(feature.id, 'operation', v);
+      }, [
+        { value: 'new', label: 'New Body' },
+        { value: 'add', label: 'Add (Union)' },
+        { value: 'subtract', label: 'Subtract (Cut)' },
+        { value: 'intersect', label: 'Intersect' },
+      ]));
 
       const sketches = this._partManager ? this._partManager.getFeatures().filter((candidate) => candidate.type === 'sketch') : [];
       const sketchOptions = sketches.map((sketch) => ({ value: sketch.id, label: sketch.name }));
@@ -5244,6 +5331,90 @@ class App {
           this._refreshFeaturePanels(feature);
         }, axisOptions));
       }
+    } else if (feature.type === 'sweep') {
+      const sketches = this._getPartSketchFeatures();
+      const sketchOptions = sketches.map((sketch, index) => ({
+        value: sketch.id,
+        label: sketch.name || `Sketch ${index + 1}`,
+      }));
+      if (sketchOptions.length === 0) sketchOptions.push({ value: '', label: '(no sketches)' });
+
+      container.appendChild(this._createParamRow('Profile', 'select', feature.profileSketchFeatureId || '', (v) => {
+        this._partManager.modifyFeature(feature.id, (f) => { f.setProfileSketchFeature(v || null); });
+        this._refreshFeaturePanels(feature);
+      }, sketchOptions));
+
+      container.appendChild(this._createParamRow('Path', 'select', feature.pathSketchFeatureId || '', (v) => {
+        this._partManager.modifyFeature(feature.id, (f) => { f.setPathSketchFeature(v || null); });
+        this._refreshFeaturePanels(feature);
+      }, sketchOptions));
+
+      container.appendChild(this._createParamRow('Operation', 'select', feature.operation || 'new', (v) => {
+        this._partManager.modifyFeature(feature.id, (f) => { f.operation = v; });
+      }, [
+        { value: 'new', label: 'New Body' },
+        { value: 'add', label: 'Add (Union)' },
+        { value: 'subtract', label: 'Subtract (Cut)' },
+        { value: 'intersect', label: 'Intersect' },
+      ]));
+
+      container.appendChild(this._createParamRow('Solid', 'checkbox', !!feature.makeSolid, (v) => {
+        this._partManager.modifyFeature(feature.id, (f) => { f.makeSolid = !!v; });
+      }));
+
+      container.appendChild(this._createParamRow('Mode', 'select', feature.mode || 'frenet', (v) => {
+        this._partManager.modifyFeature(feature.id, (f) => { f.mode = v; });
+      }, [
+        { value: 'frenet', label: 'Frenet' },
+        { value: 'fixed', label: 'Fixed' },
+      ]));
+    } else if (feature.type === 'loft') {
+      const sketches = this._getPartSketchFeatures();
+      const sketchOptions = sketches.map((sketch, index) => ({
+        value: sketch.id,
+        label: sketch.name || `Sketch ${index + 1}`,
+      }));
+      if (sketchOptions.length === 0) sketchOptions.push({ value: '', label: '(no sketches)' });
+      const sections = Array.isArray(feature.sectionSketchFeatureIds) ? feature.sectionSketchFeatureIds : [];
+
+      container.appendChild(this._createParamRow('Section 1', 'select', sections[0] || '', (v) => {
+        const nextSections = [...sections];
+        nextSections[0] = v || null;
+        this._partManager.modifyFeature(feature.id, (f) => { f.setSectionSketchFeatures(nextSections.filter(Boolean)); });
+        this._refreshFeaturePanels(feature);
+      }, sketchOptions));
+
+      container.appendChild(this._createParamRow('Section 2', 'select', sections[1] || '', (v) => {
+        const nextSections = [...sections];
+        nextSections[1] = v || null;
+        this._partManager.modifyFeature(feature.id, (f) => { f.setSectionSketchFeatures(nextSections.filter(Boolean)); });
+        this._refreshFeaturePanels(feature);
+      }, sketchOptions));
+
+      container.appendChild(this._createParamRow('Operation', 'select', feature.operation || 'new', (v) => {
+        this._partManager.modifyFeature(feature.id, (f) => { f.operation = v; });
+      }, [
+        { value: 'new', label: 'New Body' },
+        { value: 'add', label: 'Add (Union)' },
+        { value: 'subtract', label: 'Subtract (Cut)' },
+        { value: 'intersect', label: 'Intersect' },
+      ]));
+
+      container.appendChild(this._createParamRow('Solid', 'checkbox', !!feature.makeSolid, (v) => {
+        this._partManager.modifyFeature(feature.id, (f) => { f.makeSolid = !!v; });
+      }));
+
+      container.appendChild(this._createParamRow('Ruled', 'checkbox', !!feature.ruled, (v) => {
+        this._partManager.modifyFeature(feature.id, (f) => { f.ruled = !!v; });
+      }));
+
+      container.appendChild(this._createParamRow('Continuity', 'select', feature.continuity || 'C2', (v) => {
+        this._partManager.modifyFeature(feature.id, (f) => { f.continuity = v; });
+      }, [
+        { value: 'C0', label: 'C0' },
+        { value: 'C1', label: 'C1' },
+        { value: 'C2', label: 'C2' },
+      ]));
     } else if (feature.type === 'sketch') {
       const info = document.createElement('div');
       info.className = 'parameter-info';
@@ -7153,6 +7324,12 @@ class App {
       }
     });
 
+    const btnSweep = document.getElementById('btn-sweep');
+    if (btnSweep) btnSweep.addEventListener('click', () => { void this._startSweep(); });
+
+    const btnLoft = document.getElementById('btn-loft');
+    if (btnLoft) btnLoft.addEventListener('click', () => { void this._startLoft(); });
+
     // Chamfer
     const btnChamfer = document.getElementById('btn-chamfer');
     if (btnChamfer) {
@@ -7387,6 +7564,151 @@ class App {
     const degrees = (angle * 180 / Math.PI).toFixed(1);
     this.setStatus(`Revolved sketch: ${degrees}°`);
     info(`Created revolve feature: ${feature.id}`);
+  }
+
+  _getPartSketchFeatures() {
+    return this._partManager ? this._partManager.getFeatures().filter((feature) => feature.type === 'sketch') : [];
+  }
+
+  _getSketchFeatureDisplayName(sketch) {
+    if (!sketch) return 'Sketch';
+    return sketch.name || `Sketch ${sketch.id}`;
+  }
+
+  _buildSketchDialogOptions(sketches) {
+    return (sketches || []).map((sketch) => ({
+      value: sketch.id,
+      label: this._getSketchFeatureDisplayName(sketch),
+    }));
+  }
+
+  _getSecondarySketchDefault(sketches, primarySketchId) {
+    const alternate = (sketches || []).find((sketch) => sketch.id !== primarySketchId);
+    return alternate ? alternate.id : '';
+  }
+
+  async _showSweepCreationDialog(sketches) {
+    const preferredSketchId = this._getPreferredSketchFeatureId();
+    const profileSketchId = preferredSketchId && sketches.some((sketch) => sketch.id === preferredSketchId)
+      ? preferredSketchId
+      : (sketches[0]?.id || '');
+    const pathSketchId = this._getSecondarySketchDefault(sketches, profileSketchId);
+    const sketchOptions = this._buildSketchDialogOptions(sketches);
+    return await showFormDialog({
+      title: 'Create Sweep',
+      message: 'Choose the profile sketch and the path sketch.',
+      okText: 'Create Sweep',
+      fields: [
+        { key: 'profileSketchId', label: 'Profile', type: 'select', value: profileSketchId, options: sketchOptions },
+        { key: 'pathSketchId', label: 'Path', type: 'select', value: pathSketchId, options: sketchOptions },
+      ],
+      validate: (values) => {
+        if (!values.profileSketchId || !values.pathSketchId) return 'Select both a profile sketch and a path sketch.';
+        if (values.profileSketchId === values.pathSketchId) return 'Profile and path must be different sketches.';
+        return null;
+      },
+    });
+  }
+
+  async _showLoftCreationDialog(sketches) {
+    const preferredSketchId = this._getPreferredSketchFeatureId();
+    const firstSectionId = preferredSketchId && sketches.some((sketch) => sketch.id === preferredSketchId)
+      ? preferredSketchId
+      : (sketches[0]?.id || '');
+    const secondSectionId = this._getSecondarySketchDefault(sketches, firstSectionId);
+    const sketchOptions = this._buildSketchDialogOptions(sketches);
+    return await showFormDialog({
+      title: 'Create Loft',
+      message: 'Choose the first and second loft section sketches.',
+      okText: 'Create Loft',
+      fields: [
+        { key: 'firstSectionId', label: 'Section 1', type: 'select', value: firstSectionId, options: sketchOptions },
+        { key: 'secondSectionId', label: 'Section 2', type: 'select', value: secondSectionId, options: sketchOptions },
+      ],
+      validate: (values) => {
+        if (!values.firstSectionId || !values.secondSectionId) return 'Select both loft section sketches.';
+        if (values.firstSectionId === values.secondSectionId) return 'Loft sections must be different sketches.';
+        return null;
+      },
+    });
+  }
+
+  async _startSweep() {
+    if (this._workspaceMode !== 'part') {
+      this.setStatus('Sweep is only available in Part workspace.');
+      return;
+    }
+
+    const sketches = this._getPartSketchFeatures();
+    if (sketches.length < 2) {
+      this.setStatus('Sweep requires at least two sketch features in the part.');
+      return;
+    }
+
+    const selection = await this._showSweepCreationDialog(sketches);
+    if (!selection) return;
+    const { profileSketchId, pathSketchId } = selection;
+
+    let feature = null;
+    try {
+      feature = this._partManager.sweep(profileSketchId, pathSketchId);
+    } catch (error) {
+      this.setStatus(`Sweep failed: ${error.message}`);
+      return;
+    }
+
+    this._deselectAll();
+    if (this._featurePanel && feature?.id) this._featurePanel.selectFeature(feature.id);
+    else this._featurePanel?.update();
+    this._updateNodeTree();
+    this._update3DView();
+    this._updateOperationButtons();
+    if (feature?.error) {
+      this.setStatus(`Sweep created but failed: ${feature.error}`);
+      warn('Sweep feature failed', feature.error);
+      return;
+    }
+    this.setStatus('Sweep created.');
+    info(`Created sweep feature: ${feature ? feature.id : 'failed'}`);
+  }
+
+  async _startLoft() {
+    if (this._workspaceMode !== 'part') {
+      this.setStatus('Loft is only available in Part workspace.');
+      return;
+    }
+
+    const sketches = this._getPartSketchFeatures();
+    if (sketches.length < 2) {
+      this.setStatus('Loft requires at least two sketch features in the part.');
+      return;
+    }
+
+    const selection = await this._showLoftCreationDialog(sketches);
+    if (!selection) return;
+    const sectionSketchIds = [selection.firstSectionId, selection.secondSectionId];
+
+    let feature = null;
+    try {
+      feature = this._partManager.loft(sectionSketchIds);
+    } catch (error) {
+      this.setStatus(`Loft failed: ${error.message}`);
+      return;
+    }
+
+    this._deselectAll();
+    if (this._featurePanel && feature?.id) this._featurePanel.selectFeature(feature.id);
+    else this._featurePanel?.update();
+    this._updateNodeTree();
+    this._update3DView();
+    this._updateOperationButtons();
+    if (feature?.error) {
+      this.setStatus(`Loft created but failed: ${feature.error}`);
+      warn('Loft feature failed', feature.error);
+      return;
+    }
+    this.setStatus('Loft created.');
+    info(`Created loft feature: ${feature ? feature.id : 'failed'}`);
   }
 
   /** Clear all 3D selections (face, plane, feature). */
@@ -10107,13 +10429,14 @@ class App {
     const inCam = this._workspaceMode === 'cam';
 
     const hasSketch = this._lastSketchFeatureId !== null;
+    const sketchCount = this._getPartSketchFeatures().length;
     const hasEntities = state.entities.length > 0;
     const inExtrude = !!this._extrudeMode;
     const inChamfer = !!this._chamferMode;
     const inFillet = !!this._filletMode;
     const busy = inExtrude || inChamfer || inFillet;
     const hasSolid = this._partManager && this._partManager.getFeatures().some(
-      f => f.type === 'extrude' || f.type === 'extrude-cut' || f.type === 'revolve'
+      f => f.type === 'extrude' || f.type === 'extrude-cut' || f.type === 'revolve' || f.type === 'sweep' || f.type === 'loft'
     );
 
     // Determine current selection composition
@@ -10145,6 +10468,10 @@ class App {
     if (btnExtrude) btnExtrude.disabled = inCam || busy || !extrudable;
     const btnRevolve = document.getElementById('btn-revolve');
     if (btnRevolve) btnRevolve.disabled = inCam || !hasSketch || busy;
+    const btnSweep = document.getElementById('btn-sweep');
+    if (btnSweep) btnSweep.disabled = inCam || busy;
+    const btnLoft = document.getElementById('btn-loft');
+    if (btnLoft) btnLoft.disabled = inCam || busy;
     const btnExtrudeCut = document.getElementById('btn-extrude-cut');
     if (btnExtrudeCut) btnExtrudeCut.disabled = inCam || busy || !extrudable;
     const btnChamfer = document.getElementById('btn-chamfer');
@@ -11942,6 +12269,8 @@ class App {
       symmetric: false,
       operation: isCut ? 'subtract' : (this._partManager.getFeatures().some(f => f.type === 'extrude' || f.type === 'extrude-cut' || f.type === 'revolve') ? 'add' : 'new'),
       extrudeType: 'distance',
+      targetFaceRef: null,
+      surfaceOffset: 0,
       taper: false,
       taperAngle: 5,
       taperInward: true,
@@ -11984,6 +12313,8 @@ class App {
         symmetric: feature.symmetric,
         operation: feature.operation,
         extrudeType: feature.extrudeType || 'distance',
+        targetFaceRef: feature.targetFaceRef || null,
+        surfaceOffset: feature.surfaceOffset || 0,
         taper: feature.taper || false,
         taperAngle: feature.taperAngle != null ? feature.taperAngle : 5,
         taperInward: feature.taperInward != null ? feature.taperInward : true,
@@ -11994,6 +12325,8 @@ class App {
       symmetric: feature.symmetric,
       operation: feature.operation,
       extrudeType: feature.extrudeType || 'distance',
+      targetFaceRef: feature.targetFaceRef || null,
+      surfaceOffset: feature.surfaceOffset || 0,
       taper: feature.taper || false,
       taperAngle: feature.taperAngle != null ? feature.taperAngle : 5,
       taperInward: feature.taperInward != null ? feature.taperInward : true,
@@ -12051,7 +12384,9 @@ class App {
     const typeOpts = [
       { value: 'distance', label: 'Distance' },
       { value: 'throughAll', label: 'Through All' },
+      { value: 'upToNext', label: 'Up to Next' },
       { value: 'upToFace', label: 'Up to Face' },
+      { value: 'offsetFromSurface', label: 'Offset from Surface' },
     ];
     container.appendChild(this._createParamRow('Type', 'select', em.extrudeType, (v) => {
       em.extrudeType = v;
@@ -12070,12 +12405,27 @@ class App {
       }));
     }
 
-    // Up to face notice
-    if (em.extrudeType === 'upToFace') {
-      const notice = document.createElement('div');
-      notice.className = 'parameter-row';
-      notice.innerHTML = '<label class="parameter-label" style="color:#e8a040;font-size:11px">Click a face in the 3D view to set target</label>';
-      container.appendChild(notice);
+    if (em.extrudeType === 'upToFace' || em.extrudeType === 'offsetFromSurface') {
+      container.appendChild(this._createSelectionFieldRow('Target', em.targetFaceRef?.label || 'None', () => {
+        const faceRef = this._captureSelectedFaceReference();
+        if (!faceRef) {
+          this.setStatus('Select a target face in the 3D view first.');
+          return;
+        }
+        em.targetFaceRef = faceRef;
+        this._showExtrudeUI();
+        this._updateExtrudePreview();
+      }, { hint: 'Use selected face' }));
+    }
+
+    if (em.extrudeType === 'offsetFromSurface') {
+      container.appendChild(this._createParamRow('Offset', 'number', em.surfaceOffset || 0, (v) => {
+        const parsed = parseFloat(v);
+        if (!isNaN(parsed)) {
+          em.surfaceOffset = parsed;
+          this._updateExtrudePreview();
+        }
+      }));
     }
 
     // Direction
@@ -12183,6 +12533,8 @@ class App {
       direction: em.direction,
       symmetric: em.symmetric,
       extrudeType: em.extrudeType,
+      targetFaceRef: em.targetFaceRef || null,
+      surfaceOffset: em.surfaceOffset || 0,
       taper: !!em.taper,
       taperAngle: em.taperAngle,
       taperInward: !!em.taperInward,
@@ -12309,6 +12661,8 @@ class App {
         tempExtrude.direction = em.direction;
         tempExtrude.symmetric = em.symmetric;
         tempExtrude.extrudeType = em.extrudeType;
+        tempExtrude.targetFaceRef = em.targetFaceRef || null;
+        tempExtrude.surfaceOffset = em.surfaceOffset || 0;
         tempExtrude.taper = em.taper;
         tempExtrude.taperAngle = em.taperAngle;
         tempExtrude.taperInward = em.taperInward;
@@ -12404,6 +12758,8 @@ class App {
         f.symmetric = em.symmetric;
         f.operation = em.operation;
         f.extrudeType = em.extrudeType;
+        f.targetFaceRef = em.targetFaceRef || null;
+        f.surfaceOffset = em.surfaceOffset || 0;
         f.taper = em.taper;
         f.taperAngle = em.taperAngle;
         f.taperInward = em.taperInward;
@@ -12427,6 +12783,8 @@ class App {
         direction: em.direction,
         symmetric: em.symmetric,
         extrudeType: em.extrudeType,
+        targetFaceRef: em.targetFaceRef || null,
+        surfaceOffset: em.surfaceOffset || 0,
         taper: em.taper,
         taperAngle: em.taperAngle,
         taperInward: em.taperInward,
@@ -12466,6 +12824,8 @@ class App {
         f.symmetric = orig.symmetric;
         f.operation = orig.operation;
         f.extrudeType = orig.extrudeType;
+        f.targetFaceRef = orig.targetFaceRef || null;
+        f.surfaceOffset = orig.surfaceOffset || 0;
         f.taper = orig.taper;
         f.taperAngle = orig.taperAngle;
         f.taperInward = orig.taperInward;

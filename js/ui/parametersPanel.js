@@ -69,6 +69,10 @@ export class ParametersPanel {
       this.showExtrudeParameters(feature);
     } else if (feature.type === 'revolve') {
       this.showRevolveParameters(feature);
+    } else if (feature.type === 'sweep') {
+      this.showSweepParameters(feature);
+    } else if (feature.type === 'loft') {
+      this.showLoftParameters(feature);
     } else if (feature.type === 'sketch') {
       this.showSketchParameters(feature);
     }
@@ -79,6 +83,19 @@ export class ParametersPanel {
    * @param {ExtrudeFeature} feature - The extrude feature
    */
   showExtrudeParameters(feature) {
+    const extentDiv = this.createParameter('Type', 'select', feature.extrudeType || 'distance', (value) => {
+      this.partManager.modifyFeature(feature.id, (f) => { f.extrudeType = value; });
+      if (this.onParameterChange) this.onParameterChange(feature.id, 'extrudeType', value);
+      this.showFeature(feature);
+    }, [
+      { value: 'distance', label: 'Distance' },
+      { value: 'throughAll', label: 'Through All' },
+      { value: 'upToNext', label: 'Up to Next' },
+      { value: 'upToFace', label: 'Up to Face' },
+      { value: 'offsetFromSurface', label: 'Offset from Surface' },
+    ]);
+    this.contentElement.appendChild(extentDiv);
+
     // Distance
     const distanceDiv = this.createParameter('Distance', 'number', feature.distance, (value) => {
       const parsed = parseFloat(value);
@@ -88,6 +105,16 @@ export class ParametersPanel {
       if (this.onParameterChange) this.onParameterChange(feature.id, 'distance', parsed);
     });
     this.contentElement.appendChild(distanceDiv);
+
+    if ((feature.extrudeType || 'distance') === 'offsetFromSurface') {
+      const offsetDiv = this.createParameter('Offset', 'number', feature.surfaceOffset || 0, (value) => {
+        const parsed = parseFloat(value);
+        if (!Number.isFinite(parsed)) return;
+        this.partManager.modifyFeature(feature.id, (f) => { f.surfaceOffset = parsed; });
+        if (this.onParameterChange) this.onParameterChange(feature.id, 'surfaceOffset', parsed);
+      });
+      this.contentElement.appendChild(offsetDiv);
+    }
 
     // Direction
     const directionDiv = this.createParameter('Direction', 'select', feature.direction, (value) => {
@@ -124,6 +151,23 @@ export class ParametersPanel {
       if (this.onParameterChange) this.onParameterChange(feature.id, 'symmetric', value);
     });
     this.contentElement.appendChild(symmetricDiv);
+
+    const taperDiv = this.createParameter('Taper', 'checkbox', !!feature.taper, (value) => {
+      this.partManager.modifyFeature(feature.id, (f) => { f.taper = value; });
+      if (this.onParameterChange) this.onParameterChange(feature.id, 'taper', value);
+      this.showFeature(feature);
+    });
+    this.contentElement.appendChild(taperDiv);
+
+    if (feature.taper) {
+      const taperAngleDiv = this.createParameter('Taper Angle (°)', 'number', feature.taperAngle || 0, (value) => {
+        const parsed = parseFloat(value);
+        if (!Number.isFinite(parsed)) return;
+        this.partManager.modifyFeature(feature.id, (f) => { f.taperAngle = parsed; });
+        if (this.onParameterChange) this.onParameterChange(feature.id, 'taperAngle', parsed);
+      });
+      this.contentElement.appendChild(taperAngleDiv);
+    }
   }
 
   /**
@@ -131,19 +175,55 @@ export class ParametersPanel {
    * @param {RevolveFeature} feature - The revolve feature
    */
   showRevolveParameters(feature) {
+    const extentDiv = this.createParameter('Extent', 'select', feature.extentType || 'angle', (value) => {
+      this.partManager.modifyFeature(feature.id, (f) => { f.extentType = value; });
+      if (this.onParameterChange) this.onParameterChange(feature.id, 'extentType', value);
+      this.showFeature(feature);
+    }, [
+      { value: 'angle', label: 'Angle' },
+      { value: 'throughAll', label: 'Through All' },
+      { value: 'upToFace', label: 'Up to Face' },
+      { value: 'offsetFromSurface', label: 'Offset from Surface' },
+      { value: 'fromFaceToFace', label: 'From Face to Face' },
+    ]);
+    this.contentElement.appendChild(extentDiv);
+
     // Angle (in degrees for UI)
-    const angleDegrees = (feature.angle * 180 / Math.PI).toFixed(1);
-    const angleDiv = this.createParameter('Angle (°)', 'number', angleDegrees, (value) => {
-      const radians = parseFloat(value) * Math.PI / 180;
-      this.partManager.modifyFeature(feature.id, (f) => {
-        f.setAngle(radians);
-        if (Object.prototype.hasOwnProperty.call(f, 'segments')) {
-          f.segments = globalTessConfig.curveSegments;
-        }
+    if ((feature.extentType || 'angle') === 'angle') {
+      const angleDegrees = (feature.angle * 180 / Math.PI).toFixed(1);
+      const angleDiv = this.createParameter('Angle (°)', 'number', angleDegrees, (value) => {
+        const radians = parseFloat(value) * Math.PI / 180;
+        this.partManager.modifyFeature(feature.id, (f) => {
+          f.setAngle(radians);
+          if (Object.prototype.hasOwnProperty.call(f, 'segments')) {
+            f.segments = globalTessConfig.curveSegments;
+          }
+        });
+        if (this.onParameterChange) this.onParameterChange(feature.id, 'angle', radians);
       });
-      if (this.onParameterChange) this.onParameterChange(feature.id, 'angle', radians);
-    });
-    this.contentElement.appendChild(angleDiv);
+      this.contentElement.appendChild(angleDiv);
+    }
+
+    if ((feature.extentType || 'angle') === 'offsetFromSurface') {
+      const offsetDiv = this.createParameter('Offset', 'number', feature.surfaceOffset || 0, (value) => {
+        const parsed = parseFloat(value);
+        if (!Number.isFinite(parsed)) return;
+        this.partManager.modifyFeature(feature.id, (f) => { f.surfaceOffset = parsed; });
+        if (this.onParameterChange) this.onParameterChange(feature.id, 'surfaceOffset', parsed);
+      });
+      this.contentElement.appendChild(offsetDiv);
+    }
+
+    const operationDiv = this.createParameter('Operation', 'select', feature.operation || 'new', (value) => {
+      this.partManager.modifyFeature(feature.id, (f) => { f.operation = value; });
+      if (this.onParameterChange) this.onParameterChange(feature.id, 'operation', value);
+    }, [
+      { value: 'new', label: 'New Body' },
+      { value: 'add', label: 'Add (Union)' },
+      { value: 'subtract', label: 'Subtract (Cut)' },
+      { value: 'intersect', label: 'Intersect' },
+    ]);
+    this.contentElement.appendChild(operationDiv);
 
     const sketches = this.partManager.getFeatures().filter((candidate) => candidate.type === 'sketch');
     const sketchOptions = sketches.map((sketch) => ({ value: sketch.id, label: sketch.name }));
@@ -206,6 +286,84 @@ export class ParametersPanel {
       );
       this.contentElement.appendChild(axisDiv);
     }
+  }
+
+  showSweepParameters(feature) {
+    const sketches = this.partManager.getFeatures().filter((candidate) => candidate.type === 'sketch');
+    const sketchOptions = sketches.map((sketch) => ({ value: sketch.id, label: sketch.name }));
+    if (sketchOptions.length === 0) sketchOptions.push({ value: '', label: '(no sketches)' });
+
+    this.contentElement.appendChild(this.createParameter('Profile', 'select', feature.profileSketchFeatureId || '', (value) => {
+      this.partManager.modifyFeature(feature.id, (f) => { f.setProfileSketchFeature(value || null); });
+      this.showFeature(feature);
+    }, sketchOptions));
+
+    this.contentElement.appendChild(this.createParameter('Path', 'select', feature.pathSketchFeatureId || '', (value) => {
+      this.partManager.modifyFeature(feature.id, (f) => { f.setPathSketchFeature(value || null); });
+      this.showFeature(feature);
+    }, sketchOptions));
+
+    this.contentElement.appendChild(this.createParameter('Operation', 'select', feature.operation || 'new', (value) => {
+      this.partManager.modifyFeature(feature.id, (f) => { f.operation = value; });
+    }, [
+      { value: 'new', label: 'New Body' },
+      { value: 'add', label: 'Add (Union)' },
+      { value: 'subtract', label: 'Subtract (Cut)' },
+      { value: 'intersect', label: 'Intersect' },
+    ]));
+
+    this.contentElement.appendChild(this.createParameter('Solid', 'checkbox', !!feature.makeSolid, (value) => {
+      this.partManager.modifyFeature(feature.id, (f) => { f.makeSolid = value; });
+    }));
+
+    this.contentElement.appendChild(this.createParameter('Mode', 'select', feature.mode || 'frenet', (value) => {
+      this.partManager.modifyFeature(feature.id, (f) => { f.mode = value; });
+    }, [
+      { value: 'frenet', label: 'Frenet' },
+      { value: 'fixed', label: 'Fixed' },
+    ]));
+  }
+
+  showLoftParameters(feature) {
+    const sketches = this.partManager.getFeatures().filter((candidate) => candidate.type === 'sketch');
+    const sketchOptions = sketches.map((sketch) => ({ value: sketch.id, label: sketch.name }));
+    if (sketchOptions.length === 0) sketchOptions.push({ value: '', label: '(no sketches)' });
+    const sections = Array.isArray(feature.sectionSketchFeatureIds) ? feature.sectionSketchFeatureIds : [];
+
+    this.contentElement.appendChild(this.createParameter('Section 1', 'select', sections[0] || '', (value) => {
+      this.partManager.modifyFeature(feature.id, (f) => { f.setSectionSketchFeature(0, value || null); });
+      this.showFeature(feature);
+    }, sketchOptions));
+
+    this.contentElement.appendChild(this.createParameter('Section 2', 'select', sections[1] || '', (value) => {
+      this.partManager.modifyFeature(feature.id, (f) => { f.setSectionSketchFeature(1, value || null); });
+      this.showFeature(feature);
+    }, sketchOptions));
+
+    this.contentElement.appendChild(this.createParameter('Operation', 'select', feature.operation || 'new', (value) => {
+      this.partManager.modifyFeature(feature.id, (f) => { f.operation = value; });
+    }, [
+      { value: 'new', label: 'New Body' },
+      { value: 'add', label: 'Add (Union)' },
+      { value: 'subtract', label: 'Subtract (Cut)' },
+      { value: 'intersect', label: 'Intersect' },
+    ]));
+
+    this.contentElement.appendChild(this.createParameter('Solid', 'checkbox', !!feature.makeSolid, (value) => {
+      this.partManager.modifyFeature(feature.id, (f) => { f.makeSolid = value; });
+    }));
+
+    this.contentElement.appendChild(this.createParameter('Ruled', 'checkbox', !!feature.ruled, (value) => {
+      this.partManager.modifyFeature(feature.id, (f) => { f.ruled = value; });
+    }));
+
+    this.contentElement.appendChild(this.createParameter('Continuity', 'select', feature.continuity || 'C2', (value) => {
+      this.partManager.modifyFeature(feature.id, (f) => { f.continuity = value; });
+    }, [
+      { value: 'C0', label: 'C0' },
+      { value: 'C1', label: 'C1' },
+      { value: 'C2', label: 'C2' },
+    ]));
   }
 
   /**

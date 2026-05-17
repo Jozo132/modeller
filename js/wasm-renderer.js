@@ -1413,22 +1413,54 @@ export class WasmRenderer {
   }
 
   _isScreenPointVisibleAtDepth(screenPoint, depth, tolerance = 2e-3) {
-    const gl = this.executor?.gl;
-    const canvas = this.canvas;
-    const cssWidth = this._cssWidth || this.container.clientWidth;
-    const cssHeight = this._cssHeight || this.container.clientHeight;
-    if (!gl || !canvas || !cssWidth || !cssHeight || !Number.isFinite(depth)) return true;
+    if (!Number.isFinite(depth) || !this._meshTriangles || this._meshTriangleCount === 0) return true;
+    const rect = this.canvas?.getBoundingClientRect?.();
+    if (!rect) return true;
 
-    const px = Math.max(0, Math.min(canvas.width - 1, Math.round((screenPoint.x / cssWidth) * canvas.width)));
-    const py = Math.max(0, Math.min(canvas.height - 1, Math.round(((cssHeight - screenPoint.y) / cssHeight) * canvas.height)));
-    const depthSample = new Float32Array(1);
-    try {
-      gl.readPixels(px, py, 1, 1, gl.DEPTH_COMPONENT, gl.FLOAT, depthSample);
-    } catch {
-      return true;
+    const ray = this._computePickRay(rect.left + screenPoint.x, rect.top + screenPoint.y);
+    if (!ray) return true;
+
+    const occluderHit = this._raycastClosestMeshHit(ray.origin, ray.dir);
+    if (!occluderHit?.point) return true;
+
+    const occluderScreenPoint = this.worldToScreen(occluderHit.point.x, occluderHit.point.y, occluderHit.point.z);
+    if (!occluderScreenPoint || !Number.isFinite(occluderScreenPoint.depth)) return true;
+
+    return depth <= occluderScreenPoint.depth + tolerance;
+  }
+
+  _raycastClosestMeshHit(origin, dir) {
+    if (!origin || !dir || !this._meshTriangles || this._meshTriangleCount === 0) return null;
+
+    let closestT = Infinity;
+    let closestFaceIndex = -1;
+    let closestPoint = null;
+
+    const triData = this._meshTriangles;
+    const triCount = this._meshTriangleCount / 3;
+    for (let triangleIndex = 0; triangleIndex < triCount; triangleIndex++) {
+      const base = triangleIndex * 18;
+      const first = { x: triData[base], y: triData[base + 1], z: triData[base + 2] };
+      const second = { x: triData[base + 6], y: triData[base + 7], z: triData[base + 8] };
+      const third = { x: triData[base + 12], y: triData[base + 13], z: triData[base + 14] };
+      const hitT = this._rayTriangleIntersect(origin, dir, first, second, third);
+      if (hitT === null || hitT <= 0 || hitT >= closestT) continue;
+      closestT = hitT;
+      closestFaceIndex = this._triFaceMap ? this._triFaceMap[triangleIndex] : -1;
+      closestPoint = {
+        x: origin.x + dir.x * hitT,
+        y: origin.y + dir.y * hitT,
+        z: origin.z + dir.z * hitT,
+      };
     }
-    if (!Number.isFinite(depthSample[0])) return true;
-    return depth <= depthSample[0] + tolerance;
+
+    if (!closestPoint) return null;
+    return {
+      t: closestT,
+      faceIndex: closestFaceIndex,
+      face: closestFaceIndex >= 0 && this._meshFaces ? this._meshFaces[closestFaceIndex] : null,
+      point: closestPoint,
+    };
   }
 
   /** Returns true if there is an active sketch plane definition set. */
@@ -1548,41 +1580,13 @@ export class WasmRenderer {
 
     const ray = this._computePickRay(screenX, screenY);
     if (!ray) return null;
-    const { origin, dir } = ray;
-
-    // Test ray against all triangles
-    let closestT = Infinity;
-    let closestFaceIndex = -1;
-    let closestPoint = null;
-
-    const triData = this._meshTriangles;
-    const triCount = this._meshTriangleCount / 3; // number of triangles
-    for (let ti = 0; ti < triCount; ti++) {
-      const base = ti * 3 * 6; // 3 vertices * 6 floats each
-      const v0 = { x: triData[base], y: triData[base + 1], z: triData[base + 2] };
-      const v1 = { x: triData[base + 6], y: triData[base + 7], z: triData[base + 8] };
-      const v2 = { x: triData[base + 12], y: triData[base + 13], z: triData[base + 14] };
-
-      const t = this._rayTriangleIntersect(origin, dir, v0, v1, v2);
-      if (t !== null && t > 0 && t < closestT) {
-        closestT = t;
-        closestFaceIndex = this._triFaceMap ? this._triFaceMap[ti] : -1;
-        closestPoint = {
-          x: origin.x + dir.x * t,
-          y: origin.y + dir.y * t,
-          z: origin.z + dir.z * t,
-        };
-      }
-    }
-
-    if (closestFaceIndex >= 0 && closestPoint) {
-      return {
-        faceIndex: closestFaceIndex,
-        face: this._meshFaces[closestFaceIndex],
-        point: closestPoint,
-      };
-    }
-    return null;
+    const hit = this._raycastClosestMeshHit(ray.origin, ray.dir);
+    if (!hit || hit.faceIndex < 0 || !hit.point) return null;
+    return {
+      faceIndex: hit.faceIndex,
+      face: hit.face,
+      point: hit.point,
+    };
   }
 
   /**
