@@ -10,6 +10,7 @@ import { HistoryTree } from './ui/historyTree.js';
 import { FeatureEditSession, EditSessionState } from './ui/featureEditSession.js';
 import { DiagnosticsPanel } from './ui/diagnosticsPanel.js';
 import { getFeatureIconSVG } from './ui/featureIcons.js';
+import { initIcons, outline, solid, PATH } from './ui/icons.js';
 import { getSnappedPosition, invalidateSnapGrid } from './snap.js';
 import { undo, redo, takeSnapshot, setPartManager, getHistoryInfo, movePointer } from './history.js';
 import { downloadDXF, downloadFacesDXF } from './dxf/export.js';
@@ -132,6 +133,7 @@ function applyStoredTessellationPreset() {
 class App {
   constructor() {
     info('App initialization started');
+    initIcons();
     applyStoredTessellationPreset();
     this._renderer3d = null;
     this._workspaceMode = null; // 'part' | null (quick-start)
@@ -2288,7 +2290,16 @@ class App {
           // Dynamic examples are handled via event delegation below
           case 'toggle-grid': document.getElementById('btn-grid-toggle')?.click(); break;
           case 'toggle-snap': document.getElementById('btn-snap-toggle')?.click(); break;
-          case 'toggle-ortho': document.getElementById('btn-ortho-toggle')?.click(); break;
+          case 'toggle-ortho':
+            state.orthoEnabled = !state.orthoEnabled;
+            this._recorder.settingToggled('ortho', state.orthoEnabled);
+            document.getElementById('btn-ortho-toggle')?.classList.toggle('active', state.orthoEnabled);
+            document.getElementById('status-ortho').classList.toggle('active', state.orthoEnabled);
+            if (this._renderer3d) {
+              this._renderer3d.setOrtho3D(state.orthoEnabled);
+            }
+            this._scheduleRender();
+            break;
           case 'toggle-autoconnect': document.getElementById('btn-autocoincidence-toggle')?.click(); break;
           case 'tool-select': this.setActiveTool('select'); break;
           case 'tool-line': this.setActiveTool('line'); break;
@@ -2488,16 +2499,19 @@ class App {
       e.currentTarget.classList.toggle('active', state.autoCoincidence);
       document.getElementById('status-autocoincidence').classList.toggle('active', state.autoCoincidence);
     });
-    document.getElementById('btn-ortho-toggle').addEventListener('click', (e) => {
-      state.orthoEnabled = !state.orthoEnabled;
-      this._recorder.settingToggled('ortho', state.orthoEnabled);
-      e.currentTarget.classList.toggle('active', state.orthoEnabled);
-      document.getElementById('status-ortho').classList.toggle('active', state.orthoEnabled);
-      if (this._renderer3d) {
-        this._renderer3d.setOrtho3D(state.orthoEnabled);
-      }
-      this._scheduleRender();
-    });
+    const btnOrthoToggle = document.getElementById('btn-ortho-toggle');
+    if (btnOrthoToggle) {
+      btnOrthoToggle.addEventListener('click', (e) => {
+        state.orthoEnabled = !state.orthoEnabled;
+        this._recorder.settingToggled('ortho', state.orthoEnabled);
+        e.currentTarget.classList.toggle('active', state.orthoEnabled);
+        document.getElementById('status-ortho').classList.toggle('active', state.orthoEnabled);
+        if (this._renderer3d) {
+          this._renderer3d.setOrtho3D(state.orthoEnabled);
+        }
+        this._scheduleRender();
+      });
+    }
 
     // FOV slider — raw 0 = ortho, raw 1..116 maps to 5..120°
     const fovSlider = document.getElementById('fov-slider');
@@ -2613,12 +2627,12 @@ class App {
       const icon = document.getElementById('toolbar-toggle-icon');
       const lbl = document.getElementById('toolbar-toggle-label');
       if (btn && icon && lbl) {
-        // Icons SVG paths for each state
+        // Icons SVG paths for each state (all 20×20; toolbar-toggle-icon viewBox is 0 0 20 20)
         const STATES = ['open', 'minimized', 'auto'];
         const ICONS = {
-          open:      '<polyline points="2,10 8,4 14,10"/>',  // chevron-up (open)
-          minimized: '<polyline points="2,6 8,12 14,6"/>',    // chevron-down (collapsed)
-          auto:      '<circle cx="8" cy="8" r="5"/><line x1="8" y1="3" x2="8" y2="13"/>',  // auto icon
+          open:      PATH['chevron-up'],
+          minimized: PATH['chevron-down'],
+          auto:      PATH['toolbar-auto'],
         };
         const TITLES = {
           open:      'Toolbar is open – click to minimize',
@@ -2824,7 +2838,7 @@ class App {
           break;
         case 'o': case 'O':
           state.orthoEnabled = !state.orthoEnabled;
-          document.getElementById('btn-ortho-toggle').classList.toggle('active', state.orthoEnabled);
+          document.getElementById('btn-ortho-toggle')?.classList.toggle('active', state.orthoEnabled);
           document.getElementById('status-ortho').classList.toggle('active', state.orthoEnabled);
           if (this._renderer3d) {
             this._renderer3d.setOrtho3D(state.orthoEnabled);
@@ -7109,7 +7123,9 @@ class App {
     // Play / Pause
     document.getElementById('motion-play').addEventListener('click', () => {
       this._motionPlaying = !this._motionPlaying;
-      document.getElementById('motion-play').textContent = this._motionPlaying ? '⏸' : '▶';
+      document.getElementById('motion-play').innerHTML = this._motionPlaying
+        ? solid('pause', 12)
+        : solid('play', 12);
       if (this._motionPlaying) this._motionAnimate();
     });
 
@@ -7135,7 +7151,7 @@ class App {
       document.getElementById('motion-setup').style.display = '';
       document.getElementById('motion-playback').style.display = 'none';
       document.getElementById('motion-export-csv').style.display = 'none';
-      document.getElementById('motion-play').textContent = '▶';
+      document.getElementById('motion-play').innerHTML = solid('play', 12);
       this._motionPopulateDrivers();
       this._motionRebuildProbes();
       this._adjustCanvasForMotion();
@@ -7277,33 +7293,36 @@ class App {
     });
 
     // Add Sketch to Part
-    document.getElementById('btn-add-sketch').addEventListener('click', (e) => {
-      const firstFace = this._selectedFaces.size > 0 ? this._selectedFaces.values().next().value : null;
-      if (firstFace && firstFace.face) {
-        // Use selected face's plane
-        const planeDef = this._getPlaneFromFace(firstFace);
-        if (planeDef) {
-          this._addSketchToPartWithPlane(planeDef);
-          this._selectedFaces.clear();
-          if (this._renderer3d) this._renderer3d.clearFaceSelection();
-          return;
+    const addSketchButton = document.getElementById('btn-add-sketch');
+    if (addSketchButton) {
+      addSketchButton.addEventListener('click', (e) => {
+        const firstFace = this._selectedFaces.size > 0 ? this._selectedFaces.values().next().value : null;
+        if (firstFace && firstFace.face) {
+          // Use selected face's plane
+          const planeDef = this._getPlaneFromFace(firstFace);
+          if (planeDef) {
+            this._addSketchToPartWithPlane(planeDef);
+            this._selectedFaces.clear();
+            if (this._renderer3d) this._renderer3d.clearFaceSelection();
+            return;
+          }
         }
-      }
-      if (this._selectedPlane) {
-        // Use pre-selected plane directly
-        this._addSketchToPart(this._selectedPlane);
-      } else {
-        // Show tooltip hint then plane selector context menu
-        this._showPlaneSelectionTooltip(e.currentTarget);
-        const btn = e.currentTarget;
-        const rect = btn.getBoundingClientRect();
-        showContextMenu(rect.left, rect.bottom + 2, [
-          { type: 'item', label: 'XY Plane', icon: '▬', action: () => this._addSketchToPart('XY') },
-          { type: 'item', label: 'XZ Plane', icon: '▬', action: () => this._addSketchToPart('XZ') },
-          { type: 'item', label: 'YZ Plane', icon: '▬', action: () => this._addSketchToPart('YZ') },
-        ]);
-      }
-    });
+        if (this._selectedPlane) {
+          // Use pre-selected plane directly
+          this._addSketchToPart(this._selectedPlane);
+        } else {
+          // Show tooltip hint then plane selector context menu
+          this._showPlaneSelectionTooltip(e.currentTarget);
+          const btn = e.currentTarget;
+          const rect = btn.getBoundingClientRect();
+          showContextMenu(rect.left, rect.bottom + 2, [
+            { type: 'item', label: 'XY Plane', icon: '▬', action: () => this._addSketchToPart('XY') },
+            { type: 'item', label: 'XZ Plane', icon: '▬', action: () => this._addSketchToPart('XZ') },
+            { type: 'item', label: 'YZ Plane', icon: '▬', action: () => this._addSketchToPart('YZ') },
+          ]);
+        }
+      });
+    }
 
     // Extrude
     document.getElementById('btn-extrude').addEventListener('click', async () => {
@@ -9448,7 +9467,7 @@ class App {
       actions.className = 'scene-item-actions';
 
       const applyBtn = document.createElement('button');
-      applyBtn.textContent = '▶';
+      applyBtn.innerHTML = solid('play', 10);
       applyBtn.title = 'Apply this scene';
       applyBtn.addEventListener('click', (e) => { e.stopPropagation(); this._applyScene(i); });
 
@@ -10881,7 +10900,9 @@ class App {
         stepLabel.textContent = '—';
       }
 
-      btnToggle.textContent = this._playbackPlaying ? '⏸' : '▶';
+      btnToggle.innerHTML = this._playbackPlaying
+        ? solid('pause', 14)
+        : solid('play', 14);
       btnToggle.title = this._playbackPlaying ? 'Pause' : 'Play';
     };
 
