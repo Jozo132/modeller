@@ -3,8 +3,8 @@ import { generateToolpaths } from './toolpath.js';
 
 const EPSILON = 1e-9;
 export const CAM_SIMULATION_MIN_RESOLUTION = 8;
-export const CAM_SIMULATION_DEFAULT_RESOLUTION = 128;
-export const CAM_SIMULATION_MAX_RESOLUTION = 256;
+export const CAM_SIMULATION_DEFAULT_RESOLUTION = 384;
+export const CAM_SIMULATION_MAX_RESOLUTION = 1024;
 
 export function simulateStockRemoval(camConfig, toolpathsOrOptions = null, maybeOptions = {}) {
   const config = normalizeCamConfig(camConfig);
@@ -26,41 +26,85 @@ export function simulateStockRemoval(camConfig, toolpathsOrOptions = null, maybe
   const rows = Math.max(1, Math.round(resolution * Math.max(0.25, Math.min(4, depth / width))));
   const heights = new Float32Array((columns + 1) * (rows + 1));
   heights.fill(stock.max.z);
+  const initialVolume = estimateStockVolume(stock);
+  const operationStates = buildOperationStates(toolpaths, stock, initialVolume);
+  const operationStateById = new Map(operationStates.map((state) => [state.operationId, state]));
 
   const toolById = new Map(config.tools.map((tool) => [tool.id, tool]));
-  const feedSegments = collectFeedSegments(toolpaths, toolById);
+  const motionSegments = collectMotionSegments(toolpaths, toolById, config.units);
+  const feedSegments = motionSegments.filter((segment) => segment.cutting);
+  for (const segment of feedSegments) {
+    const state = operationStateById.get(segment.operationId);
+    if (state) state.feedSegmentCount += 1;
+  }
+
+  const finalizedOperationIds = new Set();
+  const finalizeOperationState = (state) => {
+    if (!state || finalizedOperationIds.has(state.operationId)) return;
+    const summary = summarizeHeightField(heights, stock, initialVolume);
+    state.progress = state.feedSegmentCount > 0
+      ? Math.max(0, Math.min(1, state.processedSegmentCount / state.feedSegmentCount))
+      : 0;
+    state.removedVertexCount = summary.removedVertexCount;
+    state.minHeight = summary.minHeight;
+    state.remainingVolume = summary.remainingVolume;
+    state.removedVolume = summary.removedVolume;
+    finalizedOperationIds.add(state.operationId);
+  };
+
   const progress = Math.max(0, Math.min(1, Number(options.progress ?? 1)));
   const totalCutSeconds = feedSegments.reduce((sum, segment) => sum + segment.durationSeconds, 0);
-  const targetCutSeconds = totalCutSeconds * progress;
+  const totalMotionSeconds = motionSegments.reduce((sum, segment) => sum + segment.durationSeconds, 0);
+  const targetMotionSeconds = totalMotionSeconds * progress;
   let processedSegmentCount = 0;
   let processedCutSeconds = 0;
-  for (const segment of feedSegments) {
-    if (processedCutSeconds >= targetCutSeconds - EPSILON) break;
-    const remainingSeconds = targetCutSeconds - processedCutSeconds;
+  let processedMotionSegmentCount = 0;
+  let processedMotionSeconds = 0;
+  let activeOperationState = null;
+  let toolState = motionSegments.length > 0 ? buildToolState(motionSegments[0], motionSegments[0].start, 0) : null;
+  for (const segment of motionSegments) {
+    const operationState = operationStateById.get(segment.operationId) || null;
+    if (activeOperationState && activeOperationState.operationId !== segment.operationId) {
+      finalizeOperationState(activeOperationState);
+    }
+    activeOperationState = operationState;
+
+    if (processedMotionSeconds >= targetMotionSeconds - EPSILON) break;
+    const remainingSeconds = targetMotionSeconds - processedMotionSeconds;
     if (remainingSeconds + EPSILON >= segment.durationSeconds) {
-      carveSegment(heights, columns, rows, stock, segment);
-      processedCutSeconds += segment.durationSeconds;
-      processedSegmentCount += 1;
+      if (segment.cutting) {
+        carveSegment(heights, columns, rows, stock, segment);
+        processedCutSeconds += segment.durationSeconds;
+        processedSegmentCount += 1;
+        if (operationState) operationState.processedSegmentCount += 1;
+      }
+      processedMotionSeconds += segment.durationSeconds;
+      processedMotionSegmentCount += 1;
+      toolState = buildToolState(segment, segment.end, 1);
       continue;
     }
     const ratio = Math.max(0, Math.min(1, remainingSeconds / segment.durationSeconds));
     if (ratio > EPSILON) {
-      carveSegment(heights, columns, rows, stock, {
+      const partialSegment = {
         ...segment,
         end: interpolatePoint(segment.start, segment.end, ratio),
-      });
-      processedCutSeconds += remainingSeconds;
-      processedSegmentCount += ratio;
+      };
+      if (segment.cutting) {
+        carveSegment(heights, columns, rows, stock, partialSegment);
+        processedCutSeconds += remainingSeconds;
+        processedSegmentCount += ratio;
+        if (operationState) operationState.processedSegmentCount += ratio;
+      }
+      processedMotionSeconds += remainingSeconds;
+      processedMotionSegmentCount += ratio;
+      toolState = buildToolState(segment, partialSegment.end, ratio);
     }
     break;
   }
 
-  let minHeight = stock.max.z;
-  let removedVertexCount = 0;
-  for (const height of heights) {
-    if (height < stock.max.z - EPSILON) removedVertexCount++;
-    if (height < minHeight) minHeight = height;
-  }
+  finalizeOperationState(activeOperationState);
+
+  const summary = summarizeHeightField(heights, stock, initialVolume);
 
   return {
     stock: {
@@ -71,44 +115,307 @@ export function simulateStockRemoval(camConfig, toolpathsOrOptions = null, maybe
     rows,
     heights,
     progress,
+    motionSegments,
+    motionSegmentCount: motionSegments.length,
+    processedMotionSegmentCount,
+    totalMotionSeconds,
+    processedMotionSeconds,
     feedSegmentCount: feedSegments.length,
     processedSegmentCount,
     totalCutSeconds,
     processedCutSeconds,
-    removedVertexCount,
-    minHeight,
+    removedVertexCount: summary.removedVertexCount,
+    minHeight: summary.minHeight,
+    remainingVolume: summary.remainingVolume,
+    removedVolume: summary.removedVolume,
+    operationStates,
+    toolState,
   };
 }
 
-function collectFeedSegments(toolpaths, toolById) {
+function collectMotionSegments(toolpaths, toolById, units = 'mm') {
   const segments = [];
-  for (const toolpath of toolpaths || []) {
+  for (let toolpathIndex = 0; toolpathIndex < (toolpaths || []).length; toolpathIndex++) {
+    const toolpath = toolpaths[toolpathIndex];
     const tool = toolById.get(toolpath.toolId) || toolById.get(String(toolpath.toolId));
     const radius = Math.max(EPSILON, Number(tool?.diameter || 1) / 2);
     let current = { x: null, y: null, z: null };
     for (const move of toolpath.moves || []) {
-      if (move.type !== 'feed' && move.type !== 'rapid') continue;
       const next = {
         x: Number.isFinite(Number(move.x)) ? Number(move.x) : current.x,
         y: Number.isFinite(Number(move.y)) ? Number(move.y) : current.y,
         z: Number.isFinite(Number(move.z)) ? Number(move.z) : current.z,
       };
-      const hasCurrentPoint = Number.isFinite(current.x) && Number.isFinite(current.y) && Number.isFinite(current.z);
-      const hasNextPoint = Number.isFinite(next.x) && Number.isFinite(next.y) && Number.isFinite(next.z);
-      if (move.type === 'feed' && hasCurrentPoint && hasNextPoint) {
-        const length = Math.hypot(next.x - current.x, next.y - current.y, next.z - current.z);
-        const feedRate = Math.max(EPSILON, Number(move.feed) || Number(tool?.feedRate) || 1);
-        segments.push({
-          start: { ...current },
-          end: next,
+      if (move.type === 'feed' || move.type === 'rapid') {
+        appendLinearMotionSegment(segments, {
+          current,
+          next,
+          move,
+          tool,
+          toolpath,
+          toolpathIndex,
           radius,
-          durationSeconds: Math.max(EPSILON, (length / feedRate) * 60),
+          units,
+        });
+      } else if (move.type === 'arc') {
+        appendArcMotionSegments(segments, {
+          current,
+          next,
+          move,
+          tool,
+          toolpath,
+          toolpathIndex,
+          radius,
+          units,
+        });
+      } else if (move.type === 'cubic') {
+        appendCubicMotionSegments(segments, {
+          current,
+          next,
+          move,
+          tool,
+          toolpath,
+          toolpathIndex,
+          radius,
+          units,
         });
       }
       current = next;
     }
   }
   return segments;
+}
+
+function appendLinearMotionSegment(segments, context) {
+  const { current, next, move, tool, toolpath, toolpathIndex, radius, units } = context;
+  if (!hasPoint3(current) || !hasPoint3(next)) return;
+  const length = segmentLength(current, next);
+  if (length <= EPSILON) return;
+  segments.push(buildMotionSegment({
+    start: current,
+    end: next,
+    moveType: move.type,
+    tool,
+    toolpath,
+    toolpathIndex,
+    radius,
+    feedOverride: move.feed,
+    units,
+  }));
+}
+
+function appendArcMotionSegments(segments, context) {
+  const { current, next, move, tool, toolpath, toolpathIndex, radius, units } = context;
+  if (!hasPoint3(current) || !hasPoint3(next)) return;
+  const centerX = Number(move.centerX);
+  const centerY = Number(move.centerY);
+  if (!Number.isFinite(centerX) || !Number.isFinite(centerY)) {
+    appendLinearMotionSegment(segments, { ...context, move: { ...move, type: 'feed' } });
+    return;
+  }
+  const startAngle = Math.atan2(current.y - centerY, current.x - centerX);
+  let endAngle = Math.atan2(next.y - centerY, next.x - centerX);
+  let sweep = endAngle - startAngle;
+  if (move.clockwise === true) {
+    if (sweep >= 0) sweep -= Math.PI * 2;
+  } else if (sweep <= 0) {
+    sweep += Math.PI * 2;
+  }
+  if (Math.abs(sweep) <= EPSILON) {
+    appendLinearMotionSegment(segments, { ...context, move: { ...move, type: 'feed' } });
+    return;
+  }
+
+  const radiusLength = Math.hypot(current.x - centerX, current.y - centerY);
+  const steps = Math.max(4, Math.ceil(Math.abs(sweep) / (Math.PI / 18)));
+  let previous = { ...current };
+  for (let index = 1; index <= steps; index++) {
+    const t = index / steps;
+    const angle = startAngle + sweep * t;
+    const point = {
+      x: centerX + Math.cos(angle) * radiusLength,
+      y: centerY + Math.sin(angle) * radiusLength,
+      z: current.z + (next.z - current.z) * t,
+    };
+    segments.push(buildMotionSegment({
+      start: previous,
+      end: point,
+      moveType: 'feed',
+      displayType: 'arc',
+      tool,
+      toolpath,
+      toolpathIndex,
+      radius,
+      feedOverride: move.feed,
+      units,
+    }));
+    previous = point;
+  }
+}
+
+function appendCubicMotionSegments(segments, context) {
+  const { current, next, move, tool, toolpath, toolpathIndex, radius, units } = context;
+  if (!hasPoint3(current) || !hasPoint3(next)) return;
+  const control1 = { x: Number(move.control1X), y: Number(move.control1Y), z: current.z };
+  const control2 = { x: Number(move.control2X), y: Number(move.control2Y), z: next.z };
+  if (!hasPoint3(control1) || !hasPoint3(control2)) {
+    appendLinearMotionSegment(segments, { ...context, move: { ...move, type: 'feed' } });
+    return;
+  }
+
+  const steps = 16;
+  let previous = { ...current };
+  for (let index = 1; index <= steps; index++) {
+    const t = index / steps;
+    const point = evaluateCubicPoint(current, control1, control2, next, t);
+    segments.push(buildMotionSegment({
+      start: previous,
+      end: point,
+      moveType: 'feed',
+      displayType: 'cubic',
+      tool,
+      toolpath,
+      toolpathIndex,
+      radius,
+      feedOverride: move.feed,
+      units,
+    }));
+    previous = point;
+  }
+}
+
+function buildMotionSegment({
+  start,
+  end,
+  moveType,
+  displayType = moveType,
+  tool,
+  toolpath,
+  toolpathIndex,
+  radius,
+  feedOverride,
+  units,
+}) {
+  const length = segmentLength(start, end);
+  const feedRate = resolveMotionRate(moveType, feedOverride, tool, units);
+  return {
+    start: { ...start },
+    end: { ...end },
+    radius,
+    moveType,
+    displayType,
+    cutting: moveType !== 'rapid',
+    durationSeconds: Math.max(EPSILON, (length / Math.max(EPSILON, feedRate)) * 60),
+    operationId: toolpath.operationId,
+    operationIndex: toolpathIndex,
+    toolpathId: toolpath.id,
+    toolId: tool?.id || toolpath.toolId,
+    toolNumber: tool?.number || toolpath.toolNumber,
+    toolType: tool?.type || 'endmill',
+    toolDiameter: Number(tool?.diameter || radius * 2 || 1),
+    toolRadius: radius,
+    toolStickout: Number(tool?.stickout || tool?.fluteLength || (radius * 8)),
+    toolFluteLength: Number(tool?.fluteLength || tool?.stickout || (radius * 4)),
+    toolBallRadius: Number(tool?.ballRadius || radius),
+    toolTipDiameter: Number(tool?.tipDiameter || 0),
+    toolTaperAngle: Number(tool?.taperAngle || 60),
+    toolPointAngle: Number(tool?.pointAngle || 118),
+  };
+}
+
+function resolveMotionRate(moveType, feedOverride, tool, units) {
+  if (moveType === 'rapid') {
+    const fallbackRapid = units === 'inch' ? 120 : 3000;
+    return Math.max(EPSILON, Math.max(Number(tool?.feedRate || 0) * 6, fallbackRapid));
+  }
+  return Math.max(EPSILON, Number(feedOverride) || Number(tool?.feedRate) || 1);
+}
+
+function buildToolState(segment, position, progress) {
+  if (!segment || !position) return null;
+  return {
+    operationId: segment.operationId,
+    toolpathId: segment.toolpathId,
+    toolId: segment.toolId,
+    toolNumber: segment.toolNumber,
+    type: segment.toolType,
+    moveType: segment.moveType,
+    displayType: segment.displayType,
+    radius: segment.toolRadius,
+    diameter: segment.toolDiameter,
+    stickout: segment.toolStickout,
+    fluteLength: segment.toolFluteLength,
+    ballRadius: segment.toolBallRadius,
+    tipDiameter: segment.toolTipDiameter,
+    taperAngle: segment.toolTaperAngle,
+    pointAngle: segment.toolPointAngle,
+    progress,
+    position: { ...position },
+  };
+}
+
+function evaluateCubicPoint(start, control1, control2, end, t) {
+  const mt = 1 - t;
+  return {
+    x: mt * mt * mt * start.x + 3 * mt * mt * t * control1.x + 3 * mt * t * t * control2.x + t * t * t * end.x,
+    y: mt * mt * mt * start.y + 3 * mt * mt * t * control1.y + 3 * mt * t * t * control2.y + t * t * t * end.y,
+    z: mt * mt * mt * start.z + 3 * mt * mt * t * control1.z + 3 * mt * t * t * control2.z + t * t * t * end.z,
+  };
+}
+
+function hasPoint3(point) {
+  return Number.isFinite(point?.x) && Number.isFinite(point?.y) && Number.isFinite(point?.z);
+}
+
+function segmentLength(start, end) {
+  return Math.hypot(end.x - start.x, end.y - start.y, end.z - start.z);
+}
+
+function buildOperationStates(toolpaths, stock, initialVolume) {
+  return (toolpaths || []).map((toolpath, index, allToolpaths) => ({
+    operationId: toolpath.operationId,
+    toolpathId: toolpath.id,
+    name: toolpath.name,
+    operationType: toolpath.operationType,
+    sequenceIndex: index,
+    remainingOperationIds: allToolpaths.slice(index + 1).map((candidate) => candidate.operationId),
+    feedSegmentCount: 0,
+    processedSegmentCount: 0,
+    progress: 0,
+    removedVertexCount: 0,
+    minHeight: stock.max.z,
+    remainingVolume: initialVolume,
+    removedVolume: 0,
+  }));
+}
+
+function estimateStockVolume(stock) {
+  const width = Math.max(0, Number(stock?.max?.x) - Number(stock?.min?.x));
+  const depth = Math.max(0, Number(stock?.max?.y) - Number(stock?.min?.y));
+  const height = Math.max(0, Number(stock?.max?.z) - Number(stock?.min?.z));
+  return width * depth * height;
+}
+
+function summarizeHeightField(heights, stock, initialVolume) {
+  let minHeight = stock.max.z;
+  let removedVertexCount = 0;
+  let remainingVolume = 0;
+  const width = Math.max(EPSILON, Number(stock.max.x) - Number(stock.min.x));
+  const depth = Math.max(EPSILON, Number(stock.max.y) - Number(stock.min.y));
+  const sampleArea = (width * depth) / Math.max(1, heights.length);
+
+  for (const height of heights) {
+    if (height < stock.max.z - EPSILON) removedVertexCount++;
+    if (height < minHeight) minHeight = height;
+    remainingVolume += Math.max(0, height - stock.min.z) * sampleArea;
+  }
+
+  return {
+    minHeight,
+    removedVertexCount,
+    remainingVolume,
+    removedVolume: Math.max(0, initialVolume - remainingVolume),
+  };
 }
 
 function carveSegment(heights, columns, rows, stock, segment) {

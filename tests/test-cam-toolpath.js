@@ -63,6 +63,236 @@ test('pocket toolpaths create inward stepover loops', () => {
   }
 });
 
+test('pocket toolpaths keep islands clear and treat narrow necks as separate pockets', () => {
+  const outer = [
+    { x: 0, y: 0 },
+    { x: 24, y: 0 },
+    { x: 24, y: 20 },
+    { x: 0, y: 20 },
+  ];
+  const island = [
+    { x: 8, y: 6 },
+    { x: 16, y: 6 },
+    { x: 16, y: 20 },
+    { x: 8, y: 20 },
+  ];
+  const cam = normalizeCamConfig({
+    tools: [{ id: 'tool-a', type: 'endmill', diameter: 6 }],
+    operations: [{
+      id: 'pocket-islands',
+      type: 'pocket',
+      toolId: 'tool-a',
+      source: { loops: [outer, island] },
+      topZ: 0,
+      bottomZ: -1,
+      stepDown: 1,
+      stepoverPercent: 100,
+    }],
+  });
+  const { toolpaths } = generateToolpaths(cam);
+  const xyRapids = toolpaths[0].moves.filter((move) => move.type === 'rapid' && move.x != null && move.y != null);
+
+  assert.ok(xyRapids.some((move) => move.x < 8), 'left pocket should be machined');
+  assert.ok(xyRapids.some((move) => move.x > 16), 'right pocket should be machined');
+  assert.ok(xyRapids.every((move) => !(move.x > 8 && move.x < 16 && move.y > 6 && move.y < 20)), 'island and blocked neck should stay clear');
+});
+
+test('concave pocket surfaces split narrow bridges that are smaller than the tool diameter', () => {
+  const dumbbell = [
+    { x: 0, y: 0 },
+    { x: 10, y: 0 },
+    { x: 10, y: 4 },
+    { x: 14, y: 4 },
+    { x: 14, y: 0 },
+    { x: 24, y: 0 },
+    { x: 24, y: 10 },
+    { x: 14, y: 10 },
+    { x: 14, y: 6 },
+    { x: 10, y: 6 },
+    { x: 10, y: 10 },
+    { x: 0, y: 10 },
+  ];
+  const cam = normalizeCamConfig({
+    tools: [{ id: 'tool-a', type: 'endmill', diameter: 6 }],
+    operations: [{
+      id: 'concave-pocket',
+      type: 'pocket',
+      toolId: 'tool-a',
+      source: { loops: [dumbbell] },
+      topZ: 0,
+      bottomZ: -1,
+      stepDown: 1,
+      stepoverPercent: 100,
+    }],
+  });
+  const { toolpaths } = generateToolpaths(cam);
+  const xyRapids = toolpaths[0].moves.filter((move) => move.type === 'rapid' && move.x != null && move.y != null);
+
+  assert.ok(xyRapids.some((move) => move.x < 10), 'left lobe should be machined');
+  assert.ok(xyRapids.some((move) => move.x > 14), 'right lobe should be machined');
+  assert.ok(xyRapids.every((move) => !(move.x > 10 && move.x < 14 && move.y > 4 && move.y < 6)), 'bridge smaller than the cutter should stay clear');
+});
+
+test('pocket order can finish each pocket before moving to the next depth', () => {
+  const leftPocket = [
+    { x: 0, y: 0 },
+    { x: 6, y: 0 },
+    { x: 6, y: 6 },
+    { x: 0, y: 6 },
+  ];
+  const rightPocket = [
+    { x: 12, y: 0 },
+    { x: 18, y: 0 },
+    { x: 18, y: 6 },
+    { x: 12, y: 6 },
+  ];
+  const cam = normalizeCamConfig({
+    tools: [{ id: 'tool-a', type: 'endmill', diameter: 2 }],
+    operations: [{
+      id: 'pocket-order',
+      type: 'pocket',
+      toolId: 'tool-a',
+      source: { loops: [leftPocket, rightPocket] },
+      topZ: 0,
+      bottomZ: -2,
+      stepDown: 1,
+      stepoverPercent: 100,
+      pocketOrder: 'per-pocket',
+    }],
+  });
+  const { toolpaths } = generateToolpaths(cam);
+  const plungeStarts = [];
+  let pendingRapid = null;
+  for (const move of toolpaths[0].moves) {
+    if (move.type === 'rapid' && move.x != null && move.y != null) {
+      pendingRapid = { x: move.x, y: move.y };
+      continue;
+    }
+    if (move.type === 'feed' && move.z != null && pendingRapid) {
+      plungeStarts.push({ ...pendingRapid, z: move.z });
+      pendingRapid = null;
+    }
+  }
+
+  assert.deepEqual(
+    plungeStarts.slice(0, 4).map(({ x, z }) => ({ side: x < 10 ? 'left' : 'right', z })),
+    [
+      { side: 'left', z: -1 },
+      { side: 'left', z: -2 },
+      { side: 'right', z: -1 },
+      { side: 'right', z: -2 },
+    ],
+  );
+});
+
+test('pocket strategies can switch raster direction', () => {
+  const baseOperation = {
+    id: 'op-pocket',
+    name: 'Pocket',
+    type: 'pocket',
+    toolId: 'tool-pocket',
+    topZ: 0,
+    bottomZ: -1,
+    stepDown: 1,
+    stepoverPercent: 100,
+    source: {
+      loops: [[
+        { x: 0, y: 0 },
+        { x: 20, y: 0 },
+        { x: 20, y: 12 },
+        { x: 0, y: 12 },
+      ]],
+    },
+  };
+
+  const horizontalConfig = normalizeCamConfig({
+    tools: [{ id: 'tool-pocket', type: 'flat-endmill', diameter: 2, feedRate: 500, plungeRate: 120 }],
+    operations: [{ ...baseOperation, id: 'op-pocket-x', pocketStrategy: 'zigzag-x' }],
+  });
+  const verticalConfig = normalizeCamConfig({
+    tools: [{ id: 'tool-pocket', type: 'flat-endmill', diameter: 2, feedRate: 500, plungeRate: 120 }],
+    operations: [{ ...baseOperation, id: 'op-pocket-y', pocketStrategy: 'zigzag-y' }],
+  });
+
+  const horizontalMoves = generateToolpaths(horizontalConfig).toolpaths[0].moves.filter((move) => move.type === 'feed' && Number.isFinite(move.x) && Number.isFinite(move.y));
+  const verticalMoves = generateToolpaths(verticalConfig).toolpaths[0].moves.filter((move) => move.type === 'feed' && Number.isFinite(move.x) && Number.isFinite(move.y));
+
+  const longestHorizontalStep = longestFeedStep(horizontalMoves);
+  const longestVerticalStep = longestFeedStep(verticalMoves);
+  assert.ok(longestHorizontalStep);
+  assert.ok(longestVerticalStep);
+
+  const horizontalDx = Math.abs(longestHorizontalStep.to.x - longestHorizontalStep.from.x);
+  const horizontalDy = Math.abs(longestHorizontalStep.to.y - longestHorizontalStep.from.y);
+  const verticalDx = Math.abs(longestVerticalStep.to.x - longestVerticalStep.from.x);
+  const verticalDy = Math.abs(longestVerticalStep.to.y - longestVerticalStep.from.y);
+
+  assert.ok(horizontalDx > horizontalDy, `expected horizontal zig-zag pass, got dx=${horizontalDx}, dy=${horizontalDy}`);
+  assert.ok(verticalDy > verticalDx, `expected vertical zig-zag pass, got dx=${verticalDx}, dy=${verticalDy}`);
+});
+
+test('zig-zag pockets stay down across connected scan lines', () => {
+  const cam = normalizeCamConfig({
+    tools: [{ id: 'tool-pocket', type: 'flat-endmill', diameter: 2, feedRate: 500, plungeRate: 120 }],
+    operations: [{
+      id: 'op-pocket-x',
+      type: 'pocket',
+      toolId: 'tool-pocket',
+      topZ: 0,
+      bottomZ: -1,
+      stepDown: 1,
+      stepoverPercent: 100,
+      pocketStrategy: 'zigzag-x',
+      source: {
+        loops: [[
+          { x: 0, y: 0 },
+          { x: 20, y: 0 },
+          { x: 20, y: 12 },
+          { x: 0, y: 12 },
+        ]],
+      },
+    }],
+  });
+
+  const moves = generateToolpaths(cam).toolpaths[0].moves;
+  const plungeMoves = moves.filter((move) => move.type === 'feed' && Number.isFinite(move.z));
+  const xyRapids = moves.filter((move) => move.type === 'rapid' && Number.isFinite(move.x) && Number.isFinite(move.y));
+
+  assert.equal(plungeMoves.length, 1);
+  assert.equal(xyRapids.length, 1);
+});
+
+test('profile along exact segment loops preserves arc moves', () => {
+  const camConfig = normalizeCamConfig({
+    tools: [{ id: 'tool-profile', type: 'flat-endmill', diameter: 2, feedRate: 400, plungeRate: 120 }],
+    operations: [{
+      id: 'op-profile',
+      name: 'Arc profile',
+      type: 'profile',
+      toolId: 'tool-profile',
+      side: 'along',
+      topZ: 0,
+      bottomZ: -1,
+      stepDown: 1,
+      source: {
+        loops: [[
+          { x: 0, y: 0 },
+          { x: 4, y: 0 },
+          { x: 0, y: 4 },
+        ]],
+        segmentLoops: [[
+          { type: 'line', start: { x: 0, y: 0 }, end: { x: 4, y: 0 } },
+          { type: 'arc', start: { x: 4, y: 0 }, end: { x: 0, y: 4 }, center: { x: 0, y: 0 }, clockwise: false },
+          { type: 'line', start: { x: 0, y: 4 }, end: { x: 0, y: 0 } },
+        ]],
+      },
+    }],
+  });
+
+  const { toolpaths } = generateToolpaths(camConfig);
+  assert.ok(toolpaths[0].moves.some((move) => move.type === 'arc'));
+});
+
 test('lead-in parameters add a zig-zag before the selected path start', () => {
   const cam = normalizeCamConfig({
     tools: [{ id: 'tool-a', type: 'endmill', diameter: 2 }],
@@ -119,3 +349,14 @@ test('depth pass helper includes the exact final depth', () => {
   assert.deepEqual(depthPasses(0, -2.5, 1), [-1, -2, -2.5]);
   assert.deepEqual(depthPasses(-2, 0, 1.25), [-0.75, 0]);
 });
+
+function longestFeedStep(moves) {
+  let best = null;
+  for (let index = 1; index < moves.length; index++) {
+    const from = moves[index - 1];
+    const to = moves[index];
+    const length = Math.hypot(to.x - from.x, to.y - from.y);
+    if (!best || length > best.length) best = { from, to, length };
+  }
+  return best;
+}

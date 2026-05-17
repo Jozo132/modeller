@@ -76,6 +76,7 @@ import {
 
 const DIAGNOSTIC_HATCH_STORAGE_KEY = 'cad-modeller-diagnostic-backface-hatch';
 const DIAGNOSTIC_HATCH_MODE_AUTO = 'auto';
+const CAM_OPERATION_PLAN_RESOLUTION = 48;
 const DIAGNOSTIC_HATCH_MODE_ON = 'on';
 const DIAGNOSTIC_HATCH_MODE_OFF = 'off';
 const INVISIBLE_EDGES_VISIBLE_KEY = 'cad-modeller-invisible-edges-visible';
@@ -185,6 +186,8 @@ class App {
     this._camPanelStage = 'setup';
     this._camPickMode = null;
     this._camPreviewMode = 'active';
+    this._camVisualizationRevision = 0;
+    this._camVisualizationCache = null;
     this._camSimulationProgress = 1;
     this._camSimulationSpeed = 1;
     this._camSimulationPlaying = false;
@@ -8190,6 +8193,7 @@ class App {
     const baseConfig = JSON.parse(JSON.stringify(this._ensureCamConfig()));
     mutator(baseConfig);
     this._camConfig = normalizeCamConfig(baseConfig);
+    this._invalidateCamVisualizationCache();
     this._refreshCamVisualization();
     if (this._workspaceMode === 'cam' && options.render !== false) {
       this._renderCamPanel();
@@ -8209,6 +8213,11 @@ class App {
     } catch {
       return {};
     }
+  }
+
+  _invalidateCamVisualizationCache() {
+    this._camVisualizationRevision += 1;
+    this._camVisualizationCache = null;
   }
 
   _getCamReferenceGeometry() {
@@ -8233,11 +8242,16 @@ class App {
     return Math.max(1e-6, Math.min(...values));
   }
 
+  _normalizeCamPanelStage(stage) {
+    return stage === 'geometry' ? 'operations' : stage;
+  }
+
   _renderCamPanel() {
     const container = document.getElementById('left-feature-params-content');
     if (!container) return;
     const headerEl = document.querySelector('#left-feature-params > h3');
-    const stage = this._camPanelStage || 'setup';
+    const stage = this._normalizeCamPanelStage(this._camPanelStage || 'setup');
+    if (this._camPanelStage !== stage) this._camPanelStage = stage;
     const stages = this._camStages();
     const stageDef = stages.find((candidate) => candidate.id === stage) || stages[0];
     if (headerEl) headerEl.innerHTML = `CAM ${stageDef.label}`;
@@ -8248,8 +8262,6 @@ class App {
       container.appendChild(this._buildCamStockSection(camConfig));
     } else if (stageDef.id === 'tools') {
       container.appendChild(this._buildCamToolSection(camConfig));
-    } else if (stageDef.id === 'geometry') {
-      container.appendChild(this._buildCamGeometrySection(camConfig));
     } else if (stageDef.id === 'operations') {
       container.appendChild(this._buildCamOperationsSection(camConfig));
     } else if (stageDef.id === 'toolpaths') {
@@ -8265,7 +8277,6 @@ class App {
     return [
       { id: 'setup', label: 'Setup' },
       { id: 'tools', label: 'Tools' },
-      { id: 'geometry', label: 'Geometry' },
       { id: 'operations', label: 'Operations' },
       { id: 'toolpaths', label: 'Toolpaths' },
       { id: 'simulate', label: 'Simulate' },
@@ -8274,9 +8285,14 @@ class App {
   }
 
   _setCamPanelStage(stage) {
-    if (!this._camStages().some((candidate) => candidate.id === stage)) return;
-    this._camPanelStage = stage;
-    if (this._workspaceMode === 'cam') this._renderCamPanel();
+    const normalizedStage = this._normalizeCamPanelStage(stage);
+    if (!this._camStages().some((candidate) => candidate.id === normalizedStage)) return;
+    this._camPanelStage = normalizedStage;
+    if (this._workspaceMode === 'cam') {
+      this._renderCamPanel();
+      this._refreshCamVisualization();
+    }
+    this._scheduleRender();
   }
 
   _buildCamStageNav(activeStage) {
@@ -8347,34 +8363,62 @@ class App {
 
   _buildCamOperationsSection(camConfig) {
     const section = this._createCamSection('Operations');
+    const generation = this._getCamToolpathGeneration(camConfig);
+    const toolById = new Map((camConfig.tools || []).map((tool) => [tool.id, tool]));
+    const stockStateByOperationId = new Map((generation.operationStates || []).map((state) => [state.operationId, state]));
+    const warningByOperationId = new Map((generation.warnings || [])
+      .filter((warning) => typeof warning?.operationId === 'string')
+      .map((warning) => [warning.operationId, warning]));
     const list = document.createElement('div');
     list.className = 'cam-operation-list';
     camConfig.operations.forEach((operation, operationIndex) => {
+      const stockState = stockStateByOperationId.get(operation.id) || null;
+      const warning = warningByOperationId.get(operation.id) || null;
+      const contourCount = operation.source?.loops?.length || 0;
+      const tool = toolById.get(operation.toolId || camConfig.activeToolId) || null;
+      const modeLabel = operation.type === 'profile'
+        ? (operation.side || 'outside')
+        : ((operation.pocketStrategy || 'contour').replace(/-/g, ' '));
+      const metaParts = [
+        `Op ${operationIndex + 1}`,
+        tool ? `T${tool.number}` : 'No tool',
+        `${contourCount} contour${contourCount === 1 ? '' : 's'}`,
+        modeLabel,
+      ];
+      const planSummary = warning
+        ? warning.message
+        : (stockState
+          ? `Remaining stock ${this._formatCamVolume(stockState.remainingVolume, camConfig.units)}`
+          : 'Select source geometry to generate the cut');
       const item = document.createElement('div');
       item.className = 'cam-operation-item';
       if (operation.id === camConfig.activeOperationId) item.classList.add('active');
       const main = document.createElement('div');
       main.className = 'cam-operation-main';
-      main.innerHTML = `<div class="cam-operation-title">${escapeHtml(operation.name)}</div><div class="cam-operation-meta">#${operationIndex + 1} · ${escapeHtml(operation.type)} · ${operation.source?.loops?.length || 0} contour</div>`;
+      main.innerHTML = `<div class="cam-operation-header"><div class="cam-operation-title">${escapeHtml(operation.name)}</div><span class="cam-pill">${escapeHtml(operation.type)}</span></div><div class="cam-operation-meta">${metaParts.map((part) => `<span class="cam-operation-stat">${escapeHtml(part)}</span>`).join('')}</div><div class="cam-operation-summary${warning ? ' warning' : ''}">${escapeHtml(planSummary)}</div>`;
 
       const controls = document.createElement('div');
       controls.className = 'cam-operation-controls';
       const statePill = document.createElement('span');
-      statePill.className = 'cam-pill';
+      statePill.className = `cam-pill${operation.enabled ? '' : ' muted'}`;
       statePill.textContent = operation.enabled ? 'Enabled' : 'Off';
       controls.appendChild(statePill);
-      controls.appendChild(this._createCamIconButton('Up', (event) => {
+
+      const controlActions = document.createElement('div');
+      controlActions.className = 'cam-operation-actions';
+      controlActions.appendChild(this._createCamIconButton('Up', (event) => {
         event.stopPropagation();
         this._moveCamOperation(operation.id, -1);
       }, { disabled: operationIndex === 0, title: 'Move earlier in the program' }));
-      controls.appendChild(this._createCamIconButton('Down', (event) => {
+      controlActions.appendChild(this._createCamIconButton('Down', (event) => {
         event.stopPropagation();
         this._moveCamOperation(operation.id, 1);
       }, { disabled: operationIndex === camConfig.operations.length - 1, title: 'Move later in the program' }));
-      controls.appendChild(this._createCamIconButton('Remove', (event) => {
+      controlActions.appendChild(this._createCamIconButton('Remove', (event) => {
         event.stopPropagation();
         this._removeCamOperation(operation.id);
       }, { danger: true, title: 'Remove operation' }));
+      controls.appendChild(controlActions);
 
       item.addEventListener('click', () => {
         this._updateCamConfig((draft) => { draft.activeOperationId = operation.id; });
@@ -8385,14 +8429,24 @@ class App {
     if (camConfig.operations.length === 0) {
       const note = document.createElement('p');
       note.className = 'cam-panel-note';
-      note.textContent = 'No operations yet. Add a profile or pocket to generate an initial stock-outline toolpath.';
+      note.textContent = 'No operations yet. Add a profile or pocket, then choose its source surface.';
       list.appendChild(note);
     }
     section.appendChild(list);
 
     const activeOperation = camConfig.operations.find((operation) => operation.id === camConfig.activeOperationId) || null;
     if (activeOperation) {
+      const activeOperationState = stockStateByOperationId.get(activeOperation.id) || null;
+      const activeOperationWarning = warningByOperationId.get(activeOperation.id) || null;
       const toolOptions = camConfig.tools.map((tool) => ({ value: tool.id, label: `T${tool.number} ${tool.name}` }));
+      if (activeOperationState || activeOperationWarning) {
+        const planNote = document.createElement('p');
+        planNote.className = `cam-panel-note${activeOperationWarning ? ' warning' : ''}`;
+        planNote.textContent = activeOperationWarning
+          ? activeOperationWarning.message
+          : `Pass ${activeOperationState.sequenceIndex + 1} of ${Math.max(1, generation.toolpaths.length)}. Removed about ${this._formatCamVolume(activeOperationState.removedVolume, camConfig.units)}; remaining about ${this._formatCamVolume(activeOperationState.remainingVolume, camConfig.units)}.`;
+        section.appendChild(planNote);
+      }
       section.appendChild(this._createParamRow('Name', 'text', activeOperation.name, (value) => this._setActiveCamOperationField('name', value)));
       section.appendChild(this._createParamRow('Enabled', 'checkbox', activeOperation.enabled, (value) => this._setActiveCamOperationField('enabled', value)));
       section.appendChild(this._createParamRow('Tool', 'select', activeOperation.toolId || camConfig.activeToolId || '', (value) => this._setActiveCamOperationField('toolId', value), toolOptions));
@@ -8407,7 +8461,19 @@ class App {
         ]));
       } else {
         section.appendChild(this._createParamRow('Step Over %', 'number', activeOperation.stepoverPercent, (value) => this._setActiveCamOperationField('stepoverPercent', value)));
+        section.appendChild(this._createParamRow('Pocket Order', 'select', activeOperation.pocketOrder || 'per-level', (value) => this._setActiveCamOperationField('pocketOrder', value), [
+          { value: 'per-level', label: 'Finish each level across all pockets' },
+          { value: 'per-pocket', label: 'Finish one pocket completely before the next' },
+        ]));
+        section.appendChild(this._createParamRow('Strategy', 'select', activeOperation.pocketStrategy || 'contour', (value) => this._setActiveCamOperationField('pocketStrategy', value), [
+          { value: 'contour', label: 'Contour offset' },
+          { value: 'zigzag-x', label: 'Zig-zag along X' },
+          { value: 'zigzag-y', label: 'Zig-zag along Y' },
+          { value: 'oneway-x', label: 'One-way along X' },
+          { value: 'oneway-y', label: 'One-way along Y' },
+        ]));
       }
+      this._appendCamOperationGeometryControls(section, activeOperation);
       section.appendChild(this._createParamRow('Lead-in Zig-zag', 'checkbox', activeOperation.leadInEnabled, (value) => this._setActiveCamOperationField('leadInEnabled', value)));
       section.appendChild(this._createParamRow('Lead-in Length', 'number', activeOperation.leadInLength, (value) => this._setActiveCamOperationField('leadInLength', value)));
       section.appendChild(this._createParamRow('Lead-in Amplitude', 'number', activeOperation.leadInZigZagAmplitude, (value) => this._setActiveCamOperationField('leadInZigZagAmplitude', value)));
@@ -8418,57 +8484,43 @@ class App {
     actions.appendChild(this._createCamButton('Add Profile', () => this._addCamOperation('profile')));
     actions.appendChild(this._createCamButton('Add Pocket', () => this._addCamOperation('pocket')));
     if (activeOperation) {
-      actions.appendChild(this._createCamButton('Edit Geometry', () => this._setCamPanelStage('geometry')));
       actions.appendChild(this._createCamButton('Recalculate Toolpath', () => this._recalculateCamToolpath(), { primary: true }));
     }
     section.appendChild(actions);
     return section;
   }
 
-  _buildCamGeometrySection(camConfig) {
-    const section = this._createCamSection('Feature Selection');
-    const activeOperation = this._getActiveCamOperation(camConfig);
-    if (!activeOperation) {
-      const note = document.createElement('p');
-      note.className = 'cam-panel-note';
-      note.textContent = 'Add an operation before selecting source geometry or machining heights.';
-      section.appendChild(note);
-      const actions = this._createCamActionRow();
-      actions.appendChild(this._createCamButton('Add Profile', () => this._addCamOperation('profile')));
-      actions.appendChild(this._createCamButton('Add Pocket', () => this._addCamOperation('pocket')));
-      section.appendChild(actions);
-      return section;
-    }
-
-    section.appendChild(this._createParamRow('Operation', 'select', activeOperation.id, (value) => {
-      this._updateCamConfig((draft) => { draft.activeOperationId = value; });
-    }, camConfig.operations.map((operation) => ({ value: operation.id, label: operation.name }))));
-    section.appendChild(this._createParamRow('Top Z', 'number', activeOperation.topZ, (value) => this._setActiveCamOperationField('topZ', value)));
-    section.appendChild(this._createParamRow('Bottom Z', 'number', activeOperation.bottomZ, (value) => this._setActiveCamOperationField('bottomZ', value)));
-
-    const source = activeOperation.source || {};
+  _appendCamOperationGeometryControls(section, activeOperation) {
+    const source = activeOperation?.source || {};
+    const contourCount = Array.isArray(source.loops) ? source.loops.length : 0;
+    const sourceLabel = source.label
+      || (source.type === 'stock-outline'
+        ? 'Stock outline'
+        : (source.type === 'face' && source.faceIndex != null
+          ? `Surface ${source.topoFaceId ?? source.faceIndex}`
+          : source.type || 'manual'));
     const sourceSummary = document.createElement('p');
     sourceSummary.className = 'cam-panel-note';
-    const sourceLabel = source.label || (source.type === 'face' && source.faceIndex != null ? `Face ${source.faceIndex}` : source.type || 'manual');
-    sourceSummary.textContent = `Source: ${sourceLabel}; contours: ${source.loops?.length || 0}.`;
+    sourceSummary.textContent = contourCount > 0
+      ? `Source: ${sourceLabel}; contours: ${contourCount}.`
+      : 'No source selected yet. Pick a model surface or use Stock Outline.';
     section.appendChild(sourceSummary);
 
+    const isPickModeActive = (mode) => this._camPickMode?.mode === mode && this._camPickMode?.operationId === activeOperation.id;
     const actions = this._createCamActionRow();
     actions.appendChild(this._createCamButton('Use Stock Outline', () => this._setActiveCamOperationSourceToStockOutline(), {
       active: source.type === 'stock-outline',
     }));
-    actions.appendChild(this._createCamButton('Pick Source Face', () => this._startCamPickMode('source-face'), {
-      active: this._camPickMode?.mode === 'source-face',
+    actions.appendChild(this._createCamButton('Pick Source Surface', () => this._startCamPickMode('source-face'), {
+      active: isPickModeActive('source-face'),
     }));
     actions.appendChild(this._createCamButton('Pick Top', () => this._startCamPickMode('top-z'), {
-      active: this._camPickMode?.mode === 'top-z',
+      active: isPickModeActive('top-z'),
     }));
     actions.appendChild(this._createCamButton('Pick Bottom', () => this._startCamPickMode('bottom-z'), {
-      active: this._camPickMode?.mode === 'bottom-z',
+      active: isPickModeActive('bottom-z'),
     }));
-    actions.appendChild(this._createCamButton('Recalculate Toolpath', () => this._recalculateCamToolpath(), { primary: true }));
     section.appendChild(actions);
-    return section;
   }
 
   _buildCamSimulationSection(camConfig) {
@@ -8569,7 +8621,7 @@ class App {
     for (const toolpath of generation.toolpaths) {
       const item = document.createElement('div');
       item.className = `cam-operation-item${toolpath.operationId === camConfig.activeOperationId ? ' active' : ''}`;
-      item.innerHTML = `<div><div class="cam-operation-title">${escapeHtml(toolpath.name)}</div><div class="cam-operation-meta">T${toolpath.toolNumber} · ${toolpath.moves?.length || 0} moves</div></div><span class="cam-pill">${escapeHtml(toolpath.operationType)}</span>`;
+      item.innerHTML = `<div class="cam-operation-main"><div class="cam-operation-header"><div class="cam-operation-title">${escapeHtml(toolpath.name)}</div><span class="cam-pill">${escapeHtml(toolpath.operationType)}</span></div><div class="cam-operation-meta"><span class="cam-operation-stat">T${toolpath.toolNumber}</span><span class="cam-operation-stat">${toolpath.moves?.length || 0} moves</span></div></div>`;
       item.addEventListener('click', () => {
         this._updateCamConfig((draft) => { draft.activeOperationId = toolpath.operationId; });
       });
@@ -8591,6 +8643,13 @@ class App {
     summary.className = 'cam-panel-summary';
     summary.textContent = `${generation.toolpaths.length} toolpath${generation.toolpaths.length === 1 ? '' : 's'} ready for ${camConfig.postprocessorId}.`;
     section.appendChild(summary);
+    section.appendChild(this._createParamRow('G5 Cubic Splines', 'checkbox', camConfig.linuxCncUseG5 !== false, (value) => {
+      this._updateCamConfig((draft) => { draft.linuxCncUseG5 = value !== false; });
+    }));
+    const splineNote = document.createElement('p');
+    splineNote.className = 'cam-panel-note';
+    splineNote.textContent = 'When exact cubic source spans are available, LinuxCNC export will emit G5 by default; disable this to linearize those segments.';
+    section.appendChild(splineNote);
     if (generation.warnings.length > 0) {
       const warnings = document.createElement('p');
       warnings.className = 'cam-panel-note warning';
@@ -8745,6 +8804,7 @@ class App {
   }
 
   _recalculateCamToolpath() {
+    this._invalidateCamVisualizationCache();
     const generation = this._getCamToolpathGeneration();
     this._refreshCamVisualization();
     if (this._workspaceMode === 'cam') this._renderCamPanel();
@@ -8764,7 +8824,7 @@ class App {
   }
 
   _addCamOperation(type) {
-    this._camPanelStage = 'geometry';
+    this._camPanelStage = 'operations';
     this._updateCamConfig((draft) => {
       const id = `${type}-${Date.now().toString(36)}`;
       const operationIndex = draft.operations.length + 1;
@@ -8776,7 +8836,7 @@ class App {
         name: `${type === 'profile' ? 'Profile' : 'Pocket'} ${operationIndex}`,
         type,
         toolId: draft.activeToolId || draft.tools[0]?.id || null,
-        source: { type: 'stock-outline', loops: [this._stockFootprintLoop(stock)] },
+        source: { type: 'manual', loops: [] },
         topZ: stock.max.z,
         bottomZ: stock.min.z,
         stepDown: Math.max(0.1, Math.abs(stock.max.z - stock.min.z) / 4 || 1),
@@ -8797,7 +8857,7 @@ class App {
       draft.operations.push(operation);
       draft.activeOperationId = id;
     });
-    this.setStatus(`CAM ${type} operation added from stock outline.`);
+    this.setStatus(`CAM ${type} operation added. Choose its source surface and heights.`);
   }
 
   _resetCamStockFromModel() {
@@ -8828,7 +8888,7 @@ class App {
       const part = this._partManager?.getPart?.();
       const partName = part?.name || 'part';
       const filename = `${partName.replace(/[^a-zA-Z0-9_-]/g, '_')}.ngc`;
-      const result = downloadGCode(camConfig, filename, { programName: partName });
+      const result = downloadGCode(camConfig, filename, { programName: partName, linuxCncUseG5: camConfig.linuxCncUseG5 !== false });
       const warningSuffix = result.warnings.length > 0 ? ` (${result.warnings.length} warning${result.warnings.length === 1 ? '' : 's'})` : '';
       this.setStatus(`G-code exported${warningSuffix}.`);
     } catch (err) {
@@ -8843,10 +8903,41 @@ class App {
 
   _getCamToolpathGeneration(camConfig = this._ensureCamConfig()) {
     try {
-      return generateToolpaths(camConfig);
+      const generation = generateToolpaths(camConfig);
+      const stockPlan = simulateStockRemoval(camConfig, generation.toolpaths, {
+        progress: 1,
+        resolution: CAM_OPERATION_PLAN_RESOLUTION,
+      });
+      const operationStates = Array.isArray(stockPlan?.operationStates) ? stockPlan.operationStates : [];
+      const operationStateById = new Map(operationStates.map((state) => [state.operationId, state]));
+      generation.toolpaths = generation.toolpaths.map((toolpath, index, toolpaths) => ({
+        ...toolpath,
+        sequenceIndex: index,
+        remainingOperationIds: toolpaths.slice(index + 1).map((candidate) => candidate.operationId),
+        stockState: operationStateById.get(toolpath.operationId) || null,
+      }));
+      generation.operationStates = operationStates;
+      generation.stockPlan = stockPlan;
+      return generation;
     } catch (err) {
-      return { config: camConfig, toolpaths: [], warnings: [{ message: err.message }] };
+      return { config: camConfig, toolpaths: [], warnings: [{ message: err.message }], operationStates: [], stockPlan: null };
     }
+  }
+
+  _getCamVisualizationGeneration(camConfig = this._ensureCamConfig()) {
+    if (this._camVisualizationCache?.revision === this._camVisualizationRevision) {
+      return this._camVisualizationCache.generation;
+    }
+    const generation = generateToolpaths(camConfig);
+    this._camVisualizationCache = {
+      revision: this._camVisualizationRevision,
+      generation,
+    };
+    return generation;
+  }
+
+  _formatCamVolume(value, units = 'mm') {
+    return `${this._formatCamNumber(value)} ${units === 'inch' ? 'in^3' : 'mm^3'}`;
   }
 
   _refreshCamVisualization() {
@@ -8857,13 +8948,17 @@ class App {
       return;
     }
     const camConfig = this._ensureCamConfig();
+    const stage = this._normalizeCamPanelStage(this._camPanelStage || 'setup');
+    const showSimulation = stage === 'simulate';
     try {
-      const generation = generateToolpaths(camConfig);
-      const simulation = simulateStockRemoval(camConfig, generation.toolpaths, {
-        progress: this._camSimulationProgress,
-        resolution: CAM_SIMULATION_DEFAULT_RESOLUTION,
-      });
-      this._camSimulationTotalSeconds = Math.max(0.001, Number(simulation?.totalCutSeconds) || this._camSimulationTotalSeconds || 10);
+      const generation = this._getCamVisualizationGeneration(camConfig);
+      const simulation = showSimulation
+        ? simulateStockRemoval(camConfig, generation.toolpaths, {
+          progress: this._camSimulationProgress,
+          resolution: CAM_SIMULATION_DEFAULT_RESOLUTION,
+        })
+        : null;
+      this._camSimulationTotalSeconds = Math.max(0.001, Number(simulation?.totalMotionSeconds) || Number(simulation?.totalCutSeconds) || this._camSimulationTotalSeconds || 10);
       this._camVisualizationWarnings = generation.warnings || [];
       this._renderer3d.setCamVisualization({
         stock: camConfig.stock,
@@ -8872,6 +8967,9 @@ class App {
         previewMode: this._camPreviewMode === 'all' ? 'all' : 'active',
         simulationProgress: this._camSimulationProgress,
         simulation,
+        showSimulationSurface: showSimulation,
+        showTool: showSimulation,
+        staticRevision: `${this._camVisualizationRevision}:${camConfig.activeOperationId || ''}:${this._camPreviewMode}:${stage}`,
       });
     } catch (err) {
       warn('CAM visualization update failed:', err);
@@ -8888,9 +8986,9 @@ class App {
       return;
     }
     this._camPickMode = { mode, operationId: operation.id };
-    this._camPanelStage = 'geometry';
+    this._camPanelStage = 'operations';
     this._renderCamPanel();
-    this.setStatus(`${this._camPickModeLabel(mode)}: click a face on the part.`);
+    this.setStatus(`${this._camPickModeLabel(mode)}: click a model surface on the part.`);
   }
 
   _handleCamCanvasClick(event) {
@@ -8898,7 +8996,7 @@ class App {
     if (!this._camPickMode) {
       if (hit) {
         this._renderer3d.selectFace(hit.faceIndex);
-        this.setStatus(`CAM face ${hit.faceIndex} selected. Use Geometry to assign it to an operation.`);
+        this.setStatus('CAM surface selected. Use the active operation to assign it.');
       } else {
         this._renderer3d.clearFaceSelection();
       }
@@ -8920,7 +9018,7 @@ class App {
     if (pickMode.mode === 'source-face') {
       const source = this._faceHitToCamSource(faceHit);
       if (!source || !Array.isArray(source.loops) || source.loops.length === 0) {
-        this.setStatus('Selected face does not have a usable planar boundary for 2.5D CAM.');
+        this.setStatus('Selected surface does not have a usable boundary for 2.5D CAM.');
         return;
       }
       this._updateCamConfig((draft) => {
@@ -8952,13 +9050,12 @@ class App {
     this.setStatus('CAM source set to stock outline.');
   }
 
-  _faceHitToCamLoop(faceHit) {
-    const vertices = faceHit?.face?.vertices;
+  _meshVerticesToCamLoop(vertices) {
     if (!Array.isArray(vertices) || vertices.length < 3) return null;
     const loop = [];
     for (const vertex of vertices) {
-      const x = Number(vertex.x);
-      const y = Number(vertex.y);
+      const x = Number(vertex?.x);
+      const y = Number(vertex?.y);
       if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
       const previous = loop[loop.length - 1];
       if (previous && Math.hypot(previous.x - x, previous.y - y) < 1e-8) continue;
@@ -8972,23 +9069,55 @@ class App {
     return loop.length >= 3 ? loop : null;
   }
 
+  _faceHitToCamLoop(faceHit) {
+    return this._meshVerticesToCamLoop(faceHit?.face?.vertices);
+  }
+
+  _faceGroupHitToCamLoops(faceHit) {
+    const faceGroup = Number.isFinite(Number(faceHit?.face?.faceGroup)) ? Number(faceHit.face.faceGroup) : null;
+    if (faceGroup == null || !this._renderer3d || typeof this._renderer3d.getAllFaces !== 'function') return [];
+
+    const groupedFaces = (this._renderer3d.getAllFaces() || [])
+      .filter((candidate) => Number.isFinite(Number(candidate?.faceGroup)) && Number(candidate.faceGroup) === faceGroup)
+      .map((candidate) => Array.isArray(candidate?.vertices) ? candidate.vertices : [])
+      .filter((vertices) => vertices.length >= 3);
+    if (groupedFaces.length === 0) return [];
+
+    return this._computeGroupBoundaryLoops(groupedFaces)
+      .map((loop) => this._meshVerticesToCamLoop(loop))
+      .filter((loop) => Array.isArray(loop) && loop.length >= 3);
+  }
+
   _faceHitToCamSource(faceHit) {
     const geometry = this._getCamReferenceGeometry();
     const topoFaceId = faceHit?.face?.topoFaceId;
     if (Number.isFinite(topoFaceId) && typeof geometry?.topoBody?.faces === 'function') {
       const topoFace = geometry.topoBody.faces().find((candidate) => candidate.id === topoFaceId);
-      const loops = this._topoFaceToCamLoops(topoFace, this._getCamReferenceTolerance(geometry));
-      if (loops.length > 0) {
+      const sourceGeometry = this._topoFaceToCamSourceGeometry(topoFace, this._getCamReferenceTolerance(geometry));
+      if (sourceGeometry.loops.length > 0) {
         return {
           type: 'face',
           referenceId: `topoface-${topoFaceId}`,
           label: `Face ${topoFaceId}`,
           faceIndex: faceHit.faceIndex,
           topoFaceId,
-          loops,
+          loops: sourceGeometry.loops,
+          segmentLoops: sourceGeometry.segmentLoops,
           tolerance: this._getCamToleranceForTopoFace(topoFace, geometry),
         };
       }
+    }
+    const faceGroupLoops = this._faceGroupHitToCamLoops(faceHit);
+    const faceGroup = Number.isFinite(Number(faceHit?.face?.faceGroup)) ? Number(faceHit.face.faceGroup) : null;
+    if (faceGroupLoops.length > 0) {
+      return {
+        type: 'face',
+        referenceId: faceGroup != null ? `facegroup-${faceGroup}` : `face-${faceHit.faceIndex}`,
+        label: faceGroup != null ? `Surface ${faceGroup}` : `Face ${faceHit.faceIndex}`,
+        faceIndex: faceHit.faceIndex,
+        loops: faceGroupLoops,
+        tolerance: this._getCamReferenceTolerance(geometry),
+      };
     }
     const fallbackLoop = this._faceHitToCamLoop(faceHit);
     if (!fallbackLoop) return null;
@@ -9014,20 +9143,30 @@ class App {
     return Math.max(1e-6, Math.min(...values));
   }
 
-  _topoFaceToCamLoops(topoFace, tolerance) {
-    if (!topoFace || typeof topoFace.allLoops !== 'function') return [];
+  _topoFaceToCamSourceGeometry(topoFace, tolerance) {
+    if (!topoFace || typeof topoFace.allLoops !== 'function') return { loops: [], segmentLoops: [] };
     const loops = [];
+    const segmentLoops = [];
     const tol = Number.isFinite(tolerance) && tolerance > 0 ? tolerance : 0.001;
     for (const loop of topoFace.allLoops()) {
       const points = [];
+      const segments = [];
+      let hasExactLoop = true;
       for (const coedge of loop?.coedges || []) {
-        const coedgePoints = this._sampleCamCoedge(coedge, tol);
-        for (let index = 0; index < coedgePoints.length; index++) {
-          const point = coedgePoints[index];
+        const coedgeGeometry = this._sampleCamCoedgeGeometry(coedge, tol);
+        for (let index = 0; index < coedgeGeometry.points.length; index++) {
+          const point = coedgeGeometry.points[index];
           if (!Number.isFinite(point?.x) || !Number.isFinite(point?.y)) continue;
           const previous = points[points.length - 1];
           if (previous && Math.hypot(previous.x - point.x, previous.y - point.y) <= Math.max(tol, 1e-8)) continue;
           points.push({ x: point.x, y: point.y });
+        }
+        if (hasExactLoop) {
+          if (!Array.isArray(coedgeGeometry.exactSegments) || coedgeGeometry.exactSegments.length === 0) {
+            hasExactLoop = false;
+          } else {
+            segments.push(...coedgeGeometry.exactSegments);
+          }
         }
       }
       if (points.length > 1) {
@@ -9035,18 +9174,29 @@ class App {
         const last = points[points.length - 1];
         if (Math.hypot(first.x - last.x, first.y - last.y) <= Math.max(tol, 1e-8)) points.pop();
       }
-      if (points.length >= 3) loops.push(points);
+      if (points.length >= 3) {
+        loops.push(points);
+        if (hasExactLoop && segments.length > 0) segmentLoops.push(segments);
+      }
     }
-    return loops;
+    return { loops, segmentLoops };
   }
 
-  _sampleCamCoedge(coedge, tolerance) {
+  _topoFaceToCamLoops(topoFace, tolerance) {
+    return this._topoFaceToCamSourceGeometry(topoFace, tolerance).loops;
+  }
+
+  _sampleCamCoedgeGeometry(coedge, tolerance) {
     const MIN_CURVE_DOMAIN_RANGE = 1e-12;
     const start = coedge?.startVertex?.()?.point;
     const end = coedge?.endVertex?.()?.point;
     const edgeCurve = coedge?.edge?.curve;
     if (!edgeCurve || typeof edgeCurve.evaluate !== 'function') {
-      return [start, end].filter(Boolean);
+      const lineSegment = this._lineSegmentFromCamPoints(start, end);
+      return {
+        points: [start, end].filter(Boolean),
+        exactSegments: lineSegment ? [lineSegment] : [],
+      };
     }
     let curve = edgeCurve;
     if (coedge?.sameSense === false && typeof edgeCurve.reversed === 'function') {
@@ -9055,9 +9205,20 @@ class App {
     const domainStart = Number.isFinite(curve.uMin) ? curve.uMin : curve.knots?.[0];
     const domainEnd = Number.isFinite(curve.uMax) ? curve.uMax : curve.knots?.[curve.knots.length - 1];
     if (!Number.isFinite(domainStart) || !Number.isFinite(domainEnd) || Math.abs(domainEnd - domainStart) <= MIN_CURVE_DOMAIN_RANGE) {
-      return [start, end].filter(Boolean);
+      const lineSegment = this._lineSegmentFromCamPoints(start, end);
+      return {
+        points: [start, end].filter(Boolean),
+        exactSegments: lineSegment ? [lineSegment] : [],
+      };
     }
-    return this._sampleCamCurve(curve, domainStart, domainEnd, tolerance);
+    return {
+      points: this._sampleCamCurve(curve, domainStart, domainEnd, tolerance),
+      exactSegments: this._curveToCamSegments(curve, tolerance),
+    };
+  }
+
+  _sampleCamCoedge(coedge, tolerance) {
+    return this._sampleCamCoedgeGeometry(coedge, tolerance).points;
   }
 
   _sampleCamCurve(curve, tStart, tEnd, tolerance) {
@@ -9096,6 +9257,186 @@ class App {
     return points;
   }
 
+  _curveToCamSegments(curve, tolerance) {
+    const spans = this._splitCamCurveIntoBezierSpans(curve);
+    if (!Array.isArray(spans) || spans.length === 0) return null;
+    const segments = [];
+    for (const span of spans) {
+      const segment = this._curveSpanToCamSegment(span, tolerance);
+      if (!segment) return null;
+      segments.push(segment);
+    }
+    return segments;
+  }
+
+  _splitCamCurveIntoBezierSpans(curve) {
+    if (!curve || typeof curve !== 'object') return null;
+    const spans = [curve];
+    const knots = Array.isArray(curve.knots) ? curve.knots : [];
+    const domainStart = Number.isFinite(curve.uMin) ? curve.uMin : knots[0];
+    const domainEnd = Number.isFinite(curve.uMax) ? curve.uMax : knots[knots.length - 1];
+    if (!Number.isFinite(domainStart) || !Number.isFinite(domainEnd)) return null;
+    const splitParameters = [];
+    for (const knot of knots) {
+      const value = Number(knot);
+      if (!Number.isFinite(value) || value <= domainStart + 1e-10 || value >= domainEnd - 1e-10) continue;
+      if (splitParameters.every((candidate) => Math.abs(candidate - value) > 1e-10)) splitParameters.push(value);
+    }
+    splitParameters.sort((left, right) => left - right);
+    for (const parameter of splitParameters) {
+      for (let index = 0; index < spans.length; index++) {
+        const span = spans[index];
+        const spanStart = Number.isFinite(span.uMin) ? span.uMin : span.knots?.[0];
+        const spanEnd = Number.isFinite(span.uMax) ? span.uMax : span.knots?.[span.knots.length - 1];
+        if (!(parameter > spanStart + 1e-10 && parameter < spanEnd - 1e-10)) continue;
+        const split = typeof span.splitAt === 'function' ? span.splitAt(parameter) : null;
+        if (!Array.isArray(split) || split.length !== 2) return null;
+        spans.splice(index, 1, split[0], split[1]);
+        break;
+      }
+    }
+    return spans;
+  }
+
+  _curveSpanToCamSegment(curve, tolerance) {
+    if (this._isStraightCamCurve(curve)) {
+      const start = this._camPoint2(curve?.evaluate?.(curve.uMin) || curve?.controlPoints?.[0]);
+      const end = this._camPoint2(curve?.evaluate?.(curve.uMax) || curve?.controlPoints?.[curve.controlPoints.length - 1]);
+      return this._lineSegmentFromCamPoints(start, end);
+    }
+
+    const cubicSegment = this._curveSpanToCamCubicSegment(curve, tolerance);
+    if (cubicSegment) return cubicSegment;
+
+    const arcSegment = this._curveSpanToCamArcSegment(curve, tolerance);
+    if (arcSegment) return arcSegment;
+
+    return null;
+  }
+
+  _curveSpanToCamArcSegment(curve, tolerance) {
+    if (!curve || curve.degree !== 2 || !Array.isArray(curve.controlPoints) || curve.controlPoints.length !== 3) return null;
+    if (!this._looksLikeCircularArcSpan(curve)) return null;
+    const start3 = curve.evaluate(curve.uMin);
+    const end3 = curve.evaluate(curve.uMax);
+    const mid3 = curve.evaluate((curve.uMin + curve.uMax) * 0.5);
+    const start = this._camPoint2(start3);
+    const end = this._camPoint2(end3);
+    const mid = this._camPoint2(mid3);
+    if (!start || !end || !mid) return null;
+    const center = this._camCircumcenter(start, mid, end);
+    if (!center) return null;
+    const radius = Math.hypot(start.x - center.x, start.y - center.y);
+    const checkTolerance = Math.max(1e-5, Number(tolerance) || 0.001, radius * 1e-5);
+    for (const sampleT of [0.25, 0.5, 0.75]) {
+      const samplePoint = this._camPoint2(curve.evaluate(curve.uMin + (curve.uMax - curve.uMin) * sampleT));
+      if (!samplePoint) return null;
+      const sampleRadius = Math.hypot(samplePoint.x - center.x, samplePoint.y - center.y);
+      if (Math.abs(sampleRadius - radius) > checkTolerance) return null;
+    }
+    const sweep = (start.x - center.x) * (end.y - center.y) - (start.y - center.y) * (end.x - center.x);
+    if (Math.abs(sweep) <= 1e-9) return null;
+    return {
+      type: 'arc',
+      start,
+      end,
+      center,
+      clockwise: sweep < 0,
+    };
+  }
+
+  _curveSpanToCamCubicSegment(curve, tolerance) {
+    if (!curve || curve.degree !== 3 || !Array.isArray(curve.controlPoints) || curve.controlPoints.length !== 4) return null;
+    if (!this._curveHasUnitWeights(curve)) return null;
+    if (!this._camPointsSharePlane(curve.controlPoints, tolerance)) return null;
+    const start = this._camPoint2(curve.controlPoints[0]);
+    const control1 = this._camPoint2(curve.controlPoints[1]);
+    const control2 = this._camPoint2(curve.controlPoints[2]);
+    const end = this._camPoint2(curve.controlPoints[3]);
+    if (!start || !control1 || !control2 || !end) return null;
+    return {
+      type: 'cubic',
+      start,
+      control1,
+      control2,
+      end,
+    };
+  }
+
+  _lineSegmentFromCamPoints(start, end) {
+    const a = this._camPoint2(start);
+    const b = this._camPoint2(end);
+    if (!a || !b) return null;
+    if (Math.hypot(a.x - b.x, a.y - b.y) <= 1e-9) return null;
+    return { type: 'line', start: a, end: b };
+  }
+
+  _camPoint2(point) {
+    const x = Number(point?.x);
+    const y = Number(point?.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    return { x, y };
+  }
+
+  _camPointsSharePlane(points, tolerance) {
+    const values = (Array.isArray(points) ? points : []).map((point) => Number(point?.z)).filter((value) => Number.isFinite(value));
+    if (values.length <= 1) return true;
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    return Math.abs(max - min) <= Math.max(1e-6, Number(tolerance) || 0.001);
+  }
+
+  _curveHasUnitWeights(curve) {
+    const weights = Array.isArray(curve?.weights) ? curve.weights : [];
+    if (weights.length === 0) return true;
+    return weights.every((weight) => Math.abs((Number(weight) || 1) - 1) <= 1e-8);
+  }
+
+  _looksLikeCircularArcSpan(curve) {
+    const weights = Array.isArray(curve?.weights) ? curve.weights.map((weight) => Number(weight)) : [];
+    if (weights.length !== 3 || weights.some((weight) => !Number.isFinite(weight) || Math.abs(weight) <= 1e-12)) return false;
+    const normalizedMid = weights[1] / weights[0];
+    const normalizedEnd = weights[2] / weights[0];
+    return Math.abs(normalizedEnd - 1) <= 1e-6 && Math.abs(normalizedMid - 1) > 1e-6;
+  }
+
+  _isStraightCamCurve(curve) {
+    if (!curve) return true;
+    if (curve.degree === 1 && curve.controlPoints && curve.controlPoints.length === 2) return true;
+    const points = Array.isArray(curve.controlPoints) ? curve.controlPoints : [];
+    if (points.length < 2) return true;
+    const start = points[0];
+    const end = points[points.length - 1];
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const dz = (Number(end.z) || 0) - (Number(start.z) || 0);
+    const length = Math.hypot(dx, dy, dz);
+    if (length < 1e-12) return true;
+    for (let index = 1; index < points.length - 1; index++) {
+      const point = points[index];
+      const px = point.x - start.x;
+      const py = point.y - start.y;
+      const pz = (Number(point.z) || 0) - (Number(start.z) || 0);
+      const cx = dy * pz - dz * py;
+      const cy = dz * px - dx * pz;
+      const cz = dx * py - dy * px;
+      if (Math.hypot(cx, cy, cz) / length > 1e-6) return false;
+    }
+    return true;
+  }
+
+  _camCircumcenter(a, b, c) {
+    const d = 2 * (a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y));
+    if (Math.abs(d) <= 1e-12) return null;
+    const aSq = a.x * a.x + a.y * a.y;
+    const bSq = b.x * b.x + b.y * b.y;
+    const cSq = c.x * c.x + c.y * c.y;
+    return {
+      x: (aSq * (b.y - c.y) + bSq * (c.y - a.y) + cSq * (a.y - b.y)) / d,
+      y: (aSq * (c.x - b.x) + bSq * (a.x - c.x) + cSq * (b.x - a.x)) / d,
+    };
+  }
+
   _faceHitZ(faceHit) {
     const vertices = faceHit?.face?.vertices;
     if (Array.isArray(vertices) && vertices.length > 0) {
@@ -9106,9 +9447,9 @@ class App {
   }
 
   _camPickModeLabel(mode) {
-    if (mode === 'source-face') return 'Pick operation source face';
-    if (mode === 'top-z') return 'Pick tool start/top face';
-    if (mode === 'bottom-z') return 'Pick tool end/bottom face';
+    if (mode === 'source-face') return 'Pick operation source surface';
+    if (mode === 'top-z') return 'Pick tool start/top surface';
+    if (mode === 'bottom-z') return 'Pick tool end/bottom surface';
     return 'Pick CAM geometry';
   }
 
@@ -9545,7 +9886,6 @@ class App {
    * Each cell is rendered at the given cellWidth × cellHeight.
    * Returns a PNG data URL of the full grid, or null if no scenes.
    * @param {object} [opts]
-   * @param {number} [opts.cellWidth=320]  - width of each cell in px
    * @param {number} [opts.cellHeight=240] - height of each cell in px
    * @param {number} [opts.columns=0]      - columns (0 = auto sqrt)
    * @returns {string|null} PNG data URL or null
@@ -9955,12 +10295,120 @@ class App {
     return null;
   }
 
+  _buildCamNodeTree(container) {
+    const camConfig = this._ensureCamConfig();
+    const generation = this._getCamToolpathGeneration(camConfig);
+    const stockStateByOperationId = new Map((generation.operationStates || []).map((state) => [state.operationId, state]));
+    const warningByOperationId = new Map((generation.warnings || [])
+      .filter((warning) => typeof warning?.operationId === 'string')
+      .map((warning) => [warning.operationId, warning]));
+    const activeStage = this._normalizeCamPanelStage(this._camPanelStage || 'setup');
+
+    const buildRow = ({ label, icon = '', active = false, child = false, title = '', onClick = null }) => {
+      const row = document.createElement('div');
+      row.className = child ? 'node-tree-feature node-tree-child-feature' : 'node-tree-feature';
+      if (active) row.classList.add('active');
+      if (title) row.title = title;
+      row.innerHTML = `<span class="node-tree-icon">${escapeHtml(icon)}</span><span class="node-tree-label">${escapeHtml(label)}</span>`;
+      if (typeof onClick === 'function') {
+        row.addEventListener('click', (event) => {
+          event.stopPropagation();
+          onClick();
+        });
+      }
+      return row;
+    };
+
+    const appendSection = (label, stage, icon, children = []) => {
+      const wrapper = document.createElement('div');
+      wrapper.className = 'node-tree-folder';
+      wrapper.appendChild(buildRow({
+        label,
+        icon,
+        active: activeStage === stage,
+        onClick: () => {
+          this._setCamPanelStage(stage);
+          this._updateNodeTree();
+        },
+      }));
+      const childContainer = document.createElement('div');
+      childContainer.className = 'node-tree-children';
+      children.forEach((child) => childContainer.appendChild(child));
+      wrapper.appendChild(childContainer);
+      container.appendChild(wrapper);
+    };
+
+    appendSection('Stock', 'setup', 'S', [
+      buildRow({ label: `${camConfig.stock.material} stock`, child: true }),
+      buildRow({
+        label: `Bounds ${this._formatCamNumber(camConfig.stock.min.x)},${this._formatCamNumber(camConfig.stock.min.y)},${this._formatCamNumber(camConfig.stock.min.z)} -> ${this._formatCamNumber(camConfig.stock.max.x)},${this._formatCamNumber(camConfig.stock.max.y)},${this._formatCamNumber(camConfig.stock.max.z)}`,
+        child: true,
+      }),
+      buildRow({
+        label: `Origin ${this._formatCamNumber(camConfig.machineOrigin.position.x)},${this._formatCamNumber(camConfig.machineOrigin.position.y)},${this._formatCamNumber(camConfig.machineOrigin.position.z)}`,
+        child: true,
+      }),
+    ]);
+
+    appendSection('Fixture', 'setup', 'F', [
+      buildRow({ label: 'No fixtures yet', child: true }),
+    ]);
+
+    appendSection(`Tools (${camConfig.tools.length})`, 'tools', 'T', camConfig.tools.map((tool) => buildRow({
+      label: `T${tool.number} ${tool.name} · D${this._formatCamNumber(tool.diameter)}`,
+      child: true,
+      active: tool.id === camConfig.activeToolId,
+      onClick: () => {
+        this._updateCamConfig((draft) => { draft.activeToolId = tool.id; }, { render: false });
+        this._setCamPanelStage('tools');
+        this._updateNodeTree();
+      },
+    })));
+
+    appendSection(`Operations (${camConfig.operations.length})`, 'operations', 'O', camConfig.operations.length > 0
+      ? camConfig.operations.map((operation, index) => {
+        const stockState = stockStateByOperationId.get(operation.id) || null;
+        const warning = warningByOperationId.get(operation.id) || null;
+        const planSummary = warning
+          ? warning.message
+          : (stockState
+            ? `remaining ${this._formatCamVolume(stockState.remainingVolume, camConfig.units)}`
+            : 'awaiting source');
+        return buildRow({
+          label: `${index + 1}. ${operation.name} (${operation.type}) · ${planSummary}`,
+          child: true,
+          active: operation.id === camConfig.activeOperationId,
+          title: warning ? warning.message : planSummary,
+          onClick: () => {
+            this._updateCamConfig((draft) => { draft.activeOperationId = operation.id; }, { render: false });
+            this._setCamPanelStage('operations');
+            this._updateNodeTree();
+          },
+        });
+      })
+      : [buildRow({ label: 'No operations yet', child: true })]);
+  }
+
   _updateNodeTree() {
     const container = document.getElementById('node-tree-features');
     if (!container) return;
-    
-    const features = this._partManager.getFeatures();
+    const header = document.querySelector('#node-tree .node-tree-header');
+    const originRow = document.querySelector('#node-tree .node-tree-origin');
+    const originChildren = document.getElementById('node-tree-origin-planes');
+    const inCam = this._workspaceMode === 'cam';
+
     container.innerHTML = '';
+
+    if (header) header.textContent = inCam ? 'CAM Plan' : 'Part';
+    if (originRow) originRow.style.display = inCam ? 'none' : '';
+    if (originChildren) originChildren.style.display = inCam ? 'none' : '';
+
+    if (inCam) {
+      this._buildCamNodeTree(container);
+      return;
+    }
+
+    const features = this._partManager.getFeatures();
 
     // Update origin plane rows (predefined in index.html) with visibility toggles
     const part = this._partManager.getPart();
@@ -11952,14 +12400,19 @@ class App {
    * @returns {Array<{x,y,z}>} Ordered boundary vertices
    */
   _computeGroupBoundary(faceVertArrays) {
+    const loops = this._computeGroupBoundaryLoops(faceVertArrays);
+    return loops[0] || [];
+  }
+
+  _computeGroupBoundaryLoops(faceVertArrays) {
     const prec = 5;
     const vk = (v) => `${v.x.toFixed(prec)},${v.y.toFixed(prec)},${v.z.toFixed(prec)}`;
     const ek = (a, b) => { const ka = vk(a), kb = vk(b); return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`; };
 
-    // Count how many faces use each edge
     const edgeCount = new Map();
-    const edgeVerts = new Map(); // edgeKey → {a, b}
+    const edgeVerts = new Map();
     for (const verts of faceVertArrays) {
+      if (!Array.isArray(verts) || verts.length < 3) continue;
       for (let i = 0; i < verts.length; i++) {
         const a = verts[i], b = verts[(i + 1) % verts.length];
         const key = ek(a, b);
@@ -11968,38 +12421,54 @@ class App {
       }
     }
 
-    // Boundary edges are those used by exactly 1 face
     const adj = new Map();
+    const boundaryEdgeKeys = [];
     for (const [key, count] of edgeCount) {
       if (count !== 1) continue;
+      boundaryEdgeKeys.push(key);
       const { a, b } = edgeVerts.get(key);
       const ka = vk(a), kb = vk(b);
       if (!adj.has(ka)) adj.set(ka, []);
       if (!adj.has(kb)) adj.set(kb, []);
-      adj.get(ka).push({ key: kb, vertex: b });
-      adj.get(kb).push({ key: ka, vertex: a });
+      adj.get(ka).push({ edgeKey: key, key: kb, vertex: b });
+      adj.get(kb).push({ edgeKey: key, key: ka, vertex: a });
     }
 
-    // Walk the boundary
-    const visited = new Set();
-    const loop = [];
-    const startKey = adj.keys().next().value;
-    if (!startKey) return [];
-    let currentKey = startKey;
-    let safety = adj.size + 1;
-    while (!visited.has(currentKey) && safety-- > 0) {
-      visited.add(currentKey);
-      const neighbors = adj.get(currentKey);
-      if (!neighbors) break;
-      let next = null;
-      for (const n of neighbors) {
-        if (!visited.has(n.key)) { next = n; break; }
+    const loops = [];
+    const usedEdges = new Set();
+    for (const edgeKey of boundaryEdgeKeys) {
+      if (usedEdges.has(edgeKey)) continue;
+      const edge = edgeVerts.get(edgeKey);
+      if (!edge) continue;
+      const start = edge.a;
+      const second = edge.b;
+      const startKey = vk(start);
+      let previousKey = startKey;
+      let currentKey = vk(second);
+      const loop = [start, second];
+      usedEdges.add(edgeKey);
+      let closed = false;
+      let safety = boundaryEdgeKeys.length + 1;
+
+      while (safety-- > 0) {
+        if (currentKey === startKey) {
+          closed = true;
+          break;
+        }
+        const neighbors = adj.get(currentKey) || [];
+        const next = neighbors.find((candidate) => !usedEdges.has(candidate.edgeKey) && candidate.key !== previousKey)
+          || neighbors.find((candidate) => !usedEdges.has(candidate.edgeKey));
+        if (!next) break;
+        usedEdges.add(next.edgeKey);
+        previousKey = currentKey;
+        currentKey = next.key;
+        loop.push(next.vertex);
       }
-      if (!next) break;
-      loop.push(next.vertex);
-      currentKey = next.key;
+
+      if (closed && loop.length > 1 && vk(loop[loop.length - 1]) === startKey) loop.pop();
+      if (closed && loop.length >= 3) loops.push(loop);
     }
-    return loop;
+    return loops;
   }
 
   async _finishSketchOnPlane() {

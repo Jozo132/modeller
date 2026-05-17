@@ -280,6 +280,74 @@ function _buildCamToolpathBuffers(toolpaths, activeOperationId, progress = 1, op
   };
 }
 
+function _buildCamMotionBuffers(motionSegments, activeOperationId, options = {}) {
+  const inactiveEdges = [];
+  const activeEdges = [];
+  const rapidEdges = [];
+  const completedEdges = [];
+  const directionEdges = [];
+  const previewMode = options.previewMode === 'all' ? 'all' : 'active';
+  const effectiveActiveOperationId = activeOperationId || (motionSegments || [])[0]?.operationId || null;
+  const processedSeconds = Math.max(0, Number(options.processedSeconds ?? 0));
+  let elapsedSeconds = 0;
+  let activeGroup = [];
+  const flushActiveGroup = () => {
+    if (activeGroup.length > 0) {
+      _appendCamDirectionArrowsForGroup(directionEdges, activeGroup);
+      activeGroup = [];
+    }
+  };
+
+  for (const segment of motionSegments || []) {
+    const isActive = segment.operationId === effectiveActiveOperationId;
+    const isVisible = isActive || previewMode === 'all';
+    const segmentStart = elapsedSeconds;
+    const segmentEnd = elapsedSeconds + Math.max(0, Number(segment.durationSeconds) || 0);
+
+    if (segment.cutting) {
+      if (isVisible) {
+        if (isActive) {
+          _appendLineSegment(activeEdges, segment.start, segment.end);
+          activeGroup.push({ first: segment.start, second: segment.end, active: true });
+        } else {
+          _appendLineSegment(inactiveEdges, segment.start, segment.end);
+          flushActiveGroup();
+        }
+      } else {
+        flushActiveGroup();
+      }
+
+      if (isVisible && processedSeconds > segmentStart + CAM_PREVIEW_EPSILON) {
+        if (processedSeconds >= segmentEnd - CAM_PREVIEW_EPSILON) {
+          _appendLineSegment(completedEdges, segment.start, segment.end);
+        } else {
+          const ratio = Math.max(0, Math.min(1, (processedSeconds - segmentStart) / Math.max(CAM_PREVIEW_EPSILON, segmentEnd - segmentStart)));
+          _appendLineSegment(completedEdges, segment.start, _interpolatePoint3(segment.start, segment.end, ratio));
+        }
+      }
+    } else {
+      flushActiveGroup();
+      if (isVisible) _appendLineSegment(rapidEdges, segment.start, segment.end);
+    }
+
+    elapsedSeconds = segmentEnd;
+  }
+  flushActiveGroup();
+
+  return {
+    allEdges: inactiveEdges.length > 0 ? new Float32Array(inactiveEdges) : null,
+    allEdgeVertexCount: inactiveEdges.length / 3,
+    activeEdges: activeEdges.length > 0 ? new Float32Array(activeEdges) : null,
+    activeEdgeVertexCount: activeEdges.length / 3,
+    rapidEdges: rapidEdges.length > 0 ? new Float32Array(rapidEdges) : null,
+    rapidEdgeVertexCount: rapidEdges.length / 3,
+    completedEdges: completedEdges.length > 0 ? new Float32Array(completedEdges) : null,
+    completedEdgeVertexCount: completedEdges.length / 3,
+    directionEdges: directionEdges.length > 0 ? new Float32Array(directionEdges) : null,
+    directionEdgeVertexCount: directionEdges.length / 3,
+  };
+}
+
 function _collectCamPathGroups(toolpath, active) {
   const groups = [];
   let current = { x: null, y: null, z: null };
@@ -447,6 +515,14 @@ function _appendCamArrowHead(out, first, second) {
   _appendLineSegment(out, tip, right);
 }
 
+function _interpolatePoint3(start, end, ratio) {
+  return {
+    x: start.x + (end.x - start.x) * ratio,
+    y: start.y + (end.y - start.y) * ratio,
+    z: start.z + (end.z - start.z) * ratio,
+  };
+}
+
 function _buildCamSimulationSurface(simulation) {
   if (!simulation?.stock || !simulation.heights || simulation.columns <= 0 || simulation.rows <= 0) return null;
   const stock = simulation.stock;
@@ -475,6 +551,90 @@ function _buildCamSimulationSurface(simulation) {
     triangles: vertices.length > 0 ? new Float32Array(vertices) : null,
     triangleCount: vertices.length / 6,
   };
+}
+
+function _buildCamToolMesh(toolState) {
+  if (!toolState?.position) return null;
+  const radius = Math.max(0.1, Number(toolState.radius) || Number(toolState.diameter) / 2 || 1);
+  const fluteLength = Math.max(radius * 2, Number(toolState.fluteLength) || radius * 4);
+  const stickout = Math.max(fluteLength, Number(toolState.stickout) || fluteLength);
+  const tipZ = Number(toolState.position.z);
+  const topZ = tipZ + stickout;
+  const triangles = [];
+  const cx = Number(toolState.position.x);
+  const cy = Number(toolState.position.y);
+  const type = typeof toolState.type === 'string' ? toolState.type : 'endmill';
+
+  if (!Number.isFinite(cx) || !Number.isFinite(cy) || !Number.isFinite(tipZ) || !Number.isFinite(topZ)) return null;
+
+  if (type === 'cone' || type === 'drill') {
+    const angle = type === 'drill'
+      ? Math.max(10, Number(toolState.pointAngle) || 118)
+      : Math.max(10, Number(toolState.taperAngle) || 60);
+    const halfAngle = (angle * Math.PI) / 360;
+    const upperRadius = radius;
+    const lowerRadius = type === 'cone' ? Math.max(0, Number(toolState.tipDiameter || 0) / 2) : 0;
+    const tipHeight = Math.max(radius, (upperRadius - lowerRadius) / Math.max(1e-4, Math.tan(halfAngle)));
+    const fluteTopZ = Math.min(topZ, tipZ + tipHeight + fluteLength);
+    _appendConeMesh(triangles, cx, cy, tipZ, tipZ + tipHeight, lowerRadius, upperRadius, 18);
+    if (fluteTopZ > tipZ + tipHeight + CAM_PREVIEW_EPSILON) {
+      _appendCylinderMesh(triangles, cx, cy, tipZ + tipHeight, fluteTopZ, upperRadius, 18);
+    }
+    if (topZ > fluteTopZ + CAM_PREVIEW_EPSILON) {
+      _appendCylinderMesh(triangles, cx, cy, fluteTopZ, topZ, upperRadius * 0.74, 18);
+    }
+  } else {
+    _appendCylinderMesh(triangles, cx, cy, tipZ, Math.min(topZ, tipZ + fluteLength), radius, 18);
+    if (topZ > tipZ + fluteLength + CAM_PREVIEW_EPSILON) {
+      _appendCylinderMesh(triangles, cx, cy, tipZ + fluteLength, topZ, radius * 0.72, 18);
+    }
+  }
+
+  return {
+    triangles: triangles.length > 0 ? new Float32Array(triangles) : null,
+    triangleCount: triangles.length / 6,
+  };
+}
+
+function _appendCylinderMesh(out, cx, cy, bottomZ, topZ, radius, steps = 18) {
+  const safeRadius = Math.max(0.05, radius);
+  const segments = Math.max(8, steps);
+  const bottomCenter = { x: cx, y: cy, z: bottomZ };
+  const topCenter = { x: cx, y: cy, z: topZ };
+  for (let index = 0; index < segments; index++) {
+    const angle0 = (index / segments) * Math.PI * 2;
+    const angle1 = ((index + 1) / segments) * Math.PI * 2;
+    const bottom0 = { x: cx + Math.cos(angle0) * safeRadius, y: cy + Math.sin(angle0) * safeRadius, z: bottomZ };
+    const bottom1 = { x: cx + Math.cos(angle1) * safeRadius, y: cy + Math.sin(angle1) * safeRadius, z: bottomZ };
+    const top0 = { x: bottom0.x, y: bottom0.y, z: topZ };
+    const top1 = { x: bottom1.x, y: bottom1.y, z: topZ };
+    _appendSolidTriangle(out, bottom0, top0, top1, _triangleNormal(bottom0, top0, top1));
+    _appendSolidTriangle(out, bottom0, top1, bottom1, _triangleNormal(bottom0, top1, bottom1));
+    _appendSolidTriangle(out, bottomCenter, bottom1, bottom0, { x: 0, y: 0, z: -1 });
+    _appendSolidTriangle(out, topCenter, top0, top1, { x: 0, y: 0, z: 1 });
+  }
+}
+
+function _appendConeMesh(out, cx, cy, bottomZ, topZ, bottomRadius, topRadius, steps = 18) {
+  const segments = Math.max(8, steps);
+  const bottomCenter = { x: cx, y: cy, z: bottomZ };
+  const topCenter = { x: cx, y: cy, z: topZ };
+  const safeBottomRadius = Math.max(0, bottomRadius);
+  const safeTopRadius = Math.max(0.05, topRadius);
+  for (let index = 0; index < segments; index++) {
+    const angle0 = (index / segments) * Math.PI * 2;
+    const angle1 = ((index + 1) / segments) * Math.PI * 2;
+    const bottom0 = { x: cx + Math.cos(angle0) * safeBottomRadius, y: cy + Math.sin(angle0) * safeBottomRadius, z: bottomZ };
+    const bottom1 = { x: cx + Math.cos(angle1) * safeBottomRadius, y: cy + Math.sin(angle1) * safeBottomRadius, z: bottomZ };
+    const top0 = { x: cx + Math.cos(angle0) * safeTopRadius, y: cy + Math.sin(angle0) * safeTopRadius, z: topZ };
+    const top1 = { x: cx + Math.cos(angle1) * safeTopRadius, y: cy + Math.sin(angle1) * safeTopRadius, z: topZ };
+    _appendSolidTriangle(out, bottom0, top0, top1, _triangleNormal(bottom0, top0, top1));
+    _appendSolidTriangle(out, bottom0, top1, bottom1, _triangleNormal(bottom0, top1, bottom1));
+    if (safeBottomRadius > CAM_PREVIEW_EPSILON) {
+      _appendSolidTriangle(out, bottomCenter, bottom1, bottom0, { x: 0, y: 0, z: -1 });
+    }
+    _appendSolidTriangle(out, topCenter, top0, top1, { x: 0, y: 0, z: 1 });
+  }
 }
 
 function _buildFaceGroupHighlightVertices(meshTriangles, meshTriangleCount, meshFaces, triFaceMap, targetGroups) {
@@ -820,12 +980,18 @@ export class WasmRenderer {
     this._camToolpathEdgeVertexCount = 0;
     this._camActiveToolpathEdges = null;
     this._camActiveToolpathEdgeVertexCount = 0;
+    this._camRapidEdges = null;
+    this._camRapidEdgeVertexCount = 0;
     this._camToolpathDirectionEdges = null;
     this._camToolpathDirectionEdgeVertexCount = 0;
     this._camCompletedToolpathEdges = null;
     this._camCompletedToolpathEdgeVertexCount = 0;
     this._camSimulationTriangles = null;
     this._camSimulationTriangleCount = 0;
+    this._camSimulationColor = [0.85, 0.58, 0.31, 0.96];
+    this._camToolTriangles = null;
+    this._camToolTriangleCount = 0;
+    this._camStaticRevision = null;
 
     // Sketch wireframe data for rendering sketch primitives in 3D
     this._sketchEdges = null;     // Float32Array: [x,y,z, x,y,z, ...] line pairs (active sketch)
@@ -4387,54 +4553,81 @@ export class WasmRenderer {
     this._meshTriangleOverlayMode = mode === 'outline' ? 'outline' : 'off';
   }
 
+  _replaceCamBuffer(field, countField, resource) {
+    if (this[field]) {
+      this.executor?.deleteStaticBuffer?.(this[field]);
+    }
+    this[field] = resource || null;
+    this[countField] = resource?.vertexCount || 0;
+  }
+
   setCamVisualization(visualization = null) {
     if (!visualization) {
       this.clearCamVisualization();
       return;
     }
 
-    const stockBuffers = _buildCamStockBuffers(visualization.stock);
-    this._camStockTriangles = stockBuffers?.triangles || null;
-    this._camStockTriangleCount = stockBuffers?.triangleCount || 0;
-    this._camStockEdges = stockBuffers?.edges || null;
-    this._camStockEdgeVertexCount = stockBuffers?.edgeVertexCount || 0;
-    this._camStockColor = stockBuffers?.color || [0.407, 0.655, 1.0, 0.18];
+    const useMotionBuffers = Array.isArray(visualization.simulation?.motionSegments);
+    const staticRevision = visualization.staticRevision || '__cam-static__';
+    const staticChanged = this._camStaticRevision !== staticRevision;
 
-    const toolpathBuffers = _buildCamToolpathBuffers(
-      visualization.toolpaths || [],
-      visualization.activeOperationId || null,
-      visualization.simulationProgress ?? 1,
-      { previewMode: visualization.previewMode },
-    );
-    this._camToolpathEdges = toolpathBuffers.allEdges;
-    this._camToolpathEdgeVertexCount = toolpathBuffers.allEdgeVertexCount;
-    this._camActiveToolpathEdges = toolpathBuffers.activeEdges;
-    this._camActiveToolpathEdgeVertexCount = toolpathBuffers.activeEdgeVertexCount;
-    this._camToolpathDirectionEdges = toolpathBuffers.directionEdges;
-    this._camToolpathDirectionEdgeVertexCount = toolpathBuffers.directionEdgeVertexCount;
-    this._camCompletedToolpathEdges = toolpathBuffers.completedEdges;
-    this._camCompletedToolpathEdgeVertexCount = toolpathBuffers.completedEdgeVertexCount;
+    if (staticChanged) {
+      this._camStaticRevision = staticRevision;
 
-    const simulationSurface = _buildCamSimulationSurface(visualization.simulation);
-    this._camSimulationTriangles = simulationSurface?.triangles || null;
-    this._camSimulationTriangleCount = simulationSurface?.triangleCount || 0;
+      const stockBuffers = _buildCamStockBuffers(visualization.stock);
+      this._camStockColor = stockBuffers?.color || [0.407, 0.655, 1.0, 0.18];
+      this._replaceCamBuffer('_camStockTriangles', '_camStockTriangleCount', this.executor?.createStaticSolidBuffer?.(stockBuffers?.triangles || null));
+      this._replaceCamBuffer('_camStockEdges', '_camStockEdgeVertexCount', this.executor?.createStaticLineBuffer?.(stockBuffers?.edges || null));
+
+      const staticToolpathBuffers = useMotionBuffers
+        ? _buildCamMotionBuffers(visualization.simulation.motionSegments, visualization.activeOperationId || null, {
+          previewMode: visualization.previewMode,
+          processedSeconds: 0,
+        })
+        : _buildCamToolpathBuffers(
+          visualization.toolpaths || [],
+          visualization.activeOperationId || null,
+          visualization.simulationProgress ?? 1,
+          { previewMode: visualization.previewMode },
+        );
+
+      this._replaceCamBuffer('_camToolpathEdges', '_camToolpathEdgeVertexCount', this.executor?.createStaticLineBuffer?.(staticToolpathBuffers.allEdges || null));
+      this._replaceCamBuffer('_camActiveToolpathEdges', '_camActiveToolpathEdgeVertexCount', this.executor?.createStaticLineBuffer?.(staticToolpathBuffers.activeEdges || null));
+      this._replaceCamBuffer('_camRapidEdges', '_camRapidEdgeVertexCount', this.executor?.createStaticLineBuffer?.(staticToolpathBuffers.rapidEdges || null));
+      this._replaceCamBuffer('_camToolpathDirectionEdges', '_camToolpathDirectionEdgeVertexCount', this.executor?.createStaticLineBuffer?.(staticToolpathBuffers.directionEdges || null));
+
+      if (!useMotionBuffers) {
+        this._replaceCamBuffer('_camCompletedToolpathEdges', '_camCompletedToolpathEdgeVertexCount', this.executor?.createStaticLineBuffer?.(staticToolpathBuffers.completedEdges || null));
+      }
+    }
+
+    if (useMotionBuffers) {
+      const dynamicToolpathBuffers = _buildCamMotionBuffers(visualization.simulation.motionSegments, visualization.activeOperationId || null, {
+        previewMode: visualization.previewMode,
+        processedSeconds: visualization.simulation?.processedMotionSeconds ?? 0,
+      });
+      this._replaceCamBuffer('_camCompletedToolpathEdges', '_camCompletedToolpathEdgeVertexCount', this.executor?.createStaticLineBuffer?.(dynamicToolpathBuffers.completedEdges || null));
+    }
+
+    const simulationSurface = visualization.showSimulationSurface ? _buildCamSimulationSurface(visualization.simulation) : null;
+    this._replaceCamBuffer('_camSimulationTriangles', '_camSimulationTriangleCount', this.executor?.createStaticSolidBuffer?.(simulationSurface?.triangles || null));
+    this._camSimulationColor = [0.85, 0.58, 0.31, 0.96];
+
+    const toolMesh = visualization.showTool ? _buildCamToolMesh(visualization.simulation?.toolState || null) : null;
+    this._replaceCamBuffer('_camToolTriangles', '_camToolTriangleCount', this.executor?.createStaticSolidBuffer?.(toolMesh?.triangles || null));
   }
 
   clearCamVisualization() {
-    this._camStockTriangles = null;
-    this._camStockTriangleCount = 0;
-    this._camStockEdges = null;
-    this._camStockEdgeVertexCount = 0;
-    this._camToolpathEdges = null;
-    this._camToolpathEdgeVertexCount = 0;
-    this._camActiveToolpathEdges = null;
-    this._camActiveToolpathEdgeVertexCount = 0;
-    this._camToolpathDirectionEdges = null;
-    this._camToolpathDirectionEdgeVertexCount = 0;
-    this._camCompletedToolpathEdges = null;
-    this._camCompletedToolpathEdgeVertexCount = 0;
-    this._camSimulationTriangles = null;
-    this._camSimulationTriangleCount = 0;
+    this._camStaticRevision = null;
+    this._replaceCamBuffer('_camStockTriangles', '_camStockTriangleCount', null);
+    this._replaceCamBuffer('_camStockEdges', '_camStockEdgeVertexCount', null);
+    this._replaceCamBuffer('_camToolpathEdges', '_camToolpathEdgeVertexCount', null);
+    this._replaceCamBuffer('_camActiveToolpathEdges', '_camActiveToolpathEdgeVertexCount', null);
+    this._replaceCamBuffer('_camRapidEdges', '_camRapidEdgeVertexCount', null);
+    this._replaceCamBuffer('_camToolpathDirectionEdges', '_camToolpathDirectionEdgeVertexCount', null);
+    this._replaceCamBuffer('_camCompletedToolpathEdges', '_camCompletedToolpathEdgeVertexCount', null);
+    this._replaceCamBuffer('_camSimulationTriangles', '_camSimulationTriangleCount', null);
+    this._replaceCamBuffer('_camToolTriangles', '_camToolTriangleCount', null);
   }
 
   /**
@@ -4863,9 +5056,11 @@ export class WasmRenderer {
       || (this._camStockEdges && this._camStockEdgeVertexCount > 0)
       || (this._camToolpathEdges && this._camToolpathEdgeVertexCount > 0)
       || (this._camActiveToolpathEdges && this._camActiveToolpathEdgeVertexCount > 0)
+      || (this._camRapidEdges && this._camRapidEdgeVertexCount > 0)
       || (this._camToolpathDirectionEdges && this._camToolpathDirectionEdgeVertexCount > 0)
       || (this._camCompletedToolpathEdges && this._camCompletedToolpathEdgeVertexCount > 0)
       || (this._camSimulationTriangles && this._camSimulationTriangleCount > 0)
+      || (this._camToolTriangles && this._camToolTriangleCount > 0)
     );
     if (!hasMesh && !hasGhost && !hasArrow && !hasSketchEdges && !hasInactiveEdges && !hasSelectedEdges && !hasActiveScene && !hasSketchFaces && !hasCamVisualization) return;
 
@@ -5239,9 +5434,10 @@ export class WasmRenderer {
     const exec = this.executor;
     if (!exec || !mvp) return;
     const stockColor = this._camStockColor || [0.407, 0.655, 1.0, 0.18];
+    const simulationColor = this._camSimulationColor || [0.85, 0.58, 0.31, 0.96];
 
     if (this._camStockTriangles && this._camStockTriangleCount > 0) {
-      exec.drawTriangleBuffer(this._camStockTriangles, this._camStockTriangleCount, {
+      exec.drawStaticTriangleBuffer(this._camStockTriangles, {
         mvp,
         color: stockColor,
         depthFunc: 'lequal',
@@ -5251,8 +5447,9 @@ export class WasmRenderer {
     }
 
     if (this._camSimulationTriangles && this._camSimulationTriangleCount > 0) {
-      exec.drawTriangleBufferNormalColor(this._camSimulationTriangles, this._camSimulationTriangleCount, {
+      exec.drawStaticTriangleBuffer(this._camSimulationTriangles, {
         mvp,
+        color: simulationColor,
         depthFunc: 'lequal',
         depthWrite: true,
         polygonOffset: [-0.5, -0.5],
@@ -5260,7 +5457,7 @@ export class WasmRenderer {
     }
 
     if (this._camStockEdges && this._camStockEdgeVertexCount > 0) {
-      exec.drawLineBuffer(this._camStockEdges, this._camStockEdgeVertexCount, {
+      exec.drawStaticLineBuffer(this._camStockEdges, {
         mvp,
         color: [stockColor[0], stockColor[1], stockColor[2], 0.82],
         depthTest: false,
@@ -5269,8 +5466,18 @@ export class WasmRenderer {
       });
     }
 
+    if (this._camRapidEdges && this._camRapidEdgeVertexCount > 0) {
+      exec.drawStaticLineBuffer(this._camRapidEdges, {
+        mvp,
+        color: [0.36, 0.76, 1.0, 0.92],
+        depthTest: false,
+        depthWrite: false,
+        lineWidth: 1.3,
+      });
+    }
+
     if (this._camToolpathEdges && this._camToolpathEdgeVertexCount > 0) {
-      exec.drawLineBuffer(this._camToolpathEdges, this._camToolpathEdgeVertexCount, {
+      exec.drawStaticLineBuffer(this._camToolpathEdges, {
         mvp,
         color: [0.72, 0.78, 0.85, 0.55],
         depthTest: false,
@@ -5280,7 +5487,7 @@ export class WasmRenderer {
     }
 
     if (this._camActiveToolpathEdges && this._camActiveToolpathEdgeVertexCount > 0) {
-      exec.drawLineBuffer(this._camActiveToolpathEdges, this._camActiveToolpathEdgeVertexCount, {
+      exec.drawStaticLineBuffer(this._camActiveToolpathEdges, {
         mvp,
         color: [1.0, 0.72, 0.22, 0.95],
         depthTest: false,
@@ -5290,7 +5497,7 @@ export class WasmRenderer {
     }
 
     if (this._camCompletedToolpathEdges && this._camCompletedToolpathEdgeVertexCount > 0) {
-      exec.drawLineBuffer(this._camCompletedToolpathEdges, this._camCompletedToolpathEdgeVertexCount, {
+      exec.drawStaticLineBuffer(this._camCompletedToolpathEdges, {
         mvp,
         color: [0.28, 0.88, 0.48, 0.95],
         depthTest: false,
@@ -5300,12 +5507,22 @@ export class WasmRenderer {
     }
 
     if (this._camToolpathDirectionEdges && this._camToolpathDirectionEdgeVertexCount > 0) {
-      exec.drawLineBuffer(this._camToolpathDirectionEdges, this._camToolpathDirectionEdgeVertexCount, {
+      exec.drawStaticLineBuffer(this._camToolpathDirectionEdges, {
         mvp,
         color: [1.0, 0.96, 0.55, 0.98],
         depthTest: false,
         depthWrite: false,
         lineWidth: 1.5,
+      });
+    }
+
+    if (this._camToolTriangles && this._camToolTriangleCount > 0) {
+      exec.drawStaticTriangleBuffer(this._camToolTriangles, {
+        mvp,
+        color: [0.92, 0.94, 0.98, 0.98],
+        depthFunc: 'lequal',
+        depthWrite: true,
+        polygonOffset: [-1.5, -1.5],
       });
     }
   }

@@ -81,3 +81,39 @@ test('LinuxCNC coordinates use CAM tolerance-based precision', () => {
   assert.match(gcode, /G1 X1\.23 Y0 F321/);
   assert.doesNotMatch(gcode, /1\.2346/);
 });
+
+test('LinuxCNC export emits circular interpolation when arc moves are present', () => {
+  const cam = normalizeCamConfig({ tools: [{ id: 'tool-a', number: 3, diameter: 6 }] });
+  const toolpaths = [{
+    operationId: 'arc-op',
+    toolId: 'tool-a',
+    toolNumber: 3,
+    moves: [
+      { type: 'rapid', z: 5 },
+      { type: 'rapid', x: 1, y: 0 },
+      { type: 'feed', z: -1, feed: 120 },
+      { type: 'arc', x: 0, y: 1, centerX: 0, centerY: 0, clockwise: false, feed: 300 },
+    ],
+  }];
+
+  const { gcode } = exportGCode(cam, toolpaths, { programName: 'Arc test' });
+  assert.match(gcode, /G3 X0 Y1 I-1 J0 F300/);
+});
+
+test('LinuxCNC export emits G5 cubic splines by default', () => {
+  const cam = normalizeCamConfig({ tools: [{ id: 'tool-a', number: 3, diameter: 6 }] });
+  const toolpaths = [{
+    operationId: 'cubic-op',
+    toolId: 'tool-a',
+    toolNumber: 3,
+    moves: [
+      { type: 'rapid', z: 5 },
+      { type: 'rapid', x: 0, y: 0 },
+      { type: 'feed', z: -1, feed: 120 },
+      { type: 'cubic', x: 3, y: 0, control1X: 1, control1Y: 1, control2X: 2, control2Y: 1, feed: 300 },
+    ],
+  }];
+
+  const { gcode } = exportGCode(cam, toolpaths, { programName: 'Spline test' });
+  assert.match(gcode, /G5 X3 Y0 I1 J1 P-1 Q1 F300/);
+});

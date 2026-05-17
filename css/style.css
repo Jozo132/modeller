@@ -3882,36 +3882,66 @@ body.workspace-part .sketch-tool-only {
 .cam-operation-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 10px;
 }
 
 .cam-operation-item {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 6px 8px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  padding: 12px 14px;
   border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.04);
+  border-radius: 12px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.03)),
+    rgba(12, 18, 30, 0.52);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.14);
   cursor: pointer;
+  transition: border-color 120ms ease, transform 120ms ease, background 120ms ease;
+}
+
+.cam-operation-item:hover {
+  border-color: rgba(255, 255, 255, 0.18);
+  transform: translateY(-1px);
 }
 
 .cam-operation-item.active {
   border-color: var(--accent);
-  background: rgba(0, 122, 204, 0.18);
+  background:
+    linear-gradient(180deg, rgba(0, 122, 204, 0.22), rgba(10, 18, 32, 0.2)),
+    rgba(8, 18, 34, 0.62);
+  box-shadow: 0 16px 34px rgba(0, 82, 138, 0.26);
 }
 
 .cam-operation-main {
   min-width: 0;
-  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cam-operation-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
 }
 
 .cam-operation-controls {
   display: flex;
   align-items: center;
-  flex-shrink: 0;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.cam-operation-actions {
+  display: flex;
+  align-items: center;
   gap: 4px;
+  margin-left: auto;
 }
 
 .cam-operation-control {
@@ -3946,22 +3976,54 @@ body.workspace-part .sketch-tool-only {
 
 .cam-operation-title {
   color: var(--text-primary);
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
 }
 
 .cam-operation-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.cam-operation-stat {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 3px 8px;
+  background: rgba(255, 255, 255, 0.06);
   color: var(--text-secondary);
   font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.cam-operation-summary {
+  color: var(--text-primary);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.cam-operation-summary.warning {
+  color: #ffd0b0;
 }
 
 .cam-pill {
   border-radius: 999px;
-  padding: 2px 6px;
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--text-secondary);
+  padding: 4px 9px;
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
   font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
   white-space: nowrap;
+}
+
+.cam-pill.muted {
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.05);
 }
 
 /* In Part workspace, re-enable sketch tools during sketch-on-plane */

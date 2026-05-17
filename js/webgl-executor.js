@@ -235,6 +235,8 @@ export class WebGLExecutor {
 
     gl.bindBuffer(gl.ARRAY_BUFFER, null);
 
+    this._ownedStaticBuffers = new Set();
+
     // Software GL state shadow — avoids expensive getParameter/isEnabled GPU stalls
     this._st = {
       blend: false,
@@ -253,6 +255,54 @@ export class WebGLExecutor {
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
     this.currentProgram = -1;
+  }
+
+  createStaticSolidBuffer(data) {
+    return this._createStaticBuffer(data, 'solid');
+  }
+
+  createStaticLineBuffer(data) {
+    return this._createStaticBuffer(data, 'line');
+  }
+
+  _createStaticBuffer(data, layout) {
+    if (!data || data.length === 0) return null;
+    const gl = this.gl;
+    const buffer = gl.createBuffer();
+    const vao = gl.createVertexArray();
+    gl.bindVertexArray(vao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+
+    if (layout === 'solid') {
+      gl.enableVertexAttribArray(0);
+      gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 24, 0);
+      gl.enableVertexAttribArray(1);
+      gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 24, 12);
+    } else {
+      gl.enableVertexAttribArray(0);
+      gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 12, 0);
+    }
+
+    gl.bindVertexArray(null);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+
+    const resource = {
+      buffer,
+      vao,
+      layout,
+      vertexCount: layout === 'solid' ? data.length / 6 : data.length / 3,
+    };
+    this._ownedStaticBuffers.add(resource);
+    return resource;
+  }
+
+  deleteStaticBuffer(resource) {
+    if (!resource) return;
+    const gl = this.gl;
+    if (resource.vao) gl.deleteVertexArray(resource.vao);
+    if (resource.buffer) gl.deleteBuffer(resource.buffer);
+    this._ownedStaticBuffers.delete(resource);
   }
 
   // --- State management (updates shadow + GL, skips redundant calls) ---
@@ -419,6 +469,53 @@ export class WebGLExecutor {
     this.setBlend(prevBlend);
   }
 
+  drawStaticTriangleBuffer(resource, options) {
+    if (!resource || resource.vertexCount <= 0) return;
+    const gl = this.gl;
+    const prevBlend = this._st.blend;
+    const prevDepthTest = this._st.depthTest;
+    const prevDepthFunc = this._st.depthFunc;
+    const prevDepthWrite = this._st.depthWrite;
+    const prevCull = this._st.cullFace;
+    const prevPolyOff = this._st.polygonOffset;
+
+    gl.viewport(0, 0, this.width, this.height);
+    if ((options.color?.[3] ?? 1) < 1) {
+      this.setBlend(true);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    }
+    this.setDepthTest(options.depthTest !== false);
+    this._setDepthFuncOption(options.depthFunc, 'lequal');
+    if (Object.prototype.hasOwnProperty.call(options, 'depthWrite')) {
+      this.setDepthWrite(!!options.depthWrite);
+    }
+    this.setCullFace(true);
+    gl.cullFace(gl.BACK);
+
+    if (options.polygonOffset) {
+      this.setPolygonOffset(true);
+      gl.polygonOffset(options.polygonOffset[0], options.polygonOffset[1]);
+    }
+
+    gl.useProgram(this.programs[0]);
+    gl.uniformMatrix4fv(this.uniforms[0].uMVP, false, options.mvp);
+    gl.uniform4f(this.uniforms[0].uColor, ...(options.color || [1, 1, 1, 1]));
+    if (this.uniforms[0].uViewDir) {
+      gl.uniform3fv(this.uniforms[0].uViewDir, this._viewDir);
+    }
+
+    gl.bindVertexArray(resource.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, resource.vertexCount);
+    gl.bindVertexArray(null);
+
+    this.setPolygonOffset(prevPolyOff);
+    this.setCullFace(prevCull);
+    this.setDepthWrite(prevDepthWrite);
+    this.setDepthFunc(prevDepthFunc);
+    this.setDepthTest(prevDepthTest);
+    this.setBlend(prevBlend);
+  }
+
   drawTriangleBufferNormalColor(data, vertexCount, options) {
     const gl = this.gl;
     const prevBlend = this._st.blend;
@@ -494,6 +591,43 @@ export class WebGLExecutor {
     gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo);
     gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
     gl.drawArrays(gl.LINES, 0, vertexCount);
+    gl.bindVertexArray(null);
+    gl.uniform1f(this.uniforms[1].uDepthBias, 0);
+
+    this.setBlend(prevBlend);
+    this.setDepthTest(prevDepthTest);
+    this.setDepthWrite(prevDepthWrite);
+    this.setDepthFunc(prevDepthFunc);
+  }
+
+  drawStaticLineBuffer(resource, options) {
+    if (!resource || resource.vertexCount <= 0) return;
+    const gl = this.gl;
+    const prevBlend = this._st.blend;
+    const prevDepthTest = this._st.depthTest;
+    const prevDepthWrite = this._st.depthWrite;
+    const prevDepthFunc = this._st.depthFunc;
+
+    gl.viewport(0, 0, this.width, this.height);
+    if ((options.color?.[3] ?? 1) < 1) {
+      this.setBlend(true);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    }
+
+    this.setDepthTest(options.depthTest !== false);
+    this._setDepthFuncOption(options.depthFunc, 'lequal');
+    if (Object.prototype.hasOwnProperty.call(options, 'depthWrite')) {
+      this.setDepthWrite(!!options.depthWrite);
+    }
+
+    gl.useProgram(this.programs[1]);
+    gl.uniformMatrix4fv(this.uniforms[1].uMVP, false, options.mvp);
+    gl.uniform4f(this.uniforms[1].uColor, ...(options.color || [1, 1, 1, 1]));
+    gl.uniform1f(this.uniforms[1].uDepthBias, options.depthBias || 0);
+    gl.lineWidth(options.lineWidth || 1);
+
+    gl.bindVertexArray(resource.vao);
+    gl.drawArrays(gl.LINES, 0, resource.vertexCount);
     gl.bindVertexArray(null);
     gl.uniform1f(this.uniforms[1].uDepthBias, 0);
 
@@ -673,6 +807,9 @@ export class WebGLExecutor {
 
   dispose() {
     const gl = this.gl;
+    for (const resource of [...this._ownedStaticBuffers]) {
+      this.deleteStaticBuffer(resource);
+    }
     gl.deleteVertexArray(this.vaoSolid);
     gl.deleteVertexArray(this.vaoLine);
     gl.deleteBuffer(this.vbo);

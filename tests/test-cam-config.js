@@ -30,10 +30,13 @@ test('default config creates stock, origin, and a usable tool', () => {
   assert.equal(cam.postprocessorId, 'linuxcnc');
   assert.deepEqual(cam.stock.min, { x: 5, y: 15, z: -2 });
   assert.deepEqual(cam.stock.max, { x: 35, y: 55, z: 9 });
+  assert.equal(cam.stock.opacity, 0.18);
   assert.deepEqual(cam.machineOrigin.position, { x: 5, y: 15, z: 9 });
   assert.equal(cam.tools.length, 1);
   assert.equal(cam.tools[0].type, 'endmill');
   assert.equal(cam.activeToolId, cam.tools[0].id);
+  assert.deepEqual(cam.operations, []);
+  assert.equal(cam.activeOperationId, null);
 });
 
 test('tool type parameters normalize for ball, cone, drill, and endmill', () => {
@@ -58,6 +61,9 @@ test('profile and pocket operations keep contours and machining defaults', () =>
   assert.equal(cam.operations[0].feedRate, 500);
   assert.equal(cam.operations[0].plungeRate, 140);
   assert.ok(Math.abs(cam.operations[1].stepover - 2.4) < 1e-9);
+  assert.equal(cam.operations[1].pocketOrder, 'per-level');
+  assert.equal(cam.operations[1].pocketStrategy, 'contour');
+  assert.equal(cam.linuxCncUseG5, true);
 });
 
 test('operation normalization rejects invalid enum values conservatively', () => {

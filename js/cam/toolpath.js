@@ -1,7 +1,8 @@
-import { getOperationLoops, normalizeCamConfig } from './model.js';
-import { offsetPolygon } from './geometry/polygonOffset.js';
+import { getOperationLoops, getOperationSegmentLoops, normalizeCamConfig } from './model.js';
+import { cleanLoop, offsetPolygon, polygonArea } from './geometry/polygonOffset.js';
 
 const EPSILON = 1e-9;
+const MAX_POCKET_SCAN_LEVELS = 10000;
 
 export function generateToolpaths(camConfig) {
   const config = normalizeCamConfig(camConfig);
@@ -17,13 +18,19 @@ export function generateToolpaths(camConfig) {
       continue;
     }
     const loops = getOperationLoops(operation);
-    if (loops.length === 0) {
+    const segmentLoops = getOperationSegmentLoops(operation);
+    if (loops.length === 0 && segmentLoops.length === 0) {
       warnings.push({ operationId: operation.id, message: 'Operation has no contours' });
       continue;
     }
     const toolpath = operation.type === 'pocket'
       ? generatePocketToolpath(operation, tool, loops)
-      : generateProfileToolpath(operation, tool, loops);
+      : generateProfileToolpath(operation, tool, loops, segmentLoops);
+    if (Array.isArray(toolpath.warnings) && toolpath.warnings.length > 0) {
+      for (const warning of toolpath.warnings) {
+        warnings.push({ operationId: operation.id, message: String(warning?.message || warning) });
+      }
+    }
     toolpath.warnings = warnings.filter((warning) => warning.operationId === operation.id);
     toolpaths.push(toolpath);
   }
@@ -31,18 +38,23 @@ export function generateToolpaths(camConfig) {
   return { config, toolpaths, warnings };
 }
 
-export function generateProfileToolpath(operation, tool, loops = getOperationLoops(operation)) {
+export function generateProfileToolpath(operation, tool, loops = getOperationLoops(operation), segmentLoops = getOperationSegmentLoops(operation)) {
   const radius = tool.diameter / 2;
   const offsetDistance = operation.side === 'outside'
     ? radius
     : (operation.side === 'inside' ? -radius : 0);
   const passes = depthPasses(operation.topZ, operation.bottomZ, operation.stepDown);
   const moves = operationHeader(operation, tool);
+  const useExactSegmentLoops = offsetDistance === 0 && Array.isArray(segmentLoops) && segmentLoops.length > 0;
 
   for (const depth of passes) {
-    for (const loop of loops) {
-      const path = offsetDistance === 0 ? loop : offsetPolygon(loop, offsetDistance);
-      appendClosedPathPass(moves, path, depth, operation);
+    if (useExactSegmentLoops) {
+      for (const segmentLoop of segmentLoops) appendClosedSegmentPathPass(moves, segmentLoop, depth, operation);
+    } else {
+      for (const loop of loops) {
+        const path = offsetDistance === 0 ? loop : offsetPolygon(loop, offsetDistance);
+        appendClosedPathPass(moves, path, depth, operation);
+      }
     }
   }
   moves.push({ type: 'rapid', z: operation.safeZ });
@@ -55,21 +67,363 @@ export function generatePocketToolpath(operation, tool, loops = getOperationLoop
   const stepover = pocketStepover(operation, tool);
   const passes = depthPasses(operation.topZ, operation.bottomZ, operation.stepDown);
   const moves = operationHeader(operation, tool);
+  const warnings = [];
+  const loopInfos = classifyPocketLoops(loops);
+  const pocketOrder = operation.pocketOrder === 'per-pocket' ? 'per-pocket' : 'per-level';
+  const pocketStrategy = normalizePocketStrategy(operation.pocketStrategy);
+  const useScanlineStrategy = pocketStrategy !== 'contour';
+  const scanAxis = pocketStrategy.endsWith('-y') ? 'y' : 'x';
+  const alternateDirection = !pocketStrategy.startsWith('oneway');
 
-  for (const depth of passes) {
-    for (const loop of loops) {
-      let offset = -radius;
-      for (let index = 0; index < 100; index++) {
-        const path = offsetPolygon(loop, offset);
-        if (path.length < 3) break;
-        appendClosedPathPass(moves, path, depth, operation);
-        offset -= stepover;
+  if (loopInfos.length === 0) {
+    warnings.push({ message: 'Operation has no machinable contours' });
+  } else if (useScanlineStrategy || shouldUseComplexPocketPlanner(loopInfos)) {
+    const regions = buildComplexPocketRegions(loopInfos, radius, stepover, scanAxis);
+    if (regions.length === 0) {
+      warnings.push({ message: 'Tool does not fit inside the selected pocket surfaces' });
+    } else if (pocketOrder === 'per-pocket') {
+      for (const region of regions) {
+        for (const depth of passes) appendComplexPocketRegionPasses(moves, region, depth, operation, { alternateDirection });
+      }
+    } else {
+      for (const depth of passes) {
+        for (const region of regions) appendComplexPocketRegionPasses(moves, region, depth, operation, { alternateDirection });
+      }
+    }
+  } else if (pocketOrder === 'per-pocket') {
+    let appended = 0;
+    for (const loopInfo of loopInfos) {
+      for (const depth of passes) appended += appendSimplePocketLoopPasses(moves, loopInfo.loop, depth, radius, stepover, operation);
+    }
+    if (appended === 0) warnings.push({ message: 'Tool does not fit inside the selected pocket surfaces' });
+  } else {
+    let appended = 0;
+    for (const depth of passes) {
+      for (const loopInfo of loopInfos) appended += appendSimplePocketLoopPasses(moves, loopInfo.loop, depth, radius, stepover, operation);
+    }
+    if (appended === 0) warnings.push({ message: 'Tool does not fit inside the selected pocket surfaces' });
+  }
+
+  moves.push({ type: 'rapid', z: operation.safeZ });
+  moves.push({ type: 'spindle', on: false });
+  return makeToolpath(operation, tool, moves, warnings);
+}
+
+function appendSimplePocketLoopPasses(moves, loop, depth, radius, stepover, operation) {
+  let appended = 0;
+  let offset = -radius;
+  for (let index = 0; index < 100; index++) {
+    const path = offsetPolygon(loop, offset);
+    if (path.length < 3) break;
+    appendClosedPathPass(moves, path, depth, operation);
+    appended += 1;
+    offset -= stepover;
+  }
+  return appended;
+}
+
+function appendComplexPocketRegionPasses(moves, region, depth, operation, options = {}) {
+  const paths = buildContinuousPocketRegionPaths(region, options);
+  for (const path of paths) appendOpenPathPass(moves, path, depth, operation);
+}
+
+function classifyPocketLoops(loops) {
+  const loopInfos = (Array.isArray(loops) ? loops : [])
+    .map((loop) => cleanLoop(loop))
+    .filter((loop) => loop.length >= 3)
+    .map((loop, index) => ({
+      index,
+      loop,
+      area: polygonArea(loop),
+      absArea: Math.abs(polygonArea(loop)),
+      nestingDepth: 0,
+      isHole: false,
+    }));
+
+  if (loopInfos.length <= 1) return loopInfos;
+
+  const loopMeta = loopInfos.map((info) => ({ ...info, samples: representativeLoopSamples(info.loop, info.area) }));
+  for (const info of loopMeta) {
+    let depth = 0;
+    for (const other of loopMeta) {
+      if (other.index === info.index) continue;
+      if (info.samples.some((sample) => pointInPolygon(sample, other.loop))) depth += 1;
+    }
+    info.nestingDepth = depth;
+    info.isHole = (depth % 2) === 1;
+  }
+
+  return loopMeta;
+}
+
+function representativeLoopSamples(loop, signedArea) {
+  const points = Array.isArray(loop) ? loop : [];
+  if (points.length < 2) return points.slice();
+  const ccw = signedArea >= 0;
+  const { minX, minY, maxX, maxY } = loopBounds([loop]);
+  const diag = Math.hypot(maxX - minX, maxY - minY) || 1;
+  const epsilon = Math.max(diag * 1e-6, 1e-7);
+  const samples = [];
+  const step = Math.max(1, Math.floor(points.length / 12));
+
+  for (let index = 0; index < points.length; index += step) {
+    const a = points[index];
+    const b = points[(index + 1) % points.length];
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const length = Math.hypot(dx, dy);
+    if (length <= EPSILON) continue;
+    const nx = ccw ? -dy / length : dy / length;
+    const ny = ccw ? dx / length : -dx / length;
+    samples.push({
+      x: (a.x + b.x) * 0.5 + nx * epsilon,
+      y: (a.y + b.y) * 0.5 + ny * epsilon,
+    });
+  }
+
+  return samples.length > 0 ? samples : points.slice(0, 1);
+}
+
+function shouldUseComplexPocketPlanner(loopInfos) {
+  return loopInfos.some((info) => info.nestingDepth > 0 || !isConvexLoop(info.loop));
+}
+
+function isConvexLoop(loop) {
+  if (!Array.isArray(loop) || loop.length < 4) return true;
+  let sign = 0;
+  for (let index = 0; index < loop.length; index++) {
+    const a = loop[index];
+    const b = loop[(index + 1) % loop.length];
+    const c = loop[(index + 2) % loop.length];
+    const cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+    if (Math.abs(cross) <= EPSILON) continue;
+    const currentSign = Math.sign(cross);
+    if (!sign) sign = currentSign;
+    else if (currentSign !== sign) return false;
+  }
+  return true;
+}
+
+function buildComplexPocketRegions(loopInfos, radius, stepover, axis = 'x') {
+  const scanAxis = axis === 'y' ? 'y' : 'x';
+  const transformedLoopInfos = scanAxis === 'y'
+    ? loopInfos.map((info) => ({ ...info, loop: swapLoopAxes(info.loop), samples: swapLoopAxes(info.samples || []) }))
+    : loopInfos;
+  const bounds = loopBounds(transformedLoopInfos.map((info) => info.loop));
+  const levels = [];
+  for (const y of pocketScanLevels(bounds, radius, stepover)) {
+    const intervals = scanPocketIntervalsAtY(transformedLoopInfos, y, radius);
+    if (intervals.length > 0) levels.push({ y, intervals });
+  }
+  if (levels.length === 0) return [];
+
+  const regions = [];
+  let previous = [];
+  for (const level of levels) {
+    const current = [];
+    for (const interval of level.intervals) {
+      const matches = previous.filter((entry) => intervalsConnect(entry.interval, interval, stepover));
+      let region = null;
+      if (matches.length > 0) {
+        matches.sort((left, right) => intervalOverlapWidth(right.interval, interval) - intervalOverlapWidth(left.interval, interval));
+        region = matches[0].region;
+      }
+      if (!region) {
+        region = { lines: [], minX: interval.start, minY: level.y };
+        regions.push(region);
+      }
+      region.lines.push({ axis: scanAxis, position: level.y, start: interval.start, end: interval.end });
+      region.minX = Math.min(region.minX, interval.start);
+      region.minY = Math.min(region.minY, level.y);
+      current.push({ interval, region });
+    }
+    previous = current;
+  }
+
+  for (const region of regions) {
+    region.lines.sort((left, right) => (left.position - right.position) || (left.start - right.start));
+  }
+
+  return regions.sort((left, right) => (left.minX - right.minX) || (left.minY - right.minY));
+}
+
+function pocketScanLevels(bounds, radius, stepover) {
+  const minY = bounds.minY + radius;
+  const maxY = bounds.maxY - radius;
+  if (!Number.isFinite(minY) || !Number.isFinite(maxY) || minY > maxY + EPSILON) return [];
+
+  const step = Math.max(EPSILON, stepover);
+  const levels = [minY];
+  let current = minY;
+  for (let guard = 0; guard < MAX_POCKET_SCAN_LEVELS; guard++) {
+    const next = current + step;
+    if (next >= maxY - EPSILON) break;
+    levels.push(next);
+    current = next;
+  }
+  if (Math.abs(levels[levels.length - 1] - maxY) > EPSILON) levels.push(maxY);
+  return levels;
+}
+
+function scanPocketIntervalsAtY(loopInfos, y, radius) {
+  const filled = buildFilledIntervalsAtY(loopInfos, y);
+  if (filled.length === 0) return [];
+  const forbidden = mergeIntervals(loopInfos.flatMap((info) => loopClearanceIntervalsAtY(info.loop, y, radius)));
+  return subtractIntervals(filled, forbidden).filter((interval) => interval.end - interval.start > EPSILON);
+}
+
+function buildFilledIntervalsAtY(loopInfos, y) {
+  const crossings = [];
+  for (const info of loopInfos) {
+    const loop = info.loop;
+    for (let index = 0; index < loop.length; index++) {
+      const a = loop[index];
+      const b = loop[(index + 1) % loop.length];
+      if ((a.y <= y && b.y > y) || (b.y <= y && a.y > y)) {
+        const t = (y - a.y) / (b.y - a.y);
+        crossings.push(a.x + (b.x - a.x) * t);
       }
     }
   }
-  moves.push({ type: 'rapid', z: operation.safeZ });
-  moves.push({ type: 'spindle', on: false });
-  return makeToolpath(operation, tool, moves);
+  crossings.sort((left, right) => left - right);
+
+  const intervals = [];
+  for (let index = 0; index + 1 < crossings.length; index += 2) {
+    const start = crossings[index];
+    const end = crossings[index + 1];
+    if (end - start > EPSILON) intervals.push({ start, end });
+  }
+  return intervals;
+}
+
+function loopClearanceIntervalsAtY(loop, y, radius) {
+  const intervals = [];
+  for (let index = 0; index < loop.length; index++) {
+    const a = loop[index];
+    const b = loop[(index + 1) % loop.length];
+    intervals.push(...segmentClearanceIntervalsAtY(a, b, y, radius));
+  }
+  return intervals;
+}
+
+function segmentClearanceIntervalsAtY(a, b, y, radius) {
+  const clearanceRadius = Math.max(0, radius - 1e-7);
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const lengthSq = dx * dx + dy * dy;
+  if (lengthSq <= EPSILON) return circleIntervalsAtY(a, y, clearanceRadius);
+
+  const intervals = [];
+  intervals.push(...circleIntervalsAtY(a, y, clearanceRadius));
+  intervals.push(...circleIntervalsAtY(b, y, clearanceRadius));
+
+  if (Math.abs(dx) <= EPSILON) {
+    if (y >= Math.min(a.y, b.y) - EPSILON && y <= Math.max(a.y, b.y) + EPSILON) {
+      intervals.push({ start: a.x - clearanceRadius, end: a.x + clearanceRadius });
+    }
+    return intervals;
+  }
+
+  if (Math.abs(dy) <= EPSILON) {
+    const deltaY = Math.abs(y - a.y);
+    if (deltaY < clearanceRadius) intervals.push({ start: Math.min(a.x, b.x), end: Math.max(a.x, b.x) });
+    return intervals;
+  }
+
+  const length = Math.sqrt(lengthSq);
+  const crossConstant = -dy * a.x - dx * (y - a.y);
+  const lineStart = (-crossConstant - clearanceRadius * length) / dy;
+  const lineEnd = (-crossConstant + clearanceRadius * length) / dy;
+  const xAtT0 = a.x - ((y - a.y) * dy) / dx;
+  const xAtT1 = a.x + (lengthSq - (y - a.y) * dy) / dx;
+  const start = Math.max(Math.min(lineStart, lineEnd), Math.min(xAtT0, xAtT1));
+  const end = Math.min(Math.max(lineStart, lineEnd), Math.max(xAtT0, xAtT1));
+  if (end - start > EPSILON) intervals.push({ start, end });
+  return intervals;
+}
+
+function circleIntervalsAtY(point, y, radius) {
+  const dy = Math.abs(y - point.y);
+  if (dy >= radius) return [];
+  const dx = Math.sqrt(Math.max(0, radius * radius - dy * dy));
+  return [{ start: point.x - dx, end: point.x + dx }];
+}
+
+function mergeIntervals(intervals) {
+  const normalized = (Array.isArray(intervals) ? intervals : [])
+    .map((interval) => ({ start: Math.min(interval.start, interval.end), end: Math.max(interval.start, interval.end) }))
+    .filter((interval) => Number.isFinite(interval.start) && Number.isFinite(interval.end) && interval.end - interval.start > EPSILON)
+    .sort((left, right) => left.start - right.start);
+  if (normalized.length === 0) return [];
+
+  const merged = [normalized[0]];
+  for (let index = 1; index < normalized.length; index++) {
+    const current = normalized[index];
+    const last = merged[merged.length - 1];
+    if (current.start <= last.end + EPSILON) {
+      last.end = Math.max(last.end, current.end);
+    } else {
+      merged.push(current);
+    }
+  }
+  return merged;
+}
+
+function subtractIntervals(source, forbidden) {
+  if (!Array.isArray(source) || source.length === 0) return [];
+  if (!Array.isArray(forbidden) || forbidden.length === 0) return source.slice();
+
+  const result = [];
+  for (const interval of source) {
+    let cursor = interval.start;
+    for (const block of forbidden) {
+      if (block.end <= cursor + EPSILON) continue;
+      if (block.start >= interval.end - EPSILON) break;
+      if (block.start > cursor + EPSILON) {
+        result.push({ start: cursor, end: Math.min(block.start, interval.end) });
+      }
+      cursor = Math.max(cursor, block.end);
+      if (cursor >= interval.end - EPSILON) break;
+    }
+    if (cursor < interval.end - EPSILON) result.push({ start: cursor, end: interval.end });
+  }
+  return result.filter((interval) => interval.end - interval.start > EPSILON);
+}
+
+function intervalsConnect(a, b, stepover) {
+  return intervalOverlapWidth(a, b) >= -Math.max(EPSILON, stepover * 0.5);
+}
+
+function intervalOverlapWidth(a, b) {
+  return Math.min(a.end, b.end) - Math.max(a.start, b.start);
+}
+
+function loopBounds(loops) {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const loop of loops) {
+    for (const point of loop || []) {
+      minX = Math.min(minX, point.x);
+      minY = Math.min(minY, point.y);
+      maxX = Math.max(maxX, point.x);
+      maxY = Math.max(maxY, point.y);
+    }
+  }
+  return { minX, minY, maxX, maxY };
+}
+
+function pointInPolygon(point, polygon) {
+  let inside = false;
+  for (let index = 0, previous = polygon.length - 1; index < polygon.length; previous = index++) {
+    const a = polygon[index];
+    const b = polygon[previous];
+    const intersects = ((a.y > point.y) !== (b.y > point.y))
+      && (point.x < ((b.x - a.x) * (point.y - a.y)) / (b.y - a.y) + a.x);
+    if (intersects) inside = !inside;
+  }
+  return inside;
 }
 
 export function depthPasses(topZ, bottomZ, stepDown) {
@@ -120,6 +474,167 @@ function appendClosedPathPass(moves, path, depth, operation) {
   moves.push({ type: 'rapid', z: operation.clearanceZ });
 }
 
+function appendClosedSegmentPathPass(moves, segmentLoop, depth, operation) {
+  if (!Array.isArray(segmentLoop) || segmentLoop.length === 0) return;
+  const orderedSegments = rotateClosedSegments(segmentLoop, operation.leadInPosition);
+  const first = segmentPointAtStart(orderedSegments[0]);
+  const tangent = segmentLeadDirectionPoint(orderedSegments[0]);
+  if (!first || !tangent) return;
+  const leadInPath = buildLeadInPath([first, tangent], operation);
+  const rapidTarget = leadInPath[0] || first;
+  moves.push({ type: 'rapid', z: operation.clearanceZ });
+  moves.push({ type: 'rapid', x: rapidTarget.x, y: rapidTarget.y });
+  moves.push({ type: 'feed', z: depth, feed: operation.plungeRate });
+  for (let index = 1; index < leadInPath.length; index++) {
+    moves.push({ type: 'feed', x: leadInPath[index].x, y: leadInPath[index].y, feed: operation.feedRate });
+  }
+  for (const segment of orderedSegments) appendSegmentMove(moves, segment, operation.feedRate);
+  const last = segmentPointAtEnd(orderedSegments[orderedSegments.length - 1]);
+  if (last && pointDistanceSquared(last, first) > EPSILON * EPSILON) {
+    moves.push({ type: 'feed', x: first.x, y: first.y, feed: operation.feedRate });
+  }
+  moves.push({ type: 'rapid', z: operation.clearanceZ });
+}
+
+function appendOpenPathPass(moves, path, depth, operation) {
+  if (!Array.isArray(path) || path.length < 2) return;
+  const first = path[0];
+  const leadInPath = buildLeadInPath(path, operation);
+  const rapidTarget = leadInPath[0] || first;
+  moves.push({ type: 'rapid', z: operation.clearanceZ });
+  moves.push({ type: 'rapid', x: rapidTarget.x, y: rapidTarget.y });
+  moves.push({ type: 'feed', z: depth, feed: operation.plungeRate });
+  for (let index = 1; index < leadInPath.length; index++) {
+    moves.push({ type: 'feed', x: leadInPath[index].x, y: leadInPath[index].y, feed: operation.feedRate });
+  }
+  for (let index = 1; index < path.length; index++) {
+    moves.push({ type: 'feed', x: path[index].x, y: path[index].y, feed: operation.feedRate });
+  }
+  moves.push({ type: 'rapid', z: operation.clearanceZ });
+}
+
+function buildContinuousPocketRegionPaths(region, options = {}) {
+  const lines = Array.isArray(region?.lines) ? region.lines : [];
+  if (lines.length === 0) return [];
+
+  const alternateDirection = options.alternateDirection !== false;
+  const axis = lines[0]?.axis === 'y' ? 'y' : 'x';
+  const paths = [];
+  let currentChunk = [lines[0]];
+
+  for (let index = 1; index < lines.length; index++) {
+    const previous = lines[index - 1];
+    const current = lines[index];
+    if (lineOverlap(previous, current) > EPSILON) {
+      currentChunk.push(current);
+      continue;
+    }
+    const chunkPath = buildPocketLineChunkPath(currentChunk, axis, { alternateDirection });
+    if (chunkPath.length >= 2) paths.push(chunkPath);
+    currentChunk = [current];
+  }
+
+  const lastChunkPath = buildPocketLineChunkPath(currentChunk, axis, { alternateDirection });
+  if (lastChunkPath.length >= 2) paths.push(lastChunkPath);
+  return paths;
+}
+
+function buildPocketLineChunkPath(lines, axis, options = {}) {
+  if (!Array.isArray(lines) || lines.length === 0) return [];
+  const alternateDirection = options.alternateDirection !== false;
+  const connectorSides = [];
+  const connectorCoords = [];
+  for (let index = 0; index + 1 < lines.length; index++) {
+    const overlap = lineSharedInterval(lines[index], lines[index + 1]);
+    if (!overlap) break;
+    const side = alternateDirection ? (index % 2 === 0 ? 'end' : 'start') : 'start';
+    connectorSides.push(side);
+    connectorCoords.push(side === 'start' ? overlap.start : overlap.end);
+  }
+
+  const path = [];
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index];
+    const hasPrev = index > 0;
+    const hasNext = index < lines.length - 1;
+    const prevSide = hasPrev ? connectorSides[index - 1] : null;
+    const prevCoord = hasPrev ? connectorCoords[index - 1] : null;
+    const nextSide = hasNext ? connectorSides[index] : null;
+    const nextCoord = hasNext ? connectorCoords[index] : null;
+
+    const entrySide = hasPrev
+      ? prevSide
+      : (alternateDirection
+        ? (hasNext ? oppositePocketLineSide(nextSide) : 'start')
+        : 'start');
+    const exitSide = hasNext
+      ? nextSide
+      : (alternateDirection ? oppositePocketLineSide(entrySide) : 'end');
+    const entryCoord = hasPrev ? prevCoord : (entrySide === 'start' ? line.start : line.end);
+    const exitCoord = hasNext ? nextCoord : (exitSide === 'start' ? line.start : line.end);
+
+    appendPocketLineCoverage(path, line, axis, entrySide, entryCoord, exitSide, exitCoord);
+    if (hasNext) appendPocketPathPoint(path, axis, nextCoord, lines[index + 1].position);
+  }
+  return path;
+}
+
+function appendPocketLineCoverage(path, line, axis, entrySide, entryCoord, exitSide, exitCoord) {
+  const start = Math.min(line.start, line.end);
+  const end = Math.max(line.start, line.end);
+  const clampedEntry = clamp(entryCoord, start, end);
+  const clampedExit = clamp(exitCoord, start, end);
+  appendPocketPathPoint(path, axis, clampedEntry, line.position);
+
+  if (entrySide === 'start') {
+    if (clampedEntry > start + EPSILON) appendPocketPathPoint(path, axis, start, line.position);
+    appendPocketPathPoint(path, axis, end, line.position);
+    if (exitSide === 'start') {
+      appendPocketPathPoint(path, axis, start, line.position);
+      if (clampedExit > start + EPSILON) appendPocketPathPoint(path, axis, clampedExit, line.position);
+    } else if (clampedExit < end - EPSILON) {
+      appendPocketPathPoint(path, axis, clampedExit, line.position);
+    }
+    return;
+  }
+
+  if (clampedEntry < end - EPSILON) appendPocketPathPoint(path, axis, end, line.position);
+  appendPocketPathPoint(path, axis, start, line.position);
+  if (exitSide === 'end') {
+    appendPocketPathPoint(path, axis, end, line.position);
+    if (clampedExit < end - EPSILON) appendPocketPathPoint(path, axis, clampedExit, line.position);
+  } else if (clampedExit > start + EPSILON) {
+    appendPocketPathPoint(path, axis, clampedExit, line.position);
+  }
+}
+
+function appendPocketPathPoint(path, axis, primary, secondary) {
+  const point = axis === 'y'
+    ? { x: secondary, y: primary }
+    : { x: primary, y: secondary };
+  const previous = path[path.length - 1];
+  if (previous && Math.abs(previous.x - point.x) <= EPSILON && Math.abs(previous.y - point.y) <= EPSILON) return;
+  path.push(point);
+}
+
+function lineOverlap(a, b) {
+  return Math.min(a.end, b.end) - Math.max(a.start, b.start);
+}
+
+function lineSharedInterval(a, b) {
+  const start = Math.max(Math.min(a.start, a.end), Math.min(b.start, b.end));
+  const end = Math.min(Math.max(a.start, a.end), Math.max(b.start, b.end));
+  return end - start > EPSILON ? { start, end } : null;
+}
+
+function oppositePocketLineSide(side) {
+  return side === 'end' ? 'start' : 'end';
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
 function pocketStepover(operation, tool) {
   const percent = Number(operation.stepoverPercent);
   if (Number.isFinite(percent)) {
@@ -129,12 +644,27 @@ function pocketStepover(operation, tool) {
   return Math.max(EPSILON, operation.stepover || tool.diameter * 0.4);
 }
 
+function normalizePocketStrategy(strategy) {
+  const value = typeof strategy === 'string' ? strategy.trim().toLowerCase() : '';
+  if (value === 'zigzag-y' || value === 'oneway-x' || value === 'oneway-y') return value;
+  if (value === 'zigzag-x') return value;
+  return 'contour';
+}
+
 function rotateClosedPath(path, position = 0) {
   if (!Array.isArray(path) || path.length < 2) return path || [];
   const clamped = Math.max(0, Math.min(1, Number(position) || 0));
   const startIndex = Math.min(path.length - 1, Math.round(clamped * (path.length - 1)));
   if (startIndex <= 0) return path;
   return path.slice(startIndex).concat(path.slice(0, startIndex));
+}
+
+function rotateClosedSegments(segments, position = 0) {
+  if (!Array.isArray(segments) || segments.length < 2) return segments || [];
+  const clamped = Math.max(0, Math.min(1, Number(position) || 0));
+  const startIndex = Math.min(segments.length - 1, Math.round(clamped * (segments.length - 1)));
+  if (startIndex <= 0) return segments;
+  return segments.slice(startIndex).concat(segments.slice(0, startIndex));
 }
 
 function buildLeadInPath(path, operation) {
@@ -166,7 +696,81 @@ function buildLeadInPath(path, operation) {
   return points;
 }
 
-function makeToolpath(operation, tool, moves) {
+function swapLoopAxes(points) {
+  return (Array.isArray(points) ? points : []).map((point) => ({ x: point.y, y: point.x }));
+}
+
+function segmentPointAtStart(segment) {
+  if (!segment || typeof segment !== 'object') return null;
+  if (segment.type === 'polyline') return normalizeSegmentPoint(segment.points?.[0]);
+  return normalizeSegmentPoint(segment.start);
+}
+
+function segmentPointAtEnd(segment) {
+  if (!segment || typeof segment !== 'object') return null;
+  if (segment.type === 'polyline') return normalizeSegmentPoint(segment.points?.[segment.points.length - 1]);
+  return normalizeSegmentPoint(segment.end);
+}
+
+function segmentLeadDirectionPoint(segment) {
+  if (!segment || typeof segment !== 'object') return null;
+  if (segment.type === 'polyline') return normalizeSegmentPoint(segment.points?.[1] || segment.points?.[0]);
+  if (segment.type === 'cubic') return normalizeSegmentPoint(segment.control1);
+  return segmentPointAtEnd(segment);
+}
+
+function normalizeSegmentPoint(point) {
+  const x = Number(point?.x);
+  const y = Number(point?.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return { x, y };
+}
+
+function appendSegmentMove(moves, segment, feedRate) {
+  if (!segment || typeof segment !== 'object') return;
+  if (segment.type === 'line') {
+    moves.push({ type: 'feed', x: segment.end.x, y: segment.end.y, feed: feedRate });
+    return;
+  }
+  if (segment.type === 'arc') {
+    moves.push({
+      type: 'arc',
+      x: segment.end.x,
+      y: segment.end.y,
+      centerX: segment.center.x,
+      centerY: segment.center.y,
+      clockwise: segment.clockwise === true,
+      feed: feedRate,
+    });
+    return;
+  }
+  if (segment.type === 'cubic') {
+    moves.push({
+      type: 'cubic',
+      x: segment.end.x,
+      y: segment.end.y,
+      control1X: segment.control1.x,
+      control1Y: segment.control1.y,
+      control2X: segment.control2.x,
+      control2Y: segment.control2.y,
+      feed: feedRate,
+    });
+    return;
+  }
+  if (segment.type === 'polyline' && Array.isArray(segment.points)) {
+    for (let index = 1; index < segment.points.length; index++) {
+      moves.push({ type: 'feed', x: segment.points[index].x, y: segment.points[index].y, feed: feedRate });
+    }
+  }
+}
+
+function pointDistanceSquared(a, b) {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  return dx * dx + dy * dy;
+}
+
+function makeToolpath(operation, tool, moves, warnings = []) {
   return {
     id: `toolpath-${operation.id}`,
     operationId: operation.id,
@@ -175,5 +779,6 @@ function makeToolpath(operation, tool, moves) {
     toolId: tool.id,
     toolNumber: tool.number,
     moves,
+    warnings,
   };
 }

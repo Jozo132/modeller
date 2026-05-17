@@ -3,6 +3,8 @@ export const CAM_CONFIG_VERSION = 1;
 export const CAM_TOOL_TYPES = Object.freeze(['endmill', 'ball', 'cone', 'drill']);
 export const CAM_OPERATION_TYPES = Object.freeze(['profile', 'pocket']);
 export const CAM_PROFILE_SIDES = Object.freeze(['along', 'inside', 'outside']);
+export const CAM_POCKET_ORDERS = Object.freeze(['per-level', 'per-pocket']);
+export const CAM_POCKET_STRATEGIES = Object.freeze(['contour', 'zigzag-x', 'zigzag-y', 'oneway-x', 'oneway-y']);
 
 const DEFAULT_BOUNDS = Object.freeze({
   min: Object.freeze({ x: 0, y: 0, z: 0 }),
@@ -38,6 +40,7 @@ export function normalizeCamConfig(input = {}, options = {}) {
     operations,
     activeToolId,
     activeOperationId,
+    linuxCncUseG5: data.linuxCncUseG5 !== false,
   };
 }
 
@@ -148,6 +151,8 @@ export function normalizeOperation(input = {}, index = 0, context = {}) {
       1,
       100,
     );
+    operation.pocketOrder = CAM_POCKET_ORDERS.includes(data.pocketOrder) ? data.pocketOrder : 'per-level';
+    operation.pocketStrategy = CAM_POCKET_STRATEGIES.includes(data.pocketStrategy) ? data.pocketStrategy : 'contour';
   }
 
   return operation;
@@ -156,6 +161,11 @@ export function normalizeOperation(input = {}, index = 0, context = {}) {
 export function getOperationLoops(operation) {
   if (!operation) return [];
   return normalizeSource(operation.source || { loops: operation.loops || operation.contours || [] }).loops;
+}
+
+export function getOperationSegmentLoops(operation) {
+  if (!operation) return [];
+  return normalizeSource(operation.source || { loops: operation.loops || operation.contours || [] }).segmentLoops;
 }
 
 function normalizeStock(input = null, bounds = null) {
@@ -167,7 +177,7 @@ function normalizeStock(input = null, bounds = null) {
     enabled: data.enabled !== false,
     material: typeof data.material === 'string' && data.material.trim() ? data.material.trim() : 'stock',
     color: typeof data.color === 'string' && data.color.trim() ? data.color.trim() : '#68a7ff',
-    opacity: clamp(numberOr(data.opacity, 0.42), 0.02, 0.9),
+    opacity: clamp(numberOr(data.opacity, 0.18), 0.02, 0.9),
     min: {
       x: Math.min(min.x, max.x),
       y: Math.min(min.y, max.y),
@@ -231,6 +241,7 @@ function normalizeSource(input = {}) {
     edgeIndex: integerOrNull(data.edgeIndex),
     tolerance: positiveNumberOrNull(data.tolerance),
     loops: loops.map(normalizeLoop).filter((loop) => loop.length >= 3),
+    segmentLoops: normalizeSegmentLoops(data.segmentLoops),
   };
 }
 
@@ -239,6 +250,58 @@ function normalizeLoop(points) {
   return points
     .map((point) => ({ x: numberOr(point?.x, NaN), y: numberOr(point?.y, NaN) }))
     .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+}
+
+function normalizeSegmentLoops(input) {
+  if (!Array.isArray(input)) return [];
+  return input
+    .map((loop) => normalizeSegmentLoop(loop))
+    .filter((loop) => loop.length > 0);
+}
+
+function normalizeSegmentLoop(loop) {
+  if (!Array.isArray(loop)) return [];
+  return loop
+    .map((segment) => normalizeSegment(segment))
+    .filter(Boolean);
+}
+
+function normalizeSegment(input) {
+  const data = input && typeof input === 'object' ? input : {};
+  if (data.type === 'line') {
+    const start = normalizePoint2OrNull(data.start);
+    const end = normalizePoint2OrNull(data.end);
+    return start && end ? { type: 'line', start, end } : null;
+  }
+  if (data.type === 'arc') {
+    const start = normalizePoint2OrNull(data.start);
+    const end = normalizePoint2OrNull(data.end);
+    const center = normalizePoint2OrNull(data.center);
+    return start && end && center
+      ? { type: 'arc', start, end, center, clockwise: data.clockwise === true }
+      : null;
+  }
+  if (data.type === 'cubic') {
+    const start = normalizePoint2OrNull(data.start);
+    const control1 = normalizePoint2OrNull(data.control1);
+    const control2 = normalizePoint2OrNull(data.control2);
+    const end = normalizePoint2OrNull(data.end);
+    return start && control1 && control2 && end
+      ? { type: 'cubic', start, control1, control2, end }
+      : null;
+  }
+  if (data.type === 'polyline') {
+    const points = Array.isArray(data.points) ? data.points.map((point) => normalizePoint2OrNull(point)).filter(Boolean) : [];
+    return points.length >= 2 ? { type: 'polyline', points } : null;
+  }
+  return null;
+}
+
+function normalizePoint2OrNull(point) {
+  const x = numberOr(point?.x, NaN);
+  const y = numberOr(point?.y, NaN);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return { x, y };
 }
 
 function inflateBounds(bounds, margin) {
