@@ -567,6 +567,7 @@ const TOOLBAR_BUTTONS = {
   // Row 1: CAM
   'btn-enter-cam':              'cam-enter',
   'btn-cam-setup':              'cam-setup',
+  'btn-cam-simulate':           'motion',
   'btn-cam-profile':            'cam-profile',
   'btn-cam-pocket':             'cam-pocket',
   'btn-cam-export':             'download',

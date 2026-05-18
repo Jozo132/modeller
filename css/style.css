@@ -2613,6 +2613,22 @@ select.parameter-input {
 #left-feature-params-content .hint {
   padding: 4px 0;
 }
+
+body.workspace-cam #left-feature-params-content {
+  padding: 4px 0;
+}
+
+body.workspace-cam #left-feature-params-content .parameter-row {
+  margin-bottom: 8px;
+}
+
+body.workspace-cam #left-feature-params-content .parameter-label {
+  margin-bottom: 3px;
+}
+
+body.workspace-cam #left-feature-params-content .parameter-input {
+  padding: 5px 7px;
+}
 .parameter-value {
   font-size: 13px;
   color: var(--text-primary);
@@ -2976,6 +2992,10 @@ body.workspace-cam #parameters-panel {
   -webkit-backdrop-filter: blur(6px);
 }
 
+body.workspace-cam .node-tree {
+  width: calc(var(--panel-width) - 16px);
+}
+
 .node-tree-header {
   padding: 6px 10px;
   font-weight: 600;
@@ -2985,8 +3005,16 @@ body.workspace-cam #parameters-panel {
   user-select: none;
 }
 
+body.workspace-cam .node-tree-header {
+  padding: 5px 8px;
+}
+
 .node-tree-content {
   padding: 4px 0;
+}
+
+body.workspace-cam .node-tree-content {
+  padding: 2px 0;
 }
 
 .node-tree-item {
@@ -3048,6 +3076,11 @@ body.workspace-cam #parameters-panel {
   margin-right: 2px;
 }
 
+body.workspace-cam .node-tree-eye {
+  width: 16px;
+  margin-right: 0;
+}
+
 .node-tree-eye:hover {
   opacity: 1.0;
 }
@@ -3103,6 +3136,10 @@ body.workspace-cam #parameters-panel {
   padding-left: 16px;
 }
 
+body.workspace-cam .node-tree-children {
+  padding-left: 12px;
+}
+
 .node-tree-features {
   border-top: 1px solid rgba(255, 255, 255, 0.04);
   margin-top: 2px;
@@ -3117,6 +3154,11 @@ body.workspace-cam #parameters-panel {
   cursor: pointer;
   user-select: none;
   transition: background 0.12s;
+}
+
+body.workspace-cam .node-tree-feature {
+  gap: 5px;
+  padding: 2px 8px;
 }
 
 .node-tree-feature:hover {
@@ -3187,6 +3229,10 @@ body.workspace-cam #parameters-panel {
   padding-left: 26px;
   font-size: 11px;
   opacity: 0.8;
+}
+
+body.workspace-cam .node-tree-child-feature {
+  padding-left: 18px;
 }
 
 /* ── Suppression / Rollback Bar ── */
@@ -3688,6 +3734,10 @@ body.workspace-cam .cam-mode-only {
   display: flex;
 }
 
+body.workspace-cam {
+  --panel-width: 280px;
+}
+
 /* In Part workspace (not sketching): hide layers section (sketch-specific) */
 body.workspace-part #layers-section,
 body.workspace-part #layers-separator,
@@ -3699,6 +3749,11 @@ body.workspace-cam #layers-separator {
 /* In Part workspace (not sketching): hide sketch-only left panel sections */
 body.workspace-part .sketch-only-section,
 body.workspace-cam .sketch-only-section {
+  display: none !important;
+}
+
+body.workspace-cam #variables-section,
+body.workspace-cam .left-panel-vars-sep {
   display: none !important;
 }
 /* Feature properties section (Part mode only, hidden by default) */
@@ -3718,6 +3773,14 @@ body.workspace-cam #left-feature-params {
   flex: 1;
   min-height: 60px;
   overflow-y: auto;
+}
+
+body.workspace-cam #left-panel {
+  padding: 8px;
+}
+
+body.workspace-cam #left-panel h3 {
+  margin-bottom: 6px;
 }
 
 /* Show layers when sketching within Part workspace */
@@ -3807,6 +3870,14 @@ body.workspace-part .sketch-tool-only {
   font-weight: 600;
 }
 
+body.workspace-cam .cam-panel-section {
+  padding: 6px 0;
+}
+
+body.workspace-cam .cam-panel-heading {
+  margin-bottom: 6px;
+}
+
 .cam-panel-note {
   margin: 6px 0;
   color: var(--text-secondary);
@@ -3814,11 +3885,20 @@ body.workspace-part .sketch-tool-only {
   line-height: 1.35;
 }
 
+body.workspace-cam .cam-panel-note {
+  margin: 4px 0;
+}
+
 .cam-action-row {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
   margin-top: 8px;
+}
+
+body.workspace-cam .cam-action-row {
+  gap: 4px;
+  margin-top: 6px;
 }
 
 .cam-action-row button,
@@ -3837,6 +3917,11 @@ body.workspace-part .sketch-tool-only {
 .cam-panel-button:hover {
   border-color: var(--accent);
   background: rgba(255, 255, 255, 0.1);
+}
+
+body.workspace-cam .cam-action-row button,
+body.workspace-cam .cam-panel-button {
+  padding: 5px 7px;
 }
 
 .cam-panel-button.primary {
@@ -3859,6 +3944,11 @@ body.workspace-part .sketch-tool-only {
   color: var(--text-secondary);
   font-size: 11px;
   line-height: 1.4;
+}
+
+body.workspace-cam .cam-panel-summary {
+  margin: 6px 0;
+  padding: 6px 7px;
 }
 
 .cam-panel-note.warning {
@@ -3894,9 +3984,9 @@ body.workspace-part .sketch-tool-only {
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 12px;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.03)),
-    rgba(12, 18, 30, 0.52);
-  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.14);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02)),
+    rgba(22, 22, 22, 0.94);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.12);
   cursor: pointer;
   transition: border-color 120ms ease, transform 120ms ease, background 120ms ease;
 }
@@ -3907,18 +3997,19 @@ body.workspace-part .sketch-tool-only {
 }
 
 .cam-operation-item.active {
-  border-color: var(--accent);
+  border-color: rgba(255, 255, 255, 0.22);
   background:
-    linear-gradient(180deg, rgba(0, 122, 204, 0.22), rgba(10, 18, 32, 0.2)),
-    rgba(8, 18, 34, 0.62);
-  box-shadow: 0 16px 34px rgba(0, 82, 138, 0.26);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.03)),
+    rgba(34, 34, 34, 0.98);
+  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.16);
 }
 
 .cam-operation-item.compact {
-  flex-direction: row;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
-  padding: 8px 10px;
+  padding: 9px 10px;
   border-radius: 10px;
   box-shadow: none;
 }
@@ -3928,36 +4019,54 @@ body.workspace-part .sketch-tool-only {
 }
 
 .cam-operation-item.compact .cam-operation-main {
-  gap: 4px;
+  gap: 3px;
 }
 
 .cam-operation-item.compact .cam-operation-header {
   align-items: center;
+  justify-content: flex-start;
   gap: 8px;
+}
+
+.cam-operation-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 
 .cam-operation-item.compact .cam-operation-title {
   font-size: 12px;
+  line-height: 1.15;
 }
 
-.cam-operation-item.compact .cam-operation-meta {
-  gap: 4px;
-}
-
-.cam-operation-item.compact .cam-operation-stat {
-  padding: 2px 6px;
-  font-size: 9px;
+.cam-operation-meta-line {
+  color: var(--text-secondary);
+  font-size: 10px;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .cam-operation-item.compact .cam-operation-controls {
-  align-self: stretch;
+  align-self: center;
   justify-content: flex-end;
   padding-top: 0;
   border-top: none;
 }
 
 .cam-operation-item.compact .cam-operation-actions {
-  gap: 2px;
+  gap: 1px;
+}
+
+.cam-operation-summary.compact {
+  color: var(--text-secondary);
+  font-size: 10px;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .cam-operation-main {
@@ -4040,6 +4149,85 @@ body.workspace-part .sketch-tool-only {
   font-size: 13px;
 }
 
+.cam-plan-browser {
+  display: flex;
+  flex-direction: column;
+  margin-top: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+  overflow: hidden;
+}
+
+.cam-plan-group + .cam-plan-group {
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.cam-plan-group-heading {
+  padding: 8px 10px 6px;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.cam-plan-browser .node-tree-feature {
+  gap: 8px;
+  padding: 6px 8px 6px 10px;
+}
+
+.cam-plan-browser .node-tree-feature:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.cam-plan-browser .node-tree-feature.active {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+}
+
+.cam-plan-row-labels {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cam-plan-row-meta {
+  color: var(--text-secondary);
+  font-size: 10px;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cam-plan-row-controls {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.cam-plan-row-controls .cam-operation-control.icon-only {
+  min-width: 22px;
+  max-width: 22px;
+}
+
+.cam-operation-control.cam-plan-toggle {
+  min-width: 32px;
+  max-width: none;
+  padding: 3px 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.cam-plan-group .cam-panel-note {
+  margin: 0;
+  padding: 0 10px 10px;
+}
+
 .cam-operation-title {
   color: var(--text-primary);
   font-size: 13px;
@@ -4078,7 +4266,7 @@ body.workspace-part .sketch-tool-only {
 .cam-pill {
   border-radius: 999px;
   padding: 4px 9px;
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.08);
   color: var(--text-primary);
   font-size: 10px;
   font-weight: 600;
@@ -4259,7 +4447,7 @@ body.scene-manager-active #node-tree {
   background: rgba(255, 255, 255, 0.05);
 }
 .scene-item.active {
-  background: rgba(0, 122, 204, 0.15);
+  background: rgba(255, 255, 255, 0.08);
   border-left-color: #007acc;
 }
 .scene-item-name {
