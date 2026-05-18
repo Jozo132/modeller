@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { startTiming, formatTimingSuffix } from './test-timing.js';
-import { normalizeCamConfig, simulateStockRemoval } from '../js/cam/index.js';
+import { buildToolpathMotionTimeline, normalizeCamConfig, simulateStockRemoval } from '../js/cam/index.js';
 
 function test(name, fn) {
   const startedAt = startTiming();
@@ -69,6 +69,17 @@ test('stock simulation tracks the full motion timeline and current tool state', 
   assert.ok(Number.isFinite(simulation.toolState.position.x));
   assert.ok(Number.isFinite(simulation.toolState.position.y));
   assert.ok(Number.isFinite(simulation.toolState.position.z));
+});
+
+test('motion timeline builder exposes full machine motion without stock simulation', () => {
+  const timeline = buildToolpathMotionTimeline(sampleCam());
+
+  assert.ok(Array.isArray(timeline.motionSegments));
+  assert.equal(timeline.motionSegmentCount, timeline.motionSegments.length);
+  assert.equal(timeline.feedSegmentCount, timeline.feedSegments.length);
+  assert.ok(timeline.totalMotionSeconds >= timeline.totalCutSeconds);
+  assert.ok(timeline.motionSegments.some((segment) => segment.moveType === 'rapid'));
+  assert.ok(timeline.motionSegments.some((segment) => Math.abs(segment.start.z - segment.end.z) > 1e-9));
 });
 
 test('stock simulation exposes sequential operation stock states', () => {

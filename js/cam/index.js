@@ -19,6 +19,7 @@ export {
   CAM_SIMULATION_DEFAULT_RESOLUTION,
   CAM_SIMULATION_MAX_RESOLUTION,
   CAM_SIMULATION_MIN_RESOLUTION,
+  buildToolpathMotionTimeline,
   simulateStockRemoval,
 } from './simulation.js';
 export { exportGCode, downloadGCode } from './export.js';

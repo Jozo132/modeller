@@ -31,6 +31,7 @@ test('default config creates stock, origin, and a usable tool', () => {
   assert.deepEqual(cam.stock.min, { x: 5, y: 15, z: -2 });
   assert.deepEqual(cam.stock.max, { x: 35, y: 55, z: 9 });
   assert.equal(cam.stock.opacity, 0.18);
+  assert.equal(cam.stock.visible, true);
   assert.deepEqual(cam.machineOrigin.position, { x: 5, y: 15, z: 9 });
   assert.equal(cam.tools.length, 1);
   assert.equal(cam.tools[0].type, 'endmill');
@@ -63,7 +64,22 @@ test('profile and pocket operations keep contours and machining defaults', () =>
   assert.ok(Math.abs(cam.operations[1].stepover - 2.4) < 1e-9);
   assert.equal(cam.operations[1].pocketOrder, 'per-level');
   assert.equal(cam.operations[1].pocketStrategy, 'contour');
+  assert.equal(cam.operations[0].visible, true);
+  assert.equal(cam.operations[1].visible, true);
   assert.equal(cam.linuxCncUseG5, true);
+});
+
+test('preview visibility flags normalize independently from machining flags', () => {
+  const cam = normalizeCamConfig({
+    stock: { visible: false },
+    tools: [{ id: 't1', type: 'endmill', diameter: 6 }],
+    operations: [{ id: 'profile-a', type: 'profile', toolId: 't1', enabled: false, visible: false, source: { loops: [rect] } }],
+  });
+
+  assert.equal(cam.stock.enabled, true);
+  assert.equal(cam.stock.visible, false);
+  assert.equal(cam.operations[0].enabled, false);
+  assert.equal(cam.operations[0].visible, false);
 });
 
 test('operation normalization rejects invalid enum values conservatively', () => {

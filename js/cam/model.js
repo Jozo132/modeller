@@ -123,6 +123,7 @@ export function normalizeOperation(input = {}, index = 0, context = {}) {
     name: typeof data.name === 'string' && data.name.trim() ? data.name.trim() : defaultOperationName(type, index),
     type,
     enabled: data.enabled !== false,
+    visible: data.visible !== false,
     toolId,
     source: normalizeSource(data.source || { loops: data.loops || data.contours || [] }),
     topZ,
@@ -175,6 +176,7 @@ function normalizeStock(input = null, bounds = null) {
   const max = normalizePoint3(sourceBounds.max, DEFAULT_BOUNDS.max);
   return {
     enabled: data.enabled !== false,
+    visible: data.visible !== false,
     material: typeof data.material === 'string' && data.material.trim() ? data.material.trim() : 'stock',
     color: typeof data.color === 'string' && data.color.trim() ? data.color.trim() : '#68a7ff',
     opacity: clamp(numberOr(data.opacity, 0.18), 0.02, 0.9),

@@ -6,6 +6,26 @@ export const CAM_SIMULATION_MIN_RESOLUTION = 8;
 export const CAM_SIMULATION_DEFAULT_RESOLUTION = 384;
 export const CAM_SIMULATION_MAX_RESOLUTION = 1024;
 
+export function buildToolpathMotionTimeline(camConfig, toolpathsOrOptions = null) {
+  const config = normalizeCamConfig(camConfig);
+  const explicitToolpaths = Array.isArray(toolpathsOrOptions) ? toolpathsOrOptions : null;
+  const toolpaths = explicitToolpaths || generateToolpaths(config).toolpaths;
+  const toolById = new Map(config.tools.map((tool) => [tool.id, tool]));
+  const motionSegments = collectMotionSegments(toolpaths, toolById, config.units);
+  const feedSegments = motionSegments.filter((segment) => segment.cutting);
+  const totalCutSeconds = feedSegments.reduce((sum, segment) => sum + segment.durationSeconds, 0);
+  const totalMotionSeconds = motionSegments.reduce((sum, segment) => sum + segment.durationSeconds, 0);
+  return {
+    toolpaths,
+    motionSegments,
+    motionSegmentCount: motionSegments.length,
+    feedSegments,
+    feedSegmentCount: feedSegments.length,
+    totalCutSeconds,
+    totalMotionSeconds,
+  };
+}
+
 export function simulateStockRemoval(camConfig, toolpathsOrOptions = null, maybeOptions = {}) {
   const config = normalizeCamConfig(camConfig);
   const explicitToolpaths = Array.isArray(toolpathsOrOptions) ? toolpathsOrOptions : null;
@@ -30,9 +50,9 @@ export function simulateStockRemoval(camConfig, toolpathsOrOptions = null, maybe
   const operationStates = buildOperationStates(toolpaths, stock, initialVolume);
   const operationStateById = new Map(operationStates.map((state) => [state.operationId, state]));
 
-  const toolById = new Map(config.tools.map((tool) => [tool.id, tool]));
-  const motionSegments = collectMotionSegments(toolpaths, toolById, config.units);
-  const feedSegments = motionSegments.filter((segment) => segment.cutting);
+  const motionTimeline = buildToolpathMotionTimeline(config, toolpaths);
+  const motionSegments = motionTimeline.motionSegments;
+  const feedSegments = motionTimeline.feedSegments;
   for (const segment of feedSegments) {
     const state = operationStateById.get(segment.operationId);
     if (state) state.feedSegmentCount += 1;
@@ -53,8 +73,8 @@ export function simulateStockRemoval(camConfig, toolpathsOrOptions = null, maybe
   };
 
   const progress = Math.max(0, Math.min(1, Number(options.progress ?? 1)));
-  const totalCutSeconds = feedSegments.reduce((sum, segment) => sum + segment.durationSeconds, 0);
-  const totalMotionSeconds = motionSegments.reduce((sum, segment) => sum + segment.durationSeconds, 0);
+  const totalCutSeconds = motionTimeline.totalCutSeconds;
+  const totalMotionSeconds = motionTimeline.totalMotionSeconds;
   const targetMotionSeconds = totalMotionSeconds * progress;
   let processedSegmentCount = 0;
   let processedCutSeconds = 0;

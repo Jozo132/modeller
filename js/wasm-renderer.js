@@ -240,12 +240,13 @@ function _buildCamToolpathBuffers(toolpaths, activeOperationId, progress = 1, op
   const completedEdges = [];
   const directionEdges = [];
   const visibleTimelineSegments = [];
-  const previewMode = options.previewMode === 'all' ? 'all' : 'active';
+  const visibleOperationIds = Array.isArray(options.visibleOperationIds) ? new Set(options.visibleOperationIds) : null;
   const effectiveActiveOperationId = activeOperationId || (toolpaths || [])[0]?.operationId || null;
 
   for (const toolpath of toolpaths || []) {
+    const isVisible = visibleOperationIds ? visibleOperationIds.has(toolpath.operationId) : true;
     const isActive = toolpath.operationId === effectiveActiveOperationId;
-    if (!isActive && previewMode !== 'all') continue;
+    if (!isVisible) continue;
 
     const groups = _sampleCamPathGroups(
       _collapseCamPathGroups(_collectCamPathGroups(toolpath, isActive)),
@@ -286,7 +287,7 @@ function _buildCamMotionBuffers(motionSegments, activeOperationId, options = {})
   const rapidEdges = [];
   const completedEdges = [];
   const directionEdges = [];
-  const previewMode = options.previewMode === 'all' ? 'all' : 'active';
+  const visibleOperationIds = Array.isArray(options.visibleOperationIds) ? new Set(options.visibleOperationIds) : null;
   const effectiveActiveOperationId = activeOperationId || (motionSegments || [])[0]?.operationId || null;
   const processedSeconds = Math.max(0, Number(options.processedSeconds ?? 0));
   let elapsedSeconds = 0;
@@ -300,7 +301,7 @@ function _buildCamMotionBuffers(motionSegments, activeOperationId, options = {})
 
   for (const segment of motionSegments || []) {
     const isActive = segment.operationId === effectiveActiveOperationId;
-    const isVisible = isActive || previewMode === 'all';
+    const isVisible = visibleOperationIds ? visibleOperationIds.has(segment.operationId) : true;
     const segmentStart = elapsedSeconds;
     const segmentEnd = elapsedSeconds + Math.max(0, Number(segment.durationSeconds) || 0);
 
@@ -4567,28 +4568,29 @@ export class WasmRenderer {
       return;
     }
 
-    const useMotionBuffers = Array.isArray(visualization.simulation?.motionSegments);
+    const useMotionBuffers = Array.isArray(visualization.motionSegments);
+    const visibleOperationIds = Array.isArray(visualization.visibleOperationIds) ? visualization.visibleOperationIds : null;
     const staticRevision = visualization.staticRevision || '__cam-static__';
     const staticChanged = this._camStaticRevision !== staticRevision;
 
     if (staticChanged) {
       this._camStaticRevision = staticRevision;
 
-      const stockBuffers = _buildCamStockBuffers(visualization.stock);
+      const stockBuffers = visualization.showStock === false ? null : _buildCamStockBuffers(visualization.stock);
       this._camStockColor = stockBuffers?.color || [0.407, 0.655, 1.0, 0.18];
       this._replaceCamBuffer('_camStockTriangles', '_camStockTriangleCount', this.executor?.createStaticSolidBuffer?.(stockBuffers?.triangles || null));
       this._replaceCamBuffer('_camStockEdges', '_camStockEdgeVertexCount', this.executor?.createStaticLineBuffer?.(stockBuffers?.edges || null));
 
       const staticToolpathBuffers = useMotionBuffers
-        ? _buildCamMotionBuffers(visualization.simulation.motionSegments, visualization.activeOperationId || null, {
-          previewMode: visualization.previewMode,
+        ? _buildCamMotionBuffers(visualization.motionSegments, visualization.activeOperationId || null, {
+          visibleOperationIds,
           processedSeconds: 0,
         })
         : _buildCamToolpathBuffers(
           visualization.toolpaths || [],
           visualization.activeOperationId || null,
           visualization.simulationProgress ?? 1,
-          { previewMode: visualization.previewMode },
+          { visibleOperationIds },
         );
 
       this._replaceCamBuffer('_camToolpathEdges', '_camToolpathEdgeVertexCount', this.executor?.createStaticLineBuffer?.(staticToolpathBuffers.allEdges || null));
@@ -4602,9 +4604,9 @@ export class WasmRenderer {
     }
 
     if (useMotionBuffers) {
-      const dynamicToolpathBuffers = _buildCamMotionBuffers(visualization.simulation.motionSegments, visualization.activeOperationId || null, {
-        previewMode: visualization.previewMode,
-        processedSeconds: visualization.simulation?.processedMotionSeconds ?? 0,
+      const dynamicToolpathBuffers = _buildCamMotionBuffers(visualization.motionSegments, visualization.activeOperationId || null, {
+        visibleOperationIds,
+        processedSeconds: visualization.processedMotionSeconds ?? visualization.simulation?.processedMotionSeconds ?? 0,
       });
       this._replaceCamBuffer('_camCompletedToolpathEdges', '_camCompletedToolpathEdgeVertexCount', this.executor?.createStaticLineBuffer?.(dynamicToolpathBuffers.completedEdges || null));
     }
