@@ -8,7 +8,7 @@
 import { getFlag } from '../featureFlags.js';
 import { Feature } from './Feature.js';
 import { applyBRepFillet } from './BRepFillet.js';
-import { expandPathEdgeKeys } from './EdgeAnalysis.js';
+import { expandPathEdgeKeys, makeEdgeKey } from './EdgeAnalysis.js';
 import { calculateMeshVolume, calculateBoundingBox } from './toolkit/MeshAnalysis.js';
 import {
   disposeOcctSketchModelingShape,
@@ -118,12 +118,88 @@ function uniqueOcctEdgeRefs(refs) {
   return [...new Map(refs.map((ref) => [ref.stableHash || `id:${ref.topoId}`, ref])).values()];
 }
 
+function parseLegacyEdgeKey(key) {
+  if (typeof key !== 'string') return null;
+  const sep = key.indexOf('|');
+  if (sep < 0) return null;
+  const parsePoint = (text) => {
+    const coords = text.split(',').map(Number);
+    if (coords.length !== 3 || coords.some((value) => Number.isNaN(value))) return null;
+    return { x: coords[0], y: coords[1], z: coords[2] };
+  };
+  const start = parsePoint(key.slice(0, sep));
+  const end = parsePoint(key.slice(sep + 1));
+  return start && end ? { start, end } : null;
+}
+
+function pointDistanceSquared(left, right) {
+  const dx = Number(left?.x || 0) - Number(right?.x || 0);
+  const dy = Number(left?.y || 0) - Number(right?.y || 0);
+  const dz = Number(left?.z || 0) - Number(right?.z || 0);
+  return dx * dx + dy * dy + dz * dz;
+}
+
+function legacyKeyMatchesEdge(key, edge, tolerance = 1e-3) {
+  const parsed = parseLegacyEdgeKey(key);
+  if (!parsed || !edge?.start || !edge?.end) return false;
+  const tolSq = tolerance * tolerance;
+  const direct = pointDistanceSquared(parsed.start, edge.start) <= tolSq
+    && pointDistanceSquared(parsed.end, edge.end) <= tolSq;
+  if (direct) return true;
+  return pointDistanceSquared(parsed.start, edge.end) <= tolSq
+    && pointDistanceSquared(parsed.end, edge.start) <= tolSq;
+}
+
+function toOcctEdgeRef(entity) {
+  if (!entity || typeof entity !== 'object') return null;
+  const stableHash = typeof entity.stableHash === 'string' && entity.stableHash.length > 0
+    ? entity.stableHash
+    : (typeof entity.hash === 'string' && entity.hash.length > 0 ? entity.hash : null);
+  const topoId = Number.isInteger(entity.topoId)
+    ? entity.topoId
+    : (Number.isInteger(entity.id) ? entity.id : null);
+  if (!stableHash && topoId == null) return null;
+  return {
+    ...(stableHash ? { stableHash } : {}),
+    ...(topoId != null ? { topoId } : {}),
+  };
+}
+
+function hasOcctEdgeRef(entities) {
+  return Array.isArray(entities) && entities.some((entity) => !!toOcctEdgeRef(entity));
+}
+
+function collectOcctPathLegacyKeys(path, nativeEdges) {
+  if (!Array.isArray(path?.edgeIndices) || path.edgeIndices.length === 0) return [];
+
+  const legacyKeys = [];
+  for (const edgeIndex of path.edgeIndices) {
+    const edge = nativeEdges[edgeIndex];
+    const legacyKey = edgeEntityToLegacyKey(edge);
+    if (legacyKey) legacyKeys.push(legacyKey);
+  }
+
+  if (path.isClosed === true) return legacyKeys;
+
+  const firstEdge = nativeEdges[path.edgeIndices[0]];
+  const lastEdge = nativeEdges[path.edgeIndices[path.edgeIndices.length - 1]];
+  if (firstEdge?.start && lastEdge?.end) {
+    legacyKeys.push(makeEdgeKey(firstEdge.start, lastEdge.end));
+  }
+
+  return legacyKeys;
+}
+
 function resolveOcctFeatureChainRefs(selectionContext, fallbackEdgeKeys) {
   if (!Array.isArray(fallbackEdgeKeys) || fallbackEdgeKeys.length === 0) return [];
 
   const geometry = selectionContext?.geometry;
-  const nativeEdges = Array.isArray(geometry?._occtFeatureEdges) ? geometry._occtFeatureEdges : [];
-  const nativePaths = Array.isArray(geometry?._occtFeaturePaths) ? geometry._occtFeaturePaths : [];
+  const nativeEdges = Array.isArray(geometry?._occtFeatureEdges) && geometry._occtFeatureEdges.length > 0
+    ? geometry._occtFeatureEdges
+    : (Array.isArray(geometry?.edges) ? geometry.edges : []);
+  const nativePaths = hasOcctEdgeRef(geometry?._occtFeaturePaths)
+    ? geometry._occtFeaturePaths
+    : (hasOcctEdgeRef(geometry?.paths) ? geometry.paths : []);
   if (nativeEdges.length === 0) return [];
 
   const nativeGeometry = nativePaths.length > 0
@@ -136,20 +212,20 @@ function resolveOcctFeatureChainRefs(selectionContext, fallbackEdgeKeys) {
   const refs = [];
 
   for (const path of nativePaths) {
-    if (!path?.stableHash || !Array.isArray(path.edgeIndices) || path.edgeIndices.length === 0) continue;
-    const matched = path.edgeIndices.some((edgeIndex) => {
-      const edge = nativeEdges[edgeIndex];
-      const legacyKey = edgeEntityToLegacyKey(edge);
-      return !!legacyKey && wanted.has(legacyKey);
-    });
-    if (matched) refs.push({ stableHash: path.stableHash });
+    if (!Array.isArray(path?.edgeIndices) || path.edgeIndices.length === 0) continue;
+    const matched = collectOcctPathLegacyKeys(path, nativeEdges)
+      .some((legacyKey) => wanted.has(legacyKey));
+    if (!matched) continue;
+    const ref = toOcctEdgeRef(path);
+    if (ref) refs.push(ref);
   }
   if (refs.length > 0) return uniqueOcctEdgeRefs(refs);
 
   for (const edge of nativeEdges) {
     const legacyKey = edgeEntityToLegacyKey(edge);
-    if (!edge?.stableHash || !legacyKey || !wanted.has(legacyKey)) continue;
-    refs.push({ stableHash: edge.stableHash });
+    const ref = toOcctEdgeRef(edge);
+    if (!ref || !legacyKey || !wanted.has(legacyKey)) continue;
+    refs.push(ref);
   }
 
   return uniqueOcctEdgeRefs(refs);
@@ -410,11 +486,15 @@ export class FilletFeature extends Feature {
     const geometryRefs = [];
     for (const edge of geometryEdges) {
       const legacyKey = edgeEntityToLegacyKey(edge);
-      if (!edge?.stableHash || !legacyKey || !fallbackEdgeKeys.includes(legacyKey)) continue;
-      geometryRefs.push({ stableHash: edge.stableHash });
+      const ref = toOcctEdgeRef(edge);
+      const matched = !!legacyKey && fallbackEdgeKeys.some((key) => (
+        key === legacyKey || legacyKeyMatchesEdge(key, edge)
+      ));
+      if (!ref || !matched) continue;
+      geometryRefs.push(ref);
     }
     if (geometryRefs.length > 0) {
-      return [...new Map(geometryRefs.map((ref) => [ref.stableHash, ref])).values()];
+      return uniqueOcctEdgeRefs(geometryRefs);
     }
 
     const bodyKeys = buildSelectionKeyMap(selectionContext, feature.id);
@@ -429,13 +509,10 @@ export class FilletFeature extends Feature {
       const result = resolveKey(stableKey, bodyKeys);
       if (result.status === RemapStatus.AMBIGUOUS || result.status === RemapStatus.MISSING) continue;
       const entity = result.entity;
-      if (entity?.stableHash) {
-        refs.push({ stableHash: entity.stableHash });
+      const ref = toOcctEdgeRef(entity);
+      if (ref) {
+        refs.push(ref);
         continue;
-      }
-      const topoId = Number.isInteger(entity?.topoId) ? entity.topoId : (Number.isInteger(entity?.id) ? entity.id : null);
-      if (topoId != null) {
-        refs.push({ topoId });
       }
     }
 
