@@ -1,10 +1,12 @@
 export const CAM_CONFIG_VERSION = 1;
 
 export const CAM_TOOL_TYPES = Object.freeze(['endmill', 'ball', 'cone', 'drill']);
-export const CAM_OPERATION_TYPES = Object.freeze(['profile', 'pocket']);
+export const CAM_OPERATION_TYPES = Object.freeze(['face', 'profile', 'pocket']);
 export const CAM_PROFILE_SIDES = Object.freeze(['along', 'inside', 'outside']);
 export const CAM_POCKET_ORDERS = Object.freeze(['per-level', 'per-pocket']);
 export const CAM_POCKET_STRATEGIES = Object.freeze(['contour', 'zigzag-x', 'zigzag-y', 'oneway-x', 'oneway-y']);
+
+const CAM_FACE_STRATEGIES = Object.freeze(['zigzag-x', 'zigzag-y', 'oneway-x', 'oneway-y']);
 
 const DEFAULT_BOUNDS = Object.freeze({
   min: Object.freeze({ x: 0, y: 0, z: 0 }),
@@ -18,11 +20,14 @@ export function createDefaultCamConfig(options = {}) {
 export function normalizeCamConfig(input = {}, options = {}) {
   const data = input && typeof input === 'object' ? input : {};
   const stock = normalizeStock(data.stock, options.bounds);
+  const safeZ = numberOr(data.safeZ, deriveOperationNumber(data.operations, 'safeZ', stock.max.z + 10, Math.max));
+  const clearanceZ = numberOr(data.clearanceZ, deriveOperationNumber(data.operations, 'clearanceZ', stock.max.z + 5, Math.max));
+  const rapidZRetract = deriveOperationBoolean(data.operations, 'rapidZRetract', data.rapidZRetract !== false);
   const tools = normalizeTools(data.tools);
   const activeToolId = tools.some((tool) => tool.id === data.activeToolId)
     ? data.activeToolId
     : tools[0]?.id || null;
-  const operations = normalizeOperations(data.operations, { stock, tools, activeToolId });
+  const operations = normalizeOperations(data.operations, { stock, tools, activeToolId, safeZ, clearanceZ, rapidZRetract });
   const activeOperationId = operations.some((operation) => operation.id === data.activeOperationId)
     ? data.activeOperationId
     : operations[0]?.id || null;
@@ -36,6 +41,9 @@ export function normalizeCamConfig(input = {}, options = {}) {
       : 'linuxcnc',
     stock,
     machineOrigin: normalizeMachineOrigin(data.machineOrigin, stock),
+    safeZ,
+    clearanceZ,
+    rapidZRetract,
     tools,
     operations,
     activeToolId,
@@ -113,10 +121,14 @@ export function normalizeOperation(input = {}, index = 0, context = {}) {
     || (context.tools || []).find((candidate) => candidate.id === context.activeToolId)
     || null;
   const toolId = tool?.id || context.activeToolId || null;
-  const safeZ = numberOr(data.safeZ, stock.max.z + 10);
-  const clearanceZ = numberOr(data.clearanceZ, Math.max(safeZ, stock.max.z + 5));
+  const safeZ = numberOr(data.safeZ, numberOr(context.safeZ, stock.max.z + 10));
+  const clearanceZ = numberOr(data.clearanceZ, numberOr(context.clearanceZ, stock.max.z + 5));
   const topZ = numberOr(data.topZ, stock.max.z);
   const bottomZ = numberOr(data.bottomZ, stock.min.z);
+  const rapidZRetract = data.rapidZRetract != null ? data.rapidZRetract !== false : context.rapidZRetract !== false;
+  const source = type === 'face'
+    ? normalizeStockOutlineSource(data.source, stock)
+    : normalizeOperationSource(data.source || { loops: data.loops || data.contours || [] }, stock);
 
   const operation = {
     id: normalizeId(data.id, `${type}-${index + 1}`),
@@ -125,12 +137,13 @@ export function normalizeOperation(input = {}, index = 0, context = {}) {
     enabled: data.enabled !== false,
     visible: data.visible !== false,
     toolId,
-    source: normalizeSource(data.source || { loops: data.loops || data.contours || [] }),
+    source,
     topZ,
     bottomZ,
     stepDown: positiveNumber(data.stepDown, Math.max(0.1, Math.abs(topZ - bottomZ) || 1)),
     safeZ,
     clearanceZ,
+    rapidZRetract,
     feedRate: positiveNumber(data.feedRate, tool?.feedRate || 400),
     plungeRate: positiveNumber(data.plungeRate, tool?.plungeRate || 120),
     spindleRpm: Math.round(positiveNumber(data.spindleRpm, tool?.spindleRpm || 10000)),
@@ -153,7 +166,13 @@ export function normalizeOperation(input = {}, index = 0, context = {}) {
       100,
     );
     operation.pocketOrder = CAM_POCKET_ORDERS.includes(data.pocketOrder) ? data.pocketOrder : 'per-level';
-    operation.pocketStrategy = CAM_POCKET_STRATEGIES.includes(data.pocketStrategy) ? data.pocketStrategy : 'contour';
+    if (type === 'pocket') {
+      operation.pocketStrategy = CAM_POCKET_STRATEGIES.includes(data.pocketStrategy) ? data.pocketStrategy : 'contour';
+      operation.sideEntryEnabled = data.sideEntryEnabled === true;
+    } else {
+      operation.pocketStrategy = CAM_FACE_STRATEGIES.includes(data.pocketStrategy) ? data.pocketStrategy : 'zigzag-x';
+      operation.sideEntryEnabled = false;
+    }
   }
 
   return operation;
@@ -167,6 +186,25 @@ export function getOperationLoops(operation) {
 export function getOperationSegmentLoops(operation) {
   if (!operation) return [];
   return normalizeSource(operation.source || { loops: operation.loops || operation.contours || [] }).segmentLoops;
+}
+
+export function getOperationSourceSurfaces(operation) {
+  if (!operation) return [];
+  const source = normalizeSource(operation.source || { loops: operation.loops || operation.contours || [] });
+  if (source.surfaces.length > 0) return source.surfaces;
+  if (source.loops.length === 0) return [];
+  return [{
+    referenceId: source.referenceId,
+    label: source.label,
+    faceIndex: source.faceIndex,
+    topoFaceId: source.topoFaceId,
+    faceGroup: source.faceGroup,
+    edgeIndex: source.edgeIndex,
+    tolerance: source.tolerance,
+    z: numberOr(operation.bottomZ, NaN),
+    loops: source.loops,
+    segmentLoops: source.segmentLoops,
+  }];
 }
 
 function normalizeStock(input = null, bounds = null) {
@@ -231,6 +269,40 @@ function normalizeOperations(input = [], context = {}) {
   });
 }
 
+function deriveOperationNumber(operations, field, fallback, reducer = Math.max) {
+  const values = (Array.isArray(operations) ? operations : [])
+    .map((operation) => Number(operation?.[field]))
+    .filter(Number.isFinite);
+  if (values.length === 0) return fallback;
+  return values.reduce((result, value) => reducer(result, value), values[0]);
+}
+
+function deriveOperationBoolean(operations, field, fallback) {
+  const values = (Array.isArray(operations) ? operations : [])
+    .map((operation) => operation?.[field])
+    .filter((value) => value === true || value === false);
+  if (values.length === 0) return fallback;
+  return values.every((value) => value !== false);
+}
+
+function normalizeOperationSource(input = {}, stock = normalizeStock()) {
+  const source = normalizeSource(input);
+  if (source.type === 'stock-outline') return normalizeStockOutlineSource(source, stock);
+  return source;
+}
+
+function normalizeStockOutlineSource(input = {}, stock = normalizeStock()) {
+  const source = normalizeSource(input);
+  return {
+    ...source,
+    type: 'stock-outline',
+    label: source.label || 'Stock outline',
+    loops: [stockFootprintLoop(stock)],
+    segmentLoops: [],
+    surfaces: [],
+  };
+}
+
 function normalizeSource(input = {}) {
   const data = input && typeof input === 'object' ? input : {};
   const loops = Array.isArray(data.loops) ? data.loops : (Array.isArray(data.contours) ? data.contours : []);
@@ -240,8 +312,29 @@ function normalizeSource(input = {}) {
     label: typeof data.label === 'string' && data.label.trim() ? data.label.trim() : null,
     faceIndex: integerOrNull(data.faceIndex),
     topoFaceId: integerOrNull(data.topoFaceId),
+    faceGroup: integerOrNull(data.faceGroup),
     edgeIndex: integerOrNull(data.edgeIndex),
     tolerance: positiveNumberOrNull(data.tolerance),
+    loops: loops.map(normalizeLoop).filter((loop) => loop.length >= 3),
+    segmentLoops: normalizeSegmentLoops(data.segmentLoops),
+    surfaces: Array.isArray(data.surfaces)
+      ? data.surfaces.map((surface) => normalizeSourceSurface(surface)).filter((surface) => surface.loops.length > 0)
+      : [],
+  };
+}
+
+function normalizeSourceSurface(input = {}) {
+  const data = input && typeof input === 'object' ? input : {};
+  const loops = Array.isArray(data.loops) ? data.loops : (Array.isArray(data.contours) ? data.contours : []);
+  return {
+    referenceId: typeof data.referenceId === 'string' ? data.referenceId : null,
+    label: typeof data.label === 'string' && data.label.trim() ? data.label.trim() : null,
+    faceIndex: integerOrNull(data.faceIndex),
+    topoFaceId: integerOrNull(data.topoFaceId),
+    faceGroup: integerOrNull(data.faceGroup),
+    edgeIndex: integerOrNull(data.edgeIndex),
+    tolerance: positiveNumberOrNull(data.tolerance),
+    z: numberOr(data.z, NaN),
     loops: loops.map(normalizeLoop).filter((loop) => loop.length >= 3),
     segmentLoops: normalizeSegmentLoops(data.segmentLoops),
   };
@@ -329,6 +422,15 @@ function cloneBounds(bounds) {
   };
 }
 
+function stockFootprintLoop(stock = normalizeStock()) {
+  return [
+    { x: stock.min.x, y: stock.min.y },
+    { x: stock.max.x, y: stock.min.y },
+    { x: stock.max.x, y: stock.max.y },
+    { x: stock.min.x, y: stock.max.y },
+  ];
+}
+
 function originFromPreset(preset, stock) {
   if (preset === 'stock-top-center') {
     return {
@@ -360,6 +462,7 @@ function defaultToolName(type, index) {
 }
 
 function defaultOperationName(type, index) {
+  if (type === 'face') return `Face Milling ${index + 1}`;
   return `${type === 'profile' ? 'Profile' : 'Pocket'} ${index + 1}`;
 }
 
@@ -379,6 +482,7 @@ function nonNegativeNumber(value, fallback) {
 }
 
 function integerOrNull(value) {
+  if (value == null || value === '' || typeof value === 'boolean') return null;
   const number = Number(value);
   return Number.isInteger(number) ? number : null;
 }

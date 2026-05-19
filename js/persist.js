@@ -19,6 +19,7 @@ let _getSessionState = null;
 let _getScenes = null;
 let _getCamConfig = null;
 let _cbrepStoreFactory = null;
+let _cbrepStorePromise = null;
 
 /** Register the viewport instance for persistence. */
 export function setViewport(vp) { _viewport = vp; }
@@ -42,7 +43,47 @@ export function setScenesGetter(fn) { _getScenes = fn; }
 export function setCamConfigGetter(fn) { _getCamConfig = fn; }
 
 /** Register a factory for the external CBREP payload store. */
-export function setCbrepPersistStoreFactory(factory) { _cbrepStoreFactory = factory; }
+export function setCbrepPersistStoreFactory(factory) {
+  _cbrepStoreFactory = factory;
+  _cbrepStorePromise = null;
+}
+
+async function _getCbrepStore() {
+  if (_cbrepStoreFactory) {
+    return await _cbrepStoreFactory();
+  }
+  if (typeof indexedDB === 'undefined') {
+    throw new Error('IndexedDB not available');
+  }
+  if (!_cbrepStorePromise) {
+    _cbrepStorePromise = import('../packages/cache/BrowserIdbCacheStore.js')
+      .then(({ BrowserIdbCacheStore }) => new BrowserIdbCacheStore());
+  }
+  return await _cbrepStorePromise;
+}
+
+function _utf8Encode(text) {
+  return new TextEncoder().encode(String(text ?? ''));
+}
+
+function _utf8Decode(buffer) {
+  const bytes = buffer instanceof Uint8Array
+    ? buffer
+    : (ArrayBuffer.isView(buffer)
+      ? new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength)
+      : new Uint8Array(buffer));
+  return new TextDecoder().decode(bytes);
+}
+
+function _toArrayBuffer(bytes) {
+  if (bytes instanceof ArrayBuffer) return bytes;
+  if (ArrayBuffer.isView(bytes)) {
+    return bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
+      ? bytes.buffer
+      : bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  }
+  return new Uint8Array(bytes).buffer;
+}
 
 function _hashProjectImagePayload(text) {
   let hash = 0x811c9dc5;

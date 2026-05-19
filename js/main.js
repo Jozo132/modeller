@@ -2466,6 +2466,7 @@ class App {
       this._setCamPanelStage('setup');
     });
     document.getElementById('btn-cam-simulate')?.addEventListener('click', () => this._setCamPanelStage('simulate'));
+    document.getElementById('btn-cam-face')?.addEventListener('click', () => this._addCamOperation('face'));
     document.getElementById('btn-cam-profile')?.addEventListener('click', () => this._addCamOperation('profile'));
     document.getElementById('btn-cam-pocket')?.addEventListener('click', () => this._addCamOperation('pocket'));
     document.getElementById('btn-cam-export')?.addEventListener('click', () => this._setCamPanelStage('export'));
@@ -8179,6 +8180,7 @@ class App {
       return;
     }
     this._camConfig = normalizeCamConfig(camConfig);
+    this._hydrateCamConfigSources(this._camConfig);
   }
 
   _ensureCamConfig() {
@@ -8187,6 +8189,7 @@ class App {
     } else {
       this._camConfig = normalizeCamConfig(this._camConfig);
     }
+    this._hydrateCamConfigSources(this._camConfig);
     return this._camConfig;
   }
 
@@ -8328,6 +8331,9 @@ class App {
     section.appendChild(this._createParamRow('Origin X', 'number', camConfig.machineOrigin.position.x, (value) => this._setCamOriginNumber('x', value)));
     section.appendChild(this._createParamRow('Origin Y', 'number', camConfig.machineOrigin.position.y, (value) => this._setCamOriginNumber('y', value)));
     section.appendChild(this._createParamRow('Origin Z', 'number', camConfig.machineOrigin.position.z, (value) => this._setCamOriginNumber('z', value)));
+    section.appendChild(this._createParamRow('Safe Z', 'number', camConfig.safeZ, (value) => this._setCamSetupNumber('safeZ', value)));
+    section.appendChild(this._createParamRow('Clearance Z', 'number', camConfig.clearanceZ, (value) => this._setCamSetupNumber('clearanceZ', value)));
+    section.appendChild(this._createParamRow('Rapid Z Retract', 'checkbox', camConfig.rapidZRetract !== false, (value) => this._setCamRapidZRetract(value)));
 
     if (options.showActions !== false) {
       const actions = this._createCamActionRow();
@@ -8378,9 +8384,7 @@ class App {
     const generation = this._getCamToolpathGeneration(camConfig);
     const toolById = new Map((camConfig.tools || []).map((tool) => [tool.id, tool]));
     const stockStateByOperationId = new Map((generation.operationStates || []).map((state) => [state.operationId, state]));
-    const warningByOperationId = new Map((generation.warnings || [])
-      .filter((warning) => typeof warning?.operationId === 'string')
-      .map((warning) => [warning.operationId, warning]));
+    const warningByOperationId = this._buildCamIssueMap(generation.warnings || []);
     const list = document.createElement('div');
     list.className = 'cam-operation-list';
     camConfig.operations.forEach((operation, operationIndex) => {
@@ -8388,9 +8392,7 @@ class App {
       const warning = warningByOperationId.get(operation.id) || null;
       const contourCount = operation.source?.loops?.length || 0;
       const tool = toolById.get(operation.toolId || camConfig.activeToolId) || null;
-      const modeLabel = operation.type === 'profile'
-        ? (operation.side || 'outside')
-        : ((operation.pocketStrategy || 'contour').replace(/-/g, ' '));
+      const modeLabel = this._camOperationModeLabel(operation);
       const metaParts = [
         `Op ${operationIndex + 1}`,
         tool ? `T${tool.number}` : 'No tool',
@@ -8407,7 +8409,7 @@ class App {
       if (operation.id === camConfig.activeOperationId) item.classList.add('active');
       const main = document.createElement('div');
       main.className = 'cam-operation-main';
-      main.innerHTML = `<div class="cam-operation-header"><div class="cam-operation-title">${escapeHtml(operation.name)}</div><span class="cam-pill">${escapeHtml(operation.type)}</span></div><div class="cam-operation-meta">${metaParts.map((part) => `<span class="cam-operation-stat">${escapeHtml(part)}</span>`).join('')}</div><div class="cam-operation-summary${warning ? ' warning' : ''}">${escapeHtml(planSummary)}</div>`;
+      main.innerHTML = `<div class="cam-operation-header"><div class="cam-operation-title">${escapeHtml(operation.name)}</div><span class="cam-pill">${escapeHtml(operation.type)}</span></div><div class="cam-operation-meta">${metaParts.map((part) => `<span class="cam-operation-stat">${escapeHtml(part)}</span>`).join('')}</div><div class="cam-operation-summary${this._camIssueClassSuffix(warning)}">${escapeHtml(planSummary)}</div>`;
 
       const controls = document.createElement('div');
       controls.className = 'cam-operation-controls';
@@ -8450,7 +8452,7 @@ class App {
     if (camConfig.operations.length === 0) {
       const note = document.createElement('p');
       note.className = 'cam-panel-note';
-      note.textContent = 'No operations yet. Add a profile or pocket, then choose its source surface.';
+      note.textContent = 'No operations yet. Add face milling, profile, or pocket, then choose its source geometry.';
       list.appendChild(note);
     }
     section.appendChild(list);
@@ -8458,6 +8460,7 @@ class App {
     this._appendCamActiveOperationEditor(section, camConfig, generation, stockStateByOperationId, warningByOperationId);
 
     const actions = this._createCamActionRow();
+    actions.appendChild(this._createCamButton('Add Face Milling', () => this._addCamOperation('face')));
     actions.appendChild(this._createCamButton('Add Profile', () => this._addCamOperation('profile')));
     actions.appendChild(this._createCamButton('Add Pocket', () => this._addCamOperation('pocket')));
     if (activeOperation) {
@@ -8507,6 +8510,7 @@ class App {
         { value: 'oneway-x', label: 'One-way along X' },
         { value: 'oneway-y', label: 'One-way along Y' },
       ]));
+      section.appendChild(this._createParamRow('Allow Side Entry', 'checkbox', activeOperation.sideEntryEnabled === true, (value) => this._setActiveCamOperationField('sideEntryEnabled', value)));
     }
     this._appendCamOperationGeometryControls(section, activeOperation);
     section.appendChild(this._createParamRow('Lead-in Zig-zag', 'checkbox', activeOperation.leadInEnabled, (value) => this._setActiveCamOperationField('leadInEnabled', value)));
@@ -8971,6 +8975,23 @@ class App {
     this._updateCamConfig((draft) => { draft.machineOrigin.position[axis] = nextValue; });
   }
 
+  _setCamSetupNumber(field, value) {
+    const nextValue = Number(value);
+    if (!Number.isFinite(nextValue)) return;
+    this._updateCamConfig((draft) => {
+      draft[field] = nextValue;
+      for (const operation of draft.operations || []) operation[field] = nextValue;
+    });
+  }
+
+  _setCamRapidZRetract(value) {
+    const enabled = value !== false;
+    this._updateCamConfig((draft) => {
+      draft.rapidZRetract = enabled;
+      for (const operation of draft.operations || []) operation.rapidZRetract = enabled;
+    });
+  }
+
   _setActiveCamToolField(field, value) {
     this._updateCamConfig((draft) => {
       const tool = draft.tools.find((candidate) => candidate.id === draft.activeToolId) || draft.tools[0];
@@ -8983,8 +9004,8 @@ class App {
     this._updateCamConfig((draft) => {
       const operation = draft.operations.find((candidate) => candidate.id === draft.activeOperationId);
       if (!operation) return;
-      if (field === 'enabled' || field === 'leadInEnabled' || field === 'visible') operation[field] = !!value;
-      else if (field === 'toolId' || field === 'side' || field === 'name') operation[field] = value;
+      if (field === 'enabled' || field === 'leadInEnabled' || field === 'visible' || field === 'sideEntryEnabled') operation[field] = !!value;
+      else if (field === 'toolId' || field === 'side' || field === 'name' || field === 'pocketOrder' || field === 'pocketStrategy') operation[field] = value;
       else operation[field] = Number(value);
     });
   }
@@ -9160,8 +9181,9 @@ class App {
         topZ: stock.max.z,
         bottomZ: stock.min.z,
         stepDown: Math.max(0.1, Math.abs(stock.max.z - stock.min.z) / 4 || 1),
-        safeZ: stock.max.z + 10,
-        clearanceZ: stock.max.z + 5,
+        safeZ: Number.isFinite(Number(draft.safeZ)) ? Number(draft.safeZ) : stock.max.z + 10,
+        clearanceZ: Number.isFinite(Number(draft.clearanceZ)) ? Number(draft.clearanceZ) : stock.max.z + 5,
+        rapidZRetract: draft.rapidZRetract !== false,
         enabled: true,
         leadInEnabled: false,
         leadInLength: 0,
@@ -9173,6 +9195,7 @@ class App {
       else {
         operation.stepoverPercent = 40;
         operation.stepover = Math.max(operationToolDiameter * 0.4, 0.1);
+        operation.sideEntryEnabled = false;
       }
       draft.operations.push(operation);
       draft.activeOperationId = id;
@@ -9362,19 +9385,24 @@ class App {
   _applyCamFacePick(faceHit, pickMode) {
     const targetOperationId = pickMode.operationId;
     if (pickMode.mode === 'source-face') {
-      const source = this._faceHitToCamSource(faceHit);
+      const sourceFaceHits = this._selectedCamSourceFaceHits(faceHit);
+      const source = this._faceHitsToCamSource(sourceFaceHits);
       if (!source || !Array.isArray(source.loops) || source.loops.length === 0) {
         this.setStatus('Selected surface does not have a usable boundary for 2.5D CAM.');
         return;
       }
+      const inferredBottomZ = sourceFaceHits.reduce((minZ, hit) => {
+        const z = this._faceHitZ(hit);
+        return Number.isFinite(z) ? Math.min(minZ, z) : minZ;
+      }, Infinity);
       this._updateCamConfig((draft) => {
         const operation = draft.operations.find((candidate) => candidate.id === targetOperationId);
         if (!operation) return;
         operation.source = source;
         if (Number.isFinite(source.tolerance) && source.tolerance > 0) draft.tolerance = source.tolerance;
-        if (Number.isFinite(faceHit.point?.z)) operation.bottomZ = this._faceHitZ(faceHit);
+        if (Number.isFinite(inferredBottomZ)) operation.bottomZ = inferredBottomZ;
       }, { render: false });
-      this.setStatus(`CAM source set to ${source.label || `face ${faceHit.faceIndex}`}; bottom height inferred as Z${this._formatCamNumber(this._faceHitZ(faceHit))}.`);
+      this.setStatus(`CAM source set to ${source.label || `face ${faceHit.faceIndex}`}; bottom height inferred as Z${this._formatCamNumber(Number.isFinite(inferredBottomZ) ? inferredBottomZ : this._faceHitZ(faceHit))}.`);
       return;
     }
     const z = this._faceHitZ(faceHit);
@@ -9419,62 +9447,264 @@ class App {
     return this._meshVerticesToCamLoop(faceHit?.face?.vertices);
   }
 
-  _faceGroupHitToCamLoops(faceHit) {
-    const faceGroup = Number.isFinite(Number(faceHit?.face?.faceGroup)) ? Number(faceHit.face.faceGroup) : null;
-    if (faceGroup == null || !this._renderer3d || typeof this._renderer3d.getAllFaces !== 'function') return [];
-
-    const groupedFaces = (this._renderer3d.getAllFaces() || [])
-      .filter((candidate) => Number.isFinite(Number(candidate?.faceGroup)) && Number(candidate.faceGroup) === faceGroup)
-      .map((candidate) => Array.isArray(candidate?.vertices) ? candidate.vertices : [])
-      .filter((vertices) => vertices.length >= 3);
-    if (groupedFaces.length === 0) return [];
-
-    return this._computeGroupBoundaryLoops(groupedFaces)
-      .map((loop) => this._meshVerticesToCamLoop(loop))
-      .filter((loop) => Array.isArray(loop) && loop.length >= 3);
+  _selectedCamSourceFaceHits(faceHit) {
+    const selectedHits = this._selectedFaces instanceof Map ? Array.from(this._selectedFaces.values()) : [];
+    const normalizedSelectedHits = selectedHits.filter((hit) => Number.isFinite(Number(hit?.faceIndex)));
+    const useSelection = normalizedSelectedHits.length > 1
+      && normalizedSelectedHits.some((hit) => Number(hit.faceIndex) === Number(faceHit?.faceIndex));
+    const rawHits = useSelection ? normalizedSelectedHits : [faceHit];
+    const seen = new Set();
+    return rawHits.filter((hit) => {
+      const faceIndex = Number(hit?.faceIndex);
+      if (!Number.isFinite(faceIndex)) return false;
+      if (seen.has(faceIndex)) return false;
+      seen.add(faceIndex);
+      return true;
+    });
   }
 
-  _faceHitToCamSource(faceHit) {
+  _faceHitsToCamSource(faceHits) {
+    const surfaces = (Array.isArray(faceHits) ? faceHits : [])
+      .map((faceHit) => this._faceHitToCamSourceSurface(faceHit))
+      .filter((surface) => surface && Array.isArray(surface.loops) && surface.loops.length > 0);
+    return this._combineCamSourceSurfaces(surfaces);
+  }
+
+  _combineCamSourceSurfaces(surfaces, baseSource = {}) {
+    const normalizedSurfaces = (Array.isArray(surfaces) ? surfaces : [])
+      .map((surface) => ({
+        referenceId: surface.referenceId || null,
+        label: surface.label || null,
+        faceIndex: Number.isFinite(Number(surface.faceIndex)) ? Number(surface.faceIndex) : null,
+        topoFaceId: Number.isFinite(Number(surface.topoFaceId)) ? Number(surface.topoFaceId) : null,
+        faceGroup: Number.isFinite(Number(surface.faceGroup)) ? Number(surface.faceGroup) : null,
+        edgeIndex: Number.isFinite(Number(surface.edgeIndex)) ? Number(surface.edgeIndex) : null,
+        tolerance: Number.isFinite(Number(surface.tolerance)) && Number(surface.tolerance) > 0 ? Number(surface.tolerance) : null,
+        z: Number.isFinite(Number(surface.z)) ? Number(surface.z) : null,
+        loops: Array.isArray(surface.loops) ? surface.loops : [],
+        segmentLoops: Array.isArray(surface.segmentLoops) ? surface.segmentLoops : [],
+      }))
+      .filter((surface) => surface.loops.length > 0);
+    if (normalizedSurfaces.length === 0) return null;
+
+    const faceGroup = normalizedSurfaces.length === 1 ? normalizedSurfaces[0].faceGroup : null;
+    const toleranceValues = normalizedSurfaces.map((surface) => surface.tolerance).filter((value) => Number.isFinite(value) && value > 0);
+    const primary = normalizedSurfaces[0];
+    return {
+      type: 'face',
+      referenceId: typeof baseSource.referenceId === 'string' && baseSource.referenceId
+        ? baseSource.referenceId
+        : (normalizedSurfaces.length === 1
+          ? primary.referenceId
+          : (faceGroup != null ? `facegroup-${faceGroup}` : 'face-selection')),
+      label: typeof baseSource.label === 'string' && baseSource.label
+        ? baseSource.label
+        : (normalizedSurfaces.length === 1 ? primary.label : `${normalizedSurfaces.length} surfaces`),
+      faceIndex: primary.faceIndex,
+      topoFaceId: normalizedSurfaces.length === 1 ? primary.topoFaceId : null,
+      faceGroup,
+      edgeIndex: normalizedSurfaces.length === 1 ? primary.edgeIndex : null,
+      tolerance: toleranceValues.length > 0 ? Math.min(...toleranceValues) : null,
+      loops: normalizedSurfaces.flatMap((surface) => surface.loops),
+      segmentLoops: normalizedSurfaces.flatMap((surface) => surface.segmentLoops || []),
+      surfaces: normalizedSurfaces,
+    };
+  }
+
+  _faceGroupHitToCamLoops(faceHit) {
+    return this._faceGroupHitToCamSourceGeometry(faceHit).loops;
+  }
+
+  _faceGroupHitToCamSourceGeometry(faceHit, geometry = this._getCamReferenceGeometry()) {
+    const faceGroup = Number.isFinite(Number(faceHit?.face?.faceGroup)) ? Number(faceHit.face.faceGroup) : null;
+    return this._faceGroupKeyToCamSourceGeometry(faceGroup, geometry);
+  }
+
+  _faceGroupKeyToCamSourceGeometry(faceGroup, geometry = this._getCamReferenceGeometry()) {
+    if (faceGroup == null || !this._renderer3d || typeof this._renderer3d.getAllFaces !== 'function') {
+      return { loops: [], segmentLoops: [], tolerance: this._getCamReferenceTolerance(geometry) };
+    }
+
+    const groupedFaces = (this._renderer3d.getAllFaces() || [])
+      .filter((candidate) => Number.isFinite(Number(candidate?.faceGroup)) && Number(candidate.faceGroup) === faceGroup);
+    if (groupedFaces.length === 0) {
+      return { loops: [], segmentLoops: [], tolerance: this._getCamReferenceTolerance(geometry) };
+    }
+
+    const topoFaces = typeof geometry?.topoBody?.faces === 'function' ? geometry.topoBody.faces() : [];
+    const topoFaceById = new Map((Array.isArray(topoFaces) ? topoFaces : []).map((topoFace) => [topoFace.id, topoFace]));
+    const exactLoops = [];
+    const exactSegmentLoops = [];
+    const tolerances = [];
+    const seenTopoFaceIds = new Set();
+    for (const candidate of groupedFaces) {
+      const topoFaceId = Number.isFinite(Number(candidate?.topoFaceId)) ? Number(candidate.topoFaceId) : null;
+      if (topoFaceId == null || seenTopoFaceIds.has(topoFaceId)) continue;
+      seenTopoFaceIds.add(topoFaceId);
+      const topoFace = topoFaceById.get(topoFaceId);
+      if (!topoFace) continue;
+      const tolerance = this._getCamToleranceForTopoFace(topoFace, geometry);
+      const sourceGeometry = this._topoFaceToCamSourceGeometry(topoFace, tolerance);
+      if (sourceGeometry.loops.length === 0) continue;
+      exactLoops.push(...sourceGeometry.loops);
+      if (sourceGeometry.segmentLoops.length > 0) exactSegmentLoops.push(...sourceGeometry.segmentLoops);
+      if (Number.isFinite(tolerance) && tolerance > 0) tolerances.push(tolerance);
+    }
+    if (exactLoops.length > 0) {
+      return {
+        loops: exactLoops,
+        segmentLoops: exactSegmentLoops,
+        tolerance: tolerances.length > 0 ? Math.min(...tolerances) : this._getCamReferenceTolerance(geometry),
+      };
+    }
+
+    const groupedFaceVertices = groupedFaces
+      .map((candidate) => Array.isArray(candidate?.vertices) ? candidate.vertices : [])
+      .filter((vertices) => vertices.length >= 3);
+    if (groupedFaceVertices.length === 0) {
+      return { loops: [], segmentLoops: [], tolerance: this._getCamReferenceTolerance(geometry) };
+    }
+
+    return {
+      loops: this._computeGroupBoundaryLoops(groupedFaceVertices)
+        .map((loop) => this._meshVerticesToCamLoop(loop))
+        .filter((loop) => Array.isArray(loop) && loop.length >= 3),
+      segmentLoops: [],
+      tolerance: this._getCamReferenceTolerance(geometry),
+    };
+  }
+
+  _faceHitToCamSourceSurface(faceHit) {
     const geometry = this._getCamReferenceGeometry();
+    const faceGroup = Number.isFinite(Number(faceHit?.face?.faceGroup)) ? Number(faceHit.face.faceGroup) : null;
+    const groupSourceGeometry = this._faceGroupHitToCamSourceGeometry(faceHit, geometry);
+    if (groupSourceGeometry.loops.length > 0) {
+      return {
+        referenceId: faceGroup != null ? `facegroup-${faceGroup}` : `face-${faceHit.faceIndex}`,
+        label: faceGroup != null ? `Surface ${faceGroup}` : `Face ${faceHit.faceIndex}`,
+        faceIndex: faceHit.faceIndex,
+        topoFaceId: Number.isFinite(Number(faceHit?.face?.topoFaceId)) ? Number(faceHit.face.topoFaceId) : null,
+        faceGroup,
+        tolerance: groupSourceGeometry.tolerance,
+        z: this._faceHitZ(faceHit),
+        loops: groupSourceGeometry.loops,
+        segmentLoops: groupSourceGeometry.segmentLoops,
+      };
+    }
+
     const topoFaceId = faceHit?.face?.topoFaceId;
     if (Number.isFinite(topoFaceId) && typeof geometry?.topoBody?.faces === 'function') {
       const topoFace = geometry.topoBody.faces().find((candidate) => candidate.id === topoFaceId);
       const sourceGeometry = this._topoFaceToCamSourceGeometry(topoFace, this._getCamReferenceTolerance(geometry));
       if (sourceGeometry.loops.length > 0) {
         return {
-          type: 'face',
           referenceId: `topoface-${topoFaceId}`,
           label: `Face ${topoFaceId}`,
           faceIndex: faceHit.faceIndex,
           topoFaceId,
+          faceGroup,
+          tolerance: this._getCamToleranceForTopoFace(topoFace, geometry),
+          z: this._faceHitZ(faceHit),
           loops: sourceGeometry.loops,
           segmentLoops: sourceGeometry.segmentLoops,
-          tolerance: this._getCamToleranceForTopoFace(topoFace, geometry),
         };
       }
     }
-    const faceGroupLoops = this._faceGroupHitToCamLoops(faceHit);
-    const faceGroup = Number.isFinite(Number(faceHit?.face?.faceGroup)) ? Number(faceHit.face.faceGroup) : null;
-    if (faceGroupLoops.length > 0) {
-      return {
-        type: 'face',
-        referenceId: faceGroup != null ? `facegroup-${faceGroup}` : `face-${faceHit.faceIndex}`,
-        label: faceGroup != null ? `Surface ${faceGroup}` : `Face ${faceHit.faceIndex}`,
-        faceIndex: faceHit.faceIndex,
-        loops: faceGroupLoops,
-        tolerance: this._getCamReferenceTolerance(geometry),
-      };
-    }
+
     const fallbackLoop = this._faceHitToCamLoop(faceHit);
     if (!fallbackLoop) return null;
     return {
-      type: 'face',
       referenceId: `face-${faceHit.faceIndex}`,
       label: `Face ${faceHit.faceIndex}`,
       faceIndex: faceHit.faceIndex,
-      loops: [fallbackLoop],
+      topoFaceId: Number.isFinite(Number(faceHit?.face?.topoFaceId)) ? Number(faceHit.face.topoFaceId) : null,
+      faceGroup,
       tolerance: this._getCamReferenceTolerance(geometry),
+      z: this._faceHitZ(faceHit),
+      loops: [fallbackLoop],
+      segmentLoops: [],
     };
+  }
+
+  _faceHitToCamSource(faceHit) {
+    return this._faceHitsToCamSource([faceHit]);
+  }
+
+  _hydrateCamConfigSources(camConfig) {
+    if (!camConfig || !Array.isArray(camConfig.operations)) return;
+    for (const operation of camConfig.operations) {
+      if (operation?.source?.type !== 'face') continue;
+      const hydrated = this._hydrateCamFaceSource(operation.source);
+      if (!hydrated) continue;
+      operation.source = hydrated;
+      if (Number.isFinite(hydrated.tolerance) && hydrated.tolerance > 0) {
+        camConfig.tolerance = Number.isFinite(Number(camConfig.tolerance)) && Number(camConfig.tolerance) > 0
+          ? Math.min(Number(camConfig.tolerance), hydrated.tolerance)
+          : hydrated.tolerance;
+      }
+    }
+  }
+
+  _hydrateCamFaceSource(source) {
+    const sourceSurfaces = Array.isArray(source?.surfaces) && source.surfaces.length > 0 ? source.surfaces : [source];
+    const hydratedSurfaces = sourceSurfaces
+      .map((surface) => this._hydrateCamFaceSourceSurface(surface))
+      .filter((surface) => surface && Array.isArray(surface.loops) && surface.loops.length > 0);
+    if (hydratedSurfaces.length === 0) return source;
+    return this._combineCamSourceSurfaces(hydratedSurfaces, source) || source;
+  }
+
+  _hydrateCamFaceSourceSurface(surface) {
+    const geometry = this._getCamReferenceGeometry();
+    const faceGroup = Number.isFinite(Number(surface?.faceGroup))
+      ? Number(surface.faceGroup)
+      : this._camSourceFaceGroupFromReferenceId(surface?.referenceId);
+    if (faceGroup != null) {
+      const groupSourceGeometry = this._faceGroupKeyToCamSourceGeometry(faceGroup, geometry);
+      if (groupSourceGeometry.loops.length > 0) {
+        return {
+          ...surface,
+          referenceId: `facegroup-${faceGroup}`,
+          label: surface?.label || `Surface ${faceGroup}`,
+          faceGroup,
+          loops: groupSourceGeometry.loops,
+          segmentLoops: groupSourceGeometry.segmentLoops,
+          tolerance: groupSourceGeometry.tolerance,
+        };
+      }
+    }
+
+    const topoFaceId = Number.isFinite(Number(surface?.topoFaceId))
+      ? Number(surface.topoFaceId)
+      : this._camSourceTopoFaceIdFromReferenceId(surface?.referenceId);
+    if (topoFaceId != null && typeof geometry?.topoBody?.faces === 'function') {
+      const topoFace = geometry.topoBody.faces().find((candidate) => candidate.id === topoFaceId);
+      const tolerance = this._getCamToleranceForTopoFace(topoFace, geometry);
+      const sourceGeometry = this._topoFaceToCamSourceGeometry(topoFace, tolerance);
+      if (sourceGeometry.loops.length > 0) {
+        return {
+          ...surface,
+          referenceId: `topoface-${topoFaceId}`,
+          label: surface?.label || `Face ${topoFaceId}`,
+          topoFaceId,
+          loops: sourceGeometry.loops,
+          segmentLoops: sourceGeometry.segmentLoops,
+          tolerance,
+        };
+      }
+    }
+
+    return surface;
+  }
+
+  _camSourceFaceGroupFromReferenceId(referenceId) {
+    const match = typeof referenceId === 'string' ? /^facegroup-(-?\d+)$/.exec(referenceId.trim()) : null;
+    return match ? Number(match[1]) : null;
+  }
+
+  _camSourceTopoFaceIdFromReferenceId(referenceId) {
+    const match = typeof referenceId === 'string' ? /^topoface-(-?\d+)$/.exec(referenceId.trim()) : null;
+    return match ? Number(match[1]) : null;
   }
 
   _getCamToleranceForTopoFace(topoFace, geometry = this._getCamReferenceGeometry()) {

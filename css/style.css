@@ -3955,6 +3955,10 @@ body.workspace-cam .cam-panel-summary {
   color: #ffcc80;
 }
 
+.cam-panel-note.error {
+  color: #ff7a7a;
+}
+
 .cam-slider-row {
   display: grid;
   grid-template-columns: 64px minmax(0, 1fr) 38px;
@@ -4261,6 +4265,10 @@ body.workspace-cam .cam-panel-summary {
 
 .cam-operation-summary.warning {
   color: #ffd0b0;
+}
+
+.cam-operation-summary.error {
+  color: #ff9a9a;
 }
 
 .cam-pill {

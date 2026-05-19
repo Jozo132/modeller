@@ -1,8 +1,10 @@
-import { getOperationLoops, getOperationSegmentLoops, normalizeCamConfig } from './model.js';
+import { getOperationLoops, getOperationSegmentLoops, getOperationSourceSurfaces, normalizeCamConfig } from './model.js';
 import { cleanLoop, offsetPolygon, polygonArea } from './geometry/polygonOffset.js';
 
 const EPSILON = 1e-9;
 const MAX_POCKET_SCAN_LEVELS = 10000;
+const MAX_POCKET_CONTOUR_SHELLS = 1000;
+const FACE_MILL_STRATEGIES = new Set(['zigzag-x', 'zigzag-y', 'oneway-x', 'oneway-y']);
 
 export function generateToolpaths(camConfig) {
   const config = normalizeCamConfig(camConfig);
@@ -24,18 +26,30 @@ export function generateToolpaths(camConfig) {
       continue;
     }
     const toolpath = operation.type === 'pocket'
-      ? generatePocketToolpath(operation, tool, loops)
-      : generateProfileToolpath(operation, tool, loops, segmentLoops);
+      ? generatePocketToolpath(operation, tool, loops, config.stock)
+      : (operation.type === 'face'
+        ? generateFaceToolpath(operation, tool, loops, config.stock)
+        : generateProfileToolpath(operation, tool, loops, segmentLoops));
     if (Array.isArray(toolpath.warnings) && toolpath.warnings.length > 0) {
       for (const warning of toolpath.warnings) {
         warnings.push({ operationId: operation.id, message: String(warning?.message || warning) });
       }
     }
     toolpath.warnings = warnings.filter((warning) => warning.operationId === operation.id);
+    if (toolpath.blocked) continue;
     toolpaths.push(toolpath);
   }
 
   return { config, toolpaths, warnings };
+}
+
+export function generateFaceToolpath(operation, tool, loops = getOperationLoops(operation), stock = null) {
+  return generatePocketToolpath({
+    ...operation,
+    pocketOrder: 'per-level',
+    pocketStrategy: normalizeFaceMillStrategy(operation?.pocketStrategy),
+    sideEntryEnabled: false,
+  }, tool, loops, stock);
 }
 
 export function generateProfileToolpath(operation, tool, loops = getOperationLoops(operation), segmentLoops = getOperationSegmentLoops(operation)) {
@@ -57,74 +71,382 @@ export function generateProfileToolpath(operation, tool, loops = getOperationLoo
       }
     }
   }
-  moves.push({ type: 'rapid', z: operation.safeZ });
+  appendRetractZMove(moves, operation, operation.safeZ);
   moves.push({ type: 'spindle', on: false });
   return makeToolpath(operation, tool, moves);
 }
 
-export function generatePocketToolpath(operation, tool, loops = getOperationLoops(operation)) {
+export function generatePocketToolpath(operation, tool, loops = getOperationLoops(operation), stock = null) {
   const radius = tool.diameter / 2;
   const stepover = pocketStepover(operation, tool);
   const passes = depthPasses(operation.topZ, operation.bottomZ, operation.stepDown);
   const moves = operationHeader(operation, tool);
   const warnings = [];
   const loopInfos = classifyPocketLoops(loops);
-  const pocketOrder = operation.pocketOrder === 'per-pocket' ? 'per-pocket' : 'per-level';
-  const pocketStrategy = normalizePocketStrategy(operation.pocketStrategy);
-  const useScanlineStrategy = pocketStrategy !== 'contour';
-  const scanAxis = pocketStrategy.endsWith('-y') ? 'y' : 'x';
-  const alternateDirection = !pocketStrategy.startsWith('oneway');
+  const surfaceStates = buildPocketSurfaceStates(operation, passes);
+  const reEvaluateSurfacesByPass = surfaceStates.length > 0;
+  const pocketOrder = operation.pocketOrder === 'per-pocket' && !reEvaluateSurfacesByPass ? 'per-pocket' : 'per-level';
+  const pocketStrategy = describePocketStrategy(operation.pocketStrategy);
 
   if (loopInfos.length === 0) {
     warnings.push({ message: 'Operation has no machinable contours' });
-  } else if (useScanlineStrategy || shouldUseComplexPocketPlanner(loopInfos)) {
-    const regions = buildComplexPocketRegions(loopInfos, radius, stepover, scanAxis);
-    if (regions.length === 0) {
-      warnings.push({ message: 'Tool does not fit inside the selected pocket surfaces' });
-    } else if (pocketOrder === 'per-pocket') {
-      for (const region of regions) {
-        for (const depth of passes) appendComplexPocketRegionPasses(moves, region, depth, operation, { alternateDirection });
-      }
-    } else {
-      for (const depth of passes) {
-        for (const region of regions) appendComplexPocketRegionPasses(moves, region, depth, operation, { alternateDirection });
-      }
-    }
-  } else if (pocketOrder === 'per-pocket') {
-    let appended = 0;
-    for (const loopInfo of loopInfos) {
-      for (const depth of passes) appended += appendSimplePocketLoopPasses(moves, loopInfo.loop, depth, radius, stepover, operation);
-    }
-    if (appended === 0) warnings.push({ message: 'Tool does not fit inside the selected pocket surfaces' });
   } else {
-    let appended = 0;
-    for (const depth of passes) {
-      for (const loopInfo of loopInfos) appended += appendSimplePocketLoopPasses(moves, loopInfo.loop, depth, radius, stepover, operation);
-    }
-    if (appended === 0) warnings.push({ message: 'Tool does not fit inside the selected pocket surfaces' });
+    const result = reEvaluateSurfacesByPass
+      ? appendSurfacePocketPasses(moves, surfaceStates, radius, stepover, operation, stock, pocketStrategy)
+      : (pocketStrategy.mode === 'contour'
+        ? appendContourPocketPasses(moves, loopInfos, passes, radius, stepover, operation, pocketOrder, stock, getOperationSegmentLoops(operation).length > 0)
+        : { appended: appendRasterPocketPasses(moves, loopInfos, passes, radius, stepover, operation, pocketOrder, pocketStrategy), error: null });
+    if (result.error) warnings.push(result.error);
+    else if (result.appended === 0) warnings.push({ message: 'Tool does not fit inside the selected pocket surfaces' });
   }
 
-  moves.push({ type: 'rapid', z: operation.safeZ });
+  appendRetractZMove(moves, operation, operation.safeZ);
   moves.push({ type: 'spindle', on: false });
-  return makeToolpath(operation, tool, moves, warnings);
+  return makeToolpath(operation, tool, moves, warnings, {
+    blocked: warnings.some((warning) => warning?.severity === 'error'),
+  });
 }
 
-function appendSimplePocketLoopPasses(moves, loop, depth, radius, stepover, operation) {
+function appendSurfacePocketPasses(moves, surfaceStates, radius, stepover, operation, stock, pocketStrategy) {
   let appended = 0;
-  let offset = -radius;
-  for (let index = 0; index < 100; index++) {
-    const path = offsetPolygon(loop, offset);
-    if (path.length < 3) break;
-    appendClosedPathPass(moves, path, depth, operation);
-    appended += 1;
-    offset -= stepover;
+  let error = null;
+  for (const state of surfaceStates) {
+    for (const surface of state.surfaces) {
+      const loopInfos = classifyPocketLoops(surface.loops);
+      if (loopInfos.length === 0) continue;
+      const result = pocketStrategy.mode === 'contour'
+        ? appendContourPocketPasses(moves, loopInfos, [state.depth], radius, stepover, operation, 'per-level', stock, Array.isArray(surface.segmentLoops) && surface.segmentLoops.length > 0)
+        : { appended: appendRasterPocketPasses(moves, loopInfos, [state.depth], radius, stepover, operation, 'per-level', pocketStrategy), error: null };
+      appended += result.appended;
+      if (!error && result.error) error = result.error;
+    }
+  }
+  return { appended, error };
+}
+
+function buildPocketSurfaceStates(operation, passes) {
+  const surfaces = getOperationSourceSurfaces(operation)
+    .filter((surface) => Array.isArray(surface.loops) && surface.loops.length > 0);
+  const uniqueDepths = new Set(surfaces.map((surface) => normalizePocketDepth(surface.z)).filter(Number.isFinite));
+  if (surfaces.length <= 1 && uniqueDepths.size <= 1) return [];
+
+  const descending = Number(operation.bottomZ) <= Number(operation.topZ);
+  const states = [];
+  let previousDepth = Number(operation.topZ);
+  for (const depth of passes) {
+    const activeSurfaces = surfaces.filter((surface) => surfaceNeedsCutAtDepth(surface, previousDepth, descending, operation.bottomZ));
+    if (activeSurfaces.length > 0) states.push({ depth, surfaces: activeSurfaces });
+    previousDepth = depth;
+  }
+  return states;
+}
+
+function normalizePocketDepth(value) {
+  return Number.isFinite(Number(value)) ? Number(value) : NaN;
+}
+
+function surfaceNeedsCutAtDepth(surface, previousDepth, descending, fallbackDepth) {
+  const floorZ = Number.isFinite(Number(surface?.z)) ? Number(surface.z) : Number(fallbackDepth);
+  if (!Number.isFinite(floorZ) || !Number.isFinite(previousDepth)) return true;
+  return descending ? floorZ < previousDepth - EPSILON : floorZ > previousDepth + EPSILON;
+}
+
+function appendContourPocketPasses(moves, loopInfos, passes, radius, stepover, operation, pocketOrder, stock, preferExactPlanner = false) {
+  if (!shouldUseComplexPocketPlanner(loopInfos)) {
+    if (pocketOrder === 'per-pocket') {
+      let appended = 0;
+      for (const loopInfo of loopInfos) {
+        for (const depth of passes) appended += appendSimpleContourPocketLoopPasses(moves, loopInfo.loop, depth, radius, stepover, operation, stock);
+      }
+      return { appended, error: null };
+    }
+
+    let appended = 0;
+    for (const depth of passes) {
+      for (const loopInfo of loopInfos) appended += appendSimpleContourPocketLoopPasses(moves, loopInfo.loop, depth, radius, stepover, operation, stock);
+    }
+    return { appended, error: null };
+  }
+
+  const contourGroups = preferExactPlanner
+    ? buildExactContourPocketGroups(loopInfos, radius, stepover)
+    : buildComplexContourPocketGroups(loopInfos, radius, stepover);
+  if (contourGroups.length === 0) {
+    return hasInsetContourCandidate(loopInfos, radius)
+      ? {
+        appended: 0,
+        error: {
+          severity: 'error',
+          code: 'contour-offset-generation-failed',
+          message: 'Contour offset failed to generate inset contours for this pocket. Toolpath generation stopped for this operation.',
+        },
+      }
+      : { appended: 0, error: null };
+  }
+
+  let appended = 0;
+  if (pocketOrder === 'per-pocket') {
+    for (const group of contourGroups) {
+      for (const depth of passes) appended += appendContourPocketGroupPasses(moves, group, depth, operation, stock, radius);
+    }
+    return { appended, error: null };
+  }
+
+  for (const depth of passes) {
+    for (const group of contourGroups) appended += appendContourPocketGroupPasses(moves, group, depth, operation, stock, radius);
+  }
+  return { appended, error: null };
+}
+
+function appendContourPocketGroupPasses(moves, group, depth, operation, stock, radius) {
+  const nestedShellLoops = group.shells.every((shellLoops) => shellLoops.length === 1)
+    ? group.shells.map((shellLoops) => shellLoops[0])
+    : null;
+  if (nestedShellLoops) {
+    return appendContourShellChainPasses(moves, nestedShellLoops, depth, operation, { stock, radius });
+  }
+
+  let appended = 0;
+  for (const shellLoops of group.shells) {
+    for (const loop of shellLoops) {
+      appendClosedPathPass(moves, loop, depth, operation);
+      appended += 1;
+    }
+  }
+
+  if (appended > 1) {
+    for (const loop of group.shells[0] || []) {
+      appendClosedPathPass(moves, loop, depth, operation);
+      appended += 1;
+    }
   }
   return appended;
 }
 
+function appendRasterPocketPasses(moves, loopInfos, passes, radius, stepover, operation, pocketOrder, strategy) {
+  const regions = buildComplexPocketRegions(loopInfos, radius, stepover, strategy.axis);
+  if (regions.length === 0) return 0;
+
+  let appended = 0;
+  if (pocketOrder === 'per-pocket') {
+    for (const region of regions) {
+      for (const depth of passes) appended += appendComplexPocketRegionPasses(moves, region, depth, operation, { alternateDirection: strategy.alternateDirection });
+    }
+    return appended;
+  }
+
+  for (const depth of passes) {
+    for (const region of regions) appended += appendComplexPocketRegionPasses(moves, region, depth, operation, { alternateDirection: strategy.alternateDirection });
+  }
+  return appended;
+}
+
+function appendSimpleContourPocketLoopPasses(moves, loop, depth, radius, stepover, operation, stock) {
+  return appendContourShellChainPasses(moves, buildSimpleContourShellLoops(loop, radius, stepover), depth, operation, { stock, radius });
+}
+
+function buildSimpleContourShellLoops(loop, radius, stepover) {
+  const shellLoops = [];
+  let offset = -radius;
+  let previousArea = Infinity;
+  for (let index = 0; index < 100; index++) {
+    const path = offsetPolygon(loop, offset);
+    if (path.length < 3) break;
+    const area = Math.abs(polygonArea(path));
+    if (!(area < previousArea - EPSILON)) break;
+    shellLoops.push(path);
+    previousArea = area;
+    offset -= stepover;
+  }
+  return shellLoops;
+}
+
+function hasInsetContourCandidate(loopInfos, radius) {
+  const inset = Math.abs(Number(radius) || 0);
+  if (!(inset > EPSILON)) return false;
+  return (Array.isArray(loopInfos) ? loopInfos : []).some((info) => !info?.isHole && offsetPolygon(info.loop, -inset).length >= 3);
+}
+
+function appendContourShellChainPasses(moves, shellLoops, depth, operation, options = {}) {
+  const rawShells = (Array.isArray(shellLoops) ? shellLoops : [])
+    .filter((loop) => Array.isArray(loop) && loop.length >= 3);
+  if (rawShells.length === 0) return 0;
+
+  const orderedShells = rawShells.slice().reverse();
+  const contourPlan = buildContourShellPlan(orderedShells, operation, options);
+  if (!contourPlan || contourPlan.shells.length === 0) return 0;
+
+  appendRetractZMove(moves, operation, operation.clearanceZ);
+  moves.push({ type: 'rapid', x: contourPlan.anchorPoint.x, y: contourPlan.anchorPoint.y });
+  moves.push({ type: 'feed', z: depth, feed: operation.plungeRate });
+
+  let currentPoint = contourPlan.anchorPoint;
+  for (let index = 0; index < contourPlan.shells.length; index++) {
+    const shell = contourPlan.shells[index];
+    const leadPoint = contourPlan.leadPoints[index] || shell[0];
+    if (pointDistanceSquared(currentPoint, leadPoint) > EPSILON * EPSILON) {
+      moves.push({ type: 'feed', x: leadPoint.x, y: leadPoint.y, feed: operation.feedRate });
+      currentPoint = leadPoint;
+    }
+    if (pointDistanceSquared(currentPoint, shell[0]) > EPSILON * EPSILON) {
+      moves.push({ type: 'feed', x: shell[0].x, y: shell[0].y, feed: operation.feedRate });
+    }
+    appendClosedLoopFeedMoves(moves, shell, operation.feedRate);
+    currentPoint = shell[0];
+  }
+
+  appendRetractZMove(moves, operation, operation.clearanceZ);
+  return contourPlan.shells.length;
+}
+
+function appendClosedLoopFeedMoves(moves, path, feedRate) {
+  for (let index = 1; index < path.length; index++) {
+    moves.push({ type: 'feed', x: path[index].x, y: path[index].y, feed: feedRate });
+  }
+  moves.push({ type: 'feed', x: path[0].x, y: path[0].y, feed: feedRate });
+}
+
+function buildContourShellPlan(shellLoops, operation, options = {}) {
+  const sideEntry = findContourSideEntry(shellLoops[shellLoops.length - 1], options.stock, options.radius, operation);
+  if (sideEntry) {
+    const shells = shellLoops.map((loop) => splitClosedPathAtClosestPoint(loop, contourSideAnchorTarget(loop, sideEntry)));
+    const leadPoints = shells.map((shell) => extendContourPointOutsideStock(shell[0], sideEntry, options.stock));
+    return {
+      anchorPoint: leadPoints[0],
+      leadPoints,
+      shells,
+    };
+  }
+
+  const centerPoint = polygonCentroid(shellLoops[0]);
+  return {
+    anchorPoint: centerPoint,
+    leadPoints: shellLoops.map(() => centerPoint),
+    shells: shellLoops.map((loop) => splitClosedPathAtClosestPoint(loop, centerPoint)),
+  };
+}
+
+function splitClosedPathAtClosestPoint(path, target) {
+  if (!Array.isArray(path) || path.length < 2) return Array.isArray(path) ? path.slice() : [];
+
+  let best = null;
+  for (let index = 0; index < path.length; index++) {
+    const start = path[index];
+    const end = path[(index + 1) % path.length];
+    const closest = closestPointOnSegment(target, start, end);
+    const distanceSq = pointDistanceSquared(target, closest.point);
+    if (!best || distanceSq < best.distanceSq - EPSILON) {
+      best = { index, distanceSq, point: closest.point, t: closest.t };
+    }
+  }
+
+  if (!best) return path.slice();
+  const startPoint = best.point;
+  const nextIndex = (best.index + 1) % path.length;
+  const result = [startPoint];
+  for (let offset = 0; offset < path.length - 1; offset++) {
+    const point = path[(nextIndex + offset) % path.length];
+    if (pointDistanceSquared(result[result.length - 1], point) > EPSILON * EPSILON) result.push(point);
+  }
+  const lastPoint = path[best.index];
+  if (pointDistanceSquared(result[result.length - 1], lastPoint) > EPSILON * EPSILON) result.push(lastPoint);
+  return cleanLoop(result);
+}
+
+function closestPointOnSegment(target, start, end) {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const lengthSq = dx * dx + dy * dy;
+  if (lengthSq <= EPSILON) return { point: { x: start.x, y: start.y }, t: 0 };
+  const t = clamp((((target.x - start.x) * dx) + ((target.y - start.y) * dy)) / lengthSq, 0, 1);
+  return {
+    point: {
+      x: start.x + dx * t,
+      y: start.y + dy * t,
+    },
+    t,
+  };
+}
+
+function polygonCentroid(loop) {
+  const cleaned = cleanLoop(loop);
+  if (cleaned.length === 0) return { x: 0, y: 0 };
+  let area2 = 0;
+  let centroidX = 0;
+  let centroidY = 0;
+  for (let index = 0; index < cleaned.length; index++) {
+    const a = cleaned[index];
+    const b = cleaned[(index + 1) % cleaned.length];
+    const cross = (a.x * b.y) - (b.x * a.y);
+    area2 += cross;
+    centroidX += (a.x + b.x) * cross;
+    centroidY += (a.y + b.y) * cross;
+  }
+  if (Math.abs(area2) <= EPSILON) {
+    const bounds = loopBounds([cleaned]);
+    return { x: (bounds.minX + bounds.maxX) * 0.5, y: (bounds.minY + bounds.maxY) * 0.5 };
+  }
+  return {
+    x: centroidX / (3 * area2),
+    y: centroidY / (3 * area2),
+  };
+}
+
+function findContourSideEntry(outerLoop, stock, radius, operation) {
+  if (!operation?.sideEntryEnabled || !Array.isArray(outerLoop) || outerLoop.length < 2 || !stock) return null;
+  const stockMinX = Number(stock.min?.x);
+  const stockMaxX = Number(stock.max?.x);
+  const stockMinY = Number(stock.min?.y);
+  const stockMaxY = Number(stock.max?.y);
+  if (![stockMinX, stockMaxX, stockMinY, stockMaxY].every(Number.isFinite)) return null;
+
+  const bounds = loopBounds([outerLoop]);
+  const tolerance = Math.max(1e-6, Math.abs(radius || 0) * 0.05, 0.001);
+  const extension = Math.max((radius || 0) * 2, Number(operation?.leadInLength) || 0);
+  const candidates = [];
+
+  if (bounds.minX <= stockMinX + (radius || 0) + tolerance) {
+    candidates.push({ side: 'left', span: bounds.maxY - bounds.minY, coordinate: (bounds.minY + bounds.maxY) * 0.5, extension });
+  }
+  if (bounds.maxX >= stockMaxX - (radius || 0) - tolerance) {
+    candidates.push({ side: 'right', span: bounds.maxY - bounds.minY, coordinate: (bounds.minY + bounds.maxY) * 0.5, extension });
+  }
+  if (bounds.minY <= stockMinY + (radius || 0) + tolerance) {
+    candidates.push({ side: 'bottom', span: bounds.maxX - bounds.minX, coordinate: (bounds.minX + bounds.maxX) * 0.5, extension });
+  }
+  if (bounds.maxY >= stockMaxY - (radius || 0) - tolerance) {
+    candidates.push({ side: 'top', span: bounds.maxX - bounds.minX, coordinate: (bounds.minX + bounds.maxX) * 0.5, extension });
+  }
+
+  if (candidates.length === 0) return null;
+  candidates.sort((left, right) => right.span - left.span);
+  return candidates[0];
+}
+
+function contourSideAnchorTarget(loop, sideEntry) {
+  const bounds = loopBounds([loop]);
+  if (sideEntry.side === 'left') return { x: bounds.minX, y: clamp(sideEntry.coordinate, bounds.minY, bounds.maxY) };
+  if (sideEntry.side === 'right') return { x: bounds.maxX, y: clamp(sideEntry.coordinate, bounds.minY, bounds.maxY) };
+  if (sideEntry.side === 'bottom') return { x: clamp(sideEntry.coordinate, bounds.minX, bounds.maxX), y: bounds.minY };
+  return { x: clamp(sideEntry.coordinate, bounds.minX, bounds.maxX), y: bounds.maxY };
+}
+
+function extendContourPointOutsideStock(point, sideEntry, stock) {
+  const extension = Math.max(Number(sideEntry?.extension) || 0, 0);
+  if (sideEntry.side === 'left') return { x: Number(stock.min?.x) - extension, y: point.y };
+  if (sideEntry.side === 'right') return { x: Number(stock.max?.x) + extension, y: point.y };
+  if (sideEntry.side === 'bottom') return { x: point.x, y: Number(stock.min?.y) - extension };
+  return { x: point.x, y: Number(stock.max?.y) + extension };
+}
+
 function appendComplexPocketRegionPasses(moves, region, depth, operation, options = {}) {
   const paths = buildContinuousPocketRegionPaths(region, options);
-  for (const path of paths) appendOpenPathPass(moves, path, depth, operation);
+  let appended = 0;
+  for (const path of paths) {
+    appendOpenPathPass(moves, path, depth, operation);
+    appended += 1;
+  }
+  return appended;
 }
 
 function classifyPocketLoops(loops) {
@@ -204,17 +526,284 @@ function isConvexLoop(loop) {
   return true;
 }
 
-function buildComplexPocketRegions(loopInfos, radius, stepover, axis = 'x') {
+function buildComplexContourPocketGroups(loopInfos, radius, stepover) {
+  const shells = [];
+  for (let shellIndex = 0; shellIndex < MAX_POCKET_CONTOUR_SHELLS; shellIndex++) {
+    const shellRadius = radius + stepover * shellIndex;
+    const sampleStep = contourRegionScanStep(shellRadius, stepover);
+    const shellLoopGroups = buildContourShellLoopGroups(collectPocketScanLevels(loopInfos, shellRadius, sampleStep, 'x'));
+    if (shellLoopGroups.length === 0) break;
+    shells.push(shellLoopGroups);
+  }
+
+  if (shells.length === 0) return [];
+
+  const groups = shells[0].map((shellGroup) => createContourPocketGroup(shellGroup.outerLoop, shellGroup.loops, 0));
+  for (let shellIndex = 1; shellIndex < shells.length; shellIndex++) {
+    for (const group of groups) group.shells.push([]);
+    for (const shellGroup of shells[shellIndex]) {
+      const group = findContourPocketGroup(groups, shellGroup.outerLoop) || createContourPocketGroup(shellGroup.outerLoop, shellGroup.loops, shellIndex);
+      if (!groups.includes(group)) groups.push(group);
+      group.shells[shellIndex].push(...shellGroup.loops);
+    }
+  }
+
+  return groups.sort((left, right) => (left.minX - right.minX) || (left.minY - right.minY));
+}
+
+function buildExactContourPocketGroups(loopInfos, radius, stepover) {
+  const shells = [];
+  for (let shellIndex = 0; shellIndex < MAX_POCKET_CONTOUR_SHELLS; shellIndex++) {
+    const shellRadius = radius + stepover * shellIndex;
+    const shellGroups = buildExactContourShellLoopGroups(loopInfos, shellRadius);
+    if (shellGroups.length === 0) break;
+    shells.push(shellGroups);
+  }
+
+  if (shells.length === 0) return [];
+
+  const groups = shells[0].map((shellGroup) => createContourPocketGroup(shellGroup.outerLoop, shellGroup.loops, 0));
+  for (let shellIndex = 1; shellIndex < shells.length; shellIndex++) {
+    for (const group of groups) group.shells.push([]);
+    for (const shellGroup of shells[shellIndex]) {
+      const group = findContourPocketGroup(groups, shellGroup.outerLoop) || createContourPocketGroup(shellGroup.outerLoop, shellGroup.loops, shellIndex);
+      if (!groups.includes(group)) groups.push(group);
+      group.shells[shellIndex].push(...shellGroup.loops);
+    }
+  }
+
+  return groups.sort((left, right) => (left.minX - right.minX) || (left.minY - right.minY));
+}
+
+function buildExactContourShellLoopGroups(loopInfos, shellRadius) {
+  const shellLoops = loopInfos
+    .map((info) => {
+      const loop = offsetPolygon(info.loop, info.isHole ? shellRadius : -shellRadius);
+      if (loop.length < 3) return null;
+      const bounds = loopBounds([loop]);
+      return {
+        loop,
+        bounds,
+        absArea: Math.abs(polygonArea(loop)),
+        isHole: info.isHole,
+      };
+    })
+    .filter(Boolean);
+
+  const outerLoops = shellLoops.filter((info) => !info.isHole);
+  if (outerLoops.length === 0) return [];
+  const holeLoops = shellLoops.filter((info) => info.isHole);
+
+  const groups = outerLoops
+    .sort((left, right) => (left.bounds.minX - right.bounds.minX) || (left.bounds.minY - right.bounds.minY))
+    .map((info) => ({ outerLoop: info.loop, loops: [info.loop], area: info.absArea }));
+
+  for (const hole of holeLoops) {
+    const sample = polygonCentroid(hole.loop);
+    let bestGroup = null;
+    let bestArea = Infinity;
+    for (const group of groups) {
+      if (!pointInPolygon(sample, group.outerLoop)) continue;
+      if (group.area < bestArea) {
+        bestArea = group.area;
+        bestGroup = group;
+      }
+    }
+    if (bestGroup) bestGroup.loops.push(hole.loop);
+  }
+
+  return groups.map((group) => ({ outerLoop: group.outerLoop, loops: group.loops }));
+}
+
+function createContourPocketGroup(loop, loops, shellIndex) {
+  const bounds = loopBounds([loop]);
+  return {
+    outerLoop: loop,
+    minX: bounds.minX,
+    minY: bounds.minY,
+    shells: Array.from({ length: shellIndex + 1 }, (_, index) => (index === shellIndex ? loops.slice() : [])),
+  };
+}
+
+function findContourPocketGroup(groups, loop) {
+  const sample = loop[0];
+  let bestGroup = null;
+  let bestArea = Infinity;
+  for (const group of groups) {
+    if (!pointInPolygon(sample, group.outerLoop)) continue;
+    const area = Math.abs(polygonArea(group.outerLoop));
+    if (area < bestArea) {
+      bestArea = area;
+      bestGroup = group;
+    }
+  }
+  return bestGroup;
+}
+
+function contourRegionScanStep(radius, stepover) {
+  return Math.max(EPSILON, Math.min(stepover, Math.max(stepover * 0.25, radius * 0.35)));
+}
+
+function buildContourShellLoopGroups(levels) {
+  const loops = buildAxisAlignedUnionLoops(buildContourShellRectangles(levels));
+  if (loops.length === 0) return [];
+
+  const loopInfos = loops.map((loop) => ({
+    loop,
+    area: polygonArea(loop),
+    absArea: Math.abs(polygonArea(loop)),
+    bounds: loopBounds([loop]),
+  }));
+  const outerLoops = loopInfos.filter((info) => info.area > 0);
+  const holeLoops = loopInfos.filter((info) => info.area < 0);
+
+  const groups = outerLoops
+    .sort((left, right) => (left.bounds.minX - right.bounds.minX) || (left.bounds.minY - right.bounds.minY))
+    .map((info) => ({ outerLoop: info.loop, loops: [info.loop], bounds: info.bounds, area: info.absArea }));
+
+  for (const hole of holeLoops) {
+    const sample = hole.loop[0];
+    let bestGroup = null;
+    let bestArea = Infinity;
+    for (const group of groups) {
+      if (!pointInPolygon(sample, group.outerLoop)) continue;
+      if (group.area < bestArea) {
+        bestArea = group.area;
+        bestGroup = group;
+      }
+    }
+    if (bestGroup) bestGroup.loops.push(hole.loop);
+  }
+
+  return groups.map((group) => ({ outerLoop: group.outerLoop, loops: group.loops }));
+}
+
+function buildContourShellRectangles(levels) {
+  const rectangles = [];
+  for (let index = 0; index + 1 < levels.length; index++) {
+    const lower = levels[index];
+    const upper = levels[index + 1];
+    const bottom = lower.position;
+    const top = upper.position;
+    if (top - bottom <= EPSILON) continue;
+    for (const lowerInterval of lower.intervals) {
+      for (const upperInterval of upper.intervals) {
+        const overlap = lineSharedInterval(lowerInterval, upperInterval);
+        if (!overlap) continue;
+        rectangles.push({ left: overlap.start, right: overlap.end, bottom, top });
+      }
+    }
+  }
+  return rectangles;
+}
+
+function buildAxisAlignedUnionLoops(rectangles) {
+  const edges = new Map();
+  for (const rectangle of rectangles) {
+    const left = normalizePocketCoord(rectangle.left);
+    const right = normalizePocketCoord(rectangle.right);
+    const bottom = normalizePocketCoord(rectangle.bottom);
+    const top = normalizePocketCoord(rectangle.top);
+    if (right - left <= EPSILON || top - bottom <= EPSILON) continue;
+
+    const bottomLeft = { x: left, y: bottom };
+    const bottomRight = { x: right, y: bottom };
+    const topRight = { x: right, y: top };
+    const topLeft = { x: left, y: top };
+    togglePocketBoundaryEdge(edges, bottomLeft, bottomRight);
+    togglePocketBoundaryEdge(edges, bottomRight, topRight);
+    togglePocketBoundaryEdge(edges, topRight, topLeft);
+    togglePocketBoundaryEdge(edges, topLeft, bottomLeft);
+  }
+
+  if (edges.size === 0) return [];
+
+  const outgoing = new Map();
+  for (const edge of edges.values()) {
+    if (!outgoing.has(edge.startKey)) outgoing.set(edge.startKey, []);
+    outgoing.get(edge.startKey).push(edge);
+  }
+
+  const loops = [];
+  while (edges.size > 0) {
+    const startEdge = edges.values().next().value;
+    const loop = [];
+    let current = startEdge;
+    const startKey = startEdge.startKey;
+
+    for (let guard = 0; guard < 100000 && current; guard++) {
+      edges.delete(current.key);
+      loop.push(current.start);
+      const nextEdges = outgoing.get(current.endKey) || [];
+      const next = nextEdges.find((edge) => edges.has(edge.key)) || null;
+      if (!next) {
+        if (current.endKey === startKey) {
+          const simplified = simplifyAxisAlignedLoop(loop);
+          if (simplified.length >= 3) loops.push(simplified);
+        }
+        break;
+      }
+      current = next;
+    }
+  }
+
+  return loops;
+}
+
+function togglePocketBoundaryEdge(edges, start, end) {
+  const startKey = pocketBoundaryPointKey(start);
+  const endKey = pocketBoundaryPointKey(end);
+  const reverseKey = `${endKey}>${startKey}`;
+  if (edges.has(reverseKey)) {
+    edges.delete(reverseKey);
+    return;
+  }
+  const key = `${startKey}>${endKey}`;
+  edges.set(key, { key, start, end, startKey, endKey });
+}
+
+function pocketBoundaryPointKey(point) {
+  return `${normalizePocketCoord(point.x)},${normalizePocketCoord(point.y)}`;
+}
+
+function normalizePocketCoord(value) {
+  return Math.round(Number(value) * 1e7) / 1e7;
+}
+
+function simplifyAxisAlignedLoop(loop) {
+  const cleaned = cleanLoop(loop);
+  if (cleaned.length < 3) return [];
+
+  const simplified = [];
+  for (let index = 0; index < cleaned.length; index++) {
+    const previous = cleaned[(index - 1 + cleaned.length) % cleaned.length];
+    const current = cleaned[index];
+    const next = cleaned[(index + 1) % cleaned.length];
+    const vertical = Math.abs(previous.x - current.x) <= EPSILON && Math.abs(current.x - next.x) <= EPSILON;
+    const horizontal = Math.abs(previous.y - current.y) <= EPSILON && Math.abs(current.y - next.y) <= EPSILON;
+    if (vertical || horizontal) continue;
+    simplified.push(current);
+  }
+
+  return cleanLoop(simplified);
+}
+
+function collectPocketScanLevels(loopInfos, radius, scanStep, axis = 'x') {
   const scanAxis = axis === 'y' ? 'y' : 'x';
   const transformedLoopInfos = scanAxis === 'y'
     ? loopInfos.map((info) => ({ ...info, loop: swapLoopAxes(info.loop), samples: swapLoopAxes(info.samples || []) }))
     : loopInfos;
   const bounds = loopBounds(transformedLoopInfos.map((info) => info.loop));
   const levels = [];
-  for (const y of pocketScanLevels(bounds, radius, stepover)) {
+  for (const y of pocketScanLevels(bounds, radius, scanStep)) {
     const intervals = scanPocketIntervalsAtY(transformedLoopInfos, y, radius);
-    if (intervals.length > 0) levels.push({ y, intervals });
+    if (intervals.length > 0) levels.push({ axis: scanAxis, position: y, intervals });
   }
+  return levels;
+}
+
+function buildComplexPocketRegions(loopInfos, radius, scanStep, axis = 'x') {
+  const levels = collectPocketScanLevels(loopInfos, radius, scanStep, axis);
   if (levels.length === 0) return [];
 
   const regions = [];
@@ -222,19 +811,19 @@ function buildComplexPocketRegions(loopInfos, radius, stepover, axis = 'x') {
   for (const level of levels) {
     const current = [];
     for (const interval of level.intervals) {
-      const matches = previous.filter((entry) => intervalsConnect(entry.interval, interval, stepover));
+      const matches = previous.filter((entry) => intervalsConnect(entry.interval, interval, scanStep));
       let region = null;
       if (matches.length > 0) {
         matches.sort((left, right) => intervalOverlapWidth(right.interval, interval) - intervalOverlapWidth(left.interval, interval));
         region = matches[0].region;
       }
       if (!region) {
-        region = { lines: [], minX: interval.start, minY: level.y };
+        region = { lines: [], minX: interval.start, minY: level.position };
         regions.push(region);
       }
-      region.lines.push({ axis: scanAxis, position: level.y, start: interval.start, end: interval.end });
+      region.lines.push({ axis: level.axis, position: level.position, start: interval.start, end: interval.end });
       region.minX = Math.min(region.minX, interval.start);
-      region.minY = Math.min(region.minY, level.y);
+      region.minY = Math.min(region.minY, level.position);
       current.push({ interval, region });
     }
     previous = current;
@@ -446,13 +1035,24 @@ export function depthPasses(topZ, bottomZ, stepDown) {
 }
 
 function operationHeader(operation, tool) {
-  return [
+  const moves = [
     { type: 'comment', text: `${operation.name} (${operation.type})` },
     { type: 'toolchange', toolNumber: tool.number, toolId: tool.id, toolName: tool.name },
     { type: 'spindle', on: true, rpm: operation.spindleRpm || tool.spindleRpm, clockwise: true },
     { type: 'coolant', on: !!tool.coolant },
-    { type: 'rapid', z: operation.safeZ },
   ];
+  appendRetractZMove(moves, operation, operation.safeZ);
+  return moves;
+}
+
+function appendRetractZMove(moves, operation, z) {
+  const targetZ = Number(z);
+  if (!Number.isFinite(targetZ)) return;
+  if (operation?.rapidZRetract === false) {
+    moves.push({ type: 'feed', z: targetZ, feed: operation.plungeRate });
+    return;
+  }
+  moves.push({ type: 'rapid', z: targetZ });
 }
 
 function appendClosedPathPass(moves, path, depth, operation) {
@@ -461,7 +1061,7 @@ function appendClosedPathPass(moves, path, depth, operation) {
   const first = orderedPath[0];
   const leadInPath = buildLeadInPath(orderedPath, operation);
   const rapidTarget = leadInPath[0] || first;
-  moves.push({ type: 'rapid', z: operation.clearanceZ });
+  appendRetractZMove(moves, operation, operation.clearanceZ);
   moves.push({ type: 'rapid', x: rapidTarget.x, y: rapidTarget.y });
   moves.push({ type: 'feed', z: depth, feed: operation.plungeRate });
   for (let index = 1; index < leadInPath.length; index++) {
@@ -471,7 +1071,7 @@ function appendClosedPathPass(moves, path, depth, operation) {
     moves.push({ type: 'feed', x: orderedPath[index].x, y: orderedPath[index].y, feed: operation.feedRate });
   }
   moves.push({ type: 'feed', x: first.x, y: first.y, feed: operation.feedRate });
-  moves.push({ type: 'rapid', z: operation.clearanceZ });
+  appendRetractZMove(moves, operation, operation.clearanceZ);
 }
 
 function appendClosedSegmentPathPass(moves, segmentLoop, depth, operation) {
@@ -482,7 +1082,7 @@ function appendClosedSegmentPathPass(moves, segmentLoop, depth, operation) {
   if (!first || !tangent) return;
   const leadInPath = buildLeadInPath([first, tangent], operation);
   const rapidTarget = leadInPath[0] || first;
-  moves.push({ type: 'rapid', z: operation.clearanceZ });
+  appendRetractZMove(moves, operation, operation.clearanceZ);
   moves.push({ type: 'rapid', x: rapidTarget.x, y: rapidTarget.y });
   moves.push({ type: 'feed', z: depth, feed: operation.plungeRate });
   for (let index = 1; index < leadInPath.length; index++) {
@@ -493,7 +1093,7 @@ function appendClosedSegmentPathPass(moves, segmentLoop, depth, operation) {
   if (last && pointDistanceSquared(last, first) > EPSILON * EPSILON) {
     moves.push({ type: 'feed', x: first.x, y: first.y, feed: operation.feedRate });
   }
-  moves.push({ type: 'rapid', z: operation.clearanceZ });
+  appendRetractZMove(moves, operation, operation.clearanceZ);
 }
 
 function appendOpenPathPass(moves, path, depth, operation) {
@@ -501,7 +1101,7 @@ function appendOpenPathPass(moves, path, depth, operation) {
   const first = path[0];
   const leadInPath = buildLeadInPath(path, operation);
   const rapidTarget = leadInPath[0] || first;
-  moves.push({ type: 'rapid', z: operation.clearanceZ });
+  appendRetractZMove(moves, operation, operation.clearanceZ);
   moves.push({ type: 'rapid', x: rapidTarget.x, y: rapidTarget.y });
   moves.push({ type: 'feed', z: depth, feed: operation.plungeRate });
   for (let index = 1; index < leadInPath.length; index++) {
@@ -510,7 +1110,7 @@ function appendOpenPathPass(moves, path, depth, operation) {
   for (let index = 1; index < path.length; index++) {
     moves.push({ type: 'feed', x: path[index].x, y: path[index].y, feed: operation.feedRate });
   }
-  moves.push({ type: 'rapid', z: operation.clearanceZ });
+  appendRetractZMove(moves, operation, operation.clearanceZ);
 }
 
 function buildContinuousPocketRegionPaths(region, options = {}) {
@@ -519,6 +1119,8 @@ function buildContinuousPocketRegionPaths(region, options = {}) {
 
   const alternateDirection = options.alternateDirection !== false;
   const axis = lines[0]?.axis === 'y' ? 'y' : 'x';
+  if (!alternateDirection) return buildOneWayPocketRegionPaths(lines, axis);
+
   const paths = [];
   let currentChunk = [lines[0]];
 
@@ -536,6 +1138,17 @@ function buildContinuousPocketRegionPaths(region, options = {}) {
 
   const lastChunkPath = buildPocketLineChunkPath(currentChunk, axis, { alternateDirection });
   if (lastChunkPath.length >= 2) paths.push(lastChunkPath);
+  return paths;
+}
+
+function buildOneWayPocketRegionPaths(lines, axis) {
+  const paths = [];
+  for (const line of lines) {
+    const path = [];
+    appendPocketPathPoint(path, axis, Math.min(line.start, line.end), line.position);
+    appendPocketPathPoint(path, axis, Math.max(line.start, line.end), line.position);
+    if (path.length >= 2) paths.push(path);
+  }
   return paths;
 }
 
@@ -649,6 +1262,16 @@ function normalizePocketStrategy(strategy) {
   if (value === 'zigzag-y' || value === 'oneway-x' || value === 'oneway-y') return value;
   if (value === 'zigzag-x') return value;
   return 'contour';
+}
+
+function describePocketStrategy(strategy) {
+  const value = normalizePocketStrategy(strategy);
+  if (value === 'contour') return { mode: 'contour', axis: 'x', alternateDirection: true };
+  return {
+    mode: 'raster',
+    axis: value.endsWith('-y') ? 'y' : 'x',
+    alternateDirection: !value.startsWith('oneway'),
+  };
 }
 
 function rotateClosedPath(path, position = 0) {
@@ -781,4 +1404,8 @@ function makeToolpath(operation, tool, moves, warnings = []) {
     moves,
     warnings,
   };
+}
+
+function normalizeFaceMillStrategy(strategy) {
+  return FACE_MILL_STRATEGIES.has(strategy) ? strategy : 'zigzag-x';
 }

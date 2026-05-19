@@ -14,7 +14,7 @@ export {
   normalizeTool,
 } from './model.js';
 export { cleanLoop, offsetPolygon, polygonArea } from './geometry/polygonOffset.js';
-export { depthPasses, generatePocketToolpath, generateProfileToolpath, generateToolpaths } from './toolpath.js';
+export { depthPasses, generateFaceToolpath, generatePocketToolpath, generateProfileToolpath, generateToolpaths } from './toolpath.js';
 export {
   CAM_SIMULATION_DEFAULT_RESOLUTION,
   CAM_SIMULATION_MAX_RESOLUTION,

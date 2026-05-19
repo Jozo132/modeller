@@ -154,6 +154,12 @@ export const PATH = {
     <line x1="7" y1="8" x2="13" y2="8"/>
     <line x1="7" y1="12" x2="11" y2="12"/>
   `,
+  'cam-face': `
+    <rect x="4" y="5" width="12" height="10" rx="1"/>
+    <path d="M6 8h8"/>
+    <path d="M6 11h8" opacity="0.7"/>
+    <path d="M8 14h4" opacity="0.45"/>
+  `,
   'cam-profile': `
     <rect x="4" y="4" width="12" height="12" rx="1"/>
     <path d="M7 10h6"/>
@@ -568,6 +574,7 @@ const TOOLBAR_BUTTONS = {
   'btn-enter-cam':              'cam-enter',
   'btn-cam-setup':              'cam-setup',
   'btn-cam-simulate':           'motion',
+  'btn-cam-face':               'cam-face',
   'btn-cam-profile':            'cam-profile',
   'btn-cam-pocket':             'cam-pocket',
   'btn-cam-export':             'download',

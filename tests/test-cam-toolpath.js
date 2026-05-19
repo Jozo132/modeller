@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { startTiming, formatTimingSuffix } from './test-timing.js';
 import { depthPasses, generateToolpaths, normalizeCamConfig, offsetPolygon } from '../js/cam/index.js';
+import { parseCMOD } from '../js/cmod.js';
 
 function test(name, fn) {
   const startedAt = startTiming();
@@ -39,6 +41,43 @@ test('profile toolpaths offset outside contours and cut requested depth passes',
   assert.deepEqual(plungeDepths, [-1, -2]);
 });
 
+test('rapid Z retract toggle can emit feed retracts for all toolpaths', () => {
+  const cam = normalizeCamConfig({
+    safeZ: 6,
+    clearanceZ: 4,
+    rapidZRetract: false,
+    stock: { min: { x: 0, y: 0, z: -1 }, max: { x: 10, y: 5, z: 0 } },
+    tools: [{ id: 'tool-a', number: 3, type: 'endmill', diameter: 2, feedRate: 300, plungeRate: 90 }],
+    operations: [{ id: 'profile-a', type: 'profile', toolId: 'tool-a', side: 'outside', source: { loops: [rect] }, topZ: 0, bottomZ: -1, stepDown: 1 }],
+  });
+  const { toolpaths } = generateToolpaths(cam);
+  const zRapids = toolpaths[0].moves.filter((move) => move.type === 'rapid' && move.z != null);
+  const zFeeds = toolpaths[0].moves.filter((move) => move.type === 'feed' && move.z != null);
+  const xyRapids = toolpaths[0].moves.filter((move) => move.type === 'rapid' && move.x != null && move.y != null);
+
+  assert.equal(zRapids.length, 0);
+  assert.ok(zFeeds.some((move) => move.z === 4), 'expected clearance retract to use a feed move');
+  assert.ok(zFeeds.some((move) => move.z === 6), 'expected safe Z retract to use a feed move');
+  assert.ok(xyRapids.length > 0, 'expected XY traverses to remain rapid');
+});
+
+test('face milling operations raster the stock outline', () => {
+  const cam = normalizeCamConfig({
+    stock: { min: { x: 0, y: 0, z: 0 }, max: { x: 10, y: 6, z: 2 } },
+    tools: [{ id: 'tool-a', type: 'endmill', diameter: 2, feedRate: 300, plungeRate: 90 }],
+    operations: [{ id: 'face-a', type: 'face', toolId: 'tool-a', topZ: 2, bottomZ: 1.5, stepDown: 0.5 }],
+  });
+  const { toolpaths, warnings } = generateToolpaths(cam);
+
+  assert.equal(warnings.length, 0);
+  assert.equal(toolpaths.length, 1);
+  assert.equal(toolpaths[0].operationType, 'face');
+  assert.ok(toolpaths[0].moves.some((move) => move.type === 'feed' && move.x != null && move.y != null));
+  const firstXYRapid = toolpaths[0].moves.find((move) => move.type === 'rapid' && move.x != null && move.y != null);
+  assert.ok(firstXYRapid.x >= 0 && firstXYRapid.x <= 10);
+  assert.ok(firstXYRapid.y >= 0 && firstXYRapid.y <= 6);
+});
+
 test('pocket toolpaths create inward stepover loops', () => {
   const square = [
     { x: 0, y: 0 },
@@ -52,11 +91,17 @@ test('pocket toolpaths create inward stepover loops', () => {
   });
   const { toolpaths } = generateToolpaths(cam);
   const xyRapids = toolpaths[0].moves.filter((move) => move.type === 'rapid' && move.x != null && move.y != null);
+  const plungeMoves = toolpaths[0].moves.filter((move) => move.type === 'feed' && move.z != null);
+  const xyFeeds = toolpaths[0].moves.filter((move) => move.type === 'feed' && move.x != null && move.y != null);
+  const innerShellIndex = xyFeeds.findIndex((move) => Math.abs(move.x - 5) < 1e-6 && Math.abs(move.y - 5.5) < 1e-6);
+  const outerShellIndex = xyFeeds.findIndex((move) => Math.abs(move.x - 5) < 1e-6 && Math.abs(move.y - 1) < 1e-6);
 
-  assert.ok(xyRapids.length >= 2);
-  assert.deepEqual({ x: xyRapids[0].x, y: xyRapids[0].y }, { x: 1, y: 1 });
-  assert.ok(xyRapids[1].x > xyRapids[0].x);
-  assert.ok(xyRapids[1].y > xyRapids[0].y);
+  assert.equal(xyRapids.length, 1);
+  assert.equal(plungeMoves.length, 1);
+  assert.deepEqual({ x: xyRapids[0].x, y: xyRapids[0].y }, { x: 5, y: 5 });
+  assert.ok(innerShellIndex >= 0, 'expected an innermost contour shell to start from the center anchor');
+  assert.ok(outerShellIndex > innerShellIndex, 'expected contour shells to expand from the center out to the wall');
+  assert.ok(xyFeeds.some((move) => Math.abs(move.x - 5) < 1e-6 && Math.abs(move.y - 2.5) < 1e-6), 'expected an intermediate contour shell');
   for (const rapid of xyRapids) {
     assert.ok(rapid.x >= 0 && rapid.x <= 10);
     assert.ok(rapid.y >= 0 && rapid.y <= 10);
@@ -262,6 +307,242 @@ test('zig-zag pockets stay down across connected scan lines', () => {
   assert.equal(xyRapids.length, 1);
 });
 
+test('one-way pockets retract between scan lines and keep one cutting direction', () => {
+  const cam = normalizeCamConfig({
+    tools: [{ id: 'tool-pocket', type: 'flat-endmill', diameter: 2, feedRate: 500, plungeRate: 120 }],
+    operations: [{
+      id: 'op-pocket-oneway',
+      type: 'pocket',
+      toolId: 'tool-pocket',
+      topZ: 0,
+      bottomZ: -1,
+      stepDown: 1,
+      stepoverPercent: 100,
+      pocketStrategy: 'oneway-x',
+      source: {
+        loops: [[
+          { x: 0, y: 0 },
+          { x: 20, y: 0 },
+          { x: 20, y: 12 },
+          { x: 0, y: 12 },
+        ]],
+      },
+    }],
+  });
+
+  const moves = generateToolpaths(cam).toolpaths[0].moves;
+  const plungeMoves = moves.filter((move) => move.type === 'feed' && Number.isFinite(move.z));
+  const xyRapids = moves.filter((move) => move.type === 'rapid' && Number.isFinite(move.x) && Number.isFinite(move.y));
+  const passEntries = collectPassEntries(moves);
+
+  assert.equal(plungeMoves.length, xyRapids.length);
+  assert.ok(plungeMoves.length > 1, 'one-way pockets should re-enter for each scan line');
+  assert.ok(passEntries.length >= 4, 'expected several one-way raster cuts');
+  assert.ok(passEntries.every((entry) => entry.end.x > entry.start.x), 'one-way-x should cut in a single positive X direction');
+  assert.ok(passEntries.every((entry) => Math.abs(entry.end.y - entry.start.y) <= 1e-6), 'one-way passes should stay on a single scan line');
+});
+
+test('complex contour pockets stay contour-parallel instead of rasterizing', () => {
+  const outer = [
+    { x: 0, y: 0 },
+    { x: 24, y: 0 },
+    { x: 24, y: 20 },
+    { x: 0, y: 20 },
+  ];
+  const island = [
+    { x: 8, y: 6 },
+    { x: 16, y: 6 },
+    { x: 16, y: 20 },
+    { x: 8, y: 20 },
+  ];
+  const cam = normalizeCamConfig({
+    tools: [{ id: 'tool-a', type: 'endmill', diameter: 4, feedRate: 300, plungeRate: 90 }],
+    operations: [{
+      id: 'pocket-contour-island',
+      type: 'pocket',
+      toolId: 'tool-a',
+      source: { loops: [outer, island] },
+      topZ: 0,
+      bottomZ: -1,
+      stepDown: 1,
+      stepoverPercent: 50,
+      pocketStrategy: 'contour',
+    }],
+  });
+
+  const moves = generateToolpaths(cam).toolpaths[0].moves;
+  const plungeMoves = moves.filter((move) => move.type === 'feed' && Number.isFinite(move.z));
+  const xyRapids = moves.filter((move) => move.type === 'rapid' && Number.isFinite(move.x) && Number.isFinite(move.y));
+
+  assert.equal(plungeMoves.length, xyRapids.length);
+  assert.ok(plungeMoves.length > 2, 'complex contour pockets should create multiple contour shells, not a single raster path');
+  assert.ok(xyRapids.some((move) => move.x < 8), 'left side of the pocket should be machined');
+  assert.ok(xyRapids.some((move) => move.x > 16), 'right side of the pocket should be machined');
+  assert.ok(xyRapids.every((move) => !(move.x > 8 && move.x < 16 && move.y > 6 && move.y < 20)), 'contour shells should keep the island clear');
+});
+
+test('face-surface pockets re-evaluate active sub-pockets at each depth', () => {
+  const outer = [
+    { x: 0, y: 0 },
+    { x: 20, y: 0 },
+    { x: 20, y: 20 },
+    { x: 0, y: 20 },
+  ];
+  const inner = [
+    { x: 6, y: 6 },
+    { x: 14, y: 6 },
+    { x: 14, y: 14 },
+    { x: 6, y: 14 },
+  ];
+  const cam = normalizeCamConfig({
+    tools: [{ id: 'tool-a', type: 'endmill', diameter: 2, feedRate: 300, plungeRate: 90 }],
+    operations: [{
+      id: 'surface-pocket',
+      type: 'pocket',
+      toolId: 'tool-a',
+      topZ: 0,
+      bottomZ: -4,
+      stepDown: 2,
+      pocketStrategy: 'contour',
+      source: {
+        type: 'face',
+        loops: [outer, inner],
+        surfaces: [
+          { referenceId: 'surface-outer', label: 'Outer shelf', z: -2, loops: [outer] },
+          { referenceId: 'surface-inner', label: 'Inner relief', z: -4, loops: [inner] },
+        ],
+      },
+    }],
+  });
+
+  const moves = generateToolpaths(cam).toolpaths[0].moves;
+  const plungeStarts = collectPlungeStarts(moves);
+  const shallowStarts = plungeStarts.filter((entry) => Math.abs(entry.z - (-2)) <= 1e-6);
+  const deepStarts = plungeStarts.filter((entry) => Math.abs(entry.z - (-4)) <= 1e-6);
+
+  assert.equal(shallowStarts.length, 2, 'expected the shallower depth to machine both active surface pockets');
+  assert.equal(deepStarts.length, 1, 'expected only the deeper inner relief to remain active at the second depth');
+});
+
+test('sample contour pocket uses contour shells when exact face geometry is available', () => {
+  const samplePath = new URL('./samples/machinning-sample.cmod', import.meta.url);
+  const parsed = parseCMOD(readFileSync(samplePath, 'utf8'));
+  assert.equal(parsed.ok, true);
+
+  const cam = normalizeCamConfig(parsed.data.cam);
+  const operation = cam.operations.find((candidate) => candidate.type === 'pocket');
+  assert.ok(operation);
+  operation.source.segmentLoops = operation.source.loops.map((loop) => loop.map((start, index) => ({
+    type: 'line',
+    start,
+    end: loop[(index + 1) % loop.length],
+  })));
+
+  const moves = generateToolpaths(cam).toolpaths[0].moves;
+  const feedSegments = collectFeedSegments(moves).slice(0, 20);
+  assert.ok(!hasRasterSweepPattern(feedSegments, 15, 2), 'expected contour-following opening moves instead of stepped raster sweeps');
+});
+
+test('contour pockets can plunge outside stock and feed in from an open side', () => {
+  const cam = normalizeCamConfig({
+    stock: { min: { x: 0, y: 0, z: -1 }, max: { x: 20, y: 20, z: 0 } },
+    tools: [{ id: 'tool-pocket', type: 'flat-endmill', diameter: 2, feedRate: 500, plungeRate: 120 }],
+    operations: [{
+      id: 'op-pocket-side-entry',
+      type: 'pocket',
+      toolId: 'tool-pocket',
+      topZ: 0,
+      bottomZ: -1,
+      stepDown: 1,
+      stepoverPercent: 75,
+      pocketStrategy: 'contour',
+      sideEntryEnabled: true,
+      leadInLength: 3,
+      source: {
+        loops: [[
+          { x: 0, y: 4 },
+          { x: 12, y: 4 },
+          { x: 12, y: 16 },
+          { x: 0, y: 16 },
+        ]],
+      },
+    }],
+  });
+
+  const moves = generateToolpaths(cam).toolpaths[0].moves;
+  const firstXYRapid = moves.find((move) => move.type === 'rapid' && Number.isFinite(move.x) && Number.isFinite(move.y));
+  const firstPlungeIndex = moves.findIndex((move) => move.type === 'feed' && Number.isFinite(move.z));
+  const firstContourFeed = moves.slice(firstPlungeIndex + 1).find((move) => move.type === 'feed' && Number.isFinite(move.x) && Number.isFinite(move.y));
+
+  assert.deepEqual({ x: firstXYRapid.x, y: firstXYRapid.y }, { x: -3, y: 10 });
+  assert.ok(firstPlungeIndex >= 0, 'expected a plunge move');
+  assert.deepEqual({ x: firstContourFeed.x, y: firstContourFeed.y }, { x: 5.5, y: 10 });
+});
+
+test('contour side-entry falls back to a normal entry when the pocket is closed in stock', () => {
+  const cam = normalizeCamConfig({
+    stock: { min: { x: 0, y: 0, z: -1 }, max: { x: 20, y: 20, z: 0 } },
+    tools: [{ id: 'tool-pocket', type: 'flat-endmill', diameter: 2, feedRate: 500, plungeRate: 120 }],
+    operations: [{
+      id: 'op-pocket-closed-side-entry',
+      type: 'pocket',
+      toolId: 'tool-pocket',
+      topZ: 0,
+      bottomZ: -1,
+      stepDown: 1,
+      stepoverPercent: 75,
+      pocketStrategy: 'contour',
+      sideEntryEnabled: true,
+      leadInLength: 3,
+      source: {
+        loops: [[
+          { x: 4, y: 4 },
+          { x: 12, y: 4 },
+          { x: 12, y: 16 },
+          { x: 4, y: 16 },
+        ]],
+      },
+    }],
+  });
+
+  const moves = generateToolpaths(cam).toolpaths[0].moves;
+  const firstXYRapid = moves.find((move) => move.type === 'rapid' && Number.isFinite(move.x) && Number.isFinite(move.y));
+
+  assert.deepEqual({ x: firstXYRapid.x, y: firstXYRapid.y }, { x: 8, y: 10 });
+});
+
+test('open contour side-entry extends outside stock by at least one tool diameter', () => {
+  const cam = normalizeCamConfig({
+    stock: { min: { x: 0, y: 0, z: -1 }, max: { x: 20, y: 20, z: 0 } },
+    tools: [{ id: 'tool-pocket', type: 'flat-endmill', diameter: 2, feedRate: 500, plungeRate: 120 }],
+    operations: [{
+      id: 'op-pocket-diameter-extension',
+      type: 'pocket',
+      toolId: 'tool-pocket',
+      topZ: 0,
+      bottomZ: -1,
+      stepDown: 1,
+      stepoverPercent: 75,
+      pocketStrategy: 'contour',
+      sideEntryEnabled: true,
+      leadInLength: 0,
+      source: {
+        loops: [[
+          { x: 0, y: 4 },
+          { x: 12, y: 4 },
+          { x: 12, y: 16 },
+          { x: 0, y: 16 },
+        ]],
+      },
+    }],
+  });
+
+  const moves = generateToolpaths(cam).toolpaths[0].moves;
+  const firstXYRapid = moves.find((move) => move.type === 'rapid' && Number.isFinite(move.x) && Number.isFinite(move.y));
+
+  assert.deepEqual({ x: firstXYRapid.x, y: firstXYRapid.y }, { x: -2, y: 10 });
+});
+
 test('profile along exact segment loops preserves arc moves', () => {
   const camConfig = normalizeCamConfig({
     tools: [{ id: 'tool-profile', type: 'flat-endmill', diameter: 2, feedRate: 400, plungeRate: 120 }],
@@ -359,4 +640,81 @@ function longestFeedStep(moves) {
     if (!best || length > best.length) best = { from, to, length };
   }
   return best;
+}
+
+function collectPassEntries(moves) {
+  const passes = [];
+  let pendingStart = null;
+  let armedAfterPlunge = false;
+
+  for (const move of moves) {
+    if (move.type === 'rapid' && Number.isFinite(move.x) && Number.isFinite(move.y)) {
+      pendingStart = { x: move.x, y: move.y };
+      armedAfterPlunge = false;
+      continue;
+    }
+    if (move.type === 'feed' && Number.isFinite(move.z) && pendingStart) {
+      armedAfterPlunge = true;
+      continue;
+    }
+    if (armedAfterPlunge && move.type === 'feed' && Number.isFinite(move.x) && Number.isFinite(move.y)) {
+      passes.push({ start: pendingStart, end: { x: move.x, y: move.y } });
+      pendingStart = null;
+      armedAfterPlunge = false;
+    }
+  }
+
+  return passes;
+}
+
+function collectPlungeStarts(moves) {
+  const starts = [];
+  let pendingRapid = null;
+  for (const move of moves) {
+    if (move.type === 'rapid' && Number.isFinite(move.x) && Number.isFinite(move.y)) {
+      pendingRapid = { x: move.x, y: move.y };
+      continue;
+    }
+    if (move.type === 'feed' && Number.isFinite(move.z) && pendingRapid) {
+      starts.push({ ...pendingRapid, z: move.z });
+      pendingRapid = null;
+    }
+  }
+  return starts;
+}
+
+function collectFeedSegments(moves) {
+  const segments = [];
+  let previous = null;
+  for (const move of moves) {
+    if (move.type !== 'feed' || !Number.isFinite(move.x) || !Number.isFinite(move.y)) continue;
+    if (previous && Number.isFinite(previous.x) && Number.isFinite(previous.y)) {
+      const dx = move.x - previous.x;
+      const dy = move.y - previous.y;
+      segments.push({
+        from: { x: previous.x, y: previous.y },
+        to: { x: move.x, y: move.y },
+        axis: Math.abs(dx) >= Math.abs(dy) ? 'x' : 'y',
+        length: Math.hypot(dx, dy),
+      });
+    }
+    previous = move;
+  }
+  return segments;
+}
+
+function hasRasterSweepPattern(segments, minSweepLength, maxStepOver) {
+  for (let index = 0; index + 2 < segments.length; index++) {
+    const first = segments[index];
+    const connector = segments[index + 1];
+    const second = segments[index + 2];
+    const firstDx = first.to.x - first.from.x;
+    const secondDx = second.to.x - second.from.x;
+    if (first.axis !== 'x' || second.axis !== 'x' || connector.axis !== 'y') continue;
+    if (first.length <= minSweepLength || second.length <= minSweepLength) continue;
+    if (connector.length > maxStepOver) continue;
+    if (Math.sign(firstDx) === 0 || Math.sign(secondDx) === 0) continue;
+    if (Math.sign(firstDx) !== Math.sign(secondDx)) return true;
+  }
+  return false;
 }

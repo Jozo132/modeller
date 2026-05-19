@@ -5,6 +5,7 @@ import {
   parseCMOD,
   projectFromCMOD,
   projectToCMOD,
+  sanitizeCamConfigForCmod,
   setCmodCamConfigGetter,
 } from '../js/cmod.js';
 import { normalizeCamConfig } from '../js/cam/index.js';
@@ -47,4 +48,34 @@ test('browser CMOD export writes cam from registered getter', () => {
   const cmod = projectToCMOD();
   assert.deepEqual(cmod.cam, cam);
   setCmodCamConfigGetter(null);
+});
+
+test('CMOD CAM serialization strips generated toolpath state', () => {
+  const runtimeCam = {
+    ...cam,
+    toolpaths: [{ operationId: 'profile-a', moves: [{ type: 'rapid', z: 10 }] }],
+    warnings: [{ message: 'preview-only' }],
+    operationStates: [{ operationId: 'profile-a' }],
+    stockPlan: { operationStates: [] },
+    operations: cam.operations.map((operation) => ({
+      ...operation,
+      toolpath: { moves: [{ type: 'feed', x: 1, y: 2 }] },
+      warnings: [{ message: 'runtime' }],
+      stockState: { removedVolume: 1 },
+    })),
+  };
+
+  const sanitized = sanitizeCamConfigForCmod(runtimeCam);
+  assert.ok(!('toolpaths' in sanitized));
+  assert.ok(!('warnings' in sanitized));
+  assert.ok(!('operationStates' in sanitized));
+  assert.ok(!('stockPlan' in sanitized));
+  assert.ok(sanitized.operations.every((operation) => !('toolpath' in operation) && !('warnings' in operation) && !('stockState' in operation)));
+
+  const cmod = buildCMOD(null, { cam: runtimeCam });
+  assert.deepEqual(cmod.cam, sanitized);
+
+  const result = projectFromCMOD(buildCMOD(null, { cam: runtimeCam }));
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.cam, sanitized);
 });

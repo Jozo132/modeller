@@ -10,6 +10,7 @@ import {
   calculateMeshVolume, calculateBoundingBox, calculateSurfaceArea,
   detectDisconnectedBodies, calculateWallThickness, countInvertedFaces,
 } from './cad/toolkit/MeshAnalysis.js';
+import { normalizeCamConfig } from './cam/model.js';
 import { info, error } from './logger.js';
 
 const FORMAT_ID = 'CAD Modeller Open Design';
@@ -23,6 +24,20 @@ let _getWorkspaceMode = null;
 let _getSessionState = null;
 let _getScenes = null;
 let _getCamConfig = null;
+
+const TRANSIENT_CAM_KEYS = new Set([
+  'toolpath',
+  'toolpaths',
+  'warnings',
+  'operationStates',
+  'stockPlan',
+  'motionTimeline',
+  'stockState',
+  'remainingOperationIds',
+  'sequenceIndex',
+  'removedVolume',
+  'remainingVolume',
+]);
 
 /** Register viewport for persistence. */
 export function setCmodViewport(vp) { _viewport = vp; }
@@ -44,6 +59,22 @@ export function setCmodScenesGetter(fn) { _getScenes = fn; }
 
 /** Register CAM config getter. */
 export function setCmodCamConfigGetter(fn) { _getCamConfig = fn; }
+
+export function sanitizeCamConfigForCmod(camConfig) {
+  if (!camConfig || typeof camConfig !== 'object') return null;
+  return normalizeCamConfig(stripTransientCamState(camConfig));
+}
+
+function stripTransientCamState(value) {
+  if (Array.isArray(value)) return value.map((entry) => stripTransientCamState(entry));
+  if (!value || typeof value !== 'object') return value;
+  const result = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (TRANSIENT_CAM_KEYS.has(key)) continue;
+    result[key] = stripTransientCamState(entry);
+  }
+  return result;
+}
 
 // -----------------------------------------------------------------------
 // Metadata computation
@@ -147,7 +178,7 @@ export function projectToCMOD() {
     cmod.sessionState = _getSessionState();
   }
   if (_getCamConfig) {
-    cmod.cam = _getCamConfig();
+    cmod.cam = sanitizeCamConfigForCmod(_getCamConfig());
   }
 
   // Named camera scenes (for repeatable renders)
@@ -263,7 +294,7 @@ export function projectFromCMOD(data) {
     scenes: Array.isArray(data.scenes) ? data.scenes : [],
     workspaceMode: data.workspaceMode || null,
     sessionState: data.sessionState || null,
-    cam: data.cam || null,
+    cam: data.cam ? sanitizeCamConfigForCmod(data.cam) : null,
     metadata: data.metadata || null,
   };
 }
@@ -331,7 +362,7 @@ export function buildCMOD(part, options = {}) {
     scenes: options.scenes || [],
     workspaceMode: 'part',
     sessionState: null,
-    cam: options.cam || null,
+    cam: options.cam ? sanitizeCamConfigForCmod(options.cam) : null,
     metadata: _computeMetadata(part),
   };
 

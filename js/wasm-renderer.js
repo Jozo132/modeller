@@ -428,7 +428,7 @@ function _sampleCamPathGroups(groups, limit) {
 }
 
 function _camPathGroupPreviewLimit(toolpath, active) {
-  if (toolpath.operationType === 'pocket') return active ? 36 : 8;
+  if (toolpath.operationType === 'pocket' || toolpath.operationType === 'face') return active ? 36 : 8;
   return active ? 80 : 18;
 }
 

@@ -33,6 +33,9 @@ test('default config creates stock, origin, and a usable tool', () => {
   assert.equal(cam.stock.opacity, 0.18);
   assert.equal(cam.stock.visible, true);
   assert.deepEqual(cam.machineOrigin.position, { x: 5, y: 15, z: 9 });
+  assert.equal(cam.safeZ, 19);
+  assert.equal(cam.clearanceZ, 14);
+  assert.equal(cam.rapidZRetract, true);
   assert.equal(cam.tools.length, 1);
   assert.equal(cam.tools[0].type, 'endmill');
   assert.equal(cam.activeToolId, cam.tools[0].id);
@@ -50,6 +53,9 @@ test('tool type parameters normalize for ball, cone, drill, and endmill', () => 
 
 test('profile and pocket operations keep contours and machining defaults', () => {
   const cam = normalizeCamConfig({
+    safeZ: 22,
+    clearanceZ: 17,
+    rapidZRetract: false,
     tools: [{ id: 't1', type: 'endmill', diameter: 6, feedRate: 500, plungeRate: 140 }],
     operations: [
       { id: 'profile-a', type: 'profile', toolId: 't1', side: 'inside', source: { loops: [rect] }, topZ: 0, bottomZ: -3, stepDown: 1 },
@@ -64,9 +70,40 @@ test('profile and pocket operations keep contours and machining defaults', () =>
   assert.ok(Math.abs(cam.operations[1].stepover - 2.4) < 1e-9);
   assert.equal(cam.operations[1].pocketOrder, 'per-level');
   assert.equal(cam.operations[1].pocketStrategy, 'contour');
+  assert.equal(cam.operations[1].sideEntryEnabled, false);
+  assert.equal(cam.safeZ, 22);
+  assert.equal(cam.clearanceZ, 17);
+  assert.equal(cam.rapidZRetract, false);
+  assert.equal(cam.operations[0].safeZ, 22);
+  assert.equal(cam.operations[1].safeZ, 22);
+  assert.equal(cam.operations[0].clearanceZ, 17);
+  assert.equal(cam.operations[1].clearanceZ, 17);
+  assert.equal(cam.operations[0].rapidZRetract, false);
+  assert.equal(cam.operations[1].rapidZRetract, false);
   assert.equal(cam.operations[0].visible, true);
   assert.equal(cam.operations[1].visible, true);
   assert.equal(cam.linuxCncUseG5, true);
+});
+
+test('face milling operations normalize to stock outline defaults', () => {
+  const cam = normalizeCamConfig({
+    stock: { min: { x: 1, y: 2, z: -1 }, max: { x: 11, y: 12, z: 4 } },
+    tools: [{ id: 't1', type: 'endmill', diameter: 6 }],
+    operations: [{ id: 'face-a', type: 'face', toolId: 't1' }],
+  });
+
+  assert.equal(cam.operations[0].type, 'face');
+  assert.equal(cam.operations[0].source.type, 'stock-outline');
+  assert.deepEqual(cam.operations[0].source.loops[0], [
+    { x: 1, y: 2 },
+    { x: 11, y: 2 },
+    { x: 11, y: 12 },
+    { x: 1, y: 12 },
+  ]);
+  assert.equal(cam.operations[0].bottomZ, 4);
+  assert.equal(cam.operations[0].pocketOrder, 'per-level');
+  assert.equal(cam.operations[0].pocketStrategy, 'zigzag-x');
+  assert.equal(cam.operations[0].sideEntryEnabled, false);
 });
 
 test('preview visibility flags normalize independently from machining flags', () => {
