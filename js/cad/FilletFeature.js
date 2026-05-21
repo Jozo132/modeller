@@ -293,6 +293,7 @@ export class FilletFeature extends Feature {
           edgeRefs: this._resolveSelectedOcctEdgeRefs(selectionContext, edgeKeys),
           radius: this.radius,
           spec: this.occtSpec,
+          sourceTopology: occtInputGeometry?._occtModeling?.topology || null,
           topoBody: inputTopoBody,
         })
         : null;

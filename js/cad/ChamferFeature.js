@@ -226,6 +226,7 @@ export class ChamferFeature extends Feature {
         edgeRefs: this._resolveSelectedOcctEdgeRefs(solid, selectedEdgeKeys),
         distance: this.distance,
         spec: this.occtSpec,
+        sourceTopology: solid.geometry?._occtModeling?.topology || null,
         topoBody: inputTopoBody,
       })
       : null;

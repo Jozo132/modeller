@@ -7,9 +7,12 @@ import {
 } from './OcctKernelLoader.js';
 import { OcctKernelAdapter } from './OcctKernelAdapter.js';
 import { computeFeatureEdges } from '../EdgeAnalysis.js';
+import { globalTessConfig } from '../TessellationConfig.js';
 
 const OCCT_SKETCH_SOLID_FLAG = 'CAD_USE_OCCT_SKETCH_SOLIDS';
 const WORLD_XY_TOLERANCE = 1e-6;
+const DEFAULT_OCCT_LINEAR_DEFLECTION = 0.1;
+const DEFAULT_OCCT_ANGULAR_DEFLECTION = 0.5;
 
 let sharedAdapter = null;
 const reportedOcctSketchFallbacks = new Set();
@@ -56,6 +59,41 @@ function dot3(a, b) {
 
 function vectorLength3(vector) {
   return Math.hypot(Number(vector?.x) || 0, Number(vector?.y) || 0, Number(vector?.z) || 0);
+}
+
+function boundingBoxDiagonal(bounds) {
+  if (!bounds || typeof bounds !== 'object') return 0;
+  return Math.hypot(
+    Number(bounds.xMax) - Number(bounds.xMin),
+    Number(bounds.yMax) - Number(bounds.yMin),
+    Number(bounds.zMax) - Number(bounds.zMin),
+  );
+}
+
+function buildOcctTessellationOptions(topology, operation) {
+  const isBlend = operation === 'fillet' || operation === 'chamfer';
+  const minEdgeSegments = isBlend ? 32 : 16;
+  const minSurfaceSegments = isBlend ? 16 : 8;
+  const edgeSegments = Math.max(Number(globalTessConfig.edgeSegments) || 0, minEdgeSegments);
+  const surfaceSegments = Math.max(Number(globalTessConfig.surfaceSegments) || 0, minSurfaceSegments);
+  const diag = boundingBoxDiagonal(topology?.boundingBox);
+  const linearDeflection = diag > WORLD_XY_TOLERANCE
+    ? clamp(
+      diag / Math.max(edgeSegments * (isBlend ? 48 : 32), 1),
+      isBlend ? 0.002 : 0.005,
+      isBlend ? 0.05 : DEFAULT_OCCT_LINEAR_DEFLECTION,
+    )
+    : (isBlend ? 0.01 : DEFAULT_OCCT_LINEAR_DEFLECTION);
+  const angularDeflection = clamp(
+    Math.PI / Math.max(surfaceSegments * (isBlend ? 2 : 1), isBlend ? 24 : 12),
+    isBlend ? 0.03 : 0.08,
+    isBlend ? 0.15 : DEFAULT_OCCT_ANGULAR_DEFLECTION,
+  );
+  return {
+    topology,
+    linearDeflection: cleanNumber(linearDeflection),
+    angularDeflection: cleanNumber(angularDeflection),
+  };
 }
 
 function normalizeVector3(vector) {
@@ -646,7 +684,7 @@ function finalizeOcctGeometry(adapter, handle, topoBody, operation) {
   }
 
   const topology = adapter.getTopology(handle);
-  const geometry = adapter.tessellate(handle, { topology });
+  const geometry = adapter.tessellate(handle, buildOcctTessellationOptions(topology, operation));
   if (!geometry?.faces?.length) {
     reportOcctSketchFallbackOnce(
       `occt-${operation}-empty-tessellation`,
@@ -666,6 +704,14 @@ function finalizeOcctGeometry(adapter, handle, topoBody, operation) {
     topology,
   };
   return geometry;
+}
+
+function faceMatchesOcctBlendSelectors(face, selectors) {
+  return face?.shared?.isFillet === true
+    || (
+      selectors.topoFaceIds.has(face?.topoFaceId)
+      || (!!face?.stableHash && selectors.stableHashes.has(face.stableHash))
+    );
 }
 
 function collectOcctBlendFaceSelectors(blendFaces) {
@@ -697,17 +743,51 @@ function collectOcctBlendFaceSelectors(blendFaces) {
   return { topoFaceIds, stableHashes };
 }
 
-function applyOcctBlendFaceMetadata(geometry, operation, blendFaces) {
+function collectOcctGeneratedBlendFaceSelectors(currentTopology, sourceTopology) {
+  const topoFaceIds = new Set();
+  const stableHashes = new Set();
+  if (!Array.isArray(currentTopology?.faces) || !Array.isArray(sourceTopology?.faces)) {
+    return { topoFaceIds, stableHashes };
+  }
+
+  const previousFaceHashes = new Set(
+    sourceTopology.faces
+      .map((face) => (typeof face?.stableHash === 'string' ? face.stableHash : null))
+      .filter(Boolean),
+  );
+  if (previousFaceHashes.size === 0) {
+    return { topoFaceIds, stableHashes };
+  }
+
+  for (const face of currentTopology.faces) {
+    const stableHash = typeof face?.stableHash === 'string' ? face.stableHash : null;
+    if (!stableHash || previousFaceHashes.has(stableHash)) continue;
+    stableHashes.add(stableHash);
+    if (Number.isInteger(face?.id)) topoFaceIds.add(face.id);
+  }
+
+  return { topoFaceIds, stableHashes };
+}
+
+function applyOcctBlendFaceMetadata(geometry, operation, blendFaces, sourceTopology = null) {
   if (!geometry?.faces?.length || operation !== 'fillet') return;
 
-  const selectors = collectOcctBlendFaceSelectors(blendFaces);
-  const hasSelectors = selectors.topoFaceIds.size > 0 || selectors.stableHashes.size > 0;
+  let selectors = collectOcctBlendFaceSelectors(blendFaces);
+  let hasSelectors = selectors.topoFaceIds.size > 0 || selectors.stableHashes.size > 0;
+  if (hasSelectors) {
+    const matchedFace = geometry.faces.some((face) => faceMatchesOcctBlendSelectors(face, selectors));
+    if (!matchedFace) {
+      const fallbackSelectors = collectOcctGeneratedBlendFaceSelectors(geometry?._occtModeling?.topology, sourceTopology);
+      const hasFallbackSelectors = fallbackSelectors.topoFaceIds.size > 0 || fallbackSelectors.stableHashes.size > 0;
+      if (hasFallbackSelectors) {
+        selectors = fallbackSelectors;
+        hasSelectors = true;
+      }
+    }
+  }
+
   for (const face of geometry.faces) {
-    const matched = face?.shared?.isFillet === true
-      || (hasSelectors && (
-        selectors.topoFaceIds.has(face.topoFaceId)
-        || (!!face.stableHash && selectors.stableHashes.has(face.stableHash))
-      ));
+    const matched = hasSelectors && faceMatchesOcctBlendSelectors(face, selectors);
     if (!matched) continue;
     face.shared = { ...(face.shared || {}), isFillet: true, isFilletFace: true };
     face.isFillet = true;
@@ -1219,12 +1299,12 @@ function _buildBlendFeatureSpec(kind, edgeRefs, params = {}) {
   };
 }
 
-function _finalizeOcctBlendResult(adapter, operation, blendResult, topoBody) {
+function _finalizeOcctBlendResult(adapter, operation, blendResult, topoBody, sourceTopology = null) {
   const handle = blendResult?.shape?.id || blendResult?.shapeId || blendResult?.shapeHandle || 0;
   const geometry = finalizeOcctGeometry(adapter, handle, topoBody, operation);
   if (!geometry) return null;
   const blendFaces = Array.isArray(blendResult?.blendFaces) ? blendResult.blendFaces : [];
-  applyOcctBlendFaceMetadata(geometry, operation, blendFaces);
+  applyOcctBlendFaceMetadata(geometry, operation, blendFaces, sourceTopology);
   attachOcctBlendFeatureEdges(geometry);
   geometry._occtBlend = {
     blendFaces,
@@ -1248,6 +1328,7 @@ export function tryBuildOcctFilletMetadataSync(options = {}) {
     handle,
     edgeRefs = [],
     topoBody = null,
+    sourceTopology = null,
     radius = null,
     spec = null,
   } = options;
@@ -1270,7 +1351,7 @@ export function tryBuildOcctFilletMetadataSync(options = {}) {
       },
     }));
     if (!blendResult || typeof blendResult !== 'object') return null;
-    return _finalizeOcctBlendResult(adapter, 'fillet', blendResult, topoBody);
+    return _finalizeOcctBlendResult(adapter, 'fillet', blendResult, topoBody, sourceTopology);
   } catch {
     return null;
   }
@@ -1283,6 +1364,7 @@ export function tryBuildOcctChamferMetadataSync(options = {}) {
     handle,
     edgeRefs = [],
     topoBody = null,
+    sourceTopology = null,
     distance = null,
     spec = null,
   } = options;
@@ -1305,7 +1387,7 @@ export function tryBuildOcctChamferMetadataSync(options = {}) {
       },
     }));
     if (!blendResult || typeof blendResult !== 'object') return null;
-    return _finalizeOcctBlendResult(adapter, 'chamfer', blendResult, topoBody);
+    return _finalizeOcctBlendResult(adapter, 'chamfer', blendResult, topoBody, sourceTopology);
   } catch {
     return null;
   }
