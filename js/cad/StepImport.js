@@ -148,6 +148,7 @@ export function importSTEP(stepString, opts = {}) {
   const timings = {};
   const totalStart = _now();
   let body = null;
+  const retainOcctShape = opts.retainOcctShape === true;
   const finalizeResult = (result) => _finalizeStepImportResult(stepString, result, opts);
 
   const occtResidency = _measureStepPhase(timings, 'occtImportMs', 'step:import:occt', () =>
@@ -177,6 +178,12 @@ export function importSTEP(stepString, opts = {}) {
           timings,
           _tessellator: occtResidency.mesh._tessellator || 'occt',
           _occt: occtResidency.mesh._occt || null,
+          _occtModeling: occtResidency._occtModeling || null,
+          ...(retainOcctShape ? {
+            occtShapeHandle: occtResidency.occtShapeHandle || 0,
+            occtShapeResident: true,
+            occtCheckpoint: occtResidency.occtCheckpoint || null,
+          } : {}),
         });
       }
 
@@ -198,9 +205,17 @@ export function importSTEP(stepString, opts = {}) {
         timings,
         _tessellator: occtResidency.mesh._tessellator || 'occt',
         _occt: occtResidency.mesh._occt || null,
+        _occtModeling: occtResidency._occtModeling || null,
+        ...(retainOcctShape ? {
+          occtShapeHandle: occtResidency.occtShapeHandle || 0,
+          occtShapeResident: true,
+          occtCheckpoint: occtResidency.occtCheckpoint || null,
+        } : {}),
       });
     } finally {
-      disposeOcctSketchModelingShape(occtResidency.occtShapeHandle || 0);
+      if (!retainOcctShape) {
+        disposeOcctSketchModelingShape(occtResidency.occtShapeHandle || 0);
+      }
     }
   }
 

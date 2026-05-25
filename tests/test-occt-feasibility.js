@@ -42,6 +42,7 @@ setTopoDeps({
 const LOCAL_DIST_CANDIDATES = [
   process.env.OCCT_KERNEL_DIST,
   process.env.CAD_OCCT_KERNEL_DIST,
+  path.resolve('node_modules/occt-kernel-wasm/dist'),
   path.resolve('vendor/occt-kernel/dist'),
   path.resolve('vendor/occt-kernel'),
   path.resolve('external/occt-kernel/dist'),

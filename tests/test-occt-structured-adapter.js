@@ -52,6 +52,32 @@ class FakeStructuredKernel {
     this.calls.push({ method: 'loftWithSpec', request });
     return { shape: { shapeHandle: 206 } };
   }
+
+  importStepPackage(stepText, heal, sew, fixSameParameter, fixSolid, sewingTolerance, linearDeflection, angularDeflection) {
+    this.calls.push({
+      method: 'importStepPackage',
+      args: [stepText, heal, sew, fixSameParameter, fixSolid, sewingTolerance, linearDeflection, angularDeflection],
+    });
+    return JSON.stringify({
+      shapeHandle: 207,
+      readStatus: 'DONE',
+      transferStatus: 'DONE',
+      isValid: true,
+      topology: {
+        faceCount: 1,
+        faces: [{ topoFaceId: 42, stableHash: 'face-42' }],
+      },
+      tessellation: {
+        positions: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+        normals: [0, 0, 1, 0, 0, 1, 0, 0, 1],
+        indices: [0, 1, 2],
+        triangleTopoFaceIds: [42],
+      },
+      checkpoint: { revision: { revisionId: 'rev-1', topologyHash: 'hash-1' } },
+      boundingBox: { xMin: 0, yMin: 0, zMin: 0, xMax: 1, yMax: 1, zMax: 0 },
+      volume: 12.5,
+    });
+  }
 }
 
 class JsonOnlyStructuredKernel {
@@ -114,6 +140,29 @@ class FakeWrappedKernel {
       positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
       normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
       indices: new Uint32Array([0, 1, 2]),
+    };
+  }
+
+  importStepPackage(params) {
+    this.calls.push({ method: 'importStepPackage', params });
+    return {
+      shape: { id: 504 },
+      readStatus: 'DONE',
+      transferStatus: 'DONE',
+      isValid: true,
+      topology: {
+        faceCount: 1,
+        faces: [{ topoFaceId: 7, stableHash: 'wrapped-face-7' }],
+      },
+      tessellation: {
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        indices: new Uint32Array([0, 1, 2]),
+        triangleTopoFaceIds: new Uint32Array([7]),
+      },
+      checkpoint: { revision: { revisionId: 'wrapped-rev', topologyHash: 'wrapped-hash' } },
+      boundingBox: { xMin: 0, yMin: 0, zMin: 0, xMax: 1, yMax: 1, zMax: 0 },
+      volume: 4,
     };
   }
 }
@@ -187,6 +236,21 @@ assert.equal(adapter.loftWithSpec({
 }), 206);
 assert.equal(kernel.calls.at(-1).request.spec.schemaVersion, 1);
 
+const importedPackage = adapter.importStepPackage('STEP', {
+  heal: true,
+  sew: true,
+  fixSameParameter: true,
+  fixSolid: true,
+  sewingTolerance: 1e-6,
+  linearDeflection: 0.1,
+  angularDeflection: 0.5,
+});
+assert.equal(importedPackage.shapeHandle, 207);
+assert.equal(importedPackage.mesh.faces.length, 1);
+assert.equal(importedPackage.topology.faceCount, 1);
+assert.equal(importedPackage.volume, 12.5);
+assert.equal(adapter._ownedShapes.has(207), true);
+
 const jsonOnlyKernel = new JsonOnlyStructuredKernel();
 const jsonOnlyAdapter = new OcctKernelAdapter({ kernel: jsonOnlyKernel });
 assert.equal(jsonOnlyAdapter.extrudeProfileWithSpec({ profile, spec: { extent: { type: 'blind', distance: 2 } } }), 301);
@@ -249,5 +313,16 @@ assert.equal(wrappedKernel.calls[2].params.spec.schemaVersion, 1);
 const wrappedMesh = wrappedAdapter.tessellate(501);
 assert.equal(wrappedMesh.vertices.length, 3);
 assert.equal(wrappedMesh.faces.length, 1);
+
+const wrappedImportedPackage = wrappedAdapter.importStepPackage('STEP', {
+  heal: true,
+  sew: true,
+  fixSameParameter: true,
+  fixSolid: true,
+});
+assert.equal(wrappedImportedPackage.shapeHandle, 504);
+assert.equal(wrappedImportedPackage.mesh.faces.length, 1);
+assert.equal(wrappedImportedPackage.topology.faceCount, 1);
+assert.equal(wrappedAdapter._ownedShapes.has(504), true);
 
 console.log('ok');

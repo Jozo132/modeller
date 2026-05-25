@@ -192,6 +192,29 @@ function normalizeStepImportResult(result) {
   };
 }
 
+function normalizeStepImportPackage(result) {
+  if (!result || typeof result !== 'object') return null;
+  const normalizedImport = normalizeStepImportResult(result);
+  const topology = firstObject(result, ['topology', 'occtTopology']) || null;
+  const tessellation = firstObject(result, ['tessellation', 'mesh', 'geometry']) || null;
+  const massProperties = firstObject(result, ['massProperties', 'properties']) || null;
+  const volumeCandidate = result?.volume ?? massProperties?.volume ?? topology?.volume;
+  return {
+    ...normalizedImport,
+    topology,
+    mesh: tessellation ? occtTessellationToMesh(tessellation, { topology }) : null,
+    rawTessellation: tessellation,
+    checkpoint: result?.occtCheckpoint ?? result?.checkpoint ?? null,
+    revisionId: stringOrNull(result?.revisionId ?? topology?.revisionId),
+    topologyHash: stringOrNull(result?.topologyHash ?? topology?.topologyHash),
+    boundingBox: firstObject(result, ['boundingBox'])
+      || firstObject(massProperties, ['boundingBox'])
+      || firstObject(topology, ['boundingBox'])
+      || null,
+    volume: Number.isFinite(volumeCandidate) ? Number(volumeCandidate) : null,
+  };
+}
+
 function formatStepImportFailure(result) {
   const firstFailure = Array.isArray(result?.messageList)
     ? result.messageList.find((message) => message?.severity === 'fail' && message.text)
@@ -942,6 +965,19 @@ export class OcctKernelAdapter {
     };
   }
 
+  _wrapperImportStepPackageResult(result) {
+    if (!result || typeof result !== 'object') return result;
+    const normalized = { ...result };
+    const tessellation = firstObject(result, ['tessellation', 'mesh', 'geometry']);
+    if (tessellation && typeof tessellation === 'object') {
+      const wrapped = this._wrapperTessellationResult(tessellation);
+      if (result.tessellation && typeof result.tessellation === 'object') normalized.tessellation = wrapped;
+      else if (result.mesh && typeof result.mesh === 'object') normalized.mesh = wrapped;
+      else if (result.geometry && typeof result.geometry === 'object') normalized.geometry = wrapped;
+    }
+    return normalized;
+  }
+
   _structuredFeatureResult(methodName, payload) {
     const kernel = this.requireReady();
     if (this._usesWrapperApi && payload?.shape != null) {
@@ -1200,6 +1236,48 @@ export class OcctKernelAdapter {
     ));
     if (result.shapeHandle > 0) this.rememberShape(result.shapeHandle);
     return result;
+  }
+
+  importStepPackage(stepText, opts = {}) {
+    const kernel = this.requireReady();
+    const sewingTolerance = opts.sewingTolerance ?? opts.sewTolerance ?? 1e-6;
+    const linearDeflection = opts.linearDeflection ?? opts.chordalDeviation ?? DEFAULT_LINEAR_DEFLECTION;
+    const angularDeflection = opts.angularDeflection ?? opts.angularTolerance ?? DEFAULT_ANGULAR_DEFLECTION;
+    const payload = {
+      content: stepText,
+      heal: opts.heal === true,
+      sew: opts.sew === true,
+      fixSameParameter: opts.fixSameParameter === true,
+      fixSolid: opts.fixSolid === true,
+      sewingTolerance,
+      linearDeflection,
+      angularDeflection,
+    };
+
+    if (this._usesWrapperApi && typeof kernel.importStepPackage === 'function') {
+      const result = kernel.importStepPackage(payload);
+      const normalized = normalizeStepImportPackage(this._wrapperImportStepPackageResult(result));
+      if (normalized?.shapeHandle > 0) this.rememberShape(this._wrapperResultHandle(result, 'importStepPackage'));
+      return normalized;
+    }
+
+    const nativeTarget = this._usesWrapperApi && kernel?._native ? kernel._native : kernel;
+    if (typeof nativeTarget?.importStepPackage !== 'function') return null;
+    const result = nativeTarget.importStepPackage(
+      stepText,
+      payload.heal,
+      payload.sew,
+      payload.fixSameParameter,
+      payload.fixSolid,
+      sewingTolerance,
+      linearDeflection,
+      angularDeflection,
+    );
+    const normalized = normalizeStepImportPackage(
+      typeof result === 'string' ? parseJson(result, 'importStepPackage') : result,
+    );
+    if (normalized?.shapeHandle > 0) this.rememberShape(normalized.shapeHandle);
+    return normalized;
   }
 
   importStep(stepText, opts = undefined) {

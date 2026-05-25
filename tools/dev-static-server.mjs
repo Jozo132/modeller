@@ -5,12 +5,29 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..');
+const cliArgs = process.argv.slice(2);
 const occtMountPath = '/vendor/occt-kernel/dist';
 const occtDistRoot = path.resolve(
   process.env.OCCT_KERNEL_DIST
   || process.env.CAD_OCCT_KERNEL_DIST
   || 'C:\\Users\\HP\\OneDrive\\Documents\\C++ Projects\\occt-kernel-wasm\\dist'
 );
+
+function envFlagEnabled(value) {
+  return value === '1' || /^true$/i.test(String(value || ''));
+}
+
+function hasFlag(args, ...flags) {
+  return flags.some((flag) => args.includes(flag));
+}
+
+const hostedMode = hasFlag(cliArgs, '--hosted');
+const disableNodeModules = hostedMode
+  || hasFlag(cliArgs, '--no-node-modules')
+  || envFlagEnabled(process.env.DEV_STATIC_NO_NODE_MODULES);
+const disableOcctVendorMount = hostedMode
+  || hasFlag(cliArgs, '--no-occt-vendor')
+  || envFlagEnabled(process.env.DEV_STATIC_NO_OCCT_VENDOR);
 
 const mimeTypes = new Map([
   ['.css', 'text/css; charset=utf-8'],
@@ -62,8 +79,14 @@ function getMimeType(filePath) {
   return mimeTypes.get(path.extname(filePath).toLowerCase()) || 'application/octet-stream';
 }
 
+function blocksRepoPath(urlPath) {
+  if (!disableNodeModules) return false;
+  const segments = decodeURIComponent(urlPath).split('/').filter(Boolean);
+  return segments[0] === 'node_modules';
+}
+
 function resolveMount(urlPath) {
-  if (urlPath === occtMountPath || urlPath.startsWith(`${occtMountPath}/`)) {
+  if (!disableOcctVendorMount && (urlPath === occtMountPath || urlPath.startsWith(`${occtMountPath}/`))) {
     return {
       rootPath: occtDistRoot,
       relativeUrl: urlPath.slice(occtMountPath.length) || '/',
@@ -112,6 +135,10 @@ ${items}
 }
 
 async function resolveRequestFile(urlPath) {
+  if (blocksRepoPath(urlPath)) {
+    return { statusCode: 404, body: 'Not found', contentType: 'text/plain; charset=utf-8' };
+  }
+
   const { rootPath, relativeUrl, isRepoMount } = resolveMount(urlPath);
   const decodedPath = decodeURIComponent(relativeUrl);
   const relativePath = decodedPath.replace(/^\/+/, '');
@@ -195,10 +222,15 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-const port = parsePort(process.argv.slice(2));
+const port = parsePort(cliArgs);
 server.listen(port, '127.0.0.1', () => {
   console.log(`Serving ${repoRoot} at http://127.0.0.1:${port}`);
-  if (existsSync(occtDistRoot)) {
+  if (disableNodeModules) {
+    console.log('Blocked /node_modules paths');
+  }
+  if (disableOcctVendorMount) {
+    console.log(`Disabled ${occtMountPath} mount`);
+  } else if (existsSync(occtDistRoot)) {
     console.log(`Mounted ${occtMountPath} -> ${occtDistRoot}`);
   } else {
     console.warn(`Mounted ${occtMountPath} -> ${occtDistRoot} (missing on disk)`);

@@ -1411,26 +1411,68 @@ export function tryImportOcctStepResidencySync(options = {}) {
   if (!adapter) return null;
 
   let importResult = null;
+  let importedWithPackage = false;
   try {
-    importResult = adapter.importStepDetailed(stepData, {
-      heal,
-      sew,
-      fixSameParameter,
-      fixSolid,
-    });
-    const handle = importResult?.shapeHandle || 0;
+    try {
+      importResult = adapter.importStepPackage(stepData, {
+        heal,
+        sew,
+        fixSameParameter,
+        fixSolid,
+        linearDeflection: tessellationOptions?.linearDeflection ?? tessellationOptions?.chordalDeviation,
+        angularDeflection: tessellationOptions?.angularDeflection ?? tessellationOptions?.angularTolerance,
+      });
+      importedWithPackage = !!importResult;
+    } catch {
+      importResult = null;
+      importedWithPackage = false;
+    }
+
+    let handle = importResult?.shapeHandle || 0;
+    if (!(handle > 0) || adapter.checkValidity(handle) !== true) {
+      if (handle > 0) adapter.disposeShape(handle);
+      importResult = adapter.importStepDetailed(stepData, {
+        heal,
+        sew,
+        fixSameParameter,
+        fixSolid,
+      });
+      importedWithPackage = false;
+    }
+
+    handle = importResult?.shapeHandle || 0;
     if (!(handle > 0) || adapter.checkValidity(handle) !== true) {
       if (handle > 0) adapter.disposeShape(handle);
       return null;
     }
 
-    const topology = adapter.getTopology(handle);
+    let topology = importResult.topology || adapter.getTopology(handle);
     let mesh = null;
     if (includeMesh) {
       mesh = adapter.tessellate(handle, {
         ...(tessellationOptions || {}),
         topology,
       });
+      if (!mesh?.faces?.length && importedWithPackage) {
+        adapter.disposeShape(handle);
+        importResult = adapter.importStepDetailed(stepData, {
+          heal,
+          sew,
+          fixSameParameter,
+          fixSolid,
+        });
+        importedWithPackage = false;
+        handle = importResult?.shapeHandle || 0;
+        if (!(handle > 0) || adapter.checkValidity(handle) !== true) {
+          if (handle > 0) adapter.disposeShape(handle);
+          return null;
+        }
+        topology = importResult.topology || adapter.getTopology(handle);
+        mesh = adapter.tessellate(handle, {
+          ...(tessellationOptions || {}),
+          topology,
+        });
+      }
       if (!mesh?.faces?.length) mesh = null;
     }
 
@@ -1438,10 +1480,11 @@ export function tryImportOcctStepResidencySync(options = {}) {
       occtShapeHandle: handle,
       occtShapeResident: true,
       mesh,
+      occtCheckpoint: importResult.checkpoint || null,
       _occtModeling: {
         authoritative: !!mesh,
         source: 'step-import',
-        topology,
+        topology: importResult.topology || topology,
         import: {
           readStatus: importResult.readStatus ?? null,
           transferStatus: importResult.transferStatus ?? null,

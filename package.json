@@ -29,6 +29,7 @@
   "main": "./js/index.js",
   "scripts": {
     "start": "node tools/dev-static-server.mjs",
+    "start:host": "node tools/dev-static-server.mjs --hosted",
     "test:parametric": "node test-parametric.js",
     "test:workflow": "node tests/test-workflow-recordings.js",
     "test:cmod": "node tests/test-cmod-import-export.js",
@@ -121,5 +122,8 @@
     "./telemetry": {
       "import": "./js/telemetry.js"
     }
+  },
+  "dependencies": {
+    "occt-kernel-wasm": "^1.0.0"
   }
 }

@@ -3,9 +3,72 @@
 const DIST_ENV_KEYS = ['OCCT_KERNEL_DIST', 'CAD_OCCT_KERNEL_DIST'];
 const JS_ENV_KEYS = ['OCCT_KERNEL_JS', 'CAD_OCCT_KERNEL_JS'];
 const WASM_ENV_KEYS = ['OCCT_KERNEL_WASM', 'CAD_OCCT_KERNEL_WASM'];
-const DEFAULT_BROWSER_DIST_URL = new URL('../../../vendor/occt-kernel/dist', import.meta.url)
+const DEFAULT_BROWSER_LOCAL_DIST_URL = new URL('../../../node_modules/occt-kernel-wasm/dist', import.meta.url)
   .href
   .replace(/\/$/, '');
+const DEFAULT_BROWSER_VENDOR_DIST_URL = new URL('../../../vendor/occt-kernel/dist', import.meta.url)
+  .href
+  .replace(/\/$/, '');
+const DEFAULT_BROWSER_CDN_DIST_URL = 'https://cdn.jsdelivr.net/npm/occt-kernel-wasm/dist';
+const DEFAULT_BROWSER_DIST_URL = DEFAULT_BROWSER_LOCAL_DIST_URL;
+const DEFAULT_NODE_PACKAGE_NAME = 'occt-kernel-wasm';
+
+function normalizeDistLocation(location) {
+  return String(location || '').replace(/\/$/, '');
+}
+
+function buildBrowserDistPaths(distUrl) {
+  const normalizedDistUrl = normalizeDistLocation(distUrl);
+  return {
+    distUrl: normalizedDistUrl,
+    jsUrl: `${normalizedDistUrl}/occt-kernel.js`,
+    wasmUrl: `${normalizedDistUrl}/occt-kernel.wasm`,
+    apiUrl: `${normalizedDistUrl}/index.mjs`,
+  };
+}
+
+function uniquePathSets(pathSets = []) {
+  const out = [];
+  const seen = new Set();
+  for (const pathSet of pathSets) {
+    if (!pathSet) continue;
+    const key = JSON.stringify(pathSet);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(pathSet);
+  }
+  return out;
+}
+
+function hasExplicitBrowserPathOverrides(options = {}) {
+  return !!(
+    options.distUrl
+    || options.distPath
+    || options.jsUrl
+    || options.jsPath
+    || options.wasmUrl
+    || options.wasmPath
+    || options.apiUrl
+    || options.wrapperUrl
+    || readEnv(DIST_ENV_KEYS)
+    || readEnv(JS_ENV_KEYS)
+    || readEnv(WASM_ENV_KEYS)
+  );
+}
+
+function hasExplicitNodePathOverrides(options = {}) {
+  return !!(
+    options.distPath
+    || options.distDir
+    || options.jsPath
+    || options.wasmPath
+    || options.apiPath
+    || options.wrapperPath
+    || readEnv(DIST_ENV_KEYS)
+    || readEnv(JS_ENV_KEYS)
+    || readEnv(WASM_ENV_KEYS)
+  );
+}
 const OCCT_RUNTIME_STATUS_KEY = '__CAD_OCCT_KERNEL_STATUS__';
 
 let cachedKey = null;
@@ -116,6 +179,37 @@ async function resolveNodePaths(options = {}) {
   return { distPath, jsPath, wasmPath, apiPath };
 }
 
+async function resolveInstalledNodePackagePaths() {
+  const { createRequire, path } = await nodeDeps();
+  const require = createRequire(import.meta.url);
+  try {
+    const jsPath = require.resolve(`${DEFAULT_NODE_PACKAGE_NAME}/occt-kernel.js`);
+    const wasmPath = require.resolve(`${DEFAULT_NODE_PACKAGE_NAME}/occt-kernel.wasm`);
+    const apiPath = require.resolve(DEFAULT_NODE_PACKAGE_NAME);
+    return {
+      distPath: path.dirname(jsPath),
+      jsPath,
+      wasmPath,
+      apiPath,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function resolveNodePathCandidates(options = {}) {
+  const explicitPaths = await resolveNodePaths(options);
+  if (hasExplicitNodePathOverrides(options)) {
+    return [explicitPaths];
+  }
+
+  const installedPackagePaths = await resolveInstalledNodePackagePaths();
+  return uniquePathSets([
+    installedPackagePaths,
+    explicitPaths,
+  ]);
+}
+
 function resolveBrowserPaths(options = {}) {
   const distUrl = options.distUrl || options.distPath || readEnv(DIST_ENV_KEYS) || DEFAULT_BROWSER_DIST_URL;
   const jsUrl = options.jsUrl || options.jsPath || readEnv(JS_ENV_KEYS)
@@ -125,6 +219,18 @@ function resolveBrowserPaths(options = {}) {
   const apiUrl = options.apiUrl || options.wrapperUrl
     || (distUrl ? `${String(distUrl).replace(/\/$/, '')}/index.mjs` : null);
   return { distUrl, jsUrl, wasmUrl, apiUrl };
+}
+
+function resolveBrowserPathCandidates(options = {}) {
+  if (hasExplicitBrowserPathOverrides(options)) {
+    return [resolveBrowserPaths(options)];
+  }
+
+  return uniquePathSets([
+    buildBrowserDistPaths(DEFAULT_BROWSER_LOCAL_DIST_URL),
+    buildBrowserDistPaths(DEFAULT_BROWSER_VENDOR_DIST_URL),
+    buildBrowserDistPaths(DEFAULT_BROWSER_CDN_DIST_URL),
+  ]);
 }
 
 async function loadNodeModule(modulePath) {
@@ -272,28 +378,38 @@ async function buildModuleOptions(options, paths) {
 }
 
 async function loadUncached(options = {}) {
-  const paths = isNodeRuntime()
-    ? await resolveNodePaths(options)
-    : resolveBrowserPaths(options);
-  const rawFactory = options.factory || (isNodeRuntime()
-    ? await loadNodeFactory(paths.jsPath)
-    : await loadBrowserFactory(paths.jsUrl));
-  const factory = normalizeFactory(rawFactory);
-  const moduleOptions = await buildModuleOptions(options, paths);
-  const ready = factory(moduleOptions);
-  const module = ready && typeof ready.then === 'function'
-    ? await ready
-    : (ready?.ready && typeof ready.ready.then === 'function' ? await ready.ready : ready);
+  const pathCandidates = isNodeRuntime()
+    ? await resolveNodePathCandidates(options)
+    : resolveBrowserPathCandidates(options);
+  let lastError = null;
 
-  if (!module || typeof module.OcctKernel !== 'function') {
-    throw new Error('OCCT module loaded but OcctKernel class is unavailable');
+  for (const paths of pathCandidates) {
+    try {
+      const rawFactory = options.factory || (isNodeRuntime()
+        ? await loadNodeFactory(paths.jsPath)
+        : await loadBrowserFactory(paths.jsUrl));
+      const factory = normalizeFactory(rawFactory);
+      const moduleOptions = await buildModuleOptions(options, paths);
+      const ready = factory(moduleOptions);
+      const module = ready && typeof ready.then === 'function'
+        ? await ready
+        : (ready?.ready && typeof ready.ready.then === 'function' ? await ready.ready : ready);
+
+      if (!module || typeof module.OcctKernel !== 'function') {
+        throw new Error('OCCT module loaded but OcctKernel class is unavailable');
+      }
+
+      const apiModule = options.apiModule || (isNodeRuntime()
+        ? await loadNodeApiModule(paths.apiPath)
+        : await loadBrowserApiModule(paths.apiUrl));
+
+      return { module, factory, apiModule, paths };
+    } catch (error) {
+      lastError = error;
+    }
   }
 
-  const apiModule = options.apiModule || (isNodeRuntime()
-    ? await loadNodeApiModule(paths.apiPath)
-    : await loadBrowserApiModule(paths.apiUrl));
-
-  return { module, factory, apiModule, paths };
+  throw (lastError || new Error('OCCT module load failed for all configured paths'));
 }
 
 export async function loadOcctKernelModule(options = {}) {
@@ -384,5 +500,5 @@ export function resolveOcctKernelEnv() {
 writeRuntimeStatus({
   state: 'idle',
   source: 'bootstrap',
-  paths: summarizePaths({ distUrl: DEFAULT_BROWSER_DIST_URL }),
+  paths: summarizePaths({ distUrl: DEFAULT_BROWSER_LOCAL_DIST_URL }),
 });

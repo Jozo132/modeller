@@ -103,6 +103,7 @@ export class StepImportFeature extends Feature {
       curveSegments: globalTessConfig.curveSegments,
       edgeSegments: globalTessConfig.edgeSegments,
       surfaceSegments: globalTessConfig.surfaceSegments,
+      retainOcctShape: true,
     };
     Object.assign(this, currentTessellation);
     const cacheMatches = this._cachedMesh &&
@@ -166,21 +167,32 @@ export class StepImportFeature extends Feature {
     };
     if (this._cachedMesh._tessellator) geometry._tessellator = this._cachedMesh._tessellator;
     if (this._cachedMesh._occt) geometry._occt = this._cachedMesh._occt;
+    if (this._cachedMesh._occtModeling) geometry._occtModeling = this._cachedMesh._occtModeling;
 
     const occtResidencyTimings = {};
-    const occtResidency = _measureSync(
-      occtResidencyTimings,
-      'occtResidencyMs',
-      'step:feature:occt-residency',
-      () => tryImportOcctStepResidencySync({ stepData: this.stepData }),
-    );
-    if (occtResidency) {
-      geometry.occtShapeHandle = occtResidency.occtShapeHandle;
+    let occtResidency = null;
+    if (Number.isInteger(this._cachedMesh.occtShapeHandle) && this._cachedMesh.occtShapeHandle > 0) {
+      geometry.occtShapeHandle = this._cachedMesh.occtShapeHandle;
       geometry.occtShapeResident = true;
       geometry._occtModeling = {
-        ...occtResidency._occtModeling,
-        authoritative: this._cachedMesh._tessellator === 'occt' || occtResidency._occtModeling?.authoritative === true,
+        ...(geometry._occtModeling || {}),
+        authoritative: this._cachedMesh._tessellator === 'occt' || geometry._occtModeling?.authoritative === true,
       };
+    } else {
+      occtResidency = _measureSync(
+        occtResidencyTimings,
+        'occtResidencyMs',
+        'step:feature:occt-residency',
+        () => tryImportOcctStepResidencySync({ stepData: this.stepData }),
+      );
+      if (occtResidency) {
+        geometry.occtShapeHandle = occtResidency.occtShapeHandle;
+        geometry.occtShapeResident = true;
+        geometry._occtModeling = {
+          ...occtResidency._occtModeling,
+          authoritative: this._cachedMesh._tessellator === 'occt' || occtResidency._occtModeling?.authoritative === true,
+        };
+      }
     }
 
     // Tag mesh faces with this feature's id
@@ -218,6 +230,11 @@ export class StepImportFeature extends Feature {
       result.occtShapeHandle = geometry.occtShapeHandle;
       result.occtShapeResident = true;
       result._occtModeling = geometry._occtModeling;
+    }
+    if (this._cachedMesh.occtCheckpoint) {
+      result.occtCheckpoint = this._cachedMesh.occtCheckpoint;
+    } else if (occtResidency?.occtCheckpoint) {
+      result.occtCheckpoint = occtResidency.occtCheckpoint;
     }
 
     return result;
