@@ -2,15 +2,16 @@
 
 ## Overview
 
-A parametric 3D CAD modeller built entirely in JavaScript (ES modules) with an
-AssemblyScript → WebAssembly acceleration layer. Runs both as a browser
-application and as a headless Node.js library for CAD kernel operations,
-mesh tessellation, STEP import/export, and offline rendering without a UI. The
-system follows a **topology-first** design: every solid is represented by an
-exact NURBS/B-Rep topology graph, and triangle meshes exist only for rendering.
+A parametric 3D CAD modeller built in JavaScript (ES modules) with WebAssembly
+kernel support. Runs both as a browser application and as a headless Node.js
+library for exact CAD operations, mesh tessellation, STEP import/export, and
+offline rendering without a UI. The system follows a **topology-first** design:
+every solid is represented by an exact NURBS/B-Rep topology graph, and triangle
+meshes exist only for rendering.
 
-For the current WASM residency and STEP import/export performance roadmap, see
-`WASM_BREP_LIFETIME_PLAN.md`.
+The current runtime direction is an OCCT-backed exact-modeling lane for
+supported operations, with existing AssemblyScript/WASM infrastructure retained
+for acceleration, residency plumbing, and non-OCCT paths.
 
 ---
 

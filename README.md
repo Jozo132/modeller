@@ -1,11 +1,19 @@
 # CAD Modeller
 
-A browser-based parametric CAD modeller with exact NURBS/B-Rep geometry kernel, 2D sketch tools, and 3D part modeling. Built with vanilla JavaScript (ES modules) and an AssemblyScript → WebAssembly acceleration layer. Zero runtime dependencies. Runs in the browser and as a headless Node.js library.
+A browser-based parametric CAD modeller with exact NURBS/B-Rep geometry, 2D sketch tools, feature-tree part modeling, STEP import/export, and a published OCCT WebAssembly lane for exact modeling authority. Built with vanilla JavaScript (ES modules), browser-first UI code, and WebAssembly-backed kernel paths for both the web app and headless Node.js usage.
+
+## Current Direction
+
+- **OCCT-backed exact modeling** now covers the primary exact-modeling lane for supported sketch solids, STEP residency, direct booleans, and downstream topology queries.
+- **AssemblyScript/WASM infrastructure** still powers app-side acceleration, tessellation helpers, and legacy/native runtime support where OCCT is not the active authority.
+- **Browser and Node.js support** are both first-class: the repo runs as an interactive local web app and as a reusable headless library for conversion, rendering, and testing.
+- **Hosted fallback support** is built in: local development can serve package-hosted OCCT assets, while hosted builds can fall back to a CDN-delivered OCCT package.
 
 ## Features
 
 ### Exact Geometry Kernel
 - **B-Rep Topology** — Full boundary representation: `TopoBody → TopoShell → TopoFace → TopoLoop → TopoCoEdge → TopoEdge → TopoVertex`
+- **OCCT WASM Authority** — Published [`occt-kernel-wasm`](https://www.npmjs.com/package/occt-kernel-wasm) integration for resident exact shapes, STEP import/export, topology queries, tessellation, and structured feature APIs
 - **NURBS Curves & Surfaces** — Rational B-splines with Cox-de Boor evaluation, arc/circle/ellipse factories, splitting, tessellation
 - **Analytic Surface Types** — Plane, Cylinder, Cone, Sphere, Torus, Extrusion, Revolution, B-Spline
 - **Exact Booleans** — Surface-surface intersection, face splitting, inside/outside classification, shell building
@@ -37,7 +45,7 @@ A browser-based parametric CAD modeller with exact NURBS/B-Rep geometry kernel, 
 - **Feature Tree** — Ordered parametric operations with dependency tracking
 - **Recursive Recalculation** — Modifying a feature automatically recomputes all dependents
 - **Stable Entity Keys** — History-based identity that survives parameter changes and serialization
-- **Feature Types**: SketchFeature, ExtrudeFeature, ExtrudeCutFeature, MultiSketchExtrudeFeature, RevolveFeature, ChamferFeature, FilletFeature, StepImportFeature
+- **Feature Types**: SketchFeature, ExtrudeFeature, ExtrudeCutFeature, MultiSketchExtrudeFeature, RevolveFeature, SweepFeature, LoftFeature, ChamferFeature, FilletFeature, StepImportFeature
 
 ### Application
 - **Split View** — 2D canvas + 3D WebGL viewport
@@ -66,9 +74,14 @@ The project features a topology-first architecture with three main design interf
 - **Part** — Parametric 3D part modeling with feature tree and exact B-Rep topology
 - **Assembly** — (Stub) Future support for multi-part assemblies with constraints and BOM
 
-The CAD kernel (~30k lines across 59 modules in `js/cad/`) uses exact NURBS/B-Rep topology as the source of truth. Triangle meshes are generated only for rendering. All feature operations (extrude, revolve, chamfer, fillet, boolean) work directly on the topology graph — never on tessellated mesh faces.
+The CAD kernel uses exact NURBS/B-Rep topology as the source of truth. Triangle meshes are generated only for rendering. Feature operations, STEP residency, and OCCT-backed exact-modeling flows are all designed around exact topology rather than mesh-derived authority.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed documentation.
+
+## Repository Docs
+
+- [README.md](README.md) is the current project overview, setup guide, and public-facing usage reference.
+- [ARCHITECTURE.md](ARCHITECTURE.md) is the maintained design doc for runtime structure and modeling rules.
 
 ## Library Usage (NPM package)
 
@@ -166,6 +179,14 @@ npm run start
 
 Then open [http://localhost:3000](http://localhost:3000) in your browser.
 
+To test the hosted/GitHub Pages style path locally, use:
+
+```bash
+npm run start:host
+```
+
+`start:host` intentionally blocks `/node_modules` and disables the local OCCT vendor mount so the app exercises the hosted fallback path instead of silently serving local package assets.
+
 ## Backend CMOD Screenshots
 
 You can render a `.cmod` model to a PNG from a standalone Node renderer:
@@ -217,6 +238,8 @@ Run individual test areas:
 ```bash
 node tests/test-feature-pipeline.js          # Feature tree execution (46+ tests)
 node tests/test-multi-body-chamfer-fillet.js  # Chamfer/fillet operations (25+ tests)
+node tests/test-occt-structured-adapter.js    # OCCT wrapper/native adapter contract
+node tests/test-occt-feasibility.js           # OCCT end-to-end feasibility + residency seams
 node tests/test-nurbs-fillet-chamfer-variants.js  # NURBS intersection edge cases (52 tests)
 node tests/test-spline-chamfer.js             # Spline/bezier chamfer (17 tests)
 node tests/test-toolkit.js                    # Toolkit utilities (82 tests)

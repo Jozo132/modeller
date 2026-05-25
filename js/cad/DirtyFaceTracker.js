@@ -1,7 +1,7 @@
 // js/cad/DirtyFaceTracker.js — C3 dirty-face/edge tracking
 //
 // Precondition for incremental tessellation (H21) and downstream selectors.
-// The audit (CAD-KERNEL-AUDIT.md) flagged that `dirtyFaces | invalidatedFaceIds`
+// Earlier kernel audit work flagged that `dirtyFaces | invalidatedFaceIds`
 // produced zero grep hits — every feature edit invalidated the entire body.
 //
 // This module introduces a per-FeatureTree bookkeeping object that records,
