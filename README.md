@@ -2,6 +2,8 @@
 
 A browser-based parametric CAD modeller with exact NURBS/B-Rep geometry, 2D sketch tools, feature-tree part modeling, STEP import/export, and a published OCCT WebAssembly lane for exact modeling authority. Built with vanilla JavaScript (ES modules), browser-first UI code, and WebAssembly-backed kernel paths for both the web app and headless Node.js usage.
 
+Try it online: [GitHub Pages demo](https://jozo132.github.io/modeller/)
+
 ## Current Direction
 
 - **OCCT-backed exact modeling** now covers the primary exact-modeling lane for supported sketch solids, STEP residency, direct booleans, and downstream topology queries.
