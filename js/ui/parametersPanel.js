@@ -1,6 +1,7 @@
 // ui/parametersPanel.js - Feature parameters editing panel
 import { getFeatureIconSVG } from './featureIcons.js';
 import { globalTessConfig } from '../cad/TessellationConfig.js';
+import { appendChamferBlendControls, appendFilletBlendControls } from './occtBlendSpecControls.js';
 
 /**
  * ParametersPanel - Displays and edits feature parameters
@@ -73,6 +74,10 @@ export class ParametersPanel {
       this.showSweepParameters(feature);
     } else if (feature.type === 'loft') {
       this.showLoftParameters(feature);
+    } else if (feature.type === 'chamfer') {
+      this.showChamferParameters(feature);
+    } else if (feature.type === 'fillet') {
+      this.showFilletParameters(feature);
     } else if (feature.type === 'sketch') {
       this.showSketchParameters(feature);
     }
@@ -96,7 +101,6 @@ export class ParametersPanel {
     ]);
     this.contentElement.appendChild(extentDiv);
 
-    // Distance
     const distanceDiv = this.createParameter('Distance', 'number', feature.distance, (value) => {
       const parsed = parseFloat(value);
       this.partManager.modifyFeature(feature.id, (f) => {
@@ -116,7 +120,6 @@ export class ParametersPanel {
       this.contentElement.appendChild(offsetDiv);
     }
 
-    // Direction
     const directionDiv = this.createParameter('Direction', 'select', feature.direction, (value) => {
       const dir = parseInt(value, 10);
       this.partManager.modifyFeature(feature.id, (f) => {
@@ -129,7 +132,6 @@ export class ParametersPanel {
     ]);
     this.contentElement.appendChild(directionDiv);
 
-    // Operation
     const operationDiv = this.createParameter('Operation', 'select', feature.operation, (value) => {
       this.partManager.modifyFeature(feature.id, (f) => {
         f.operation = value;
@@ -143,7 +145,6 @@ export class ParametersPanel {
     ]);
     this.contentElement.appendChild(operationDiv);
 
-    // Symmetric option
     const symmetricDiv = this.createParameter('Symmetric', 'checkbox', feature.symmetric, (value) => {
       this.partManager.modifyFeature(feature.id, (f) => {
         f.symmetric = value;
@@ -366,6 +367,70 @@ export class ParametersPanel {
     ]));
   }
 
+  showChamferParameters(feature) {
+    this.contentElement.appendChild(this.createParameter('Distance', 'number', feature.distance, (value) => {
+      const parsed = parseFloat(value);
+      if (!Number.isFinite(parsed) || parsed <= 0) return;
+      this.partManager.modifyFeature(feature.id, (f) => {
+        if (typeof f.setDistance === 'function') f.setDistance(parsed);
+        else f.distance = parsed;
+      });
+    }));
+
+    this.contentElement.appendChild(this.createInfoBlock(
+      'OCCT Spec',
+      'Optional JSON merged with the selected edges and default distance. Pass through any library-supported chamfer fields such as mode, contourMode, referenceFace, and per-edge distance1/distance2/angleDegrees.'
+    ));
+
+    this.contentElement.appendChild(this.createParameter(
+      'OCCT Spec (JSON)',
+      'textarea',
+      this.formatOcctSpec(feature.occtSpec),
+      (value) => {
+        const parsed = this.parseOcctSpec(value, 'chamfer');
+        if (!parsed.ok) return;
+        this.partManager.modifyFeature(feature.id, (f) => {
+          if (typeof f.setOcctSpec === 'function') f.setOcctSpec(parsed.spec);
+          else f.occtSpec = parsed.spec;
+        });
+        this.showFeature(feature);
+      },
+      { rows: 10 }
+    ));
+  }
+
+  showFilletParameters(feature) {
+    this.contentElement.appendChild(this.createParameter('Radius', 'number', feature.radius, (value) => {
+      const parsed = parseFloat(value);
+      if (!Number.isFinite(parsed) || parsed <= 0) return;
+      this.partManager.modifyFeature(feature.id, (f) => {
+        if (typeof f.setRadius === 'function') f.setRadius(parsed);
+        else f.radius = parsed;
+      });
+    }));
+
+    this.contentElement.appendChild(this.createInfoBlock(
+      'OCCT Spec',
+      'Optional JSON merged with the selected edges and default radius. Pass through any library-supported fillet fields such as continuity, blendShape, overflowMode, and per-edge radius laws or station lists.'
+    ));
+
+    this.contentElement.appendChild(this.createParameter(
+      'OCCT Spec (JSON)',
+      'textarea',
+      this.formatOcctSpec(feature.occtSpec),
+      (value) => {
+        const parsed = this.parseOcctSpec(value, 'fillet');
+        if (!parsed.ok) return;
+        this.partManager.modifyFeature(feature.id, (f) => {
+          if (typeof f.setOcctSpec === 'function') f.setOcctSpec(parsed.spec);
+          else f.occtSpec = parsed.spec;
+        });
+        this.showFeature(feature);
+      },
+      { rows: 10 }
+    ));
+  }
+
   /**
    * Show sketch feature parameters
    * @param {SketchFeature} feature - The sketch feature
@@ -379,6 +444,32 @@ export class ParametersPanel {
       <p><strong>Points:</strong> ${feature.sketch.points.length}</p>
     `;
     this.contentElement.appendChild(info);
+  }
+
+  createInfoBlock(title, text) {
+    const info = document.createElement('div');
+    info.className = 'parameter-info';
+    info.innerHTML = `<p><strong>${title}:</strong> ${text}</p>`;
+    return info;
+  }
+
+  formatOcctSpec(spec) {
+    return spec && typeof spec === 'object' ? JSON.stringify(spec, null, 2) : '';
+  }
+
+  parseOcctSpec(value, label) {
+    const trimmed = String(value || '').trim();
+    if (!trimmed) return { ok: true, spec: null };
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('Expected a JSON object');
+      }
+      return { ok: true, spec: parsed };
+    } catch (error) {
+      console.warn(`Invalid OCCT ${label} spec JSON`, error);
+      return { ok: false, spec: null };
+    }
   }
 
   /**
@@ -416,6 +507,15 @@ export class ParametersPanel {
         if (String(opt.value) === String(value)) optEl.selected = true;
         inputElement.appendChild(optEl);
       }
+      inputElement.addEventListener('change', (e) => {
+        onChange(e.target.value);
+      });
+    } else if (type === 'textarea') {
+      inputElement = document.createElement('textarea');
+      inputElement.className = 'parameter-input';
+      inputElement.value = value || '';
+      inputElement.rows = Number(options?.rows) || 8;
+      inputElement.spellcheck = false;
       inputElement.addEventListener('change', (e) => {
         onChange(e.target.value);
       });

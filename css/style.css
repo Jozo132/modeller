@@ -2603,6 +2603,65 @@ select.parameter-input {
   margin-bottom: 6px;
 }
 
+.parameter-subsection-title {
+  margin: 12px 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.parameter-advanced-details {
+  margin: 12px 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg-dark) 88%, transparent);
+}
+
+.parameter-advanced-details > summary {
+  cursor: pointer;
+  padding: 8px 10px;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  user-select: none;
+}
+
+.parameter-advanced-body {
+  padding: 0 10px 10px;
+}
+
+.parameter-array-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.parameter-array-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.parameter-action-button {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-dark);
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.parameter-action-button:hover {
+  border-color: var(--accent);
+}
+
+.parameter-action-button-danger {
+  color: var(--danger, #ff8f8f);
+}
+
 /* Left feature-params section reuses parameter styles */
 #left-feature-params-content {
   padding: 8px 0;

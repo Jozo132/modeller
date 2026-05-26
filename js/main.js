@@ -10,6 +10,7 @@ import { HistoryTree } from './ui/historyTree.js';
 import { FeatureEditSession, EditSessionState } from './ui/featureEditSession.js';
 import { DiagnosticsPanel } from './ui/diagnosticsPanel.js';
 import { getFeatureIconSVG } from './ui/featureIcons.js';
+import { appendChamferBlendControls, appendFilletBlendControls } from './ui/occtBlendSpecControls.js';
 import { initIcons, outline, solid, PATH } from './ui/icons.js';
 import { getSnappedPosition, invalidateSnapGrid } from './snap.js';
 import { undo, redo, takeSnapshot, setPartManager, getHistoryInfo, movePointer } from './history.js';
@@ -5471,18 +5472,34 @@ class App {
         stateKey: 'edgeKeys',
       };
 
-      container.appendChild(this._createParamRow('Distance', 'number', chamferEditMode ? chamferEditMode.mode.distance : feature.distance, (v) => {
-        const parsed = parseFloat(v);
-        if (!isNaN(parsed) && parsed > 0) {
+      appendChamferBlendControls({
+        container,
+        feature,
+        baseDistance: chamferEditMode ? chamferEditMode.mode.distance : feature.distance,
+        setBaseDistance: (distance) => {
           if (chamferEditMode) {
-            chamferEditMode.mode.distance = parsed;
+            chamferEditMode.mode.distance = distance;
             this._updateChamferPreview();
-          } else {
-            this._partManager.modifyFeature(feature.id, (f) => { f.distance = parsed; });
-            this._update3DView();
+            return;
           }
-        }
-      }));
+          this._partManager.modifyFeature(feature.id, (f) => {
+            if (typeof f.setDistance === 'function') f.setDistance(distance);
+            else f.distance = distance;
+          });
+          this._update3DView();
+        },
+        applySpec: (spec) => {
+          this._partManager.modifyFeature(feature.id, (f) => {
+            if (typeof f.setOcctSpec === 'function') f.setOcctSpec(spec);
+            else f.occtSpec = spec;
+          });
+          this._update3DView();
+        },
+        rerender: () => {
+          this._refreshFeaturePanels(feature);
+        },
+        reportError: (message) => this.setStatus(`Invalid OCCT chamfer input: ${message}`),
+      });
       container.appendChild(this._buildInlineSelectionField(chamferTarget, {
         summaryText: chamferEditMode
           ? this._describeFeatureSelectionSummary(chamferTarget)
@@ -5511,29 +5528,42 @@ class App {
         stateKey: 'edgeKeys',
       };
 
-      container.appendChild(this._createParamRow('Radius', 'number', filletEditMode ? filletEditMode.mode.radius : feature.radius, (v) => {
-        const parsed = parseFloat(v);
-        if (!isNaN(parsed) && parsed > 0) {
+      appendFilletBlendControls({
+        container,
+        feature,
+        baseRadius: filletEditMode ? filletEditMode.mode.radius : feature.radius,
+        setBaseRadius: (radius) => {
           if (filletEditMode) {
-            filletEditMode.mode.radius = parsed;
+            filletEditMode.mode.radius = radius;
             this._updateFilletPreview();
-          } else {
-            this._partManager.modifyFeature(feature.id, (f) => {
-              if (typeof f.setRadius === 'function') {
-                f.setRadius(parsed);
-              } else {
-                f.radius = parsed;
-              }
-              if (typeof f.setSegments === 'function') {
-                f.setSegments(this._getTessellationDrivenCurveSegments());
-              } else if (Object.prototype.hasOwnProperty.call(f, 'segments')) {
-                f.segments = this._getTessellationDrivenCurveSegments();
-              }
-            });
-            this._update3DView();
+            return;
           }
-        }
-      }));
+          this._partManager.modifyFeature(feature.id, (f) => {
+            if (typeof f.setRadius === 'function') {
+              f.setRadius(radius);
+            } else {
+              f.radius = radius;
+            }
+            if (typeof f.setSegments === 'function') {
+              f.setSegments(this._getTessellationDrivenCurveSegments());
+            } else if (Object.prototype.hasOwnProperty.call(f, 'segments')) {
+              f.segments = this._getTessellationDrivenCurveSegments();
+            }
+          });
+          this._update3DView();
+        },
+        applySpec: (spec) => {
+          this._partManager.modifyFeature(feature.id, (f) => {
+            if (typeof f.setOcctSpec === 'function') f.setOcctSpec(spec);
+            else f.occtSpec = spec;
+          });
+          this._update3DView();
+        },
+        rerender: () => {
+          this._refreshFeaturePanels(feature);
+        },
+        reportError: (message) => this.setStatus(`Invalid OCCT fillet input: ${message}`),
+      });
       container.appendChild(this._buildInlineSelectionField(filletTarget, {
         summaryText: filletEditMode
           ? this._describeFeatureSelectionSummary(filletTarget)
@@ -5621,6 +5651,13 @@ class App {
         if (String(opt.value) === String(value)) o.selected = true;
         input.appendChild(o);
       }
+      input.addEventListener('change', (e) => onChange(e.target.value));
+    } else if (type === 'textarea') {
+      input = document.createElement('textarea');
+      input.className = 'parameter-input';
+      input.value = value || '';
+      input.rows = Number(options?.rows) || 8;
+      input.spellcheck = false;
       input.addEventListener('change', (e) => onChange(e.target.value));
     } else {
       input = document.createElement('input');

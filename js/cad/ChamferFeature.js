@@ -21,6 +21,150 @@ import {
   selectionKeyToLegacyEdgeKey,
 } from './history/StableEntityKey.js';
 
+function isPlainObject(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function cloneJsonLike(value) {
+  if (Array.isArray(value)) return value.map((entry) => cloneJsonLike(entry));
+  if (!isPlainObject(value)) return value;
+  const cloned = {};
+  for (const [key, entry] of Object.entries(value)) {
+    cloned[key] = cloneJsonLike(entry);
+  }
+  return cloned;
+}
+
+function mergeJsonLike(baseValue, overrideValue, key = '') {
+  if (overrideValue === undefined) return cloneJsonLike(baseValue);
+  if (baseValue === undefined) return cloneJsonLike(overrideValue);
+
+  if (key === 'edges' && Array.isArray(baseValue) && Array.isArray(overrideValue)) {
+    const merged = [];
+    const length = Math.max(baseValue.length, overrideValue.length);
+    for (let index = 0; index < length; index += 1) {
+      merged.push(mergeJsonLike(baseValue[index], overrideValue[index]));
+    }
+    return merged;
+  }
+
+  if (Array.isArray(overrideValue)) return cloneJsonLike(overrideValue);
+  if (Array.isArray(baseValue)) return cloneJsonLike(baseValue);
+
+  if (isPlainObject(baseValue) && isPlainObject(overrideValue)) {
+    const merged = {};
+    const keys = new Set([...Object.keys(baseValue), ...Object.keys(overrideValue)]);
+    for (const childKey of keys) {
+      merged[childKey] = mergeJsonLike(baseValue[childKey], overrideValue[childKey], childKey);
+    }
+    return merged;
+  }
+
+  return cloneJsonLike(overrideValue);
+}
+
+function buildDefaultChamferOcctSpec(edgeRefs, distance) {
+  return {
+    schemaVersion: 1,
+    unit: { length: 'model', angle: 'radians' },
+    mode: 'symmetric',
+    distance: Number(distance) || 0,
+    edges: edgeRefs.map((edgeRef) => ({
+      edge: cloneJsonLike(edgeRef),
+    })),
+  };
+}
+
+function cleanChamferReferenceFace(face) {
+  if (!isPlainObject(face)) return null;
+  const cleaned = {};
+  if (typeof face.stableHash === 'string' && face.stableHash.length > 0) {
+    cleaned.stableHash = face.stableHash;
+  }
+  const topoId = Number(face.topoId);
+  if (Number.isFinite(topoId)) cleaned.topoId = Math.trunc(topoId);
+  return Object.keys(cleaned).length > 0 ? cleaned : null;
+}
+
+function cleanChamferLimits(limits) {
+  if (!isPlainObject(limits)) return null;
+  const start = Number(limits.start);
+  const end = Number(limits.end);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  return {
+    start,
+    end,
+    normalized: limits.normalized !== false,
+  };
+}
+
+function cleanChamferAngleFields(target) {
+  if (!isPlainObject(target)) return;
+  const angleDegrees = Number(target.angleDegrees);
+  const angleRadians = Number(target.angleRadians);
+  if (Number.isFinite(angleDegrees)) {
+    target.angleDegrees = angleDegrees;
+    delete target.angleRadians;
+    return;
+  }
+  if (Number.isFinite(angleRadians)) {
+    target.angleRadians = angleRadians;
+    delete target.angleDegrees;
+    return;
+  }
+  delete target.angleDegrees;
+  delete target.angleRadians;
+}
+
+function cleanEffectiveChamferSpec(spec) {
+  const cleaned = mergeJsonLike({}, spec);
+  const mode = cleaned.mode || 'symmetric';
+  const angleUnit = cleaned.unit?.angle === 'degrees' ? 'degrees' : 'radians';
+
+  if (mode !== 'twoDistance') {
+    delete cleaned.distance1;
+    delete cleaned.distance2;
+  }
+  if (mode !== 'distanceAngle') {
+    delete cleaned.angleDegrees;
+    delete cleaned.angleRadians;
+    delete cleaned.referenceFace;
+  } else {
+    cleanChamferAngleFields(cleaned);
+    cleaned.referenceFace = cleanChamferReferenceFace(cleaned.referenceFace);
+    if (!cleaned.referenceFace) delete cleaned.referenceFace;
+  }
+
+  cleaned.limits = cleanChamferLimits(cleaned.limits);
+  if (!cleaned.limits) delete cleaned.limits;
+
+  if (Array.isArray(cleaned.edges)) {
+    cleaned.edges = cleaned.edges.map((edge) => {
+      if (!isPlainObject(edge)) return edge;
+      const nextEdge = mergeJsonLike({}, edge);
+      const edgeMode = nextEdge.mode || mode;
+      if (edgeMode !== 'twoDistance') {
+        delete nextEdge.distance1;
+        delete nextEdge.distance2;
+      }
+      if (edgeMode !== 'distanceAngle') {
+        delete nextEdge.angleDegrees;
+        delete nextEdge.angleRadians;
+        delete nextEdge.referenceFace;
+      } else {
+        cleanChamferAngleFields(nextEdge);
+        nextEdge.referenceFace = cleanChamferReferenceFace(nextEdge.referenceFace);
+        if (!nextEdge.referenceFace) delete nextEdge.referenceFace;
+      }
+      nextEdge.limits = cleanChamferLimits(nextEdge.limits);
+      if (!nextEdge.limits) delete nextEdge.limits;
+      return nextEdge;
+    });
+  }
+
+  return cleaned;
+}
+
 function resolveFeatureEdgeKeys(feature, selectionContext) {
   const stableKeys = Array.isArray(feature.stableEdgeKeys) ? feature.stableEdgeKeys : [];
   const fallbackEdgeKeys = Array.isArray(feature.edgeKeys) ? [...feature.edgeKeys] : [];
@@ -220,12 +364,15 @@ export class ChamferFeature extends Feature {
     }
 
     const inputTopoBody = solid.body || (solid.geometry && solid.geometry.topoBody) || null;
+    const selectedOcctEdgeRefs = solid.geometry?.occtShapeHandle > 0
+      ? this._resolveSelectedOcctEdgeRefs(solid, selectedEdgeKeys)
+      : [];
     const occtGeometry = solid.geometry?.occtShapeHandle > 0
       ? tryBuildOcctChamferMetadataSync({
         handle: solid.geometry.occtShapeHandle,
-        edgeRefs: this._resolveSelectedOcctEdgeRefs(solid, selectedEdgeKeys),
+        edgeRefs: selectedOcctEdgeRefs,
         distance: this.distance,
-        spec: this.occtSpec,
+        spec: this.buildOcctSpec(selectedOcctEdgeRefs),
         sourceTopology: solid.geometry?._occtModeling?.topology || null,
         topoBody: inputTopoBody,
       })
@@ -359,13 +506,25 @@ export class ChamferFeature extends Feature {
     this.modified = new Date();
   }
 
+  setOcctSpec(spec) {
+    this.occtSpec = spec && typeof spec === 'object' ? cloneJsonLike(spec) : null;
+    this.modified = new Date();
+  }
+
+  buildOcctSpec(edgeRefs = []) {
+    const normalizedEdgeRefs = Array.isArray(edgeRefs) ? edgeRefs.filter((edgeRef) => !!edgeRef) : [];
+    const baseSpec = buildDefaultChamferOcctSpec(normalizedEdgeRefs, this.distance);
+    if (!this.occtSpec || typeof this.occtSpec !== 'object') return baseSpec;
+    return cleanEffectiveChamferSpec(mergeJsonLike(baseSpec, this.occtSpec));
+  }
+
   serialize() {
     return {
       ...super.serialize(),
       distance: this.distance,
       edgeKeys: [...this.edgeKeys],
       stableEdgeKeys: [...this.stableEdgeKeys],
-      occtSpec: this.occtSpec && typeof this.occtSpec === 'object' ? { ...this.occtSpec } : this.occtSpec,
+      occtSpec: this.occtSpec && typeof this.occtSpec === 'object' ? cloneJsonLike(this.occtSpec) : this.occtSpec,
     };
   }
 
@@ -377,7 +536,7 @@ export class ChamferFeature extends Feature {
     feature.distance = data.distance || 1;
     feature.edgeKeys = Array.isArray(data.edgeKeys) ? [...data.edgeKeys] : [];
     feature.stableEdgeKeys = Array.isArray(data.stableEdgeKeys) ? [...data.stableEdgeKeys] : [];
-    feature.occtSpec = data.occtSpec && typeof data.occtSpec === 'object' ? { ...data.occtSpec } : null;
+    feature.occtSpec = data.occtSpec && typeof data.occtSpec === 'object' ? cloneJsonLike(data.occtSpec) : null;
     // Mark legacy projects (no stable keys) so downstream can detect non-exact provenance
     if (feature.stableEdgeKeys.length === 0 && feature.edgeKeys.length > 0) {
       feature._legacySelection = true;

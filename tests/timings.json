@@ -50,6 +50,7 @@
     "test-boolean-hardening.js": 0.579,
     "test-intersections-wasm-plane-cone.js": 0.576,
     "test-boolean-nurbs.js": 0.551,
+    "test-occt-blend-feature-spec.js": 0.55,
     "test-intersections-wasm-plane-sphere.js": 0.549,
     "test-fast-restore-opt-out.js": 0.54,
     "test-intersections-wasm-sphere-sphere.js": 0.539,

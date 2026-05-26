@@ -30,6 +30,155 @@ import {
 
 const OCCT_SKETCH_SOLID_FLAG = 'CAD_USE_OCCT_SKETCH_SOLIDS';
 
+function isPlainObject(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function cloneJsonLike(value) {
+  if (Array.isArray(value)) return value.map((entry) => cloneJsonLike(entry));
+  if (!isPlainObject(value)) return value;
+  const cloned = {};
+  for (const [key, entry] of Object.entries(value)) {
+    cloned[key] = cloneJsonLike(entry);
+  }
+  return cloned;
+}
+
+function mergeJsonLike(baseValue, overrideValue, key = '') {
+  if (overrideValue === undefined) return cloneJsonLike(baseValue);
+  if (baseValue === undefined) return cloneJsonLike(overrideValue);
+
+  if (key === 'edges' && Array.isArray(baseValue) && Array.isArray(overrideValue)) {
+    const merged = [];
+    const length = Math.max(baseValue.length, overrideValue.length);
+    for (let index = 0; index < length; index += 1) {
+      merged.push(mergeJsonLike(baseValue[index], overrideValue[index]));
+    }
+    return merged;
+  }
+
+  if (Array.isArray(overrideValue)) return cloneJsonLike(overrideValue);
+  if (Array.isArray(baseValue)) return cloneJsonLike(baseValue);
+
+  if (isPlainObject(baseValue) && isPlainObject(overrideValue)) {
+    const merged = {};
+    const keys = new Set([...Object.keys(baseValue), ...Object.keys(overrideValue)]);
+    for (const childKey of keys) {
+      merged[childKey] = mergeJsonLike(baseValue[childKey], overrideValue[childKey], childKey);
+    }
+    return merged;
+  }
+
+  return cloneJsonLike(overrideValue);
+}
+
+function buildDefaultFilletOcctSpec(edgeRefs, radius) {
+  return {
+    schemaVersion: 1,
+    unit: { length: 'model', angle: 'radians' },
+    edges: edgeRefs.map((edgeRef) => ({
+      edge: cloneJsonLike(edgeRef),
+      radiusMode: 'constant',
+      radius: Number(radius) || 0,
+    })),
+  };
+}
+
+function cleanFilletRadiusLaw(law) {
+  if (!isPlainObject(law)) return null;
+  const type = law.type === 'linear' ? 'linear' : 'constant';
+  if (type === 'linear') {
+    const startRadius = Number(law.startRadius);
+    const endRadius = Number(law.endRadius);
+    if (!Number.isFinite(startRadius) || !Number.isFinite(endRadius)) return null;
+    return { type, startRadius, endRadius };
+  }
+  const radius = Number(law.radius);
+  return Number.isFinite(radius) ? { type, radius } : null;
+}
+
+function cleanFilletStations(stations) {
+  if (!Array.isArray(stations)) return null;
+  const cleaned = stations
+    .map((station) => {
+      if (!isPlainObject(station)) return null;
+      const t = Number(station.t);
+      const radius = Number(station.radius);
+      if (!Number.isFinite(t) || !Number.isFinite(radius)) return null;
+      return { t, radius };
+    })
+    .filter(Boolean);
+  return cleaned.length > 0 ? cleaned : null;
+}
+
+function cleanFilletLimits(limits) {
+  if (!isPlainObject(limits)) return null;
+  const start = Number(limits.start);
+  const end = Number(limits.end);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  return {
+    start,
+    end,
+    normalized: limits.normalized !== false,
+  };
+}
+
+function cleanEffectiveFilletSpec(spec) {
+  const cleaned = mergeJsonLike({}, spec);
+  const mode = cleaned.radiusMode || 'constant';
+
+  if (mode !== 'constant') delete cleaned.radius;
+  if (mode !== 'startEnd') {
+    delete cleaned.startRadius;
+    delete cleaned.endRadius;
+  }
+  if (mode !== 'variable') {
+    delete cleaned.stations;
+  } else {
+    cleaned.stations = cleanFilletStations(cleaned.stations);
+  }
+  if (mode !== 'law') {
+    delete cleaned.law;
+  } else {
+    cleaned.law = cleanFilletRadiusLaw(cleaned.law);
+  }
+
+  cleaned.limits = cleanFilletLimits(cleaned.limits);
+  if (!cleaned.limits) delete cleaned.limits;
+  if (!cleaned.stations) delete cleaned.stations;
+  if (!cleaned.law) delete cleaned.law;
+
+  if (Array.isArray(cleaned.edges)) {
+    cleaned.edges = cleaned.edges.map((edge) => {
+      if (!isPlainObject(edge)) return edge;
+      const nextEdge = mergeJsonLike({}, edge);
+      const edgeMode = nextEdge.radiusMode || mode;
+      if (edgeMode !== 'constant') delete nextEdge.radius;
+      if (edgeMode !== 'startEnd') {
+        delete nextEdge.startRadius;
+        delete nextEdge.endRadius;
+      }
+      if (edgeMode !== 'variable') {
+        delete nextEdge.stations;
+      } else {
+        nextEdge.stations = cleanFilletStations(nextEdge.stations);
+      }
+      if (edgeMode !== 'law') {
+        delete nextEdge.law;
+      } else {
+        nextEdge.law = cleanFilletRadiusLaw(nextEdge.law);
+      }
+      nextEdge.limits = cleanFilletLimits(nextEdge.limits);
+      if (!nextEdge.limits) delete nextEdge.limits;
+      if (!nextEdge.stations) delete nextEdge.stations;
+      if (!nextEdge.law) delete nextEdge.law;
+      return nextEdge;
+    });
+  }
+
+  return cleaned;
+}
+
 function resolveFeatureEdgeKeys(feature, selectionContext, options = {}) {
   const updateFeature = options.updateFeature !== false;
   const stableKeys = Array.isArray(feature.stableEdgeKeys) ? feature.stableEdgeKeys : [];
@@ -286,13 +435,16 @@ export class FilletFeature extends Feature {
 
     const hadOcctInput = occtInputGeometry?.occtShapeHandle > 0;
     let occtGeometry = null;
+    const selectedOcctEdgeRefs = hadOcctInput
+      ? this._resolveSelectedOcctEdgeRefs(selectionContext, edgeKeys)
+      : [];
     try {
       occtGeometry = hadOcctInput
         ? tryBuildOcctFilletMetadataSync({
           handle: occtInputGeometry.occtShapeHandle,
-          edgeRefs: this._resolveSelectedOcctEdgeRefs(selectionContext, edgeKeys),
+          edgeRefs: selectedOcctEdgeRefs,
           radius: this.radius,
-          spec: this.occtSpec,
+          spec: this.buildOcctSpec(selectedOcctEdgeRefs),
           sourceTopology: occtInputGeometry?._occtModeling?.topology || null,
           topoBody: inputTopoBody,
         })
@@ -573,6 +725,18 @@ export class FilletFeature extends Feature {
     this.modified = new Date();
   }
 
+  setOcctSpec(spec) {
+    this.occtSpec = spec && typeof spec === 'object' ? cloneJsonLike(spec) : null;
+    this.modified = new Date();
+  }
+
+  buildOcctSpec(edgeRefs = []) {
+    const normalizedEdgeRefs = Array.isArray(edgeRefs) ? edgeRefs.filter((edgeRef) => !!edgeRef) : [];
+    const baseSpec = buildDefaultFilletOcctSpec(normalizedEdgeRefs, this.radius);
+    if (!this.occtSpec || typeof this.occtSpec !== 'object') return baseSpec;
+    return cleanEffectiveFilletSpec(mergeJsonLike(baseSpec, this.occtSpec));
+  }
+
   serialize() {
     return {
       ...super.serialize(),
@@ -580,7 +744,7 @@ export class FilletFeature extends Feature {
       segments: this.segments,
       edgeKeys: [...this.edgeKeys],
       stableEdgeKeys: [...this.stableEdgeKeys],
-      occtSpec: this.occtSpec && typeof this.occtSpec === 'object' ? { ...this.occtSpec } : this.occtSpec,
+      occtSpec: this.occtSpec && typeof this.occtSpec === 'object' ? cloneJsonLike(this.occtSpec) : this.occtSpec,
     };
   }
 
@@ -593,7 +757,7 @@ export class FilletFeature extends Feature {
     feature.segments = data.segments || 8;
     feature.edgeKeys = Array.isArray(data.edgeKeys) ? [...data.edgeKeys] : [];
     feature.stableEdgeKeys = Array.isArray(data.stableEdgeKeys) ? [...data.stableEdgeKeys] : [];
-    feature.occtSpec = data.occtSpec && typeof data.occtSpec === 'object' ? { ...data.occtSpec } : null;
+    feature.occtSpec = data.occtSpec && typeof data.occtSpec === 'object' ? cloneJsonLike(data.occtSpec) : null;
     // Mark legacy projects (no stable keys) so downstream can detect non-exact provenance
     if (feature.stableEdgeKeys.length === 0 && feature.edgeKeys.length > 0) {
       feature._legacySelection = true;
