@@ -299,6 +299,47 @@ function legacyKeyMatchesEdge(key, edge, tolerance = 1e-3) {
     && pointDistanceSquared(parsed.end, edge.start) <= tolSq;
 }
 
+function pointLiesOnEdge(point, edge, tolerance = 1e-3) {
+  if (!point || !edge?.start || !edge?.end) return false;
+  const tolSq = tolerance * tolerance;
+  if (pointDistanceSquared(point, edge.start) <= tolSq) return true;
+  if (pointDistanceSquared(point, edge.end) <= tolSq) return true;
+
+  const abx = edge.end.x - edge.start.x;
+  const aby = edge.end.y - edge.start.y;
+  const abz = edge.end.z - edge.start.z;
+  const apx = point.x - edge.start.x;
+  const apy = point.y - edge.start.y;
+  const apz = point.z - edge.start.z;
+  const abLen2 = abx * abx + aby * aby + abz * abz;
+  if (abLen2 < 1e-14) return false;
+
+  const t = (apx * abx + apy * aby + apz * abz) / abLen2;
+  if (t < -1e-4 || t > 1 + 1e-4) return false;
+
+  const projX = edge.start.x + t * abx;
+  const projY = edge.start.y + t * aby;
+  const projZ = edge.start.z + t * abz;
+  return pointDistanceSquared(point, { x: projX, y: projY, z: projZ }) <= tolSq;
+}
+
+function legacyKeyMatchesPath(key, path, nativeEdges, tolerance = 1e-3) {
+  const parsed = parseLegacyEdgeKey(key);
+  if (!parsed || !Array.isArray(path?.edgeIndices) || path.edgeIndices.length === 0) return false;
+
+  let startMatched = false;
+  let endMatched = false;
+  for (const edgeIndex of path.edgeIndices) {
+    const edge = nativeEdges[edgeIndex];
+    if (!edge) continue;
+    if (!startMatched && pointLiesOnEdge(parsed.start, edge, tolerance)) startMatched = true;
+    if (!endMatched && pointLiesOnEdge(parsed.end, edge, tolerance)) endMatched = true;
+    if (startMatched && endMatched) return true;
+  }
+
+  return false;
+}
+
 function toOcctEdgeRef(entity) {
   if (!entity || typeof entity !== 'object') return null;
   const stableHash = typeof entity.stableHash === 'string' && entity.stableHash.length > 0
@@ -343,12 +384,22 @@ function resolveOcctFeatureChainRefs(selectionContext, fallbackEdgeKeys) {
   if (!Array.isArray(fallbackEdgeKeys) || fallbackEdgeKeys.length === 0) return [];
 
   const geometry = selectionContext?.geometry;
-  const nativeEdges = Array.isArray(geometry?._occtFeatureEdges) && geometry._occtFeatureEdges.length > 0
-    ? geometry._occtFeatureEdges
-    : (Array.isArray(geometry?.edges) ? geometry.edges : []);
-  const nativePaths = hasOcctEdgeRef(geometry?._occtFeaturePaths)
-    ? geometry._occtFeaturePaths
-    : (hasOcctEdgeRef(geometry?.paths) ? geometry.paths : []);
+  const compatOcctEdges = Array.isArray(geometry?._selectionCompatOcctFeatureEdges) && geometry._selectionCompatOcctFeatureEdges.length > 0
+    ? geometry._selectionCompatOcctFeatureEdges
+    : null;
+  const compatOcctPaths = Array.isArray(geometry?._selectionCompatOcctFeaturePaths) && geometry._selectionCompatOcctFeaturePaths.length > 0
+    ? geometry._selectionCompatOcctFeaturePaths
+    : null;
+  const nativeEdges = Array.isArray(compatOcctEdges) && compatOcctEdges.length > 0
+    ? compatOcctEdges
+    : (Array.isArray(geometry?._occtFeatureEdges) && geometry._occtFeatureEdges.length > 0
+      ? geometry._occtFeatureEdges
+      : (Array.isArray(geometry?.edges) ? geometry.edges : []));
+  const nativePaths = hasOcctEdgeRef(compatOcctPaths)
+    ? compatOcctPaths
+    : (hasOcctEdgeRef(geometry?._occtFeaturePaths)
+      ? geometry._occtFeaturePaths
+      : (hasOcctEdgeRef(geometry?.paths) ? geometry.paths : []));
   if (nativeEdges.length === 0) return [];
 
   const nativeGeometry = nativePaths.length > 0
@@ -362,8 +413,9 @@ function resolveOcctFeatureChainRefs(selectionContext, fallbackEdgeKeys) {
 
   for (const path of nativePaths) {
     if (!Array.isArray(path?.edgeIndices) || path.edgeIndices.length === 0) continue;
-    const matched = collectOcctPathLegacyKeys(path, nativeEdges)
+    const exactMatch = collectOcctPathLegacyKeys(path, nativeEdges)
       .some((legacyKey) => wanted.has(legacyKey));
+    const matched = exactMatch || fallbackEdgeKeys.some((legacyKey) => legacyKeyMatchesPath(legacyKey, path, nativeEdges));
     if (!matched) continue;
     const ref = toOcctEdgeRef(path);
     if (ref) refs.push(ref);

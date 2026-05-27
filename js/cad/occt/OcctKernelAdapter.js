@@ -776,7 +776,7 @@ export function occtTessellationToMesh(tessellation, opts = {}) {
     const normal = explicitTriangleNormal || (smoothNormal && dot(analyticNormal, smoothNormal) < 0
       ? { x: -analyticNormal.x, y: -analyticNormal.y, z: -analyticNormal.z }
       : analyticNormal);
-    const vertexNormalReference = smoothNormal || normal;
+    const vertexNormalReference = normal;
     const vertexNormals = normals.length >= vertexCount * 3
       ? [
         readVertexNormal(normals, i0, vertexNormalReference),

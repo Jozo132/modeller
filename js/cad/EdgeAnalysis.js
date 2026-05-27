@@ -27,6 +27,18 @@ function faceIsCorner(face) {
   return !!(face?.isCorner || face?.shared?.isCorner);
 }
 
+function faceSourceFeatureId(face) {
+  return face?.shared && typeof face.shared.sourceFeatureId === 'string' && face.shared.sourceFeatureId.length > 0
+    ? face.shared.sourceFeatureId
+    : null;
+}
+
+function facesHaveDistinctSourceFeatures(a, b) {
+  const sourceA = faceSourceFeatureId(a);
+  const sourceB = faceSourceFeatureId(b);
+  return !!(sourceA && sourceB && sourceA !== sourceB);
+}
+
 export function assignCoplanarFaceGroups(faces) {
   // Build a plane key for grouping: quantized normal + plane distance
   function planeKey(normal, vertices) {
@@ -122,7 +134,10 @@ export function assignCoplanarFaceGroups(faces) {
 
     for (const [, faceIds] of vertexFaces) {
       for (let i = 1; i < faceIds.length; i++) {
-        unite(faceIds[0], faceIds[i]);
+        const left = faceIds[0];
+        const right = faceIds[i];
+        if (facesHaveDistinctSourceFeatures(faces[left], faces[right])) continue;
+        unite(left, right);
       }
     }
 
@@ -134,6 +149,7 @@ export function assignCoplanarFaceGroups(faces) {
       for (let gj = gi + 1; gj < group.length; gj++) {
         if (find(group[gi]) === find(group[gj])) continue; // already merged
         const fb = faces[group[gj]];
+        if (facesHaveDistinctSourceFeatures(fa, fb)) continue;
         if (coplanarFacesTouch(fa, fb)) unite(group[gi], group[gj]);
       }
     }
@@ -410,6 +426,12 @@ export function computeFeatureEdges(faces) {
       let minDot = 1;
       const hasFillet = info.faceIndices.some(fi => faceIsFillet(faces[fi]));
       const hasNonFillet = info.faceIndices.some(fi => !faceIsFillet(faces[fi]));
+      const sourceFeatureIds = new Set(
+        info.faceIndices
+          .map((fi) => faceSourceFeatureId(faces[fi]))
+          .filter((featureId) => !!featureId)
+      );
+      const hasFeatureOwnerBoundary = sourceFeatureIds.size > 1;
       for (let i = 1; i < info.normals.length; i++) {
         const n1 = info.normals[i];
         const dot = n0.x * n1.x + n0.y * n1.y + n0.z * n1.z;
@@ -422,6 +444,10 @@ export function computeFeatureEdges(faces) {
       // Force feature edge at fillet-to-flat face boundary
       if (!isFeature && info.faceIndices.length >= 2) {
         if (hasFillet && hasNonFillet) isFeature = true;
+      }
+      // Feature-owned seams must stay selectable even when tangent/coplanar.
+      if (!isFeature && info.faceIndices.length >= 2 && hasFeatureOwnerBoundary) {
+        isFeature = true;
       }
       // Force feature edge at STEP topology face boundaries: edges between
       // different topoFaceId values represent B-Rep surface seams that should
@@ -449,7 +475,7 @@ export function computeFeatureEdges(faces) {
       // on a spherical corner never shows internal lines.
       if (isFeature && info.faceIndices.length >= 2) {
         const fa = faces[info.faceIndices[0]], fb = faces[info.faceIndices[1]];
-        if (fa.topoFaceId !== undefined && fa.topoFaceId === fb.topoFaceId) {
+        if (!hasFeatureOwnerBoundary && fa.topoFaceId !== undefined && fa.topoFaceId === fb.topoFaceId) {
           isFeature = false;
         }
       }
@@ -457,13 +483,13 @@ export function computeFeatureEdges(faces) {
       // is an internal tessellation split, not a real B-Rep boundary.
       if (isFeature && info.faceIndices.length >= 2) {
         const fa = faces[info.faceIndices[0]], fb = faces[info.faceIndices[1]];
-        if (fa.fusedGroupId && fa.fusedGroupId === fb.fusedGroupId) {
+        if (!hasFeatureOwnerBoundary && fa.fusedGroupId && fa.fusedGroupId === fb.fusedGroupId) {
           isFeature = false;
         }
       }
       // Faces already merged into one logical coplanar face must never
       // expose their internal triangulation seam as a selectable feature edge.
-      if (isFeature && sameGroup && !(hasFillet && hasNonFillet)) {
+      if (isFeature && sameGroup && !(hasFillet && hasNonFillet) && !hasFeatureOwnerBoundary) {
         isFeature = false;
       }
       if (isFeature) {

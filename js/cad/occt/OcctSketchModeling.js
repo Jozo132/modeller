@@ -794,6 +794,71 @@ function applyOcctBlendFaceMetadata(geometry, operation, blendFaces, sourceTopol
   }
 }
 
+function _edgePointKey(point) {
+  return `${cleanNumber(point?.x).toFixed(6)},${cleanNumber(point?.y).toFixed(6)},${cleanNumber(point?.z).toFixed(6)}`;
+}
+
+function _edgeSegmentKey(edge) {
+  if (!edge?.start || !edge?.end) return null;
+  const startKey = _edgePointKey(edge.start);
+  const endKey = _edgePointKey(edge.end);
+  return startKey < endKey ? `${startKey}|${endKey}` : `${endKey}|${startKey}`;
+}
+
+export function mergeOcctFeatureEdgeSets(nativeEdges = [], nativePaths = [], computedEdges = [], computedPaths = []) {
+  const mergedEdges = [];
+  const edgeIndexByKey = new Map();
+
+  const appendEdges = (edges) => {
+    const remap = new Map();
+    for (let index = 0; index < edges.length; index += 1) {
+      const edge = edges[index];
+      const key = _edgeSegmentKey(edge);
+      if (!key) continue;
+      const existingIndex = edgeIndexByKey.get(key);
+      if (existingIndex != null) {
+        remap.set(index, existingIndex);
+        continue;
+      }
+      const mergedIndex = mergedEdges.length;
+      mergedEdges.push(edge);
+      edgeIndexByKey.set(key, mergedIndex);
+      remap.set(index, mergedIndex);
+    }
+    return remap;
+  };
+
+  const nativeRemap = appendEdges(Array.isArray(nativeEdges) ? nativeEdges : []);
+  const computedRemap = appendEdges(Array.isArray(computedEdges) ? computedEdges : []);
+
+  const mergedPaths = [];
+  const pathSignatures = new Set();
+  const appendPaths = (paths, remap) => {
+    for (const path of paths || []) {
+      if (!path || !Array.isArray(path.edgeIndices) || path.edgeIndices.length === 0) continue;
+      const edgeIndices = path.edgeIndices
+        .map((edgeIndex) => remap.get(edgeIndex))
+        .filter((edgeIndex) => Number.isInteger(edgeIndex));
+      if (edgeIndices.length === 0) continue;
+      const signature = `${path.isClosed === true ? '1' : '0'}|${edgeIndices.join(',')}`;
+      if (pathSignatures.has(signature)) continue;
+      pathSignatures.add(signature);
+      mergedPaths.push({
+        ...path,
+        edgeIndices,
+      });
+    }
+  };
+
+  appendPaths(nativePaths, nativeRemap);
+  appendPaths(computedPaths, computedRemap);
+
+  return {
+    edges: mergedEdges,
+    paths: mergedPaths,
+  };
+}
+
 function attachOcctBlendFeatureEdges(geometry) {
   if (!geometry?.faces?.length) return;
   if (!Array.isArray(geometry._occtFeatureEdges)
@@ -807,9 +872,44 @@ function attachOcctBlendFeatureEdges(geometry) {
     geometry._occtFeaturePaths = geometry.paths;
   }
   const edgeResult = computeFeatureEdges(geometry.faces);
-  geometry.edges = edgeResult.edges;
-  geometry.paths = edgeResult.paths;
+  if (Array.isArray(geometry._occtFeatureEdges) && geometry._occtFeatureEdges.length > 0) {
+    const merged = mergeOcctFeatureEdgeSets(
+      geometry._occtFeatureEdges,
+      Array.isArray(geometry._occtFeaturePaths) ? geometry._occtFeaturePaths : [],
+      edgeResult.edges,
+      edgeResult.paths,
+    );
+    geometry.edges = merged.edges;
+    geometry.paths = merged.paths;
+  } else {
+    geometry.edges = edgeResult.edges;
+    geometry.paths = edgeResult.paths;
+  }
   geometry.visualEdges = edgeResult.visualEdges;
+}
+
+export function rehydrateOcctFeatureDisplayGeometry(geometry, operation = null, sourceTopology = null) {
+  if (!geometry?.faces?.length) return geometry;
+  if (operation === 'fillet') {
+    const generatedSelectors = sourceTopology
+      ? collectOcctGeneratedBlendFaceSelectors(geometry?._occtModeling?.topology, sourceTopology)
+      : null;
+    const hasGeneratedSelectors = !!generatedSelectors
+      && (generatedSelectors.topoFaceIds.size > 0 || generatedSelectors.stableHashes.size > 0);
+    if (hasGeneratedSelectors) {
+      for (const face of geometry.faces) {
+        if (!faceMatchesOcctBlendSelectors(face, generatedSelectors)) continue;
+        face.shared = { ...(face.shared || {}), isFillet: true, isFilletFace: true };
+        face.isFillet = true;
+      }
+    } else {
+      applyOcctBlendFaceMetadata(geometry, operation, [], sourceTopology);
+    }
+  }
+  if (operation === 'fillet' || operation === 'chamfer') {
+    attachOcctBlendFeatureEdges(geometry);
+  }
+  return geometry;
 }
 
 function buildStructuredExtrudeExtent({ distance, extrudeType, targetFaceRef, surfaceOffset }) {
@@ -1343,13 +1443,21 @@ export function tryBuildOcctFilletMetadataSync(options = {}) {
   const normalizedEdgeRefs = edgeRefs.map(_normalizeBlendEdgeRef).filter(Boolean);
   if (normalizedEdgeRefs.length === 0) return null;
 
+  const filletSpec = spec || _buildBlendFeatureSpec('fillet', normalizedEdgeRefs, {
+    spec: {
+      radiusMode: 'constant',
+      radius: Number(radius) || 0,
+    },
+  });
+
   try {
-    const blendResult = adapter.filletEdges(handle, spec || _buildBlendFeatureSpec('fillet', normalizedEdgeRefs, {
-      spec: {
-        radiusMode: 'constant',
-        radius: Number(radius) || 0,
-      },
-    }));
+    let blendResult = adapter.filletEdges(handle, filletSpec);
+    if (!blendResult || typeof blendResult !== 'object') {
+      // Some first-pass blend calls on freshly restored OCCT state can return
+      // an empty result even though the same resident handle/spec succeeds on
+      // an immediate retry.
+      blendResult = adapter.filletEdges(handle, filletSpec);
+    }
     if (!blendResult || typeof blendResult !== 'object') return null;
     return _finalizeOcctBlendResult(adapter, 'fillet', blendResult, topoBody, sourceTopology);
   } catch {

@@ -10,6 +10,7 @@ import { DirtyFaceTracker, stampDirtyFieldsOnResult } from './DirtyFaceTracker.j
 import {
   createOcctSketchModelingCheckpoint,
   disposeOcctSketchModelingShape,
+  rehydrateOcctFeatureDisplayGeometry,
   restoreOcctSketchModelingCheckpoint,
 } from './occt/OcctSketchModeling.js';
 
@@ -193,6 +194,36 @@ export class FeatureTree {
     } catch (err) {
       result._occtCheckpointError = err?.message || String(err);
       return false;
+    }
+  }
+
+  _normalizeLiveSolidResultFromOcctCheckpoint(featureId, feature, result) {
+    if (!feature || !result || result.type !== 'solid') return result;
+    if (feature.type !== 'fillet' && feature.type !== 'chamfer') return result;
+    if (!this._ensureSolidResultOcctCheckpoint(result)) return result;
+
+    try {
+      const restored = this._buildSolidResultFromOcctCheckpoint(
+        featureId,
+        result.occtCheckpoint,
+        null,
+        this._getFeatureCbrepCacheVersion(feature),
+      );
+      if (restored?.geometry && result.geometry) {
+        restored.geometry._selectionCompatEdges = Array.isArray(result.geometry.edges) ? result.geometry.edges : [];
+        restored.geometry._selectionCompatPaths = Array.isArray(result.geometry.paths) ? result.geometry.paths : [];
+        restored.geometry._selectionCompatOcctFeatureEdges = Array.isArray(result.geometry._occtFeatureEdges)
+          ? result.geometry._occtFeatureEdges
+          : [];
+        restored.geometry._selectionCompatOcctFeaturePaths = Array.isArray(result.geometry._occtFeaturePaths)
+          ? result.geometry._occtFeaturePaths
+          : [];
+      }
+      this._releaseResultHandle(result, featureId);
+      return restored;
+    } catch (error) {
+      result._occtCheckpointRestoreError = error?.message || String(error);
+      return result;
     }
   }
 
@@ -503,6 +534,7 @@ export class FeatureTree {
   }
 
   _buildSolidResultFromOcctCheckpoint(featureId, checkpoint, deps, cbrepCacheVersion = null) {
+    const feature = this.featureMap.get(featureId) || null;
     const restored = restoreOcctSketchModelingCheckpoint(checkpoint);
     const geometry = restored?.geometry || restored?.mesh || null;
     if (!geometry || !Array.isArray(geometry.faces) || geometry.faces.length === 0) {
@@ -519,6 +551,12 @@ export class FeatureTree {
     if (!Array.isArray(geometry.visualEdges)) geometry.visualEdges = geometry.edges;
     if (!hasNativeFeatureEdges) {
       geometry._occtMissingFeatureEdges = true;
+    }
+
+    if (feature && (feature.type === 'fillet' || feature.type === 'chamfer')) {
+      const sourceResult = this._getPreviousSolidCheckpointSourceResult(featureId);
+      const sourceTopology = sourceResult?.geometry?._occtModeling?.topology || null;
+      rehydrateOcctFeatureDisplayGeometry(geometry, feature.type, sourceTopology);
     }
 
     const volume = this._readOcctCheckpointVolume(restored, geometry);
@@ -540,6 +578,20 @@ export class FeatureTree {
     if (cbrepCacheVersion) result.cbrepCacheVersion = cbrepCacheVersion;
     this._rememberOcctCheckpoint(result, checkpoint);
     return result;
+  }
+
+  _getPreviousSolidCheckpointSourceResult(featureId) {
+    const featureIndex = this.getFeatureIndex(featureId);
+    if (featureIndex < 0) return null;
+    for (let index = featureIndex - 1; index >= 0; index -= 1) {
+      const feature = this.features[index];
+      if (!feature || feature.suppressed) continue;
+      const result = this.results[feature.id];
+      if (result && result.type === 'solid' && !result.error) {
+        return result;
+      }
+    }
+    return null;
   }
 
   _restoreSolidResultFromCheckpoint(featureId, deps = this._fastRestoreDeps) {
@@ -845,7 +897,8 @@ export class FeatureTree {
           continue;
         }
         
-        const result = feature.execute(context);
+        const executedResult = feature.execute(context);
+        const result = this._normalizeLiveSolidResultFromOcctCheckpoint(feature.id, feature, executedResult);
         feature.result = result;
         feature.error = null;
         this._stampSolidResult(feature.id, result);
@@ -978,7 +1031,8 @@ export class FeatureTree {
         }
 
         const oldResult = this.results[feature.id];
-        const result = feature.execute(context);
+        const executedResult = feature.execute(context);
+        const result = this._normalizeLiveSolidResultFromOcctCheckpoint(feature.id, feature, executedResult);
         feature.result = result;
         feature.error = null;
         this._releaseResultHandle(oldResult, feature.id);

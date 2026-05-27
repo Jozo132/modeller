@@ -363,7 +363,7 @@ class App {
     this._setStartupLoading(true, 'Loading renderer and project state...', 20);
 
     Promise.resolve(loadProject())
-      .then((loaded) => {
+      .then(async (loaded) => {
         if (loaded && loaded.ok) {
           this._setStartupLoading(true, 'Restoring saved project...', 45);
           this._rebuildLayersPanel();
@@ -376,6 +376,7 @@ class App {
           // Restore Part/CAM state if saved
           if (loaded.part && (loaded.workspaceMode === 'part' || loaded.workspaceMode === 'cam')) {
             try {
+              await this._ensureReplayPreloads();
               this._partManager.deserialize(loaded.part);
               this._restoreCamConfig(loaded.cam);
               if (this._restoreUsedReplayFallback(this._partManager.getPart())) {
