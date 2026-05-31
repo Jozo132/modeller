@@ -23,6 +23,9 @@ const MIN_ORBIT_RADIUS = 0.001;
 const MAX_ORBIT_RADIUS = 100000;
 const MAX_EXPANDED_IMAGE_CACHE_ENTRIES = 12;
 const FULLY_CONSTRAINED_COLOR = [0.035, 0.227, 0.612, 1.0]; // dark blue for fully constrained sketch geometry
+const ORBIT_POLE_EPSILON = 0.001;
+const ALT_ROLL_HANDLE_RADIUS_PX = 22;
+const ROTATE_CURSOR = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 28 28'%3E%3Cg fill='none' stroke='%23dff9ff' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 8a7.5 7.5 0 0 1 10.5 4.5'/%3E%3Cpath d='M20.5 7v6h-6'/%3E%3Cpath d='M19 20a7.5 7.5 0 0 1-10.5-4.5'/%3E%3Cpath d='M7.5 21v-6h6'/%3E%3C/g%3E%3C/svg%3E") 14 14, move`;
 
 function _clampOrbitRadius(radius) {
   return Math.max(MIN_ORBIT_RADIUS, Math.min(MAX_ORBIT_RADIUS, radius || MIN_ORBIT_RADIUS));
@@ -111,6 +114,14 @@ function _rotatePointAroundAxis(point, origin, axis, angle) {
     _vec3Scale(unitAxis, _vec3Dot(unitAxis, relative) * (1 - cosAngle)),
   );
   return _vec3Add(origin, rotated);
+}
+
+function _rotateVectorAroundAxis(vector, axis, angle) {
+  return _rotatePointAroundAxis(vector, { x: 0, y: 0, z: 0 }, axis, angle);
+}
+
+function _angleDelta(start, end) {
+  return Math.atan2(Math.sin(end - start), Math.cos(end - start));
 }
 
 function _projectPolygon2D(verts, normal) {
@@ -973,6 +984,7 @@ export class WasmRenderer {
     this._orbitPhi = Math.PI / 3;     // polar angle (from Z axis)
     this._orbitRadius = 25;
     this._orbitTarget = { x: 0, y: 0, z: 0 };
+    this._orbitUp = { x: 0, y: 0, z: 1 };
     this._orbitDirty = true;
 
     // 3D interaction state
@@ -997,6 +1009,8 @@ export class WasmRenderer {
     this._orbitInteractionPivot = null;
     this._orbitInteractionState = null;
     this._panInteractionPivot = null;
+    this._orbitPivotMarker = null;
+    this._altNavigationActive = false;
 
     // Callback for camera change events (used by interaction recorder)
     this.onCameraInteraction = null; // (type: 'orbit_start'|'pan_start'|'orbit_end'|'zoom', state) => void
@@ -1108,6 +1122,30 @@ export class WasmRenderer {
     // Window resize handler
     this._resizeHandler = () => this.onWindowResize();
     window.addEventListener('resize', this._resizeHandler);
+    this._keyDownHandler = (event) => {
+      if (event.key === 'Alt' && !this._altNavigationActive) {
+        this._altNavigationActive = true;
+        this._rebaseOrbitInteractionMode({ freeOrbit: true, barrelRoll: false });
+        this._update3DCursor();
+      }
+    };
+    this._keyUpHandler = (event) => {
+      if (event.key === 'Alt' && this._altNavigationActive) {
+        this._altNavigationActive = false;
+        this._rebaseOrbitInteractionMode({ freeOrbit: false, barrelRoll: false });
+        this._update3DCursor();
+      }
+    };
+    this._windowBlurHandler = () => {
+      if (this._altNavigationActive) {
+        this._altNavigationActive = false;
+        this._rebaseOrbitInteractionMode({ freeOrbit: false, barrelRoll: false });
+        this._update3DCursor();
+      }
+    };
+    window.addEventListener('keydown', this._keyDownHandler);
+    window.addEventListener('keyup', this._keyUpHandler);
+    window.addEventListener('blur', this._windowBlurHandler);
 
     if (!this.executor) {
       this._loadPromise = null;
@@ -1197,6 +1235,8 @@ export class WasmRenderer {
       this._renderPartSketchImagesOverlay();
       // Draw origin plane labels (XY / XZ / YZ) on the 2D overlay in 3D part mode
       this._drawOriginPlaneLabels();
+      this._renderOrbitPivotMarker();
+      this._renderAltRollOverlay();
     }
 
     if (this.onPostRender) this.onPostRender();
@@ -1292,6 +1332,27 @@ export class WasmRenderer {
     return true;
   }
 
+  _zoom3DViewAt(screenX, screenY, factor) {
+    if (!Number.isFinite(factor) || factor <= 0) return false;
+
+    const pose = this._getCurrentOrbitCameraPose();
+    const pivot = this._pickSurfaceNavigationPoint(screenX, screenY) || this._getNavigationFallbackPoint();
+    if (!pose || !_isFiniteVec3(pivot)) return false;
+
+    const currentRadius = _clampOrbitRadius(this._orbitRadius);
+    if (!Number.isFinite(currentRadius) || currentRadius <= 1e-6) return false;
+    const nextRadius = _clampOrbitRadius(currentRadius * factor);
+    const appliedFactor = nextRadius / currentRadius;
+    if (!Number.isFinite(appliedFactor) || appliedFactor <= 0) return false;
+
+    const nextEye = _vec3Add(pivot, _vec3Scale(_vec3Sub(pose.eye, pivot), appliedFactor));
+    const nextTarget = _vec3Add(pivot, _vec3Scale(_vec3Sub(this._orbitTarget, pivot), appliedFactor));
+    return this._setOrbitFromEyeAndTarget(nextEye, nextTarget, {
+      clampPhi: false,
+      up: this._getOrbitUp(),
+    });
+  }
+
   _getCurrentOrbitCameraPose() {
     const eye = computeOrbitCameraPosition(this._orbitTheta, this._orbitPhi, this._orbitRadius, this._orbitTarget);
     const forward = _vec3Normalize(_vec3Sub(this._orbitTarget, eye));
@@ -1299,17 +1360,90 @@ export class WasmRenderer {
     return { eye, forward };
   }
 
-  _setOrbitFromEyeAndTarget(eye, target) {
+  _getOrbitUp() {
+    return _vec3Normalize(this._orbitUp) || { x: 0, y: 0, z: 1 };
+  }
+
+  _setOrbitUp(up) {
+    this._orbitUp = _vec3Normalize(up) || { x: 0, y: 0, z: 1 };
+  }
+
+  _isAltRollOverlayVisible() {
+    return this.mode === '3d' && !this._sketchPlane && (this._altNavigationActive || !!this._orbitInteractionState?.barrelRoll);
+  }
+
+  _getAltRollOverlayCenterClient() {
+    const rect = this.canvas.getBoundingClientRect();
+    return {
+      x: rect.left + rect.width * 0.5,
+      y: rect.top + rect.height * 0.5,
+    };
+  }
+
+  _getAltRollOverlayAngle(clientX, clientY) {
+    const center = this._getAltRollOverlayCenterClient();
+    return Math.atan2(clientY - center.y, clientX - center.x);
+  }
+
+  _isPointOverAltRollOverlay(clientX, clientY) {
+    if (!this._isAltRollOverlayVisible()) return false;
+    const center = this._getAltRollOverlayCenterClient();
+    return Math.hypot(clientX - center.x, clientY - center.y) <= ALT_ROLL_HANDLE_RADIUS_PX;
+  }
+
+  _update3DCursor(pointerX = this._lastMouseX, pointerY = this._lastMouseY) {
+    if (!this.canvas) return;
+    if (this.mode !== '3d') {
+      this.canvas.style.cursor = '';
+      return;
+    }
+    if (this._isPanning3D) {
+      this.canvas.style.cursor = 'grabbing';
+      return;
+    }
+    if (this._isDragging) {
+      this.canvas.style.cursor = ROTATE_CURSOR;
+      return;
+    }
+    if (this._isPointOverAltRollOverlay(pointerX, pointerY)) {
+      this.canvas.style.cursor = 'grab';
+      return;
+    }
+    this.canvas.style.cursor = '';
+  }
+
+  _rebaseOrbitInteractionMode(options = {}) {
+    const interaction = this._orbitInteractionState;
+    if (!interaction?.pivot || !this._isDragging || this._isPanning3D) return;
+    const pose = this._getCurrentOrbitCameraPose();
+    if (!pose) return;
+    const barrelRoll = options.barrelRoll === true;
+    interaction.startX = this._lastMouseX;
+    interaction.startY = this._lastMouseY;
+    interaction.eye = { ...pose.eye };
+    interaction.target = { ...this._orbitTarget };
+    interaction.up = { ...this._getOrbitUp() };
+    interaction.freeOrbit = options.freeOrbit === true;
+    interaction.barrelRoll = barrelRoll;
+    interaction.startRollAngle = barrelRoll ? this._getAltRollOverlayAngle(this._lastMouseX, this._lastMouseY) : 0;
+  }
+
+  _setOrbitFromEyeAndTarget(eye, target, options = {}) {
     if (!_isFiniteVec3(eye) || !_isFiniteVec3(target)) return false;
     const offset = _vec3Sub(eye, target);
     const radius = _vec3Length(offset);
     if (!Number.isFinite(radius) || radius <= 1e-6) return false;
+    const clampPhi = options.clampPhi !== false;
+    const minPhi = Number.isFinite(options.minPhi) ? options.minPhi : ORBIT_POLE_EPSILON;
 
     this._orbitTarget = { x: target.x, y: target.y, z: target.z };
     this._orbitRadius = _clampOrbitRadius(radius);
     this._orbitTheta = Math.atan2(offset.y, offset.x);
     this._orbitPhi = Math.acos(Math.max(-1, Math.min(1, offset.z / radius)));
-    this._orbitPhi = Math.max(0.001, Math.min(Math.PI - 0.001, this._orbitPhi));
+    if (clampPhi) {
+      this._orbitPhi = Math.max(minPhi, Math.min(Math.PI - minPhi, this._orbitPhi));
+    }
+    this._setOrbitUp(options.up || this._orbitUp);
     this._orbitDirty = true;
     return true;
   }
@@ -1321,25 +1455,31 @@ export class WasmRenderer {
     this._orbitDirty = true;
   }
 
-  _computeOrbitRightAxis(forward) {
-    let right = _vec3Normalize(_vec3Cross(forward, { x: 0, y: 0, z: 1 }));
+  _computeOrbitRightAxis(forward, up = { x: 0, y: 0, z: 1 }) {
+    let right = _vec3Normalize(_vec3Cross(forward, up));
     if (!right) {
       right = _vec3Normalize({ x: Math.cos(this._orbitTheta), y: Math.sin(this._orbitTheta), z: 0 });
     }
     return right || { x: 1, y: 0, z: 0 };
   }
 
-  _beginOrbitInteraction(screenX, screenY) {
+  _beginOrbitInteraction(screenX, screenY, options = {}) {
     const pose = this._getCurrentOrbitCameraPose();
     if (!pose) return false;
     const pivot = this._resolveOrbitInteractionPivot(screenX, screenY);
+    const barrelRoll = options.barrelRoll === true;
     this._orbitInteractionPivot = pivot;
+    this._orbitPivotMarker = _isFiniteVec3(pivot) ? { ...pivot } : null;
     this._orbitInteractionState = {
       startX: screenX,
       startY: screenY,
       eye: { ...pose.eye },
       target: { ...this._orbitTarget },
       pivot: _isFiniteVec3(pivot) ? { ...pivot } : null,
+      up: { ...this._getOrbitUp() },
+      freeOrbit: options.freeOrbit === true,
+      barrelRoll,
+      startRollAngle: barrelRoll ? this._getAltRollOverlayAngle(screenX, screenY) : 0,
     };
     return !!this._orbitInteractionState.pivot;
   }
@@ -1348,21 +1488,57 @@ export class WasmRenderer {
     const interaction = this._orbitInteractionState;
     if (!interaction?.pivot) return false;
 
+    if (interaction.barrelRoll) {
+      const currentAngle = this._getAltRollOverlayAngle(screenX, screenY);
+      if (!Number.isFinite(currentAngle)) return false;
+      const delta = _angleDelta(interaction.startRollAngle, currentAngle);
+      const forward = _vec3Normalize(_vec3Sub(interaction.target, interaction.eye));
+      if (!forward) return false;
+      const up = _rotateVectorAroundAxis(interaction.up, forward, delta);
+      return this._setOrbitFromEyeAndTarget(interaction.eye, interaction.target, { clampPhi: false, up });
+    }
+
     const yaw = -(screenX - interaction.startX) * 0.005;
     const pitch = -(screenY - interaction.startY) * 0.005;
+
+    if (interaction.freeOrbit) {
+      const upAxis = _vec3Normalize(interaction.up) || { x: 0, y: 0, z: 1 };
+      let eye = _rotatePointAroundAxis(interaction.eye, interaction.pivot, upAxis, yaw);
+      let target = _rotatePointAroundAxis(interaction.target, interaction.pivot, upAxis, yaw);
+      const forwardAfterYaw = _vec3Normalize(_vec3Sub(target, eye));
+      const rightAxis = this._computeOrbitRightAxis(forwardAfterYaw || { x: 1, y: 0, z: 0 }, upAxis);
+      eye = _rotatePointAroundAxis(eye, interaction.pivot, rightAxis, pitch);
+      target = _rotatePointAroundAxis(target, interaction.pivot, rightAxis, pitch);
+      const up = _rotateVectorAroundAxis(upAxis, rightAxis, pitch);
+      return this._setOrbitFromEyeAndTarget(eye, target, { clampPhi: false, up });
+    }
 
     let eye = _rotatePointAroundAxis(interaction.eye, interaction.pivot, { x: 0, y: 0, z: 1 }, yaw);
     let target = _rotatePointAroundAxis(interaction.target, interaction.pivot, { x: 0, y: 0, z: 1 }, yaw);
     const forwardAfterYaw = _vec3Normalize(_vec3Sub(target, eye));
-    const rightAxis = this._computeOrbitRightAxis(forwardAfterYaw || { x: 1, y: 0, z: 0 });
-    eye = _rotatePointAroundAxis(eye, interaction.pivot, rightAxis, pitch);
-    target = _rotatePointAroundAxis(target, interaction.pivot, rightAxis, pitch);
-    return this._setOrbitFromEyeAndTarget(eye, target);
+    const rightAxis = this._computeOrbitRightAxis(forwardAfterYaw || { x: 1, y: 0, z: 0 }, { x: 0, y: 0, z: 1 });
+    const candidateEye = _rotatePointAroundAxis(eye, interaction.pivot, rightAxis, pitch);
+    const candidateTarget = _rotatePointAroundAxis(target, interaction.pivot, rightAxis, pitch);
+    const candidateOffset = _vec3Sub(candidateEye, candidateTarget);
+    const candidateRadius = _vec3Length(candidateOffset);
+    if (candidateRadius > 1e-6) {
+      const candidatePhi = Math.acos(Math.max(-1, Math.min(1, candidateOffset.z / candidateRadius)));
+      if (candidatePhi >= ORBIT_POLE_EPSILON && candidatePhi <= Math.PI - ORBIT_POLE_EPSILON) {
+        eye = candidateEye;
+        target = candidateTarget;
+      }
+    }
+    return this._setOrbitFromEyeAndTarget(eye, target, {
+      clampPhi: true,
+      minPhi: ORBIT_POLE_EPSILON,
+      up: { x: 0, y: 0, z: 1 },
+    });
   }
 
   _endOrbitInteraction() {
     this._orbitInteractionPivot = null;
     this._orbitInteractionState = null;
+    this._orbitPivotMarker = null;
   }
 
   _retargetOrbitToPoint(point) {
@@ -1406,6 +1582,23 @@ export class WasmRenderer {
     return this._intersectRayWithPlane(ray.origin, ray.dir, planeOrigin, planeNormal);
   }
 
+  _pickSurfaceNavigationPoint(screenX, screenY) {
+    const ray = this._computePickRay(screenX, screenY);
+    if (!ray) return null;
+
+    const solidHit = this._raycastClosestMeshHit(ray.origin, ray.dir);
+    if (solidHit?.point) return { ...solidHit.point };
+
+    if (this._sketchPlaneDef) {
+      const sketchHit = this.pickSketch(screenX, screenY);
+      if (sketchHit) {
+        return this._intersectRayWithPlane(ray.origin, ray.dir, this._sketchPlaneDef.origin, this._sketchPlaneDef.normal);
+      }
+    }
+
+    return null;
+  }
+
   _pickNavigationWorldPoint(screenX, screenY) {
     const ray = this._computePickRay(screenX, screenY);
     if (!ray) return null;
@@ -1436,13 +1629,12 @@ export class WasmRenderer {
     const start = _vec3Add(hit.point, _vec3Scale(inwardDir, epsilon));
     const exitHit = this._raycastClosestMeshHit(start, inwardDir, { minT: epsilon });
     if (!_isFiniteVec3(exitHit?.point)) return { ...hit.point };
-    if (_vec3Length(_vec3Sub(exitHit.point, hit.point)) <= epsilon * 2) return { ...hit.point };
+    const solidDepth = _vec3Length(_vec3Sub(exitHit.point, hit.point));
+    if (solidDepth <= epsilon * 2) return { ...hit.point };
 
-    return {
-      x: (hit.point.x + exitHit.point.x) * 0.5,
-      y: (hit.point.y + exitHit.point.y) * 0.5,
-      z: (hit.point.z + exitHit.point.z) * 0.5,
-    };
+    const cameraDistance = _vec3Length(_vec3Sub(hit.point, this._getCurrentOrbitCameraPose()?.eye || hit.point));
+    const pivotOffset = Math.min(solidDepth * 0.5, cameraDistance);
+    return _vec3Add(hit.point, _vec3Scale(inwardDir, pivotOffset));
   }
 
   _computeSolidCentroid() {
@@ -1587,9 +1779,96 @@ export class WasmRenderer {
   }
 
   _resolvePanInteractionPivot(screenX, screenY) {
-    return this._pickNavigationWorldPoint(screenX, screenY)
+    return this._pickSurfaceNavigationPoint(screenX, screenY)
       || this._getClosestScenePointToCamera()
       || this._getNavigationFallbackPoint();
+  }
+
+  _renderOrbitPivotMarker() {
+    if (this.mode !== '3d' || this._sketchPlane) return;
+    const marker = this._orbitPivotMarker;
+    if (!_isFiniteVec3(marker)) return;
+
+    const screen = this.worldToScreen(marker.x, marker.y, marker.z);
+    if (!screen || !Number.isFinite(screen.x) || !Number.isFinite(screen.y) || !Number.isFinite(screen.depth)) return;
+
+    const ctx = this.overlayCtx;
+    if (!ctx) return;
+
+    const radiusPx = 8;
+    const outlineSamples = [
+      { x: radiusPx, y: 0 },
+      { x: -radiusPx, y: 0 },
+      { x: 0, y: radiusPx },
+      { x: 0, y: -radiusPx },
+      { x: radiusPx * 0.7, y: radiusPx * 0.7 },
+      { x: -radiusPx * 0.7, y: radiusPx * 0.7 },
+      { x: radiusPx * 0.7, y: -radiusPx * 0.7 },
+      { x: -radiusPx * 0.7, y: -radiusPx * 0.7 },
+    ];
+    const centerVisible = this._isScreenPointVisibleAtDepth(screen, screen.depth, 2e-3);
+    let visibleOutlineSamples = 0;
+    for (const sample of outlineSamples) {
+      const samplePoint = { x: screen.x + sample.x, y: screen.y + sample.y };
+      if (this._isScreenPointVisibleAtDepth(samplePoint, screen.depth, 2e-3)) {
+        visibleOutlineSamples++;
+      }
+    }
+    const dashedOutline = !centerVisible || visibleOutlineSamples < outlineSamples.length;
+
+    ctx.save();
+    ctx.fillStyle = centerVisible ? 'rgba(0, 229, 255, 0.8)' : 'rgba(0, 229, 255, 0.22)';
+    ctx.beginPath();
+    ctx.arc(screen.x, screen.y, radiusPx, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = centerVisible ? 'rgba(0, 255, 255, 0.95)' : 'rgba(0, 255, 255, 0.6)';
+    ctx.setLineDash(dashedOutline ? [4, 3] : []);
+    ctx.beginPath();
+    ctx.arc(screen.x, screen.y, radiusPx, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  _renderAltRollOverlay() {
+    if (!this._isAltRollOverlayVisible()) return;
+    const ctx = this.overlayCtx;
+    if (!ctx) return;
+
+    const width = this._cssWidth || this.container.clientWidth || 800;
+    const height = this._cssHeight || this.container.clientHeight || 600;
+    const centerX = width * 0.5;
+    const centerY = height * 0.5;
+    const hovered = this._isPointOverAltRollOverlay(this._lastMouseX, this._lastMouseY);
+
+    ctx.save();
+    ctx.translate(centerX, centerY);
+    ctx.strokeStyle = hovered ? 'rgba(0, 229, 255, 0.95)' : 'rgba(0, 229, 255, 0.7)';
+    ctx.lineWidth = hovered ? 1.75 : 1.25;
+    ctx.setLineDash([5, 4]);
+    ctx.beginPath();
+    ctx.arc(0, 0, ALT_ROLL_HANDLE_RADIUS_PX, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.strokeStyle = hovered ? 'rgba(0, 229, 255, 0.55)' : 'rgba(0, 229, 255, 0.35)';
+    ctx.beginPath();
+    ctx.arc(0, 0, ALT_ROLL_HANDLE_RADIUS_PX * 0.55, 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(-6, -ALT_ROLL_HANDLE_RADIUS_PX - 4);
+    ctx.lineTo(0, -ALT_ROLL_HANDLE_RADIUS_PX - 9);
+    ctx.lineTo(6, -ALT_ROLL_HANDLE_RADIUS_PX - 4);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(6, ALT_ROLL_HANDLE_RADIUS_PX + 4);
+    ctx.lineTo(0, ALT_ROLL_HANDLE_RADIUS_PX + 9);
+    ctx.lineTo(-6, ALT_ROLL_HANDLE_RADIUS_PX + 4);
+    ctx.stroke();
+    ctx.restore();
   }
 
   _pan3DBetweenScreenPoints(fromX, fromY, toX, toY, pivotPoint) {
@@ -1612,24 +1891,31 @@ export class WasmRenderer {
     canvas.addEventListener('mousedown', (e) => {
       if (this.mode !== '3d') return;
       const sketchNavigation = this._isSketchNavigationMode();
+      const altNavigation = this._altNavigationActive || e.altKey;
       // Left button = orbit (when allowed), Middle button = orbit, Right button = pan
       const allowLeftOrbit = this._leftClickOrbitEnabled
         && (!this.shouldAllowLeftClickOrbit || this.shouldAllowLeftClickOrbit());
-      if (e.button === 0 && allowLeftOrbit && (!sketchNavigation || e.shiftKey)) {
+      if (e.button === 0 && allowLeftOrbit && (!sketchNavigation || e.shiftKey || altNavigation)) {
         e.preventDefault();
-        this._beginOrbitInteraction(e.clientX, e.clientY);
+        this._beginOrbitInteraction(e.clientX, e.clientY, {
+          freeOrbit: altNavigation,
+          barrelRoll: altNavigation && this._isPointOverAltRollOverlay(e.clientX, e.clientY),
+        });
         this._isDragging = true;
         this._isPanning3D = false;
         this._leftClickOrbiting = true;
         if (this.onCameraInteraction) this.onCameraInteraction('orbit_start', this.getOrbitState());
-      } else if (e.button === 1 && (!sketchNavigation || e.shiftKey)) {
+      } else if (e.button === 1 && (!sketchNavigation || e.shiftKey || altNavigation)) {
         e.preventDefault();
-        this._beginOrbitInteraction(e.clientX, e.clientY);
+        this._beginOrbitInteraction(e.clientX, e.clientY, {
+          freeOrbit: altNavigation,
+          barrelRoll: altNavigation && this._isPointOverAltRollOverlay(e.clientX, e.clientY),
+        });
         this._isDragging = true;
         this._isPanning3D = false;
         this._leftClickOrbiting = false;
         if (this.onCameraInteraction) this.onCameraInteraction('orbit_start', this.getOrbitState());
-      } else if (e.button === 1 && sketchNavigation) {
+      } else if (e.button === 1 && sketchNavigation && !altNavigation) {
         e.preventDefault();
         this._endOrbitInteraction();
         this._panInteractionPivot = null;
@@ -1649,6 +1935,7 @@ export class WasmRenderer {
       }
       this._lastMouseX = e.clientX;
       this._lastMouseY = e.clientY;
+      this._update3DCursor(e.clientX, e.clientY);
     });
 
     canvas.addEventListener('mousemove', (e) => {
@@ -1670,6 +1957,7 @@ export class WasmRenderer {
       } else if (this._isPanning3D) {
         if (this._isSketchNavigationMode() && !e.shiftKey) {
           this._panSketchViewBetweenScreenPoints(previousX, previousY, e.clientX, e.clientY);
+          this._update3DCursor(e.clientX, e.clientY);
           return;
         }
         if (!this._pan3DBetweenScreenPoints(previousX, previousY, e.clientX, e.clientY, this._panInteractionPivot)) {
@@ -1689,6 +1977,7 @@ export class WasmRenderer {
           );
         }
       }
+      this._update3DCursor(e.clientX, e.clientY);
     });
 
     canvas.addEventListener('mouseup', () => {
@@ -1698,6 +1987,7 @@ export class WasmRenderer {
       this._leftClickOrbiting = false;
       this._endOrbitInteraction();
       this._panInteractionPivot = null;
+      this._update3DCursor();
       if (wasDragging && this.onCameraInteraction) this.onCameraInteraction('orbit_end', this.getOrbitState());
     });
 
@@ -1707,6 +1997,7 @@ export class WasmRenderer {
       this._leftClickOrbiting = false;
       this._endOrbitInteraction();
       this._panInteractionPivot = null;
+      this._update3DCursor();
     });
 
     canvas.addEventListener('wheel', (e) => {
@@ -1719,9 +2010,7 @@ export class WasmRenderer {
         if (this.onCameraInteraction) this.onCameraInteraction('zoom', this.getOrbitState());
         return;
       }
-      this._orbitRadius *= factor;
-      this._orbitRadius = _clampOrbitRadius(this._orbitRadius);
-      this._orbitDirty = true;
+      this._zoom3DViewAt(e.clientX, e.clientY, factor);
       if (this.onCameraInteraction) this.onCameraInteraction('zoom', this.getOrbitState());
     }, { passive: false });
 
@@ -1789,9 +2078,7 @@ export class WasmRenderer {
         // Pinch zoom
         if (this._lastPinchDist > 0 && dist > 0) {
           const scale = this._lastPinchDist / dist;
-          this._orbitRadius *= scale;
-          this._orbitRadius = _clampOrbitRadius(this._orbitRadius);
-          this._orbitDirty = true;
+          this._zoom3DViewAt(cx, cy, scale);
         }
 
         // Pan
@@ -1859,12 +2146,16 @@ export class WasmRenderer {
   _applyOrbitCamera() {
     if (!this._ready) return;
     const t = this._orbitTarget;
+    const up = this._getOrbitUp();
     this._orbitRadius = _clampOrbitRadius(this._orbitRadius);
     const clip = _cameraClipRange(this._orbitRadius);
     const camera = computeOrbitCameraPosition(this._orbitTheta, this._orbitPhi, this._orbitRadius, t);
 
     this.wasm.setCameraPosition(camera.x, camera.y, camera.z);
     this.wasm.setCameraTarget(t.x, t.y, t.z);
+    if (typeof this.wasm.setCameraUp === 'function') {
+      this.wasm.setCameraUp(up.x, up.y, up.z);
+    }
     if (typeof this.wasm.setCameraClipPlanes === 'function') {
       this.wasm.setCameraClipPlanes(clip.near, clip.far);
     }
@@ -2084,6 +2375,7 @@ export class WasmRenderer {
       default:
         return;
     }
+    this._setOrbitUp({ x: 0, y: 0, z: 1 });
     this._orbitDirty = true;
     this._applyOrbitCamera();
   }
@@ -2120,6 +2412,7 @@ export class WasmRenderer {
       this._orbitTarget = { x: center.x, y: center.y, z: center.z };
     }
 
+    this._setOrbitUp({ x: 0, y: 0, z: 1 });
     this._orbitDirty = true;
     this._applyOrbitCamera();
   }
@@ -2134,6 +2427,7 @@ export class WasmRenderer {
       phi: this._orbitPhi,
       radius: this._orbitRadius,
       target: { ...this._orbitTarget },
+      up: { ...this._getOrbitUp() },
       fovDegrees: this._fovDegrees,
       ortho3D: this._ortho3D,
     };
@@ -2148,6 +2442,7 @@ export class WasmRenderer {
     this._orbitTheta = state.theta;
     this._orbitPhi = state.phi;
     this._orbitTarget = { ...state.target };
+    if (state.up) this._setOrbitUp(state.up);
     if (state.ortho3D != null) this.setOrtho3D(state.ortho3D);
     if (state.fovDegrees != null) {
       // Set FOV first (which adjusts radius via compensation),
@@ -2606,6 +2901,7 @@ export class WasmRenderer {
       phi: this._orbitPhi,
       radius: this._orbitRadius,
       target: { ...this._orbitTarget },
+      up: { ...this._getOrbitUp() },
       fovDegrees: this._fovDegrees,
       ortho3D: this._ortho3D,
     };
@@ -2618,6 +2914,7 @@ export class WasmRenderer {
     if (s.phi != null) this._orbitPhi = s.phi;
     if (s.radius != null) this._orbitRadius = _clampOrbitRadius(s.radius);
     if (s.target) this._orbitTarget = { x: s.target.x || 0, y: s.target.y || 0, z: s.target.z || 0 };
+    if (s.up) this._setOrbitUp(s.up);
     if (s.fovDegrees != null) this.setFOV(s.fovDegrees);
     if (s.ortho3D != null) this.setOrtho3D(s.ortho3D);
     // Override radius again after setFOV (which adjusts radius for compensation)
@@ -5972,7 +6269,8 @@ export class WasmRenderer {
     const camZ = t.z + r * Math.cos(phi);
 
     // View matrix (lookAt with Z-up)
-    const view = this._mat4LookAt(camX, camY, camZ, t.x, t.y, t.z, 0, 0, 1);
+    const up = this._getOrbitUp();
+    const view = this._mat4LookAt(camX, camY, camZ, t.x, t.y, t.z, up.x, up.y, up.z);
     if (!view) return null;
 
     // Projection matrix: orthographic when FOV is 0 or ortho3D is forced,
@@ -6363,6 +6661,7 @@ export class WasmRenderer {
       this.wasm.setAxesSize(fit.axesSize);
       this._orbitTheta = Math.PI / 4;
       this._orbitPhi = Math.PI / 3;
+      this._setOrbitUp({ x: 0, y: 0, z: 1 });
       this._orbitDirty = true;
       this._applyOrbitCamera();
     }
@@ -6417,6 +6716,15 @@ export class WasmRenderer {
     if (this.executor) this.executor.dispose();
     if (this._resizeHandler) {
       window.removeEventListener('resize', this._resizeHandler);
+    }
+    if (this._keyDownHandler) {
+      window.removeEventListener('keydown', this._keyDownHandler);
+    }
+    if (this._keyUpHandler) {
+      window.removeEventListener('keyup', this._keyUpHandler);
+    }
+    if (this._windowBlurHandler) {
+      window.removeEventListener('blur', this._windowBlurHandler);
     }
     if (this.canvas.parentNode) {
       this.canvas.parentNode.removeChild(this.canvas);
