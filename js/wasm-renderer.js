@@ -36,6 +36,83 @@ function _cameraClipRange(radius) {
   };
 }
 
+function _isFiniteVec3(value) {
+  return !!value
+    && Number.isFinite(value.x)
+    && Number.isFinite(value.y)
+    && Number.isFinite(value.z);
+}
+
+function _vec3Dot(a, b) {
+  return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+function _vec3Sub(a, b) {
+  return {
+    x: a.x - b.x,
+    y: a.y - b.y,
+    z: a.z - b.z,
+  };
+}
+
+function _vec3Add(a, b) {
+  return {
+    x: a.x + b.x,
+    y: a.y + b.y,
+    z: a.z + b.z,
+  };
+}
+
+function _vec3Scale(value, scalar) {
+  return {
+    x: value.x * scalar,
+    y: value.y * scalar,
+    z: value.z * scalar,
+  };
+}
+
+function _vec3Cross(a, b) {
+  return {
+    x: a.y * b.z - a.z * b.y,
+    y: a.z * b.x - a.x * b.z,
+    z: a.x * b.y - a.y * b.x,
+  };
+}
+
+function _vec3Length(value) {
+  return Math.hypot(value.x, value.y, value.z);
+}
+
+function _vec3Normalize(value) {
+  const length = _vec3Length(value);
+  if (length <= 1e-12) return null;
+  return {
+    x: value.x / length,
+    y: value.y / length,
+    z: value.z / length,
+  };
+}
+
+function _rotatePointAroundAxis(point, origin, axis, angle) {
+  if (!_isFiniteVec3(point) || !_isFiniteVec3(origin) || !Number.isFinite(angle) || Math.abs(angle) < 1e-12) {
+    return _isFiniteVec3(point) ? { ...point } : null;
+  }
+  const unitAxis = _vec3Normalize(axis);
+  if (!unitAxis) return { ...point };
+
+  const relative = _vec3Sub(point, origin);
+  const cosAngle = Math.cos(angle);
+  const sinAngle = Math.sin(angle);
+  const rotated = _vec3Add(
+    _vec3Add(
+      _vec3Scale(relative, cosAngle),
+      _vec3Scale(_vec3Cross(unitAxis, relative), sinAngle),
+    ),
+    _vec3Scale(unitAxis, _vec3Dot(unitAxis, relative) * (1 - cosAngle)),
+  );
+  return _vec3Add(origin, rotated);
+}
+
 function _projectPolygon2D(verts, normal) {
   const an = {
     x: Math.abs(normal?.x || 0),
@@ -917,6 +994,9 @@ export class WasmRenderer {
     this._lastTouchX = 0;
     this._lastTouchY = 0;
     this._lastPinchDist = 0;
+    this._orbitInteractionPivot = null;
+    this._orbitInteractionState = null;
+    this._panInteractionPivot = null;
 
     // Callback for camera change events (used by interaction recorder)
     this.onCameraInteraction = null; // (type: 'orbit_start'|'pan_start'|'orbit_end'|'zoom', state) => void
@@ -1212,6 +1292,320 @@ export class WasmRenderer {
     return true;
   }
 
+  _getCurrentOrbitCameraPose() {
+    const eye = computeOrbitCameraPosition(this._orbitTheta, this._orbitPhi, this._orbitRadius, this._orbitTarget);
+    const forward = _vec3Normalize(_vec3Sub(this._orbitTarget, eye));
+    if (!forward) return null;
+    return { eye, forward };
+  }
+
+  _setOrbitFromEyeAndTarget(eye, target) {
+    if (!_isFiniteVec3(eye) || !_isFiniteVec3(target)) return false;
+    const offset = _vec3Sub(eye, target);
+    const radius = _vec3Length(offset);
+    if (!Number.isFinite(radius) || radius <= 1e-6) return false;
+
+    this._orbitTarget = { x: target.x, y: target.y, z: target.z };
+    this._orbitRadius = _clampOrbitRadius(radius);
+    this._orbitTheta = Math.atan2(offset.y, offset.x);
+    this._orbitPhi = Math.acos(Math.max(-1, Math.min(1, offset.z / radius)));
+    this._orbitPhi = Math.max(0.001, Math.min(Math.PI - 0.001, this._orbitPhi));
+    this._orbitDirty = true;
+    return true;
+  }
+
+  _translateOrbitTargetBy(dx, dy, dz) {
+    this._orbitTarget.x += dx;
+    this._orbitTarget.y += dy;
+    this._orbitTarget.z += dz;
+    this._orbitDirty = true;
+  }
+
+  _computeOrbitRightAxis(forward) {
+    let right = _vec3Normalize(_vec3Cross(forward, { x: 0, y: 0, z: 1 }));
+    if (!right) {
+      right = _vec3Normalize({ x: Math.cos(this._orbitTheta), y: Math.sin(this._orbitTheta), z: 0 });
+    }
+    return right || { x: 1, y: 0, z: 0 };
+  }
+
+  _beginOrbitInteraction(screenX, screenY) {
+    const pose = this._getCurrentOrbitCameraPose();
+    if (!pose) return false;
+    const pivot = this._resolveOrbitInteractionPivot(screenX, screenY);
+    this._orbitInteractionPivot = pivot;
+    this._orbitInteractionState = {
+      startX: screenX,
+      startY: screenY,
+      eye: { ...pose.eye },
+      target: { ...this._orbitTarget },
+      pivot: _isFiniteVec3(pivot) ? { ...pivot } : null,
+    };
+    return !!this._orbitInteractionState.pivot;
+  }
+
+  _updateOrbitInteraction(screenX, screenY) {
+    const interaction = this._orbitInteractionState;
+    if (!interaction?.pivot) return false;
+
+    const yaw = -(screenX - interaction.startX) * 0.005;
+    const pitch = -(screenY - interaction.startY) * 0.005;
+
+    let eye = _rotatePointAroundAxis(interaction.eye, interaction.pivot, { x: 0, y: 0, z: 1 }, yaw);
+    let target = _rotatePointAroundAxis(interaction.target, interaction.pivot, { x: 0, y: 0, z: 1 }, yaw);
+    const forwardAfterYaw = _vec3Normalize(_vec3Sub(target, eye));
+    const rightAxis = this._computeOrbitRightAxis(forwardAfterYaw || { x: 1, y: 0, z: 0 });
+    eye = _rotatePointAroundAxis(eye, interaction.pivot, rightAxis, pitch);
+    target = _rotatePointAroundAxis(target, interaction.pivot, rightAxis, pitch);
+    return this._setOrbitFromEyeAndTarget(eye, target);
+  }
+
+  _endOrbitInteraction() {
+    this._orbitInteractionPivot = null;
+    this._orbitInteractionState = null;
+  }
+
+  _retargetOrbitToPoint(point) {
+    if (!_isFiniteVec3(point)) return false;
+
+    const eye = computeOrbitCameraPosition(this._orbitTheta, this._orbitPhi, this._orbitRadius, this._orbitTarget);
+    const offset = _vec3Sub(eye, point);
+    const radius = _vec3Length(offset);
+    if (!Number.isFinite(radius) || radius <= 1e-6) return false;
+
+    this._orbitTarget = { x: point.x, y: point.y, z: point.z };
+    this._orbitRadius = _clampOrbitRadius(radius);
+    this._orbitTheta = Math.atan2(offset.y, offset.x);
+    this._orbitPhi = Math.acos(Math.max(-1, Math.min(1, offset.z / radius)));
+    this._orbitPhi = Math.max(0.05, Math.min(Math.PI - 0.05, this._orbitPhi));
+    this._orbitDirty = true;
+    return true;
+  }
+
+  _intersectRayWithPlane(origin, dir, planeOrigin, planeNormal) {
+    if (!_isFiniteVec3(origin) || !_isFiniteVec3(dir) || !_isFiniteVec3(planeOrigin) || !_isFiniteVec3(planeNormal)) {
+      return null;
+    }
+
+    const denom = _vec3Dot(dir, planeNormal);
+    if (Math.abs(denom) < 1e-10) return null;
+
+    const t = _vec3Dot(_vec3Sub(planeOrigin, origin), planeNormal) / denom;
+    if (!Number.isFinite(t) || t < 0) return null;
+
+    return {
+      x: origin.x + dir.x * t,
+      y: origin.y + dir.y * t,
+      z: origin.z + dir.z * t,
+    };
+  }
+
+  _raycastWorldPlane(screenX, screenY, planeOrigin, planeNormal) {
+    const ray = this._computePickRay(screenX, screenY);
+    if (!ray) return null;
+    return this._intersectRayWithPlane(ray.origin, ray.dir, planeOrigin, planeNormal);
+  }
+
+  _pickNavigationWorldPoint(screenX, screenY) {
+    const ray = this._computePickRay(screenX, screenY);
+    if (!ray) return null;
+
+    const solidHit = this._raycastClosestMeshHit(ray.origin, ray.dir);
+    if (solidHit?.point) return this._resolveSolidInteriorPivot(solidHit, ray.dir) || { ...solidHit.point };
+
+    if (this._sketchPlaneDef) {
+      const sketchHit = this.pickSketch(screenX, screenY);
+      if (sketchHit) {
+        return this._intersectRayWithPlane(ray.origin, ray.dir, this._sketchPlaneDef.origin, this._sketchPlaneDef.normal);
+      }
+    }
+
+    return null;
+  }
+
+  _resolveSolidInteriorPivot(hit, rayDir) {
+    if (!_isFiniteVec3(hit?.point)) return null;
+
+    const surfaceNormal = _vec3Normalize(hit.normal || hit.face?.normal || null);
+    if (!surfaceNormal) return { ...hit.point };
+
+    const inwardDir = _vec3Dot(rayDir, surfaceNormal) <= 0
+      ? _vec3Scale(surfaceNormal, -1)
+      : { ...surfaceNormal };
+    const epsilon = Math.max(this._orbitRadius * 1e-5, 1e-4);
+    const start = _vec3Add(hit.point, _vec3Scale(inwardDir, epsilon));
+    const exitHit = this._raycastClosestMeshHit(start, inwardDir, { minT: epsilon });
+    if (!_isFiniteVec3(exitHit?.point)) return { ...hit.point };
+    if (_vec3Length(_vec3Sub(exitHit.point, hit.point)) <= epsilon * 2) return { ...hit.point };
+
+    return {
+      x: (hit.point.x + exitHit.point.x) * 0.5,
+      y: (hit.point.y + exitHit.point.y) * 0.5,
+      z: (hit.point.z + exitHit.point.z) * 0.5,
+    };
+  }
+
+  _computeSolidCentroid() {
+    if (!this._meshTriangles || this._meshTriangleCount < 3) return null;
+
+    let signedVolume6 = 0;
+    let centroidX = 0;
+    let centroidY = 0;
+    let centroidZ = 0;
+    const triData = this._meshTriangles;
+    const triangleCount = this._meshTriangleCount / 3;
+
+    for (let triangleIndex = 0; triangleIndex < triangleCount; triangleIndex++) {
+      const base = triangleIndex * 18;
+      const ax = triData[base];
+      const ay = triData[base + 1];
+      const az = triData[base + 2];
+      const bx = triData[base + 6];
+      const by = triData[base + 7];
+      const bz = triData[base + 8];
+      const cx = triData[base + 12];
+      const cy = triData[base + 13];
+      const cz = triData[base + 14];
+
+      const signed6 = ax * (by * cz - bz * cy)
+        - ay * (bx * cz - bz * cx)
+        + az * (bx * cy - by * cx);
+      signedVolume6 += signed6;
+      centroidX += (ax + bx + cx) * signed6;
+      centroidY += (ay + by + cy) * signed6;
+      centroidZ += (az + bz + cz) * signed6;
+    }
+
+    if (Math.abs(signedVolume6) > 1e-8) {
+      const centroid = {
+        x: centroidX / (4 * signedVolume6),
+        y: centroidY / (4 * signedVolume6),
+        z: centroidZ / (4 * signedVolume6),
+      };
+      if (_isFiniteVec3(centroid)) return centroid;
+    }
+
+    if (this._partBounds?.min && this._partBounds?.max) {
+      return {
+        x: (this._partBounds.min.x + this._partBounds.max.x) * 0.5,
+        y: (this._partBounds.min.y + this._partBounds.max.y) * 0.5,
+        z: (this._partBounds.min.z + this._partBounds.max.z) * 0.5,
+      };
+    }
+
+    return null;
+  }
+
+  _computeSketchCenter() {
+    let minX = Infinity;
+    let minY = Infinity;
+    let minZ = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    let maxZ = -Infinity;
+    let found = false;
+
+    const expandBounds = (buffer, stride) => {
+      if (!buffer || buffer.length < 3) return;
+      for (let index = 0; index + 2 < buffer.length; index += stride) {
+        const x = buffer[index];
+        const y = buffer[index + 1];
+        const z = buffer[index + 2];
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        minZ = Math.min(minZ, z);
+        maxX = Math.max(maxX, x);
+        maxY = Math.max(maxY, y);
+        maxZ = Math.max(maxZ, z);
+        found = true;
+      }
+    };
+
+    expandBounds(this._activeSceneEdges, 3);
+    expandBounds(this._sketchEdges, 3);
+    expandBounds(this._sketchInactiveEdges, 3);
+    expandBounds(this._sketchSelectedEdges, 3);
+    expandBounds(this._sketchFaceTriangles, 6);
+
+    if (found) {
+      return {
+        x: (minX + maxX) * 0.5,
+        y: (minY + maxY) * 0.5,
+        z: (minZ + maxZ) * 0.5,
+      };
+    }
+
+    if (_isFiniteVec3(this._sketchPlaneDef?.origin)) {
+      return { ...this._sketchPlaneDef.origin };
+    }
+
+    return null;
+  }
+
+  _getNavigationFallbackPoint() {
+    return this._computeSolidCentroid()
+      || this._computeSketchCenter()
+      || { x: 0, y: 0, z: 0 };
+  }
+
+  _getClosestScenePointToCamera() {
+    const pose = this._getCurrentOrbitCameraPose();
+    if (!pose) return null;
+
+    let bestPoint = null;
+    let bestDepth = Infinity;
+
+    const considerPoint = (x, y, z) => {
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
+      const point = { x, y, z };
+      const depth = _vec3Dot(_vec3Sub(point, pose.eye), pose.forward);
+      if (!Number.isFinite(depth) || depth <= 0 || depth >= bestDepth) return;
+      bestDepth = depth;
+      bestPoint = point;
+    };
+
+    const considerBuffer = (buffer, stride) => {
+      if (!buffer || buffer.length < 3) return;
+      for (let index = 0; index + 2 < buffer.length; index += stride) {
+        considerPoint(buffer[index], buffer[index + 1], buffer[index + 2]);
+      }
+    };
+
+    considerBuffer(this._meshTriangles, 6);
+    considerBuffer(this._activeSceneEdges, 3);
+    considerBuffer(this._sketchEdges, 3);
+    considerBuffer(this._sketchInactiveEdges, 3);
+    considerBuffer(this._sketchSelectedEdges, 3);
+    considerBuffer(this._sketchFaceTriangles, 6);
+
+    return bestPoint;
+  }
+
+  _resolveOrbitInteractionPivot(screenX, screenY) {
+    return this._pickNavigationWorldPoint(screenX, screenY) || this._getNavigationFallbackPoint();
+  }
+
+  _resolvePanInteractionPivot(screenX, screenY) {
+    return this._pickNavigationWorldPoint(screenX, screenY)
+      || this._getClosestScenePointToCamera()
+      || this._getNavigationFallbackPoint();
+  }
+
+  _pan3DBetweenScreenPoints(fromX, fromY, toX, toY, pivotPoint) {
+    if (!_isFiniteVec3(pivotPoint)) return false;
+    const pose = this._getCurrentOrbitCameraPose();
+    if (!pose) return false;
+
+    // Pan in the camera-facing plane anchored at the chosen pivot depth.
+    const before = this._raycastWorldPlane(fromX, fromY, pivotPoint, pose.forward);
+    const after = this._raycastWorldPlane(toX, toY, pivotPoint, pose.forward);
+    if (!before || !after) return false;
+
+    this._translateOrbitTargetBy(before.x - after.x, before.y - after.y, before.z - after.z);
+    return true;
+  }
+
   _bind3DControls() {
     const canvas = this.canvas;
 
@@ -1223,24 +1617,32 @@ export class WasmRenderer {
         && (!this.shouldAllowLeftClickOrbit || this.shouldAllowLeftClickOrbit());
       if (e.button === 0 && allowLeftOrbit && (!sketchNavigation || e.shiftKey)) {
         e.preventDefault();
+        this._beginOrbitInteraction(e.clientX, e.clientY);
         this._isDragging = true;
         this._isPanning3D = false;
         this._leftClickOrbiting = true;
         if (this.onCameraInteraction) this.onCameraInteraction('orbit_start', this.getOrbitState());
       } else if (e.button === 1 && (!sketchNavigation || e.shiftKey)) {
         e.preventDefault();
+        this._beginOrbitInteraction(e.clientX, e.clientY);
         this._isDragging = true;
         this._isPanning3D = false;
         this._leftClickOrbiting = false;
         if (this.onCameraInteraction) this.onCameraInteraction('orbit_start', this.getOrbitState());
       } else if (e.button === 1 && sketchNavigation) {
         e.preventDefault();
+        this._endOrbitInteraction();
+        this._panInteractionPivot = null;
         this._isPanning3D = true;
         this._isDragging = false;
         this._leftClickOrbiting = false;
         if (this.onCameraInteraction) this.onCameraInteraction('pan_start', this.getOrbitState());
       } else if (e.button === 2) {
         e.preventDefault();
+        this._endOrbitInteraction();
+        this._panInteractionPivot = (sketchNavigation && !e.shiftKey)
+          ? null
+          : this._resolvePanInteractionPivot(e.clientX, e.clientY);
         this._isPanning3D = true;
         this._isDragging = false;
         if (this.onCameraInteraction) this.onCameraInteraction('pan_start', this.getOrbitState());
@@ -1259,34 +1661,33 @@ export class WasmRenderer {
       this._lastMouseY = e.clientY;
 
       if (this._isDragging) {
-        // Orbit: adjust theta (azimuth) and phi (elevation)
-        this._orbitTheta -= dx * 0.005;
-        this._orbitPhi -= dy * 0.005;
-        // Clamp phi to avoid flipping
-        this._orbitPhi = Math.max(0.05, Math.min(Math.PI - 0.05, this._orbitPhi));
-        this._orbitDirty = true;
+        if (!this._updateOrbitInteraction(e.clientX, e.clientY)) {
+          this._orbitTheta -= dx * 0.005;
+          this._orbitPhi -= dy * 0.005;
+          this._orbitPhi = Math.max(0.05, Math.min(Math.PI - 0.05, this._orbitPhi));
+          this._orbitDirty = true;
+        }
       } else if (this._isPanning3D) {
         if (this._isSketchNavigationMode() && !e.shiftKey) {
           this._panSketchViewBetweenScreenPoints(previousX, previousY, e.clientX, e.clientY);
           return;
         }
-        // Pan: move target in the camera's local right/up plane
-        const panSpeed = this._orbitRadius * 0.001;
-        const theta = this._orbitTheta;
-        const phi = this._orbitPhi;
+        if (!this._pan3DBetweenScreenPoints(previousX, previousY, e.clientX, e.clientY, this._panInteractionPivot)) {
+          const panSpeed = this._orbitRadius * 0.001;
+          const theta = this._orbitTheta;
+          const phi = this._orbitPhi;
+          const rightX = -Math.sin(theta);
+          const rightY = Math.cos(theta);
+          const upX = -Math.cos(theta) * Math.cos(phi);
+          const upY = -Math.sin(theta) * Math.cos(phi);
+          const upZ = Math.sin(phi);
 
-        // Camera right vector (perpendicular to view direction in XY plane)
-        const rightX = -Math.sin(theta);
-        const rightY = Math.cos(theta);
-        // Camera up vector (world Z projected)
-        const upX = -Math.cos(theta) * Math.cos(phi);
-        const upY = -Math.sin(theta) * Math.cos(phi);
-        const upZ = Math.sin(phi);
-
-        this._orbitTarget.x += (-dx * rightX + dy * upX) * panSpeed;
-        this._orbitTarget.y += (-dx * rightY + dy * upY) * panSpeed;
-        this._orbitTarget.z += dy * upZ * panSpeed;
-        this._orbitDirty = true;
+          this._translateOrbitTargetBy(
+            (-dx * rightX + dy * upX) * panSpeed,
+            (-dx * rightY + dy * upY) * panSpeed,
+            dy * upZ * panSpeed,
+          );
+        }
       }
     });
 
@@ -1295,6 +1696,8 @@ export class WasmRenderer {
       this._isDragging = false;
       this._isPanning3D = false;
       this._leftClickOrbiting = false;
+      this._endOrbitInteraction();
+      this._panInteractionPivot = null;
       if (wasDragging && this.onCameraInteraction) this.onCameraInteraction('orbit_end', this.getOrbitState());
     });
 
@@ -1302,6 +1705,8 @@ export class WasmRenderer {
       this._isDragging = false;
       this._isPanning3D = false;
       this._leftClickOrbiting = false;
+      this._endOrbitInteraction();
+      this._panInteractionPivot = null;
     });
 
     canvas.addEventListener('wheel', (e) => {
@@ -1333,6 +1738,7 @@ export class WasmRenderer {
 
       if (e.touches.length === 1) {
         // Single finger: orbit
+        this._beginOrbitInteraction(e.touches[0].clientX, e.touches[0].clientY);
         this._touchOrbiting = true;
         this._touchPanning = false;
         this._lastTouchX = e.touches[0].clientX;
@@ -1340,11 +1746,13 @@ export class WasmRenderer {
         if (this.onCameraInteraction) this.onCameraInteraction('orbit_start', this.getOrbitState());
       } else if (e.touches.length === 2) {
         // Two fingers: pan + pinch zoom
+        this._endOrbitInteraction();
         this._touchOrbiting = false;
         this._touchPanning = true;
         const t0 = e.touches[0], t1 = e.touches[1];
         this._lastPinchCenterX = (t0.clientX + t1.clientX) / 2;
         this._lastPinchCenterY = (t0.clientY + t1.clientY) / 2;
+        this._panInteractionPivot = this._resolvePanInteractionPivot(this._lastPinchCenterX, this._lastPinchCenterY);
         this._lastTouchX = this._lastPinchCenterX;
         this._lastTouchY = this._lastPinchCenterY;
         this._lastPinchDist = Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY);
@@ -1365,10 +1773,12 @@ export class WasmRenderer {
         this._lastTouchX = e.touches[0].clientX;
         this._lastTouchY = e.touches[0].clientY;
 
-        this._orbitTheta -= dx * 0.005;
-        this._orbitPhi -= dy * 0.005;
-        this._orbitPhi = Math.max(0.05, Math.min(Math.PI - 0.05, this._orbitPhi));
-        this._orbitDirty = true;
+        if (!this._updateOrbitInteraction(this._lastTouchX, this._lastTouchY)) {
+          this._orbitTheta -= dx * 0.005;
+          this._orbitPhi -= dy * 0.005;
+          this._orbitPhi = Math.max(0.05, Math.min(Math.PI - 0.05, this._orbitPhi));
+          this._orbitDirty = true;
+        }
       } else if (e.touches.length === 2) {
         // Two-finger pan + pinch zoom
         const t0 = e.touches[0], t1 = e.touches[1];
@@ -1388,19 +1798,22 @@ export class WasmRenderer {
         const dx = cx - this._lastTouchX;
         const dy = cy - this._lastTouchY;
         if (Math.abs(dx) > 0.1 || Math.abs(dy) > 0.1) {
-          const panSpeed = this._orbitRadius * 0.001;
-          const theta = this._orbitTheta;
-          const phi = this._orbitPhi;
-          const rightX = -Math.sin(theta);
-          const rightY = Math.cos(theta);
-          const upX = -Math.cos(theta) * Math.cos(phi);
-          const upY = -Math.sin(theta) * Math.cos(phi);
-          const upZ = Math.sin(phi);
+          if (!this._pan3DBetweenScreenPoints(this._lastTouchX, this._lastTouchY, cx, cy, this._panInteractionPivot)) {
+            const panSpeed = this._orbitRadius * 0.001;
+            const theta = this._orbitTheta;
+            const phi = this._orbitPhi;
+            const rightX = -Math.sin(theta);
+            const rightY = Math.cos(theta);
+            const upX = -Math.cos(theta) * Math.cos(phi);
+            const upY = -Math.sin(theta) * Math.cos(phi);
+            const upZ = Math.sin(phi);
 
-          this._orbitTarget.x += (-dx * rightX + dy * upX) * panSpeed;
-          this._orbitTarget.y += (-dx * rightY + dy * upY) * panSpeed;
-          this._orbitTarget.z += dy * upZ * panSpeed;
-          this._orbitDirty = true;
+            this._translateOrbitTargetBy(
+              (-dx * rightX + dy * upX) * panSpeed,
+              (-dx * rightY + dy * upY) * panSpeed,
+              dy * upZ * panSpeed,
+            );
+          }
         }
 
         this._lastTouchX = cx;
@@ -1418,6 +1831,8 @@ export class WasmRenderer {
         this._touchOrbiting = false;
         this._touchPanning = false;
         this._touchCount = 0;
+        this._endOrbitInteraction();
+        this._panInteractionPivot = null;
         if (wasTouching && this.onCameraInteraction) this.onCameraInteraction('orbit_end', this.getOrbitState());
       } else if (e.touches.length === 1) {
         // Went from 2 fingers to 1: switch to orbit
@@ -1426,6 +1841,8 @@ export class WasmRenderer {
         this._touchCount = 1;
         this._lastTouchX = e.touches[0].clientX;
         this._lastTouchY = e.touches[0].clientY;
+        this._panInteractionPivot = null;
+        this._beginOrbitInteraction(this._lastTouchX, this._lastTouchY);
       }
     }, { passive: false });
 
@@ -1434,6 +1851,8 @@ export class WasmRenderer {
       this._touchPanning = false;
       this._touchCount = 0;
       this._lastPinchDist = 0;
+      this._endOrbitInteraction();
+      this._panInteractionPivot = null;
     });
   }
 
@@ -1596,12 +2015,14 @@ export class WasmRenderer {
     return depth <= occluderScreenPoint.depth + tolerance;
   }
 
-  _raycastClosestMeshHit(origin, dir) {
+  _raycastClosestMeshHit(origin, dir, options = {}) {
     if (!origin || !dir || !this._meshTriangles || this._meshTriangleCount === 0) return null;
 
+    const minT = Number.isFinite(options.minT) ? Math.max(0, options.minT) : 0;
     let closestT = Infinity;
     let closestFaceIndex = -1;
     let closestPoint = null;
+    let closestNormal = null;
 
     const triData = this._meshTriangles;
     const triCount = this._meshTriangleCount / 3;
@@ -1611,7 +2032,7 @@ export class WasmRenderer {
       const second = { x: triData[base + 6], y: triData[base + 7], z: triData[base + 8] };
       const third = { x: triData[base + 12], y: triData[base + 13], z: triData[base + 14] };
       const hitT = this._rayTriangleIntersect(origin, dir, first, second, third);
-      if (hitT === null || hitT <= 0 || hitT >= closestT) continue;
+      if (hitT === null || hitT <= minT || hitT >= closestT) continue;
       closestT = hitT;
       closestFaceIndex = this._triFaceMap ? this._triFaceMap[triangleIndex] : -1;
       closestPoint = {
@@ -1619,6 +2040,7 @@ export class WasmRenderer {
         y: origin.y + dir.y * hitT,
         z: origin.z + dir.z * hitT,
       };
+      closestNormal = _triangleNormal(first, second, third);
     }
 
     if (!closestPoint) return null;
@@ -1626,6 +2048,7 @@ export class WasmRenderer {
       t: closestT,
       faceIndex: closestFaceIndex,
       face: closestFaceIndex >= 0 && this._meshFaces ? this._meshFaces[closestFaceIndex] : null,
+      normal: closestNormal,
       point: closestPoint,
     };
   }
