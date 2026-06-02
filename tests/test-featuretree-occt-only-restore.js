@@ -68,10 +68,30 @@ function makeOcctResult(checkpoint = makeOcctCheckpoint()) {
         { x: 0, y: 1, z: 0 },
       ],
       normal: { x: 0, y: 0, z: 1 },
+      vertexNormals: [
+        { x: 0, y: 0, z: 1 },
+        { x: 0, y: 0, z: 1 },
+        { x: 0, y: 0, z: 1 },
+      ],
     }],
-    edges: [],
-    paths: [],
-    visualEdges: [],
+    edges: [{
+      start: { x: 0, y: 0, z: 0 },
+      end: { x: 1, y: 0, z: 0 },
+      stableHash: 'E:top',
+      source: 'occt',
+    }],
+    paths: [{ edgeIndices: [0], stableHash: 'P:top' }],
+    visualEdges: [{
+      start: { x: 0, y: 0, z: 0 },
+      end: { x: 1, y: 0, z: 0 },
+    }],
+    _occtFeatureEdges: [{
+      start: { x: 0, y: 0, z: 0 },
+      end: { x: 1, y: 0, z: 0 },
+      stableHash: 'E:top',
+      source: 'occt',
+    }],
+    _occtFeaturePaths: [{ edgeIndices: [0], stableHash: 'P:top' }],
     _occtModeling: {
       authoritative: true,
       source: 'checkpoint-restore',
@@ -160,6 +180,38 @@ test('serialize emits only OCCT checkpoints for solid results', () => {
   assert.equal(Object.prototype.hasOwnProperty.call(entry, 'payload'), false, 'serialized checkpoints should not emit a CBREP payload');
   assert.equal(Object.prototype.hasOwnProperty.call(entry, 'hash'), false, 'serialized checkpoints should not emit a legacy CBREP hash');
   assert.equal(Object.prototype.hasOwnProperty.call(entry, 'version'), false, 'serialized checkpoints should not emit a legacy CBREP version');
+});
+
+test('serialize preserves OCCT mesh snapshots needed for smooth shading and feature edges', () => {
+  const { tree, feature } = createTreeWithFeature();
+  const checkpoint = makeOcctCheckpoint({ revision: { revisionId: 'rev-3', topologyHash: 'topo-3' } });
+  tree.results[feature.id] = makeOcctResult(checkpoint);
+
+  const serialized = tree.serialize();
+  const entry = serialized.checkpoints?.[feature.id];
+
+  assert.ok(entry?.mesh, 'serialized checkpoint should include a display mesh snapshot');
+  assert.equal(entry.mesh.faces?.[0]?.vertexNormals?.length, 3, 'mesh snapshot should preserve per-vertex normals');
+  assert.equal(entry.mesh._occtFeatureEdges?.length, 1, 'mesh snapshot should preserve native OCCT feature edges');
+  assert.equal(entry.mesh.paths?.[0]?.stableHash, 'P:top', 'mesh snapshot should preserve edge path metadata');
+});
+
+test('fast restore forwards serialized mesh snapshots into the OCCT restore path', () => {
+  const { tree, feature } = createTreeWithFeature();
+  const checkpoint = makeOcctCheckpoint();
+  const mesh = makeOcctResult(checkpoint).geometry;
+  let seenMesh = null;
+  tree._buildSolidResultFromOcctCheckpoint = (_featureId, occtCheckpoint, _deps, _cacheVersion, meshSnapshot) => {
+    seenMesh = meshSnapshot;
+    return makeOcctResult(occtCheckpoint);
+  };
+
+  const restored = tree.tryFastRestoreFromCheckpoints({
+    [feature.id]: { occt: checkpoint, mesh },
+  });
+
+  assert.equal(restored, true, 'mesh-backed OCCT checkpoint should restore successfully');
+  assert.deepEqual(seenMesh, mesh, 'fast restore should pass the serialized mesh snapshot through to the OCCT restore helper');
 });
 
 test('rehydrateOcctFeatureDisplayGeometry rebuilds fillet tags and merged edge sets from checkpoint topology', () => {

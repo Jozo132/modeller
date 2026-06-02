@@ -9,6 +9,7 @@ import { Feature } from './Feature.js';
 import { DirtyFaceTracker, stampDirtyFieldsOnResult } from './DirtyFaceTracker.js';
 import {
   createOcctSketchModelingCheckpoint,
+  cloneOcctCheckpointMeshSnapshot,
   disposeOcctSketchModelingShape,
   rehydrateOcctFeatureDisplayGeometry,
   restoreOcctSketchModelingCheckpoint,
@@ -528,14 +529,44 @@ export class FeatureTree {
 
   _buildSolidResultFromSerializedCheckpoint(featureId, feature, entry, deps, cbrepCacheVersion = null) {
     if (this._hasOcctCheckpoint(entry)) {
-      return this._buildSolidResultFromOcctCheckpoint(featureId, entry.occt, deps, cbrepCacheVersion);
+      return this._buildSolidResultFromOcctCheckpoint(
+        featureId,
+        entry.occt,
+        deps,
+        cbrepCacheVersion,
+        this._cloneOcctDisplayMeshSnapshot(entry.mesh),
+      );
     }
     throw new Error(`missing OCCT checkpoint for ${featureId}`);
   }
 
-  _buildSolidResultFromOcctCheckpoint(featureId, checkpoint, deps, cbrepCacheVersion = null) {
+  _cloneOcctDisplayMeshSnapshot(mesh) {
+    return cloneOcctCheckpointMeshSnapshot(mesh);
+  }
+
+  _serializeOcctDisplayMeshSnapshot(geometry) {
+    if (!geometry || !Array.isArray(geometry.faces) || geometry.faces.length === 0) return null;
+    const snapshot = {
+      faces: geometry.faces,
+      edges: Array.isArray(geometry.edges) ? geometry.edges : [],
+      paths: Array.isArray(geometry.paths) ? geometry.paths : [],
+      visualEdges: Array.isArray(geometry.visualEdges) ? geometry.visualEdges : [],
+    };
+    if (Array.isArray(geometry._occtFeatureEdges)) snapshot._occtFeatureEdges = geometry._occtFeatureEdges;
+    if (Array.isArray(geometry._occtFeaturePaths)) snapshot._occtFeaturePaths = geometry._occtFeaturePaths;
+    if (Array.isArray(geometry._selectionCompatEdges)) snapshot._selectionCompatEdges = geometry._selectionCompatEdges;
+    if (Array.isArray(geometry._selectionCompatPaths)) snapshot._selectionCompatPaths = geometry._selectionCompatPaths;
+    if (Array.isArray(geometry._selectionCompatOcctFeatureEdges)) snapshot._selectionCompatOcctFeatureEdges = geometry._selectionCompatOcctFeatureEdges;
+    if (Array.isArray(geometry._selectionCompatOcctFeaturePaths)) snapshot._selectionCompatOcctFeaturePaths = geometry._selectionCompatOcctFeaturePaths;
+    if (geometry._occtModeling && typeof geometry._occtModeling === 'object') snapshot._occtModeling = geometry._occtModeling;
+    if (geometry._occt && typeof geometry._occt === 'object') snapshot._occt = geometry._occt;
+    if (geometry._tessellator != null) snapshot._tessellator = geometry._tessellator;
+    return this._cloneOcctDisplayMeshSnapshot(snapshot);
+  }
+
+  _buildSolidResultFromOcctCheckpoint(featureId, checkpoint, deps, cbrepCacheVersion = null, meshSnapshot = null) {
     const feature = this.featureMap.get(featureId) || null;
-    const restored = restoreOcctSketchModelingCheckpoint(checkpoint);
+    const restored = restoreOcctSketchModelingCheckpoint(checkpoint, null, meshSnapshot);
     const geometry = restored?.geometry || restored?.mesh || null;
     if (!geometry || !Array.isArray(geometry.faces) || geometry.faces.length === 0) {
       throw new Error(`empty OCCT checkpoint restore for ${featureId}`);
@@ -1255,6 +1286,10 @@ export class FeatureTree {
       const entry = {};
       if (this._hasOcctCheckpoint({ occt: result.occtCheckpoint })) {
         entry.occt = result.occtCheckpoint;
+      }
+      const mesh = this._serializeOcctDisplayMeshSnapshot(result.geometry);
+      if (mesh) {
+        entry.mesh = mesh;
       }
       if (!entry.occt) continue;
       out[feature.id] = entry;
