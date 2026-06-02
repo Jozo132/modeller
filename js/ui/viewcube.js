@@ -187,7 +187,7 @@ export class ViewCube {
    * @param {HTMLElement} container — the viewport element to attach to
    * @param {object} opts
    * @param {() => {theta:number, phi:number}} opts.getOrbit — read current orbit angles
-   * @param {(theta:number, phi:number) => void} opts.setOrbit — animate to orbit angles
+  * @param {(theta:number, phi:number, region?:string) => void} opts.setOrbit — animate to orbit angles
    */
   constructor(container, { getOrbit, setOrbit } = {}) {
     this._container = container;
@@ -386,7 +386,7 @@ export class ViewCube {
     const region = this._hitTest(mx, my);
     if (region && VIEW_ANGLES[region] && this._setOrbit) {
       const target = VIEW_ANGLES[region];
-      this._setOrbit(target.theta, target.phi);
+      this._setOrbit(target.theta, target.phi, region);
     }
   }
 

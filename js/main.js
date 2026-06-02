@@ -86,6 +86,12 @@ const MESH_TRIANGLE_OVERLAY_STORAGE_KEY = 'cad-modeller-mesh-triangle-overlay';
 const MESH_TRIANGLE_OVERLAY_MODE_OFF = 'off';
 const MESH_TRIANGLE_OVERLAY_MODE_OUTLINE = 'outline';
 const NORMAL_COLOR_SHADING_KEY = 'cad-modeller-normal-color-shading';
+const PROJECTED_SHADOW_ENABLED_KEY = 'cad-modeller-projected-shadow-enabled';
+const SELF_SHADOW_ENABLED_KEY = 'cad-modeller-self-shadow-enabled';
+const SUN_LIGHT_ENABLED_KEY = 'cad-modeller-sun-light-enabled';
+const SUN_TIME_HOURS_KEY = 'cad-modeller-sun-time-hours';
+const BACKGROUND_ENABLED_KEY = 'cad-modeller-background-enabled';
+const FISHEYE_STRENGTH_KEY = 'cad-modeller-fisheye-strength';
 const RECORDING_BAR_VISIBLE_KEY = 'cad-modeller-recording-bar-visible';
 const COMMAND_BAR_VISIBLE_KEY = 'cad-modeller-command-bar-visible';
 const TESS_QUALITY_STORAGE_KEY = 'cad-modeller-tessellation-quality-preset';
@@ -93,6 +99,9 @@ const CLICK_DRAG_TOLERANCE_PX = 4;
 const TESS_QUALITY_PRESETS = new Set(['draft', 'normal', 'fine', 'ultra']);
 const STATUS_ERROR_RE = /\b(failed|error|exception|unavailable|invalid|missing|cannot|not a function)\b/i;
 const STATUS_WARN_RE = /\bwarn(?:ing)?\b/i;
+const TOP_VIEW_ANGLES = { theta: -Math.PI / 2, phi: 0.001 };
+const BOTTOM_VIEW_ANGLES = { theta: -Math.PI / 2, phi: Math.PI - 0.001 };
+const ORBIT_SHORTCUT_EPSILON = 1e-3;
 const IMAGE_PROPERTY_SECTIONS = [
   { key: 'overview', label: 'Overview' },
   { key: 'transform', label: 'Transform' },
@@ -172,6 +181,13 @@ class App {
     this._invisibleEdgesVisible = this._loadInvisibleEdgesVisible();
     this._meshTriangleOverlayMode = this._loadMeshTriangleOverlayMode();
     this._normalColorShadingEnabled = this._loadNormalColorShading();
+    this._projectedShadowEnabled = this._loadProjectedShadowEnabled();
+    this._selfShadowEnabled = this._loadSelfShadowEnabled();
+    this._sunLightEnabled = this._loadSunLightEnabled();
+    this._sunTimeHours = this._loadSunTimeHours();
+    this._backgroundEnabled = this._loadBackgroundEnabled();
+    this._fisheyeStrength = this._loadFisheyeStrength();
+    this._topBottomShortcutState = null;
     this._consoleViewController = getOrCreateConsoleViewController({
       onClearStatus: () => this.setStatus('Console cleared.'),
     });
@@ -224,7 +240,14 @@ class App {
     this._renderer3d.setInvisibleEdgesVisible(this._invisibleEdgesVisible);
     this._renderer3d.setMeshTriangleOverlayMode(this._meshTriangleOverlayMode);
     this._renderer3d.setNormalColorShadingEnabled(this._normalColorShadingEnabled);
+    this._renderer3d.setProjectedShadowEnabled(this._projectedShadowEnabled);
+    this._renderer3d.setSelfShadowEnabled(this._selfShadowEnabled);
+    this._renderer3d.setSunLightEnabled(this._sunLightEnabled);
+    this._renderer3d.setSunTimeHours(this._sunTimeHours);
+    this._renderer3d.setBackgroundEnabled(this._backgroundEnabled);
+    this._renderer3d.setFisheyeStrength(this._fisheyeStrength);
     this._renderer3d.shouldAllowLeftClickOrbit = () => false;
+    this._syncFisheyeStrengthSlider(this._fisheyeStrength);
     if (this._renderer3d._loadPromise) {
       this._renderer3d._loadPromise.then(async () => {
         this._update3DView();
@@ -237,7 +260,7 @@ class App {
     // Navigation ViewCube — visible only in part (3D) mode
     this._viewCube = new ViewCube(view3dContainer, {
       getOrbit: () => this._renderer3d.getOrbitState(),
-      setOrbit: (theta, phi) => this._animateOrbitTo(theta, phi),
+      setOrbit: (theta, phi, region) => this._animateOrbitTo(theta, phi, { fitToExtents: true, region }),
     });
     this._viewCube.setVisible(this._workspaceMode === 'part');
     this._renderer3d.onPostRender = () => this._viewCube.render();
@@ -338,6 +361,11 @@ class App {
     this._applyMeshTriangleOverlayState();
     this._syncDiagnosticHatchUI();
     this._syncNormalColorShadingUI();
+    this._applyProjectedShadowState();
+    this._applySelfShadowState();
+    this._applySunLightState();
+    this._applySunTimeState();
+    this._applyBackgroundState();
     this._applyBarVisibility();
     this._bindDragDropEvents();
     this._setupMobileUI();
@@ -489,6 +517,15 @@ class App {
     const raw = degrees <= 0 ? 0 : Math.max(1, degrees - 4);
     if (slider) slider.value = raw;
     if (label) label.textContent = degrees === 0 ? 'Ortho' : degrees + '\u00b0';
+  }
+
+  _syncFisheyeStrengthSlider(strength) {
+    const slider = document.getElementById('fisheye-strength-slider');
+    const label = document.getElementById('fisheye-strength-value');
+    const clamped = Math.max(0, Math.min(1, Number.isFinite(strength) ? strength : 1));
+    const percent = Math.round(clamped * 100);
+    if (slider) slider.value = String(percent);
+    if (label) label.textContent = percent + '%';
   }
 
   _scheduleRender() {
@@ -2387,6 +2424,51 @@ class App {
       this._toggleNormalColorShading(!!e.currentTarget.checked);
     });
 
+    const projectedShadowLabel = document.getElementById('menu-toggle-projected-shadow-label');
+    const projectedShadowToggle = document.getElementById('menu-toggle-projected-shadow');
+    projectedShadowLabel?.addEventListener('click', (e) => e.stopPropagation());
+    projectedShadowToggle?.addEventListener('click', (e) => e.stopPropagation());
+    projectedShadowToggle?.addEventListener('change', (e) => {
+      e.stopPropagation();
+      this._toggleProjectedShadow(!!e.currentTarget.checked);
+    });
+
+    const selfShadowLabel = document.getElementById('menu-toggle-self-shadow-label');
+    const selfShadowToggle = document.getElementById('menu-toggle-self-shadow');
+    selfShadowLabel?.addEventListener('click', (e) => e.stopPropagation());
+    selfShadowToggle?.addEventListener('click', (e) => e.stopPropagation());
+    selfShadowToggle?.addEventListener('change', (e) => {
+      e.stopPropagation();
+      this._toggleSelfShadow(!!e.currentTarget.checked);
+    });
+
+    const sunLightLabel = document.getElementById('menu-toggle-sun-light-label');
+    const sunLightToggle = document.getElementById('menu-toggle-sun-light');
+    sunLightLabel?.addEventListener('click', (e) => e.stopPropagation());
+    sunLightToggle?.addEventListener('click', (e) => e.stopPropagation());
+    sunLightToggle?.addEventListener('change', (e) => {
+      e.stopPropagation();
+      this._toggleSunLight(!!e.currentTarget.checked);
+    });
+
+    const sunTimeControl = document.getElementById('menu-sun-time-control');
+    const sunTimeSlider = document.getElementById('menu-sun-time');
+    sunTimeControl?.addEventListener('click', (e) => e.stopPropagation());
+    sunTimeSlider?.addEventListener('click', (e) => e.stopPropagation());
+    sunTimeSlider?.addEventListener('input', (e) => {
+      e.stopPropagation();
+      this._setSunTimeHours(parseFloat(e.currentTarget.value));
+    });
+
+    const backgroundLabel = document.getElementById('menu-toggle-background-label');
+    const backgroundToggle = document.getElementById('menu-toggle-background');
+    backgroundLabel?.addEventListener('click', (e) => e.stopPropagation());
+    backgroundToggle?.addEventListener('click', (e) => e.stopPropagation());
+    backgroundToggle?.addEventListener('change', (e) => {
+      e.stopPropagation();
+      this._toggleBackground(!!e.currentTarget.checked);
+    });
+
     const recordingBarLabel = document.getElementById('menu-toggle-recording-bar-label');
     const recordingBarToggle = document.getElementById('menu-toggle-recording-bar');
     recordingBarLabel?.addEventListener('click', (e) => e.stopPropagation());
@@ -2550,6 +2632,14 @@ class App {
           this._recorder.fovChanged(deg);
         }
         this._scheduleRender();
+      });
+    }
+
+    const fisheyeStrengthSlider = document.getElementById('fisheye-strength-slider');
+    if (fisheyeStrengthSlider) {
+      fisheyeStrengthSlider.addEventListener('input', () => {
+        const raw = parseInt(fisheyeStrengthSlider.value, 10);
+        this._setFisheyeStrength((Number.isFinite(raw) ? raw : 100) / 100);
       });
     }
 
@@ -2748,7 +2838,7 @@ class App {
             break;
           case 'd': e.preventDefault(); this.setActiveTool('copy'); break;
           case 'g': e.preventDefault(); this._toggleGroupSelection(); break;
-          case '8': e.preventDefault(); this._orientToNormalView(); break;
+          case '8': e.preventDefault(); this._triggerTopBottomViewShortcut(); break;
           case 'a':
             e.preventDefault();
             state.entities.forEach(ent => state.select(ent));
@@ -2759,6 +2849,10 @@ class App {
       }
 
       switch (e.key) {
+        case '0':
+          e.preventDefault();
+          this._triggerTopBottomViewShortcut();
+          break;
         case 'Escape': {
           // Cancel awaiting sketch plane selection first
           if (this._awaitingSketchPlane) {
@@ -8092,6 +8186,233 @@ class App {
     this._scheduleRender();
   }
 
+  _loadProjectedShadowEnabled() {
+    try {
+      const stored = localStorage.getItem(PROJECTED_SHADOW_ENABLED_KEY);
+      return stored == null ? true : stored === 'true';
+    } catch {
+      return true;
+    }
+  }
+
+  _saveProjectedShadowEnabled() {
+    try {
+      localStorage.setItem(PROJECTED_SHADOW_ENABLED_KEY, this._projectedShadowEnabled ? 'true' : 'false');
+    } catch {}
+  }
+
+  _applyProjectedShadowState() {
+    if (this._renderer3d) {
+      this._renderer3d.setProjectedShadowEnabled(this._projectedShadowEnabled);
+    }
+    this._syncProjectedShadowUI();
+  }
+
+  _syncProjectedShadowUI() {
+    const toggle = document.getElementById('menu-toggle-projected-shadow');
+    const label = document.getElementById('menu-toggle-projected-shadow-label');
+    if (toggle) toggle.checked = !!this._projectedShadowEnabled;
+    if (label) label.classList.toggle('active', !!this._projectedShadowEnabled);
+  }
+
+  _toggleProjectedShadow(forceValue = null) {
+    this._projectedShadowEnabled = typeof forceValue === 'boolean'
+      ? forceValue
+      : !this._projectedShadowEnabled;
+    this._saveProjectedShadowEnabled();
+    this._applyProjectedShadowState();
+    this._scheduleRender();
+  }
+
+  _loadSelfShadowEnabled() {
+    try {
+      const stored = localStorage.getItem(SELF_SHADOW_ENABLED_KEY);
+      return stored == null ? true : stored === 'true';
+    } catch {
+      return true;
+    }
+  }
+
+  _saveSelfShadowEnabled() {
+    try {
+      localStorage.setItem(SELF_SHADOW_ENABLED_KEY, this._selfShadowEnabled ? 'true' : 'false');
+    } catch {}
+  }
+
+  _applySelfShadowState() {
+    if (this._renderer3d) {
+      this._renderer3d.setSelfShadowEnabled(this._selfShadowEnabled);
+    }
+    this._syncSelfShadowUI();
+  }
+
+  _syncSelfShadowUI() {
+    const toggle = document.getElementById('menu-toggle-self-shadow');
+    const label = document.getElementById('menu-toggle-self-shadow-label');
+    if (toggle) toggle.checked = !!this._selfShadowEnabled;
+    if (label) label.classList.toggle('active', !!this._selfShadowEnabled);
+  }
+
+  _toggleSelfShadow(forceValue = null) {
+    this._selfShadowEnabled = typeof forceValue === 'boolean'
+      ? forceValue
+      : !this._selfShadowEnabled;
+    this._saveSelfShadowEnabled();
+    this._applySelfShadowState();
+    this._scheduleRender();
+  }
+
+  _loadSunLightEnabled() {
+    try {
+      const stored = localStorage.getItem(SUN_LIGHT_ENABLED_KEY);
+      return stored == null ? true : stored === 'true';
+    } catch {
+      return true;
+    }
+  }
+
+  _saveSunLightEnabled() {
+    try {
+      localStorage.setItem(SUN_LIGHT_ENABLED_KEY, this._sunLightEnabled ? 'true' : 'false');
+    } catch {}
+  }
+
+  _applySunLightState() {
+    if (this._renderer3d) {
+      this._renderer3d.setSunLightEnabled(this._sunLightEnabled);
+    }
+    this._syncSunLightUI();
+  }
+
+  _syncSunLightUI() {
+    const toggle = document.getElementById('menu-toggle-sun-light');
+    const label = document.getElementById('menu-toggle-sun-light-label');
+    if (toggle) toggle.checked = !!this._sunLightEnabled;
+    if (label) label.classList.toggle('active', !!this._sunLightEnabled);
+  }
+
+  _toggleSunLight(forceValue = null) {
+    this._sunLightEnabled = typeof forceValue === 'boolean'
+      ? forceValue
+      : !this._sunLightEnabled;
+    this._saveSunLightEnabled();
+    this._applySunLightState();
+    this._scheduleRender();
+  }
+
+  _loadSunTimeHours() {
+    try {
+      const stored = parseFloat(localStorage.getItem(SUN_TIME_HOURS_KEY) || '');
+      if (Number.isFinite(stored)) {
+        return Math.max(6, Math.min(20, stored));
+      }
+    } catch {}
+    return 16;
+  }
+
+  _saveSunTimeHours() {
+    try {
+      localStorage.setItem(SUN_TIME_HOURS_KEY, String(this._sunTimeHours));
+    } catch {}
+  }
+
+  _formatSunTimeLabel(hours) {
+    const totalMinutes = Math.round((Math.max(6, Math.min(20, hours)) + 1e-6) * 60);
+    const hh = String(Math.floor(totalMinutes / 60)).padStart(2, '0');
+    const mm = String(totalMinutes % 60).padStart(2, '0');
+    return `${hh}:${mm}`;
+  }
+
+  _applySunTimeState() {
+    if (this._renderer3d) {
+      this._renderer3d.setSunTimeHours(this._sunTimeHours);
+    }
+    this._syncSunTimeUI();
+  }
+
+  _syncSunTimeUI() {
+    const slider = document.getElementById('menu-sun-time');
+    const value = document.getElementById('menu-sun-time-value');
+    if (slider) slider.value = String(this._sunTimeHours);
+    if (value) value.textContent = this._formatSunTimeLabel(this._sunTimeHours);
+  }
+
+  _setSunTimeHours(hours) {
+    const nextValue = Math.max(6, Math.min(20, Number.isFinite(hours) ? hours : 16));
+    this._sunTimeHours = nextValue;
+    this._saveSunTimeHours();
+    this._applySunTimeState();
+    this._scheduleRender();
+  }
+
+  _loadBackgroundEnabled() {
+    try {
+      const stored = localStorage.getItem(BACKGROUND_ENABLED_KEY);
+      return stored == null ? true : stored === 'true';
+    } catch {
+      return true;
+    }
+  }
+
+  _saveBackgroundEnabled() {
+    try {
+      localStorage.setItem(BACKGROUND_ENABLED_KEY, this._backgroundEnabled ? 'true' : 'false');
+    } catch {}
+  }
+
+  _applyBackgroundState() {
+    if (this._renderer3d) {
+      this._renderer3d.setBackgroundEnabled(this._backgroundEnabled);
+    }
+    this._syncBackgroundUI();
+  }
+
+  _syncBackgroundUI() {
+    const toggle = document.getElementById('menu-toggle-background');
+    const label = document.getElementById('menu-toggle-background-label');
+    if (toggle) toggle.checked = !!this._backgroundEnabled;
+    if (label) label.classList.toggle('active', !!this._backgroundEnabled);
+  }
+
+  _toggleBackground(forceValue = null) {
+    this._backgroundEnabled = typeof forceValue === 'boolean'
+      ? forceValue
+      : !this._backgroundEnabled;
+    this._saveBackgroundEnabled();
+    this._applyBackgroundState();
+    this._scheduleRender();
+  }
+
+  _loadFisheyeStrength() {
+    try {
+      const stored = parseFloat(localStorage.getItem(FISHEYE_STRENGTH_KEY) || '');
+      if (Number.isFinite(stored)) {
+        return Math.max(0, Math.min(1, stored));
+      }
+    } catch {}
+    return 0;
+  }
+
+  _saveFisheyeStrength() {
+    try {
+      localStorage.setItem(FISHEYE_STRENGTH_KEY, String(this._fisheyeStrength));
+    } catch {}
+  }
+
+  _applyFisheyeStrengthState() {
+    if (this._renderer3d) {
+      this._renderer3d.setFisheyeStrength(this._fisheyeStrength);
+    }
+    this._syncFisheyeStrengthSlider(this._fisheyeStrength);
+  }
+
+  _setFisheyeStrength(strength) {
+    this._fisheyeStrength = Math.max(0, Math.min(1, Number.isFinite(strength) ? strength : 1));
+    this._saveFisheyeStrength();
+    this._applyFisheyeStrengthState();
+    this._scheduleRender();
+  }
+
   /** Update the left-click orbit flag on the renderer based on current UI state. */
   _updateLeftClickOrbit() {
     if (!this._renderer3d) return;
@@ -11680,18 +12001,58 @@ class App {
     }
   }
 
+  _isOrbitViewUnchanged(reference) {
+    if (!reference || !this._renderer3d) return false;
+    const state = this._renderer3d.getOrbitState();
+    const dTheta = Math.atan2(Math.sin((state.theta || 0) - (reference.theta || 0)), Math.cos((state.theta || 0) - (reference.theta || 0)));
+    const dPhi = (state.phi || 0) - (reference.phi || 0);
+    return Math.abs(dTheta) <= ORBIT_SHORTCUT_EPSILON && Math.abs(dPhi) <= ORBIT_SHORTCUT_EPSILON;
+  }
+
+  _triggerTopBottomViewShortcut() {
+    if (!this._renderer3d) return;
+
+    if (this._sketchingOnPlane || this._selectedFaces.size > 0 || this._selectedPlane || this._renderer3d._selectedFeatureId) {
+      this._orientToNormalView();
+      return;
+    }
+
+    const nextView = this._topBottomShortcutState
+      && this._topBottomShortcutState.view === 'TOP'
+      && this._isOrbitViewUnchanged(this._topBottomShortcutState.orbit)
+        ? 'BOTTOM'
+        : 'TOP';
+    const angles = nextView === 'BOTTOM' ? BOTTOM_VIEW_ANGLES : TOP_VIEW_ANGLES;
+    this._topBottomShortcutState = {
+      view: nextView,
+      orbit: { theta: angles.theta, phi: angles.phi },
+    };
+    this._animateOrbitTo(angles.theta, angles.phi, { fitToExtents: true, region: nextView });
+  }
+
   /** Smoothly animate the orbit camera to target (theta, phi) over ~300ms. */
-  _animateOrbitTo(targetTheta, targetPhi) {
+  _animateOrbitTo(targetTheta, targetPhi, options = {}) {
     if (!this._renderer3d) return;
     const state = this._renderer3d.getOrbitState();
     const startTheta = state.theta;
     const startPhi = state.phi;
+    const startRadius = state.radius;
+    const startTarget = state.target || { x: 0, y: 0, z: 0 };
+    const focusTarget = this._renderer3d.getViewNavigationFocusPoint?.() || startTarget;
+    const fittedState = options.fitToExtents
+      ? this._renderer3d.getViewNavigationFitState?.(targetTheta, targetPhi, focusTarget)
+      : null;
+    const targetState = fittedState || { target: focusTarget, radius: startRadius };
 
     // Normalise angle difference to shortest path
     let dTheta = targetTheta - startTheta;
     while (dTheta > Math.PI)  dTheta -= 2 * Math.PI;
     while (dTheta < -Math.PI) dTheta += 2 * Math.PI;
     const dPhi = targetPhi - startPhi;
+    const dRadius = (targetState.radius || startRadius || 0) - (startRadius || 0);
+    const dTargetX = (targetState.target?.x || 0) - (startTarget.x || 0);
+    const dTargetY = (targetState.target?.y || 0) - (startTarget.y || 0);
+    const dTargetZ = (targetState.target?.z || 0) - (startTarget.z || 0);
 
     const duration = 300; // ms
     const t0 = performance.now();
@@ -11707,7 +12068,16 @@ class App {
 
       const theta = startTheta + dTheta * s;
       const phi = startPhi + dPhi * s;
-      this._renderer3d.setOrbitState({ theta, phi });
+      this._renderer3d.setOrbitState({
+        theta,
+        phi,
+        radius: (startRadius || 0) + dRadius * s,
+        target: {
+          x: (startTarget.x || 0) + dTargetX * s,
+          y: (startTarget.y || 0) + dTargetY * s,
+          z: (startTarget.z || 0) + dTargetZ * s,
+        },
+      });
 
       if (t < 1) {
         this._orbitAnimId = requestAnimationFrame(step);

@@ -611,15 +611,30 @@ export function computeFitViewState(bounds, fallbackRadius = 25) {
     };
   }
 
-  const sx = bounds.max.x - bounds.min.x;
-  const sy = bounds.max.y - bounds.min.y;
-  const sz = bounds.max.z - bounds.min.z;
+  const min = Array.isArray(bounds.min)
+    ? { x: bounds.min[0], y: bounds.min[1], z: bounds.min[2] }
+    : bounds.min;
+  const max = Array.isArray(bounds.max)
+    ? { x: bounds.max[0], y: bounds.max[1], z: bounds.max[2] }
+    : bounds.max;
+  if (!min || !max) {
+    return {
+      target: { x: 0, y: 0, z: 0 },
+      radius: fallbackRadius,
+      gridSize: 200,
+      axesSize: 50,
+    };
+  }
+
+  const sx = max.x - min.x;
+  const sy = max.y - min.y;
+  const sz = max.z - min.z;
   const maxDim = Math.max(sx, sy, sz, 10);
   return {
     target: {
-      x: (bounds.max.x + bounds.min.x) / 2,
-      y: (bounds.max.y + bounds.min.y) / 2,
-      z: (bounds.max.z + bounds.min.z) / 2,
+      x: (max.x + min.x) / 2,
+      y: (max.y + min.y) / 2,
+      z: (max.z + min.z) / 2,
     },
     radius: maxDim * 2.5,
     gridSize: maxDim * 3,

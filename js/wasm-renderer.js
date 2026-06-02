@@ -957,6 +957,16 @@ export class WasmRenderer {
     this.executor = null;
     try {
       this.executor = new WebGLExecutor(this.canvas);
+      this.executor.setProjectedShadowEnabled?.(this._projectedShadowEnabled);
+      this.executor.setSelfShadowEnabled?.(this._selfShadowEnabled);
+      this.executor.setSunLightEnabled?.(this._sunLightEnabled);
+      this.executor.setSunTimeHours?.(this._sunTimeHours);
+      this.executor.setProjectionMode?.({
+        fovDegrees: this._fovDegrees,
+        fisheyeEnabled: !this._ortho3D && this._fovDegrees > 0,
+        fisheyeStrength: this._fisheyeStrength,
+      });
+      this.executor.setBackgroundEnabled?.(this._backgroundEnabled);
     } catch (err) {
       this._webglUnavailableReason = err instanceof Error ? err.message : String(err);
       console.warn('WasmRenderer: WebGL executor unavailable, disabling 3D renderer startup', err);
@@ -986,6 +996,11 @@ export class WasmRenderer {
     this._orbitTarget = { x: 0, y: 0, z: 0 };
     this._orbitUp = { x: 0, y: 0, z: 1 };
     this._orbitDirty = true;
+    this._projectedShadowEnabled = true;
+    this._selfShadowEnabled = true;
+    this._sunLightEnabled = true;
+    this._sunTimeHours = 16;
+    this._backgroundEnabled = true;
 
     // 3D interaction state
     this._isDragging = false;
@@ -998,6 +1013,7 @@ export class WasmRenderer {
     this._ortho3D = false; // orthographic projection in 3D mode
     this._fov = Math.PI / 4; // field of view in radians (default 45°)
     this._fovDegrees = 45;   // FOV in degrees for UI
+    this._fisheyeStrength = 0;
 
     // Touch gesture state for 3D controls
     this._touchCount = 0;
@@ -1741,6 +1757,76 @@ export class WasmRenderer {
       || { x: 0, y: 0, z: 0 };
   }
 
+  getViewNavigationFocusPoint() {
+    return this._computeSolidCentroid()
+      || this._getNavigationFallbackPoint();
+  }
+
+  getViewNavigationFitState(theta = this._orbitTheta, phi = this._orbitPhi, target = null) {
+    const fallback = computeFitViewState(this._partBounds, 25);
+    const focusTarget = _isFiniteVec3(target)
+      ? { x: target.x, y: target.y, z: target.z }
+      : (this.getViewNavigationFocusPoint() || fallback.target);
+
+    if (!this._partBounds?.min || !this._partBounds?.max) {
+      return {
+        theta,
+        phi,
+        target: focusTarget,
+        radius: _clampOrbitRadius(fallback.radius),
+      };
+    }
+
+    const previewEye = computeOrbitCameraPosition(theta, phi, 1, { x: 0, y: 0, z: 0 });
+    const forward = _vec3Normalize(_vec3Scale(previewEye, -1)) || { x: 0, y: 0, z: -1 };
+    let right = _vec3Normalize(_vec3Cross(forward, { x: 0, y: 0, z: 1 }));
+    if (!right) {
+      right = _vec3Normalize({ x: Math.cos(theta), y: Math.sin(theta), z: 0 }) || { x: 1, y: 0, z: 0 };
+    }
+    const up = _vec3Normalize(_vec3Cross(right, forward)) || { x: 0, y: 0, z: 1 };
+    const aspect = Math.max(1e-3, this.canvas.width / Math.max(this.canvas.height, 1));
+
+    const corners = [];
+    for (const x of [this._partBounds.min.x, this._partBounds.max.x]) {
+      for (const y of [this._partBounds.min.y, this._partBounds.max.y]) {
+        for (const z of [this._partBounds.min.z, this._partBounds.max.z]) {
+          corners.push({ x, y, z });
+        }
+      }
+    }
+
+    let radius = 0.001;
+    if (this._ortho3D || this._fovDegrees <= 0) {
+      for (const corner of corners) {
+        const offset = _vec3Sub(corner, focusTarget);
+        const viewX = Math.abs(_vec3Dot(offset, right));
+        const viewY = Math.abs(_vec3Dot(offset, up));
+        radius = Math.max(radius, 2 * Math.max(viewY, viewX / aspect));
+      }
+    } else {
+      const tanHalfY = Math.max(1e-4, Math.tan(this._fov * 0.5));
+      const tanHalfX = tanHalfY * aspect;
+      for (const corner of corners) {
+        const offset = _vec3Sub(corner, focusTarget);
+        const viewX = Math.abs(_vec3Dot(offset, right));
+        const viewY = Math.abs(_vec3Dot(offset, up));
+        const viewZ = _vec3Dot(offset, forward);
+        radius = Math.max(
+          radius,
+          viewX / tanHalfX - viewZ,
+          viewY / tanHalfY - viewZ,
+        );
+      }
+    }
+
+    return {
+      theta,
+      phi,
+      target: focusTarget,
+      radius: _clampOrbitRadius(Math.max(radius * 1.12, 0.01)),
+    };
+  }
+
   _getClosestScenePointToCamera() {
     const pose = this._getCurrentOrbitCameraPose();
     if (!pose) return null;
@@ -2153,11 +2239,33 @@ export class WasmRenderer {
 
     this.wasm.setCameraPosition(camera.x, camera.y, camera.z);
     this.wasm.setCameraTarget(t.x, t.y, t.z);
+    if (this.executor?.setCameraPosition) {
+      this.executor.setCameraPosition(camera.x, camera.y, camera.z);
+    }
     if (typeof this.wasm.setCameraUp === 'function') {
       this.wasm.setCameraUp(up.x, up.y, up.z);
     }
+    if (this.executor?.setViewDir) {
+      const dx = t.x - camera.x;
+      const dy = t.y - camera.y;
+      const dz = t.z - camera.z;
+      const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (len > 1e-8) {
+        this.executor.setViewDir(dx / len, dy / len, dz / len);
+      }
+    }
+    if (this.executor?.setViewUp) {
+      this.executor.setViewUp(up.x, up.y, up.z);
+    }
     if (typeof this.wasm.setCameraClipPlanes === 'function') {
       this.wasm.setCameraClipPlanes(clip.near, clip.far);
+    }
+    if (this.executor?.setProjectionMode) {
+      this.executor.setProjectionMode({
+        fovDegrees: this._fovDegrees,
+        fisheyeEnabled: !this._ortho3D && this._fovDegrees > 0,
+        fisheyeStrength: this._fisheyeStrength,
+      });
     }
 
     // Apply orthographic or perspective projection for 3D mode
@@ -2195,6 +2303,11 @@ export class WasmRenderer {
    */
   setOrtho3D(enabled) {
     this._ortho3D = enabled;
+    this.executor?.setProjectionMode?.({
+      fovDegrees: this._fovDegrees,
+      fisheyeEnabled: !this._ortho3D && this._fovDegrees > 0,
+      fisheyeStrength: this._fisheyeStrength,
+    });
     if (this.mode === '3d') {
       this._orbitDirty = true;
     }
@@ -2220,6 +2333,11 @@ export class WasmRenderer {
 
     this._fovDegrees = newDeg;
     this._fov = this._fovDegrees * Math.PI / 180;
+    this.executor?.setProjectionMode?.({
+      fovDegrees: this._fovDegrees,
+      fisheyeEnabled: !this._ortho3D && this._fovDegrees > 0,
+      fisheyeStrength: this._fisheyeStrength,
+    });
     // Sync WASM camera FOV and mode
     if (this._ready) {
       if (this._fovDegrees <= 0) {
@@ -2234,6 +2352,18 @@ export class WasmRenderer {
 
   /** @returns {number} Current FOV in degrees */
   getFOV() { return this._fovDegrees; }
+
+  setFisheyeStrength(strength) {
+    this._fisheyeStrength = Math.max(0, Math.min(1, Number.isFinite(strength) ? strength : 1));
+    this.executor?.setProjectionMode?.({
+      fovDegrees: this._fovDegrees,
+      fisheyeEnabled: !this._ortho3D && this._fovDegrees > 0,
+      fisheyeStrength: this._fisheyeStrength,
+    });
+    this._orbitDirty = true;
+  }
+
+  getFisheyeStrength() { return this._fisheyeStrength; }
 
   /**
    * Project a sketch-local 2D coordinate to screen (CSS) pixel coordinates.
@@ -5274,6 +5404,31 @@ export class WasmRenderer {
     this._meshTriangleOverlayMode = mode === 'outline' ? 'outline' : 'off';
   }
 
+  setProjectedShadowEnabled(enabled) {
+    this._projectedShadowEnabled = enabled !== false;
+    this.executor?.setProjectedShadowEnabled?.(this._projectedShadowEnabled);
+  }
+
+  setSelfShadowEnabled(enabled) {
+    this._selfShadowEnabled = enabled !== false;
+    this.executor?.setSelfShadowEnabled?.(this._selfShadowEnabled);
+  }
+
+  setSunLightEnabled(enabled) {
+    this._sunLightEnabled = enabled !== false;
+    this.executor?.setSunLightEnabled?.(this._sunLightEnabled);
+  }
+
+  setSunTimeHours(hours) {
+    this._sunTimeHours = Number.isFinite(hours) ? hours : 16;
+    this.executor?.setSunTimeHours?.(this._sunTimeHours);
+  }
+
+  setBackgroundEnabled(enabled) {
+    this._backgroundEnabled = enabled !== false;
+    this.executor?.setBackgroundEnabled?.(this._backgroundEnabled);
+  }
+
   _replaceCamBuffer(field, countField, resource) {
     if (this[field]) {
       this.executor?.deleteStaticBuffer?.(this[field]);
@@ -5821,6 +5976,9 @@ export class WasmRenderer {
         showInvisibleEdges: this._invisibleEdgesVisible,
         meshTriangleOverlayMode: this._meshTriangleOverlayMode,
         normalColorShading: this._normalColorShadingEnabled,
+        projectedShadowEnabled: this._projectedShadowEnabled,
+        selfShadowEnabled: this._selfShadowEnabled,
+        sunLightEnabled: this._sunLightEnabled,
       });
 
       if (this._diagnosticBackfaceHatchEnabled) {

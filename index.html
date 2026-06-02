@@ -125,6 +125,29 @@
           <input id="menu-toggle-normal-color" type="checkbox">
           <span>Normal Color Shading</span>
         </label>
+        <label id="menu-toggle-projected-shadow-label" class="menu-checkbox-item" title="Show the sun shadow projected onto the model floor plane">
+          <input id="menu-toggle-projected-shadow" type="checkbox">
+          <span>Projected Shadow</span>
+        </label>
+        <label id="menu-toggle-self-shadow-label" class="menu-checkbox-item" title="Allow the sun shadow to darken solid faces">
+          <input id="menu-toggle-self-shadow" type="checkbox">
+          <span>Self Shadow</span>
+        </label>
+        <label id="menu-toggle-sun-light-label" class="menu-checkbox-item" title="Enable the directional sun light contribution">
+          <input id="menu-toggle-sun-light" type="checkbox">
+          <span>Sun Light</span>
+        </label>
+        <div id="menu-sun-time-control" class="menu-slider-item" title="Adjust the sun position between sunrise and sunset">
+          <div class="menu-slider-row">
+            <span>Sun Time</span>
+            <span id="menu-sun-time-value">16:00</span>
+          </div>
+          <input id="menu-sun-time" type="range" min="6" max="20" step="0.25" value="16">
+        </div>
+        <label id="menu-toggle-background-label" class="menu-checkbox-item" title="Use the environment background instead of a flat white backdrop">
+          <input id="menu-toggle-background" type="checkbox">
+          <span>Gradient Background</span>
+        </label>
         <hr>
         <button data-action="scene-manager">Scene Manager</button>
         <hr>
@@ -607,6 +630,11 @@
       <label class="fov-label" title="Field of View">FOV</label>
       <input id="fov-slider" type="range" class="fov-slider" min="0" max="116" value="41" step="1" title="Field of View: 0 = Orthographic, 5-120 = Perspective">
       <span id="fov-value" class="fov-value">45°</span>
+    </div>
+    <div class="fisheye-group">
+      <label class="fisheye-label" title="Fish-eye distortion strength">FISH</label>
+      <input id="fisheye-strength-slider" type="range" class="fisheye-slider" min="0" max="100" value="100" step="1" title="Fish-eye distortion strength: 0% = regular perspective, 100% = full fish-eye">
+      <span id="fisheye-strength-value" class="fisheye-value">100%</span>
     </div>
     <span id="status-message"></span>
   </div>

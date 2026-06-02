@@ -83,7 +83,13 @@ export function renderBaseMeshOverlay(executor, options) {
   if (!meshTriangles || meshTriangleCount === 0 || !mvp) return;
 
   // Diagnostic hatch uses a combined front+back face pass with painter's algorithm
-  const { diagnosticHatch, normalColorShading } = options;
+  const {
+    diagnosticHatch,
+    normalColorShading,
+    projectedShadowEnabled,
+    selfShadowEnabled,
+    sunLightEnabled,
+  } = options;
 
   const supportsDepthPrepass = typeof executor.drawTriangleDepthPrepass === 'function'
     && typeof executor.setDepthWrite === 'function';
@@ -93,6 +99,13 @@ export function renderBaseMeshOverlay(executor, options) {
   if (supportsDepthPrepass) {
     executor.drawTriangleDepthPrepass(meshTriangles, meshTriangleCount, { mvp });
     executor.setDepthWrite(false);
+  }
+
+  const shadowSetup = typeof executor.prepareSunShadow === 'function'
+    ? executor.prepareSunShadow(meshTriangles, meshTriangleCount)
+    : null;
+  if (shadowSetup && typeof executor.drawProjectedShadowPlane === 'function') {
+    executor.drawProjectedShadowPlane({ mvp, shadowSetup });
   }
 
   if (normalColorShading) {
@@ -110,6 +123,10 @@ export function renderBaseMeshOverlay(executor, options) {
       depthWrite: false,
       polygonOffset: supportsDepthPrepass ? null : [2, 2],
       diagnosticHatch: !!diagnosticHatch,
+      shadowSetup,
+      projectedShadowEnabled,
+      selfShadowEnabled,
+      sunLightEnabled,
     });
   }
 

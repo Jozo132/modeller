@@ -131,6 +131,26 @@ html, body {
 .menu-checkbox-item input {
   margin: 0;
 }
+.menu-slider-item {
+  width: 100%;
+  padding: 6px 16px 8px;
+  color: var(--text-primary);
+  font-size: 12px;
+  box-sizing: border-box;
+}
+.menu-slider-item:hover {
+  background: rgba(0, 122, 204, 0.10);
+}
+.menu-slider-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.menu-slider-item input[type="range"] {
+  width: 100%;
+  margin: 0;
+}
 .menu-dropdown hr {
   border: none;
   border-top: 1px solid var(--border);
@@ -2131,13 +2151,15 @@ body.sketch-on-plane .toolbar-row-sketch {
 }
 
 /* FOV slider in status bar */
-.fov-group {
+.fov-group,
+.fisheye-group {
   display: flex;
   align-items: center;
   gap: 4px;
 }
 
-.fov-label {
+.fov-label,
+.fisheye-label {
   font-size: 11px;
   color: var(--text-secondary);
   font-weight: 600;
@@ -2145,7 +2167,8 @@ body.sketch-on-plane .toolbar-row-sketch {
   user-select: none;
 }
 
-.fov-slider {
+.fov-slider,
+.fisheye-slider {
   width: 90px;
   -webkit-appearance: none;
   appearance: none;
@@ -2155,7 +2178,8 @@ body.sketch-on-plane .toolbar-row-sketch {
   outline: none;
 }
 
-.fov-slider::-webkit-slider-thumb {
+.fov-slider::-webkit-slider-thumb,
+.fisheye-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
   width: 12px;
@@ -2166,7 +2190,8 @@ body.sketch-on-plane .toolbar-row-sketch {
   border: 1.5px solid var(--bg-panel);
 }
 
-.fov-slider::-moz-range-thumb {
+.fov-slider::-moz-range-thumb,
+.fisheye-slider::-moz-range-thumb {
   width: 12px;
   height: 12px;
   border-radius: 50%;
@@ -2175,7 +2200,8 @@ body.sketch-on-plane .toolbar-row-sketch {
   border: 1.5px solid var(--bg-panel);
 }
 
-.fov-value {
+.fov-value,
+.fisheye-value {
   font-size: 11px;
   color: var(--text-secondary);
   min-width: 30px;
