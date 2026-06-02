@@ -1631,6 +1631,9 @@ export function createOcctSketchModelingCheckpoint(handle) {
 function cloneOcctCheckpointMeshSnapshot(meshSnapshot) {
   if (!meshSnapshot || typeof meshSnapshot !== 'object') return null;
   try {
+    if (typeof structuredClone === 'function') {
+      return structuredClone(meshSnapshot);
+    }
     return JSON.parse(JSON.stringify(meshSnapshot));
   } catch {
     return null;

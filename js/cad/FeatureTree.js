@@ -542,6 +542,9 @@ export class FeatureTree {
   _cloneOcctDisplayMeshSnapshot(mesh) {
     if (!mesh || typeof mesh !== 'object') return null;
     try {
+      if (typeof structuredClone === 'function') {
+        return structuredClone(mesh);
+      }
       return JSON.parse(JSON.stringify(mesh));
     } catch {
       return null;
