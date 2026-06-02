@@ -20,6 +20,16 @@ import { FilletFeature } from './FilletFeature.js';
 import { StepImportFeature } from './StepImportFeature.js';
 import { TessellationConfig, globalTessConfig } from './TessellationConfig.js';
 import { isLegacyEdgeKey, legacyEdgeKeyToStable } from './history/StableEntityKey.js';
+import { info } from '../logger.js';
+
+const PART_DESERIALIZE_LOG_THRESHOLD_MS = 100;
+
+function _partDeserializeNowMs() {
+  if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
+    return performance.now();
+  }
+  return Date.now();
+}
 
 function parseFeatureIdNumber(featureId) {
   if (typeof featureId !== 'string') return null;
@@ -808,6 +818,7 @@ export class Part {
   }
 
   static deserialize(data, options = {}) {
+    const startedAt = _partDeserializeNowMs();
     const part = new Part();
     if (!data) return part;
 
@@ -859,6 +870,14 @@ export class Part {
         handleRegistry: options.handleRegistry ?? null,
         residencyManager: options.residencyManager ?? null,
         fastRestoreDeps: options.fastRestoreDeps ?? null,
+      });
+    }
+
+    const elapsedMs = _partDeserializeNowMs() - startedAt;
+    if (elapsedMs >= PART_DESERIALIZE_LOG_THRESHOLD_MS) {
+      info('Part deserialize timing', {
+        featureCount: Array.isArray(data.featureTree?.features) ? data.featureTree.features.length : 0,
+        elapsedMs: +elapsedMs.toFixed(1),
       });
     }
     

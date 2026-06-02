@@ -13,6 +13,7 @@
 
 import { SurfaceType } from './BRepTopology.js';
 import {
+  ensureOcctGeometryResidentFromCheckpoint,
   exportOcctSketchModelingStep,
   getOcctSketchModelingTopology,
 } from './occt/OcctSketchModeling.js';
@@ -99,6 +100,14 @@ export function exportSTEP(source, opts = {}) {
  */
 export function exportSTEPDetailed(source, opts = {}) {
   _assertStepExportable(source, opts);
+
+  const checkpointGeometry = source?.geometry
+    || source?.solid?.geometry
+    || source?.solid
+    || source;
+  if (_extractOcctShapeHandle(source) <= 0 && checkpointGeometry?.occtCheckpoint) {
+    ensureOcctGeometryResidentFromCheckpoint(checkpointGeometry);
+  }
 
   const body = _extractStepExportBody(source);
   const occtShapeHandle = _extractOcctShapeHandle(source);

@@ -9,7 +9,7 @@ import { Feature } from './Feature.js';
 import { applyBRepChamfer } from './BRepChamfer.js';
 import { expandPathEdgeKeys, makeEdgeKey } from './EdgeAnalysis.js';
 import { calculateMeshVolume, calculateBoundingBox } from './toolkit/MeshAnalysis.js';
-import { tryBuildOcctChamferMetadataSync } from './occt/OcctSketchModeling.js';
+import { ensureOcctGeometryResidentFromCheckpoint, tryBuildOcctChamferMetadataSync } from './occt/OcctSketchModeling.js';
 import {
   buildSelectionKeyMap,
   edgeEntityToLegacyKey,
@@ -416,6 +416,9 @@ export class ChamferFeature extends Feature {
     }
 
     const inputTopoBody = solid.body || (solid.geometry && solid.geometry.topoBody) || null;
+    if (!(solid.geometry?.occtShapeHandle > 0) && solid.geometry?.occtCheckpoint) {
+      ensureOcctGeometryResidentFromCheckpoint(solid.geometry);
+    }
     const selectedOcctEdgeRefs = solid.geometry?.occtShapeHandle > 0
       ? this._resolveSelectedOcctEdgeRefs(solid, selectedEdgeKeys)
       : [];

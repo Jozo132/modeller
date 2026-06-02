@@ -14,6 +14,7 @@ const PROJECT_RECORD_CONTAINER_KIND = 'project-record';
 const PROJECT_RECORD_IDB_KEY_PREFIX = `${STORAGE_KEY}:record`;
 const SAVE_DEBOUNCE_MS = 500;
 const VIEW_SAVE_DEBOUNCE_MS = 120;
+const PROJECT_LOAD_STAGE_LOG_THRESHOLD_MS = 100;
 
 let _saveTimer = null;
 let _viewSaveTimer = null;
@@ -66,6 +67,26 @@ async function _getCbrepStore() {
       .then(({ BrowserIdbCacheStore }) => new BrowserIdbCacheStore());
   }
   return await _cbrepStorePromise;
+}
+
+function _nowMs() {
+  if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
+    return performance.now();
+  }
+  return Date.now();
+}
+
+function _logProjectLoadStage(stage, startedAt, extra = null) {
+  const elapsedMs = _nowMs() - startedAt;
+  if (elapsedMs < PROJECT_LOAD_STAGE_LOG_THRESHOLD_MS) {
+    return elapsedMs;
+  }
+  info('Project load stage timing', {
+    stage,
+    elapsedMs: +elapsedMs.toFixed(1),
+    ...(extra && typeof extra === 'object' ? extra : {}),
+  });
+  return elapsedMs;
 }
 
 function _utf8Encode(text) {
@@ -198,12 +219,21 @@ async function _loadProjectRecordPayload(manifest) {
   }
 
   try {
+    const readStartedAt = _nowMs();
     const store = await _getCbrepStore();
     const raw = await store.get(manifest.key);
+    _logProjectLoadStage('project-record:read-idb', readStartedAt, {
+      key: manifest.key,
+      encoding: manifest.encoding || 'utf8',
+    });
     if (!raw) {
       return null;
     }
+    const decodeStartedAt = _nowMs();
     const text = await _decompressProjectRecordPayload(raw, manifest.encoding || 'utf8');
+    _logProjectLoadStage('project-record:decode-payload', decodeStartedAt, {
+      encoding: manifest.encoding || 'utf8',
+    });
     if (!text) {
       return null;
     }
@@ -211,7 +241,10 @@ async function _loadProjectRecordPayload(manifest) {
       warn('Ignoring mismatched project snapshot payload from IndexedDB', `${manifest.key}`);
       return null;
     }
-    return JSON.parse(text);
+    const parseStartedAt = _nowMs();
+    const parsed = JSON.parse(text);
+    _logProjectLoadStage('project-record:parse-json', parseStartedAt);
+    return parsed;
   } catch (err) {
     warn('Failed to restore project snapshot from IndexedDB', err?.message || String(err));
     return null;
@@ -503,14 +536,20 @@ function projectToJSON() {
 async function projectFromJSON(data) {
   if (!data || data.version == null) return { ok: false, hasViewport: false };
 
-  await _hydrateProjectImagePayloads(data);
+  const hydrateImagesStartedAt = _nowMs();
+  await _hydrateProjectImagePayloads(data.scene);
+  _logProjectLoadStage('project-json:hydrate-scene-images', hydrateImagesStartedAt);
 
   // Backward compatible: v2 projects lack part/orbit/workspaceMode fields,
   // which will be null in the returned object. The caller handles this gracefully.
 
   // Restore scene
   if (data.scene) {
+    const sceneDeserializeStartedAt = _nowMs();
     state.scene = Scene.deserialize(data.scene);
+    _logProjectLoadStage('project-json:scene-deserialize', sceneDeserializeStartedAt, {
+      imageCount: Array.isArray(data.scene.images) ? data.scene.images.length : 0,
+    });
   }
   state.selectedEntities = [];
 
@@ -559,10 +598,10 @@ export async function saveProject() {
   try {
     const previousEntry = _readStoredProjectEntry();
     const previous = await _readStoredProjectRecord(previousEntry);
-    const previousImageManifests = _collectProjectImageManifests(previous);
+    const previousImageManifests = _collectProjectImageManifests(previous?.scene);
     const json = projectToJSON();
 
-    const activeImageKeys = await _externalizeProjectImagePayloads(json);
+    const activeImageKeys = await _externalizeProjectImagePayloads(json.scene);
 
     const rawProject = JSON.stringify(json);
     let nextStoredEntry = json;
@@ -632,11 +671,19 @@ export function debouncedSaveViewState() {
  */
 export async function loadProject() {
   try {
+    const resolveStartedAt = _nowMs();
     const entry = _readStoredProjectEntry();
     if (!entry) return false;
     const data = _applyViewStateOverlay(await _readStoredProjectRecord(entry));
+    _logProjectLoadStage('project-record:resolve-entry', resolveStartedAt, {
+      storage: _isProjectRecordManifest(entry) ? 'idb-manifest' : 'local-storage',
+    });
     if (!data) return false;
+    const restoreStartedAt = _nowMs();
     const result = await projectFromJSON(data);
+    _logProjectLoadStage('project-record:apply-project-json', restoreStartedAt, {
+      hasPart: !!data.part,
+    });
     if (result.ok) {
       info('Project restored from browser storage', { entities: state.entities.length, layers: state.layers.length, hasViewport: result.hasViewport });
     }
@@ -660,7 +707,7 @@ export function clearSavedProject() {
     if (_isProjectRecordManifest(previousEntry)) {
       await _deletePersistedProjectRecord(previousEntry);
     }
-    for (const manifest of _collectProjectImageManifests(previous)) {
+    for (const manifest of _collectProjectImageManifests(previous?.scene)) {
       await _deletePersistedProjectImage(manifest);
     }
   })();

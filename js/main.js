@@ -79,6 +79,7 @@ import {
 const DIAGNOSTIC_HATCH_STORAGE_KEY = 'cad-modeller-diagnostic-backface-hatch';
 const DIAGNOSTIC_HATCH_MODE_AUTO = 'auto';
 const CAM_OPERATION_PLAN_RESOLUTION = 48;
+const ROLLBACK_DRAG_LOG_THRESHOLD_MS = 100;
 const DIAGNOSTIC_HATCH_MODE_ON = 'on';
 const DIAGNOSTIC_HATCH_MODE_OFF = 'off';
 const INVISIBLE_EDGES_VISIBLE_KEY = 'cad-modeller-invisible-edges-visible';
@@ -102,6 +103,7 @@ const STATUS_WARN_RE = /\bwarn(?:ing)?\b/i;
 const TOP_VIEW_ANGLES = { theta: -Math.PI / 2, phi: 0.001 };
 const BOTTOM_VIEW_ANGLES = { theta: -Math.PI / 2, phi: Math.PI - 0.001 };
 const ORBIT_SHORTCUT_EPSILON = 1e-3;
+const PART_CHANGE_REFRESH_LOG_THRESHOLD_MS = 100;
 const STARTUP_STAGE_LOG_THRESHOLD_MS = 100;
 const STARTUP_RESTORE_STEPS = [
   'Checking saved workspace',
@@ -160,6 +162,13 @@ function applyStoredTessellationPreset() {
   globalTessConfig.applyPreset(preset);
   writePersistedTessellationPreset(preset);
   return preset;
+}
+
+function getAppNowMs() {
+  if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
+    return performance.now();
+  }
+  return Date.now();
 }
 
 class App {
@@ -239,6 +248,9 @@ class App {
     this._startupLoadingStageToken = null;
     this._startupLoadingStageLabel = null;
     this._startupLoadingStageStartedAt = 0;
+    this._rollbackDragActive = false;
+    this._partChangeRefreshFrame = 0;
+    this._queuedPartChange = null;
     this._restoreUsedReplayFallback = (part) => {
       const tree = part?.featureTree;
       if (!tree?.results || !Array.isArray(tree.features)) return false;
@@ -675,6 +687,60 @@ class App {
       if (this._renderer3d) this._renderer3d.onWindowResize();
       debug('Viewport sync resize', { width: this.viewport.width, height: this.viewport.height });
     }
+  }
+
+  _runPartChangeRefresh(part, reason = 'default') {
+    const startedAt = getAppNowMs();
+    const stages = {};
+
+    let stageStartedAt = getAppNowMs();
+    this._featurePanel.update();
+    stages.featurePanelMs = getAppNowMs() - stageStartedAt;
+
+    stageStartedAt = getAppNowMs();
+    if (this._historyTree) this._historyTree.update();
+    stages.historyTreeMs = getAppNowMs() - stageStartedAt;
+
+    stageStartedAt = getAppNowMs();
+    this._updateNodeTree();
+    stages.nodeTreeMs = getAppNowMs() - stageStartedAt;
+
+    stageStartedAt = getAppNowMs();
+    this._update3DView();
+    stages.view3dMs = getAppNowMs() - stageStartedAt;
+
+    stageStartedAt = getAppNowMs();
+    this._updateOperationButtons();
+    stages.operationButtonsMs = getAppNowMs() - stageStartedAt;
+
+    const totalElapsedMs = getAppNowMs() - startedAt;
+    if (
+      totalElapsedMs >= PART_CHANGE_REFRESH_LOG_THRESHOLD_MS
+      || stages.featurePanelMs >= PART_CHANGE_REFRESH_LOG_THRESHOLD_MS
+      || stages.historyTreeMs >= PART_CHANGE_REFRESH_LOG_THRESHOLD_MS
+      || stages.nodeTreeMs >= PART_CHANGE_REFRESH_LOG_THRESHOLD_MS
+      || stages.view3dMs >= PART_CHANGE_REFRESH_LOG_THRESHOLD_MS
+      || stages.operationButtonsMs >= PART_CHANGE_REFRESH_LOG_THRESHOLD_MS
+    ) {
+      info('Part change refresh timing', {
+        reason,
+        hasPart: !!part,
+        totalElapsedMs,
+        ...stages,
+      });
+    }
+  }
+
+  _queuePartChangeRefresh(part, reason = 'default') {
+    this._queuedPartChange = { part, reason };
+    if (this._partChangeRefreshFrame) return;
+    this._partChangeRefreshFrame = requestAnimationFrame(() => {
+      this._partChangeRefreshFrame = 0;
+      const queued = this._queuedPartChange;
+      this._queuedPartChange = null;
+      if (!queued) return;
+      this._runPartChangeRefresh(queued.part, queued.reason);
+    });
   }
 
   _schedulePointerProcessing() {
@@ -7512,11 +7578,11 @@ class App {
 
     // Listen to part changes
     this._partManager.addListener((part) => {
-      this._featurePanel.update();
-      if (this._historyTree) this._historyTree.update();
-      this._updateNodeTree();
-      this._update3DView();
-      this._updateOperationButtons();
+      if (this._rollbackDragActive) {
+        this._queuePartChangeRefresh(part, 'rollback-drag');
+        return;
+      }
+      this._runPartChangeRefresh(part, 'part-change');
     });
 
     // Add Sketch to Part
@@ -11111,13 +11177,14 @@ class App {
 
     const finalGeo = part.getFinalGeometry?.();
     const occtShapeHandle = finalGeo?.occtShapeHandle || finalGeo?.geometry?.occtShapeHandle || 0;
+    const occtCheckpoint = finalGeo?.occtCheckpoint || finalGeo?.geometry?.occtCheckpoint || null;
     const body = finalGeo?.body
       || finalGeo?.topoBody
       || finalGeo?.solid?.topoBody
       || finalGeo?.solid?.body
       || finalGeo?.geometry?.topoBody
       || null;
-    if (!body && !occtShapeHandle) {
+    if (!body && !occtShapeHandle && !occtCheckpoint) {
       this.setStatus('No exact body or resident OCCT shape available for STEP export');
       return;
     }
@@ -11889,15 +11956,40 @@ class App {
       let newIndex = dragStartIndex + indexDelta;
       newIndex = Math.max(0, Math.min(features.length, newIndex));
       if (newIndex !== this._rollbackIndex && !(newIndex === features.length && this._rollbackIndex === -1)) {
+        const previousIndex = this._rollbackIndex < 0 ? features.length : this._rollbackIndex;
+        const startedAt = getAppNowMs();
         this._rollbackIndex = newIndex >= features.length ? -1 : newIndex;
         this._rollbackIndexBeforeSketchEdit = null;
-        this._applyRollbackSuppression();
+        const rollbackMetrics = this._applyRollbackSuppression();
         // notifyListeners in _applyRollbackSuppression triggers _updateNodeTree, _update3DView
         this._scheduleRender();
+        const elapsedMs = getAppNowMs() - startedAt;
+        if (elapsedMs >= ROLLBACK_DRAG_LOG_THRESHOLD_MS) {
+          info('Rollback drag timing', {
+            fromIndex: previousIndex,
+            toIndex: newIndex,
+            deltaIndex: newIndex - previousIndex,
+            direction: newIndex > previousIndex ? 'forward' : 'rollback',
+            replayed: rollbackMetrics?.replayed === true,
+            restored: rollbackMetrics?.restored || 0,
+            suppressedCount: rollbackMetrics?.suppressedCount || 0,
+            unsuppressedCount: rollbackMetrics?.unsuppressedCount || 0,
+            missingResultCount: rollbackMetrics?.missingResultCount || 0,
+            invalidResultCount: rollbackMetrics?.invalidResultCount || 0,
+            scanElapsedMs: rollbackMetrics?.scanElapsedMs || 0,
+            replayElapsedMs: rollbackMetrics?.replayElapsedMs || 0,
+            restoreElapsedMs: rollbackMetrics?.restoreElapsedMs || 0,
+            applyElapsedMs: rollbackMetrics?.totalElapsedMs || 0,
+            featureTreeElapsedMs: rollbackMetrics?.featureTreeElapsedMs || 0,
+            notifyElapsedMs: rollbackMetrics?.notifyElapsedMs || 0,
+            elapsedMs,
+          });
+        }
       }
     };
 
     const onDragEnd = () => {
+      this._rollbackDragActive = false;
       rollbackBar.classList.remove('dragging');
       document.removeEventListener('mousemove', onDragMove);
       document.removeEventListener('mouseup', onDragEnd);
@@ -11908,6 +12000,7 @@ class App {
     rollbackBar.addEventListener('mousedown', (e) => {
       e.preventDefault();
       e.stopPropagation();
+      this._rollbackDragActive = true;
       dragStartY = e.clientY;
       dragStartIndex = this._rollbackIndex < 0 ? features.length : this._rollbackIndex;
       document.addEventListener('mousemove', onDragMove);
@@ -11917,6 +12010,7 @@ class App {
     rollbackBar.addEventListener('touchstart', (e) => {
       e.preventDefault();
       e.stopPropagation();
+      this._rollbackDragActive = true;
       dragStartY = e.touches[0].clientY;
       dragStartIndex = this._rollbackIndex < 0 ? features.length : this._rollbackIndex;
       document.addEventListener('touchmove', onDragMove, { passive: false });
@@ -11941,16 +12035,45 @@ class App {
    * unsuppress features before _rollbackIndex.
    */
   _applyRollbackSuppression() {
+    const startedAt = getAppNowMs();
     const features = this._partManager.getFeatures();
-    if (features.length === 0) return;
+    if (features.length === 0) return null;
     const pos = this._rollbackIndex < 0 ? features.length : this._rollbackIndex;
     const part = this._partManager.getPart();
+    let rollbackMetrics = null;
+    const featureTreeStartedAt = getAppNowMs();
     if (part) {
-      part.featureTree.applyRollbackSuppression(pos);
+      rollbackMetrics = part.featureTree.applyRollbackSuppression(pos);
       part.modified = new Date();
     }
+    const featureTreeElapsedMs = getAppNowMs() - featureTreeStartedAt;
     this._syncGridToggleButton();
+    const notifyStartedAt = getAppNowMs();
     this._partManager.notifyListeners();
+    const notifyElapsedMs = getAppNowMs() - notifyStartedAt;
+    const totalElapsedMs = getAppNowMs() - startedAt;
+    const metrics = {
+      ...(rollbackMetrics || {}),
+      featureTreeElapsedMs,
+      notifyElapsedMs,
+      totalElapsedMs,
+    };
+    if (
+      totalElapsedMs >= ROLLBACK_DRAG_LOG_THRESHOLD_MS
+      || featureTreeElapsedMs >= ROLLBACK_DRAG_LOG_THRESHOLD_MS
+      || notifyElapsedMs >= ROLLBACK_DRAG_LOG_THRESHOLD_MS
+    ) {
+      info('Rollback apply timing', {
+        activeFeatureCount: pos,
+        featureCount: features.length,
+        replayed: metrics.replayed === true,
+        restored: metrics.restored || 0,
+        featureTreeElapsedMs,
+        notifyElapsedMs,
+        totalElapsedMs,
+      });
+    }
+    return metrics;
   }
 
   _updateOperationButtons() {

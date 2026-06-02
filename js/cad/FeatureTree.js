@@ -14,6 +14,19 @@ import {
   rehydrateOcctFeatureDisplayGeometry,
   restoreOcctSketchModelingCheckpoint,
 } from './occt/OcctSketchModeling.js';
+import { info } from '../logger.js';
+
+const FEATURETREE_DESERIALIZE_LOG_THRESHOLD_MS = 100;
+const FEATURETREE_FEATURE_RESTORE_LOG_THRESHOLD_MS = 100;
+const FEATURETREE_ROLLBACK_LOG_THRESHOLD_MS = 100;
+const FEATURETREE_ROLLBACK_FEATURE_LOG_THRESHOLD_MS = 100;
+
+function _featureTreeNowMs() {
+  if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
+    return performance.now();
+  }
+  return Date.now();
+}
 
 /**
  * FeatureTree manages the ordered list of parametric features.
@@ -140,6 +153,15 @@ export class FeatureTree {
   _rememberOcctCheckpoint(result, checkpoint) {
     if (!result || !checkpoint || typeof checkpoint !== 'object') return false;
     result.occtCheckpoint = checkpoint;
+    if (result.geometry && typeof result.geometry === 'object') {
+      result.geometry.occtCheckpoint = checkpoint;
+    }
+    if (result.solid && typeof result.solid === 'object') {
+      result.solid.occtCheckpoint = checkpoint;
+      if (result.solid.geometry && typeof result.solid.geometry === 'object') {
+        result.solid.geometry.occtCheckpoint = checkpoint;
+      }
+    }
     const meta = this._getOcctCheckpointMeta(checkpoint);
     const topology = result._occtModeling?.topology || result.geometry?._occtModeling?.topology || null;
     const revisionId = meta.revisionId || topology?.revisionId || null;
@@ -424,6 +446,7 @@ export class FeatureTree {
         }
 
         const entry = checkpoints[feature.id];
+        const restoreStartedAt = _featureTreeNowMs();
         const result = this._buildSolidResultFromSerializedCheckpoint(
           feature.id,
           feature,
@@ -431,13 +454,29 @@ export class FeatureTree {
           deps,
           this._getFeatureCbrepCacheVersion(feature),
         );
+        const restoreMs = _featureTreeNowMs() - restoreStartedAt;
         feature.result = result;
         feature.error = null;
         if (feature._irHash == null && result.irHash != null) {
           feature._irHash = result.irHash;
         }
+        const stampStartedAt = _featureTreeNowMs();
         this._stampSolidResult(feature.id, result);
+        const stampMs = _featureTreeNowMs() - stampStartedAt;
         this.results[feature.id] = result;
+
+        const totalFeatureMs = restoreMs + stampMs;
+        if (totalFeatureMs >= FEATURETREE_FEATURE_RESTORE_LOG_THRESHOLD_MS) {
+          info('Feature checkpoint restore timing', {
+            featureId: feature.id,
+            featureType: feature.type,
+            featureName: feature.name || null,
+            hasMeshSnapshot: !!entry?.mesh,
+            restoreMs: +restoreMs.toFixed(1),
+            stampMs: +stampMs.toFixed(1),
+            elapsedMs: +totalFeatureMs.toFixed(1),
+          });
+        }
       }
     } catch (err) {
       // Restore prior state and let caller fall back to executeAll().
@@ -529,15 +568,72 @@ export class FeatureTree {
 
   _buildSolidResultFromSerializedCheckpoint(featureId, feature, entry, deps, cbrepCacheVersion = null) {
     if (this._hasOcctCheckpoint(entry)) {
+      if (entry.mesh && Array.isArray(entry.mesh.faces) && entry.mesh.faces.length > 0) {
+        return this._buildSolidResultFromCheckpointMesh(
+          featureId,
+          entry.occt,
+          entry.mesh,
+          cbrepCacheVersion,
+        );
+      }
       return this._buildSolidResultFromOcctCheckpoint(
         featureId,
         entry.occt,
         deps,
         cbrepCacheVersion,
-        this._cloneOcctDisplayMeshSnapshot(entry.mesh),
+        entry.mesh || null,
       );
     }
     throw new Error(`missing OCCT checkpoint for ${featureId}`);
+  }
+
+  _buildSolidResultFromCheckpointMesh(featureId, checkpoint, meshSnapshot, cbrepCacheVersion = null) {
+    const feature = this.featureMap.get(featureId) || null;
+    const geometry = meshSnapshot && typeof meshSnapshot === 'object'
+      ? { ...meshSnapshot }
+      : null;
+    if (!geometry || !Array.isArray(geometry.faces) || geometry.faces.length === 0) {
+      throw new Error(`empty checkpoint mesh restore for ${featureId}`);
+    }
+
+    const hasNativeFeatureEdges = Array.isArray(geometry.edges) && geometry.edges.length > 0
+      && Array.isArray(geometry.paths) && geometry.paths.length > 0;
+    if (!Array.isArray(geometry.edges)) geometry.edges = [];
+    if (!Array.isArray(geometry.paths)) geometry.paths = [];
+    if (!Array.isArray(geometry.visualEdges)) geometry.visualEdges = geometry.edges;
+    if (!hasNativeFeatureEdges) {
+      geometry._occtMissingFeatureEdges = true;
+    }
+
+    if (feature && (feature.type === 'fillet' || feature.type === 'chamfer')) {
+      const sourceResult = this._getPreviousSolidCheckpointSourceResult(featureId);
+      const sourceTopology = sourceResult?.geometry?._occtModeling?.topology || null;
+      rehydrateOcctFeatureDisplayGeometry(geometry, feature.type, sourceTopology);
+    }
+
+    geometry.topoBody = null;
+    geometry.occtShapeHandle = 0;
+    geometry.occtShapeResident = false;
+    geometry.occtCheckpoint = checkpoint;
+
+    const volume = this._readOcctCheckpointVolume(null, geometry);
+    const boundingBox = this._readOcctCheckpointBoundingBox(null, geometry);
+    const result = {
+      type: 'solid',
+      geometry,
+      solid: { geometry, body: null, occtCheckpoint: checkpoint },
+      body: null,
+      volume,
+      boundingBox,
+      occtShapeHandle: 0,
+      occtShapeResident: false,
+      _occtModeling: geometry._occtModeling || null,
+      occtCheckpoint: checkpoint,
+      _restoredFromCheckpoint: true,
+    };
+    if (cbrepCacheVersion) result.cbrepCacheVersion = cbrepCacheVersion;
+    this._rememberOcctCheckpoint(result, checkpoint);
+    return result;
   }
 
   _cloneOcctDisplayMeshSnapshot(mesh) {
@@ -633,11 +729,33 @@ export class FeatureTree {
     if (!hasOcctCheckpoint) return false;
 
     let nextResult;
+    const startedAt = _featureTreeNowMs();
+    const meshSnapshot = this._serializeOcctDisplayMeshSnapshot(oldResult.geometry);
     try {
-      nextResult = this._buildSolidResultFromOcctCheckpoint(featureId, oldResult.occtCheckpoint, deps, this._getFeatureCbrepCacheVersion(feature));
+      nextResult = this._buildSolidResultFromSerializedCheckpoint(
+        featureId,
+        feature,
+        {
+          occt: oldResult.occtCheckpoint,
+          mesh: meshSnapshot,
+        },
+        deps,
+        this._getFeatureCbrepCacheVersion(feature),
+      );
     } catch (err) {
       oldResult._checkpointRestoreError = err?.message || String(err);
       return false;
+    }
+
+    const restoreElapsedMs = _featureTreeNowMs() - startedAt;
+    if (restoreElapsedMs >= FEATURETREE_ROLLBACK_FEATURE_LOG_THRESHOLD_MS) {
+      info('Feature rollback restore timing', {
+        featureId,
+        featureType: feature.type || '',
+        featureName: feature.name || '',
+        usedMeshSnapshot: !!meshSnapshot,
+        elapsedMs: +restoreElapsedMs.toFixed(1),
+      });
     }
 
     this._releaseResultHandle(oldResult, featureId);
@@ -904,9 +1022,16 @@ export class FeatureTree {
 
   /**
    * Execute all features in the tree.
+   * @param {Object} [options]
+   * @param {string} [options.timingContext='']
+   * @param {number} [options.featureLogThresholdMs=0]
    * @returns {Object} Execution results
    */
-  executeAll() {
+  executeAll(options = null) {
+    const timingContext = typeof options?.timingContext === 'string' ? options.timingContext : '';
+    const featureLogThresholdMs = Number.isFinite(options?.featureLogThresholdMs)
+      ? Math.max(0, options.featureLogThresholdMs)
+      : 0;
     // Release all existing handles before clearing results
     for (const fid of Object.keys(this.results)) {
       this._releaseResultHandle(this.results[fid], fid);
@@ -914,8 +1039,24 @@ export class FeatureTree {
     this.results = {};
     
     for (const feature of this.features) {
+      const featureStartedAt = featureLogThresholdMs > 0 ? _featureTreeNowMs() : 0;
+      let timingStatus = 'ok';
       if (feature.suppressed) {
         this.results[feature.id] = { suppressed: true };
+        timingStatus = 'suppressed';
+        if (featureLogThresholdMs > 0) {
+          const elapsedMs = _featureTreeNowMs() - featureStartedAt;
+          if (elapsedMs >= featureLogThresholdMs) {
+            info('Feature tree execute timing', {
+              context: timingContext || 'execute-all',
+              featureId: feature.id,
+              featureType: feature.type || '',
+              featureName: feature.name || '',
+              status: timingStatus,
+              elapsedMs,
+            });
+          }
+        }
         continue;
       }
       
@@ -925,6 +1066,7 @@ export class FeatureTree {
         if (!feature.canExecute(context)) {
           feature.error = 'Dependencies not satisfied';
           this.results[feature.id] = { error: feature.error };
+          timingStatus = 'dependencies-not-satisfied';
           continue;
         }
         
@@ -941,7 +1083,22 @@ export class FeatureTree {
       } catch (error) {
         feature.error = error.message;
         this.results[feature.id] = { error: error.message };
+        timingStatus = 'error';
         console.error(`Error executing feature ${feature.name}:`, error);
+      } finally {
+        if (featureLogThresholdMs > 0) {
+          const elapsedMs = _featureTreeNowMs() - featureStartedAt;
+          if (elapsedMs >= featureLogThresholdMs) {
+            info('Feature tree execute timing', {
+              context: timingContext || 'execute-all',
+              featureId: feature.id,
+              featureType: feature.type || '',
+              featureName: feature.name || '',
+              status: timingStatus,
+              elapsedMs,
+            });
+          }
+        }
       }
     }
     
@@ -958,34 +1115,90 @@ export class FeatureTree {
    * @returns {{replayed:boolean, restored:number}}
    */
   applyRollbackSuppression(activeFeatureCount, deps = this._fastRestoreDeps) {
+    const startedAt = _featureTreeNowMs();
     const pos = Math.max(0, Math.min(this.features.length, Number.isFinite(activeFeatureCount) ? activeFeatureCount : this.features.length));
     let needsReplay = false;
     let restored = 0;
+    let suppressedCount = 0;
+    let unsuppressedCount = 0;
+    let missingResultCount = 0;
+    let invalidResultCount = 0;
 
     for (let i = 0; i < this.features.length; i++) {
       const feature = this.features[i];
       const shouldSuppress = i >= pos;
       if (shouldSuppress) {
-        if (!feature.suppressed) feature.suppress();
+        if (!feature.suppressed) {
+          feature.suppress();
+          suppressedCount++;
+        }
         continue;
       }
 
-      if (feature.suppressed) feature.unsuppress();
+      if (feature.suppressed) {
+        feature.unsuppress();
+        unsuppressedCount++;
+      }
       const result = this.results[feature.id];
       if (!result || result.error || result.suppressed) {
         needsReplay = true;
+        if (!result || result.suppressed) {
+          missingResultCount++;
+        } else {
+          invalidResultCount++;
+        }
         continue;
       }
       if (feature.type !== 'sketch' && result.type !== 'solid') {
         needsReplay = true;
+        invalidResultCount++;
       }
     }
 
+    const scanElapsedMs = _featureTreeNowMs() - startedAt;
+
     if (needsReplay) {
-      this.executeAll();
-      return { replayed: true, restored };
+      const replayStartedAt = _featureTreeNowMs();
+      this.executeAll({
+        timingContext: 'rollback-suppression-replay',
+        featureLogThresholdMs: FEATURETREE_ROLLBACK_FEATURE_LOG_THRESHOLD_MS,
+      });
+      const replayElapsedMs = _featureTreeNowMs() - replayStartedAt;
+      const totalElapsedMs = _featureTreeNowMs() - startedAt;
+      if (
+        totalElapsedMs >= FEATURETREE_ROLLBACK_LOG_THRESHOLD_MS
+        || replayElapsedMs >= FEATURETREE_ROLLBACK_LOG_THRESHOLD_MS
+        || scanElapsedMs >= FEATURETREE_ROLLBACK_LOG_THRESHOLD_MS
+      ) {
+        info('Rollback suppression timing', {
+          activeFeatureCount: pos,
+          featureCount: this.features.length,
+          replayed: true,
+          restored,
+          suppressedCount,
+          unsuppressedCount,
+          missingResultCount,
+          invalidResultCount,
+          scanElapsedMs,
+          replayElapsedMs,
+          totalElapsedMs,
+        });
+      }
+      return {
+        replayed: true,
+        restored,
+        suppressedCount,
+        unsuppressedCount,
+        missingResultCount,
+        invalidResultCount,
+        scanElapsedMs,
+        replayElapsedMs,
+        restoreElapsedMs: 0,
+        totalElapsedMs,
+      };
     }
 
+    const restoreStartedAt = _featureTreeNowMs();
     for (let i = 0; i < pos; i++) {
       const feature = this.features[i];
       if (feature.type === 'sketch') continue;
@@ -993,7 +1206,39 @@ export class FeatureTree {
         restored++;
       }
     }
-    return { replayed: false, restored };
+    const restoreElapsedMs = _featureTreeNowMs() - restoreStartedAt;
+    const totalElapsedMs = _featureTreeNowMs() - startedAt;
+    if (
+      totalElapsedMs >= FEATURETREE_ROLLBACK_LOG_THRESHOLD_MS
+      || restoreElapsedMs >= FEATURETREE_ROLLBACK_LOG_THRESHOLD_MS
+      || scanElapsedMs >= FEATURETREE_ROLLBACK_LOG_THRESHOLD_MS
+    ) {
+      info('Rollback suppression timing', {
+        activeFeatureCount: pos,
+        featureCount: this.features.length,
+        replayed: false,
+        restored,
+        suppressedCount,
+        unsuppressedCount,
+        missingResultCount,
+        invalidResultCount,
+        scanElapsedMs,
+        restoreElapsedMs,
+        totalElapsedMs,
+      });
+    }
+    return {
+      replayed: false,
+      restored,
+      suppressedCount,
+      unsuppressedCount,
+      missingResultCount,
+      invalidResultCount,
+      scanElapsedMs,
+      replayElapsedMs: 0,
+      restoreElapsedMs,
+      totalElapsedMs,
+    };
   }
 
   /**
@@ -1303,6 +1548,10 @@ export class FeatureTree {
    * Note: Features must be deserialized by their specific subclasses.
    */
   static deserialize(data, featureFactory, options = {}) {
+    const startedAt = _featureTreeNowMs();
+    let featureDeserializeMs = 0;
+    let fastRestoreMs = 0;
+    let executeAllMs = 0;
     const tree = new FeatureTree();
 
     if (Object.prototype.hasOwnProperty.call(options, 'handleRegistry')) {
@@ -1318,6 +1567,7 @@ export class FeatureTree {
     if (!data || !data.features) return tree;
 
     // Deserialize features in order
+    const featureDeserializeStartedAt = _featureTreeNowMs();
     for (const featureData of data.features) {
       const feature = featureFactory(featureData);
       if (feature) {
@@ -1325,20 +1575,48 @@ export class FeatureTree {
         tree.featureMap.set(feature.id, feature);
       }
     }
+    featureDeserializeMs = _featureTreeNowMs() - featureDeserializeStartedAt;
 
     // Try OCCT checkpoint fast-restore before replay. On any failure this is
     // a silent no-op and we fall through to executeAll() below.
+    const fastRestoreStartedAt = _featureTreeNowMs();
     if (data.checkpoints &&
         tree.tryFastRestoreFromCheckpoints(data.checkpoints, tree._fastRestoreDeps)) {
+      fastRestoreMs = _featureTreeNowMs() - fastRestoreStartedAt;
+      const elapsedMs = _featureTreeNowMs() - startedAt;
+      if (elapsedMs >= FEATURETREE_DESERIALIZE_LOG_THRESHOLD_MS) {
+        info('Feature tree deserialize timing', {
+          featureCount: tree.features.length,
+          mode: 'checkpoint-fast-restore',
+          featureDeserializeMs: +featureDeserializeMs.toFixed(1),
+          fastRestoreMs: +fastRestoreMs.toFixed(1),
+          elapsedMs: +elapsedMs.toFixed(1),
+        });
+      }
       return tree;
     }
+    fastRestoreMs = _featureTreeNowMs() - fastRestoreStartedAt;
 
     // Execute all features to rebuild results
+    const executeAllStartedAt = _featureTreeNowMs();
     tree.executeAll();
+    executeAllMs = _featureTreeNowMs() - executeAllStartedAt;
 
     // After replay, attach any serialized OCCT checkpoints that still match
     // the replayed topology so future restores can stay on the OCCT path.
     tree._applySerializedCheckpoints(data.checkpoints);
+
+    const elapsedMs = _featureTreeNowMs() - startedAt;
+    if (elapsedMs >= FEATURETREE_DESERIALIZE_LOG_THRESHOLD_MS) {
+      info('Feature tree deserialize timing', {
+        featureCount: tree.features.length,
+        mode: 'execute-all',
+        featureDeserializeMs: +featureDeserializeMs.toFixed(1),
+        fastRestoreMs: +fastRestoreMs.toFixed(1),
+        executeAllMs: +executeAllMs.toFixed(1),
+        elapsedMs: +elapsedMs.toFixed(1),
+      });
+    }
 
     return tree;
   }

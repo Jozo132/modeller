@@ -14,7 +14,7 @@
 import { exactBooleanOp, hasExactTopology } from './BooleanKernel.js';
 import { computeFeatureEdges } from './EdgeAnalysis.js';
 import { chainEdgePaths } from './toolkit/EdgePathUtils.js';
-import { tryBuildOcctBooleanMetadataSync } from './occt/OcctSketchModeling.js';
+import { ensureOcctGeometryResidentFromCheckpoint, tryBuildOcctBooleanMetadataSync } from './occt/OcctSketchModeling.js';
 
 import {
   vec3Sub as _vec3Sub,
@@ -250,6 +250,12 @@ function _finalizeBooleanDisplayGeometry(result) {
 export function booleanOp(geomA, geomB, operation, sharedA = null, sharedB = null, booleanOpts = null) {
   const opName = (operation === 'add') ? 'union' : operation;
   const preferOcctPrimary = booleanOpts?.preferOcctPrimary === true;
+  if (preferOcctPrimary && geomA?.occtShapeHandle <= 0 && geomA?.occtCheckpoint) {
+    ensureOcctGeometryResidentFromCheckpoint(geomA);
+  }
+  if (preferOcctPrimary && geomB?.occtShapeHandle <= 0 && geomB?.occtCheckpoint) {
+    ensureOcctGeometryResidentFromCheckpoint(geomB);
+  }
   if (preferOcctPrimary && geomA?.occtShapeHandle > 0 && geomB?.occtShapeHandle > 0) {
     const primary = tryBuildOcctBooleanMetadataSync({
       handleA: geomA.occtShapeHandle,

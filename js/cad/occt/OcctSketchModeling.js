@@ -1651,7 +1651,9 @@ export function restoreOcctSketchModelingCheckpoint(checkpoint, tessellationOpti
 
     const valid = adapter.checkValidity(handle);
     const topology = adapter.getTopology(handle);
-    let geometry = cloneOcctCheckpointMeshSnapshot(meshSnapshot);
+    let geometry = meshSnapshot && typeof meshSnapshot === 'object'
+      ? { ...meshSnapshot }
+      : null;
     if (!geometry?.faces?.length) {
       geometry = adapter.tessellate(handle, {
         ...(tessellationOptions || {}),
@@ -1694,6 +1696,68 @@ export function restoreOcctSketchModelingCheckpoint(checkpoint, tessellationOpti
         adapter.disposeShape(handle);
       } catch {
         // Best-effort cleanup after failed checkpoint restore.
+      }
+    }
+    throw error;
+  }
+}
+
+export function ensureOcctGeometryResidentFromCheckpoint(geometry, checkpoint = null) {
+  if (geometry?.occtShapeHandle > 0) {
+    return {
+      geometry,
+      mesh: geometry,
+      occtShapeHandle: geometry.occtShapeHandle,
+      occtShapeResident: geometry.occtShapeResident === true,
+      topology: geometry?._occtModeling?.topology || null,
+      _occtModeling: geometry?._occtModeling || null,
+    };
+  }
+
+  const adapter = getSharedAdapterSync();
+  const resolvedCheckpoint = checkpoint || geometry?.occtCheckpoint || null;
+  if (!adapter || !geometry || !resolvedCheckpoint || typeof resolvedCheckpoint !== 'object') {
+    return null;
+  }
+
+  let handle = 0;
+  try {
+    handle = adapter.hydrateCheckpoint(resolvedCheckpoint);
+    if (!(handle > 0)) return null;
+
+    const valid = adapter.checkValidity(handle);
+    const topology = adapter.getTopology(handle);
+    const previousModeling = geometry._occtModeling && typeof geometry._occtModeling === 'object'
+      ? geometry._occtModeling
+      : null;
+
+    geometry.topoBody = null;
+    geometry.occtShapeHandle = handle;
+    geometry.occtShapeResident = true;
+    geometry.occtCheckpoint = resolvedCheckpoint;
+    geometry._occtModeling = {
+      ...(previousModeling || {}),
+      authoritative: previousModeling?.authoritative !== false,
+      acceptedInvalidShape: valid !== true,
+      operation: topology?.operationType || previousModeling?.operation || null,
+      source: 'checkpoint-restore',
+      topology: topology || previousModeling?.topology || null,
+    };
+
+    return {
+      geometry,
+      mesh: geometry,
+      occtShapeHandle: handle,
+      occtShapeResident: true,
+      topology,
+      _occtModeling: geometry._occtModeling,
+    };
+  } catch (error) {
+    if (handle > 0) {
+      try {
+        adapter.disposeShape(handle);
+      } catch {
+        // Best-effort cleanup after failed checkpoint hydration.
       }
     }
     throw error;
