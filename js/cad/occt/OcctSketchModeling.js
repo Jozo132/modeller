@@ -1628,7 +1628,16 @@ export function createOcctSketchModelingCheckpoint(handle) {
   return adapter.createCheckpoint(handle);
 }
 
-export function restoreOcctSketchModelingCheckpoint(checkpoint, tessellationOptions = null) {
+function cloneOcctCheckpointMeshSnapshot(meshSnapshot) {
+  if (!meshSnapshot || typeof meshSnapshot !== 'object') return null;
+  try {
+    return JSON.parse(JSON.stringify(meshSnapshot));
+  } catch {
+    return null;
+  }
+}
+
+export function restoreOcctSketchModelingCheckpoint(checkpoint, tessellationOptions = null, meshSnapshot = null) {
   const adapter = getSharedAdapterSync();
   if (!adapter || !checkpoint || typeof checkpoint !== 'object') return null;
 
@@ -1639,10 +1648,13 @@ export function restoreOcctSketchModelingCheckpoint(checkpoint, tessellationOpti
 
     const valid = adapter.checkValidity(handle);
     const topology = adapter.getTopology(handle);
-    const geometry = adapter.tessellate(handle, {
-      ...(tessellationOptions || {}),
-      topology,
-    });
+    let geometry = cloneOcctCheckpointMeshSnapshot(meshSnapshot);
+    if (!geometry?.faces?.length) {
+      geometry = adapter.tessellate(handle, {
+        ...(tessellationOptions || {}),
+        topology,
+      });
+    }
     if (!geometry?.faces?.length) {
       adapter.disposeShape(handle);
       return null;
@@ -1651,12 +1663,16 @@ export function restoreOcctSketchModelingCheckpoint(checkpoint, tessellationOpti
     geometry.topoBody = null;
     geometry.occtShapeHandle = handle;
     geometry.occtShapeResident = true;
+    const previousModeling = geometry._occtModeling && typeof geometry._occtModeling === 'object'
+      ? geometry._occtModeling
+      : null;
     geometry._occtModeling = {
-      authoritative: true,
+      ...(previousModeling || {}),
+      authoritative: previousModeling?.authoritative !== false,
       acceptedInvalidShape: valid !== true,
-      operation: topology?.operationType || null,
+      operation: topology?.operationType || previousModeling?.operation || null,
       source: 'checkpoint-restore',
-      topology,
+      topology: topology || previousModeling?.topology || null,
     };
 
     return {
