@@ -29,7 +29,7 @@ import { WasmBrepHandleRegistry } from './cad/WasmBrepHandleRegistry.js';
 import { HandleResidencyManager } from './cad/HandleResidencyManager.js';
 import { downloadCMOD, openCMODFile, projectFromCMOD, setCmodViewport, setCmodPartManager, setCmodRenderer, setCmodWorkspaceModeGetter, setCmodSessionStateGetter, setCmodScenesGetter, setCmodCamConfigGetter } from './cmod.js';
 import { debug, info, warn, error } from './logger.js';
-import { loadProject, debouncedSave, clearSavedProject, setViewport, setPartManagerForPersist, setRendererForPersist, setWorkspaceModeGetter, setSessionStateGetter, setScenesGetter, setCamConfigGetter } from './persist.js';
+import { loadProject, debouncedSave, debouncedSaveViewState, clearSavedProject, setViewport, setPartManagerForPersist, setRendererForPersist, setWorkspaceModeGetter, setSessionStateGetter, setScenesGetter, setCamConfigGetter } from './persist.js';
 import { showConfirm, showPrompt, showDimensionInput, isModalOpen, showCustomDialog, showFormDialog } from './ui/popup.js';
 import { DxfExportPanel } from './ui/dxfExportPanel.js';
 import { showContextMenu, closeContextMenu, isContextMenuOpen } from './ui/contextMenu.js';
@@ -102,6 +102,24 @@ const STATUS_WARN_RE = /\bwarn(?:ing)?\b/i;
 const TOP_VIEW_ANGLES = { theta: -Math.PI / 2, phi: 0.001 };
 const BOTTOM_VIEW_ANGLES = { theta: -Math.PI / 2, phi: Math.PI - 0.001 };
 const ORBIT_SHORTCUT_EPSILON = 1e-3;
+const STARTUP_STAGE_LOG_THRESHOLD_MS = 100;
+const STARTUP_RESTORE_STEPS = [
+  'Checking saved workspace',
+  'Restoring scene, layers, and settings',
+  'Rebuilding workspace panels',
+  'Applying saved camera and workspace state',
+  'Finalizing workspace',
+];
+const STARTUP_MODEL_RESTORE_STEPS = [
+  'Checking saved workspace',
+  'Restoring scene, layers, and settings',
+  'Rebuilding workspace panels',
+  'Preloading solid checkpoints',
+  'Deserializing part workspace',
+  'Applying session, camera, and scenes',
+  'Updating render tree and viewport',
+  'Finalizing workspace',
+];
 const IMAGE_PROPERTY_SECTIONS = [
   { key: 'overview', label: 'Overview' },
   { key: 'transform', label: 'Transform' },
@@ -216,6 +234,11 @@ class App {
     this._sceneManagerOpen = false;
     this._recordingBarVisible = localStorage.getItem(RECORDING_BAR_VISIBLE_KEY) === 'true';
     this._commandBarVisible = localStorage.getItem(COMMAND_BAR_VISIBLE_KEY) === 'true';
+    this._startupLoadingPlan = [];
+    this._startupLoadingStepIndex = -1;
+    this._startupLoadingStageToken = null;
+    this._startupLoadingStageLabel = null;
+    this._startupLoadingStageStartedAt = 0;
     this._restoreUsedReplayFallback = (part) => {
       const tree = part?.featureTree;
       if (!tree?.results || !Array.isArray(tree.features)) return false;
@@ -388,12 +411,26 @@ class App {
     setCmodScenesGetter(() => this._scenes);
     setCmodCamConfigGetter(() => this._serializeCamConfig());
 
-    this._setStartupLoading(true, 'Loading renderer and project state...', 20);
+    this._setStartupLoading(true, 'Checking saved workspace...', 10, {
+      steps: STARTUP_RESTORE_STEPS,
+      stepIndex: 0,
+    });
 
     Promise.resolve(loadProject())
       .then(async (loaded) => {
         if (loaded && loaded.ok) {
-          this._setStartupLoading(true, 'Restoring saved project...', 45);
+          const restoreSteps = loaded.part && (loaded.workspaceMode === 'part' || loaded.workspaceMode === 'cam')
+            ? STARTUP_MODEL_RESTORE_STEPS
+            : STARTUP_RESTORE_STEPS;
+          this._setStartupLoading(true, 'Restoring scene, layers, and settings...', 26, {
+            steps: restoreSteps,
+            stepIndex: 1,
+          });
+          await this._yieldStartupLoadingFrame();
+
+          this._setStartupLoading(true, 'Rebuilding workspace panels...', 40, {
+            stepIndex: 2,
+          });
           this._rebuildLayersPanel();
           this._rebuildLeftPanel();
           if (!loaded.part) this._restoreCamConfig(loaded.cam);
@@ -404,7 +441,16 @@ class App {
           // Restore Part/CAM state if saved
           if (loaded.part && (loaded.workspaceMode === 'part' || loaded.workspaceMode === 'cam')) {
             try {
+              this._setStartupLoading(true, 'Preloading solid checkpoints...', 52, {
+                stepIndex: 3,
+              });
+              await this._yieldStartupLoadingFrame();
               await this._ensureReplayPreloads();
+
+              this._setStartupLoading(true, 'Deserializing part workspace...', 64, {
+                stepIndex: 4,
+              });
+              await this._yieldStartupLoadingFrame();
               this._partManager.deserialize(loaded.part);
               this._restoreCamConfig(loaded.cam);
               if (this._restoreUsedReplayFallback(this._partManager.getPart())) {
@@ -412,6 +458,10 @@ class App {
                 debouncedSave();
               }
               this._enterWorkspace(loaded.workspaceMode === 'cam' ? 'cam' : 'part');
+
+              this._setStartupLoading(true, 'Applying session, camera, and scenes...', 78, {
+                stepIndex: 5,
+              });
               if (loaded.sessionState) {
                 this._restoreSessionState(loaded.sessionState, loaded.orbit);
               }
@@ -421,7 +471,9 @@ class App {
               }
               // Restore named scenes
               if (loaded.scenes) this._scenes = loaded.scenes;
-              this._setStartupLoading(true, 'Preparing part workspace...', 72);
+              this._setStartupLoading(true, 'Updating render tree and viewport...', 90, {
+                stepIndex: 6,
+              });
             } catch (err) {
               error('Failed to restore saved Part workspace:', err);
               this._setStartupLoading(false);
@@ -433,12 +485,20 @@ class App {
             const readyPromise = this._renderer3d && this._renderer3d._loadPromise
               ? this._renderer3d._loadPromise
               : Promise.resolve();
-            readyPromise.then(() => {
+            readyPromise.then(async () => {
+              await this._yieldStartupLoadingFrame();
               this._update3DView();
               this._updateNodeTree();
               this._scheduleRender();
-              this._setStartupLoading(true, 'Workspace restored.', 100);
-              requestAnimationFrame(() => this._setStartupLoading(false));
+              this._setStartupLoading(true, 'Finalizing workspace...', 98, {
+                stepIndex: 7,
+              });
+              requestAnimationFrame(() => {
+                this._setStartupLoading(true, 'Workspace restored.', 100, {
+                  stepIndex: STARTUP_MODEL_RESTORE_STEPS.length,
+                });
+                requestAnimationFrame(() => this._setStartupLoading(false));
+              });
               info('App initialization completed (restored model workspace)');
             }).catch((err) => {
               error('Failed to prepare restored Part workspace:', err);
@@ -447,6 +507,19 @@ class App {
             });
             return;
           }
+
+          this._setStartupLoading(true, 'Applying saved camera and workspace state...', 74, {
+            steps: STARTUP_RESTORE_STEPS,
+            stepIndex: 3,
+          });
+          await this._yieldStartupLoadingFrame();
+          this._scheduleRender();
+          this._setStartupLoading(true, 'Finalizing workspace...', 100, {
+            stepIndex: STARTUP_RESTORE_STEPS.length,
+          });
+          requestAnimationFrame(() => this._setStartupLoading(false));
+          info('App initialization completed (restored sketch workspace)');
+          return;
         }
 
         // Show quick-start page on startup
@@ -1595,7 +1668,7 @@ class App {
       }
 
       if (e.button === 1 || e.button === 2) {
-        debouncedSave();
+        debouncedSaveViewState();
         return;
       }
 
@@ -7901,9 +7974,9 @@ class App {
   _update3DView() {
     if (!this._renderer3d) return;
 
-    // Trigger debounced save whenever the 3D view updates in a model workspace
+    // Persist camera movement cheaply without rewriting the full project record.
     if (this._isModelWorkspace()) {
-      debouncedSave();
+      debouncedSaveViewState();
     }
     const part = this._partManager.getPart();
     if (!part) {
@@ -11956,11 +12029,119 @@ class App {
     if (qs) qs.classList.add('hidden');
   }
 
-  _setStartupLoading(visible, label = null, progress = null) {
+  async _yieldStartupLoadingFrame() {
+    if (typeof window === 'undefined' || typeof window.requestAnimationFrame !== 'function') {
+      return;
+    }
+    await new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
+  }
+
+  _renderStartupLoadingSteps() {
+    const counter = document.getElementById('startup-loading-step-counter');
+    const list = document.getElementById('startup-loading-steps');
+    const steps = Array.isArray(this._startupLoadingPlan) ? this._startupLoadingPlan : [];
+    const rawStepIndex = Number.isFinite(this._startupLoadingStepIndex) ? this._startupLoadingStepIndex : -1;
+    const completedAll = steps.length > 0 && rawStepIndex >= steps.length;
+
+    if (counter) {
+      if (!steps.length || rawStepIndex < 0) {
+        counter.textContent = '';
+      } else {
+        counter.textContent = `Step ${Math.min(rawStepIndex + 1, steps.length)} of ${steps.length}`;
+      }
+    }
+
+    if (!list) return;
+    list.textContent = '';
+    for (let index = 0; index < steps.length; index++) {
+      const item = document.createElement('li');
+      let state = 'pending';
+      if (completedAll || index < rawStepIndex) {
+        state = 'done';
+      } else if (index === rawStepIndex) {
+        state = 'active';
+      }
+      item.className = `startup-loading-step is-${state}`;
+      if (state === 'active') item.setAttribute('aria-current', 'step');
+
+      const bullet = document.createElement('span');
+      bullet.className = 'startup-loading-step-bullet';
+      bullet.setAttribute('aria-hidden', 'true');
+      item.appendChild(bullet);
+
+      const text = document.createElement('span');
+      text.textContent = steps[index];
+      item.appendChild(text);
+
+      list.appendChild(item);
+    }
+  }
+
+  _getStartupLoadingTimestamp() {
+    if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
+      return performance.now();
+    }
+    return Date.now();
+  }
+
+  _flushStartupLoadingStageTiming() {
+    if (!this._startupLoadingStageToken || !this._startupLoadingStageLabel) {
+      this._startupLoadingStageToken = null;
+      this._startupLoadingStageLabel = null;
+      this._startupLoadingStageStartedAt = 0;
+      return;
+    }
+
+    const elapsedMs = this._getStartupLoadingTimestamp() - this._startupLoadingStageStartedAt;
+    if (elapsedMs >= STARTUP_STAGE_LOG_THRESHOLD_MS) {
+      info('Startup restore stage timing', {
+        stage: this._startupLoadingStageLabel,
+        elapsedMs: +elapsedMs.toFixed(1),
+      });
+    }
+
+    this._startupLoadingStageToken = null;
+    this._startupLoadingStageLabel = null;
+    this._startupLoadingStageStartedAt = 0;
+  }
+
+  _syncStartupLoadingStageTiming(visible, label) {
+    if (!visible) {
+      this._flushStartupLoadingStageTiming();
+      return;
+    }
+
+    const steps = Array.isArray(this._startupLoadingPlan) ? this._startupLoadingPlan : [];
+    const stepIndex = Number.isFinite(this._startupLoadingStepIndex) ? this._startupLoadingStepIndex : -1;
+    const stepLabel = stepIndex >= 0 && stepIndex < steps.length ? steps[stepIndex] : null;
+    const stageLabel = stepLabel || label || null;
+    if (!stageLabel) {
+      return;
+    }
+
+    const stageToken = `${stepIndex}:${stageLabel}`;
+    if (stageToken === this._startupLoadingStageToken) {
+      return;
+    }
+
+    this._flushStartupLoadingStageTiming();
+    this._startupLoadingStageToken = stageToken;
+    this._startupLoadingStageLabel = stageLabel;
+    this._startupLoadingStageStartedAt = this._getStartupLoadingTimestamp();
+  }
+
+  _setStartupLoading(visible, label = null, progress = null, options = null) {
     const overlay = document.getElementById('startup-loading');
     if (!overlay) return;
 
     overlay.classList.toggle('hidden', !visible);
+
+    if (options && Array.isArray(options.steps)) {
+      this._startupLoadingPlan = options.steps.slice();
+    }
+    if (options && Object.prototype.hasOwnProperty.call(options, 'stepIndex')) {
+      this._startupLoadingStepIndex = Number.isFinite(options.stepIndex) ? options.stepIndex : -1;
+    }
 
     const labelEl = document.getElementById('startup-loading-label');
     if (labelEl && label !== null) {
@@ -11974,6 +12155,9 @@ class App {
       bar.style.width = `${clamped}%`;
       if (track) track.setAttribute('aria-valuenow', String(clamped));
     }
+
+    this._renderStartupLoadingSteps();
+    this._syncStartupLoadingStageTiming(visible, label);
   }
 
   _bindQuickStartEvents() {

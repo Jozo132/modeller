@@ -3387,7 +3387,7 @@ body.workspace-cam .node-tree-child-feature {
 }
 
 .startup-loading-card {
-  width: min(420px, calc(100vw - 40px));
+  width: min(520px, calc(100vw - 40px));
   padding: 32px 28px;
   border-radius: 16px;
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -3425,6 +3425,61 @@ body.workspace-cam .node-tree-child-feature {
   background: linear-gradient(90deg, #2a9df4 0%, #69d2e7 100%);
   box-shadow: 0 0 24px rgba(42, 157, 244, 0.35);
   transition: width 0.35s ease;
+}
+
+.startup-loading-step-counter {
+  margin-top: 12px;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.52);
+}
+
+.startup-loading-steps {
+  list-style: none;
+  margin: 14px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.startup-loading-step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 24px;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.startup-loading-step-bullet {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.08);
+  transition: transform 0.2s ease, background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.startup-loading-step.is-active {
+  color: rgba(255, 255, 255, 0.94);
+}
+
+.startup-loading-step.is-active .startup-loading-step-bullet {
+  background: linear-gradient(180deg, #5ab3ff 0%, #2a9df4 100%);
+  border-color: rgba(105, 210, 231, 0.65);
+  box-shadow: 0 0 0 4px rgba(42, 157, 244, 0.16);
+  transform: scale(1.05);
+}
+
+.startup-loading-step.is-done {
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.startup-loading-step.is-done .startup-loading-step-bullet {
+  background: rgba(105, 210, 231, 0.9);
+  border-color: rgba(105, 210, 231, 0.9);
 }
 
 .startup-loading-actions {

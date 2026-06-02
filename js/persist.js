@@ -4,13 +4,19 @@ import { Scene } from './cad/index.js';
 import { info, warn, error } from './logger.js';
 
 const STORAGE_KEY = 'cad-modeller-project';
+const VIEW_STATE_STORAGE_KEY = `${STORAGE_KEY}:view`;
 const PROJECT_SCHEMA_VERSION = 4;
 const PROJECT_IMAGE_CONTAINER_VERSION = 1;
 const PROJECT_IMAGE_CONTAINER_KIND = 'project-image';
 const PROJECT_IMAGE_IDB_KEY_PREFIX = `${STORAGE_KEY}:image`;
+const PROJECT_RECORD_CONTAINER_VERSION = 1;
+const PROJECT_RECORD_CONTAINER_KIND = 'project-record';
+const PROJECT_RECORD_IDB_KEY_PREFIX = `${STORAGE_KEY}:record`;
 const SAVE_DEBOUNCE_MS = 500;
+const VIEW_SAVE_DEBOUNCE_MS = 120;
 
 let _saveTimer = null;
+let _viewSaveTimer = null;
 let _viewport = null;
 let _partManager = null;
 let _renderer3d = null;
@@ -94,6 +100,10 @@ function _hashProjectImagePayload(text) {
   return `${(hash >>> 0).toString(16).padStart(8, '0')}-${text.length.toString(16)}`;
 }
 
+function _hashProjectRecordPayload(text) {
+  return _hashProjectImagePayload(text);
+}
+
 function _makeProjectImageManifest(key, hash) {
   return {
     version: PROJECT_IMAGE_CONTAINER_VERSION,
@@ -103,6 +113,121 @@ function _makeProjectImageManifest(key, hash) {
     encoding: 'utf8',
     hash,
   };
+}
+
+function _makeProjectRecordManifest(key, hash, encoding) {
+  return {
+    version: PROJECT_RECORD_CONTAINER_VERSION,
+    kind: PROJECT_RECORD_CONTAINER_KIND,
+    storage: 'idb',
+    key,
+    encoding,
+    hash,
+  };
+}
+
+function _isProjectRecordManifest(value) {
+  return !!value
+    && typeof value === 'object'
+    && value.kind === PROJECT_RECORD_CONTAINER_KIND
+    && value.storage === 'idb'
+    && typeof value.key === 'string'
+    && value.key.length > 0;
+}
+
+async function _compressProjectRecordPayload(text) {
+  const encoded = _utf8Encode(text);
+  if (typeof CompressionStream !== 'function' || typeof Blob === 'undefined' || typeof Response === 'undefined') {
+    return {
+      encoding: 'utf8',
+      payload: _toArrayBuffer(encoded),
+    };
+  }
+
+  try {
+    const compressed = await new Response(
+      new Blob([encoded]).stream().pipeThrough(new CompressionStream('gzip'))
+    ).arrayBuffer();
+    return {
+      encoding: 'gzip+utf8',
+      payload: compressed,
+    };
+  } catch {
+    return {
+      encoding: 'utf8',
+      payload: _toArrayBuffer(encoded),
+    };
+  }
+}
+
+async function _decompressProjectRecordPayload(raw, encoding) {
+  if (!raw) return null;
+  if (encoding === 'gzip+utf8') {
+    if (typeof DecompressionStream !== 'function' || typeof Blob === 'undefined' || typeof Response === 'undefined') {
+      throw new Error('gzip project payload requires DecompressionStream support');
+    }
+    const inflated = await new Response(
+      new Blob([raw]).stream().pipeThrough(new DecompressionStream('gzip'))
+    ).arrayBuffer();
+    return _utf8Decode(inflated);
+  }
+  return _utf8Decode(raw);
+}
+
+async function _persistProjectRecordPayload(text) {
+  if (!text || (!_cbrepStoreFactory && typeof indexedDB === 'undefined')) {
+    return null;
+  }
+
+  const hash = _hashProjectRecordPayload(text);
+  const key = `${PROJECT_RECORD_IDB_KEY_PREFIX}:${hash}`;
+  try {
+    const store = await _getCbrepStore();
+    const compressed = await _compressProjectRecordPayload(text);
+    await store.put(key, compressed.payload);
+    return _makeProjectRecordManifest(key, hash, compressed.encoding);
+  } catch (err) {
+    warn('Failed to persist project snapshot to IndexedDB', err?.message || String(err));
+    return null;
+  }
+}
+
+async function _loadProjectRecordPayload(manifest) {
+  if (!_isProjectRecordManifest(manifest)) {
+    return null;
+  }
+
+  try {
+    const store = await _getCbrepStore();
+    const raw = await store.get(manifest.key);
+    if (!raw) {
+      return null;
+    }
+    const text = await _decompressProjectRecordPayload(raw, manifest.encoding || 'utf8');
+    if (!text) {
+      return null;
+    }
+    if (manifest.hash && _hashProjectRecordPayload(text) !== manifest.hash) {
+      warn('Ignoring mismatched project snapshot payload from IndexedDB', `${manifest.key}`);
+      return null;
+    }
+    return JSON.parse(text);
+  } catch (err) {
+    warn('Failed to restore project snapshot from IndexedDB', err?.message || String(err));
+    return null;
+  }
+}
+
+async function _deletePersistedProjectRecord(manifest) {
+  if (!_isProjectRecordManifest(manifest)) {
+    return;
+  }
+  try {
+    const store = await _getCbrepStore();
+    await store.delete(manifest.key);
+  } catch {
+    // Best-effort cleanup only.
+  }
 }
 
 async function _persistProjectImagePayload(dataUrl) {
@@ -259,13 +384,64 @@ async function _hydrateProjectImagePayloads(node) {
   await visit(node);
 }
 
-function _readStoredProjectRecord() {
+function _readStoredProjectEntry() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     return raw ? JSON.parse(raw) : null;
   } catch {
     return null;
   }
+}
+
+async function _readStoredProjectRecord(entry = _readStoredProjectEntry()) {
+  if (!entry) return null;
+  if (_isProjectRecordManifest(entry)) {
+    return await _loadProjectRecordPayload(entry);
+  }
+  return entry;
+}
+
+function _captureViewState() {
+  const viewState = {
+    version: 1,
+  };
+
+  if (_viewport) {
+    viewState.viewport = {
+      zoom: _viewport.zoom,
+      panX: _viewport.panX,
+      panY: _viewport.panY,
+    };
+  }
+
+  if (_renderer3d && _renderer3d.getOrbitState) {
+    viewState.orbit = _renderer3d.getOrbitState();
+  }
+
+  return viewState;
+}
+
+function _readStoredViewState() {
+  try {
+    const raw = localStorage.getItem(VIEW_STATE_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function _applyViewStateOverlay(data, viewState = _readStoredViewState()) {
+  if (!data || !viewState || typeof viewState !== 'object') {
+    return data;
+  }
+
+  if (viewState.viewport) {
+    data.viewport = viewState.viewport;
+  }
+  if (viewState.orbit) {
+    data.orbit = viewState.orbit;
+  }
+  return data;
 }
 
 /**
@@ -381,13 +557,38 @@ async function projectFromJSON(data) {
  */
 export async function saveProject() {
   try {
-    const previous = _readStoredProjectRecord();
+    const previousEntry = _readStoredProjectEntry();
+    const previous = await _readStoredProjectRecord(previousEntry);
     const previousImageManifests = _collectProjectImageManifests(previous);
     const json = projectToJSON();
 
     const activeImageKeys = await _externalizeProjectImagePayloads(json);
 
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(json));
+    const rawProject = JSON.stringify(json);
+    let nextStoredEntry = json;
+    let nextProjectManifest = null;
+
+    try {
+      localStorage.setItem(STORAGE_KEY, rawProject);
+    } catch (err) {
+      const fallbackManifest = await _persistProjectRecordPayload(rawProject);
+      if (!fallbackManifest) {
+        throw err;
+      }
+      nextProjectManifest = fallbackManifest;
+      nextStoredEntry = fallbackManifest;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(fallbackManifest));
+      info('Project snapshot externalized to IndexedDB after localStorage quota pressure', { key: fallbackManifest.key, encoding: fallbackManifest.encoding });
+    }
+
+    if (_isProjectRecordManifest(previousEntry)) {
+      const shouldDeletePreviousProject = !nextProjectManifest || previousEntry.key !== nextProjectManifest.key;
+      if (shouldDeletePreviousProject) {
+        await _deletePersistedProjectRecord(previousEntry);
+      }
+    }
+
+    localStorage.removeItem(VIEW_STATE_STORAGE_KEY);
 
     for (const manifest of previousImageManifests) {
       if (!activeImageKeys.has(manifest.key)) {
@@ -410,14 +611,31 @@ export function debouncedSave() {
   }, SAVE_DEBOUNCE_MS);
 }
 
+export function saveViewState() {
+  try {
+    localStorage.setItem(VIEW_STATE_STORAGE_KEY, JSON.stringify(_captureViewState()));
+  } catch (err) {
+    warn('Failed to save view state to localStorage', err?.message || String(err));
+  }
+}
+
+export function debouncedSaveViewState() {
+  if (_viewSaveTimer) clearTimeout(_viewSaveTimer);
+  _viewSaveTimer = setTimeout(() => {
+    _viewSaveTimer = null;
+    saveViewState();
+  }, VIEW_SAVE_DEBOUNCE_MS);
+}
+
 /**
  * Load project from localStorage. Returns true if a project was restored.
  */
 export async function loadProject() {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return false;
-    const data = JSON.parse(raw);
+    const entry = _readStoredProjectEntry();
+    if (!entry) return false;
+    const data = _applyViewStateOverlay(await _readStoredProjectRecord(entry));
+    if (!data) return false;
     const result = await projectFromJSON(data);
     if (result.ok) {
       info('Project restored from browser storage', { entities: state.entities.length, layers: state.layers.length, hasViewport: result.hasViewport });
@@ -433,10 +651,19 @@ export async function loadProject() {
  * Clear saved project from localStorage.
  */
 export function clearSavedProject() {
-  const previous = _readStoredProjectRecord();
+  const previousEntry = _readStoredProjectEntry();
   localStorage.removeItem(STORAGE_KEY);
-  for (const manifest of _collectProjectImageManifests(previous)) {
-    void _deletePersistedProjectImage(manifest);
-  }
+  localStorage.removeItem(VIEW_STATE_STORAGE_KEY);
+
+  void (async () => {
+    const previous = await _readStoredProjectRecord(previousEntry);
+    if (_isProjectRecordManifest(previousEntry)) {
+      await _deletePersistedProjectRecord(previousEntry);
+    }
+    for (const manifest of _collectProjectImageManifests(previous)) {
+      await _deletePersistedProjectImage(manifest);
+    }
+  })();
+
   info('Saved project cleared from browser storage');
 }
