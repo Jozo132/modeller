@@ -196,12 +196,12 @@ test('serialize preserves OCCT mesh snapshots needed for smooth shading and feat
   assert.equal(entry.mesh.paths?.[0]?.stableHash, 'P:top', 'mesh snapshot should preserve edge path metadata');
 });
 
-test('fast restore forwards serialized mesh snapshots into the OCCT restore path', () => {
+test('fast restore rebuilds solids directly from serialized mesh snapshots when available', () => {
   const { tree, feature } = createTreeWithFeature();
   const checkpoint = makeOcctCheckpoint();
   const mesh = makeOcctResult(checkpoint).geometry;
   let seenMesh = null;
-  tree._buildSolidResultFromOcctCheckpoint = (_featureId, occtCheckpoint, _deps, _cacheVersion, meshSnapshot) => {
+  tree._buildSolidResultFromCheckpointMesh = (_featureId, occtCheckpoint, meshSnapshot) => {
     seenMesh = meshSnapshot;
     return makeOcctResult(occtCheckpoint);
   };
@@ -211,7 +211,98 @@ test('fast restore forwards serialized mesh snapshots into the OCCT restore path
   });
 
   assert.equal(restored, true, 'mesh-backed OCCT checkpoint should restore successfully');
-  assert.deepEqual(seenMesh, mesh, 'fast restore should pass the serialized mesh snapshot through to the OCCT restore helper');
+  assert.deepEqual(seenMesh, mesh, 'fast restore should rebuild from the serialized mesh snapshot when one is available');
+});
+
+test('mesh-backed checkpoint restore seeds selection compatibility geometry for downstream fillets', () => {
+  const { tree, feature } = createTreeWithFeature();
+  const checkpoint = makeOcctCheckpoint();
+  const mesh = structuredClone(makeOcctResult(checkpoint).geometry);
+  delete mesh._selectionCompatEdges;
+  delete mesh._selectionCompatPaths;
+  delete mesh._selectionCompatOcctFeatureEdges;
+  delete mesh._selectionCompatOcctFeaturePaths;
+
+  const restored = tree._buildSolidResultFromCheckpointMesh(feature.id, checkpoint, mesh);
+
+  assert.deepEqual(restored.geometry._selectionCompatEdges, restored.geometry.edges, 'restored checkpoint meshes should preserve edge-key compatibility geometry');
+  assert.deepEqual(restored.geometry._selectionCompatPaths, restored.geometry.paths, 'restored checkpoint meshes should preserve path compatibility geometry');
+  assert.deepEqual(restored.geometry._selectionCompatOcctFeatureEdges, restored.geometry._occtFeatureEdges, 'restored checkpoint meshes should preserve OCCT edge refs for downstream exact blends');
+  assert.deepEqual(restored.geometry._selectionCompatOcctFeaturePaths, restored.geometry._occtFeaturePaths, 'restored checkpoint meshes should preserve OCCT path refs for downstream exact blends');
+});
+
+test('mesh-backed checkpoint restore deep-clones display snapshots before rehydrate', () => {
+  const { tree, feature } = createTreeWithFeature();
+  const checkpoint = makeOcctCheckpoint();
+  const mesh = structuredClone(makeOcctResult(checkpoint).geometry);
+
+  const restored = tree._buildSolidResultFromCheckpointMesh(feature.id, checkpoint, mesh);
+  restored.geometry.faces[0].vertexNormals[0].z = 0.25;
+  restored.geometry._occtFeatureEdges[0].stableHash = 'E:mutated';
+
+  assert.equal(mesh.faces[0].vertexNormals[0].z, 1, 'restore should not mutate the saved smooth-shading snapshot');
+  assert.equal(mesh._occtFeatureEdges[0].stableHash, 'E:top', 'restore should not mutate the saved OCCT feature-edge snapshot');
+});
+
+test('live fillet normalization keeps the executed result instead of immediately re-restoring from checkpoint', () => {
+  const tree = new FeatureTree();
+  const feature = new FilletFeature('Live Fillet');
+  tree.features.push(feature);
+  tree.featureMap.set(feature.id, feature);
+
+  let restoreCalls = 0;
+  tree._buildSolidResultFromOcctCheckpoint = () => {
+    restoreCalls++;
+    throw new Error('should not restore live fillet result');
+  };
+
+  const result = makeOcctResult();
+  const normalized = tree._normalizeLiveSolidResultFromOcctCheckpoint(feature.id, feature, result);
+
+  assert.equal(normalized, result, 'live fillet result should remain the active result object');
+  assert.equal(restoreCalls, 0, 'live fillet normalization should not immediately rehydrate from checkpoint');
+  assert.ok(normalized.occtCheckpoint, 'live fillet result should still capture an OCCT checkpoint for later restore');
+  assert.deepEqual(normalized.geometry._selectionCompatEdges, normalized.geometry.edges, 'live fillet result should seed compatibility edges directly');
+  assert.deepEqual(normalized.geometry._selectionCompatOcctFeatureEdges, normalized.geometry._occtFeatureEdges, 'live fillet result should seed compatibility OCCT edges directly');
+});
+
+test('stamping a live solid result does not eagerly capture an OCCT checkpoint', () => {
+  const { tree, feature } = createTreeWithFeature();
+  const result = makeOcctResult();
+  delete result.occtCheckpoint;
+  delete result.geometry.occtCheckpoint;
+  delete result.solid.occtCheckpoint;
+
+  let checkpointCaptureCalls = 0;
+  tree._ensureSolidResultOcctCheckpoint = () => {
+    checkpointCaptureCalls++;
+    return true;
+  };
+
+  tree._stampSolidResult(feature.id, result);
+
+  assert.equal(checkpointCaptureCalls, 0, 'interactive live stamping should not synchronously capture a checkpoint');
+  assert.equal(result.exactBodyRevisionId, 1, 'live result should still receive revision metadata');
+});
+
+test('serializing checkpoints lazily captures a missing live OCCT checkpoint', () => {
+  const { tree, feature } = createTreeWithFeature();
+  const result = makeOcctResult();
+  delete result.occtCheckpoint;
+  delete result.geometry.occtCheckpoint;
+  delete result.solid.occtCheckpoint;
+  tree.results[feature.id] = result;
+
+  let checkpointCaptureCalls = 0;
+  tree._ensureSolidResultOcctCheckpoint = (liveResult) => {
+    checkpointCaptureCalls++;
+    return tree._rememberOcctCheckpoint(liveResult, makeOcctCheckpoint({ revision: { revisionId: 'rev-lazy', topologyHash: 'topo-lazy' } }));
+  };
+
+  const checkpoints = tree._serializeCheckpoints();
+
+  assert.equal(checkpointCaptureCalls, 1, 'serialization should lazily capture a missing OCCT checkpoint');
+  assert.equal(checkpoints?.[feature.id]?.occt?.revision?.topologyHash, 'topo-lazy', 'lazy-captured checkpoint should be serialized');
 });
 
 test('rehydrateOcctFeatureDisplayGeometry rebuilds fillet tags and merged edge sets from checkpoint topology', () => {

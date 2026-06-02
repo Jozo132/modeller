@@ -38,6 +38,60 @@ html, body {
   color: var(--text-primary);
 }
 
+body.cad-task-locked {
+  cursor: progress;
+  user-select: none;
+}
+
+.cad-task-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 17, 20, 0.48);
+  backdrop-filter: blur(2px);
+  pointer-events: auto;
+}
+
+.cad-task-overlay[hidden] {
+  display: none;
+}
+
+.cad-task-overlay-panel {
+  min-width: 240px;
+  max-width: min(360px, calc(100vw - 32px));
+  padding: 18px 20px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  background: rgba(37, 37, 38, 0.96);
+  box-shadow: 0 16px 42px rgba(0, 0, 0, 0.48);
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.cad-task-spinner {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 3px solid rgba(255, 255, 255, 0.2);
+  border-top-color: var(--accent-hover);
+  animation: cad-task-spin 0.8s linear infinite;
+  flex: 0 0 auto;
+}
+
+.cad-task-label {
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+@keyframes cad-task-spin {
+  to { transform: rotate(360deg); }
+}
+
 /* Menu Bar */
 #menu-bar {
   position: fixed;

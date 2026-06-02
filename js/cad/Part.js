@@ -631,7 +631,13 @@ export class Part {
    */
   fillet(edgeKeys, radius, options = {}) {
     this.modified = new Date();
+    const feature = this.buildFilletFeature(edgeKeys, radius, options);
+    this.featureTree.addFeature(feature);
+    this._checkAutoHidePlanes();
+    return feature;
+  }
 
+  buildFilletFeature(edgeKeys, radius, options = {}) {
     const feature = new FilletFeature(this._nextTypeName('fillet', 'Fillet'), radius);
     feature.setEdgeKeys(edgeKeys);
     if (options.segments) {
@@ -639,15 +645,19 @@ export class Part {
     } else {
       feature.setSegments(globalTessConfig.curveSegments);
     }
-
-    // Auto-populate stable entity keys for new features
     feature.stableEdgeKeys = edgeKeys
       .filter(k => isLegacyEdgeKey(k))
       .map(k => legacyEdgeKeyToStable(k, feature.id))
       .filter(k => k !== null);
+    return feature;
+  }
 
-    this.featureTree.addFeature(feature);
+  addPreparedFeature(feature, precomputedResult, index = -1) {
+    if (!feature) return null;
+    this.modified = new Date();
+    this.featureTree.addFeature(feature, index, precomputedResult);
     this._checkAutoHidePlanes();
+    this.updatePhysicalProperties();
     return feature;
   }
 

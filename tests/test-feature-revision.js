@@ -378,6 +378,21 @@ console.log('\n=== Part lifecycle wiring ===');
 
 {
   const pm = new PartManager();
+  const changes = [];
+  pm.addListener((_part, change) => changes.push(change));
+
+  const part = pm.createPart('ChangeReasons');
+  part.getFeatures = () => [{ id: 'feature_1' }];
+  pm.setActiveFeature('feature_1');
+
+  assert(changes[0]?.reason === 'create-part' && changes[0]?.shouldPersist === true,
+    'createPart notifies listeners with a persist-worthy change reason');
+  assert(changes[1]?.reason === 'set-active-feature' && changes[1]?.shouldPersist === false,
+    'setActiveFeature notifies listeners without marking the project dirty');
+}
+
+{
+  const pm = new PartManager();
   const reg = new MockHandleRegistry();
   const residency = new MockResidencyManager();
   let executeAllCalls = 0;

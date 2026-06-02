@@ -1368,6 +1368,17 @@ export class OcctKernelAdapter {
     return parseJson(kernel.getOperationSchema(), 'getOperationSchema');
   }
 
+  analyzeShape(shapeHandle) {
+    const kernel = this.requireReady();
+    if (typeof kernel.analyzeShape !== 'function') {
+      throw new Error('OCCT analyzeShape is unavailable in this build');
+    }
+    const result = this._usesWrapperApi
+      ? kernel.analyzeShape({ shape: this._shapeHandleObject(shapeHandle) })
+      : kernel.analyzeShape(shapeHandle);
+    return parseJson(result, 'analyzeShape');
+  }
+
   evaluateEdge(shapeHandle, edgeRef, t) {
     const kernel = this.requireReady();
     if (typeof kernel.evaluateEdge !== 'function') {

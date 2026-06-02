@@ -44,6 +44,7 @@ import { chamferSketchCorner, filletSketchCorner, union } from './cad/Operations
 import { motionAnalysis } from './motion.js';
 import { setFlag } from './featureFlags.js';
 import { loadOcctKernelModule } from './cad/occt/index.js';
+import { WorkerDispatcher, OCCT_BLEND_WORKER_PATH } from './workers/index.js';
 import { traceImageDataContours } from './image/trace-raster.js';
 import { buildFittedTraceEntities, buildHybridTraceEntities } from './image/trace-fitting.js';
 import { PPoint } from './cad/Point.js';
@@ -64,6 +65,7 @@ import { ViewCube } from './ui/viewcube.js';
 import { expandPathEdgeKeys, makeEdgeKey } from './cad/EdgeAnalysis.js';
 import { applyBRepChamfer as applyChamfer } from './cad/BRepChamfer.js';
 import { applyBRepFillet as applyFillet } from './cad/BRepFillet.js';
+import { FilletFeature } from './cad/FilletFeature.js';
 import { calculateMeshVolume, calculateBoundingBox, calculateSurfaceArea, detectDisconnectedBodies, calculateWallThickness, countInvertedFaces } from './cad/toolkit/MeshAnalysis.js';
 import {
   CAM_SIMULATION_DEFAULT_RESOLUTION,
@@ -317,6 +319,13 @@ class App {
     this._renderScheduled = false;
     this._renderRequested = false;
     this._sceneVersion = 1;
+    this._occtBlendWorker = null;
+    this._pendingAsyncFillet = null;
+    this._cadTaskLockDepth = 0;
+    this._cadTaskOverlay = null;
+    this._cadTaskOverlayLabel = null;
+    this._cadTaskInteractionGuardInstalled = false;
+    this._installCadTaskInteractionGuard();
 
     // Tools
     this.tools = {
@@ -1105,6 +1114,70 @@ class App {
     } else if (STATUS_WARN_RE.test(text)) {
       warn('Status:', text);
     }
+  }
+
+  _isCadTaskLocked() {
+    return this._cadTaskLockDepth > 0;
+  }
+
+  _installCadTaskInteractionGuard() {
+    if (this._cadTaskInteractionGuardInstalled) return;
+    const blockedEvents = [
+      'pointerdown', 'pointermove', 'pointerup', 'pointercancel',
+      'mousedown', 'mousemove', 'mouseup', 'click', 'dblclick', 'contextmenu', 'wheel',
+      'touchstart', 'touchmove', 'touchend', 'keydown', 'keyup', 'beforeinput', 'input',
+    ];
+    const blockWhenBusy = (event) => {
+      if (!this._isCadTaskLocked()) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
+    for (const eventName of blockedEvents) {
+      document.addEventListener(eventName, blockWhenBusy, { capture: true, passive: false });
+    }
+    this._cadTaskInteractionGuardInstalled = true;
+  }
+
+  _ensureCadTaskOverlay() {
+    if (this._cadTaskOverlay) return this._cadTaskOverlay;
+    const overlay = document.createElement('div');
+    overlay.className = 'cad-task-overlay';
+    overlay.setAttribute('aria-live', 'polite');
+    overlay.setAttribute('aria-busy', 'true');
+    overlay.hidden = true;
+
+    const panel = document.createElement('div');
+    panel.className = 'cad-task-overlay-panel';
+    const spinner = document.createElement('div');
+    spinner.className = 'cad-task-spinner';
+    spinner.setAttribute('aria-hidden', 'true');
+    const label = document.createElement('div');
+    label.className = 'cad-task-label';
+    label.textContent = 'Working...';
+    panel.appendChild(spinner);
+    panel.appendChild(label);
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
+
+    this._cadTaskOverlay = overlay;
+    this._cadTaskOverlayLabel = label;
+    return overlay;
+  }
+
+  _beginCadTaskLock(label = 'Working...') {
+    this._cadTaskLockDepth += 1;
+    const overlay = this._ensureCadTaskOverlay();
+    if (this._cadTaskOverlayLabel) this._cadTaskOverlayLabel.textContent = label;
+    overlay.hidden = false;
+    document.body.classList.add('cad-task-locked');
+    this.setStatus(label);
+  }
+
+  _endCadTaskLock() {
+    this._cadTaskLockDepth = Math.max(0, this._cadTaskLockDepth - 1);
+    if (this._cadTaskLockDepth > 0) return;
+    if (this._cadTaskOverlay) this._cadTaskOverlay.hidden = true;
+    document.body.classList.remove('cad-task-locked');
   }
 
   async _ensureReplayPreloads() {
@@ -7577,12 +7650,15 @@ class App {
     });
 
     // Listen to part changes
-    this._partManager.addListener((part) => {
+    this._partManager.addListener((part, change) => {
+      if (change?.shouldPersist === true && !this._rollbackDragActive) {
+        debouncedSave();
+      }
       if (this._rollbackDragActive) {
         this._queuePartChangeRefresh(part, 'rollback-drag');
         return;
       }
-      this._runPartChangeRefresh(part, 'part-change');
+      this._runPartChangeRefresh(part, change?.reason || 'part-change');
     });
 
     // Add Sketch to Part
@@ -15027,7 +15103,7 @@ class App {
     this._updateFilletPreview();
   }
 
-  _acceptFillet() {
+  async _acceptFillet() {
     if (!this._filletMode) return;
     const fm = this._filletMode;
     const isInline = fm.panelMode === 'inline';
@@ -15041,6 +15117,12 @@ class App {
 
     try {
       const segments = this._getTessellationDrivenCurveSegments();
+      if (!fm.editingFeatureId) {
+        const acceptedAsync = await this._acceptFilletAsync(edgeKeys, fm, segments);
+        if (acceptedAsync) {
+          return;
+        }
+      }
       if (fm.editingFeatureId) {
         // Update existing feature
         this._partManager.modifyFeature(fm.editingFeatureId, (f) => {
@@ -15099,13 +15181,16 @@ class App {
     this.setStatus('Fillet cancelled.');
   }
 
-  _exitFilletMode() {
+  _exitFilletMode(options = {}) {
+    const preserveGhostPreview = options.preserveGhostPreview === true;
     if (!this._filletMode) return;
     const isInline = this._filletMode.panelMode === 'inline';
     if (this._renderer3d) {
       this._renderer3d.setEdgeSelectionMode(false);
       this._renderer3d.clearEdgeSelection();
-      this._renderer3d.clearGhostPreview();
+      if (!preserveGhostPreview) {
+        this._renderer3d.clearGhostPreview();
+      }
       this._renderer3d.setHoveredEdge(-1);
       this._renderer3d.setHoveredFace(-1);
     }
@@ -15118,6 +15203,100 @@ class App {
       this._showLeftFeatureParams(null);
     }
     this._scheduleRender();
+  }
+
+  _getOcctBlendWorker() {
+    if (!this._occtBlendWorker) {
+      this._occtBlendWorker = new WorkerDispatcher(OCCT_BLEND_WORKER_PATH);
+    }
+    return this._occtBlendWorker;
+  }
+
+  async _acceptFilletAsync(edgeKeys, fm, segments) {
+    const part = this._partManager?.getPart?.();
+    if (!part) return false;
+    const baseResult = part.getFinalGeometry();
+    if (!baseResult?.geometry || !baseResult?.occtCheckpoint) return false;
+
+    const feature = this._partManager.buildFilletFeature(edgeKeys, fm.radius, { segments });
+    if (!feature) return false;
+
+    const selectionContext = baseResult.solid || {
+      geometry: baseResult.geometry,
+      body: baseResult.body || baseResult.geometry?.topoBody || null,
+    };
+    const resolvedEdgeKeys = feature._resolveSelectedEdgeKeys(selectionContext, feature);
+    const edgeRefs = feature._resolveSelectedOcctEdgeRefs(selectionContext, resolvedEdgeKeys, feature);
+    if (!Array.isArray(edgeRefs) || edgeRefs.length === 0) {
+      return false;
+    }
+
+    const requestToken = `${feature.id}:${Date.now()}`;
+    this._pendingAsyncFillet = {
+      token: requestToken,
+      featureId: feature.id,
+      baseRevisionId: baseResult.exactBodyRevisionId || null,
+    };
+
+    this._recorder.filletCreated(edgeKeys, fm.radius, segments);
+    this._exitFilletMode({ preserveGhostPreview: true });
+    this._deselectAll();
+    this._beginCadTaskLock(`Applying exact fillet: radius ${fm.radius} on ${edgeKeys.length} edge(s)...`);
+
+    try {
+      const worker = this._getOcctBlendWorker();
+      const response = await worker.dispatch({
+        op: 'occt-fillet',
+        checkpoint: baseResult.occtCheckpoint,
+        meshSnapshot: baseResult.geometry,
+        edgeKeys: resolvedEdgeKeys,
+        edgeRefs,
+        radius: fm.radius,
+        spec: feature.buildOcctSpec(edgeRefs),
+        sourceTopology: baseResult.geometry?._occtModeling?.topology || null,
+      });
+      if (this._pendingAsyncFillet?.token !== requestToken) {
+        return true;
+      }
+
+      const currentBase = this._partManager?.getPart?.()?.getFinalGeometry?.() || null;
+      if ((this._pendingAsyncFillet?.baseRevisionId || null) !== (currentBase?.exactBodyRevisionId || null)) {
+        if (this._renderer3d) this._renderer3d.clearGhostPreview();
+        this._pendingAsyncFillet = null;
+        this.setStatus('Fillet result discarded because the model changed during background exact compute.');
+        this._scheduleRender();
+        return true;
+      }
+
+      const committed = this._partManager.commitPreparedFeature(feature, response.result);
+      if (this._renderer3d) {
+        this._renderer3d.clearGhostPreview();
+        this._renderer3d.setSelectedFeature(feature.id);
+      }
+      if (this._featurePanel) {
+        this._featurePanel.update();
+        this._featurePanel.selectFeature(feature.id);
+      }
+      const committedFeature = committed || this._getPartFeatureById(feature.id);
+      if (committedFeature) {
+        this._showLeftFeatureParams(committedFeature);
+      }
+      this._updateNodeTree();
+      this._update3DView();
+      this._updateOperationButtons();
+      this._scheduleRender();
+      this.setStatus(`Fillet: radius ${fm.radius} on ${edgeKeys.length} edge(s)`);
+      this._pendingAsyncFillet = null;
+      return true;
+    } catch (err) {
+      if (this._renderer3d) this._renderer3d.clearGhostPreview();
+      this._pendingAsyncFillet = null;
+      this.setStatus(`Fillet failed: ${err.message}`);
+      this._scheduleRender();
+      return true;
+    } finally {
+      this._endCadTaskLock();
+    }
   }
 
   /**

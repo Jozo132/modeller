@@ -5,6 +5,10 @@ import { Sketch } from './cad/Sketch.js';
 import { Scene } from './cad/Scene.js';
 import { globalTessConfig } from './cad/TessellationConfig.js';
 
+function makePartChange(reason, shouldPersist = false) {
+  return { reason, shouldPersist };
+}
+
 /**
  * PartManager - Handles 3D part creation and feature management
  */
@@ -26,7 +30,7 @@ export class PartManager {
     this.part = new Part(name);
     this._wirePart(this.part);
     this.activeFeature = null;
-    this.notifyListeners();
+    this.notifyListeners(makePartChange('create-part', true));
     return this.part;
   }
 
@@ -64,7 +68,7 @@ export class PartManager {
 
     this._wirePart(this.part);
 
-    this.notifyListeners();
+    this.notifyListeners(makePartChange('rewire-subsystem', false));
   }
 
   /**
@@ -85,7 +89,7 @@ export class PartManager {
 
     const sketchFeature = this.part.addSketch(sketch, plane);
     this.activeFeature = sketchFeature;
-    this.notifyListeners();
+    this.notifyListeners(makePartChange('add-sketch', true));
     return sketchFeature;
   }
 
@@ -100,7 +104,7 @@ export class PartManager {
 
     const feature = this.part.extrude(sketchFeatureId, distance, options);
     this.activeFeature = feature;
-    this.notifyListeners();
+    this.notifyListeners(makePartChange('extrude', true));
     return feature;
   }
 
@@ -112,7 +116,7 @@ export class PartManager {
 
     const feature = this.part.extrudeCut(sketchFeatureId, distance, options);
     this.activeFeature = feature;
-    this.notifyListeners();
+    this.notifyListeners(makePartChange('extrude-cut', true));
     return feature;
   }
 
@@ -127,7 +131,7 @@ export class PartManager {
 
     const feature = this.part.revolve(sketchFeatureId, angle, options);
     this.activeFeature = feature;
-    this.notifyListeners();
+    this.notifyListeners(makePartChange('revolve', true));
     return feature;
   }
 
@@ -136,7 +140,7 @@ export class PartManager {
 
     const feature = this.part.sweep(profileSketchFeatureId, pathSketchFeatureId, options);
     this.activeFeature = feature;
-    this.notifyListeners();
+    this.notifyListeners(makePartChange('sweep', true));
     return feature;
   }
 
@@ -145,7 +149,7 @@ export class PartManager {
 
     const feature = this.part.loft(sectionSketchFeatureIds, options);
     this.activeFeature = feature;
-    this.notifyListeners();
+    this.notifyListeners(makePartChange('loft', true));
     return feature;
   }
 
@@ -153,7 +157,7 @@ export class PartManager {
     if (!this.part) return null;
     const feature = this.part.chamfer(edgeKeys, distance);
     this.activeFeature = feature;
-    this.notifyListeners();
+    this.notifyListeners(makePartChange('chamfer', true));
     return feature;
   }
 
@@ -161,8 +165,21 @@ export class PartManager {
     if (!this.part) return null;
     const feature = this.part.fillet(edgeKeys, radius, options);
     this.activeFeature = feature;
-    this.notifyListeners();
+    this.notifyListeners(makePartChange('fillet', true));
     return feature;
+  }
+
+  buildFilletFeature(edgeKeys, radius, options = {}) {
+    if (!this.part) return null;
+    return this.part.buildFilletFeature(edgeKeys, radius, options);
+  }
+
+  commitPreparedFeature(feature, precomputedResult, index = -1) {
+    if (!this.part || !feature || !precomputedResult) return null;
+    const committed = this.part.addPreparedFeature(feature, precomputedResult, index);
+    this.activeFeature = committed;
+    this.notifyListeners(makePartChange('commit-prepared-feature', true));
+    return committed;
   }
 
   /**
@@ -177,7 +194,7 @@ export class PartManager {
 
     const feature = this.part.importSTEP(stepData, options);
     this.activeFeature = feature;
-    this.notifyListeners();
+    this.notifyListeners(makePartChange('import-step', true));
     return feature;
   }
 
@@ -190,7 +207,7 @@ export class PartManager {
     if (!this.part) return;
 
     this.part.modifyFeature(featureId, modifyFn);
-    this.notifyListeners();
+    this.notifyListeners(makePartChange('modify-feature', true));
   }
 
   /**
@@ -201,7 +218,7 @@ export class PartManager {
     if (!this.part) return;
 
     this.part.suppressFeature(featureId);
-    this.notifyListeners();
+    this.notifyListeners(makePartChange('suppress-feature', true));
   }
 
   /**
@@ -212,7 +229,7 @@ export class PartManager {
     if (!this.part) return;
 
     this.part.unsuppressFeature(featureId);
-    this.notifyListeners();
+    this.notifyListeners(makePartChange('unsuppress-feature', true));
   }
 
   /**
@@ -226,7 +243,7 @@ export class PartManager {
     if (this.activeFeature && this.activeFeature.id === featureId) {
       this.activeFeature = null;
     }
-    this.notifyListeners();
+    this.notifyListeners(makePartChange('remove-feature', true));
   }
 
   /**
@@ -254,7 +271,7 @@ export class PartManager {
     if (feature) {
       if (this.activeFeature === feature) return;
       this.activeFeature = feature;
-      this.notifyListeners();
+      this.notifyListeners(makePartChange('set-active-feature', false));
     }
   }
 
@@ -287,8 +304,8 @@ export class PartManager {
   /**
    * Notify all listeners of part updates
    */
-  notifyListeners() {
-    this.listeners.forEach(listener => listener(this.part));
+  notifyListeners(change = makePartChange('update', false)) {
+    this.listeners.forEach(listener => listener(this.part, change));
   }
 
   /**
@@ -314,7 +331,7 @@ export class PartManager {
     });
     this._wirePart(this.part);
     this.activeFeature = null;
-    this.notifyListeners();
+    this.notifyListeners(makePartChange('deserialize', false));
   }
 
   _wirePart(part) {

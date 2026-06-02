@@ -224,30 +224,13 @@ export class FeatureTree {
     if (!feature || !result || result.type !== 'solid') return result;
     if (feature.type !== 'fillet' && feature.type !== 'chamfer') return result;
     if (!this._ensureSolidResultOcctCheckpoint(result)) return result;
-
-    try {
-      const restored = this._buildSolidResultFromOcctCheckpoint(
-        featureId,
-        result.occtCheckpoint,
-        null,
-        this._getFeatureCbrepCacheVersion(feature),
-      );
-      if (restored?.geometry && result.geometry) {
-        restored.geometry._selectionCompatEdges = Array.isArray(result.geometry.edges) ? result.geometry.edges : [];
-        restored.geometry._selectionCompatPaths = Array.isArray(result.geometry.paths) ? result.geometry.paths : [];
-        restored.geometry._selectionCompatOcctFeatureEdges = Array.isArray(result.geometry._occtFeatureEdges)
-          ? result.geometry._occtFeatureEdges
-          : [];
-        restored.geometry._selectionCompatOcctFeaturePaths = Array.isArray(result.geometry._occtFeaturePaths)
-          ? result.geometry._occtFeaturePaths
-          : [];
-      }
-      this._releaseResultHandle(result, featureId);
-      return restored;
-    } catch (error) {
-      result._occtCheckpointRestoreError = error?.message || String(error);
-      return result;
+    if (result.geometry) {
+      this._seedSelectionCompatGeometry(result.geometry);
     }
+    if (this._getFeatureCbrepCacheVersion(feature)) {
+      result.cbrepCacheVersion = this._getFeatureCbrepCacheVersion(feature);
+    }
+    return result;
   }
 
   /**
@@ -506,7 +489,12 @@ export class FeatureTree {
     result.exactBodyRevisionId = this._revisionCounter;
 
     const feature = this.featureMap.get(featureId);
-    this._ensureSolidResultCheckpoint(featureId, result, feature);
+    if (this._hasOcctCheckpoint({ occt: result.occtCheckpoint })) {
+      this._rememberOcctCheckpoint(result, result.occtCheckpoint);
+    }
+    if (feature && !feature._irHash && result.irHash) {
+      feature._irHash = result.irHash;
+    }
 
     // Propagate irHash from the feature instance if available
     if (feature && feature._irHash) {
@@ -589,9 +577,7 @@ export class FeatureTree {
 
   _buildSolidResultFromCheckpointMesh(featureId, checkpoint, meshSnapshot, cbrepCacheVersion = null) {
     const feature = this.featureMap.get(featureId) || null;
-    const geometry = meshSnapshot && typeof meshSnapshot === 'object'
-      ? { ...meshSnapshot }
-      : null;
+    const geometry = this._cloneOcctDisplayMeshSnapshot(meshSnapshot);
     if (!geometry || !Array.isArray(geometry.faces) || geometry.faces.length === 0) {
       throw new Error(`empty checkpoint mesh restore for ${featureId}`);
     }
@@ -610,6 +596,8 @@ export class FeatureTree {
       const sourceTopology = sourceResult?.geometry?._occtModeling?.topology || null;
       rehydrateOcctFeatureDisplayGeometry(geometry, feature.type, sourceTopology);
     }
+
+    this._seedSelectionCompatGeometry(geometry);
 
     geometry.topoBody = null;
     geometry.occtShapeHandle = 0;
@@ -638,6 +626,30 @@ export class FeatureTree {
 
   _cloneOcctDisplayMeshSnapshot(mesh) {
     return cloneOcctCheckpointMeshSnapshot(mesh);
+  }
+
+  _seedSelectionCompatGeometry(geometry) {
+    if (!geometry || typeof geometry !== 'object') return;
+    if (!Array.isArray(geometry._selectionCompatEdges) || geometry._selectionCompatEdges.length === 0) {
+      geometry._selectionCompatEdges = Array.isArray(geometry.edges) ? geometry.edges : [];
+    }
+    if (!Array.isArray(geometry._selectionCompatPaths) || geometry._selectionCompatPaths.length === 0) {
+      geometry._selectionCompatPaths = Array.isArray(geometry.paths) ? geometry.paths : [];
+    }
+    if (!Array.isArray(geometry._selectionCompatOcctFeatureEdges) || geometry._selectionCompatOcctFeatureEdges.length === 0) {
+      if (Array.isArray(geometry._occtFeatureEdges) && geometry._occtFeatureEdges.length > 0) {
+        geometry._selectionCompatOcctFeatureEdges = geometry._occtFeatureEdges;
+      } else {
+        geometry._selectionCompatOcctFeatureEdges = Array.isArray(geometry.edges) ? geometry.edges : [];
+      }
+    }
+    if (!Array.isArray(geometry._selectionCompatOcctFeaturePaths) || geometry._selectionCompatOcctFeaturePaths.length === 0) {
+      if (Array.isArray(geometry._occtFeaturePaths) && geometry._occtFeaturePaths.length > 0) {
+        geometry._selectionCompatOcctFeaturePaths = geometry._occtFeaturePaths;
+      } else {
+        geometry._selectionCompatOcctFeaturePaths = Array.isArray(geometry.paths) ? geometry.paths : [];
+      }
+    }
   }
 
   _serializeOcctDisplayMeshSnapshot(geometry) {
@@ -685,6 +697,8 @@ export class FeatureTree {
       const sourceTopology = sourceResult?.geometry?._occtModeling?.topology || null;
       rehydrateOcctFeatureDisplayGeometry(geometry, feature.type, sourceTopology);
     }
+
+    this._seedSelectionCompatGeometry(geometry);
 
     const volume = this._readOcctCheckpointVolume(restored, geometry);
     const boundingBox = this._readOcctCheckpointBoundingBox(restored, geometry);
@@ -803,8 +817,9 @@ export class FeatureTree {
    * @param {number} index - Optional index to insert at (default: append)
    * @returns {Feature} The added feature
    */
-  addFeature(feature, index = -1) {
+  addFeature(feature, index = -1, precomputedResult = null) {
     if (!feature) return null;
+    const appendAtEnd = !(index >= 0 && index < this.features.length);
     
     // Validate dependencies exist
     for (const depId of feature.getDependencies()) {
@@ -821,7 +836,17 @@ export class FeatureTree {
     }
     
     this.featureMap.set(feature.id, feature);
-    
+
+    if (precomputedResult && appendAtEnd) {
+      const result = this._normalizeLiveSolidResultFromOcctCheckpoint(feature.id, feature, precomputedResult);
+      feature.result = result;
+      feature.error = null;
+      this._stampSolidResult(feature.id, result);
+      this.results[feature.id] = result;
+      feature._lastInputFingerprint = this._computeInputFingerprint(feature);
+      return feature;
+    }
+
     // Recalculate from this feature onward
     this.recalculateFrom(feature.id);
     

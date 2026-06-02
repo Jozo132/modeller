@@ -11,7 +11,9 @@ import { applyBRepFillet } from './BRepFillet.js';
 import { expandPathEdgeKeys, makeEdgeKey } from './EdgeAnalysis.js';
 import { calculateMeshVolume, calculateBoundingBox } from './toolkit/MeshAnalysis.js';
 import {
+  cloneOcctCheckpointMeshSnapshot,
   disposeOcctSketchModelingShape,
+  ensureOcctGeometryResidentFromCheckpoint,
   restoreOcctSketchModelingCheckpoint,
   tryBuildOcctFilletMetadataSync,
 } from './occt/OcctSketchModeling.js';
@@ -432,6 +434,31 @@ function resolveOcctFeatureChainRefs(selectionContext, fallbackEdgeKeys) {
   return uniqueOcctEdgeRefs(refs);
 }
 
+export function resolveOcctEdgeRefsFromSelectionContext(selectionContext, legacyKeys = []) {
+  const fallbackEdgeKeys = Array.isArray(legacyKeys) && legacyKeys.length > 0
+    ? [...new Set(legacyKeys)]
+    : [];
+  if (fallbackEdgeKeys.length === 0) return [];
+
+  const nativeChainRefs = resolveOcctFeatureChainRefs(selectionContext, fallbackEdgeKeys);
+  if (nativeChainRefs.length > 0) return nativeChainRefs;
+
+  const geometryEdges = Array.isArray(selectionContext?.geometry?.edges)
+    ? selectionContext.geometry.edges
+    : [];
+  const geometryRefs = [];
+  for (const edge of geometryEdges) {
+    const legacyKey = edgeEntityToLegacyKey(edge);
+    const ref = toOcctEdgeRef(edge);
+    const matched = !!legacyKey && fallbackEdgeKeys.some((key) => (
+      key === legacyKey || legacyKeyMatchesEdge(key, edge)
+    ));
+    if (!ref || !matched) continue;
+    geometryRefs.push(ref);
+  }
+  return geometryRefs.length > 0 ? uniqueOcctEdgeRefs(geometryRefs) : [];
+}
+
 export class FilletFeature extends Feature {
   constructor(name = 'Fillet', radius = 1) {
     super(name);
@@ -465,23 +492,25 @@ export class FilletFeature extends Feature {
     const inputTopoBody = solid.body || (solid.geometry && solid.geometry.topoBody) || null;
     let selectionContext = solid;
     let occtInputGeometry = solid.geometry;
-    let restoredOcctGeometry = null;
     let occtRestoreError = null;
+    const occtCheckpoint = occtInputGeometry?.occtCheckpoint || sourceResult?.occtCheckpoint || null;
+    let restoredSelectionRetry = null;
 
-    if (!(occtInputGeometry?.occtShapeHandle > 0) && sourceResult?.occtCheckpoint) {
-      try {
-        const restored = restoreOcctSketchModelingCheckpoint(sourceResult.occtCheckpoint);
-        if (restored?.geometry?.occtShapeHandle > 0) {
-          restoredOcctGeometry = restored.geometry;
-          occtInputGeometry = restored.geometry;
-          selectionContext = {
-            ...solid,
-            geometry: restored.geometry,
-            body: solid.body || restored.geometry.topoBody || null,
-          };
+    if (!(occtInputGeometry?.occtShapeHandle > 0)) {
+      if (occtCheckpoint) {
+        try {
+          const restored = ensureOcctGeometryResidentFromCheckpoint(occtInputGeometry, occtCheckpoint);
+          if (restored?.geometry?.occtShapeHandle > 0) {
+            occtInputGeometry = restored.geometry;
+            selectionContext = {
+              ...solid,
+              geometry: restored.geometry,
+              body: solid.body || restored.geometry.topoBody || null,
+            };
+          }
+        } catch (error) {
+          occtRestoreError = error;
         }
-      } catch (error) {
-        occtRestoreError = error;
       }
     }
 
@@ -490,20 +519,48 @@ export class FilletFeature extends Feature {
     const selectedOcctEdgeRefs = hadOcctInput
       ? this._resolveSelectedOcctEdgeRefs(selectionContext, edgeKeys)
       : [];
-    try {
-      occtGeometry = hadOcctInput
-        ? tryBuildOcctFilletMetadataSync({
-          handle: occtInputGeometry.occtShapeHandle,
-          edgeRefs: selectedOcctEdgeRefs,
-          radius: this.radius,
-          spec: this.buildOcctSpec(selectedOcctEdgeRefs),
-          sourceTopology: occtInputGeometry?._occtModeling?.topology || null,
-          topoBody: inputTopoBody,
-        })
-        : null;
-    } finally {
-      if (restoredOcctGeometry) {
-        this._disposeTemporaryOcctGeometry(restoredOcctGeometry, occtGeometry?.occtShapeHandle || 0);
+    occtGeometry = hadOcctInput
+      ? tryBuildOcctFilletMetadataSync({
+        handle: occtInputGeometry.occtShapeHandle,
+        edgeRefs: selectedOcctEdgeRefs,
+        radius: this.radius,
+        spec: this.buildOcctSpec(selectedOcctEdgeRefs),
+        sourceTopology: occtInputGeometry?._occtModeling?.topology || null,
+        topoBody: inputTopoBody,
+      })
+      : null;
+
+    if (!occtGeometry && hadOcctInput && occtCheckpoint) {
+      try {
+        const retryMeshSnapshot = this._buildRetryMeshSnapshot(occtInputGeometry, sourceResult?.geometry || null);
+        restoredSelectionRetry = restoreOcctSketchModelingCheckpoint(occtCheckpoint, null, retryMeshSnapshot);
+        if (restoredSelectionRetry?.geometry?.occtShapeHandle > 0) {
+          this._copySelectionCompatGeometry(occtInputGeometry, restoredSelectionRetry.geometry);
+          const retrySelectionContext = {
+            ...solid,
+            geometry: restoredSelectionRetry.geometry,
+            body: solid.body || restoredSelectionRetry.geometry.topoBody || null,
+          };
+          const retryOcctEdgeRefs = this._resolveSelectedOcctEdgeRefs(retrySelectionContext, edgeKeys);
+          occtGeometry = retryOcctEdgeRefs.length > 0
+            ? tryBuildOcctFilletMetadataSync({
+              handle: restoredSelectionRetry.geometry.occtShapeHandle,
+              edgeRefs: retryOcctEdgeRefs,
+              radius: this.radius,
+              spec: this.buildOcctSpec(retryOcctEdgeRefs),
+              sourceTopology: restoredSelectionRetry.geometry?._occtModeling?.topology || null,
+              topoBody: inputTopoBody,
+            })
+            : null;
+        }
+      } catch (error) {
+        if (!occtRestoreError) {
+          occtRestoreError = error;
+        }
+      } finally {
+        if (restoredSelectionRetry?.geometry) {
+          this._disposeTemporaryOcctGeometry(restoredSelectionRetry.geometry, occtGeometry?.occtShapeHandle || 0);
+        }
       }
     }
 
@@ -595,6 +652,41 @@ export class FilletFeature extends Feature {
     return null;
   }
 
+  _copySelectionCompatGeometry(sourceGeometry, targetGeometry) {
+    if (!sourceGeometry || !targetGeometry) return;
+    if ((!Array.isArray(targetGeometry._selectionCompatEdges) || targetGeometry._selectionCompatEdges.length === 0)
+        && Array.isArray(sourceGeometry._selectionCompatEdges)) {
+      targetGeometry._selectionCompatEdges = sourceGeometry._selectionCompatEdges;
+    }
+    if ((!Array.isArray(targetGeometry._selectionCompatPaths) || targetGeometry._selectionCompatPaths.length === 0)
+        && Array.isArray(sourceGeometry._selectionCompatPaths)) {
+      targetGeometry._selectionCompatPaths = sourceGeometry._selectionCompatPaths;
+    }
+    if ((!Array.isArray(targetGeometry._selectionCompatOcctFeatureEdges) || targetGeometry._selectionCompatOcctFeatureEdges.length === 0)
+        && Array.isArray(sourceGeometry._selectionCompatOcctFeatureEdges)) {
+      targetGeometry._selectionCompatOcctFeatureEdges = sourceGeometry._selectionCompatOcctFeatureEdges;
+    }
+    if ((!Array.isArray(targetGeometry._selectionCompatOcctFeaturePaths) || targetGeometry._selectionCompatOcctFeaturePaths.length === 0)
+        && Array.isArray(sourceGeometry._selectionCompatOcctFeaturePaths)) {
+      targetGeometry._selectionCompatOcctFeaturePaths = sourceGeometry._selectionCompatOcctFeaturePaths;
+    }
+  }
+
+  _buildRetryMeshSnapshot(primaryGeometry, fallbackGeometry = null) {
+    const primarySnapshot = cloneOcctCheckpointMeshSnapshot(primaryGeometry);
+    if (primarySnapshot?.faces?.length) return primarySnapshot;
+    const fallbackSnapshot = cloneOcctCheckpointMeshSnapshot(fallbackGeometry);
+    return fallbackSnapshot?.faces?.length ? fallbackSnapshot : null;
+  }
+
+  _disposeTemporaryOcctGeometry(geometry, keepHandle = 0) {
+    const handle = geometry?.occtShapeHandle || 0;
+    if (!handle || handle === keepHandle) return;
+    disposeOcctSketchModelingShape(handle);
+    geometry.occtShapeHandle = 0;
+    geometry.occtShapeResident = false;
+  }
+
   _resolveFilletExecutionInput(context) {
     const thisIndex = context.tree.getFeatureIndex(this.id);
     const mergedFeatures = [this];
@@ -659,14 +751,6 @@ export class FilletFeature extends Feature {
     };
   }
 
-  _disposeTemporaryOcctGeometry(geometry, keepHandle = 0) {
-    const handle = geometry?.occtShapeHandle || 0;
-    if (!handle || handle === keepHandle) return;
-    disposeOcctSketchModelingShape(handle);
-    geometry.occtShapeHandle = 0;
-    geometry.occtShapeResident = false;
-  }
-
   _getStoredSelectionKeys(feature = this) {
     if (Array.isArray(feature?.stableEdgeKeys) && feature.stableEdgeKeys.length > 0) {
       return [...feature.stableEdgeKeys];
@@ -682,25 +766,8 @@ export class FilletFeature extends Feature {
     const fallbackEdgeKeys = Array.isArray(legacyKeys) && legacyKeys.length > 0
       ? [...new Set(legacyKeys)]
       : (Array.isArray(feature.edgeKeys) ? [...feature.edgeKeys] : []);
-    const nativeChainRefs = resolveOcctFeatureChainRefs(selectionContext, fallbackEdgeKeys);
-    if (nativeChainRefs.length > 0) return nativeChainRefs;
-
-    const geometryEdges = Array.isArray(selectionContext?.geometry?.edges)
-      ? selectionContext.geometry.edges
-      : [];
-    const geometryRefs = [];
-    for (const edge of geometryEdges) {
-      const legacyKey = edgeEntityToLegacyKey(edge);
-      const ref = toOcctEdgeRef(edge);
-      const matched = !!legacyKey && fallbackEdgeKeys.some((key) => (
-        key === legacyKey || legacyKeyMatchesEdge(key, edge)
-      ));
-      if (!ref || !matched) continue;
-      geometryRefs.push(ref);
-    }
-    if (geometryRefs.length > 0) {
-      return uniqueOcctEdgeRefs(geometryRefs);
-    }
+    const directRefs = resolveOcctEdgeRefsFromSelectionContext(selectionContext, fallbackEdgeKeys);
+    if (directRefs.length > 0) return directRefs;
 
     const bodyKeys = buildSelectionKeyMap(selectionContext, feature.id);
     const stableKeys = this._getStoredSelectionKeys(feature);
