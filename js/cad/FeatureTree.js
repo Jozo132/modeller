@@ -9,6 +9,7 @@ import { Feature } from './Feature.js';
 import { DirtyFaceTracker, stampDirtyFieldsOnResult } from './DirtyFaceTracker.js';
 import {
   createOcctSketchModelingCheckpoint,
+  cloneOcctCheckpointMeshSnapshot,
   disposeOcctSketchModelingShape,
   rehydrateOcctFeatureDisplayGeometry,
   restoreOcctSketchModelingCheckpoint,
@@ -540,15 +541,7 @@ export class FeatureTree {
   }
 
   _cloneOcctDisplayMeshSnapshot(mesh) {
-    if (!mesh || typeof mesh !== 'object') return null;
-    try {
-      if (typeof structuredClone === 'function') {
-        return structuredClone(mesh);
-      }
-      return JSON.parse(JSON.stringify(mesh));
-    } catch {
-      return null;
-    }
+    return cloneOcctCheckpointMeshSnapshot(mesh);
   }
 
   _serializeOcctDisplayMeshSnapshot(geometry) {

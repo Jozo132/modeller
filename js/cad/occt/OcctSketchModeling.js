@@ -1628,7 +1628,7 @@ export function createOcctSketchModelingCheckpoint(handle) {
   return adapter.createCheckpoint(handle);
 }
 
-function cloneOcctCheckpointMeshSnapshot(meshSnapshot) {
+export function cloneOcctCheckpointMeshSnapshot(meshSnapshot) {
   if (!meshSnapshot || typeof meshSnapshot !== 'object') return null;
   try {
     if (typeof structuredClone === 'function') {
@@ -1669,6 +1669,8 @@ export function restoreOcctSketchModelingCheckpoint(checkpoint, tessellationOpti
     const previousModeling = geometry._occtModeling && typeof geometry._occtModeling === 'object'
       ? geometry._occtModeling
       : null;
+    // A retessellated restore is always authoritative; snapshot-backed restores
+    // preserve any explicit non-authoritative flag captured in the saved mesh.
     geometry._occtModeling = {
       ...(previousModeling || {}),
       authoritative: previousModeling?.authoritative !== false,
