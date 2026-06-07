@@ -65,6 +65,7 @@ import { ViewCube } from './ui/viewcube.js';
 import { expandPathEdgeKeys, makeEdgeKey } from './cad/EdgeAnalysis.js';
 import { applyBRepChamfer as applyChamfer } from './cad/BRepChamfer.js';
 import { applyBRepFillet as applyFillet } from './cad/BRepFillet.js';
+import { ChamferFeature } from './cad/ChamferFeature.js';
 import { FilletFeature } from './cad/FilletFeature.js';
 import { calculateMeshVolume, calculateBoundingBox, calculateSurfaceArea, detectDisconnectedBodies, calculateWallThickness, countInvertedFaces } from './cad/toolkit/MeshAnalysis.js';
 import {
@@ -320,6 +321,7 @@ class App {
     this._renderRequested = false;
     this._sceneVersion = 1;
     this._occtBlendWorker = null;
+    this._pendingAsyncChamfer = null;
     this._pendingAsyncFillet = null;
     this._cadTaskLockDepth = 0;
     this._cadTaskOverlay = null;
@@ -14937,7 +14939,7 @@ class App {
     this._updateChamferPreview();
   }
 
-  _acceptChamfer() {
+  async _acceptChamfer() {
     if (!this._chamferMode) return;
     const cm = this._chamferMode;
     const isInline = cm.panelMode === 'inline';
@@ -14950,6 +14952,12 @@ class App {
     }
 
     try {
+      if (!cm.editingFeatureId) {
+        const acceptedAsync = await this._acceptChamferAsync(edgeKeys, cm);
+        if (acceptedAsync) {
+          return;
+        }
+      }
       if (cm.editingFeatureId) {
         // Update existing feature
         this._partManager.modifyFeature(cm.editingFeatureId, (f) => {
@@ -14979,6 +14987,93 @@ class App {
       this.setStatus(`Chamfer: ${cm.distance} units on ${edgeKeys.length} edge(s)`);
     } catch (err) {
       this.setStatus(`Chamfer failed: ${err.message}`);
+    }
+  }
+
+  async _acceptChamferAsync(edgeKeys, cm) {
+    const part = this._partManager?.getPart?.();
+    if (!part) return false;
+    const baseResult = part.getFinalGeometry();
+    if (!baseResult?.geometry || !baseResult?.occtCheckpoint) return false;
+
+    const feature = this._partManager.buildChamferFeature(edgeKeys, cm.distance);
+    if (!feature) return false;
+
+    const selectionContext = baseResult.solid || {
+      geometry: baseResult.geometry,
+      body: baseResult.body || baseResult.geometry?.topoBody || null,
+    };
+    const resolvedEdgeKeys = feature._resolveSelectedEdgeKeys(selectionContext);
+    const edgeRefs = feature._resolveSelectedOcctEdgeRefs(selectionContext, resolvedEdgeKeys);
+    if (!Array.isArray(edgeRefs) || edgeRefs.length === 0) {
+      return false;
+    }
+
+    const requestToken = `${feature.id}:${Date.now()}`;
+    this._pendingAsyncChamfer = {
+      token: requestToken,
+      featureId: feature.id,
+      baseRevisionId: baseResult.exactBodyRevisionId || null,
+    };
+
+    this._recorder.chamferCreated(edgeKeys, cm.distance);
+    this._exitChamferMode();
+    this._deselectAll();
+    this._beginCadTaskLock(`Applying exact chamfer: distance ${cm.distance} on ${edgeKeys.length} edge(s)...`);
+
+    try {
+      const worker = this._getOcctBlendWorker();
+      const response = await worker.dispatch({
+        op: 'occt-chamfer',
+        checkpoint: baseResult.occtCheckpoint,
+        meshSnapshot: baseResult.geometry,
+        edgeKeys: resolvedEdgeKeys,
+        edgeRefs,
+        distance: cm.distance,
+        spec: feature.buildOcctSpec(edgeRefs),
+        sourceTopology: baseResult.geometry?._occtModeling?.topology || null,
+      });
+      if (this._pendingAsyncChamfer?.token !== requestToken) {
+        return true;
+      }
+
+      const currentBase = this._partManager?.getPart?.()?.getFinalGeometry?.() || null;
+      if ((this._pendingAsyncChamfer?.baseRevisionId || null) !== (currentBase?.exactBodyRevisionId || null)) {
+        if (this._renderer3d) this._renderer3d.clearGhostPreview();
+        this._pendingAsyncChamfer = null;
+        this.setStatus('Chamfer result discarded because the model changed during background exact compute.');
+        this._scheduleRender();
+        return true;
+      }
+
+      const committed = this._partManager.commitPreparedFeature(feature, response.result);
+      if (this._renderer3d) {
+        this._renderer3d.clearGhostPreview();
+        this._renderer3d.setSelectedFeature(feature.id);
+      }
+      if (this._featurePanel) {
+        this._featurePanel.update();
+        this._featurePanel.selectFeature(feature.id);
+      }
+      const committedFeature = committed || this._getPartFeatureById(feature.id);
+      if (committedFeature) {
+        this._showLeftFeatureParams(committedFeature);
+      }
+      this._updateNodeTree();
+      this._update3DView();
+      this._updateOperationButtons();
+      this._scheduleRender();
+      this.setStatus(`Chamfer: ${cm.distance} units on ${edgeKeys.length} edge(s)`);
+      this._pendingAsyncChamfer = null;
+      return true;
+    } catch (err) {
+      if (this._renderer3d) this._renderer3d.clearGhostPreview();
+      this._pendingAsyncChamfer = null;
+      this.setStatus(`Chamfer failed: ${err.message}`);
+      this._scheduleRender();
+      return true;
+    } finally {
+      this._endCadTaskLock();
     }
   }
 

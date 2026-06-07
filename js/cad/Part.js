@@ -670,17 +670,21 @@ export class Part {
   chamfer(edgeKeys, distance) {
     this.modified = new Date();
 
+    const feature = this.buildChamferFeature(edgeKeys, distance);
+    this.featureTree.addFeature(feature);
+    this._checkAutoHidePlanes();
+    return feature;
+  }
+
+  buildChamferFeature(edgeKeys, distance) {
     const feature = new ChamferFeature(this._nextTypeName('chamfer', 'Chamfer'), distance);
     feature.setEdgeKeys(edgeKeys);
 
-    // Auto-populate stable entity keys for new features
     feature.stableEdgeKeys = edgeKeys
       .filter(k => isLegacyEdgeKey(k))
       .map(k => legacyEdgeKeyToStable(k, feature.id))
       .filter(k => k !== null);
 
-    this.featureTree.addFeature(feature);
-    this._checkAutoHidePlanes();
     return feature;
   }
 

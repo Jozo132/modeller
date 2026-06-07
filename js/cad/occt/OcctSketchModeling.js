@@ -1688,6 +1688,7 @@ export function tryBuildOcctChamferMetadataSync(options = {}) {
     sourceTopology = null,
     distance = null,
     spec = null,
+    failureInfo = null,
   } = options;
   if (!Number.isInteger(handle) || handle <= 0) return null;
   if (!Array.isArray(edgeRefs) || edgeRefs.length === 0) return null;
@@ -1701,22 +1702,121 @@ export function tryBuildOcctChamferMetadataSync(options = {}) {
   if (normalizedEdgeRefs.length === 0) return null;
 
   const promotedEdgeRefs = _promoteBlendEdgeRefs(adapter, handle, normalizedEdgeRefs);
-  const effectiveEdgeRefs = promotedEdgeRefs.length === normalizedEdgeRefs.length
-    && _blendEdgeRefsChanged(promotedEdgeRefs, normalizedEdgeRefs)
-    ? promotedEdgeRefs
-    : normalizedEdgeRefs;
-
-  try {
-    const blendResult = adapter.chamferEdges(handle, spec
-      ? _cloneBlendSpecWithResolvedRefs(spec, effectiveEdgeRefs)
-      : _buildBlendFeatureSpec('chamfer', effectiveEdgeRefs, {
+  const usePromotedEdgeRefs = promotedEdgeRefs.length === normalizedEdgeRefs.length
+    && _blendEdgeRefsChanged(promotedEdgeRefs, normalizedEdgeRefs);
+  const effectiveEdgeRefs = usePromotedEdgeRefs ? promotedEdgeRefs : normalizedEdgeRefs;
+  const chamferSpec = spec
+    ? _cloneBlendSpecWithResolvedRefs(spec, effectiveEdgeRefs)
+    : _buildBlendFeatureSpec('chamfer', effectiveEdgeRefs, {
       spec: {
         mode: 'symmetric',
         distance: Number(distance) || 0,
       },
-    }));
-    if (!blendResult || typeof blendResult !== 'object') return null;
-    return _finalizeOcctBlendResult(adapter, 'chamfer', blendResult, topoBody, sourceTopology);
+    });
+  const fallbackSpec = usePromotedEdgeRefs && spec
+    ? _cloneBlendSpecWithResolvedRefs(spec, normalizedEdgeRefs)
+    : null;
+
+  try {
+    let kernelMs = 0;
+    let retriedKernel = false;
+    let resolvedStableHashes = 0;
+    let lastError = null;
+    const invokeChamfer = (requestedSpec) => {
+      try {
+        return adapter.chamferEdges(handle, requestedSpec);
+      } catch (error) {
+        lastError = error;
+        return null;
+      }
+    };
+    let kernelStartedAt = occtSketchNowMs();
+    let blendResult = invokeChamfer(chamferSpec);
+    kernelMs += occtSketchNowMs() - kernelStartedAt;
+    if (usePromotedEdgeRefs) {
+      resolvedStableHashes = promotedEdgeRefs.reduce((count, edgeRef, index) => (
+        edgeRef?.topoId != null && normalizedEdgeRefs[index]?.topoId == null ? count + 1 : count
+      ), 0);
+    }
+    if (!blendResult || typeof blendResult !== 'object') {
+      kernelStartedAt = occtSketchNowMs();
+      blendResult = invokeChamfer(chamferSpec);
+      kernelMs += occtSketchNowMs() - kernelStartedAt;
+      retriedKernel = true;
+    }
+    if ((!blendResult || typeof blendResult !== 'object') && usePromotedEdgeRefs && fallbackSpec) {
+      kernelStartedAt = occtSketchNowMs();
+      blendResult = invokeChamfer(fallbackSpec);
+      kernelMs += occtSketchNowMs() - kernelStartedAt;
+      retriedKernel = true;
+    }
+    if (!blendResult || typeof blendResult !== 'object') {
+      let revision = null;
+      let analysis = null;
+      try {
+        if (typeof adapter.getRevisionInfo === 'function') {
+          revision = adapter.getRevisionInfo(handle);
+        }
+      } catch {
+        revision = null;
+      }
+      try {
+        if (typeof adapter.analyzeShape === 'function') {
+          analysis = adapter.analyzeShape(handle);
+        }
+      } catch {
+        analysis = null;
+      }
+      _populateBlendFailureInfo(failureInfo, {
+        operation: 'chamfer',
+        edgeRefCount: normalizedEdgeRefs.length,
+        resolvedStableHashes,
+        usedPromotedEdgeRefs: usePromotedEdgeRefs,
+        retriedKernel,
+        requestedEdgeRefs: normalizedEdgeRefs,
+        effectiveEdgeRefs,
+        nativeError: lastError
+          ? {
+            name: lastError.name || 'Error',
+            code: lastError.code || null,
+            message: lastError.message || String(lastError),
+            detail: lastError.detail || null,
+          }
+          : null,
+        revision: revision && typeof revision === 'object'
+          ? {
+            revisionId: revision.revisionId ?? null,
+            topologyHash: revision.topologyHash ?? null,
+          }
+          : null,
+        analysis: analysis && typeof analysis === 'object'
+          ? {
+            valid: analysis.valid ?? analysis.isValid ?? null,
+            shapeType: analysis.shapeType ?? null,
+            solidCount: analysis.solidCount ?? null,
+            faceCount: analysis.faceCount ?? null,
+            edgeCount: analysis.edgeCount ?? null,
+            vertexCount: analysis.vertexCount ?? null,
+          }
+          : null,
+      });
+      return null;
+    }
+    const finalizeStartedAt = occtSketchNowMs();
+    const geometry = _finalizeOcctBlendResult(adapter, 'chamfer', blendResult, topoBody, sourceTopology);
+    const finalizeMs = occtSketchNowMs() - finalizeStartedAt;
+    const totalMs = kernelMs + finalizeMs;
+    if (totalMs >= OCCT_BLEND_LOG_THRESHOLD_MS && typeof console?.info === 'function') {
+      console.info('OCCT chamfer timing', {
+        edgeRefCount: normalizedEdgeRefs.length,
+        resolvedStableHashes,
+        retriedKernel,
+        kernelMs: +kernelMs.toFixed(1),
+        finalizeMs: +finalizeMs.toFixed(1),
+        totalMs: +totalMs.toFixed(1),
+      });
+    }
+    return geometry;
   } catch {
     return null;
   }

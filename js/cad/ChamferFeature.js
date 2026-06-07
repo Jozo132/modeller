@@ -64,14 +64,23 @@ function mergeJsonLike(baseValue, overrideValue, key = '') {
 }
 
 function buildDefaultChamferOcctSpec(edgeRefs, distance) {
+  const normalizedDistance = Number(distance) || 0;
   return {
     schemaVersion: 1,
     unit: { length: 'model', angle: 'radians' },
     mode: 'symmetric',
-    distance: Number(distance) || 0,
-    edges: edgeRefs.map((edgeRef) => ({
-      edge: cloneJsonLike(edgeRef),
-    })),
+    distance: normalizedDistance,
+    edges: edgeRefs.map((edgeRef) => {
+      const topoFaceIds = Array.isArray(edgeRef?.topoFaceIds)
+        ? edgeRef.topoFaceIds.filter((value) => Number.isInteger(value) && value > 0)
+        : [];
+      return {
+        edge: cloneJsonLike(edgeRef),
+        mode: 'symmetric',
+        distance: normalizedDistance,
+        ...(topoFaceIds.length > 0 ? { referenceFace: { topoId: topoFaceIds[0] } } : {}),
+      };
+    }),
   };
 }
 
@@ -224,10 +233,14 @@ function toOcctEdgeRef(entity) {
   const topoId = Number.isInteger(entity.topoId)
     ? entity.topoId
     : (Number.isInteger(entity.id) ? entity.id : null);
+  const topoFaceIds = Array.isArray(entity.topoFaceIds)
+    ? entity.topoFaceIds.filter((value) => Number.isInteger(value) && value > 0)
+    : [];
   if (!stableHash && topoId == null) return null;
   return {
     ...(stableHash ? { stableHash } : {}),
     ...(topoId != null ? { topoId } : {}),
+    ...(topoFaceIds.length > 0 ? { topoFaceIds } : {}),
   };
 }
 

@@ -393,6 +393,28 @@ console.log('\n=== Part lifecycle wiring ===');
 
 {
   const pm = new PartManager();
+  pm.createPart('PreparedChamfer');
+
+  const feature = pm.buildChamferFeature([
+    '0.00000,0.00000,0.00000|1.00000,0.00000,0.00000',
+  ], 2.5);
+
+  assert(feature && feature.type === 'chamfer',
+    'buildChamferFeature returns a ChamferFeature instance');
+  assert(feature.distance === 2.5,
+    'buildChamferFeature preserves the requested chamfer distance');
+  assert(Array.isArray(feature.stableEdgeKeys) && feature.stableEdgeKeys.length === 1,
+    'buildChamferFeature derives stable edge keys for async exact commit flows');
+  const spec = feature.buildOcctSpec([{ topoId: 7, stableHash: 'E:test' }]);
+  assert(spec.edges[0]?.mode === 'symmetric' && spec.edges[0]?.distance === 2.5,
+    'default chamfer OCCT spec carries symmetric distance controls on each edge entry');
+  const faceAwareSpec = feature.buildOcctSpec([{ topoId: 8, stableHash: 'E:face', topoFaceIds: [21, 22] }]);
+  assert(faceAwareSpec.edges[0]?.referenceFace?.topoId === 21,
+    'default chamfer OCCT spec derives a referenceFace from adjacent topo faces when available');
+}
+
+{
+  const pm = new PartManager();
   const reg = new MockHandleRegistry();
   const residency = new MockResidencyManager();
   let executeAllCalls = 0;

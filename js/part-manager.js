@@ -161,6 +161,11 @@ export class PartManager {
     return feature;
   }
 
+  buildChamferFeature(edgeKeys, distance) {
+    if (!this.part) return null;
+    return this.part.buildChamferFeature(edgeKeys, distance);
+  }
+
   fillet(edgeKeys, radius, options = {}) {
     if (!this.part) return null;
     const feature = this.part.fillet(edgeKeys, radius, options);
