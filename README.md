@@ -179,6 +179,8 @@ npm install
 npm run start
 ```
 
+When this repo sits alongside `../occt-kernel-wasm`, the OCCT loader and dev server prefer that sibling repo's `dist/` output for local development. If the sibling repo is absent, `modeller` falls back to the installed `occt-kernel-wasm` package and then the hosted CDN path.
+
 Then open [http://localhost:3000](http://localhost:3000) in your browser.
 
 To test the hosted/GitHub Pages style path locally, use:

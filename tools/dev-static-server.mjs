@@ -7,10 +7,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..');
 const cliArgs = process.argv.slice(2);
 const occtMountPath = '/vendor/occt-kernel/dist';
+const defaultOcctDistRoot = path.resolve(repoRoot, '..', 'occt-kernel-wasm', 'dist');
 const occtDistRoot = path.resolve(
   process.env.OCCT_KERNEL_DIST
   || process.env.CAD_OCCT_KERNEL_DIST
-  || 'C:\\Users\\HP\\OneDrive\\Documents\\C++ Projects\\occt-kernel-wasm\\dist'
+  || defaultOcctDistRoot
 );
 
 function envFlagEnabled(value) {

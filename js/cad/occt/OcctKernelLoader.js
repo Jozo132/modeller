@@ -10,7 +10,7 @@ const DEFAULT_BROWSER_VENDOR_DIST_URL = new URL('../../../vendor/occt-kernel/dis
   .href
   .replace(/\/$/, '');
 const DEFAULT_BROWSER_CDN_DIST_URL = 'https://cdn.jsdelivr.net/npm/occt-kernel-wasm/dist';
-const DEFAULT_BROWSER_DIST_URL = DEFAULT_BROWSER_LOCAL_DIST_URL;
+const DEFAULT_BROWSER_DIST_URL = DEFAULT_BROWSER_VENDOR_DIST_URL;
 const DEFAULT_NODE_PACKAGE_NAME = 'occt-kernel-wasm';
 
 function normalizeDistLocation(location) {
@@ -164,7 +164,32 @@ async function nodeDeps() {
     import('node:path'),
     import('node:url'),
   ]);
-  return { createRequire, fs, path, pathToFileURL: url.pathToFileURL };
+  return {
+    createRequire,
+    fs,
+    path,
+    fileURLToPath: url.fileURLToPath,
+    pathToFileURL: url.pathToFileURL,
+  };
+}
+
+async function resolveWorkspaceSiblingNodePaths() {
+  const { fs, path, fileURLToPath } = await nodeDeps();
+  const currentDir = path.dirname(fileURLToPath(import.meta.url));
+  const siblingRepoRoot = path.resolve(currentDir, '../../../../occt-kernel-wasm');
+  const distPath = path.join(siblingRepoRoot, 'dist');
+  const jsPath = path.join(distPath, 'occt-kernel.js');
+  const wasmPath = path.join(distPath, 'occt-kernel.wasm');
+  const apiPath = path.join(distPath, 'index.js');
+  if (!fs.existsSync(jsPath) || !fs.existsSync(wasmPath) || !fs.existsSync(apiPath)) {
+    return null;
+  }
+  return {
+    distPath,
+    jsPath,
+    wasmPath,
+    apiPath,
+  };
 }
 
 async function resolveNodePaths(options = {}) {
@@ -203,8 +228,10 @@ async function resolveNodePathCandidates(options = {}) {
     return [explicitPaths];
   }
 
+  const workspaceSiblingPaths = await resolveWorkspaceSiblingNodePaths();
   const installedPackagePaths = await resolveInstalledNodePackagePaths();
   return uniquePathSets([
+    workspaceSiblingPaths,
     installedPackagePaths,
     explicitPaths,
   ]);
@@ -227,8 +254,8 @@ function resolveBrowserPathCandidates(options = {}) {
   }
 
   return uniquePathSets([
-    buildBrowserDistPaths(DEFAULT_BROWSER_LOCAL_DIST_URL),
     buildBrowserDistPaths(DEFAULT_BROWSER_VENDOR_DIST_URL),
+    buildBrowserDistPaths(DEFAULT_BROWSER_LOCAL_DIST_URL),
     buildBrowserDistPaths(DEFAULT_BROWSER_CDN_DIST_URL),
   ]);
 }
@@ -500,5 +527,5 @@ export function resolveOcctKernelEnv() {
 writeRuntimeStatus({
   state: 'idle',
   source: 'bootstrap',
-  paths: summarizePaths({ distUrl: DEFAULT_BROWSER_LOCAL_DIST_URL }),
+  paths: summarizePaths({ distUrl: DEFAULT_BROWSER_DIST_URL }),
 });
