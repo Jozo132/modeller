@@ -14951,6 +14951,15 @@ class App {
       return;
     }
 
+    const part = this._partManager?.getPart?.();
+    const baseResult = part?.getFinalGeometry?.() || null;
+    const selectionContext = baseResult?.solid || (baseResult?.geometry
+      ? {
+        geometry: baseResult.geometry,
+        body: baseResult.body || baseResult.geometry?.topoBody || null,
+      }
+      : null);
+
     try {
       if (!cm.editingFeatureId) {
         const acceptedAsync = await this._acceptChamferAsync(edgeKeys, cm);
@@ -14962,10 +14971,24 @@ class App {
         // Update existing feature
         this._partManager.modifyFeature(cm.editingFeatureId, (f) => {
           f.distance = cm.distance;
-          f.edgeKeys = edgeKeys;
+          if (typeof f.setEdgeKeys === 'function') {
+            f.setEdgeKeys(edgeKeys);
+          } else {
+            f.edgeKeys = edgeKeys;
+          }
+          if (selectionContext && typeof f.setOcctEdgeRefs === 'function') {
+            f.setOcctEdgeRefs([]);
+            const resolvedEdgeKeys = typeof f._resolveSelectedEdgeKeys === 'function'
+              ? f._resolveSelectedEdgeKeys(selectionContext)
+              : edgeKeys;
+            const resolvedEdgeRefs = typeof f._resolveSelectedOcctEdgeRefs === 'function'
+              ? f._resolveSelectedOcctEdgeRefs(selectionContext, resolvedEdgeKeys)
+              : [];
+            f.setOcctEdgeRefs(resolvedEdgeRefs);
+          }
         });
       } else {
-        this._partManager.chamfer(edgeKeys, cm.distance);
+        this._partManager.chamfer(edgeKeys, cm.distance, { selectionContext });
       }
       this._recorder.chamferCreated(edgeKeys, cm.distance);
       this._exitChamferMode();
@@ -14996,7 +15019,7 @@ class App {
     const baseResult = part.getFinalGeometry();
     if (!baseResult?.geometry || !baseResult?.occtCheckpoint) return false;
 
-    const feature = this._partManager.buildChamferFeature(edgeKeys, cm.distance);
+    const feature = this._partManager.buildChamferFeature(edgeKeys, cm.distance, { selectionContext });
     if (!feature) return false;
 
     const selectionContext = baseResult.solid || {
@@ -15004,7 +15027,9 @@ class App {
       body: baseResult.body || baseResult.geometry?.topoBody || null,
     };
     const resolvedEdgeKeys = feature._resolveSelectedEdgeKeys(selectionContext);
-    const edgeRefs = feature._resolveSelectedOcctEdgeRefs(selectionContext, resolvedEdgeKeys);
+    const edgeRefs = Array.isArray(feature.occtEdgeRefs) && feature.occtEdgeRefs.length > 0
+      ? [...feature.occtEdgeRefs]
+      : feature._resolveSelectedOcctEdgeRefs(selectionContext, resolvedEdgeKeys);
     if (!Array.isArray(edgeRefs) || edgeRefs.length === 0) {
       return false;
     }
@@ -15210,6 +15235,15 @@ class App {
       return;
     }
 
+    const part = this._partManager?.getPart?.();
+    const baseResult = part?.getFinalGeometry?.() || null;
+    const selectionContext = baseResult?.solid || (baseResult?.geometry
+      ? {
+        geometry: baseResult.geometry,
+        body: baseResult.body || baseResult.geometry?.topoBody || null,
+      }
+      : null);
+
     try {
       const segments = this._getTessellationDrivenCurveSegments();
       if (!fm.editingFeatureId) {
@@ -15231,10 +15265,24 @@ class App {
           } else {
             f.segments = segments;
           }
-          f.edgeKeys = edgeKeys;
+          if (typeof f.setEdgeKeys === 'function') {
+            f.setEdgeKeys(edgeKeys);
+          } else {
+            f.edgeKeys = edgeKeys;
+          }
+          if (selectionContext && typeof f.setOcctEdgeRefs === 'function') {
+            f.setOcctEdgeRefs([]);
+            const resolvedEdgeKeys = typeof f._resolveSelectedEdgeKeys === 'function'
+              ? f._resolveSelectedEdgeKeys(selectionContext, f)
+              : edgeKeys;
+            const resolvedEdgeRefs = typeof f._resolveSelectedOcctEdgeRefs === 'function'
+              ? f._resolveSelectedOcctEdgeRefs(selectionContext, resolvedEdgeKeys, f)
+              : [];
+            f.setOcctEdgeRefs(resolvedEdgeRefs);
+          }
         });
       } else {
-        this._partManager.fillet(edgeKeys, fm.radius, { segments });
+        this._partManager.fillet(edgeKeys, fm.radius, { segments, selectionContext });
       }
       this._recorder.filletCreated(edgeKeys, fm.radius, segments);
       this._exitFilletMode();
@@ -15313,7 +15361,7 @@ class App {
     const baseResult = part.getFinalGeometry();
     if (!baseResult?.geometry || !baseResult?.occtCheckpoint) return false;
 
-    const feature = this._partManager.buildFilletFeature(edgeKeys, fm.radius, { segments });
+    const feature = this._partManager.buildFilletFeature(edgeKeys, fm.radius, { segments, selectionContext });
     if (!feature) return false;
 
     const selectionContext = baseResult.solid || {
@@ -15321,7 +15369,9 @@ class App {
       body: baseResult.body || baseResult.geometry?.topoBody || null,
     };
     const resolvedEdgeKeys = feature._resolveSelectedEdgeKeys(selectionContext, feature);
-    const edgeRefs = feature._resolveSelectedOcctEdgeRefs(selectionContext, resolvedEdgeKeys, feature);
+    const edgeRefs = Array.isArray(feature.occtEdgeRefs) && feature.occtEdgeRefs.length > 0
+      ? [...feature.occtEdgeRefs]
+      : feature._resolveSelectedOcctEdgeRefs(selectionContext, resolvedEdgeKeys, feature);
     if (!Array.isArray(edgeRefs) || edgeRefs.length === 0) {
       return false;
     }

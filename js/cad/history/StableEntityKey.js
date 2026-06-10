@@ -285,9 +285,13 @@ export function buildSelectionKeyMap(selectionContext, provenance = '') {
   }
 
   const geometry = _extractGeometryFromSelectionContext(selectionContext) || selectionContext?.geometry || null;
-  const selectionEdges = Array.isArray(geometry?._selectionCompatEdges) && geometry._selectionCompatEdges.length > 0
-    ? geometry._selectionCompatEdges
-    : geometry?.edges;
+  const selectionEdges = Array.isArray(geometry?._selectionCompatOcctFeatureEdges) && geometry._selectionCompatOcctFeatureEdges.length > 0
+    ? geometry._selectionCompatOcctFeatureEdges
+    : (Array.isArray(geometry?._occtFeatureEdges) && geometry._occtFeatureEdges.length > 0
+      ? geometry._occtFeatureEdges
+      : (Array.isArray(geometry?._selectionCompatEdges) && geometry._selectionCompatEdges.length > 0
+        ? geometry._selectionCompatEdges
+        : geometry?.edges));
   if (Array.isArray(selectionEdges) && selectionEdges.length > 0) {
     return keyEdgeSegments(selectionEdges, provenance);
   }

@@ -1059,40 +1059,11 @@ export function tryBuildOcctExtrudeGeometrySync(options = {}) {
   );
   if (!(vectorLength3(extrusionVector) > WORLD_XY_TOLERANCE)) return null;
 
-  const canUseStructuredExtrude = Number(direction || 0) >= 0;
   const structuredOnlyExtent = extrudeType !== 'distance' && extrudeType !== 'throughAll';
-  if (canUseStructuredExtrude && adapterHasKernelMethod(adapter, 'extrudeProfileWithSpec')) {
-    let structuredHandle = 0;
-    try {
-      structuredHandle = adapter.extrudeProfileWithSpec({
-        profile: occtProfile,
-        spec: buildStructuredExtrudeSpec({
-          occtPlane,
-          distance: vectorLength3(extrusionVector),
-          taper,
-          taperAngle: options.taperAngle,
-          taperInward: options.taperInward,
-          extrudeType,
-          targetFaceRef,
-          surfaceOffset,
-        }),
-      });
-      return finalizeOcctGeometry(adapter, structuredHandle, topoBody, 'extrude');
-    } catch (error) {
-      reportOcctSketchFallbackOnce(
-        'occt-structured-extrude-error',
-        'OCCT structured extrude rejected the translated sketch profile; falling back to the legacy OCCT profile extrude.',
-        { message: error?.message || String(error) },
-      );
-      if (structuredHandle > 0) adapter.disposeShape(structuredHandle);
-      if (taper || structuredOnlyExtent) return null;
-    }
-  } else if (taper || structuredOnlyExtent) {
+  if (taper || structuredOnlyExtent) {
     reportOcctSketchFallbackOnce(
-      canUseStructuredExtrude ? 'unsupported-structured-extrude' : 'unsupported-reverse-structured-extrude',
-      canUseStructuredExtrude
-        ? 'OCCT sketch extrude draft and advanced extents require a kernel build with extrudeProfileWithSpec.'
-        : 'OCCT structured sketch extrude cannot encode the app reverse-direction advanced extent; using the compatibility path.',
+      'unsupported-structured-extrude',
+      'Standalone OCCT sketch extrude supports blind and through-all style prism builds only; draft and face-limited extents still use the compatibility path.',
     );
     return null;
   }

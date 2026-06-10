@@ -177,12 +177,27 @@ function cleanEffectiveChamferSpec(spec) {
 function resolveFeatureEdgeKeys(feature, selectionContext) {
   const stableKeys = Array.isArray(feature.stableEdgeKeys) ? feature.stableEdgeKeys : [];
   const fallbackEdgeKeys = Array.isArray(feature.edgeKeys) ? [...feature.edgeKeys] : [];
+  const storedOcctEdgeRefs = sanitizeOcctEdgeRefs(feature?.occtEdgeRefs);
   if (stableKeys.length === 0) {
+    if (storedOcctEdgeRefs.length > 0) {
+      const resolvedFromRefs = resolveLegacyEdgeKeysFromOcctRefs(selectionContext, storedOcctEdgeRefs);
+      if (resolvedFromRefs.length > 0) {
+        feature.edgeKeys = resolvedFromRefs;
+        return resolvedFromRefs;
+      }
+    }
     return fallbackEdgeKeys;
   }
 
   const bodyKeys = buildSelectionKeyMap(selectionContext, feature.id);
   if (!bodyKeys) {
+    if (storedOcctEdgeRefs.length > 0) {
+      const resolvedFromRefs = resolveLegacyEdgeKeysFromOcctRefs(selectionContext, storedOcctEdgeRefs);
+      if (resolvedFromRefs.length > 0) {
+        feature.edgeKeys = resolvedFromRefs;
+        return resolvedFromRefs;
+      }
+    }
     const fallbackKeys = stableKeys
       .map((key) => selectionKeyToLegacyEdgeKey(key))
       .filter((key) => key !== null);
@@ -204,6 +219,13 @@ function resolveFeatureEdgeKeys(feature, selectionContext) {
     }
     const result = resolveKey(stableKey, bodyKeys);
     if (result.status === RemapStatus.AMBIGUOUS || result.status === RemapStatus.MISSING) {
+      if (storedOcctEdgeRefs.length > 0) {
+        const resolvedFromRefs = resolveLegacyEdgeKeysFromOcctRefs(selectionContext, storedOcctEdgeRefs);
+        if (resolvedFromRefs.length > 0) {
+          feature.edgeKeys = resolvedFromRefs;
+          return resolvedFromRefs;
+        }
+      }
       if (fallbackEdgeKeys.length > 0) {
         feature._legacySelectionFallback = result.reason || result.status;
         return fallbackEdgeKeys;
@@ -246,6 +268,10 @@ function toOcctEdgeRef(entity) {
 
 function uniqueOcctEdgeRefs(refs) {
   return [...new Map(refs.map((ref) => [ref.stableHash || `id:${ref.topoId}`, ref])).values()];
+}
+
+function sanitizeOcctEdgeRefs(refs) {
+  return uniqueOcctEdgeRefs((Array.isArray(refs) ? refs : []).map((ref) => toOcctEdgeRef(ref)).filter(Boolean));
 }
 
 function parseLegacyEdgeKey(key) {
@@ -325,6 +351,19 @@ function hasOcctEdgeRef(entities) {
   return Array.isArray(entities) && entities.some((entity) => !!toOcctEdgeRef(entity));
 }
 
+function occtEntityMatchesRef(entity, edgeRef) {
+  if (!entity || !edgeRef) return false;
+  const entityStableHash = typeof entity.stableHash === 'string' && entity.stableHash.length > 0
+    ? entity.stableHash
+    : (typeof entity.hash === 'string' && entity.hash.length > 0 ? entity.hash : null);
+  const entityTopoId = Number.isInteger(entity.topoId)
+    ? entity.topoId
+    : (Number.isInteger(entity.id) ? entity.id : null);
+  if (edgeRef.stableHash && entityStableHash === edgeRef.stableHash) return true;
+  if (Number.isInteger(edgeRef.topoId) && entityTopoId === edgeRef.topoId) return true;
+  return false;
+}
+
 function collectOcctPathLegacyKeys(path, nativeEdges) {
   if (!Array.isArray(path?.edgeIndices) || path.edgeIndices.length === 0) return [];
 
@@ -344,6 +383,69 @@ function collectOcctPathLegacyKeys(path, nativeEdges) {
   }
 
   return legacyKeys;
+}
+
+function selectionNativeOcctEdges(selectionContext) {
+  const geometry = selectionContext?.geometry;
+  if (Array.isArray(geometry?._selectionCompatOcctFeatureEdges) && geometry._selectionCompatOcctFeatureEdges.length > 0) {
+    return geometry._selectionCompatOcctFeatureEdges;
+  }
+  if (Array.isArray(geometry?._occtFeatureEdges) && geometry._occtFeatureEdges.length > 0) {
+    return geometry._occtFeatureEdges;
+  }
+  return Array.isArray(geometry?.edges) ? geometry.edges : [];
+}
+
+function selectionNativeOcctPaths(selectionContext) {
+  const geometry = selectionContext?.geometry;
+  if (Array.isArray(geometry?._selectionCompatOcctFeaturePaths) && hasOcctEdgeRef(geometry._selectionCompatOcctFeaturePaths)) {
+    return geometry._selectionCompatOcctFeaturePaths;
+  }
+  if (Array.isArray(geometry?._occtFeaturePaths) && hasOcctEdgeRef(geometry._occtFeaturePaths)) {
+    return geometry._occtFeaturePaths;
+  }
+  if (Array.isArray(geometry?.paths) && hasOcctEdgeRef(geometry.paths)) {
+    return geometry.paths;
+  }
+  return [];
+}
+
+function topoBodyEdges(selectionContext) {
+  const topoBody = selectionContext?.body || selectionContext?.solid?.body || selectionContext?.geometry?.topoBody || null;
+  if (!topoBody || typeof topoBody.edges !== 'function') return [];
+  return [...topoBody.edges()];
+}
+
+function resolveLegacyEdgeKeysFromOcctRefs(selectionContext, edgeRefs) {
+  const normalizedRefs = sanitizeOcctEdgeRefs(edgeRefs);
+  if (normalizedRefs.length === 0) return [];
+
+  const nativeEdges = selectionNativeOcctEdges(selectionContext);
+  const nativePaths = selectionNativeOcctPaths(selectionContext);
+  const resolvedKeys = [];
+
+  for (const edgeRef of normalizedRefs) {
+    const matchedPath = nativePaths.find((path) => occtEntityMatchesRef(path, edgeRef));
+    if (matchedPath) {
+      resolvedKeys.push(...collectOcctPathLegacyKeys(matchedPath, nativeEdges));
+      continue;
+    }
+
+    const matchedNativeEdge = nativeEdges.find((edge) => occtEntityMatchesRef(edge, edgeRef));
+    if (matchedNativeEdge) {
+      const legacyKey = edgeEntityToLegacyKey(matchedNativeEdge);
+      if (legacyKey) resolvedKeys.push(legacyKey);
+      continue;
+    }
+
+    const matchedTopoEdge = topoBodyEdges(selectionContext).find((edge) => occtEntityMatchesRef(edge, edgeRef));
+    if (matchedTopoEdge) {
+      const legacyKey = edgeEntityToLegacyKey(matchedTopoEdge);
+      if (legacyKey) resolvedKeys.push(legacyKey);
+    }
+  }
+
+  return [...new Set(resolvedKeys)];
 }
 
 function resolveOcctFeatureChainRefs(selectionContext, fallbackEdgeKeys) {
@@ -398,6 +500,15 @@ function resolveOcctFeatureChainRefs(selectionContext, fallbackEdgeKeys) {
   return uniqueOcctEdgeRefs(refs);
 }
 
+function resolveStoredOcctEdgeRefs(feature, selectionContext) {
+  const directRefs = sanitizeOcctEdgeRefs(feature?.occtEdgeRefs);
+  if (directRefs.length > 0) return directRefs;
+
+  const resolvedLegacyKeys = resolveLegacyEdgeKeysFromOcctRefs(selectionContext, feature?.occtEdgeRefs);
+  if (resolvedLegacyKeys.length === 0) return [];
+  return resolveOcctFeatureChainRefs(selectionContext, resolvedLegacyKeys);
+}
+
 export class ChamferFeature extends Feature {
   constructor(name = 'Chamfer', distance = 1) {
     super(name);
@@ -407,6 +518,7 @@ export class ChamferFeature extends Feature {
     this.edgeKeys = [];
     // Stable entity keys (populated on new workflows, empty on legacy projects)
     this.stableEdgeKeys = [];
+    this.occtEdgeRefs = [];
     this.occtSpec = null;
     // Whether this feature result was produced by the exact topology path
     this._resultExact = false;
@@ -522,6 +634,9 @@ export class ChamferFeature extends Feature {
   }
 
   _resolveSelectedOcctEdgeRefs(selectionContext, legacyKeys = null) {
+    const storedRefs = resolveStoredOcctEdgeRefs(this, selectionContext);
+    if (storedRefs.length > 0) return storedRefs;
+
     const fallbackEdgeKeys = Array.isArray(legacyKeys) && legacyKeys.length > 0
       ? [...new Set(legacyKeys)]
       : (Array.isArray(this.edgeKeys) ? [...this.edgeKeys] : []);
@@ -571,6 +686,15 @@ export class ChamferFeature extends Feature {
 
   setEdgeKeys(keys) {
     this.edgeKeys = [...keys];
+    this.stableEdgeKeys = this.edgeKeys
+      .filter((key) => isLegacyEdgeKey(key))
+      .map((key) => legacyEdgeKeyToStable(key, this.id || ''))
+      .filter((key) => key !== null);
+    this.modified = new Date();
+  }
+
+  setOcctEdgeRefs(edgeRefs) {
+    this.occtEdgeRefs = sanitizeOcctEdgeRefs(edgeRefs);
     this.modified = new Date();
   }
 
@@ -592,6 +716,7 @@ export class ChamferFeature extends Feature {
       distance: this.distance,
       edgeKeys: [...this.edgeKeys],
       stableEdgeKeys: [...this.stableEdgeKeys],
+      occtEdgeRefs: sanitizeOcctEdgeRefs(this.occtEdgeRefs),
       occtSpec: this.occtSpec && typeof this.occtSpec === 'object' ? cloneJsonLike(this.occtSpec) : this.occtSpec,
     };
   }
@@ -604,6 +729,7 @@ export class ChamferFeature extends Feature {
     feature.distance = data.distance || 1;
     feature.edgeKeys = Array.isArray(data.edgeKeys) ? [...data.edgeKeys] : [];
     feature.stableEdgeKeys = Array.isArray(data.stableEdgeKeys) ? [...data.stableEdgeKeys] : [];
+    feature.occtEdgeRefs = sanitizeOcctEdgeRefs(data.occtEdgeRefs);
     feature.occtSpec = data.occtSpec && typeof data.occtSpec === 'object' ? cloneJsonLike(data.occtSpec) : null;
     // Mark legacy projects (no stable keys) so downstream can detect non-exact provenance
     if (feature.stableEdgeKeys.length === 0 && feature.edgeKeys.length > 0) {

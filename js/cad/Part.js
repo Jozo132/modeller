@@ -640,15 +640,16 @@ export class Part {
   buildFilletFeature(edgeKeys, radius, options = {}) {
     const feature = new FilletFeature(this._nextTypeName('fillet', 'Fillet'), radius);
     feature.setEdgeKeys(edgeKeys);
+    feature.setOcctEdgeRefs(options.edgeRefs || []);
     if (options.segments) {
       feature.setSegments(options.segments);
     } else {
       feature.setSegments(globalTessConfig.curveSegments);
     }
-    feature.stableEdgeKeys = edgeKeys
-      .filter(k => isLegacyEdgeKey(k))
-      .map(k => legacyEdgeKeyToStable(k, feature.id))
-      .filter(k => k !== null);
+    if (feature.occtEdgeRefs.length === 0 && options.selectionContext) {
+      const resolvedEdgeKeys = feature._resolveSelectedEdgeKeys(options.selectionContext, feature);
+      feature.setOcctEdgeRefs(feature._resolveSelectedOcctEdgeRefs(options.selectionContext, resolvedEdgeKeys, feature));
+    }
     return feature;
   }
 
@@ -667,23 +668,23 @@ export class Part {
    * @param {number} distance - The chamfer distance
    * @returns {ChamferFeature} The created chamfer feature
    */
-  chamfer(edgeKeys, distance) {
+  chamfer(edgeKeys, distance, options = {}) {
     this.modified = new Date();
 
-    const feature = this.buildChamferFeature(edgeKeys, distance);
+    const feature = this.buildChamferFeature(edgeKeys, distance, options);
     this.featureTree.addFeature(feature);
     this._checkAutoHidePlanes();
     return feature;
   }
 
-  buildChamferFeature(edgeKeys, distance) {
+  buildChamferFeature(edgeKeys, distance, options = {}) {
     const feature = new ChamferFeature(this._nextTypeName('chamfer', 'Chamfer'), distance);
     feature.setEdgeKeys(edgeKeys);
-
-    feature.stableEdgeKeys = edgeKeys
-      .filter(k => isLegacyEdgeKey(k))
-      .map(k => legacyEdgeKeyToStable(k, feature.id))
-      .filter(k => k !== null);
+    feature.setOcctEdgeRefs(options.edgeRefs || []);
+    if (feature.occtEdgeRefs.length === 0 && options.selectionContext) {
+      const resolvedEdgeKeys = feature._resolveSelectedEdgeKeys(options.selectionContext);
+      feature.setOcctEdgeRefs(feature._resolveSelectedOcctEdgeRefs(options.selectionContext, resolvedEdgeKeys));
+    }
 
     return feature;
   }

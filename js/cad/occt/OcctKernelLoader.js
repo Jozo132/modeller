@@ -64,9 +64,6 @@ function hasExplicitNodePathOverrides(options = {}) {
     || options.wasmPath
     || options.apiPath
     || options.wrapperPath
-    || readEnv(DIST_ENV_KEYS)
-    || readEnv(JS_ENV_KEYS)
-    || readEnv(WASM_ENV_KEYS)
   );
 }
 const OCCT_RUNTIME_STATUS_KEY = '__CAD_OCCT_KERNEL_STATUS__';

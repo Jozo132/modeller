@@ -153,17 +153,17 @@ export class PartManager {
     return feature;
   }
 
-  chamfer(edgeKeys, distance) {
+  chamfer(edgeKeys, distance, options = {}) {
     if (!this.part) return null;
-    const feature = this.part.chamfer(edgeKeys, distance);
+    const feature = this.part.chamfer(edgeKeys, distance, options);
     this.activeFeature = feature;
     this.notifyListeners(makePartChange('chamfer', true));
     return feature;
   }
 
-  buildChamferFeature(edgeKeys, distance) {
+  buildChamferFeature(edgeKeys, distance, options = {}) {
     if (!this.part) return null;
-    return this.part.buildChamferFeature(edgeKeys, distance);
+    return this.part.buildChamferFeature(edgeKeys, distance, options);
   }
 
   fillet(edgeKeys, radius, options = {}) {
