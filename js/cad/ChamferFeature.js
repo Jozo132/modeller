@@ -6,7 +6,6 @@
 // features. Selection uses stable entity keys when present.
 
 import { Feature } from './Feature.js';
-import { applyBRepChamfer } from './BRepChamfer.js';
 import { expandPathEdgeKeys, makeEdgeKey } from './EdgeAnalysis.js';
 import { calculateMeshVolume, calculateBoundingBox } from './toolkit/MeshAnalysis.js';
 import { ensureOcctGeometryResidentFromCheckpoint, tryBuildOcctChamferMetadataSync } from './occt/OcctSketchModeling.js';
@@ -572,48 +571,10 @@ export class ChamferFeature extends Feature {
       };
     }
 
-    // Expand path-level keys to individual face-edge keys.
-    // Skip expansion for the BRep path since applyBRepChamfer already maps
-    // mesh-level segment keys to whole TopoEdges internally, and tangent-path
-    // expansion can erroneously include neighboring arc segments.
-    const resolvedKeys = inputTopoBody
-      ? selectedEdgeKeys
-      : expandPathEdgeKeys(solid.geometry, selectedEdgeKeys);
-    if (!inputTopoBody) {
-      throw new Error(
-        '[BRep-only] ChamferFeature requires exact topology (TopoBody) on the input solid or a resident OCCT handle. ' +
-        'Legacy mesh-based chamfer is no longer supported.'
-      );
-    }
-    const exactInputGeometry = { ...solid.geometry, topoBody: inputTopoBody };
-    const geometry = applyBRepChamfer(exactInputGeometry, resolvedKeys, this.distance);
-    if (!geometry) {
-      throw new Error(
-        '[BRep-only] applyBRepChamfer returned null — the BRep chamfer path failed. ' +
-        'This must be fixed in the BRep kernel, not by falling back to mesh chamfer.'
-      );
-    }
-
-    // Tag faces with source feature
-    for (const f of geometry.faces) {
-      if (!f.shared) f.shared = {};
-    }
-
-    const resultTopoBody = geometry.topoBody || geometry.brep || null;
-
-    // Mark exactness: true when result has valid TopoBody (either from
-    // exact BRep path or from successful mesh-level promotion)
-    this._resultExact = !!resultTopoBody;
-
-    return {
-      type: 'solid',
-      geometry,
-      solid: { geometry, body: resultTopoBody },
-      volume: calculateMeshVolume(geometry),
-      boundingBox: calculateBoundingBox(geometry),
-      brep: geometry.brep || null,
-      _exactTopology: this._resultExact,
-    };
+    throw new Error(
+      '[OCCT-only] ChamferFeature requires resident or restorable OCCT geometry. ' +
+      'No OCCT replacement shape was produced for the selected edges.'
+    );
   }
 
   _getPreviousSolid(context) {

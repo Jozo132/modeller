@@ -3,6 +3,7 @@
 const DIST_ENV_KEYS = ['OCCT_KERNEL_DIST', 'CAD_OCCT_KERNEL_DIST'];
 const JS_ENV_KEYS = ['OCCT_KERNEL_JS', 'CAD_OCCT_KERNEL_JS'];
 const WASM_ENV_KEYS = ['OCCT_KERNEL_WASM', 'CAD_OCCT_KERNEL_WASM'];
+const VARIANT_ENV_KEYS = ['OCCT_KERNEL_VARIANT', 'CAD_OCCT_KERNEL_VARIANT'];
 const DEFAULT_BROWSER_LOCAL_DIST_URL = new URL('../../../node_modules/occt-kernel-wasm/dist', import.meta.url)
   .href
   .replace(/\/$/, '');
@@ -13,18 +14,55 @@ const DEFAULT_BROWSER_CDN_DIST_URL = 'https://cdn.jsdelivr.net/npm/occt-kernel-w
 const DEFAULT_BROWSER_DIST_URL = DEFAULT_BROWSER_VENDOR_DIST_URL;
 const DEFAULT_NODE_PACKAGE_NAME = 'occt-kernel-wasm';
 
+function normalizeKernelVariant(variant) {
+  const normalized = String(variant || '').trim().toLowerCase();
+  if (!normalized) return null;
+  if (normalized === 'mt' || normalized === 'pthread' || normalized === 'threads' || normalized === 'multi-thread') return 'mt';
+  if (normalized === 'st' || normalized === 'single' || normalized === 'single-thread') return 'st';
+  if (normalized === 'auto') return 'auto';
+  return null;
+}
+
+function resolveRequestedKernelVariant(options = {}) {
+  return normalizeKernelVariant(options.kernelVariant || options.variant || readEnv(VARIANT_ENV_KEYS));
+}
+
+function preferredKernelBasenames(options = {}) {
+  const variant = resolveRequestedKernelVariant(options);
+  if (variant === 'mt') return ['occt-kernel.mt'];
+  if (variant === 'auto') return isNodeRuntime()
+    ? ['occt-kernel.mt', 'occt-kernel.st', 'occt-kernel']
+    : ['occt-kernel.st', 'occt-kernel.mt', 'occt-kernel'];
+  if (variant === 'st') return ['occt-kernel.st', 'occt-kernel'];
+  return ['occt-kernel.st', 'occt-kernel'];
+}
+
+function buildArtifactPathSet(base, basename, isBrowser) {
+  const normalizedBase = normalizeDistLocation(base);
+  return isBrowser
+    ? {
+      distUrl: normalizedBase,
+      jsUrl: `${normalizedBase}/${basename}.js`,
+      wasmUrl: `${normalizedBase}/${basename}.wasm`,
+      apiUrl: `${normalizedBase}/index.mjs`,
+      variant: basename,
+    }
+    : {
+      distPath: normalizedBase,
+      jsPath: `${normalizedBase}/${basename}.js`,
+      wasmPath: `${normalizedBase}/${basename}.wasm`,
+      apiPath: `${normalizedBase}/index.js`,
+      variant: basename,
+    };
+}
+
 function normalizeDistLocation(location) {
   return String(location || '').replace(/\/$/, '');
 }
 
-function buildBrowserDistPaths(distUrl) {
-  const normalizedDistUrl = normalizeDistLocation(distUrl);
-  return {
-    distUrl: normalizedDistUrl,
-    jsUrl: `${normalizedDistUrl}/occt-kernel.js`,
-    wasmUrl: `${normalizedDistUrl}/occt-kernel.wasm`,
-    apiUrl: `${normalizedDistUrl}/index.mjs`,
-  };
+function buildBrowserDistPaths(distUrl, options = {}) {
+  const basenames = preferredKernelBasenames(options);
+  return basenames.map((basename) => buildArtifactPathSet(distUrl, basename, true));
 }
 
 function uniquePathSets(pathSets = []) {
@@ -98,6 +136,7 @@ function summarizePaths(paths = {}) {
     dist: paths.distUrl || paths.distPath || null,
     js: paths.jsUrl || paths.jsPath || null,
     wasm: paths.wasmUrl || paths.wasmPath || null,
+    variant: paths.variant || null,
   };
 }
 
@@ -170,90 +209,110 @@ async function nodeDeps() {
   };
 }
 
-async function resolveWorkspaceSiblingNodePaths() {
+async function resolveWorkspaceSiblingNodePaths(options = {}) {
   const { fs, path, fileURLToPath } = await nodeDeps();
   const currentDir = path.dirname(fileURLToPath(import.meta.url));
   const siblingRepoRoot = path.resolve(currentDir, '../../../../occt-kernel-wasm');
   const distPath = path.join(siblingRepoRoot, 'dist');
-  const jsPath = path.join(distPath, 'occt-kernel.js');
-  const wasmPath = path.join(distPath, 'occt-kernel.wasm');
   const apiPath = path.join(distPath, 'index.js');
-  if (!fs.existsSync(jsPath) || !fs.existsSync(wasmPath) || !fs.existsSync(apiPath)) {
+  if (!fs.existsSync(apiPath)) {
     return null;
   }
-  return {
-    distPath,
-    jsPath,
-    wasmPath,
-    apiPath,
-  };
+  return preferredKernelBasenames(options).map((basename) => {
+    const jsPath = path.join(distPath, `${basename}.js`);
+    const wasmPath = path.join(distPath, `${basename}.wasm`);
+    if (!fs.existsSync(jsPath) || !fs.existsSync(wasmPath)) return null;
+    return { distPath, jsPath, wasmPath, apiPath, variant: basename };
+  }).filter(Boolean);
 }
 
 async function resolveNodePaths(options = {}) {
   const { path } = await nodeDeps();
   const distPath = options.distPath || options.distDir || readEnv(DIST_ENV_KEYS);
-  const jsPath = options.jsPath || readEnv(JS_ENV_KEYS)
-    || (distPath ? path.join(distPath, 'occt-kernel.js') : null);
-  const wasmPath = options.wasmPath || readEnv(WASM_ENV_KEYS)
-    || (distPath ? path.join(distPath, 'occt-kernel.wasm') : null);
+  const explicitJsPath = options.jsPath || readEnv(JS_ENV_KEYS);
+  const explicitWasmPath = options.wasmPath || readEnv(WASM_ENV_KEYS);
   const apiPath = options.apiPath || options.wrapperPath
     || (distPath ? path.join(distPath, 'index.js') : null);
-  return { distPath, jsPath, wasmPath, apiPath };
+  if (explicitJsPath || explicitWasmPath || !distPath) {
+    if (!explicitJsPath && !explicitWasmPath && !distPath) return [];
+    return [{ distPath, jsPath: explicitJsPath, wasmPath: explicitWasmPath, apiPath, variant: resolveRequestedKernelVariant(options) }];
+  }
+  return preferredKernelBasenames(options).map((basename) => ({
+    distPath,
+    jsPath: path.join(distPath, `${basename}.js`),
+    wasmPath: path.join(distPath, `${basename}.wasm`),
+    apiPath,
+    variant: basename,
+  }));
 }
 
-async function resolveInstalledNodePackagePaths() {
+async function resolveInstalledNodePackagePaths(options = {}) {
   const { createRequire, path } = await nodeDeps();
   const require = createRequire(import.meta.url);
-  try {
-    const jsPath = require.resolve(`${DEFAULT_NODE_PACKAGE_NAME}/occt-kernel.js`);
-    const wasmPath = require.resolve(`${DEFAULT_NODE_PACKAGE_NAME}/occt-kernel.wasm`);
-    const apiPath = require.resolve(DEFAULT_NODE_PACKAGE_NAME);
-    return {
-      distPath: path.dirname(jsPath),
-      jsPath,
-      wasmPath,
-      apiPath,
-    };
-  } catch {
-    return null;
-  }
+  const apiPath = (() => {
+    try {
+      return require.resolve(DEFAULT_NODE_PACKAGE_NAME);
+    } catch {
+      return null;
+    }
+  })();
+  if (!apiPath) return null;
+
+  const resolved = preferredKernelBasenames(options).map((basename) => {
+    try {
+      const jsPath = require.resolve(`${DEFAULT_NODE_PACKAGE_NAME}/${basename}.js`);
+      const wasmPath = require.resolve(`${DEFAULT_NODE_PACKAGE_NAME}/${basename}.wasm`);
+      return {
+        distPath: path.dirname(jsPath),
+        jsPath,
+        wasmPath,
+        apiPath,
+        variant: basename,
+      };
+    } catch {
+      return null;
+    }
+  }).filter(Boolean);
+
+  return resolved.length ? resolved : null;
 }
 
 async function resolveNodePathCandidates(options = {}) {
   const explicitPaths = await resolveNodePaths(options);
   if (hasExplicitNodePathOverrides(options)) {
-    return [explicitPaths];
+    return explicitPaths;
   }
 
-  const workspaceSiblingPaths = await resolveWorkspaceSiblingNodePaths();
-  const installedPackagePaths = await resolveInstalledNodePackagePaths();
+  const workspaceSiblingPaths = await resolveWorkspaceSiblingNodePaths(options);
+  const installedPackagePaths = await resolveInstalledNodePackagePaths(options);
   return uniquePathSets([
-    workspaceSiblingPaths,
-    installedPackagePaths,
-    explicitPaths,
+    ...(workspaceSiblingPaths || []),
+    ...(installedPackagePaths || []),
+    ...explicitPaths,
   ]);
 }
 
 function resolveBrowserPaths(options = {}) {
   const distUrl = options.distUrl || options.distPath || readEnv(DIST_ENV_KEYS) || DEFAULT_BROWSER_DIST_URL;
-  const jsUrl = options.jsUrl || options.jsPath || readEnv(JS_ENV_KEYS)
-    || (distUrl ? `${String(distUrl).replace(/\/$/, '')}/occt-kernel.js` : null);
-  const wasmUrl = options.wasmUrl || options.wasmPath || readEnv(WASM_ENV_KEYS)
-    || (distUrl ? `${String(distUrl).replace(/\/$/, '')}/occt-kernel.wasm` : null);
-  const apiUrl = options.apiUrl || options.wrapperUrl
-    || (distUrl ? `${String(distUrl).replace(/\/$/, '')}/index.mjs` : null);
-  return { distUrl, jsUrl, wasmUrl, apiUrl };
+  const explicitJsUrl = options.jsUrl || options.jsPath || readEnv(JS_ENV_KEYS);
+  const explicitWasmUrl = options.wasmUrl || options.wasmPath || readEnv(WASM_ENV_KEYS);
+  const apiUrl = options.apiUrl || options.wrapperUrl || (distUrl ? `${String(distUrl).replace(/\/$/, '')}/index.mjs` : null);
+  if (explicitJsUrl || explicitWasmUrl) {
+    return [{ distUrl, jsUrl: explicitJsUrl, wasmUrl: explicitWasmUrl, apiUrl, variant: resolveRequestedKernelVariant(options) }];
+  }
+  if (!distUrl) return [];
+  return buildBrowserDistPaths(distUrl, options).map((paths) => ({ ...paths, apiUrl }));
 }
 
 function resolveBrowserPathCandidates(options = {}) {
   if (hasExplicitBrowserPathOverrides(options)) {
-    return [resolveBrowserPaths(options)];
+    return resolveBrowserPaths(options);
   }
 
   return uniquePathSets([
-    buildBrowserDistPaths(DEFAULT_BROWSER_VENDOR_DIST_URL),
-    buildBrowserDistPaths(DEFAULT_BROWSER_LOCAL_DIST_URL),
-    buildBrowserDistPaths(DEFAULT_BROWSER_CDN_DIST_URL),
+    ...buildBrowserDistPaths(DEFAULT_BROWSER_VENDOR_DIST_URL, options),
+    ...buildBrowserDistPaths(DEFAULT_BROWSER_LOCAL_DIST_URL, options),
+    ...buildBrowserDistPaths(DEFAULT_BROWSER_CDN_DIST_URL, options),
   ]);
 }
 
@@ -356,6 +415,7 @@ function normalizeFactory(factory) {
 
 function buildCacheKey(options = {}) {
   return JSON.stringify({
+    kernelVariant: resolveRequestedKernelVariant(options),
     distPath: options.distPath || options.distDir || null,
     distUrl: options.distUrl || null,
     jsPath: options.jsPath || null,
@@ -405,7 +465,18 @@ async function loadUncached(options = {}) {
   const pathCandidates = isNodeRuntime()
     ? await resolveNodePathCandidates(options)
     : resolveBrowserPathCandidates(options);
+  const requestedVariant = resolveRequestedKernelVariant(options);
   let lastError = null;
+
+  if (!pathCandidates.length) {
+    if (requestedVariant === 'mt') {
+      throw new Error('OCCT mt artifact is unavailable in the configured dist paths. Build or install occt-kernel.mt before requesting kernelVariant=mt.');
+    }
+    if (requestedVariant === 'st') {
+      throw new Error('OCCT st artifact is unavailable in the configured dist paths. Build or install occt-kernel.st before requesting kernelVariant=st.');
+    }
+    throw new Error('OCCT module load failed for all configured paths');
+  }
 
   for (const paths of pathCandidates) {
     try {
@@ -515,6 +586,7 @@ export function getOcctKernelStatus(module) {
 
 export function resolveOcctKernelEnv() {
   return {
+    kernelVariant: readEnv(VARIANT_ENV_KEYS),
     distPath: readEnv(DIST_ENV_KEYS),
     jsPath: readEnv(JS_ENV_KEYS),
     wasmPath: readEnv(WASM_ENV_KEYS),

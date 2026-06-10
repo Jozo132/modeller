@@ -6,7 +6,7 @@ The live tessellation path is native WASM / OCCT-first:
 
 - `js/cad/Tessellation.js` routes body display and STL tessellation to the native WASM kernel.
 - `js/cad/StepImportWasm.js` and STEP import use the same native trimming and mesh-validation path.
-- `js/cad/TessellationConfig.js` controls tessellation density only. Its serialized `tessellator` field is retained for backward compatibility and diagnostics; it does not switch the live runtime path.
+- `js/cad/TessellationConfig.js` controls tessellation density only. It does not switch the live runtime path.
 
 `js/cad/Tessellator2/` is retained only as a compatibility / forensic stack. It is no longer exported from the public CAD barrels, no longer exercised by default package test scripts, and is only imported by dedicated diagnostics such as:
 
@@ -32,7 +32,6 @@ live tessellation quality control.
 | `surfaceSegments`    | number  | 8          | Surface U/V subdivisions             |
 | `edgeSegments`       | number  | 16         | Edge wireframe segments              |
 | `adaptiveSubdivision`| boolean | true       | Enable adaptive refinement           |
-| `tessellator`        | string  | `'legacy'` | Compatibility-only serialized field; ignored by the live WASM path |
 
 ### Presets
 
@@ -111,5 +110,5 @@ The active tessellation path is now covered by:
 - `tests/test-wasm-tessellation-policy.js` for WASM-only routing policy
 - `tests/test-wasm-tessellation.js` for native tessellation behavior
 - `tests/test-lod-retess.js` for live LoD retessellation
-- `tests/test-api-migration.js` for package-level migration contracts
+- `tests/test-exact-revolve.js` for exact-topology tessellation coverage
 - `tests/test-step-import-nist.js` for STEP import regression

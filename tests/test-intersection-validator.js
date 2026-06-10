@@ -22,7 +22,10 @@ import {
 import { HealingReport, healFragments } from '../js/cad/Healing.js';
 import { exactBooleanOp } from '../js/cad/BooleanKernel.js';
 import { buildBody } from '../js/cad/ShellBuilder.js';
+import { ensureWasmReady } from '../js/cad/StepImportWasm.js';
 import { formatTimingSuffix, startTiming } from './test-timing.js';
+
+await ensureWasmReady().catch(() => null);
 
 let passed = 0;
 let failed = 0;
@@ -403,16 +406,13 @@ test('exactBooleanOp: overlapping union produces valid result', () => {
   const boxA = makeBox(0, 0, 0, 10, 10, 10);
   const boxB = makeBox(5, 0, 0, 10, 10, 10);
   const result = exactBooleanOp(boxA, boxB, 'union');
-  // With allow-fallback policy (now the default), the exact path may detect
-  // invariant violations and route to the discrete fallback, returning a mesh
-  // instead of an exact body.  Both outcomes are valid.
+  // The default route is exact-only, so overlapping unions should still
+  // return an exact body when they succeed.
   const hasBody = !!result.body;
   const hasMesh = !!result.mesh;
-  assert.ok(hasBody || hasMesh, 'Should produce a body or fallback mesh');
+  assert.ok(hasBody || hasMesh, 'Should produce a body or mesh payload');
   assert.ok(result.diagnostics, 'Should include diagnostics');
-  if (!hasBody) {
-    assert.strictEqual(result.resultGrade, 'fallback', 'No body → grade must be fallback');
-  }
+  assert.notStrictEqual(result.resultGrade, 'fallback', 'Default boolean route should not silently downgrade to fallback');
 });
 
 test('exactBooleanOp: subtract produces valid result', () => {

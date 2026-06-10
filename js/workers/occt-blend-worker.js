@@ -1,4 +1,3 @@
-import { setFlag } from '../featureFlags.js';
 import { loadOcctKernelModule } from '../cad/occt/index.js';
 import {
   cloneOcctCheckpointMeshSnapshot,
@@ -102,7 +101,6 @@ export async function handleOcctBlendWorkerMessage(data) {
       return { type: 'error', message: `Unknown OCCT blend op: ${op}`, _dispatchId };
     }
 
-    setFlag('CAD_USE_OCCT_SKETCH_SOLIDS', true);
     await loadOcctKernelModule();
 
     const {

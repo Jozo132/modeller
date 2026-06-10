@@ -12,6 +12,7 @@ import { resetFeatureIds } from '../js/cad/Feature.js';
 import { resetTopoIds, SurfaceType } from '../js/cad/BRepTopology.js';
 import { resetPrimitiveIds } from '../js/cad/Primitive.js';
 import { validateBody } from '../js/cad/BRepValidator.js';
+import { ensureWasmReady } from '../js/cad/StepImportWasm.js';
 import { tessellateBody } from '../js/cad/Tessellation.js';
 import { formatTimingSuffix, startTiming } from './test-timing.js';
 
@@ -112,6 +113,8 @@ function assertExactRevolveForSketch(sketch, description) {
 // ============================================================
 console.log('=== Exact Revolve B-Rep Tests ===\n');
 // ============================================================
+
+await ensureWasmReady();
 
 test('Revolve produces topoBody on geometry', () => {
   resetFeatureIds();

@@ -380,14 +380,6 @@ test('diagnostics entries serialize to JSON', () => {
   assert.deepStrictEqual(json.selectionKeys, ['sek1:E:0,0,0|1,0,0:f1']);
 });
 
-// Fallback diagnostic category testing
-test('fallback status categories are correct strings', () => {
-  const categories = ['fallback', 'invariant', 'containment', 'replay'];
-  for (const cat of categories) {
-    assert.strictEqual(typeof cat, 'string');
-  }
-});
-
 // -----------------------------------------------------------------------
 // 4) History pointer undo/redo — deterministic replay
 // -----------------------------------------------------------------------
@@ -515,13 +507,6 @@ test('selection keys are restored from snapshot', () => {
   let uiKeys = [];
   if (snapshot.selectionKeys) uiKeys = [...snapshot.selectionKeys];
   assert.deepStrictEqual(uiKeys, keys);
-});
-
-test('legacy snapshot without selectionKeys restores empty', () => {
-  const snapshot = { scene: {} };
-  let uiKeys = [];
-  if (snapshot.selectionKeys) uiKeys = [...snapshot.selectionKeys];
-  assert.deepStrictEqual(uiKeys, []);
 });
 
 // -----------------------------------------------------------------------

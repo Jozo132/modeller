@@ -16525,7 +16525,6 @@ class App {
 // Bootstrap — ensure WASM is ready before the app starts restoring saved
 // projects (which triggers tessellation).
 setFlag('CAD_REQUIRE_WASM_TESSELLATION', true);
-setFlag('CAD_USE_OCCT_SKETCH_SOLIDS', true);
 const wasmReady = Promise.all([
   wasmTessellation.init()
     .then(() => console.log('[WASM] tessellation module loaded'))

@@ -20,7 +20,7 @@ import { tessellateBody } from '../js/cad/Tessellation.js';
 import { computeFeatureEdges } from '../js/cad/EdgeAnalysis.js';
 import { makeEdgeKey } from '../js/cad/EdgeAnalysis.js';
 import { calculateMeshVolume, calculateBoundingBox } from '../js/cad/toolkit/MeshAnalysis.js';
-import { resetFlags, setFlag } from '../js/featureFlags.js';
+import { resetFlags } from '../js/featureFlags.js';
 import { StepImportFeature } from '../js/cad/StepImportFeature.js';
 import {
   OcctKernelAdapter,
@@ -224,7 +224,6 @@ async function withOcctSketchSolids(fn) {
   const previousOcctDist = process.env.OCCT_KERNEL_DIST;
   process.env.OCCT_KERNEL_DIST = distPath;
   resetFlags();
-  setFlag('CAD_USE_OCCT_SKETCH_SOLIDS', true);
   if (!occtSketchKernelPrimed) {
     await loadOcctKernelModule({ distPath });
     occtSketchKernelPrimed = true;
@@ -668,10 +667,11 @@ await check('serializes and fast-restores OCCT resident boolean checkpoints', as
       const restoredGeometry = restoredResult?.geometry;
 
       assert.equal(restoredResult?._restoredFromCheckpoint, true, 'deserialize should fast-restore the OCCT boolean from checkpoint');
-      assert.ok(restoredGeometry?.occtShapeHandle > 0, 'restored OCCT boolean should retain a resident handle');
+      assert.ok(restoredGeometry?.occtCheckpoint, 'restored OCCT boolean should retain its serialized OCCT checkpoint');
       assert.equal(restoredGeometry?._tessellator, 'occt', 'restored OCCT boolean should keep OCCT tessellation');
       assert.equal(restoredGeometry?.topoBody ?? null, null, 'restored OCCT boolean should not materialize a JS topoBody shadow');
-      assert.equal(restoredGeometry?._occtModeling?.source, 'checkpoint-restore', 'restored OCCT boolean should report checkpoint restore provenance');
+      assert.equal(restoredGeometry?.occtShapeResident ?? false, false, 'restored OCCT boolean should not require an eager resident handle after checkpoint restore');
+      assert.equal(restoredGeometry?._occtModeling?.source, 'resident-boolean', 'restored OCCT boolean should preserve its OCCT modeling provenance');
       assert.equal(restoredGeometry?._occtModeling?.topology?.revisionId, checkpoint.occt.revision?.revisionId, 'restored OCCT boolean should preserve revision identity');
       assert.ok(Array.isArray(restoredGeometry?.paths) && restoredGeometry.paths.length > 0, 'restored OCCT boolean should keep feature-edge chains');
     } finally {
@@ -680,7 +680,7 @@ await check('serializes and fast-restores OCCT resident boolean checkpoints', as
   });
 });
 
-await check('rollback rehydrates active OCCT boolean results from resident checkpoints', async () => {
+await check('rollback keeps active OCCT boolean results resident without replay', async () => {
   await withOcctSketchSolids(async () => {
     const part = new Part('OcctCheckpointRollback');
     const baseSketch = part.addSketch(makeRectSketch(0, 0, 10, 10), makeXYPlane());
@@ -693,14 +693,16 @@ await check('rollback rehydrates active OCCT boolean results from resident check
     const tree = part.featureTree;
     const initialRevisionId = unionExtrude.result?.geometry?._occtModeling?.topology?.revisionId;
 
-    assert.ok(unionExtrude.result?.occtCheckpoint, 'union result should capture an OCCT checkpoint during stamping');
+    assert.equal(unionExtrude.result?.geometry?.occtShapeResident, true, 'union result should stay resident in OCCT while active');
+    assert.equal(unionExtrude.result?.geometry?._occtModeling?.source, 'resident-boolean', 'union result should report resident OCCT boolean provenance');
 
     const firstRollback = tree.applyRollbackSuppression(5, fastRestoreDeps());
     const firstResult = tree.results[unionExtrude.id];
     assert.equal(firstRollback.replayed, false, 'rollback should reuse checkpointed OCCT results without replay');
-    assert.ok(firstRollback.restored >= 2, 'rollback should restore active solid checkpoints');
-    assert.equal(firstResult?._restoredFromCheckpoint, true, 'active OCCT boolean should be restored from checkpoint during rollback');
-    assert.equal(firstResult?.geometry?._occtModeling?.source, 'checkpoint-restore', 'rollback should hydrate the OCCT checkpoint restore path');
+    assert.equal(firstRollback.restored, 0, 'rollback should keep resident OCCT boolean results without forcing checkpoint restore');
+    assert.equal(firstResult?._restoredFromCheckpoint ?? false, false, 'active OCCT boolean should stay live instead of being rehydrated from checkpoint during rollback');
+    assert.equal(firstResult?.geometry?.occtShapeResident, true, 'rollback should keep the active OCCT boolean resident');
+    assert.equal(firstResult?.geometry?._occtModeling?.source, 'resident-boolean', 'rollback should preserve the resident OCCT boolean path');
     assert.equal(firstResult?.geometry?._occtModeling?.topology?.revisionId, initialRevisionId, 'rollback should preserve the OCCT revision identity');
 
     const rollForward = tree.applyRollbackSuppression(6, fastRestoreDeps());
@@ -709,8 +711,9 @@ await check('rollback rehydrates active OCCT boolean results from resident check
     const secondRollback = tree.applyRollbackSuppression(5, fastRestoreDeps());
     const secondResult = tree.results[unionExtrude.id];
     assert.equal(secondRollback.replayed, false, 'second rollback should still avoid full replay');
-    assert.ok(secondRollback.restored >= 2, 'second rollback should restore checkpoints again');
-    assert.equal(secondResult?._restoredFromCheckpoint, true, 'second rollback should restore the OCCT boolean from checkpoint again');
+    assert.equal(secondRollback.restored, 0, 'second rollback should continue reusing resident OCCT results');
+    assert.equal(secondResult?._restoredFromCheckpoint ?? false, false, 'second rollback should keep the OCCT boolean live instead of restoring from checkpoint again');
+    assert.equal(secondResult?.geometry?.occtShapeResident, true, 'second rollback should keep the active OCCT boolean resident');
     assert.equal(secondResult?.geometry?._occtModeling?.topology?.revisionId, initialRevisionId, 'repeated rollback should keep the same OCCT revision id');
   });
 });

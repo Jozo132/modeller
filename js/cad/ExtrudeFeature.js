@@ -5,7 +5,6 @@
 // enabling STEP-quality export and exact boolean operations.
 
 import { Feature } from './Feature.js';
-import { getFlag } from '../featureFlags.js';
 import { booleanOp } from './BooleanDispatch.js';
 import { computeFeatureEdges } from './EdgeAnalysis.js';
 import { calculateMeshVolume, calculateBoundingBox } from './toolkit/MeshAnalysis.js';
@@ -29,7 +28,6 @@ let _nextFusedId = 1;
 const PLANAR_CUT_HOST_CLIP_INSET = 1e-5;
 const CLIPPED_CURVE_MATCH_TOLERANCE = 1e-4;
 const LARGE_TOP_FACE_AREA_RATIO = 0.25;
-const OCCT_SKETCH_SOLID_FLAG = 'CAD_USE_OCCT_SKETCH_SOLIDS';
 
 /**
  * ExtrudeFeature extrudes a 2D sketch profile along its normal to create 3D geometry.
@@ -84,27 +82,10 @@ export class ExtrudeFeature extends Feature {
     
     // Get the current solid (if any)
     let solid = this.getPreviousSolid(context);
-    const occtSketchSolidsEnabled = getFlag(OCCT_SKETCH_SOLID_FLAG) === true;
 
     const profileGroups = this.groupProfilesForExtrusion(profiles);
 
-    if (solid && this.operation === 'subtract' && !occtSketchSolidsEnabled) {
-      const directCut = this._tryApplyPlanarThroughCut(solid, profileGroups, plane)
-        || this._tryApplyPlanarBlindCut(solid, profileGroups, plane);
-      if (directCut) {
-        solid = directCut;
-        const finalGeometry = solid.geometry;
-        return {
-          type: 'solid',
-          geometry: finalGeometry,
-          solid,
-          volume: this.calculateVolume(finalGeometry),
-          boundingBox: this.calculateBoundingBox(finalGeometry),
-        };
-      }
-    }
-
-    if (solid && this.operation === 'subtract' && occtSketchSolidsEnabled) {
+    if (solid && this.operation === 'subtract') {
       const subtractPasses = this.buildSubtractProfilePasses(profiles);
       if (subtractPasses.length > 0) {
         for (const pass of subtractPasses) {
@@ -2392,9 +2373,7 @@ export class ExtrudeFeature extends Feature {
   }
 
   _createBooleanOptions(extraOpts = null) {
-    const booleanOpts = getFlag(OCCT_SKETCH_SOLID_FLAG) === true
-      ? { preferOcctPrimary: true }
-      : {};
+    const booleanOpts = { preferOcctPrimary: true };
     if (extraOpts && typeof extraOpts === 'object') {
       Object.assign(booleanOpts, extraOpts);
     }

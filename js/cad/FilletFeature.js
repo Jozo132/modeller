@@ -5,9 +5,7 @@
 // outputs geometry that preserves the topology chain for downstream
 // features. Selection uses stable entity keys when present.
 
-import { getFlag } from '../featureFlags.js';
 import { Feature } from './Feature.js';
-import { applyBRepFillet } from './BRepFillet.js';
 import { expandPathEdgeKeys, makeEdgeKey } from './EdgeAnalysis.js';
 import { calculateMeshVolume, calculateBoundingBox } from './toolkit/MeshAnalysis.js';
 import {
@@ -29,8 +27,6 @@ import {
   resolveKey,
   selectionKeyToLegacyEdgeKey,
 } from './history/StableEntityKey.js';
-
-const OCCT_SKETCH_SOLID_FLAG = 'CAD_USE_OCCT_SKETCH_SOLIDS';
 
 function isPlainObject(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -591,7 +587,6 @@ export class FilletFeature extends Feature {
   }
 
   execute(context) {
-    const requireOcct = getFlag(OCCT_SKETCH_SOLID_FLAG) === true;
     const { solid, sourceResult, edgeKeys } = this._resolveFilletExecutionInput(context);
     if (!solid || !solid.geometry || !solid.geometry.faces) {
       throw new Error('No solid body found to fillet');
@@ -691,50 +686,14 @@ export class FilletFeature extends Feature {
       };
     }
 
-    if (requireOcct) {
-      const restoreMessage = occtRestoreError
-        ? `Failed to restore the upstream OCCT checkpoint: ${occtRestoreError?.message || String(occtRestoreError)}`
-        : (hadOcctInput
-          ? 'The OCCT fillet operation did not produce a replacement shape for the selected edges.'
-          : 'No resident or restorable OCCT handle was available on the input solid.');
-      throw new Error(
-        `[OCCT-only] FilletFeature requires resident or restorable OCCT geometry. ${restoreMessage}`
-      );
-    }
-
-    if (!inputTopoBody) {
-      throw new Error(
-        '[BRep-only] FilletFeature requires exact topology (TopoBody) on the input solid or a resident OCCT handle. ' +
-        'Legacy mesh-based fillet is no longer supported.'
-      );
-    }
-
-    const exactInputGeometry = { ...solid.geometry, topoBody: inputTopoBody };
-    const geometry = applyBRepFillet(exactInputGeometry, edgeKeys, this.radius, this.segments);
-    if (!geometry) {
-      throw new Error(
-        '[BRep-only] applyBRepFillet returned null — the BRep fillet path failed. ' +
-        'This must be fixed in the BRep kernel, not by falling back to mesh fillet.'
-      );
-    }
-
-    // Tag faces with source feature
-    for (const f of geometry.faces) {
-      if (!f.shared) f.shared = {};
-    }
-
-    const resultTopoBody = geometry.topoBody || null;
-    this._resultExact = !!resultTopoBody;
-
-    return {
-      type: 'solid',
-      geometry,
-      solid: { geometry, body: resultTopoBody },
-      volume: calculateMeshVolume(geometry),
-      boundingBox: calculateBoundingBox(geometry),
-      brep: geometry.brep || null,
-      _exactTopology: this._resultExact,
-    };
+    const restoreMessage = occtRestoreError
+      ? `Failed to restore the upstream OCCT checkpoint: ${occtRestoreError?.message || String(occtRestoreError)}`
+      : (hadOcctInput
+        ? 'The OCCT fillet operation did not produce a replacement shape for the selected edges.'
+        : 'No resident or restorable OCCT handle was available on the input solid.');
+    throw new Error(
+      `[OCCT-only] FilletFeature requires resident or restorable OCCT geometry. ${restoreMessage}`
+    );
   }
 
   _getPreviousSolid(context) {

@@ -15,9 +15,9 @@
 //   9. Validate shell orientation and closure
 //  10. Tessellate the result for rendering
 //
-// When CAD_ALLOW_DISCRETE_FALLBACK=1, or when callers explicitly request
-// allow/force fallback policy, a discrete fallback lane can activate on
-// exact-path failure. Fallback results are always explicitly flagged.
+// When callers explicitly request force-fallback policy, a discrete fallback
+// lane can activate instead of the exact-path result. Fallback results are
+// always explicitly flagged.
 
 import { intersectBodies } from './Intersections.js';
 import { splitFace, classifyFragment } from './FaceSplitter.js';
@@ -56,13 +56,12 @@ export async function ensureOcctBooleanShadowReady(opts = {}) {
 /**
  * Perform an exact boolean operation on two TopoBody operands.
  *
- * When CAD_ALLOW_DISCRETE_FALLBACK=1 and the exact path fails invariants,
- * the discrete fallback lane activates automatically.  Fallback results
- * carry resultGrade === 'fallback' and _isFallback === true.
+ * When callers explicitly request the force-fallback policy, the discrete
+ * fallback lane activates immediately. Fallback results carry
+ * resultGrade === 'fallback' and _isFallback === true.
  *
  * The optional `opts.policy` parameter controls fallback routing:
  *   - 'exact-only':      Never fall back; throw on exact failure.
- *   - 'allow-fallback':  Attempt exact first; fall back on failure (default when enabled).
  *   - 'force-fallback':  Skip exact path; always use discrete fallback.
  *
  * @param {import('./BRepTopology.js').TopoBody} bodyA

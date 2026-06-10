@@ -56,19 +56,9 @@ test('CAD_USE_GWN_CONTAINMENT defaults to true', () => {
   assert.strictEqual(getFlag('CAD_USE_GWN_CONTAINMENT'), true);
 });
 
-test('CAD_USE_ROBUST_TESSELLATOR compatibility flag defaults to true', () => {
-  resetFlags();
-  assert.strictEqual(getFlag('CAD_USE_ROBUST_TESSELLATOR'), true);
-});
-
 test('CAD_REQUIRE_WASM_TESSELLATION defaults to false', () => {
   resetFlags();
   assert.strictEqual(getFlag('CAD_REQUIRE_WASM_TESSELLATION'), false);
-});
-
-test('CAD_ALLOW_DISCRETE_FALLBACK defaults to false', () => {
-  resetFlags();
-  assert.strictEqual(getFlag('CAD_ALLOW_DISCRETE_FALLBACK'), false);
 });
 
 test('CAD_STRICT_INVARIANTS defaults to false', () => {
@@ -89,11 +79,6 @@ test('CAD_USE_OCCT_STEP_SHADOW defaults to false', () => {
 test('CAD_USE_OCCT_BOOLEAN_SHADOW defaults to false', () => {
   resetFlags();
   assert.strictEqual(getFlag('CAD_USE_OCCT_BOOLEAN_SHADOW'), false);
-});
-
-test('CAD_USE_OCCT_SKETCH_SOLIDS defaults to false', () => {
-  resetFlags();
-  assert.strictEqual(getFlag('CAD_USE_OCCT_SKETCH_SOLIDS'), false);
 });
 
 // ── Unknown flag ────────────────────────────────────────────────────
@@ -227,16 +212,15 @@ test('Programmatic override takes precedence over env', () => {
 
 // ── allFlags snapshot ───────────────────────────────────────────────
 
-test('allFlags() returns snapshot of all 12 flags', () => {
+test('allFlags() returns snapshot of all 9 flags', () => {
   resetFlags();
   const snap = allFlags();
-  assert.strictEqual(Object.keys(snap).length, 12);
+  assert.strictEqual(Object.keys(snap).length, 9);
   assert.strictEqual(snap.CAD_USE_IR_CACHE, true);
   assert.strictEqual(snap.CAD_IR_CACHE_MODE, 'memory');
   assert.strictEqual(snap.CAD_DIAGNOSTICS_DIR, '');
   assert.strictEqual(snap.CAD_USE_OCCT_STEP_SHADOW, false);
   assert.strictEqual(snap.CAD_USE_OCCT_BOOLEAN_SHADOW, false);
-  assert.strictEqual(snap.CAD_USE_OCCT_SKETCH_SOLIDS, false);
 });
 
 test('allFlags() snapshot is frozen', () => {
@@ -247,9 +231,9 @@ test('allFlags() snapshot is frozen', () => {
 
 // ── flagDefinitions ─────────────────────────────────────────────────
 
-test('flagDefinitions() returns 12 entries', () => {
+test('flagDefinitions() returns 9 entries', () => {
   const defs = flagDefinitions();
-  assert.strictEqual(defs.length, 12);
+  assert.strictEqual(defs.length, 9);
 });
 
 test('flagDefinitions() entries have expected shape', () => {

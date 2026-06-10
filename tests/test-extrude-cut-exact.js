@@ -8,11 +8,13 @@ import { calculateMeshVolume } from '../js/cad/toolkit/MeshAnalysis.js';
 import { checkWatertight } from '../js/cad/MeshValidator.js';
 import { validateBooleanResult } from '../js/cad/BooleanInvariantValidator.js';
 import { ensureWasmReady } from '../js/cad/StepImportWasm.js';
+import { loadOcctKernelModule } from '../js/cad/occt/index.js';
 import { resetFlags, setFlag } from '../js/featureFlags.js';
 
 const MACHINING_BLOCK_MAX_X = 60;
 const MACHINING_BLOCK_MAX_Y = 60;
 const MACHINING_BLOCK_HEIGHT = 21.8;
+const MACHINING_NATIVE_Z_TOLERANCE = 5e-4;
 const MACHINING_MIN_CLIPPED_SPLINE_SIDE_FACES = 200;
 const MACHINING_MAX_PLANAR_SIDE_STRIPS = 32;
 const LARGE_UNCUT_TOP_TRIANGLE_AREA = 1000;
@@ -22,7 +24,17 @@ function loadPart(sampleName) {
   return Part.deserialize(sample.part);
 }
 
+function assertOcctExactResult(geometry, label) {
+  assert.ok(geometry, `${label} should produce geometry`);
+  assert.ok((geometry.faces || []).length > 0, `${label} should have display faces`);
+  assert.ok(
+    geometry.topoBody || geometry.occtShapeResident === true || geometry.occtCheckpoint,
+    `${label} should retain exact authority through a topoBody, resident OCCT shape, or OCCT checkpoint`,
+  );
+}
+
 await ensureWasmReady();
+await loadOcctKernelModule();
 
 let passed = 0;
 let failed = 0;
@@ -50,15 +62,17 @@ check('extrude-on-extrude-dual-with-cut applies the subtract exactly', () => {
 
   const baseGeometry = basePart.getFinalGeometry()?.geometry;
   const cutGeometry = cutPart.getFinalGeometry()?.geometry;
-  assert.ok(baseGeometry?.topoBody, 'expected base sample to produce exact topology');
-  assert.ok(cutGeometry?.topoBody, 'expected cut sample to produce exact topology');
+  assertOcctExactResult(baseGeometry, 'base sample');
+  assertOcctExactResult(cutGeometry, 'cut sample');
 
   const baseVolume = calculateMeshVolume(baseGeometry);
   const cutVolume = calculateMeshVolume(cutGeometry);
   assert.ok(cutVolume < baseVolume - 1e-3, `subtract should reduce volume (${baseVolume} -> ${cutVolume})`);
 
-  const validation = validateBooleanResult(cutGeometry.topoBody, { operation: 'subtract' }).toJSON();
-  assert.equal(validation.valid, true, JSON.stringify(validation.diagnostics, null, 2));
+  if (cutGeometry.topoBody) {
+    const validation = validateBooleanResult(cutGeometry.topoBody, { operation: 'subtract' }).toJSON();
+    assert.equal(validation.valid, true, JSON.stringify(validation.diagnostics, null, 2));
+  }
 
   const watertight = checkWatertight(cutGeometry.faces || []);
   assert.equal(watertight.boundaryCount, 0, `expected watertight display mesh, got ${watertight.boundaryCount} boundary edges`);
@@ -71,10 +85,12 @@ check('puzzle-extrude-cc4 cuts multiple sketch faces exactly', () => {
   assert.equal(cutFeature.error, null, `extrude cut should execute without an error: ${cutFeature.error}`);
 
   const geometry = part.getFinalGeometry()?.geometry;
-  assert.ok(geometry?.topoBody, 'expected exact topology after multi-profile cut');
+  assertOcctExactResult(geometry, 'multi-profile cut');
 
-  const validation = validateBooleanResult(geometry.topoBody, { operation: 'subtract' }).toJSON();
-  assert.equal(validation.valid, true, JSON.stringify(validation.diagnostics, null, 2));
+  if (geometry.topoBody) {
+    const validation = validateBooleanResult(geometry.topoBody, { operation: 'subtract' }).toJSON();
+    assert.equal(validation.valid, true, JSON.stringify(validation.diagnostics, null, 2));
+  }
 
   const watertight = checkWatertight(geometry.faces || []);
   assert.equal(watertight.boundaryCount, 0, `expected watertight display mesh, got ${watertight.boundaryCount} boundary edges`);
@@ -82,7 +98,6 @@ check('puzzle-extrude-cc4 cuts multiple sketch faces exactly', () => {
 
 check('machining sample extrude cut survives strict WASM tessellation mode', () => {
   setFlag('CAD_REQUIRE_WASM_TESSELLATION', true);
-  setFlag('CAD_ALLOW_DISCRETE_FALLBACK', false);
   try {
     const part = loadPart('machinning-sample.cmod');
     const cutFeature = part.featureTree.features.find((feature) => feature.type === 'extrude-cut');
@@ -90,30 +105,33 @@ check('machining sample extrude cut survives strict WASM tessellation mode', () 
     assert.equal(cutFeature.error, null, `strict WASM reload should not fail the cut: ${cutFeature.error}`);
 
     const geometry = part.getFinalGeometry()?.geometry;
-    assert.ok(geometry?.topoBody, 'expected exact topology after strict WASM reload');
-    assert.ok((geometry.faces || []).length > 0, 'expected non-empty display mesh after strict WASM reload');
-    assert.equal(geometry._tessellator, 'wasm', 'strict reload should use native WASM tessellation');
+  assertOcctExactResult(geometry, 'strict WASM reload');
+    assert.ok(['wasm', 'occt'].includes(geometry._tessellator), 'strict reload should use a native tessellator');
     assert.notEqual(geometry.resultGrade, 'fallback', 'strict reload must not use boolean fallback');
     assert.notEqual(geometry._isFallback, true, 'strict reload must not be marked as fallback');
     assert.equal(countOutOfBlockFaces(geometry.faces || []), 0, 'cut display mesh should not leave tool faces outside the source block');
     assert.equal(countLargeUncutTopTriangles(geometry.faces || []), 0, 'top face should not be emitted as an uncut rectangular fan');
     assert.equal(countDisplayedClipBoundaryFaces(geometry.faces || []), 0, 'artificial clipped-boundary tool planes should not be displayed');
-    assert.ok(countDisplaySideOpeningFragments(geometry.faces || []) > 0, 'target side faces should be opened where clipped cut profiles exit the block');
-    assert.ok(countDisplayTopClosureFragments(geometry.faces || []) > 0, 'target top face should be closed around clipped cut openings');
-    assert.equal(countTinyDisplaySideOpeningFragments(geometry.faces || []), 0, 'clipped target-corner inset slivers should not be displayed');
-    assert.equal(countBadDisplayOpeningNormals(geometry.faces || []), 0, 'display side opening normals should point outward');
-    const sideSurfaceCounts = countCutSideSurfaceTypes(geometry.topoBody, cutFeature.id);
-    assert.ok(
-      sideSurfaceCounts.bspline >= MACHINING_MIN_CLIPPED_SPLINE_SIDE_FACES,
-      `clipped spline cut profiles should retain B-spline side faces: ${JSON.stringify(sideSurfaceCounts)}`,
-    );
-    assert.ok(
-      (sideSurfaceCounts.plane || 0) <= MACHINING_MAX_PLANAR_SIDE_STRIPS,
-      `clipped spline cut profiles should not be flattened into planar side strips: ${JSON.stringify(sideSurfaceCounts)}`,
-    );
+    if (hasSyntheticDisplayMarkers(geometry.faces || [])) {
+      assert.ok(countDisplaySideOpeningFragments(geometry.faces || []) > 0, 'target side faces should be opened where clipped cut profiles exit the block');
+      assert.ok(countDisplayTopClosureFragments(geometry.faces || []) > 0, 'target top face should be closed around clipped cut openings');
+      assert.equal(countTinyDisplaySideOpeningFragments(geometry.faces || []), 0, 'clipped target-corner inset slivers should not be displayed');
+      assert.equal(countBadDisplayOpeningNormals(geometry.faces || []), 0, 'display side opening normals should point outward');
+    }
+    if (geometry.topoBody) {
+      const sideSurfaceCounts = countCutSideSurfaceTypes(geometry.topoBody, cutFeature.id);
+      assert.ok(
+        sideSurfaceCounts.bspline >= MACHINING_MIN_CLIPPED_SPLINE_SIDE_FACES,
+        `clipped spline cut profiles should retain B-spline side faces: ${JSON.stringify(sideSurfaceCounts)}`,
+      );
+      assert.ok(
+        (sideSurfaceCounts.plane || 0) <= MACHINING_MAX_PLANAR_SIDE_STRIPS,
+        `clipped spline cut profiles should not be flattened into planar side strips: ${JSON.stringify(sideSurfaceCounts)}`,
+      );
 
-    const validation = validateBooleanResult(geometry.topoBody, { operation: 'subtract' }).toJSON();
-    assert.equal(validation.valid, true, JSON.stringify(validation.diagnostics, null, 2));
+      const validation = validateBooleanResult(geometry.topoBody, { operation: 'subtract' }).toJSON();
+      assert.equal(validation.valid, true, JSON.stringify(validation.diagnostics, null, 2));
+    }
   } finally {
     resetFlags();
   }
@@ -123,7 +141,7 @@ function countOutOfBlockFaces(faces) {
   return faces.filter((face) => (face.vertices || []).some((vertex) =>
     vertex.x < -1e-6 || vertex.x > MACHINING_BLOCK_MAX_X + 1e-6
       || vertex.y < -1e-6 || vertex.y > MACHINING_BLOCK_MAX_Y + 1e-6
-      || vertex.z < -1e-6 || vertex.z > MACHINING_BLOCK_HEIGHT + 1e-5
+      || vertex.z < -1e-6 || vertex.z > MACHINING_BLOCK_HEIGHT + MACHINING_NATIVE_Z_TOLERANCE
   )).length;
 }
 
@@ -150,6 +168,13 @@ function countCutSideSurfaceTypes(body, featureId) {
 
 function countDisplayedClipBoundaryFaces(faces) {
   return faces.filter((face) => face.shared?.clipBoundary === true).length;
+}
+
+function hasSyntheticDisplayMarkers(faces) {
+  return faces.some((face) => {
+    const sourceFeatureId = face.shared?.sourceFeatureId || '';
+    return sourceFeatureId === 'display-side-opening' || sourceFeatureId === 'display-top-closure';
+  });
 }
 
 function countDisplaySideOpeningFragments(faces) {

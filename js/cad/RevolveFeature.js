@@ -5,7 +5,6 @@
 // enabling STEP-quality export and exact boolean operations.
 
 import { Feature } from './Feature.js';
-import { getFlag } from '../featureFlags.js';
 import { resolveSketchRevolveAxis } from './SketchFeature.js';
 import { booleanOp } from './BooleanDispatch.js';
 import { computeFeatureEdges } from './EdgeAnalysis.js';
@@ -372,6 +371,38 @@ export class RevolveFeature extends Feature {
     }
 
     if (isFullRevolution) {
+      if (innerRadius > REVOLVE_EPS) {
+        const sliceSweep = directionSign * (Math.PI * 2 / 4);
+        const faces = [];
+        for (let sliceIndex = 0; sliceIndex < 4; sliceIndex++) {
+          const startAngle = sliceIndex * sliceSweep;
+          const endAngle = startAngle + sliceSweep;
+          const startInner = this._pointOnRevolveFrame(innerRadius, start.height, startAngle, frame, axisFrame);
+          const startOuter = this._pointOnRevolveFrame(outerRadius, start.height, startAngle, frame, axisFrame);
+          const endOuter = this._pointOnRevolveFrame(outerRadius, start.height, endAngle, frame, axisFrame);
+          const endInner = this._pointOnRevolveFrame(innerRadius, start.height, endAngle, frame, axisFrame);
+
+          faces.push({
+            surface: NurbsSurface.createPlane(
+              startInner,
+              _sub3(startOuter, startInner),
+              _sub3(endInner, startInner),
+            ),
+            surfaceType: SurfaceType.PLANE,
+            vertices: [startInner, startOuter, endOuter, endInner],
+            edgeCurves: [
+              NurbsCurve.createLine(startInner, startOuter),
+              this._makeRevolveArc(start.height, outerRadius, frame, axisFrame, startAngle, sliceSweep),
+              NurbsCurve.createLine(endOuter, endInner),
+              this._makeRevolveArc(start.height, innerRadius, frame, axisFrame, endAngle, -sliceSweep),
+            ],
+            shared: { sourceFeatureId: this.id },
+            stableHash: `${baseHash}_s${sliceIndex}`,
+          });
+        }
+        return faces;
+      }
+
       const outerLoop = this._buildFullCircleLoop(start.height, outerRadius, 4, frame, axisFrame, directionSign, false);
       const faceDesc = {
         surface: NurbsSurface.createPlane(
@@ -1195,9 +1226,7 @@ export class RevolveFeature extends Feature {
     }
 
     try {
-      const booleanOpts = getFlag('CAD_USE_OCCT_SKETCH_SOLIDS') === true
-        ? { preferOcctPrimary: true }
-        : null;
+      const booleanOpts = { preferOcctPrimary: true };
       const resultGeom = booleanOp(prevGeom, geometry, this.operation, null, null, booleanOpts);
       this._disposeTemporaryOcctGeometry(geometry, resultGeom.occtShapeHandle || 0);
       return { geometry: resultGeom };
@@ -1223,9 +1252,7 @@ export class RevolveFeature extends Feature {
       return { geometry };
     }
     try {
-      const booleanOpts = getFlag('CAD_USE_OCCT_SKETCH_SOLIDS') === true
-        ? { preferOcctPrimary: true }
-        : null;
+      const booleanOpts = { preferOcctPrimary: true };
       const resultGeom = booleanOp(solid.geometry, geometry, 'union', null, null, booleanOpts);
       this._disposeTemporaryOcctGeometry(geometry, resultGeom.occtShapeHandle || 0);
       return { geometry: resultGeom };

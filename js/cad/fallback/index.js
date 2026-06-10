@@ -8,7 +8,6 @@ export { ResultGrade, FallbackDiagnostics } from './FallbackDiagnostics.js';
 export {
   FallbackTrigger,
   OperationPolicy,
-  isFallbackEnabled,
   resolvePolicy,
   shouldTriggerFallback,
   evaluateExactResult,

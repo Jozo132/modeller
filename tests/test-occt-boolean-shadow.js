@@ -9,6 +9,7 @@ import { ensureOcctBooleanShadowReady, exactBooleanOp } from '../js/cad/BooleanK
 import { buildTopoBody, SurfaceType } from '../js/cad/BRepTopology.js';
 import { tryBuildOcctExtrudeGeometrySync } from '../js/cad/occt/OcctSketchModeling.js';
 import { invalidateOcctKernelModuleCache } from '../js/cad/occt/index.js';
+import { ensureWasmReady as ensureTessellationWasmReady } from '../js/cad/StepImportWasm.js';
 import { resetFlags, setFlag } from '../js/featureFlags.js';
 
 const LOCAL_DIST_CANDIDATES = [
@@ -70,6 +71,15 @@ function makeRectProfile(width = 10, height = 10) {
   };
 }
 
+function makeXYPlane() {
+  return {
+    origin: { x: 0, y: 0, z: 0 },
+    normal: { x: 0, y: 0, z: 1 },
+    xAxis: { x: 1, y: 0, z: 0 },
+    yAxis: { x: 0, y: 1, z: 0 },
+  };
+}
+
 console.log('OCCT boolean shadow integration\n');
 
 const distPath = resolveDistPath();
@@ -80,6 +90,8 @@ if (!distPath) {
 
 const previousOcctDist = process.env.OCCT_KERNEL_DIST;
 process.env.OCCT_KERNEL_DIST = distPath;
+
+await ensureTessellationWasmReady().catch(() => false);
 
 let passed = 0;
 let failed = 0;
@@ -96,7 +108,6 @@ async function check(name, fn) {
 }
 
 setFlag('CAD_USE_OCCT_BOOLEAN_SHADOW', true);
-setFlag('CAD_USE_OCCT_SKETCH_SOLIDS', true);
 
 await check('exactBooleanOp reports shadow not ready before preload', async () => {
   invalidateOcctKernelModuleCache();
@@ -137,7 +148,7 @@ await check('explicit preload enables exact boolean OCCT shadow summaries', asyn
 
 await check('exactBooleanOp attaches resident OCCT primary payload for shared-adapter handles', async () => {
   const profile = makeRectProfile();
-  const plane = { normal: { x: 0, y: 0, z: 1 } };
+  const plane = makeXYPlane();
   const sketchToWorld = (point) => ({ x: point.x, y: point.y, z: 0 });
 
   const geomA = tryBuildOcctExtrudeGeometrySync({

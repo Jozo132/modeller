@@ -54,22 +54,10 @@ const FLAG_DEFS = [
     description: 'Use generalized winding number for containment classification.',
   },
   {
-    name: 'CAD_USE_ROBUST_TESSELLATOR',
-    type: 'boolean',
-    defaultValue: true,
-    description: 'Compatibility flag retained for older tests and tools; the live tessellation path no longer reads it.',
-  },
-  {
     name: 'CAD_REQUIRE_WASM_TESSELLATION',
     type: 'boolean',
     defaultValue: false,
     description: 'Disallow JS tessellation fallbacks and require the native WASM tessellator.',
-  },
-  {
-    name: 'CAD_ALLOW_DISCRETE_FALLBACK',
-    type: 'boolean',
-    defaultValue: false,
-    description: 'Allow discrete mesh fallback when exact boolean path fails (opt-in only).',
   },
   {
     name: 'CAD_STRICT_INVARIANTS',
@@ -94,12 +82,6 @@ const FLAG_DEFS = [
     type: 'boolean',
     defaultValue: false,
     description: 'Run the optional OCCT boolean shadow path when the OCCT module has been preloaded.',
-  },
-  {
-    name: 'CAD_USE_OCCT_SKETCH_SOLIDS',
-    type: 'boolean',
-    defaultValue: false,
-    description: 'Use OCCT residency for supported sketch solids, STEP imports, and direct booleans between resident shapes.',
   },
 ];
 

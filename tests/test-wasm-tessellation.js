@@ -131,18 +131,6 @@ console.log('\n=== Part + TessellationConfig ===');
   assert(restored.tessellationConfig.surfaceSegments === 16, 'Part.deserialize restores surfaceSegments');
 }
 
-{
-  // Test backward compatibility: old Part data without tessellationConfig
-  const oldData = {
-    type: 'Part',
-    name: 'OldPart',
-    featureTree: { features: [] },
-  };
-  const restored = Part.deserialize(oldData);
-  assert(restored.tessellationConfig.curveSegments === 64, 'Old data without config → defaults');
-  assert(restored.tessellationConfig.getPreset() === 'custom', 'Old data → custom preset');
-}
-
 // ─── WASM Tessellation Tests ─────────────────────────────────────────
 
 console.log('\n=== WASM Tessellation ===');

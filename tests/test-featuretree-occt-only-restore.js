@@ -1,10 +1,8 @@
 import assert from 'node:assert/strict';
 
-import { makeEdgeKey } from '../js/cad/EdgeAnalysis.js';
 import { Feature } from '../js/cad/Feature.js';
 import { FilletFeature } from '../js/cad/FilletFeature.js';
 import { FeatureTree } from '../js/cad/FeatureTree.js';
-import { legacyEdgeKeyToStable } from '../js/cad/history/StableEntityKey.js';
 import { rehydrateOcctFeatureDisplayGeometry } from '../js/cad/occt/OcctSketchModeling.js';
 
 let passed = 0;
@@ -123,7 +121,7 @@ function createTreeWithFeature() {
 
 console.log('FeatureTree OCCT-only restore policy\n');
 
-test('fast restore accepts OCCT checkpoints without legacy deps', () => {
+test('fast restore accepts OCCT checkpoints without CBREP deps', () => {
   const { tree, feature } = createTreeWithFeature();
   const checkpoint = makeOcctCheckpoint();
   let hydrationAttempts = 0;
@@ -137,30 +135,10 @@ test('fast restore accepts OCCT checkpoints without legacy deps', () => {
     [feature.id]: { occt: checkpoint },
   });
 
-  assert.equal(restored, true, 'OCCT checkpoint should restore without any legacy deps');
-  assert.equal(hydrationAttempts, 0, 'OCCT fast restore should not rehydrate legacy CBREP handles');
+  assert.equal(restored, true, 'OCCT checkpoint should restore without any CBREP deps');
+  assert.equal(hydrationAttempts, 0, 'OCCT fast restore should not rehydrate cached CBREP handles');
   assert.equal(tree.results[feature.id]?._restoredFromCheckpoint, true, 'restored result should be marked as checkpoint-restored');
   assert.equal(tree.results[feature.id]?.occtTopologyHash, checkpoint.revision.topologyHash, 'restored result should keep the OCCT topology hash');
-});
-
-test('fast restore rejects payload-only checkpoints even when legacy deps are supplied', () => {
-  const { tree, feature } = createTreeWithFeature();
-
-  const restored = tree.tryFastRestoreFromCheckpoints({
-    [feature.id]: {
-      payload: 'legacy-payload',
-      hash: 'legacy-hash',
-      version: 'legacy-version',
-    },
-  }, {
-    readCbrep() { throw new Error('legacy restore should not run'); },
-    tessellateBody() { throw new Error('legacy restore should not run'); },
-    computeFeatureEdges() { throw new Error('legacy restore should not run'); },
-    calculateMeshVolume() { throw new Error('legacy restore should not run'); },
-    calculateBoundingBox() { throw new Error('legacy restore should not run'); },
-  });
-
-  assert.equal(restored, false, 'payload-only checkpoints should no longer be accepted');
 });
 
 test('serialize emits only OCCT checkpoints for solid results', () => {
@@ -169,8 +147,8 @@ test('serialize emits only OCCT checkpoints for solid results', () => {
   tree.results[feature.id] = {
     ...makeOcctResult(checkpoint),
     cbrepBuffer: new ArrayBuffer(8),
-    cbrepCacheVersion: 'legacy-version',
-    irHash: 'legacy-hash',
+    cbrepCacheVersion: 'stale-version',
+    irHash: 'stale-hash',
   };
 
   const serialized = tree.serialize();
@@ -178,8 +156,8 @@ test('serialize emits only OCCT checkpoints for solid results', () => {
 
   assert.ok(entry?.occt, 'serialized checkpoints should retain the OCCT checkpoint');
   assert.equal(Object.prototype.hasOwnProperty.call(entry, 'payload'), false, 'serialized checkpoints should not emit a CBREP payload');
-  assert.equal(Object.prototype.hasOwnProperty.call(entry, 'hash'), false, 'serialized checkpoints should not emit a legacy CBREP hash');
-  assert.equal(Object.prototype.hasOwnProperty.call(entry, 'version'), false, 'serialized checkpoints should not emit a legacy CBREP version');
+  assert.equal(Object.prototype.hasOwnProperty.call(entry, 'hash'), false, 'serialized checkpoints should not emit a CBREP hash field');
+  assert.equal(Object.prototype.hasOwnProperty.call(entry, 'version'), false, 'serialized checkpoints should not emit a CBREP version field');
 });
 
 test('serialize preserves OCCT mesh snapshots needed for smooth shading and feature edges', () => {
@@ -214,23 +192,6 @@ test('fast restore rebuilds solids directly from serialized mesh snapshots when 
   assert.deepEqual(seenMesh, mesh, 'fast restore should rebuild from the serialized mesh snapshot when one is available');
 });
 
-test('mesh-backed checkpoint restore seeds selection compatibility geometry for downstream fillets', () => {
-  const { tree, feature } = createTreeWithFeature();
-  const checkpoint = makeOcctCheckpoint();
-  const mesh = structuredClone(makeOcctResult(checkpoint).geometry);
-  delete mesh._selectionCompatEdges;
-  delete mesh._selectionCompatPaths;
-  delete mesh._selectionCompatOcctFeatureEdges;
-  delete mesh._selectionCompatOcctFeaturePaths;
-
-  const restored = tree._buildSolidResultFromCheckpointMesh(feature.id, checkpoint, mesh);
-
-  assert.deepEqual(restored.geometry._selectionCompatEdges, restored.geometry.edges, 'restored checkpoint meshes should preserve edge-key compatibility geometry');
-  assert.deepEqual(restored.geometry._selectionCompatPaths, restored.geometry.paths, 'restored checkpoint meshes should preserve path compatibility geometry');
-  assert.deepEqual(restored.geometry._selectionCompatOcctFeatureEdges, restored.geometry._occtFeatureEdges, 'restored checkpoint meshes should preserve OCCT edge refs for downstream exact blends');
-  assert.deepEqual(restored.geometry._selectionCompatOcctFeaturePaths, restored.geometry._occtFeaturePaths, 'restored checkpoint meshes should preserve OCCT path refs for downstream exact blends');
-});
-
 test('mesh-backed checkpoint restore deep-clones display snapshots before rehydrate', () => {
   const { tree, feature } = createTreeWithFeature();
   const checkpoint = makeOcctCheckpoint();
@@ -262,8 +223,6 @@ test('live fillet normalization keeps the executed result instead of immediately
   assert.equal(normalized, result, 'live fillet result should remain the active result object');
   assert.equal(restoreCalls, 0, 'live fillet normalization should not immediately rehydrate from checkpoint');
   assert.ok(normalized.occtCheckpoint, 'live fillet result should still capture an OCCT checkpoint for later restore');
-  assert.deepEqual(normalized.geometry._selectionCompatEdges, normalized.geometry.edges, 'live fillet result should seed compatibility edges directly');
-  assert.deepEqual(normalized.geometry._selectionCompatOcctFeatureEdges, normalized.geometry._occtFeatureEdges, 'live fillet result should seed compatibility OCCT edges directly');
 });
 
 test('stamping a live solid result does not eagerly capture an OCCT checkpoint', () => {
@@ -373,43 +332,6 @@ test('rehydrateOcctFeatureDisplayGeometry rebuilds fillet tags and merged edge s
   assert.equal(geometry._occtFeatureEdges?.length, 1, 'native OCCT edges should be preserved as the base edge set');
   assert.ok(geometry.edges.length > geometry._occtFeatureEdges.length, 'computed display edges should merge with native OCCT edges');
   assert.ok(Array.isArray(geometry.paths) && geometry.paths.length >= 1, 'display edge paths should remain available after rehydrate');
-});
-
-test('fillet replay resolves stable keys and OCCT chain refs from preserved compatibility geometry', () => {
-  const feature = new FilletFeature('Replay Fillet');
-  const compatSegment = {
-    start: { x: 0, y: 0, z: 0 },
-    end: { x: 0.5, y: 0, z: 0 },
-  };
-  const compatSegmentKey = makeEdgeKey(compatSegment.start, compatSegment.end);
-  feature.stableEdgeKeys = [legacyEdgeKeyToStable(compatSegmentKey, feature.id)];
-
-  const selectionContext = {
-    geometry: {
-      edges: [{
-        start: { x: 10, y: 0, z: 0 },
-        end: { x: 11, y: 0, z: 0 },
-      }],
-      paths: [],
-      _selectionCompatEdges: [compatSegment],
-      _selectionCompatPaths: [{ edgeIndices: [0] }],
-      _selectionCompatOcctFeatureEdges: [{
-        start: { x: 0, y: 0, z: 0 },
-        end: { x: 1, y: 0, z: 0 },
-        stableHash: 'E:compat-chain',
-      }],
-      _selectionCompatOcctFeaturePaths: [{
-        edgeIndices: [0],
-        stableHash: 'P:compat-chain',
-      }],
-    },
-  };
-
-  const resolvedEdgeKeys = feature._resolveSelectedEdgeKeys(selectionContext, feature);
-  assert.deepEqual(resolvedEdgeKeys, [compatSegmentKey], 'stable edge replay should resolve against the preserved compatibility segments');
-
-  const refs = feature._resolveSelectedOcctEdgeRefs(selectionContext, resolvedEdgeKeys, feature);
-  assert.deepEqual(refs, [{ stableHash: 'P:compat-chain' }], 'segment selections that lie on a preserved native path should resolve back to that OCCT chain ref');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

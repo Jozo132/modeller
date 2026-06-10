@@ -1,5 +1,3 @@
-import { getFlag } from '../../featureFlags.js';
-
 import {
   getCachedOcctKernelModule,
   occtKernelReadySync,
@@ -9,7 +7,6 @@ import { OcctKernelAdapter } from './OcctKernelAdapter.js';
 import { computeFeatureEdges } from '../EdgeAnalysis.js';
 import { globalTessConfig } from '../TessellationConfig.js';
 
-const OCCT_SKETCH_SOLID_FLAG = 'CAD_USE_OCCT_SKETCH_SOLIDS';
 const WORLD_XY_TOLERANCE = 1e-6;
 const DEFAULT_OCCT_LINEAR_DEFLECTION = 0.1;
 const DEFAULT_OCCT_ANGULAR_DEFLECTION = 0.5;
@@ -996,14 +993,6 @@ function buildStructuredRevolveExtent({ extentType, angleRadians, targetFaceRef,
 }
 
 export function tryBuildOcctExtrudeGeometrySync(options = {}) {
-  if (getFlag(OCCT_SKETCH_SOLID_FLAG) !== true) {
-    reportOcctSketchFallbackOnce(
-      'flag-disabled',
-      'CAD_USE_OCCT_SKETCH_SOLIDS is disabled; sketch solids stay on the compatibility exact path.',
-    );
-    return null;
-  }
-
   const {
     profile,
     plane,
@@ -1087,8 +1076,6 @@ export function tryBuildOcctExtrudeGeometrySync(options = {}) {
 }
 
 export function tryBuildOcctRevolveGeometrySync(options = {}) {
-  if (getFlag(OCCT_SKETCH_SOLID_FLAG) !== true) return null;
-
   const {
     profile,
     plane,
@@ -1204,8 +1191,6 @@ export function tryBuildOcctRevolveGeometrySync(options = {}) {
 }
 
 export function tryBuildOcctSweepGeometrySync(options = {}) {
-  if (getFlag(OCCT_SKETCH_SOLID_FLAG) !== true) return null;
-
   const {
     profileSketchResult,
     pathSketchResult,
@@ -1251,8 +1236,6 @@ export function tryBuildOcctSweepGeometrySync(options = {}) {
 }
 
 export function tryBuildOcctLoftGeometrySync(options = {}) {
-  if (getFlag(OCCT_SKETCH_SOLID_FLAG) !== true) return null;
-
   const { sectionSketchResults = [], spec = {}, shapeHandle = 0, topoBody = null } = options;
   const sections = [];
   for (const sketchResult of sectionSketchResults || []) {
@@ -1292,8 +1275,6 @@ export function tryBuildOcctLoftGeometrySync(options = {}) {
 }
 
 export function tryBuildOcctBooleanMetadataSync(options = {}) {
-  if (getFlag(OCCT_SKETCH_SOLID_FLAG) !== true) return null;
-
   const { handleA, handleB, operation } = options;
   if (!Number.isInteger(handleA) || handleA <= 0) return null;
   if (!Number.isInteger(handleB) || handleB <= 0) return null;
@@ -1502,8 +1483,6 @@ function _finalizeOcctBlendResult(adapter, operation, blendResult, topoBody, sou
 }
 
 export function tryBuildOcctFilletMetadataSync(options = {}) {
-  if (getFlag(OCCT_SKETCH_SOLID_FLAG) !== true) return null;
-
   const {
     handle,
     edgeRefs = [],
@@ -1650,8 +1629,6 @@ export function tryBuildOcctFilletMetadataSync(options = {}) {
 }
 
 export function tryBuildOcctChamferMetadataSync(options = {}) {
-  if (getFlag(OCCT_SKETCH_SOLID_FLAG) !== true) return null;
-
   const {
     handle,
     edgeRefs = [],
@@ -1794,8 +1771,6 @@ export function tryBuildOcctChamferMetadataSync(options = {}) {
 }
 
 export function tryImportOcctStepResidencySync(options = {}) {
-  if (getFlag(OCCT_SKETCH_SOLID_FLAG) !== true) return null;
-
   const {
     stepData,
     heal = true,

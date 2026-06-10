@@ -10,7 +10,7 @@ import { buildTopoBody, SurfaceType } from '../js/cad/BRepTopology.js';
 import { tryBuildOcctExtrudeGeometrySync } from '../js/cad/occt/OcctSketchModeling.js';
 import { loadOcctKernelModule } from '../js/cad/occt/OcctKernelLoader.js';
 import { ensureWasmReady as ensureTessellationWasmReady } from '../js/cad/StepImportWasm.js';
-import { resetFlags, setFlag } from '../js/featureFlags.js';
+import { resetFlags } from '../js/featureFlags.js';
 
 const LOCAL_DIST_CANDIDATES = [
   process.env.OCCT_KERNEL_DIST,
@@ -71,6 +71,15 @@ function makeRectProfile(width = 10, height = 10) {
   };
 }
 
+function makeXYPlane() {
+  return {
+    origin: { x: 0, y: 0, z: 0 },
+    normal: { x: 0, y: 0, z: 1 },
+    xAxis: { x: 1, y: 0, z: 0 },
+    yAxis: { x: 0, y: 1, z: 0 },
+  };
+}
+
 console.log('OCCT boolean primary integration\n');
 
 const distPath = resolveDistPath();
@@ -79,8 +88,11 @@ if (!distPath) {
   process.exit(0);
 }
 
+const previousOcctDist = process.env.OCCT_KERNEL_DIST;
+process.env.OCCT_KERNEL_DIST = distPath;
+
 await Promise.all([
-  loadOcctKernelModule({ distPath }),
+  loadOcctKernelModule(),
   ensureTessellationWasmReady().catch(() => false),
 ]);
 
@@ -100,11 +112,10 @@ async function check(name, fn) {
 
 await check('exactBooleanOp promotes resident OCCT boolean authority into the result contract', async () => {
   const profile = makeRectProfile();
-  const plane = { normal: { x: 0, y: 0, z: 1 } };
+  const plane = makeXYPlane();
   const sketchToWorld = (point) => ({ x: point.x, y: point.y, z: 0 });
 
   resetFlags();
-  setFlag('CAD_USE_OCCT_SKETCH_SOLIDS', true);
 
   const geomA = tryBuildOcctExtrudeGeometrySync({
     profile,
@@ -151,11 +162,10 @@ await check('exactBooleanOp promotes resident OCCT boolean authority into the re
 
 await check('BooleanDispatch consumes the promoted OCCT boolean contract directly', async () => {
   const profile = makeRectProfile();
-  const plane = { normal: { x: 0, y: 0, z: 1 } };
+  const plane = makeXYPlane();
   const sketchToWorld = (point) => ({ x: point.x, y: point.y, z: 0 });
 
   resetFlags();
-  setFlag('CAD_USE_OCCT_SKETCH_SOLIDS', true);
 
   const geomA = tryBuildOcctExtrudeGeometrySync({
     profile,
@@ -186,4 +196,6 @@ await check('BooleanDispatch consumes the promoted OCCT boolean contract directl
 });
 
 console.log(`\nOCCT boolean primary: ${passed} passed, ${failed} failed`);
+if (previousOcctDist == null) delete process.env.OCCT_KERNEL_DIST;
+else process.env.OCCT_KERNEL_DIST = previousOcctDist;
 if (failed > 0) process.exit(1);

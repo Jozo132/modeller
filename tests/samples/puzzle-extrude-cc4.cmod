@@ -749,8 +749,7 @@
       "curveSegments": 8,
       "surfaceSegments": 8,
       "edgeSegments": 8,
-      "adaptiveSubdivision": true,
-      "tessellator": "legacy"
+      "adaptiveSubdivision": true
     }
   },
   "orbit": {

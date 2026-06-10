@@ -113,7 +113,7 @@ export { BooleanInvariantResult, validateBooleanResult } from './BooleanInvarian
 export { ResultGrade, FallbackDiagnostics } from './fallback/FallbackDiagnostics.js';
 export {
   FallbackTrigger, OperationPolicy,
-  isFallbackEnabled, resolvePolicy, shouldTriggerFallback,
+  resolvePolicy, shouldTriggerFallback,
   evaluateExactResult, wrapResult,
 } from './fallback/FallbackPolicy.js';
 export { buildConformingMesh, mergeVertexSpaces } from './fallback/ConformingSurfaceMesh.js';

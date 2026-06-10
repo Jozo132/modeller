@@ -9,9 +9,7 @@
 //   const segs = globalTessConfig.surfaceSegments; // always current
 //   globalTessConfig.applyPreset('fine');           // updates everywhere
 //
-// The serialized `tessellator` field is retained for backward compatibility
-// with older configs and diagnostics. The live runtime path is always
-// native WASM / OCCT-first.
+// The live runtime path is always native WASM / OCCT-first.
 //
 // Quality presets: draft, normal, fine, ultra
 
@@ -29,15 +27,12 @@ export class TessellationConfig {
    * @param {number} [opts.surfaceSegments=16]  - NURBS surface U/V subdivisions
   * @param {number} [opts.edgeSegments=64]    - Edge wireframe tessellation segments
   * @param {boolean} [opts.adaptiveSubdivision=true] - Enable adaptive refinement
-  * @param {'legacy'|'robust'} [opts.tessellator='legacy'] - Compatibility-only serialized field; ignored by the live runtime route.
    */
   constructor(opts = {}) {
     this.curveSegments = opts.curveSegments ?? 64;
     this.surfaceSegments = opts.surfaceSegments ?? 16;
     this.edgeSegments = opts.edgeSegments ?? 64;
     this.adaptiveSubdivision = opts.adaptiveSubdivision !== false;
-    /** @type {'legacy'|'robust'} */
-    this.tessellator = opts.tessellator ?? 'legacy';
   }
 
   /**
@@ -92,7 +87,6 @@ export class TessellationConfig {
       surfaceSegments: this.surfaceSegments,
       edgeSegments: this.edgeSegments,
       adaptiveSubdivision: this.adaptiveSubdivision,
-      tessellator: this.tessellator,
     };
   }
 

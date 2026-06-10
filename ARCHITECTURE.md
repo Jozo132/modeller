@@ -512,7 +512,7 @@ npm run test:parametric   # Parametric feature tests
 | Booleans | test-boolean-analytic, test-boolean-nurbs, test-boolean-hardening |
 | Topology | test-brep-topology (29), test-coplanar-merge, test-stable-hash (21) |
 | STEP | test-step-import, test-step-export |
-| Pipeline | test-feature-pipeline (46), test-toolkit (82), test-history-replay (60) |
+| Pipeline | test-feature-pipeline (46), test-toolkit (82), test-featuretree-occt-only-restore, test-occt-history-replay |
 | Sketching | test-sketch-drag, test-spline-multi-extrude (23), test-multi-sketch-planes |
 | I/O | test-cmod-import-export, test-geometry-persistence |
 | UI | test-ui-workflow, test-face-selection, test-interaction-recorder |
@@ -584,8 +584,6 @@ Boolean flags accept `'1'`, `'true'`, `'yes'` (case-insensitive) as truthy.
 | `CAD_IR_CACHE_MODE` | string | `'none'` | IR cache storage mode: `'none'` \| `'memory'` \| `'fs'` \| `'idb'` |
 | `CAD_USE_WASM_EVAL` | boolean | `false` | Prefer WASM evaluator for NURBS curve/surface evaluation |
 | `CAD_USE_GWN_CONTAINMENT` | boolean | `false` | Use generalized winding number for containment |
-| `CAD_USE_ROBUST_TESSELLATOR` | boolean | `false` | Use the Tessellator2 robust tessellation pipeline |
-| `CAD_ALLOW_DISCRETE_FALLBACK` | boolean | `false` | Allow discrete mesh fallback when exact boolean fails |
 | `CAD_STRICT_INVARIANTS` | boolean | `false` | Throw on invariant violations instead of warning |
 | `CAD_DIAGNOSTICS_DIR` | string | `''` | Directory path for diagnostic JSON output (empty = disabled) |
 
