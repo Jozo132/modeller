@@ -641,6 +641,9 @@ export class Part {
     const feature = new FilletFeature(this._nextTypeName('fillet', 'Fillet'), radius);
     feature.setEdgeKeys(edgeKeys);
     feature.setOcctEdgeRefs(options.edgeRefs || []);
+    if (Object.prototype.hasOwnProperty.call(options, 'occtSpec')) {
+      feature.setOcctSpec(options.occtSpec);
+    }
     if (options.segments) {
       feature.setSegments(options.segments);
     } else {
@@ -681,6 +684,9 @@ export class Part {
     const feature = new ChamferFeature(this._nextTypeName('chamfer', 'Chamfer'), distance);
     feature.setEdgeKeys(edgeKeys);
     feature.setOcctEdgeRefs(options.edgeRefs || []);
+    if (Object.prototype.hasOwnProperty.call(options, 'occtSpec')) {
+      feature.setOcctSpec(options.occtSpec);
+    }
     if (feature.occtEdgeRefs.length === 0 && options.selectionContext) {
       const resolvedEdgeKeys = feature._resolveSelectedEdgeKeys(options.selectionContext);
       feature.setOcctEdgeRefs(feature._resolveSelectedOcctEdgeRefs(options.selectionContext, resolvedEdgeKeys));

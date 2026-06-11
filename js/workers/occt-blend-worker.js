@@ -112,6 +112,7 @@ export async function handleOcctBlendWorkerMessage(data) {
       distance = 0,
       spec = null,
       sourceTopology = null,
+      previewFast = false,
     } = data;
 
     const restored = restoreOcctSketchModelingCheckpoint(checkpoint, null, cloneOcctCheckpointMeshSnapshot(meshSnapshot));
@@ -159,6 +160,7 @@ export async function handleOcctBlendWorkerMessage(data) {
           sourceTopology: restored.geometry?._occtModeling?.topology || sourceTopology,
           topoBody: null,
           failureInfo,
+          previewFast,
         })
         : tryBuildOcctFilletMetadataSync({
           handle: inputHandle,
@@ -168,6 +170,7 @@ export async function handleOcctBlendWorkerMessage(data) {
           sourceTopology: restored.geometry?._occtModeling?.topology || sourceTopology,
           topoBody: null,
           failureInfo,
+          previewFast,
         });
       if (!resultGeometry?.faces?.length) {
         return {

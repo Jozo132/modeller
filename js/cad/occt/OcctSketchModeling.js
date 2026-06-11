@@ -78,32 +78,33 @@ function boundingBoxDiagonal(bounds) {
 function buildOcctTessellationOptions(topology, operation, options = {}) {
   const isBlend = operation === 'fillet' || operation === 'chamfer';
   const liveBlendDisplay = options.liveBlendDisplay === true && isBlend;
+  const previewFast = options.previewFast === true && liveBlendDisplay;
   const minEdgeSegments = isBlend
-    ? (liveBlendDisplay ? 16 : 32)
+    ? (liveBlendDisplay ? (previewFast ? 8 : 16) : 32)
     : 16;
   const minSurfaceSegments = isBlend
-    ? (liveBlendDisplay ? 8 : 16)
+    ? (liveBlendDisplay ? (previewFast ? 4 : 8) : 16)
     : 8;
   const configuredEdgeSegments = Math.max(Number(globalTessConfig.edgeSegments) || 0, minEdgeSegments);
   const configuredSurfaceSegments = Math.max(Number(globalTessConfig.surfaceSegments) || 0, minSurfaceSegments);
   const edgeSegments = liveBlendDisplay
-    ? Math.min(configuredEdgeSegments, 24)
+    ? Math.min(configuredEdgeSegments, previewFast ? 12 : 24)
     : configuredEdgeSegments;
   const surfaceSegments = liveBlendDisplay
-    ? Math.min(configuredSurfaceSegments, 12)
+    ? Math.min(configuredSurfaceSegments, previewFast ? 6 : 12)
     : configuredSurfaceSegments;
   const diag = boundingBoxDiagonal(topology?.boundingBox);
   const linearDeflection = diag > WORLD_XY_TOLERANCE
     ? clamp(
-      diag / Math.max(edgeSegments * (isBlend ? (liveBlendDisplay ? 20 : 48) : 32), 1),
-      isBlend ? (liveBlendDisplay ? 0.005 : 0.002) : 0.005,
-      isBlend ? (liveBlendDisplay ? 0.1 : 0.05) : DEFAULT_OCCT_LINEAR_DEFLECTION,
+      diag / Math.max(edgeSegments * (isBlend ? (liveBlendDisplay ? (previewFast ? 10 : 20) : 48) : 32), 1),
+      isBlend ? (liveBlendDisplay ? (previewFast ? 0.01 : 0.005) : 0.002) : 0.005,
+      isBlend ? (liveBlendDisplay ? (previewFast ? 0.18 : 0.1) : 0.05) : DEFAULT_OCCT_LINEAR_DEFLECTION,
     )
     : (isBlend ? 0.01 : DEFAULT_OCCT_LINEAR_DEFLECTION);
   const angularDeflection = clamp(
-    Math.PI / Math.max(surfaceSegments * (isBlend ? (liveBlendDisplay ? 1 : 2) : 1), isBlend ? (liveBlendDisplay ? 12 : 24) : 12),
-    isBlend ? (liveBlendDisplay ? 0.06 : 0.03) : 0.08,
-    isBlend ? (liveBlendDisplay ? 0.25 : 0.15) : DEFAULT_OCCT_ANGULAR_DEFLECTION,
+    Math.PI / Math.max(surfaceSegments * (isBlend ? (liveBlendDisplay ? (previewFast ? 0.75 : 1) : 2) : 1), isBlend ? (liveBlendDisplay ? (previewFast ? 8 : 12) : 24) : 12),
+    isBlend ? (liveBlendDisplay ? (previewFast ? 0.12 : 0.06) : 0.03) : 0.08,
+    isBlend ? (liveBlendDisplay ? (previewFast ? 0.4 : 0.25) : 0.15) : DEFAULT_OCCT_ANGULAR_DEFLECTION,
   );
   return {
     topology,
@@ -692,9 +693,10 @@ function finalizeOcctGeometry(adapter, handle, topoBody, operation, options = {}
   }
 
   const startedAt = occtSketchNowMs();
+  const previewFast = options.previewFast === true;
   const validStartedAt = startedAt;
-  const valid = adapter.checkValidity(handle);
-  const validMs = occtSketchNowMs() - validStartedAt;
+  const valid = previewFast ? true : adapter.checkValidity(handle);
+  const validMs = previewFast ? 0 : (occtSketchNowMs() - validStartedAt);
   if (!valid) {
     reportOcctSketchFallbackOnce(
       `occt-${operation}-invalid-shape`,
@@ -732,6 +734,9 @@ function finalizeOcctGeometry(adapter, handle, topoBody, operation, options = {}
     tessellateMs,
     totalMs: occtSketchNowMs() - startedAt,
   };
+  if (previewFast) {
+    geometry._occtPreviewFast = true;
+  }
   return geometry;
 }
 
@@ -1446,9 +1451,12 @@ function _buildBlendFeatureSpec(kind, edgeRefs, params = {}) {
   };
 }
 
-function _finalizeOcctBlendResult(adapter, operation, blendResult, topoBody, sourceTopology = null) {
+function _finalizeOcctBlendResult(adapter, operation, blendResult, topoBody, sourceTopology = null, options = {}) {
   const handle = blendResult?.shape?.id || blendResult?.shapeId || blendResult?.shapeHandle || 0;
-  const geometry = finalizeOcctGeometry(adapter, handle, topoBody, operation, { liveBlendDisplay: true });
+  const geometry = finalizeOcctGeometry(adapter, handle, topoBody, operation, {
+    liveBlendDisplay: true,
+    previewFast: options.previewFast === true,
+  });
   if (!geometry) return null;
   const blendFaces = Array.isArray(blendResult?.blendFaces) ? blendResult.blendFaces : [];
   applyOcctBlendFaceMetadata(geometry, operation, blendFaces, sourceTopology);
@@ -1491,6 +1499,7 @@ export function tryBuildOcctFilletMetadataSync(options = {}) {
     radius = null,
     spec = null,
     failureInfo = null,
+    previewFast = false,
   } = options;
   if (!Number.isInteger(handle) || handle <= 0) return null;
   if (!Array.isArray(edgeRefs) || edgeRefs.length === 0) return null;
@@ -1609,7 +1618,7 @@ export function tryBuildOcctFilletMetadataSync(options = {}) {
       return null;
     }
     const finalizeStartedAt = occtSketchNowMs();
-    const geometry = _finalizeOcctBlendResult(adapter, 'fillet', blendResult, topoBody, sourceTopology);
+    const geometry = _finalizeOcctBlendResult(adapter, 'fillet', blendResult, topoBody, sourceTopology, { previewFast });
     const finalizeMs = occtSketchNowMs() - finalizeStartedAt;
     const totalMs = kernelMs + finalizeMs;
     if (totalMs >= OCCT_BLEND_LOG_THRESHOLD_MS && typeof console?.info === 'function') {
@@ -1637,6 +1646,7 @@ export function tryBuildOcctChamferMetadataSync(options = {}) {
     distance = null,
     spec = null,
     failureInfo = null,
+    previewFast = false,
   } = options;
   if (!Number.isInteger(handle) || handle <= 0) return null;
   if (!Array.isArray(edgeRefs) || edgeRefs.length === 0) return null;
@@ -1751,7 +1761,7 @@ export function tryBuildOcctChamferMetadataSync(options = {}) {
       return null;
     }
     const finalizeStartedAt = occtSketchNowMs();
-    const geometry = _finalizeOcctBlendResult(adapter, 'chamfer', blendResult, topoBody, sourceTopology);
+    const geometry = _finalizeOcctBlendResult(adapter, 'chamfer', blendResult, topoBody, sourceTopology, { previewFast });
     const finalizeMs = occtSketchNowMs() - finalizeStartedAt;
     const totalMs = kernelMs + finalizeMs;
     if (totalMs >= OCCT_BLEND_LOG_THRESHOLD_MS && typeof console?.info === 'function') {

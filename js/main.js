@@ -174,6 +174,27 @@ function getAppNowMs() {
   return Date.now();
 }
 
+function cloneBlendDraftValue(value) {
+  if (value == null || typeof value !== 'object') return value;
+  if (typeof structuredClone === 'function') {
+    try {
+      return structuredClone(value);
+    } catch {
+      // Fall through to JSON cloning.
+    }
+  }
+  return JSON.parse(JSON.stringify(value));
+}
+
+function serializeBlendDraftSpec(spec) {
+  if (!spec || typeof spec !== 'object') return null;
+  try {
+    return JSON.stringify(spec);
+  } catch {
+    return null;
+  }
+}
+
 class App {
   constructor() {
     info('App initialization started');
@@ -204,6 +225,15 @@ class App {
     this._extrudePreviewRunning = false;
     this._extrudePreviewQueued = false;
     this._extrudePreviewCache = null;
+    this._chamferPreviewRunning = false;
+    this._chamferPreviewQueued = false;
+    this._chamferPreviewCache = null;
+    this._chamferPreviewToken = 0;
+    this._filletPreviewRunning = false;
+    this._filletPreviewQueued = false;
+    this._filletPreviewCache = null;
+    this._filletPreviewToken = 0;
+    this._suppressBlendAutoEditSelection = false;
     this._extrudeArrowHoveredState = false;
     this._diagnosticBackfaceHatchMode = this._loadDiagnosticBackfaceHatchMode();
     this._diagnosticBackfaceHatchAuto = false;
@@ -4130,6 +4160,91 @@ class App {
     return btnRow;
   }
 
+  _appendBlendPreviewError(container, message) {
+    if (!container || !message) return;
+    const errorEl = document.createElement('div');
+    errorEl.className = 'parameter-info';
+    errorEl.style.cssText = 'margin-top:8px;border:1px solid rgba(183,28,28,0.45);background:rgba(183,28,28,0.08);color:#b71c1c';
+    errorEl.innerHTML = `<p>${escapeHtml(message)}</p>`;
+    container.appendChild(errorEl);
+  }
+
+  _selectFeatureWithoutBlendAutoEdit(featureId) {
+    if (!this._featurePanel) return;
+    this._suppressBlendAutoEditSelection = true;
+    try {
+      this._featurePanel.selectFeature(featureId);
+    } finally {
+      this._suppressBlendAutoEditSelection = false;
+    }
+  }
+
+  _maybeEnterBlendAutoEdit(feature) {
+    if (this._suppressBlendAutoEditSelection || !feature) return;
+    if (feature.type === 'chamfer') {
+      this._editChamferEdges(feature);
+    } else if (feature.type === 'fillet') {
+      this._editFilletEdges(feature);
+    }
+  }
+
+  _refreshBlendPreviewErrorUi(kind, mode) {
+    if (!mode) return;
+    if (kind === 'chamfer') {
+      if (this._chamferMode !== mode) return;
+      if (mode.panelMode === 'inline' && mode.editingFeatureId) {
+        const feature = this._getPartFeatureById(mode.editingFeatureId);
+        if (feature) this._showLeftFeatureParams(feature);
+        return;
+      }
+      this._showChamferUI({ skipPreviewUpdate: true });
+      return;
+    }
+    if (this._filletMode !== mode) return;
+    if (mode.panelMode === 'inline' && mode.editingFeatureId) {
+      const feature = this._getPartFeatureById(mode.editingFeatureId);
+      if (feature) this._showLeftFeatureParams(feature);
+      return;
+    }
+    this._showFilletUI({ skipPreviewUpdate: true });
+  }
+
+  _setChamferPreviewError(cm, message) {
+    if (!cm || this._chamferMode !== cm) return;
+    const nextMessage = typeof message === 'string' && message ? message : 'Chamfer preview failed. Cannot accept the current parameters.';
+    const changed = cm.previewError !== nextMessage;
+    cm.previewError = nextMessage;
+    this._chamferPreviewCache = null;
+    if (this._renderer3d) this._renderer3d.clearGhostPreview();
+    this._scheduleRender();
+    this.setStatus(nextMessage);
+    if (changed) this._refreshBlendPreviewErrorUi('chamfer', cm);
+  }
+
+  _clearChamferPreviewError(cm) {
+    if (!cm || this._chamferMode !== cm || !cm.previewError) return;
+    cm.previewError = null;
+    this._refreshBlendPreviewErrorUi('chamfer', cm);
+  }
+
+  _setFilletPreviewError(fm, message) {
+    if (!fm || this._filletMode !== fm) return;
+    const nextMessage = typeof message === 'string' && message ? message : 'Fillet preview failed. Cannot accept the current parameters.';
+    const changed = fm.previewError !== nextMessage;
+    fm.previewError = nextMessage;
+    this._filletPreviewCache = null;
+    if (this._renderer3d) this._renderer3d.clearGhostPreview();
+    this._scheduleRender();
+    this.setStatus(nextMessage);
+    if (changed) this._refreshBlendPreviewErrorUi('fillet', fm);
+  }
+
+  _clearFilletPreviewError(fm) {
+    if (!fm || this._filletMode !== fm || !fm.previewError) return;
+    fm.previewError = null;
+    this._refreshBlendPreviewErrorUi('fillet', fm);
+  }
+
   _activateFeatureSelectionTarget(target) {
     if (!target || !this._renderer3d) {
       return;
@@ -5771,6 +5886,9 @@ class App {
       container.appendChild(info);
     } else if (feature.type === 'chamfer') {
       const chamferEditMode = this._getInlineFeatureEditMode(feature.id);
+      const displayedChamferFeature = chamferEditMode
+        ? { ...feature, occtSpec: chamferEditMode.mode.occtSpec ?? feature.occtSpec }
+        : feature;
       const chamferTarget = {
         featureId: feature.id,
         fieldId: 'edges',
@@ -5781,52 +5899,85 @@ class App {
         stateKey: 'edgeKeys',
       };
 
-      appendChamferBlendControls({
-        container,
-        feature,
-        baseDistance: chamferEditMode ? chamferEditMode.mode.distance : feature.distance,
-        setBaseDistance: (distance) => {
-          if (chamferEditMode) {
-            chamferEditMode.mode.distance = distance;
-            this._updateChamferPreview();
-            return;
-          }
-          this._partManager.modifyFeature(feature.id, (f) => {
-            if (typeof f.setDistance === 'function') f.setDistance(distance);
-            else f.distance = distance;
-          });
-          this._update3DView();
-        },
-        applySpec: (spec) => {
-          this._partManager.modifyFeature(feature.id, (f) => {
-            if (typeof f.setOcctSpec === 'function') f.setOcctSpec(spec);
-            else f.occtSpec = spec;
-          });
-          this._update3DView();
-        },
-        rerender: () => {
-          this._refreshFeaturePanels(feature);
-        },
-        reportError: (message) => this.setStatus(`Invalid OCCT chamfer input: ${message}`),
-      });
-      container.appendChild(this._buildInlineSelectionField(chamferTarget, {
-        summaryText: chamferEditMode
-          ? this._describeFeatureSelectionSummary(chamferTarget)
-          : (Array.isArray(feature.edgeKeys) && feature.edgeKeys.length > 0
-            ? `${feature.edgeKeys.length} edge${feature.edgeKeys.length === 1 ? '' : 's'} selected`
-            : 'Click to choose edges'),
-        showSelectionList: !!chamferEditMode,
-        helperText: 'Click to pick edges or faces in the viewport',
-        onActivate: () => this._editChamferEdges(feature),
-      }));
-      if (chamferEditMode) {
-        container.appendChild(this._buildFeatureEditActionRow(
-          () => this._acceptChamfer(),
-          () => this._cancelChamfer()
-        ));
+      if (!chamferEditMode && this._suppressBlendAutoEditSelection) {
+        const info = document.createElement('div');
+        info.className = 'parameter-info';
+        info.innerHTML = `<p><strong>Distance:</strong> ${feature.distance}</p>`;
+        container.appendChild(info);
+
+        const editBtn = document.createElement('button');
+        editBtn.type = 'button';
+        editBtn.textContent = 'Edit Chamfer';
+        editBtn.className = 'param-btn accept';
+        editBtn.style.cssText = 'width:100%;padding:6px;background:#4caf50;color:#fff;border:none;border-radius:4px;cursor:pointer;margin-top:12px';
+        editBtn.addEventListener('click', () => {
+          this._editChamferEdges(feature);
+          this._showLeftFeatureParams(feature);
+        });
+        container.appendChild(editBtn);
+      } else {
+
+        appendChamferBlendControls({
+          container,
+          feature: displayedChamferFeature,
+          baseDistance: chamferEditMode ? chamferEditMode.mode.distance : feature.distance,
+          setBaseDistance: (distance) => {
+            if (chamferEditMode) {
+              chamferEditMode.mode.distance = distance;
+              this._updateChamferPreview();
+              return;
+            }
+            this._partManager.modifyFeature(feature.id, (f) => {
+              if (typeof f.setDistance === 'function') f.setDistance(distance);
+              else f.distance = distance;
+            });
+            this._update3DView();
+          },
+          applySpec: (spec) => {
+            if (chamferEditMode) {
+              chamferEditMode.mode.occtSpec = cloneBlendDraftValue(spec);
+              this._updateChamferPreview();
+              return;
+            }
+            this._partManager.modifyFeature(feature.id, (f) => {
+              if (typeof f.setOcctSpec === 'function') f.setOcctSpec(spec);
+              else f.occtSpec = spec;
+            });
+            this._update3DView();
+          },
+          rerender: () => {
+            if (chamferEditMode) {
+              this._showLeftFeatureParams(feature);
+              this._updateChamferPreview();
+              return;
+            }
+            this._refreshFeaturePanels(feature);
+          },
+          reportError: (message) => this.setStatus(`Invalid OCCT chamfer input: ${message}`),
+        });
+        this._appendBlendPreviewError(container, chamferEditMode?.mode?.previewError || null);
+        container.appendChild(this._buildInlineSelectionField(chamferTarget, {
+          summaryText: chamferEditMode
+            ? this._describeFeatureSelectionSummary(chamferTarget)
+            : (Array.isArray(feature.edgeKeys) && feature.edgeKeys.length > 0
+              ? `${feature.edgeKeys.length} edge${feature.edgeKeys.length === 1 ? '' : 's'} selected`
+              : 'Click to choose edges'),
+          showSelectionList: !!chamferEditMode,
+          helperText: 'Click to pick edges or faces in the viewport',
+          onActivate: () => this._editChamferEdges(feature),
+        }));
+        if (chamferEditMode) {
+          container.appendChild(this._buildFeatureEditActionRow(
+            () => this._acceptChamfer(),
+            () => this._cancelChamfer()
+          ));
+        }
       }
     } else if (feature.type === 'fillet') {
       const filletEditMode = this._getInlineFeatureEditMode(feature.id);
+      const displayedFilletFeature = filletEditMode
+        ? { ...feature, occtSpec: filletEditMode.mode.occtSpec ?? feature.occtSpec }
+        : feature;
       const filletTarget = {
         featureId: feature.id,
         fieldId: 'edges',
@@ -5837,57 +5988,87 @@ class App {
         stateKey: 'edgeKeys',
       };
 
-      appendFilletBlendControls({
-        container,
-        feature,
-        baseRadius: filletEditMode ? filletEditMode.mode.radius : feature.radius,
-        setBaseRadius: (radius) => {
-          if (filletEditMode) {
-            filletEditMode.mode.radius = radius;
-            this._updateFilletPreview();
-            return;
-          }
-          this._partManager.modifyFeature(feature.id, (f) => {
-            if (typeof f.setRadius === 'function') {
-              f.setRadius(radius);
-            } else {
-              f.radius = radius;
+      if (!filletEditMode && this._suppressBlendAutoEditSelection) {
+        const info = document.createElement('div');
+        info.className = 'parameter-info';
+        info.innerHTML = `<p><strong>Radius:</strong> ${feature.radius}</p>`;
+        container.appendChild(info);
+
+        const editBtn = document.createElement('button');
+        editBtn.type = 'button';
+        editBtn.textContent = 'Edit Fillet';
+        editBtn.className = 'param-btn accept';
+        editBtn.style.cssText = 'width:100%;padding:6px;background:#4caf50;color:#fff;border:none;border-radius:4px;cursor:pointer;margin-top:12px';
+        editBtn.addEventListener('click', () => {
+          this._editFilletEdges(feature);
+          this._showLeftFeatureParams(feature);
+        });
+        container.appendChild(editBtn);
+      } else {
+
+        appendFilletBlendControls({
+          container,
+          feature: displayedFilletFeature,
+          baseRadius: filletEditMode ? filletEditMode.mode.radius : feature.radius,
+          setBaseRadius: (radius) => {
+            if (filletEditMode) {
+              filletEditMode.mode.radius = radius;
+              this._updateFilletPreview();
+              return;
             }
-            if (typeof f.setSegments === 'function') {
-              f.setSegments(this._getTessellationDrivenCurveSegments());
-            } else if (Object.prototype.hasOwnProperty.call(f, 'segments')) {
-              f.segments = this._getTessellationDrivenCurveSegments();
+            this._partManager.modifyFeature(feature.id, (f) => {
+              if (typeof f.setRadius === 'function') {
+                f.setRadius(radius);
+              } else {
+                f.radius = radius;
+              }
+              if (typeof f.setSegments === 'function') {
+                f.setSegments(this._getTessellationDrivenCurveSegments());
+              } else if (Object.prototype.hasOwnProperty.call(f, 'segments')) {
+                f.segments = this._getTessellationDrivenCurveSegments();
+              }
+            });
+            this._update3DView();
+          },
+          applySpec: (spec) => {
+            if (filletEditMode) {
+              filletEditMode.mode.occtSpec = cloneBlendDraftValue(spec);
+              this._updateFilletPreview();
+              return;
             }
-          });
-          this._update3DView();
-        },
-        applySpec: (spec) => {
-          this._partManager.modifyFeature(feature.id, (f) => {
-            if (typeof f.setOcctSpec === 'function') f.setOcctSpec(spec);
-            else f.occtSpec = spec;
-          });
-          this._update3DView();
-        },
-        rerender: () => {
-          this._refreshFeaturePanels(feature);
-        },
-        reportError: (message) => this.setStatus(`Invalid OCCT fillet input: ${message}`),
-      });
-      container.appendChild(this._buildInlineSelectionField(filletTarget, {
-        summaryText: filletEditMode
-          ? this._describeFeatureSelectionSummary(filletTarget)
-          : (Array.isArray(feature.edgeKeys) && feature.edgeKeys.length > 0
-            ? `${feature.edgeKeys.length} edge${feature.edgeKeys.length === 1 ? '' : 's'} selected`
-            : 'Click to choose edges'),
-        showSelectionList: !!filletEditMode,
-        helperText: 'Click to pick edges or faces in the viewport',
-        onActivate: () => this._editFilletEdges(feature),
-      }));
-      if (filletEditMode) {
-        container.appendChild(this._buildFeatureEditActionRow(
-          () => this._acceptFillet(),
-          () => this._cancelFillet()
-        ));
+            this._partManager.modifyFeature(feature.id, (f) => {
+              if (typeof f.setOcctSpec === 'function') f.setOcctSpec(spec);
+              else f.occtSpec = spec;
+            });
+            this._update3DView();
+          },
+          rerender: () => {
+            if (filletEditMode) {
+              this._showLeftFeatureParams(feature);
+              this._updateFilletPreview();
+              return;
+            }
+            this._refreshFeaturePanels(feature);
+          },
+          reportError: (message) => this.setStatus(`Invalid OCCT fillet input: ${message}`),
+        });
+        this._appendBlendPreviewError(container, filletEditMode?.mode?.previewError || null);
+        container.appendChild(this._buildInlineSelectionField(filletTarget, {
+          summaryText: filletEditMode
+            ? this._describeFeatureSelectionSummary(filletTarget)
+            : (Array.isArray(feature.edgeKeys) && feature.edgeKeys.length > 0
+              ? `${feature.edgeKeys.length} edge${feature.edgeKeys.length === 1 ? '' : 's'} selected`
+              : 'Click to choose edges'),
+          showSelectionList: !!filletEditMode,
+          helperText: 'Click to pick edges or faces in the viewport',
+          onActivate: () => this._editFilletEdges(feature),
+        }));
+        if (filletEditMode) {
+          container.appendChild(this._buildFeatureEditActionRow(
+            () => this._acceptFillet(),
+            () => this._cancelFillet()
+          ));
+        }
       }
     }
 
@@ -7608,6 +7789,7 @@ class App {
       this._historyTree.isLocked = () => this._isEditingFeature();
       this._historyTree.onFeatureSelect = (feature) => {
         if (feature && feature.type === 'sketch') this._lastSketchFeatureId = feature.id;
+        this._maybeEnterBlendAutoEdit(feature);
         this._parametersPanel.showFeature(feature);
         this._showLeftFeatureParams(feature);
       };
@@ -7637,6 +7819,7 @@ class App {
       if (feature && feature.type === 'sketch') {
         this._lastSketchFeatureId = feature.id;
       }
+      this._maybeEnterBlendAutoEdit(feature);
       this._parametersPanel.showFeature(feature);
       this._showLeftFeatureParams(feature);
     });
@@ -14880,6 +15063,8 @@ class App {
     this._chamferMode = {
       edgeKeys: [],
       distance: 1,
+      occtSpec: null,
+      previewError: null,
       editingFeatureId: null,
       panelMode: 'standalone',
     };
@@ -14899,9 +15084,10 @@ class App {
     this.setStatus('Chamfer: Click edges to select, then adjust distance and accept.');
   }
 
-  _showChamferUI() {
+  _showChamferUI(options = {}) {
     const container = document.getElementById('left-feature-params-content');
     if (!container || !this._chamferMode) return;
+    const { skipPreviewUpdate = false } = options;
     container.innerHTML = '';
 
     const cm = this._chamferMode;
@@ -14919,34 +15105,33 @@ class App {
     // Selection list
     container.appendChild(this._buildEdgeSelectionList());
 
-    // Distance
-    container.appendChild(this._createParamRow('Distance', 'number', cm.distance, (v) => {
-      const parsed = parseFloat(v);
-      if (!isNaN(parsed) && parsed > 0) {
-        cm.distance = parsed;
+    appendChamferBlendControls({
+      container,
+      feature: { occtSpec: cm.occtSpec ?? null },
+      baseDistance: cm.distance,
+      setBaseDistance: (distance) => {
+        cm.distance = distance;
         this._updateChamferPreview();
-      }
-    }));
+      },
+      applySpec: (spec) => {
+        cm.occtSpec = cloneBlendDraftValue(spec);
+        this._updateChamferPreview();
+      },
+      rerender: () => {
+        this._showChamferUI();
+      },
+      reportError: (message) => this.setStatus(`Invalid OCCT chamfer input: ${message}`),
+    });
 
-    // Accept / Cancel
-    const btnRow = document.createElement('div');
-    btnRow.style.cssText = 'display:flex;gap:8px;margin-top:12px;padding:0 4px';
-    const acceptBtn = document.createElement('button');
-    acceptBtn.textContent = 'Accept';
-    acceptBtn.className = 'param-btn accept';
-    acceptBtn.style.cssText = 'flex:1;padding:6px;background:#4caf50;color:#fff;border:none;border-radius:4px;cursor:pointer';
-    acceptBtn.addEventListener('click', () => this._acceptChamfer());
-    const cancelBtn = document.createElement('button');
-    cancelBtn.textContent = 'Cancel';
-    cancelBtn.className = 'param-btn cancel';
-    cancelBtn.style.cssText = 'flex:1;padding:6px;background:#f44336;color:#fff;border:none;border-radius:4px;cursor:pointer';
-    cancelBtn.addEventListener('click', () => this._cancelChamfer());
-    btnRow.appendChild(acceptBtn);
-    btnRow.appendChild(cancelBtn);
-    container.appendChild(btnRow);
+    this._appendBlendPreviewError(container, cm.previewError);
+
+    container.appendChild(this._buildFeatureEditActionRow(
+      () => this._acceptChamfer(),
+      () => this._cancelChamfer()
+    ));
 
     // Trigger preview update when edges change
-    this._updateChamferPreview();
+    if (!skipPreviewUpdate) this._updateChamferPreview();
   }
 
   async _acceptChamfer() {
@@ -14960,9 +15145,17 @@ class App {
       this.setStatus('Select at least one edge for chamfer.');
       return;
     }
+    if (cm.previewError) {
+      this.setStatus(cm.previewError);
+      return;
+    }
 
     const part = this._partManager?.getPart?.();
-    const baseResult = part?.getFinalGeometry?.() || null;
+    const baseResult = part
+      ? (cm.editingFeatureId
+        ? part.getGeometryBeforeFeature(cm.editingFeatureId)
+        : part.getFinalGeometry())
+      : null;
     const selectionContext = baseResult?.solid || (baseResult?.geometry
       ? {
         geometry: baseResult.geometry,
@@ -14978,6 +15171,7 @@ class App {
         }
       }
       if (cm.editingFeatureId) {
+        takeSnapshot();
         // Update existing feature
         this._partManager.modifyFeature(cm.editingFeatureId, (f) => {
           f.distance = cm.distance;
@@ -14996,27 +15190,25 @@ class App {
               : [];
             f.setOcctEdgeRefs(resolvedEdgeRefs);
           }
+          if (typeof f.setOcctSpec === 'function') {
+            f.setOcctSpec(cm.occtSpec ?? null);
+          } else {
+            f.occtSpec = cloneBlendDraftValue(cm.occtSpec);
+          }
         });
       } else {
-        this._partManager.chamfer(edgeKeys, cm.distance, { selectionContext });
+        this._partManager.chamfer(edgeKeys, cm.distance, {
+          selectionContext,
+          occtSpec: cm.occtSpec ?? null,
+        });
       }
       this._recorder.chamferCreated(edgeKeys, cm.distance);
       this._exitChamferMode();
-      if (!isInline) {
-        this._deselectAll();
-      }
       this._featurePanel.update();
+      this._deselectAll();
       this._updateNodeTree();
       this._update3DView();
       this._updateOperationButtons();
-      if (isInline && editedFeatureId) {
-        const editedFeature = this._getPartFeatureById(editedFeatureId);
-        if (editedFeature) {
-          if (this._featurePanel) this._featurePanel.selectFeature(editedFeature.id);
-          if (this._renderer3d) this._renderer3d.setSelectedFeature(editedFeature.id);
-          this._showLeftFeatureParams(editedFeature);
-        }
-      }
       this.setStatus(`Chamfer: ${cm.distance} units on ${edgeKeys.length} edge(s)`);
     } catch (err) {
       this.setStatus(`Chamfer failed: ${err.message}`);
@@ -15029,19 +15221,52 @@ class App {
     const baseResult = part.getFinalGeometry();
     if (!baseResult?.geometry || !baseResult?.occtCheckpoint) return false;
 
-    const feature = this._partManager.buildChamferFeature(edgeKeys, cm.distance, { selectionContext });
-    if (!feature) return false;
-
     const selectionContext = baseResult.solid || {
       geometry: baseResult.geometry,
       body: baseResult.body || baseResult.geometry?.topoBody || null,
     };
+
+    const feature = this._partManager.buildChamferFeature(edgeKeys, cm.distance, {
+      selectionContext,
+      occtSpec: cm.occtSpec ?? null,
+    });
+    if (!feature) return false;
     const resolvedEdgeKeys = feature._resolveSelectedEdgeKeys(selectionContext);
     const edgeRefs = Array.isArray(feature.occtEdgeRefs) && feature.occtEdgeRefs.length > 0
       ? [...feature.occtEdgeRefs]
       : feature._resolveSelectedOcctEdgeRefs(selectionContext, resolvedEdgeKeys);
     if (!Array.isArray(edgeRefs) || edgeRefs.length === 0) {
       return false;
+    }
+
+    const previewCacheKey = this._buildChamferPreviewCacheKey(
+      baseResult,
+      resolvedEdgeKeys,
+      cm.distance,
+      cm.editingFeatureId || null,
+      cm.occtSpec ?? null,
+    );
+    if (this._chamferPreviewCache?.key === previewCacheKey
+      && this._chamferPreviewCache?.result
+      && this._chamferPreviewCache?.result?.geometry?._occtPreviewFast !== true) {
+      this._recorder.chamferCreated(edgeKeys, cm.distance);
+      this._exitChamferMode({ preserveGhostPreview: true });
+      const committed = this._partManager.commitPreparedFeature(feature, this._chamferPreviewCache.result);
+      if (this._renderer3d) {
+        this._renderer3d.clearGhostPreview();
+      }
+      if (this._featurePanel) {
+        this._featurePanel.update();
+      }
+      this._deselectAll();
+      this._updateNodeTree();
+      this._update3DView();
+      this._updateOperationButtons();
+      this._scheduleRender();
+      this.setStatus(`Chamfer: ${cm.distance} units on ${edgeKeys.length} edge(s)`);
+      this._chamferPreviewCache = null;
+      this._pendingAsyncChamfer = null;
+      return true;
     }
 
     const requestToken = `${feature.id}:${Date.now()}`;
@@ -15052,7 +15277,7 @@ class App {
     };
 
     this._recorder.chamferCreated(edgeKeys, cm.distance);
-    this._exitChamferMode();
+    this._exitChamferMode({ preserveGhostPreview: true });
     this._deselectAll();
     this._beginCadTaskLock(`Applying exact chamfer: distance ${cm.distance} on ${edgeKeys.length} edge(s)...`);
 
@@ -15067,6 +15292,7 @@ class App {
         distance: cm.distance,
         spec: feature.buildOcctSpec(edgeRefs),
         sourceTopology: baseResult.geometry?._occtModeling?.topology || null,
+        previewFast: true,
       });
       if (this._pendingAsyncChamfer?.token !== requestToken) {
         return true;
@@ -15084,21 +15310,17 @@ class App {
       const committed = this._partManager.commitPreparedFeature(feature, response.result);
       if (this._renderer3d) {
         this._renderer3d.clearGhostPreview();
-        this._renderer3d.setSelectedFeature(feature.id);
       }
       if (this._featurePanel) {
         this._featurePanel.update();
-        this._featurePanel.selectFeature(feature.id);
       }
-      const committedFeature = committed || this._getPartFeatureById(feature.id);
-      if (committedFeature) {
-        this._showLeftFeatureParams(committedFeature);
-      }
+      this._deselectAll();
       this._updateNodeTree();
       this._update3DView();
       this._updateOperationButtons();
       this._scheduleRender();
       this.setStatus(`Chamfer: ${cm.distance} units on ${edgeKeys.length} edge(s)`);
+      this._chamferPreviewCache = null;
       this._pendingAsyncChamfer = null;
       return true;
     } catch (err) {
@@ -15120,7 +15342,7 @@ class App {
     this._update3DView();
     this._updateOperationButtons();
     if (inlineFeature) {
-      if (this._featurePanel) this._featurePanel.selectFeature(inlineFeature.id);
+      this._selectFeatureWithoutBlendAutoEdit(inlineFeature.id);
       if (this._renderer3d) this._renderer3d.setSelectedFeature(inlineFeature.id);
       this._showLeftFeatureParams(inlineFeature);
       this.setStatus('Chamfer edit cancelled.');
@@ -15129,13 +15351,21 @@ class App {
     this.setStatus('Chamfer cancelled.');
   }
 
-  _exitChamferMode() {
+  _exitChamferMode(options = {}) {
+    const preserveGhostPreview = options.preserveGhostPreview === true;
     if (!this._chamferMode) return;
     const isInline = this._chamferMode.panelMode === 'inline';
+    this._chamferPreviewQueued = false;
+    this._chamferPreviewToken += 1;
+    if (!preserveGhostPreview) {
+      this._chamferPreviewCache = null;
+    }
     if (this._renderer3d) {
       this._renderer3d.setEdgeSelectionMode(false);
       this._renderer3d.clearEdgeSelection();
-      this._renderer3d.clearGhostPreview();
+      if (!preserveGhostPreview) {
+        this._renderer3d.clearGhostPreview();
+      }
       this._renderer3d.setHoveredEdge(-1);
       this._renderer3d.setHoveredFace(-1);
     }
@@ -15164,6 +15394,8 @@ class App {
     this._filletMode = {
       edgeKeys: [],
       radius: 1,
+      occtSpec: null,
+      previewError: null,
       editingFeatureId: null,
       panelMode: 'standalone',
     };
@@ -15183,9 +15415,10 @@ class App {
     this.setStatus('Fillet: Click edges to select, then adjust radius and accept.');
   }
 
-  _showFilletUI() {
+  _showFilletUI(options = {}) {
     const container = document.getElementById('left-feature-params-content');
     if (!container || !this._filletMode) return;
+    const { skipPreviewUpdate = false } = options;
     container.innerHTML = '';
 
     const fm = this._filletMode;
@@ -15203,34 +15436,33 @@ class App {
     // Selection list
     container.appendChild(this._buildEdgeSelectionList());
 
-    // Radius
-    container.appendChild(this._createParamRow('Radius', 'number', fm.radius, (v) => {
-      const parsed = parseFloat(v);
-      if (!isNaN(parsed) && parsed > 0) {
-        fm.radius = parsed;
+    appendFilletBlendControls({
+      container,
+      feature: { occtSpec: fm.occtSpec ?? null },
+      baseRadius: fm.radius,
+      setBaseRadius: (radius) => {
+        fm.radius = radius;
         this._updateFilletPreview();
-      }
-    }));
+      },
+      applySpec: (spec) => {
+        fm.occtSpec = cloneBlendDraftValue(spec);
+        this._updateFilletPreview();
+      },
+      rerender: () => {
+        this._showFilletUI();
+      },
+      reportError: (message) => this.setStatus(`Invalid OCCT fillet input: ${message}`),
+    });
 
-    // Accept / Cancel
-    const btnRow = document.createElement('div');
-    btnRow.style.cssText = 'display:flex;gap:8px;margin-top:12px;padding:0 4px';
-    const acceptBtn = document.createElement('button');
-    acceptBtn.textContent = 'Accept';
-    acceptBtn.className = 'param-btn accept';
-    acceptBtn.style.cssText = 'flex:1;padding:6px;background:#4caf50;color:#fff;border:none;border-radius:4px;cursor:pointer';
-    acceptBtn.addEventListener('click', () => this._acceptFillet());
-    const cancelBtn = document.createElement('button');
-    cancelBtn.textContent = 'Cancel';
-    cancelBtn.className = 'param-btn cancel';
-    cancelBtn.style.cssText = 'flex:1;padding:6px;background:#f44336;color:#fff;border:none;border-radius:4px;cursor:pointer';
-    cancelBtn.addEventListener('click', () => this._cancelFillet());
-    btnRow.appendChild(acceptBtn);
-    btnRow.appendChild(cancelBtn);
-    container.appendChild(btnRow);
+    this._appendBlendPreviewError(container, fm.previewError);
+
+    container.appendChild(this._buildFeatureEditActionRow(
+      () => this._acceptFillet(),
+      () => this._cancelFillet()
+    ));
 
     // Trigger preview update when edges change
-    this._updateFilletPreview();
+    if (!skipPreviewUpdate) this._updateFilletPreview();
   }
 
   async _acceptFillet() {
@@ -15244,9 +15476,17 @@ class App {
       this.setStatus('Select at least one edge for fillet.');
       return;
     }
+    if (fm.previewError) {
+      this.setStatus(fm.previewError);
+      return;
+    }
 
     const part = this._partManager?.getPart?.();
-    const baseResult = part?.getFinalGeometry?.() || null;
+    const baseResult = part
+      ? (fm.editingFeatureId
+        ? part.getGeometryBeforeFeature(fm.editingFeatureId)
+        : part.getFinalGeometry())
+      : null;
     const selectionContext = baseResult?.solid || (baseResult?.geometry
       ? {
         geometry: baseResult.geometry,
@@ -15263,6 +15503,7 @@ class App {
         }
       }
       if (fm.editingFeatureId) {
+        takeSnapshot();
         // Update existing feature
         this._partManager.modifyFeature(fm.editingFeatureId, (f) => {
           if (typeof f.setRadius === 'function') {
@@ -15290,27 +15531,26 @@ class App {
               : [];
             f.setOcctEdgeRefs(resolvedEdgeRefs);
           }
+          if (typeof f.setOcctSpec === 'function') {
+            f.setOcctSpec(fm.occtSpec ?? null);
+          } else {
+            f.occtSpec = cloneBlendDraftValue(fm.occtSpec);
+          }
         });
       } else {
-        this._partManager.fillet(edgeKeys, fm.radius, { segments, selectionContext });
+        this._partManager.fillet(edgeKeys, fm.radius, {
+          segments,
+          selectionContext,
+          occtSpec: fm.occtSpec ?? null,
+        });
       }
       this._recorder.filletCreated(edgeKeys, fm.radius, segments);
       this._exitFilletMode();
-      if (!isInline) {
-        this._deselectAll();
-      }
       this._featurePanel.update();
+      this._deselectAll();
       this._updateNodeTree();
       this._update3DView();
       this._updateOperationButtons();
-      if (isInline && editedFeatureId) {
-        const editedFeature = this._getPartFeatureById(editedFeatureId);
-        if (editedFeature) {
-          if (this._featurePanel) this._featurePanel.selectFeature(editedFeature.id);
-          if (this._renderer3d) this._renderer3d.setSelectedFeature(editedFeature.id);
-          this._showLeftFeatureParams(editedFeature);
-        }
-      }
       this.setStatus(`Fillet: radius ${fm.radius} on ${edgeKeys.length} edge(s)`);
     } catch (err) {
       this.setStatus(`Fillet failed: ${err.message}`);
@@ -15325,7 +15565,7 @@ class App {
     this._update3DView();
     this._updateOperationButtons();
     if (inlineFeature) {
-      if (this._featurePanel) this._featurePanel.selectFeature(inlineFeature.id);
+      this._selectFeatureWithoutBlendAutoEdit(inlineFeature.id);
       if (this._renderer3d) this._renderer3d.setSelectedFeature(inlineFeature.id);
       this._showLeftFeatureParams(inlineFeature);
       this.setStatus('Fillet edit cancelled.');
@@ -15338,6 +15578,11 @@ class App {
     const preserveGhostPreview = options.preserveGhostPreview === true;
     if (!this._filletMode) return;
     const isInline = this._filletMode.panelMode === 'inline';
+    this._filletPreviewQueued = false;
+    this._filletPreviewToken += 1;
+    if (!preserveGhostPreview) {
+      this._filletPreviewCache = null;
+    }
     if (this._renderer3d) {
       this._renderer3d.setEdgeSelectionMode(false);
       this._renderer3d.clearEdgeSelection();
@@ -15365,25 +15610,86 @@ class App {
     return this._occtBlendWorker;
   }
 
+  _buildChamferPreviewCacheKey(baseResult, edgeKeys, distance, editingFeatureId = null, occtSpec = null) {
+    return JSON.stringify({
+      revisionId: baseResult?.exactBodyRevisionId || null,
+      edgeKeys: Array.isArray(edgeKeys) ? edgeKeys : [],
+      distance: Number.isFinite(distance) ? distance : 0,
+      editingFeatureId: editingFeatureId || null,
+      spec: serializeBlendDraftSpec(occtSpec),
+    });
+  }
+
+  _buildFilletPreviewCacheKey(baseResult, edgeKeys, radius, segments, editingFeatureId = null, occtSpec = null) {
+    return JSON.stringify({
+      revisionId: baseResult?.exactBodyRevisionId || null,
+      edgeKeys: Array.isArray(edgeKeys) ? edgeKeys : [],
+      radius: Number.isFinite(radius) ? radius : 0,
+      segments: Number.isFinite(segments) ? segments : 0,
+      editingFeatureId: editingFeatureId || null,
+      spec: serializeBlendDraftSpec(occtSpec),
+    });
+  }
+
+  _commitAcceptedFilletFeature(feature, result, fm, edgeKeys) {
+    const committed = this._partManager.commitPreparedFeature(feature, result);
+    if (this._renderer3d) {
+      this._renderer3d.clearGhostPreview();
+    }
+    if (this._featurePanel) {
+      this._featurePanel.update();
+    }
+    this._deselectAll();
+    this._updateNodeTree();
+    this._update3DView();
+    this._updateOperationButtons();
+    this._scheduleRender();
+    this.setStatus(`Fillet: radius ${fm.radius} on ${edgeKeys.length} edge(s)`);
+    this._filletPreviewCache = null;
+    this._pendingAsyncFillet = null;
+    return committed || this._getPartFeatureById(feature.id);
+  }
+
   async _acceptFilletAsync(edgeKeys, fm, segments) {
     const part = this._partManager?.getPart?.();
     if (!part) return false;
     const baseResult = part.getFinalGeometry();
     if (!baseResult?.geometry || !baseResult?.occtCheckpoint) return false;
 
-    const feature = this._partManager.buildFilletFeature(edgeKeys, fm.radius, { segments, selectionContext });
-    if (!feature) return false;
-
     const selectionContext = baseResult.solid || {
       geometry: baseResult.geometry,
       body: baseResult.body || baseResult.geometry?.topoBody || null,
     };
+
+    const feature = this._partManager.buildFilletFeature(edgeKeys, fm.radius, {
+      segments,
+      selectionContext,
+      occtSpec: fm.occtSpec ?? null,
+    });
+    if (!feature) return false;
     const resolvedEdgeKeys = feature._resolveSelectedEdgeKeys(selectionContext, feature);
     const edgeRefs = Array.isArray(feature.occtEdgeRefs) && feature.occtEdgeRefs.length > 0
       ? [...feature.occtEdgeRefs]
       : feature._resolveSelectedOcctEdgeRefs(selectionContext, resolvedEdgeKeys, feature);
     if (!Array.isArray(edgeRefs) || edgeRefs.length === 0) {
       return false;
+    }
+
+    const previewCacheKey = this._buildFilletPreviewCacheKey(
+      baseResult,
+      resolvedEdgeKeys,
+      fm.radius,
+      segments,
+      fm.editingFeatureId || null,
+      fm.occtSpec ?? null,
+    );
+    if (this._filletPreviewCache?.key === previewCacheKey
+      && this._filletPreviewCache?.result
+      && this._filletPreviewCache?.result?.geometry?._occtPreviewFast !== true) {
+      this._recorder.filletCreated(edgeKeys, fm.radius, segments);
+      this._exitFilletMode({ preserveGhostPreview: true });
+      this._commitAcceptedFilletFeature(feature, this._filletPreviewCache.result, fm, edgeKeys);
+      return true;
     }
 
     const requestToken = `${feature.id}:${Date.now()}`;
@@ -15409,6 +15715,7 @@ class App {
         radius: fm.radius,
         spec: feature.buildOcctSpec(edgeRefs),
         sourceTopology: baseResult.geometry?._occtModeling?.topology || null,
+        previewFast: true,
       });
       if (this._pendingAsyncFillet?.token !== requestToken) {
         return true;
@@ -15423,25 +15730,7 @@ class App {
         return true;
       }
 
-      const committed = this._partManager.commitPreparedFeature(feature, response.result);
-      if (this._renderer3d) {
-        this._renderer3d.clearGhostPreview();
-        this._renderer3d.setSelectedFeature(feature.id);
-      }
-      if (this._featurePanel) {
-        this._featurePanel.update();
-        this._featurePanel.selectFeature(feature.id);
-      }
-      const committedFeature = committed || this._getPartFeatureById(feature.id);
-      if (committedFeature) {
-        this._showLeftFeatureParams(committedFeature);
-      }
-      this._updateNodeTree();
-      this._update3DView();
-      this._updateOperationButtons();
-      this._scheduleRender();
-      this.setStatus(`Fillet: radius ${fm.radius} on ${edgeKeys.length} edge(s)`);
-      this._pendingAsyncFillet = null;
+      this._commitAcceptedFilletFeature(feature, response.result, fm, edgeKeys);
       return true;
     } catch (err) {
       if (this._renderer3d) this._renderer3d.clearGhostPreview();
@@ -15672,67 +15961,309 @@ class App {
   // -----------------------------------------------------------------------
 
   /** Compute and display a live preview of the chamfer result. */
-  _updateChamferPreview() {
-    if (!this._chamferMode || !this._renderer3d) return;
-    const cm = this._chamferMode;
-    const edgeKeys = this._renderer3d.getSelectedEdgeKeys();
-    if (edgeKeys.length === 0) {
-      this._renderer3d.clearGhostPreview();
-      this._scheduleRender();
+  async _updateChamferPreview() {
+    if (this._chamferPreviewRunning) {
+      this._chamferPreviewQueued = true;
       return;
     }
-
-    const part = this._partManager.getPart();
-    if (!part) return;
-
-    // Get base geometry (before this feature for edits, or current for new)
-    let baseResult;
-    if (cm.editingFeatureId) {
-      baseResult = part.getGeometryBeforeFeature(cm.editingFeatureId);
-    } else {
-      baseResult = part.getFinalGeometry();
-    }
-    if (!baseResult || !baseResult.geometry) return;
+    this._chamferPreviewRunning = true;
+    const cm = this._chamferMode;
 
     try {
+      if (!this._chamferMode || !this._renderer3d) return;
+      const edgeKeys = this._renderer3d.getSelectedEdgeKeys();
+      if (edgeKeys.length === 0) {
+        this._clearChamferPreviewError(cm);
+        this._renderer3d.clearGhostPreview();
+        this._scheduleRender();
+        return;
+      }
+
+      const part = this._partManager.getPart();
+      if (!part) return;
+
+      let baseResult;
+      if (cm.editingFeatureId) {
+        baseResult = part.getGeometryBeforeFeature(cm.editingFeatureId);
+      } else {
+        baseResult = part.getFinalGeometry();
+      }
+      if (!baseResult || !baseResult.geometry) return;
+
       const resolvedKeys = expandPathEdgeKeys(baseResult.geometry, edgeKeys);
-      const preview = applyChamfer(baseResult.geometry, resolvedKeys, cm.distance);
-      this._renderer3d.setGhostPreview(preview);
+      const preview = !cm.occtSpec
+        ? applyChamfer(baseResult.geometry, resolvedKeys, cm.distance)
+        : null;
+      if (preview?.faces?.length) {
+        this._clearChamferPreviewError(cm);
+        this._chamferPreviewCache = null;
+        this._renderer3d.setGhostPreview(preview);
+        this._scheduleRender();
+        return;
+      }
+
+      if (!baseResult.occtCheckpoint) {
+        this._setChamferPreviewError(cm, 'Chamfer preview failed. Cannot accept the current parameters.');
+        return;
+      }
+
+      const selectionContext = baseResult.solid || {
+        geometry: baseResult.geometry,
+        body: baseResult.body || baseResult.geometry?.topoBody || null,
+      };
+      const feature = this._partManager.buildChamferFeature(edgeKeys, cm.distance, {
+        selectionContext,
+        occtSpec: cm.occtSpec ?? null,
+      });
+      if (!feature) {
+        this._setChamferPreviewError(cm, 'Chamfer preview failed. Cannot accept the current parameters.');
+        return;
+      }
+      const resolvedEdgeKeys = feature._resolveSelectedEdgeKeys(selectionContext);
+      const edgeRefs = Array.isArray(feature.occtEdgeRefs) && feature.occtEdgeRefs.length > 0
+        ? [...feature.occtEdgeRefs]
+        : feature._resolveSelectedOcctEdgeRefs(selectionContext, resolvedEdgeKeys);
+      if (!Array.isArray(edgeRefs) || edgeRefs.length === 0) {
+        this._setChamferPreviewError(cm, 'Chamfer preview failed. Cannot accept the current parameters.');
+        return;
+      }
+
+      const previewCacheKey = this._buildChamferPreviewCacheKey(
+        baseResult,
+        resolvedEdgeKeys,
+        cm.distance,
+        cm.editingFeatureId || null,
+        cm.occtSpec ?? null,
+      );
+      if (this._chamferPreviewCache?.key === previewCacheKey && this._chamferPreviewCache?.result?.geometry?.faces?.length) {
+        this._clearChamferPreviewError(cm);
+        this._renderer3d.setGhostPreview(this._chamferPreviewCache.result.geometry);
+        this._scheduleRender();
+        return;
+      }
+
+      const requestToken = ++this._chamferPreviewToken;
+      const worker = this._getOcctBlendWorker();
+      const response = await worker.dispatch({
+        op: 'occt-chamfer',
+        checkpoint: baseResult.occtCheckpoint,
+        meshSnapshot: baseResult.geometry,
+        edgeKeys: resolvedEdgeKeys,
+        edgeRefs,
+        distance: cm.distance,
+        spec: feature.buildOcctSpec(edgeRefs),
+        sourceTopology: baseResult.geometry?._occtModeling?.topology || null,
+      });
+      if (requestToken !== this._chamferPreviewToken || !this._chamferMode || this._chamferMode !== cm) return;
+
+      const currentPart = this._partManager.getPart();
+      const currentBase = currentPart
+        ? (cm.editingFeatureId
+          ? currentPart.getGeometryBeforeFeature(cm.editingFeatureId)
+          : currentPart.getFinalGeometry())
+        : null;
+      const currentEdgeKeys = this._renderer3d ? this._renderer3d.getSelectedEdgeKeys() : [];
+      const currentSelectionContext = currentBase?.solid || (currentBase?.geometry
+        ? {
+          geometry: currentBase.geometry,
+          body: currentBase.body || currentBase.geometry?.topoBody || null,
+        }
+        : null);
+      const currentFeature = currentSelectionContext
+        ? this._partManager.buildChamferFeature(currentEdgeKeys, this._chamferMode?.distance, {
+          selectionContext: currentSelectionContext,
+          occtSpec: this._chamferMode?.occtSpec ?? null,
+        })
+        : null;
+      const currentResolvedKeys = currentFeature
+        ? currentFeature._resolveSelectedEdgeKeys(currentSelectionContext)
+        : [];
+      const currentPreviewKey = this._buildChamferPreviewCacheKey(
+        currentBase,
+        currentResolvedKeys,
+        this._chamferMode?.distance,
+        this._chamferMode?.editingFeatureId || null,
+        this._chamferMode?.occtSpec ?? null,
+      );
+      if (currentPreviewKey !== previewCacheKey) return;
+
+      const previewGeometry = response?.result?.geometry || response?.result?.solid?.geometry || null;
+      if (!previewGeometry?.faces?.length) {
+        this._setChamferPreviewError(cm, 'Chamfer preview failed. Cannot accept the current parameters.');
+        return;
+      }
+      this._clearChamferPreviewError(cm);
+      this._chamferPreviewCache = {
+        key: previewCacheKey,
+        result: response.result,
+      };
+      this._renderer3d.setGhostPreview(previewGeometry);
       this._scheduleRender();
-    } catch (_) {
-      // Preview computation failed — leave current view
+    } catch (error) {
+      const detail = error?.message ? `: ${error.message}` : '';
+      this._setChamferPreviewError(cm, `Chamfer preview failed. Cannot accept the current parameters${detail}`);
+    } finally {
+      this._chamferPreviewRunning = false;
+      if (this._chamferPreviewQueued) {
+        this._chamferPreviewQueued = false;
+        this._updateChamferPreview();
+      }
     }
   }
 
   /** Compute and display a live preview of the fillet result. */
-  _updateFilletPreview() {
-    if (!this._filletMode || !this._renderer3d) return;
-    const fm = this._filletMode;
-    const edgeKeys = this._renderer3d.getSelectedEdgeKeys();
-    if (edgeKeys.length === 0) {
-      this._renderer3d.clearGhostPreview();
-      this._scheduleRender();
+  async _updateFilletPreview() {
+    if (this._filletPreviewRunning) {
+      this._filletPreviewQueued = true;
       return;
     }
-
-    const part = this._partManager.getPart();
-    if (!part) return;
-
-    let baseResult;
-    if (fm.editingFeatureId) {
-      baseResult = part.getGeometryBeforeFeature(fm.editingFeatureId);
-    } else {
-      baseResult = part.getFinalGeometry();
-    }
-    if (!baseResult || !baseResult.geometry) return;
+    this._filletPreviewRunning = true;
+    const fm = this._filletMode;
 
     try {
+      if (!this._filletMode || !this._renderer3d) return;
+      const edgeKeys = this._renderer3d.getSelectedEdgeKeys();
+      if (edgeKeys.length === 0) {
+        this._clearFilletPreviewError(fm);
+        this._renderer3d.clearGhostPreview();
+        this._scheduleRender();
+        return;
+      }
+
+      const part = this._partManager.getPart();
+      if (!part) return;
+
+      let baseResult;
+      if (fm.editingFeatureId) {
+        baseResult = part.getGeometryBeforeFeature(fm.editingFeatureId);
+      } else {
+        baseResult = part.getFinalGeometry();
+      }
+      if (!baseResult || !baseResult.geometry) return;
+
+      const segments = this._getTessellationDrivenCurveSegments();
       const resolvedKeys = expandPathEdgeKeys(baseResult.geometry, edgeKeys);
-      const preview = applyFillet(baseResult.geometry, resolvedKeys, fm.radius, this._getTessellationDrivenCurveSegments());
-      this._renderer3d.setGhostPreview(preview);
+      const preview = !fm.occtSpec
+        ? applyFillet(baseResult.geometry, resolvedKeys, fm.radius, segments)
+        : null;
+      if (preview?.faces?.length) {
+        this._clearFilletPreviewError(fm);
+        this._filletPreviewCache = null;
+        this._renderer3d.setGhostPreview(preview);
+        this._scheduleRender();
+        return;
+      }
+
+      if (!baseResult.occtCheckpoint) {
+        this._setFilletPreviewError(fm, 'Fillet preview failed. Cannot accept the current parameters.');
+        return;
+      }
+
+      const selectionContext = baseResult.solid || {
+        geometry: baseResult.geometry,
+        body: baseResult.body || baseResult.geometry?.topoBody || null,
+      };
+      const feature = this._partManager.buildFilletFeature(edgeKeys, fm.radius, {
+        segments,
+        selectionContext,
+        occtSpec: fm.occtSpec ?? null,
+      });
+      if (!feature) {
+        this._setFilletPreviewError(fm, 'Fillet preview failed. Cannot accept the current parameters.');
+        return;
+      }
+      const resolvedEdgeKeys = feature._resolveSelectedEdgeKeys(selectionContext, feature);
+      const edgeRefs = Array.isArray(feature.occtEdgeRefs) && feature.occtEdgeRefs.length > 0
+        ? [...feature.occtEdgeRefs]
+        : feature._resolveSelectedOcctEdgeRefs(selectionContext, resolvedEdgeKeys, feature);
+      if (!Array.isArray(edgeRefs) || edgeRefs.length === 0) {
+        this._setFilletPreviewError(fm, 'Fillet preview failed. Cannot accept the current parameters.');
+        return;
+      }
+
+      const previewCacheKey = this._buildFilletPreviewCacheKey(
+        baseResult,
+        resolvedEdgeKeys,
+        fm.radius,
+        segments,
+        fm.editingFeatureId || null,
+        fm.occtSpec ?? null,
+      );
+      if (this._filletPreviewCache?.key === previewCacheKey && this._filletPreviewCache?.result?.geometry?.faces?.length) {
+        this._clearFilletPreviewError(fm);
+        this._renderer3d.setGhostPreview(this._filletPreviewCache.result.geometry);
+        this._scheduleRender();
+        return;
+      }
+
+      const requestToken = ++this._filletPreviewToken;
+      const worker = this._getOcctBlendWorker();
+      const response = await worker.dispatch({
+        op: 'occt-fillet',
+        checkpoint: baseResult.occtCheckpoint,
+        meshSnapshot: baseResult.geometry,
+        edgeKeys: resolvedEdgeKeys,
+        edgeRefs,
+        radius: fm.radius,
+        spec: feature.buildOcctSpec(edgeRefs),
+        sourceTopology: baseResult.geometry?._occtModeling?.topology || null,
+      });
+      if (requestToken !== this._filletPreviewToken || !this._filletMode || this._filletMode !== fm) return;
+
+      const currentPart = this._partManager.getPart();
+      const currentBase = currentPart
+        ? (fm.editingFeatureId
+          ? currentPart.getGeometryBeforeFeature(fm.editingFeatureId)
+          : currentPart.getFinalGeometry())
+        : null;
+      const currentEdgeKeys = this._renderer3d ? this._renderer3d.getSelectedEdgeKeys() : [];
+      const currentSelectionContext = currentBase?.solid || (currentBase?.geometry
+        ? {
+          geometry: currentBase.geometry,
+          body: currentBase.body || currentBase.geometry?.topoBody || null,
+        }
+        : null);
+      const currentFeature = currentSelectionContext
+        ? this._partManager.buildFilletFeature(currentEdgeKeys, this._filletMode?.radius, {
+          segments,
+          selectionContext: currentSelectionContext,
+          occtSpec: this._filletMode?.occtSpec ?? null,
+        })
+        : null;
+      const currentResolvedKeys = currentFeature
+        ? currentFeature._resolveSelectedEdgeKeys(currentSelectionContext, currentFeature)
+        : [];
+      const currentPreviewKey = this._buildFilletPreviewCacheKey(
+        currentBase,
+        currentResolvedKeys,
+        this._filletMode?.radius,
+        segments,
+        this._filletMode?.editingFeatureId || null,
+        this._filletMode?.occtSpec ?? null,
+      );
+      if (currentPreviewKey !== previewCacheKey) return;
+
+      const previewGeometry = response?.result?.geometry || response?.result?.solid?.geometry || null;
+      if (!previewGeometry?.faces?.length) {
+        this._setFilletPreviewError(fm, 'Fillet preview failed. Cannot accept the current parameters.');
+        return;
+      }
+      this._clearFilletPreviewError(fm);
+      this._filletPreviewCache = {
+        key: previewCacheKey,
+        result: response.result,
+      };
+      this._renderer3d.setGhostPreview(previewGeometry);
       this._scheduleRender();
-    } catch (_) {
-      // Preview computation failed — leave current view
+    } catch (error) {
+      const detail = error?.message ? `: ${error.message}` : '';
+      this._setFilletPreviewError(fm, `Fillet preview failed. Cannot accept the current parameters${detail}`);
+    } finally {
+      this._filletPreviewRunning = false;
+      if (this._filletPreviewQueued) {
+        this._filletPreviewQueued = false;
+        this._updateFilletPreview();
+      }
     }
   }
 
@@ -15761,6 +16292,8 @@ class App {
       this._chamferMode = {
         edgeKeys: [...feature.edgeKeys],
         distance: feature.distance,
+        occtSpec: cloneBlendDraftValue(feature.occtSpec),
+        previewError: null,
         editingFeatureId: feature.id,
         panelMode: 'inline',
       };
@@ -15811,6 +16344,8 @@ class App {
       this._filletMode = {
         edgeKeys: [...feature.edgeKeys],
         radius: feature.radius,
+        occtSpec: cloneBlendDraftValue(feature.occtSpec),
+        previewError: null,
         editingFeatureId: feature.id,
         panelMode: 'inline',
       };

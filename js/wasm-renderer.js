@@ -255,6 +255,178 @@ function _appendLineSegment(out, first, second) {
   out.push(first.x, first.y, first.z, second.x, second.y, second.z);
 }
 
+function _appendDashedLineSegment(out, first, second, dashLength = 0.12, gapLength = 0.08) {
+  const dx = second.x - first.x;
+  const dy = second.y - first.y;
+  const dz = second.z - first.z;
+  const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+  if (len <= 1e-8) return;
+
+  const ux = dx / len;
+  const uy = dy / len;
+  const uz = dz / len;
+  const step = Math.max(dashLength + gapLength, 1e-6);
+
+  for (let distance = 0; distance < len; distance += step) {
+    const start = distance;
+    const end = Math.min(distance + dashLength, len);
+    if (end - start <= 1e-6) continue;
+    out.push(
+      first.x + ux * start,
+      first.y + uy * start,
+      first.z + uz * start,
+      first.x + ux * end,
+      first.y + uy * end,
+      first.z + uz * end,
+    );
+  }
+}
+
+function _makePreviewSegmentKey(first, second, precision = 5) {
+  const a = `${first.x.toFixed(precision)},${first.y.toFixed(precision)},${first.z.toFixed(precision)}`;
+  const b = `${second.x.toFixed(precision)},${second.y.toFixed(precision)},${second.z.toFixed(precision)}`;
+  return a < b ? `${a}|${b}` : `${b}|${a}`;
+}
+
+function _collectPreviewSegmentKeys(edges, out = new Set()) {
+  for (const edge of edges || []) {
+    const points = _getEdgePolylinePoints(edge);
+    for (let i = 1; i < points.length; i++) {
+      out.add(_makePreviewSegmentKey(points[i - 1], points[i]));
+    }
+  }
+  return out;
+}
+
+function _collectPreviewSegmentRecords(edges, out = []) {
+  for (const edge of edges || []) {
+    const points = _getEdgePolylinePoints(edge);
+    for (let i = 1; i < points.length; i++) {
+      const a = points[i - 1];
+      const b = points[i];
+      out.push({
+        a,
+        b,
+        key: _makePreviewSegmentKey(a, b),
+        minX: Math.min(a.x, b.x),
+        minY: Math.min(a.y, b.y),
+        minZ: Math.min(a.z, b.z),
+        maxX: Math.max(a.x, b.x),
+        maxY: Math.max(a.y, b.y),
+        maxZ: Math.max(a.z, b.z),
+      });
+    }
+  }
+  return out;
+}
+
+function _distancePointToSegment(point, start, end) {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const dz = end.z - start.z;
+  const lenSq = dx * dx + dy * dy + dz * dz;
+  if (lenSq <= 1e-12) {
+    const px = point.x - start.x;
+    const py = point.y - start.y;
+    const pz = point.z - start.z;
+    return Math.sqrt(px * px + py * py + pz * pz);
+  }
+  const t = Math.max(0, Math.min(1, (
+    (point.x - start.x) * dx +
+    (point.y - start.y) * dy +
+    (point.z - start.z) * dz
+  ) / lenSq));
+  const cx = start.x + dx * t;
+  const cy = start.y + dy * t;
+  const cz = start.z + dz * t;
+  const px = point.x - cx;
+  const py = point.y - cy;
+  const pz = point.z - cz;
+  return Math.sqrt(px * px + py * py + pz * pz);
+}
+
+function _segmentOverlapsExisting(first, second, existingSegments, tolerance = null) {
+  if (!Array.isArray(existingSegments) || existingSegments.length === 0) return false;
+  const dx = second.x - first.x;
+  const dy = second.y - first.y;
+  const dz = second.z - first.z;
+  const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+  if (len <= 1e-8) return true;
+
+  const tol = tolerance ?? Math.min(0.025, Math.max(0.0015, len * 0.04));
+  const minX = Math.min(first.x, second.x) - tol;
+  const minY = Math.min(first.y, second.y) - tol;
+  const minZ = Math.min(first.z, second.z) - tol;
+  const maxX = Math.max(first.x, second.x) + tol;
+  const maxY = Math.max(first.y, second.y) + tol;
+  const maxZ = Math.max(first.z, second.z) + tol;
+  const sampleCount = len > 0.5 ? 5 : len > 0.15 ? 4 : 3;
+
+  for (let index = 0; index < sampleCount; index++) {
+    const t = sampleCount === 1 ? 0.5 : index / (sampleCount - 1);
+    const sample = {
+      x: first.x + dx * t,
+      y: first.y + dy * t,
+      z: first.z + dz * t,
+    };
+    let matched = false;
+    for (const segment of existingSegments) {
+      if (segment.maxX < minX || segment.minX > maxX
+        || segment.maxY < minY || segment.minY > maxY
+        || segment.maxZ < minZ || segment.minZ > maxZ) {
+        continue;
+      }
+      if (_distancePointToSegment(sample, segment.a, segment.b) <= tol) {
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) return false;
+  }
+  return true;
+}
+
+function _buildPreviewEdgeBuffer(edges, options = {}) {
+  const {
+    excludeKeys = null,
+    excludeSegments = null,
+    overlapCache = null,
+    emittedKeys = null,
+    dashed = false,
+    dashLength = 0.12,
+    gapLength = 0.08,
+  } = options;
+
+  const data = [];
+  for (const edge of edges || []) {
+    const points = _getEdgePolylinePoints(edge);
+    for (let i = 1; i < points.length; i++) {
+      const a = points[i - 1];
+      const b = points[i];
+      const key = _makePreviewSegmentKey(a, b);
+      if (excludeKeys?.has(key) || emittedKeys?.has(key)) continue;
+      let overlaps = false;
+      if (overlapCache?.has(key)) {
+        overlaps = overlapCache.get(key) === true;
+      } else if (excludeSegments?.length) {
+        overlaps = _segmentOverlapsExisting(a, b, excludeSegments);
+        overlapCache?.set(key, overlaps);
+      }
+      if (overlaps) {
+        excludeKeys?.add(key);
+        continue;
+      }
+      emittedKeys?.add(key);
+      if (dashed) {
+        _appendDashedLineSegment(data, a, b, dashLength, gapLength);
+      } else {
+        _appendLineSegment(data, a, b);
+      }
+    }
+  }
+  return data.length > 0 ? new Float32Array(data) : null;
+}
+
 function _parseCamColor(color, fallback = [0.407, 0.655, 1.0, 0.18]) {
   if (typeof color !== 'string') return fallback;
   const hex = color.trim().replace(/^#/, '');
@@ -6158,6 +6330,20 @@ export class WasmRenderer {
         gl.bindVertexArray(null);
       }
 
+      if (this._ghostVisualEdges && this._ghostVisualEdgeVertexCount > 0) {
+        exec.setDepthTest(false);
+        gl.useProgram(exec.programs[1]);
+        gl.uniformMatrix4fv(exec.uniforms[1].uMVP, false, mvp);
+        gl.uniform4f(exec.uniforms[1].uColor, 0.4, 0.7, 1.0, 0.65);
+        gl.lineWidth(1.0);
+
+        gl.bindVertexArray(exec.vaoLine);
+        gl.bindBuffer(gl.ARRAY_BUFFER, exec.vbo);
+        gl.bufferData(gl.ARRAY_BUFFER, this._ghostVisualEdges, gl.DYNAMIC_DRAW);
+        gl.drawArrays(gl.LINES, 0, this._ghostVisualEdgeVertexCount);
+        gl.bindVertexArray(null);
+      }
+
       // Ghost silhouette edges (view-dependent outline on curved surfaces)
       if (this._ghostSilhouetteCandidates) {
         const ghostSilData = computeSilhouetteEdges(this._ghostSilhouetteCandidates, {
@@ -6663,14 +6849,59 @@ export class WasmRenderer {
       }
     }
 
-    const edgeData = new Float32Array(featureEdges.length * 2 * 3);
-    let ei = 0;
-    for (const e of featureEdges) {
-      edgeData[ei++] = e.a.x; edgeData[ei++] = e.a.y; edgeData[ei++] = e.a.z;
-      edgeData[ei++] = e.b.x; edgeData[ei++] = e.b.y; edgeData[ei++] = e.b.z;
+    const baseGeometry = this._meshRenderGeometry;
+    const baseSegmentKeys = new Set();
+    _collectPreviewSegmentKeys(baseGeometry?.edges, baseSegmentKeys);
+    _collectPreviewSegmentKeys(baseGeometry?.visualEdges, baseSegmentKeys);
+    const baseSegmentRecords = [];
+    _collectPreviewSegmentRecords(baseGeometry?.edges, baseSegmentRecords);
+    _collectPreviewSegmentRecords(baseGeometry?.visualEdges, baseSegmentRecords);
+    const emittedPreviewKeys = new Set();
+    const overlapCache = new Map();
+
+    let edgeData = null;
+    if (Array.isArray(geometry.edges) && geometry.edges.length > 0) {
+      edgeData = _buildPreviewEdgeBuffer(geometry.edges, {
+        excludeKeys: baseSegmentKeys,
+        excludeSegments: baseSegmentRecords,
+        overlapCache,
+        emittedKeys: emittedPreviewKeys,
+      });
+    }
+    if (!edgeData) {
+      const diffFeatureEdges = [];
+      for (const edge of featureEdges) {
+        const key = _makePreviewSegmentKey(edge.a, edge.b);
+        if (baseSegmentKeys.has(key) || emittedPreviewKeys.has(key)) continue;
+        if (_segmentOverlapsExisting(edge.a, edge.b, baseSegmentRecords)) {
+          baseSegmentKeys.add(key);
+          continue;
+        }
+        emittedPreviewKeys.add(key);
+        diffFeatureEdges.push(edge);
+      }
+      edgeData = new Float32Array(diffFeatureEdges.length * 2 * 3);
+      let ei = 0;
+      for (const e of diffFeatureEdges) {
+        edgeData[ei++] = e.a.x; edgeData[ei++] = e.a.y; edgeData[ei++] = e.a.z;
+        edgeData[ei++] = e.b.x; edgeData[ei++] = e.b.y; edgeData[ei++] = e.b.z;
+      }
     }
     this._ghostEdges = edgeData;
-    this._ghostEdgeVertexCount = featureEdges.length * 2;
+    this._ghostEdgeVertexCount = edgeData ? edgeData.length / 3 : 0;
+
+    let visualEdgeData = null;
+    if (Array.isArray(geometry.visualEdges) && geometry.visualEdges.length > 0) {
+      visualEdgeData = _buildPreviewEdgeBuffer(geometry.visualEdges, {
+        excludeKeys: baseSegmentKeys,
+        excludeSegments: baseSegmentRecords,
+        overlapCache,
+        emittedKeys: emittedPreviewKeys,
+        dashed: true,
+      });
+    }
+    this._ghostVisualEdges = visualEdgeData;
+    this._ghostVisualEdgeVertexCount = visualEdgeData ? visualEdgeData.length / 3 : 0;
 
     // Build silhouette candidates: smooth shared edges (non-feature, non-coplanar)
     // Store as flat array: [ax,ay,az, bx,by,bz, n0x,n0y,n0z, n1x,n1y,n1z] per candidate (12 floats)
@@ -6689,10 +6920,14 @@ export class WasmRenderer {
         }
       }
     }
-    this._ghostSilhouetteCandidates = silCandidates.length > 0 ? new Float32Array(silCandidates) : null;
+    this._ghostSilhouetteCandidates = baseSegmentKeys.size === 0 && silCandidates.length > 0
+      ? new Float32Array(silCandidates)
+      : null;
 
-    this._ghostVisualEdges = null;
-    this._ghostVisualEdgeVertexCount = 0;
+    if (!visualEdgeData) {
+      this._ghostVisualEdges = null;
+      this._ghostVisualEdgeVertexCount = 0;
+    }
   }
 
   /**
