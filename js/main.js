@@ -12556,6 +12556,16 @@ class App {
         if (this._isEditingFeature()) return;
         const plane = item.getAttribute('data-plane');
         if (!this._isOriginPlaneVisible(plane)) return;
+        if (this._awaitingSketchPlane) {
+          this._awaitingSketchPlane = false;
+          const btn = document.getElementById('btn-sketch-on-plane');
+          if (btn) btn.classList.remove('awaiting');
+          this._startSketchOnPlane(plane);
+          this._updateNodeTree();
+          this._updateOperationButtons();
+          this._scheduleRender();
+          return;
+        }
         if (this._selectedPlane === plane) {
           // Deselect
           this._selectedPlane = null;
