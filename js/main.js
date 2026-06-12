@@ -44,6 +44,7 @@ import { chamferSketchCorner, filletSketchCorner, union } from './cad/Operations
 import { motionAnalysis } from './motion.js';
 import { setFlag } from './featureFlags.js';
 import { loadOcctKernelModule } from './cad/occt/index.js';
+import { loadSketchToolkit } from './cad/occt/SketchToolkitLoader.js';
 import { WorkerDispatcher, OCCT_BLEND_WORKER_PATH } from './workers/index.js';
 import { traceImageDataContours } from './image/trace-raster.js';
 import { buildFittedTraceEntities, buildHybridTraceEntities } from './image/trace-fitting.js';
@@ -6364,26 +6365,38 @@ class App {
   /** Get all primitive IDs involved in a constraint */
   _constraintPrimIds(c) {
     const ids = new Set();
+    const addPointId = (point) => {
+      if (point?.id != null) ids.add(point.id);
+    };
+    const addShapeIds = (shape) => {
+      if (!shape) return;
+      if (shape.id != null) ids.add(shape.id);
+      addPointId(shape.p1);
+      addPointId(shape.p2);
+      addPointId(shape.center);
+      addPointId(shape.startPoint);
+      addPointId(shape.endPoint);
+    };
     if (c.type === 'dimension') {
       // Use source IDs and involved points
       if (c.sourceAId != null) ids.add(c.sourceAId);
       if (c.sourceBId != null) ids.add(c.sourceBId);
-      for (const pt of c.involvedPoints()) ids.add(pt.id);
+      for (const pt of c.involvedPoints?.() || []) addPointId(pt);
       return ids;
     }
-    if (c.ptA) ids.add(c.ptA.id);
-    if (c.ptB) ids.add(c.ptB.id);
-    if (c.pt) ids.add(c.pt.id);
-    if (c.seg) { ids.add(c.seg.id); ids.add(c.seg.p1.id); ids.add(c.seg.p2.id); }
-    if (c.segA) { ids.add(c.segA.id); ids.add(c.segA.p1.id); ids.add(c.segA.p2.id); }
-    if (c.segB) { ids.add(c.segB.id); ids.add(c.segB.p1.id); ids.add(c.segB.p2.id); }
-    if (c.circle) { ids.add(c.circle.id); if (c.circle.center) ids.add(c.circle.center.id); }
-    if (c.shape) { ids.add(c.shape.id); if (c.shape.center) ids.add(c.shape.center.id); }
-    if (c.center) ids.add(c.center.id);
+    addPointId(c.ptA);
+    addPointId(c.ptB);
+    addPointId(c.pt);
+    addShapeIds(c.seg);
+    addShapeIds(c.segA);
+    addShapeIds(c.segB);
+    addShapeIds(c.circle);
+    addShapeIds(c.shape);
+    addPointId(c.center);
     if (c.pairs) {
       for (const p of c.pairs) {
-        if (p.src) ids.add(p.src.id);
-        if (p.dst) ids.add(p.dst.id);
+        addPointId(p.src);
+        addPointId(p.dst);
       }
     }
     return ids;
@@ -17086,9 +17099,35 @@ const wasmReady = Promise.all([
       console.warn('[OCCT] kernel preload failed — sketch-solid replay will stay on the compatibility exact path', err?.message || String(err));
       return null;
     }),
+  loadSketchToolkit()
+    .then(() => console.log('[OCCT] sketch toolkit loaded'))
+    .catch((err) => {
+      console.error('[OCCT] sketch toolkit preload failed — the native sketch solver is mandatory', err?.message || String(err));
+      throw err;
+    }),
 ]);
-window.addEventListener('DOMContentLoaded', async () => {
+
+async function bootstrapApp() {
   await wasmReady;
   window.cadApp = new App();
   window.__modellerMainAppInitialized = true;
-});
+}
+
+function reportBootstrapFailure(error) {
+  console.error('[APP] startup failed', error);
+
+  const label = document.getElementById('startup-loading-label');
+  if (label) {
+    label.textContent = `Startup failed: ${error?.message || String(error)}`;
+  }
+}
+
+function startAppBootstrap() {
+  void bootstrapApp().catch(reportBootstrapFailure);
+}
+
+if (document.readyState === 'loading') {
+  window.addEventListener('DOMContentLoaded', startAppBootstrap, { once: true });
+} else {
+  startAppBootstrap();
+}

@@ -5,6 +5,8 @@ import './_watchdog.mjs';
 import { Scene } from '../js/cad/Scene.js';
 import { union } from '../js/cad/Operations.js';
 import { Horizontal, Vertical, Length } from '../js/cad/Constraint.js';
+import { state } from '../js/state.js';
+import { SelectTool } from '../js/tools/SelectTool.js';
 
 let passed = 0;
 let failed = 0;
@@ -189,9 +191,86 @@ function assertApprox(a, b, msg, tol = 1e-4) {
   assert(scene.points.includes(D), 'D exists');
 }
 
+// ---- Test 7: dragging one selected entity moves the whole selection ----
+{
+  console.log('Test 7: Multi-selection drag moves all selected sketch entities');
+  state.scene = new Scene();
+  state.clearSelection();
+
+  const first = state.scene.addSegment(0, 0, 10, 0, { merge: false });
+  const second = state.scene.addSegment(20, 0, 30, 0, { merge: false });
+  state.select(first);
+  state.select(second);
+
+  const tool = new SelectTool({
+    renderer: { previewEntities: [], hoverEntity: null },
+    setStatus() {},
+    viewport: { zoom: 10 },
+    _scheduleRender() {},
+  });
+
+  tool.onMouseDown(5, 0, 100, 100, { button: 0 });
+  tool.onMouseMove(10, 5, 130, 130);
+  tool.onMouseUp(10, 5, {});
+
+  assertApprox(first.p1.x, 5, 'First segment p1.x moved');
+  assertApprox(first.p1.y, 5, 'First segment p1.y moved');
+  assertApprox(first.p2.x, 15, 'First segment p2.x moved');
+  assertApprox(first.p2.y, 5, 'First segment p2.y moved');
+  assertApprox(second.p1.x, 25, 'Second segment p1.x moved');
+  assertApprox(second.p1.y, 5, 'Second segment p1.y moved');
+  assertApprox(second.p2.x, 35, 'Second segment p2.x moved');
+  assertApprox(second.p2.y, 5, 'Second segment p2.y moved');
+  assert(state.selectedEntities.includes(first), 'First segment remains selected after drag');
+  assert(state.selectedEntities.includes(second), 'Second segment remains selected after drag');
+
+  state.clearSelection();
+  state.scene = new Scene();
+}
+
 // ---- Summary ----
 {
-  console.log('Test 7: Sequential profile constraints stay satisfied together');
+  console.log('Test 8: shared coincident arc endpoints preserve both arc edit semantics during drag');
+  const originalScene = state.scene;
+  try {
+    const scene = new Scene();
+    const arcA = scene.addArc(0, 0, 5, 0, Math.PI / 2, { merge: false });
+    const arcB = scene.addArc(0, 10, 5, -Math.PI / 2, 0, { merge: false });
+    union(scene, arcA.endPoint, arcB.startPoint);
+    state.scene = scene;
+
+    const shared = arcA.endPoint;
+    assert(arcB.startPoint === shared, 'Arc endpoints share one coincident point after union');
+
+    const tool = new SelectTool({ renderer: { previewEntities: [], hoverEntity: null }, setStatus() {}, viewport: { zoom: 1 } });
+    tool._dragPoint = shared;
+    tool._dragArcEndpoint = tool._findArcEndpointRole(shared);
+    tool._dragSolvedPointState = tool._snapshotScenePointPositions();
+
+    const sharedRoles = Array.isArray(tool._dragArcEndpoint?.roles) ? tool._dragArcEndpoint.roles : [tool._dragArcEndpoint].filter(Boolean);
+    assert(sharedRoles.length === 2, `Expected 2 arc endpoint roles for shared point, got ${sharedRoles.length}`);
+
+    tool._applyDraggedArcEndpointTarget(0, 8);
+
+    assertApprox(shared.x, 0, 'Shared endpoint x moved');
+    assertApprox(shared.y, 8, 'Shared endpoint y moved');
+    assertApprox(arcA.center.x, 0, 'Arc A center x unchanged');
+    assertApprox(arcA.center.y, 0, 'Arc A center y unchanged');
+    assertApprox(arcA.radius, 8, 'Arc A radius updated from shared drag');
+    assertApprox(arcA.startPoint.x, 8, 'Arc A opposite endpoint x follows radius');
+    assertApprox(arcA.startPoint.y, 0, 'Arc A opposite endpoint y follows radius');
+    assertApprox(arcB.center.x, 0, 'Arc B center x unchanged');
+    assertApprox(arcB.center.y, 10, 'Arc B center y unchanged');
+    assertApprox(arcB.radius, 2, 'Arc B radius updated from shared drag');
+    assertApprox(arcB.endPoint.x, 2, 'Arc B opposite endpoint x follows radius');
+    assertApprox(arcB.endPoint.y, 10, 'Arc B opposite endpoint y follows radius');
+  } finally {
+    state.scene = originalScene;
+  }
+}
+
+{
+  console.log('Test 9: Sequential profile constraints stay satisfied together');
   const scene = new Scene();
   const bottom = scene.addSegment(0, 0, 12, 1);
   const right = scene.addSegment(12, 1, 11, 8);

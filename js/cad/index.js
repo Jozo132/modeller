@@ -42,7 +42,6 @@ export { RevolveFeature } from './RevolveFeature.js';
 export { ChamferFeature } from './ChamferFeature.js';
 export { FilletFeature } from './FilletFeature.js';
 export { StepImportFeature } from './StepImportFeature.js';
-export { solve } from './Solver.js';
 export {
   Constraint, resetConstraintIds,
   Coincident, Distance, Fixed,

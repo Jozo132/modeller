@@ -4,6 +4,21 @@ function _isCircleLike(shape) {
   return !!shape && (shape.type === 'circle' || shape.type === 'arc') && typeof shape.radius === 'number';
 }
 
+function _isSegmentFullyConstrained(seg, ps) {
+  if (!seg) return false;
+  return ps.has(seg.p1) && ps.has(seg.p2) && _isPointStateFullyConstrained(ps.get(seg.p1)) && _isPointStateFullyConstrained(ps.get(seg.p2));
+}
+
+function _isPointStateFullyConstrained(state) {
+  if (!state) return false;
+  if (state.xLock && state.yLock) return true;
+  const axes = (state.xLock ? 1 : 0) + (state.yLock ? 1 : 0);
+  if (axes >= 1 && (state.radials.size >= 1 || state.onFCLine)) return true;
+  if (state.radials.size >= 2) return true;
+  if (state.onFCLine && state.radials.size >= 1) return true;
+  return false;
+}
+
 /**
  * Estimate which sketch points and primitives are fully constrained.
  * This is intentionally conservative: entities are marked fully constrained only
@@ -35,15 +50,7 @@ export function computeFullyConstrained(scene) {
   for (const circ of scene.circles || []) cs.set(circ, { radiusKnown: false });
   for (const arc of scene.arcs || []) cs.set(arc, { radiusKnown: false });
 
-  const isFC = (s) => {
-    if (!s) return false;
-    if (s.xLock && s.yLock) return true;
-    const axes = (s.xLock ? 1 : 0) + (s.yLock ? 1 : 0);
-    if (axes >= 1 && (s.radials.size >= 1 || s.onFCLine)) return true;
-    if (s.radials.size >= 2) return true;
-    if (s.onFCLine && s.radials.size >= 1) return true;
-    return false;
-  };
+  const isFC = (s) => _isPointStateFullyConstrained(s);
   const markFC = (s) => {
     if (!s) return false;
     let ch = false;
@@ -171,9 +178,73 @@ export function computeFullyConstrained(scene) {
             if (isFC(sa) && !sb.radials.has(c.sourceA)) { sb.radials.add(c.sourceA); changed = true; }
             if (isFC(sb) && !sa.radials.has(c.sourceB)) { sa.radials.add(c.sourceB); changed = true; }
           }
+        } else if (c.dimType === 'distance' && c.sourceA.type === 'point' && c.sourceB?.type === 'segment') {
+          const sp = ps.get(c.sourceA);
+          const s1 = ps.get(c.sourceB.p1);
+          const s2 = ps.get(c.sourceB.p2);
+          if (sp && s1 && s2 && isFC(s1) && isFC(s2) && !sp.onFCLine) {
+            sp.onFCLine = true; changed = true;
+          }
+        } else if (c.dimType === 'distance' && c.sourceA.type === 'segment' && c.sourceB?.type === 'point') {
+          const sp = ps.get(c.sourceB);
+          const s1 = ps.get(c.sourceA.p1);
+          const s2 = ps.get(c.sourceA.p2);
+          if (sp && s1 && s2 && isFC(s1) && isFC(s2) && !sp.onFCLine) {
+            sp.onFCLine = true; changed = true;
+          }
+        } else if (c.dimType === 'distance' && _isCircleLike(c.sourceA) && c.sourceB?.type === 'point') {
+          const sc = ps.get(c.sourceA.center);
+          const sp = ps.get(c.sourceB);
+          if (sc && sp) {
+            if (isFC(sc) && !sp.radials.has(c.sourceA.center)) { sp.radials.add(c.sourceA.center); changed = true; }
+            if (isFC(sp) && !sc.radials.has(c.sourceB)) { sc.radials.add(c.sourceB); changed = true; }
+          }
+        } else if (c.dimType === 'distance' && c.sourceA.type === 'point' && _isCircleLike(c.sourceB)) {
+          const sp = ps.get(c.sourceA);
+          const sc = ps.get(c.sourceB.center);
+          if (sp && sc) {
+            if (isFC(sp) && !sc.radials.has(c.sourceA)) { sc.radials.add(c.sourceA); changed = true; }
+            if (isFC(sc) && !sp.radials.has(c.sourceB.center)) { sp.radials.add(c.sourceB.center); changed = true; }
+          }
+        } else if (c.dimType === 'distance' && _isCircleLike(c.sourceA) && _isCircleLike(c.sourceB)) {
+          const sa = ps.get(c.sourceA.center);
+          const sb = ps.get(c.sourceB.center);
+          if (sa && sb) {
+            if (isFC(sa) && !sb.radials.has(c.sourceA.center)) { sb.radials.add(c.sourceA.center); changed = true; }
+            if (isFC(sb) && !sa.radials.has(c.sourceB.center)) { sa.radials.add(c.sourceB.center); changed = true; }
+          }
         } else if (c.dimType === 'distance' && c.sourceA.type === 'segment' && !c.sourceB) {
           const si = ss.get(c.sourceA);
           if (si && !si.lenKnown) { si.lenKnown = true; changed = true; }
+        } else if (c.dimType === 'distance' && c.sourceA.type === 'segment' && _isCircleLike(c.sourceB)) {
+          const sc = ps.get(c.sourceB.center);
+          if (sc && _isSegmentFullyConstrained(c.sourceA, ps) && !sc.radials.has(c.sourceA)) {
+            sc.radials.add(c.sourceA); changed = true;
+          }
+        } else if (c.dimType === 'distance' && _isCircleLike(c.sourceA) && c.sourceB?.type === 'segment') {
+          const sc = ps.get(c.sourceA.center);
+          if (sc && _isSegmentFullyConstrained(c.sourceB, ps) && !sc.radials.has(c.sourceB)) {
+            sc.radials.add(c.sourceB); changed = true;
+          }
+        } else if ((c.dimType === 'dx' || c.dimType === 'dy') && c.sourceA.type === 'point' && c.sourceB?.type === 'point') {
+          const sa = ps.get(c.sourceA);
+          const sb = ps.get(c.sourceB);
+          if (sa && sb) {
+            if (isFC(sa)) {
+              if (!sb.onFCLine) { sb.onFCLine = true; changed = true; }
+              if (!sb.radials.has(c.sourceA)) { sb.radials.add(c.sourceA); changed = true; }
+            }
+            if (isFC(sb)) {
+              if (!sa.onFCLine) { sa.onFCLine = true; changed = true; }
+              if (!sa.radials.has(c.sourceB)) { sa.radials.add(c.sourceB); changed = true; }
+            }
+          }
+        } else if ((c.dimType === 'dx' || c.dimType === 'dy') && c.sourceA.type === 'segment' && !c.sourceB) {
+          const si = ss.get(c.sourceA);
+          if (si) {
+            if (!si.dirKnown) { si.dirKnown = true; changed = true; }
+            if (!si.lenKnown) { si.lenKnown = true; changed = true; }
+          }
         } else if ((c.dimType === 'radius' || c.dimType === 'diameter') && _isCircleLike(c.sourceA)) {
           const ci = cs.get(c.sourceA);
           if (ci && !ci.radiusKnown) { ci.radiusKnown = true; changed = true; }

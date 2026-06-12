@@ -15,12 +15,20 @@
 
 import { Primitive } from './Primitive.js';
 import { resolveValue } from './Constraint.js';
+import {
+  buildSmartSegmentAngleInfo as buildToolkitSmartSegmentAngleInfo,
+  detectAllDimensionTypes as detectToolkitAllDimensionTypes,
+  detectDimensionType as detectToolkitDimensionType,
+} from './occt/SketchToolkitSmartDimensions.js';
 
 /** Valid dimension types */
 export const DIM_TYPES = ['distance', 'dx', 'dy', 'angle', 'radius', 'diameter'];
 
 /** Display modes for the dimension label */
 export const DISPLAY_MODES = ['value', 'formula', 'both'];
+
+const FULL_CIRCLE_EPS = 1e-6;
+const ANGLE_RAY_EPS = 1e-9;
 
 export class DimensionPrimitive extends Primitive {
   /**
@@ -54,6 +62,8 @@ export class DimensionPrimitive extends Primitive {
     this.formula = opts.formula ?? null;     // number or variable name string
     this.sourceAId = opts.sourceAId ?? null; // id of first source primitive
     this.sourceBId = opts.sourceBId ?? null; // id of second source primitive
+    this.angleEndpointAKey = opts.angleEndpointAKey ?? null;
+    this.angleEndpointBKey = opts.angleEndpointBKey ?? null;
 
     // Direct object references to source primitives (for constraint solving)
     this.sourceA = opts.sourceA ?? null;
@@ -65,6 +75,9 @@ export class DimensionPrimitive extends Primitive {
     // Constraint range limits (like Constraint base class)
     this.min = opts.min ?? null;
     this.max = opts.max ?? null;
+
+    // Runtime-only measured value reported by the native sketch toolkit for driven dimensions.
+    this._drivenMeasurement = null;
   }
 
   // -----------------------------------------------------------------------
@@ -292,6 +305,8 @@ export class DimensionPrimitive extends Primitive {
 
   /** Update drawing coordinates from live source geometry (call after solver) */
   syncFromSources() {
+    this.clearDrivenMeasurement();
+
     const srcA = this.sourceA;
     const srcB = this.sourceB;
     if (!srcA) return;
@@ -299,11 +314,16 @@ export class DimensionPrimitive extends Primitive {
     if (this.dimType === 'angle') {
       // Recalculate angle info
       if (srcA.type === 'segment' && srcB && srcB.type === 'segment') {
-        const info = _segAngleInfoLive(srcA, srcB);
+        const info = buildSmartSegmentAngleInfo(srcA, srcB, {
+          endpointAKey: this.angleEndpointAKey,
+          endpointBKey: this.angleEndpointBKey,
+        });
         this.x1 = info.vx; this.y1 = info.vy;
         this.x2 = info.vx; this.y2 = info.vy;
         this._angleStart = info.startAngle;
         this._angleSweep = info.sweep;
+        this.angleEndpointAKey = info.angleEndpointAKey ?? this.angleEndpointAKey;
+        this.angleEndpointBKey = info.angleEndpointBKey ?? this.angleEndpointBKey;
       }
       return;
     }
@@ -323,11 +343,72 @@ export class DimensionPrimitive extends Primitive {
     } else if (srcA.type === 'segment' && !srcB) {
       this.x1 = srcA.x1; this.y1 = srcA.y1;
       this.x2 = srcA.x2; this.y2 = srcA.y2;
+    } else if (this.dimType === 'distance' && srcA.type === 'point' && srcB && srcB.type === 'segment') {
+      const foot = _footOnSegment(srcA.x, srcA.y, srcB.x1, srcB.y1, srcB.x2, srcB.y2);
+      this.x1 = srcA.x; this.y1 = srcA.y;
+      this.x2 = foot.x; this.y2 = foot.y;
+    } else if (this.dimType === 'distance' && srcA.type === 'segment' && srcB && srcB.type === 'point') {
+      const foot = _footOnSegment(srcB.x, srcB.y, srcA.x1, srcA.y1, srcA.x2, srcA.y2);
+      this.x1 = srcB.x; this.y1 = srcB.y;
+      this.x2 = foot.x; this.y2 = foot.y;
+    } else if (this.dimType === 'distance' && (srcA.type === 'circle' || srcA.type === 'arc') && srcB && srcB.type === 'point') {
+      this.x1 = srcA.cx; this.y1 = srcA.cy;
+      this.x2 = srcB.x; this.y2 = srcB.y;
+    } else if (this.dimType === 'distance' && srcA.type === 'point' && srcB && (srcB.type === 'circle' || srcB.type === 'arc')) {
+      this.x1 = srcA.x; this.y1 = srcA.y;
+      this.x2 = srcB.cx; this.y2 = srcB.cy;
+    } else if (this.dimType === 'distance' && (srcA.type === 'circle' || srcA.type === 'arc') && srcB && (srcB.type === 'circle' || srcB.type === 'arc')) {
+      this.x1 = srcA.cx; this.y1 = srcA.cy;
+      this.x2 = srcB.cx; this.y2 = srcB.cy;
+    } else if (this.dimType === 'distance' && srcA.type === 'segment' && srcB && srcB.type === 'segment') {
+      const midX = srcA.midX;
+      const midY = srcA.midY;
+      const foot = _footOnLine(midX, midY, srcB.x1, srcB.y1, srcB.x2, srcB.y2);
+      this.x1 = midX; this.y1 = midY;
+      this.x2 = foot.x; this.y2 = foot.y;
+    } else if (this.dimType === 'distance' && srcA.type === 'segment' && srcB && (srcB.type === 'circle' || srcB.type === 'arc')) {
+      this.x1 = srcA.midX; this.y1 = srcA.midY;
+      this.x2 = srcB.cx; this.y2 = srcB.cy;
+    } else if (this.dimType === 'distance' && (srcA.type === 'circle' || srcA.type === 'arc') && srcB && srcB.type === 'segment') {
+      this.x1 = srcA.cx; this.y1 = srcA.cy;
+      this.x2 = srcB.midX; this.y2 = srcB.midY;
     }
+  }
+
+  setDrivenMeasurement(value, meta = {}) {
+    const numericValue = Number(value);
+    if (!Number.isFinite(numericValue)) {
+      this._drivenMeasurement = null;
+      return;
+    }
+
+    this._drivenMeasurement = {
+      value: numericValue,
+      kind: typeof meta.kind === 'string' ? meta.kind : null,
+      name: typeof meta.name === 'string' ? meta.name : null,
+      drivingState: typeof meta.drivingState === 'string' ? meta.drivingState : null,
+    };
+  }
+
+  clearDrivenMeasurement() {
+    this._drivenMeasurement = null;
+  }
+
+  get drivenMeasurement() {
+    return this._drivenMeasurement;
+  }
+
+  get measuredValue() {
+    const measured = Number(this._drivenMeasurement?.value);
+    return Number.isFinite(measured) ? measured : null;
   }
 
   /** Computed measured value */
   get value() {
+    if (!this.isConstraint && Number.isFinite(this.measuredValue)) {
+      return this.measuredValue;
+    }
+
     switch (this.dimType) {
       case 'dx': return Math.abs(this.x2 - this.x1);
       case 'dy': return Math.abs(this.y2 - this.y1);
@@ -650,6 +731,8 @@ export class DimensionPrimitive extends Primitive {
     if (this.formula != null) out.formula = this.formula;
     if (this.sourceAId != null) out.sourceAId = this.sourceAId;
     if (this.sourceBId != null) out.sourceBId = this.sourceBId;
+    if (this.angleEndpointAKey) out.angleEndpointAKey = this.angleEndpointAKey;
+    if (this.angleEndpointBKey) out.angleEndpointBKey = this.angleEndpointBKey;
     if (this._angleStart != null) out._angleStart = this._angleStart;
     if (this._angleSweep != null) out._angleSweep = this._angleSweep;
     if (this.min != null) out.min = this.min;
@@ -670,75 +753,7 @@ export class DimensionPrimitive extends Primitive {
  * @returns {{ dimType: string, x1: number, y1: number, x2: number, y2: number, angleStart?: number, angleSweep?: number }}
  */
 export function detectDimensionType(a, b) {
-  if (!b) {
-    // Single entity
-    if (a.type === 'segment') {
-      return { dimType: 'distance', x1: a.x1, y1: a.y1, x2: a.x2, y2: a.y2 };
-    }
-    if (a.type === 'circle' || a.type === 'arc') {
-      return { dimType: 'radius', x1: a.cx, y1: a.cy, x2: a.cx + a.radius, y2: a.cy };
-    }
-    return null;
-  }
-
-  // Two points → distance (dx, dy available via dimType override)
-  if (a.type === 'point' && b.type === 'point') {
-    return { dimType: 'distance', x1: a.x, y1: a.y, x2: b.x, y2: b.y };
-  }
-
-  // Two segments
-  if (a.type === 'segment' && b.type === 'segment') {
-    if (_areParallel(a, b)) {
-      // Parallel lines → perpendicular distance
-      const foot = _footOnLine(a.midX, a.midY, b.x1, b.y1, b.x2, b.y2);
-      return { dimType: 'distance', x1: a.midX, y1: a.midY, x2: foot.x, y2: foot.y };
-    } else {
-      // Non-parallel → angle between them
-      const info = _segAngleInfo(a, b);
-      return {
-        dimType: 'angle',
-        x1: info.vx, y1: info.vy,
-        x2: info.vx, y2: info.vy,
-        angleStart: info.startAngle,
-        angleSweep: info.sweep,
-      };
-    }
-  }
-
-  // Point and segment → distance from point to line
-  if (a.type === 'point' && b.type === 'segment') {
-    const foot = _footOnSegment(a.x, a.y, b.x1, b.y1, b.x2, b.y2);
-    return { dimType: 'distance', x1: a.x, y1: a.y, x2: foot.x, y2: foot.y };
-  }
-  if (a.type === 'segment' && b.type === 'point') {
-    const foot = _footOnSegment(b.x, b.y, a.x1, a.y1, a.x2, a.y2);
-    return { dimType: 'distance', x1: b.x, y1: b.y, x2: foot.x, y2: foot.y };
-  }
-
-  // Point / segment and circle / arc → distance from center
-  if ((a.type === 'circle' || a.type === 'arc') && b.type === 'point') {
-    return { dimType: 'distance', x1: a.cx, y1: a.cy, x2: b.x, y2: b.y };
-  }
-  if (a.type === 'point' && (b.type === 'circle' || b.type === 'arc')) {
-    return { dimType: 'distance', x1: a.x, y1: a.y, x2: b.cx, y2: b.cy };
-  }
-
-  // Two circles/arcs → distance between centers
-  if ((a.type === 'circle' || a.type === 'arc') && (b.type === 'circle' || b.type === 'arc')) {
-    return { dimType: 'distance', x1: a.cx, y1: a.cy, x2: b.cx, y2: b.cy };
-  }
-
-  // Segment and circle/arc → distance from segment midpoint to center
-  if (a.type === 'segment' && (b.type === 'circle' || b.type === 'arc')) {
-    return { dimType: 'distance', x1: a.midX, y1: a.midY, x2: b.cx, y2: b.cy };
-  }
-  if ((a.type === 'circle' || a.type === 'arc') && b.type === 'segment') {
-    return { dimType: 'distance', x1: a.cx, y1: a.cy, x2: b.midX, y2: b.midY };
-  }
-
-  // Fallback: endpoint-to-endpoint
-  return { dimType: 'distance', x1: a.x1 ?? a.x ?? a.cx ?? 0, y1: a.y1 ?? a.y ?? a.cy ?? 0,
-           x2: b.x1 ?? b.x ?? b.cx ?? 0, y2: b.y1 ?? b.y ?? b.cy ?? 0 };
+  return detectToolkitDimensionType(a, b);
 }
 
 /**
@@ -747,96 +762,7 @@ export function detectDimensionType(a, b) {
  * Each entry has { dimType, label, x1, y1, x2, y2, angleStart?, angleSweep? }.
  */
 export function detectAllDimensionTypes(a, b) {
-  const results = [];
-
-  if (!b) {
-    // --- Single entity ---
-    if (a.type === 'segment') {
-      results.push({ dimType: 'distance', label: 'Length', x1: a.x1, y1: a.y1, x2: a.x2, y2: a.y2 });
-      // Horizontal/vertical components
-      results.push({ dimType: 'dx', label: 'Horizontal (ΔX)', x1: a.x1, y1: a.y1, x2: a.x2, y2: a.y2 });
-      results.push({ dimType: 'dy', label: 'Vertical (ΔY)', x1: a.x1, y1: a.y1, x2: a.x2, y2: a.y2 });
-    }
-    if (a.type === 'circle' || a.type === 'arc') {
-      results.push({ dimType: 'diameter', label: 'Diameter', x1: a.cx, y1: a.cy, x2: a.cx + a.radius, y2: a.cy });
-      results.push({ dimType: 'radius', label: 'Radius', x1: a.cx, y1: a.cy, x2: a.cx + a.radius, y2: a.cy });
-    }
-    return results;
-  }
-
-  // --- Two primitives ---
-
-  // Two points
-  if (a.type === 'point' && b.type === 'point') {
-    results.push({ dimType: 'distance', label: 'Distance', x1: a.x, y1: a.y, x2: b.x, y2: b.y });
-    results.push({ dimType: 'dx', label: 'Horizontal (ΔX)', x1: a.x, y1: a.y, x2: b.x, y2: b.y });
-    results.push({ dimType: 'dy', label: 'Vertical (ΔY)', x1: a.x, y1: a.y, x2: b.x, y2: b.y });
-    return results;
-  }
-
-  // Two segments — possibly both angle and distance
-  if (a.type === 'segment' && b.type === 'segment') {
-    if (_areParallel(a, b)) {
-      // Parallel: distance is default
-      const foot = _footOnLine(a.midX, a.midY, b.x1, b.y1, b.x2, b.y2);
-      results.push({ dimType: 'distance', label: 'Distance', x1: a.midX, y1: a.midY, x2: foot.x, y2: foot.y });
-    } else {
-      // Non-parallel: angle is default, but also offer distance
-      const info = _segAngleInfo(a, b);
-      results.push({
-        dimType: 'angle', label: 'Angle',
-        x1: info.vx, y1: info.vy, x2: info.vx, y2: info.vy,
-        angleStart: info.startAngle, angleSweep: info.sweep,
-      });
-      const foot = _footOnLine(a.midX, a.midY, b.x1, b.y1, b.x2, b.y2);
-      results.push({ dimType: 'distance', label: 'Distance', x1: a.midX, y1: a.midY, x2: foot.x, y2: foot.y });
-    }
-    return results;
-  }
-
-  // Point + segment
-  if (a.type === 'point' && b.type === 'segment') {
-    const foot = _footOnSegment(a.x, a.y, b.x1, b.y1, b.x2, b.y2);
-    results.push({ dimType: 'distance', label: 'Distance', x1: a.x, y1: a.y, x2: foot.x, y2: foot.y });
-    return results;
-  }
-  if (a.type === 'segment' && b.type === 'point') {
-    const foot = _footOnSegment(b.x, b.y, a.x1, a.y1, a.x2, a.y2);
-    results.push({ dimType: 'distance', label: 'Distance', x1: b.x, y1: b.y, x2: foot.x, y2: foot.y });
-    return results;
-  }
-
-  // Circle/arc + point
-  if ((a.type === 'circle' || a.type === 'arc') && b.type === 'point') {
-    results.push({ dimType: 'distance', label: 'Distance (center)', x1: a.cx, y1: a.cy, x2: b.x, y2: b.y });
-    return results;
-  }
-  if (a.type === 'point' && (b.type === 'circle' || b.type === 'arc')) {
-    results.push({ dimType: 'distance', label: 'Distance (center)', x1: a.x, y1: a.y, x2: b.cx, y2: b.cy });
-    return results;
-  }
-
-  // Two circles/arcs
-  if ((a.type === 'circle' || a.type === 'arc') && (b.type === 'circle' || b.type === 'arc')) {
-    results.push({ dimType: 'distance', label: 'Distance (centers)', x1: a.cx, y1: a.cy, x2: b.cx, y2: b.cy });
-    return results;
-  }
-
-  // Segment + circle/arc
-  if (a.type === 'segment' && (b.type === 'circle' || b.type === 'arc')) {
-    results.push({ dimType: 'distance', label: 'Distance', x1: a.midX, y1: a.midY, x2: b.cx, y2: b.cy });
-    return results;
-  }
-  if ((a.type === 'circle' || a.type === 'arc') && b.type === 'segment') {
-    results.push({ dimType: 'distance', label: 'Distance', x1: a.cx, y1: a.cy, x2: b.midX, y2: b.midY });
-    return results;
-  }
-
-  // Fallback
-  results.push({ dimType: 'distance', label: 'Distance',
-    x1: a.x1 ?? a.x ?? a.cx ?? 0, y1: a.y1 ?? a.y ?? a.cy ?? 0,
-    x2: b.x1 ?? b.x ?? b.cx ?? 0, y2: b.y1 ?? b.y ?? b.cy ?? 0 });
-  return results;
+  return detectToolkitAllDimensionTypes(a, b);
 }
 
 // ---------------------------------------------------------------------------
@@ -869,32 +795,9 @@ function _footOnSegment(px, py, ax, ay, bx, by) {
   return { x: ax + t * dx, y: ay + t * dy };
 }
 
-function _segAngleInfo(segA, segB) {
-  // Find intersection of two lines (or use closest point)
-  const a1x = segA.x1, a1y = segA.y1, a2x = segA.x2, a2y = segA.y2;
-  const b1x = segB.x1, b1y = segB.y1, b2x = segB.x2, b2y = segB.y2;
-  const dAx = a2x - a1x, dAy = a2y - a1y;
-  const dBx = b2x - b1x, dBy = b2y - b1y;
-  const denom = dAx * dBy - dAy * dBx;
-  let vx, vy;
-  if (Math.abs(denom) < 1e-9) {
-    vx = (a1x + a2x + b1x + b2x) / 4;
-    vy = (a1y + a2y + b1y + b2y) / 4;
-  } else {
-    const t = ((b1x - a1x) * dBy - (b1y - a1y) * dBx) / denom;
-    vx = a1x + t * dAx;
-    vy = a1y + t * dAy;
-  }
-  const angleA = Math.atan2(dAy, dAx);
-  const angleB = Math.atan2(dBy, dBx);
-  let sweep = angleB - angleA;
-  while (sweep > Math.PI) sweep -= 2 * Math.PI;
-  while (sweep < -Math.PI) sweep += 2 * Math.PI;
-  return { vx, vy, startAngle: angleA, sweep };
+export function buildSmartSegmentAngleInfo(segA, segB, options = {}) {
+  return buildToolkitSmartSegmentAngleInfo(segA, segB, options);
 }
-
-// Re-exported for use in syncFromSources (same logic as _segAngleInfo)
-const _segAngleInfoLive = _segAngleInfo;
 
 function _scaleSegToLength(seg, target) {
   const dx = seg.x2 - seg.x1, dy = seg.y2 - seg.y1;

@@ -63,8 +63,9 @@ export class SelectTool extends BaseTool {
     // Shape drag state
     this._dragShape = null;       // shape being dragged (segment / circle / arc)
     this._dragShapePts = [];      // non-fixed points of that shape
+    this._dragShapeTranslatables = []; // selected non-parametric entities moved with the shape drag
     this._dragRadiusShape = null; // circle/arc edge radius being dragged
-    this._dragArcEndpoint = null; // { arc, which } for arc endpoint drags
+    this._dragArcEndpoint = null; // { arc, which } or { arc, which, roles:[...] } for arc endpoint drags
     this._dragImageHandle = null; // { image, index }
 
     // Dimension drag state (repositioning the offset)
@@ -97,6 +98,7 @@ export class SelectTool extends BaseTool {
     this._dragPoint = null;
     this._dragShape = null;
     this._dragShapePts = [];
+    this._dragShapeTranslatables = [];
     this._dragRadiusShape = null;
     this._dragArcEndpoint = null;
     this._dragImageHandle = null;
@@ -146,6 +148,7 @@ export class SelectTool extends BaseTool {
     this._dragPoint = null;
     this._dragShape = null;
     this._dragShapePts = [];
+    this._dragShapeTranslatables = [];
     this._dragRadiusShape = null;
     this._dragArcEndpoint = null;
     this._dragImageHandle = null;
@@ -198,16 +201,17 @@ export class SelectTool extends BaseTool {
   _stabilizeDraggedSolve(result) {
     if (!result || !Array.isArray(this._dragSolvedPointState) || this._dragSolvedPointState.length === 0) return;
 
-    const draggedPoints = [];
+    const draggedPoints = new Set();
     if (this._dragPoint) {
-      draggedPoints.push(this._dragPoint);
-      if (this._dragArcEndpoint?.arc) {
-        draggedPoints.push(this._dragArcEndpoint.arc.startPoint, this._dragArcEndpoint.arc.endPoint);
+      draggedPoints.add(this._dragPoint);
+      for (const role of this._getDraggedArcEndpointRoles()) {
+        if (role.arc.startPoint) draggedPoints.add(role.arc.startPoint);
+        if (role.arc.endPoint) draggedPoints.add(role.arc.endPoint);
       }
     } else if (Array.isArray(this._dragShapePts) && this._dragShapePts.length > 0) {
-      draggedPoints.push(...this._dragShapePts);
+      for (const point of this._dragShapePts) draggedPoints.add(point);
     }
-    if (draggedPoints.length === 0) return;
+    if (draggedPoints.size === 0) return;
 
     let deltaX = 0;
     let deltaY = 0;
@@ -226,7 +230,7 @@ export class SelectTool extends BaseTool {
     if (absDx <= 1e-9 && absDy <= 1e-9) return;
 
     const lockedAxis = absDx >= absDy ? 'y' : 'x';
-    const protectedPoints = new Set(draggedPoints);
+    const protectedPoints = draggedPoints;
     const solvedState = this._snapshotScenePointPositions();
     let changed = false;
 
@@ -379,15 +383,19 @@ export class SelectTool extends BaseTool {
   }
 
   _applyDraggedArcEndpointTarget(targetX, targetY) {
-    const drag = this._dragArcEndpoint;
-    if (!drag?.arc) return this._applyDraggedPointTarget(targetX, targetY);
+    const roles = this._getDraggedArcEndpointRoles();
+    if (roles.length === 0) return this._applyDraggedPointTarget(targetX, targetY);
 
-    drag.arc.setEndpointPosition(drag.which, targetX, targetY);
-    const endpoint = drag.which === 'start' ? drag.arc.startPoint : drag.arc.endPoint;
+    for (const role of roles) {
+      role.arc.setEndpointPosition(role.which, targetX, targetY);
+    }
+    const endpoint = this._dragPoint || (roles[0].which === 'start' ? roles[0].arc.startPoint : roles[0].arc.endPoint);
     const wasFixed = endpoint?.fixed;
     if (endpoint) endpoint.fixed = true;
     const solved = this._solveDraggedConstraintState(() => {
-      drag.arc.setEndpointPosition(drag.which, targetX, targetY);
+      for (const role of roles) {
+        role.arc.setEndpointPosition(role.which, targetX, targetY);
+      }
       if (endpoint) endpoint.fixed = false;
     });
     if (endpoint) endpoint.fixed = wasFixed;
@@ -430,9 +438,18 @@ export class SelectTool extends BaseTool {
   _applyDraggedShapeTarget(wx, wy) {
     const wdx = wx - this._dragStart.wx;
     const wdy = wy - this._dragStart.wy;
+    const translatables = Array.isArray(this._dragShapeTranslatables) ? this._dragShapeTranslatables : [];
+    const translateTranslatables = (dx, dy) => {
+      for (const entity of translatables) {
+        entity.translate(dx, dy);
+      }
+    };
     let solved = true;
 
     if (this._dragShapePts.length > 0) {
+      if (translatables.length > 0) {
+        translateTranslatables(wdx, wdy);
+      }
       const movedPoints = this._dragShapePts.map((point) => ({ point, x: point.x + wdx, y: point.y + wdy }));
       const savedFixed = this._dragShapePts.map((point) => point.fixed);
       for (const moved of movedPoints) {
@@ -464,6 +481,8 @@ export class SelectTool extends BaseTool {
       if (solved) {
         this._dragStart.wx = wx;
         this._dragStart.wy = wy;
+      } else if (translatables.length > 0) {
+        translateTranslatables(-wdx, -wdy);
       }
 
       if (solved && state.autoCoincidence) {
@@ -474,6 +493,13 @@ export class SelectTool extends BaseTool {
         this._lineSnapCandidates = [];
       }
       this._alignmentGuides = solved ? this._findAlignmentGuides(this._dragShapePts) : [];
+    } else if (translatables.length > 0) {
+      translateTranslatables(wdx, wdy);
+      this._dragStart.wx = wx;
+      this._dragStart.wy = wy;
+      this._snapCandidates = [];
+      this._lineSnapCandidates = [];
+      this._alignmentGuides = [];
     } else {
       this._dragShape.translate(wdx, wdy);
       this._dragStart.wx = wx;
@@ -528,19 +554,31 @@ export class SelectTool extends BaseTool {
     this._scheduleIdleDragSettleFrame();
   }
 
-  _findArcEndpointRole(point) {
-    for (const arc of state.scene.arcs || []) {
-      if (arc.startPoint === point) return { arc, which: 'start' };
-      if (arc.endPoint === point) return { arc, which: 'end' };
+  _getDraggedArcEndpointRoles() {
+    if (!this._dragArcEndpoint) return [];
+    if (Array.isArray(this._dragArcEndpoint.roles)) {
+      return this._dragArcEndpoint.roles.filter((role) => role?.arc);
     }
-    return null;
+    return this._dragArcEndpoint.arc ? [this._dragArcEndpoint] : [];
+  }
+
+  _findArcEndpointRole(point) {
+    const roles = [];
+    for (const arc of state.scene.arcs || []) {
+      if (arc.startPoint === point) roles.push({ arc, which: 'start' });
+      if (arc.endPoint === point) roles.push({ arc, which: 'end' });
+    }
+    if (roles.length === 0) return null;
+    if (roles.length === 1) return roles[0];
+    return { ...roles[0], roles };
   }
 
   _restoreSceneDragState(snapshot) {
     state.scene = Scene.deserialize(snapshot.sceneData);
     const selectedIds = new Set(snapshot.selectedEntityIds || []);
     state.selectedEntities = [];
-    for (const entity of [...state.entities, ...(state.scene.groups || [])]) {
+    const selectionCandidates = new Set([...(state.scene.points || []), ...state.entities, ...(state.scene.groups || [])]);
+    for (const entity of selectionCandidates) {
       entity.selected = selectedIds.has(entity.id);
       if (entity.selected) state.selectedEntities.push(entity);
     }
@@ -672,6 +710,53 @@ export class SelectTool extends BaseTool {
       if (entity !== image) state.deselect(entity);
     }
     if (!image.selected) state.select(image);
+  }
+
+  _collectDragMembersFromEntity(entity, pointSet, translatableSet, visited = new Set()) {
+    if (!entity || visited.has(entity)) return;
+    visited.add(entity);
+
+    if (entity.type === 'group' && typeof entity.getChildren === 'function') {
+      for (const child of entity.getChildren()) {
+        this._collectDragMembersFromEntity(child, pointSet, translatableSet, visited);
+      }
+      return;
+    }
+
+    if (entity.type === 'point') {
+      if (!entity.fixed) pointSet.add(entity);
+      return;
+    }
+
+    const points = _shapePoints(entity);
+    if (points.length > 0) {
+      for (const point of points) {
+        if (point && !point.fixed) pointSet.add(point);
+      }
+      return;
+    }
+
+    if (entity.type !== 'dimension' && typeof entity.translate === 'function') {
+      translatableSet.add(entity);
+    }
+  }
+
+  _buildSelectionDragState(anchor) {
+    if (!anchor?.selected || anchor.type === 'dimension' || state.selectedEntities.length <= 1) return null;
+
+    const pointSet = new Set();
+    const translatableSet = new Set();
+    const visited = new Set();
+    for (const entity of state.selectedEntities) {
+      this._collectDragMembersFromEntity(entity, pointSet, translatableSet, visited);
+    }
+
+    if (pointSet.size === 0 && translatableSet.size === 0) return null;
+    return {
+      anchor,
+      points: [...pointSet],
+      translatables: [...translatableSet],
+    };
   }
 
   // ------------------------------------------------------------------
@@ -901,6 +986,7 @@ export class SelectTool extends BaseTool {
       this._dragPoint = null;
       this._dragShape = null;
       this._dragShapePts = [];
+      this._dragShapeTranslatables = [];
       this._dragDimension = null;
       this._dragTookSnapshot = false;
       this._isDragging = false;
@@ -917,9 +1003,26 @@ export class SelectTool extends BaseTool {
     }
 
     const fc = computeFullyConstrained(state.scene);
+    const pt = this._findClosestPoint(wx, wy, PICK_PT_PX);
+    const entity = this._findClosestEntity(wx, wy, PICK_PX);
+    const selectionDrag = this._buildSelectionDragState(pt?.selected ? pt : entity?.selected ? entity : null);
+    if (selectionDrag) {
+      this._dragShape = selectionDrag.anchor;
+      this._dragShapePts = selectionDrag.points;
+      this._dragShapeTranslatables = selectionDrag.translatables;
+      this._dragPoint = null;
+      this._dragArcEndpoint = null;
+      this._dragRadiusShape = null;
+      this._dragImageHandle = null;
+      this._dragDimension = null;
+      this._dragTookSnapshot = false;
+      this._isDragging = false;
+      this._dragStart = { wx, wy, sx, sy };
+      this._dragCancelState = null;
+      return;
+    }
 
     // 1. Point takes priority
-    const pt = this._findClosestPoint(wx, wy, PICK_PT_PX);
     if (pt) {
       if (_isFullyConstrained(pt, fc)) {
         // Fully constrained point — allow click-select but not drag
@@ -927,6 +1030,7 @@ export class SelectTool extends BaseTool {
         this._isDragging = false;
         this._dragPoint = null;
         this._dragShape = null;
+        this._dragShapeTranslatables = [];
         this._dragRadiusShape = null;
         return;
       }
@@ -934,6 +1038,7 @@ export class SelectTool extends BaseTool {
       this._dragArcEndpoint = this._findArcEndpointRole(pt);
       this._dragShape = null;
       this._dragShapePts = [];
+      this._dragShapeTranslatables = [];
       this._dragRadiusShape = null;
       this._dragTookSnapshot = false;
       this._isDragging = false;
@@ -943,12 +1048,12 @@ export class SelectTool extends BaseTool {
     }
 
     // 2. Dimension drag — reposition offset
-    const entity = this._findClosestEntity(wx, wy, PICK_PX);
     if (entity && entity.type === 'dimension') {
       this._dragDimension = entity;
       this._dragPoint = null;
       this._dragShape = null;
       this._dragShapePts = [];
+      this._dragShapeTranslatables = [];
       this._dragTookSnapshot = false;
       this._isDragging = false;
       this._dragStart = { wx, wy, sx, sy };
@@ -963,6 +1068,7 @@ export class SelectTool extends BaseTool {
         this._dragRadiusShape = shape;
         this._dragShape = null;
         this._dragShapePts = [];
+        this._dragShapeTranslatables = [];
         this._dragPoint = null;
         this._dragArcEndpoint = null;
         this._dragImageHandle = null;
@@ -977,6 +1083,7 @@ export class SelectTool extends BaseTool {
       if (movable.length > 0 || canTranslateDirectly) {
         this._dragShape = shape;
         this._dragShapePts = movable;
+        this._dragShapeTranslatables = canTranslateDirectly && movable.length === 0 ? [shape] : [];
         this._dragPoint = null;
         this._dragImageHandle = null;
         this._dragRadiusShape = null;
@@ -994,6 +1101,7 @@ export class SelectTool extends BaseTool {
     this._dragPoint = null;
     this._dragShape = null;
     this._dragShapePts = [];
+    this._dragShapeTranslatables = [];
     this._dragRadiusShape = null;
     this._dragImageHandle = null;
     this._dragDimension = null;
@@ -1210,6 +1318,7 @@ export class SelectTool extends BaseTool {
       }
       this._dragShape = null;
       this._dragShapePts = [];
+      this._dragShapeTranslatables = [];
       this._snapCandidates = [];
       this._lineSnapCandidates = [];
       this._alignmentGuides = [];

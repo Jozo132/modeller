@@ -111,6 +111,25 @@ test('renderer preview fill subtracts circular holes from filled profiles', () =
   assert.strictEqual(pointCovered({ x: 25, y: 25 }, triangles), false, 'circular hole center should stay empty');
 });
 
+test('renderer preview fill respects clockwise arc sweeps in closed chains', () => {
+  const sketchFeature = new SketchFeature('ClockwiseArcPreviewFill');
+  sketchFeature.sketch.addArc(0, 0, 10, Math.PI / 2, 0);
+  sketchFeature.sketch.addSegment(10, 0, 0, 0);
+  sketchFeature.sketch.addSegment(0, 0, 0, 10);
+
+  const profiles = extractRenderableSketchProfiles(sketchFeature.sketch);
+  assert.strictEqual(profiles.length, 1, 'expected a single closed profile from the arc sector');
+
+  const triangles = triangulateSketchProfileFill(profiles);
+  assert.ok(triangles.length > 0, 'expected non-empty fill triangulation for clockwise arc sector');
+
+  const filledArea = triangles.reduce((sum, triangle) => sum + triangleArea(triangle), 0);
+  const expectedArea = Math.PI * 100 / 4;
+  assert.ok(Math.abs(filledArea - expectedArea) < 8, `expected fill area near ${expectedArea}, got ${filledArea}`);
+  assert.strictEqual(pointCovered({ x: 3, y: 3 }, triangles), true, 'minor sector interior should be filled');
+  assert.strictEqual(pointCovered({ x: -5, y: 0 }, triangles), false, 'major-arc complement should stay empty');
+});
+
 test('executed sketch profiles classify near-boundary holes with inward samples', () => {
   const sketchFeature = new SketchFeature('NearBoundaryHoleProfile');
   addRect(sketchFeature, 0, 0, 10, 10);

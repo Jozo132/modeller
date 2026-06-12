@@ -14,6 +14,11 @@ export {
 } from './OcctKernelAdapter.js';
 
 export {
+  collectUnsupportedSceneConstraints,
+  solveSceneWithSketchToolkit,
+} from './SketchToolkitSceneAdapter.js';
+
+export {
   buildOcctStepShadowSync,
   ensureOcctStepShadowReady,
   isOcctStepShadowEnabled,

@@ -9,7 +9,7 @@ import { TextPrimitive } from './TextPrimitive.js';
 import { DimensionPrimitive } from './DimensionPrimitive.js';
 import { ImagePrimitive } from './ImagePrimitive.js';
 import { GroupPrimitive } from './GroupPrimitive.js';
-import { solve } from './Solver.js';
+import { solveSceneWithSharedSketchToolkit } from './occt/SketchToolkitSceneAdapter.js';
 import { resetPrimitiveIds, peekNextPrimitiveId } from './Primitive.js';
 import { resetConstraintIds, serializeVariables, deserializeVariables, clearVariables } from './Constraint.js';
 import {
@@ -24,6 +24,28 @@ import {
 
 const MERGE_TOLERANCE = 1e-4; // world units — points closer than this auto-merge
 const ADD_CONSTRAINT_SOLVE_OPTIONS = Object.freeze({ maxIter: 1200, relaxation: 1, tolerance: 1e-4 });
+
+function mapSceneSolveOptions(opts = {}) {
+  const maxIterations = Number.isFinite(opts?.maxIter) ? Math.max(1, Math.trunc(opts.maxIter)) : undefined;
+  const residualTolerance = Number.isFinite(opts?.tolerance) ? Math.max(0, Number(opts.tolerance)) : undefined;
+
+  return {
+    algorithm: 'lm',
+    ...(maxIterations != null ? { maxIterations } : {}),
+    ...(residualTolerance != null ? { residualTolerance } : {}),
+  };
+}
+
+function normalizeSceneSolveResult(nativeResult) {
+  const maxError = Number.isFinite(nativeResult?.maxScaledResidual)
+    ? Number(nativeResult.maxScaledResidual)
+    : Number.POSITIVE_INFINITY;
+
+  return {
+    ...nativeResult,
+    maxError,
+  };
+}
 
 export class Scene {
   constructor() {
@@ -217,9 +239,6 @@ export class Scene {
 
   addConstraint(c) {
     this.constraints.push(c);
-    if (typeof c?.apply === 'function') {
-      c.apply();
-    }
     this.solve(ADD_CONSTRAINT_SOLVE_OPTIONS);
     return c;
   }
@@ -231,12 +250,10 @@ export class Scene {
 
   /** Run the solver on all constraints. */
   solve(opts) {
-    const result = solve(this.constraints, opts);
-    // Update dimension coordinates from live geometry after solving
-    for (const dim of this.dimensions) {
-      if (dim.sourceA) dim.syncFromSources();
-    }
-    return result;
+    const { result } = solveSceneWithSharedSketchToolkit(this, {
+      solveOptions: mapSceneSolveOptions(opts),
+    });
+    return normalizeSceneSolveResult(result);
   }
 
   // -----------------------------------------------------------------------
@@ -744,6 +761,8 @@ export class Scene {
         formula: d.formula,
         sourceAId: d.sourceAId,
         sourceBId: d.sourceBId,
+        angleEndpointAKey: d.angleEndpointAKey,
+        angleEndpointBKey: d.angleEndpointBKey,
       });
       dm.id = d.id;
       dm.layer = d.layer || '0';

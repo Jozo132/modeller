@@ -569,9 +569,6 @@ function _ptEq(a, b) {
 }
 
 function _arcAsEdge(arc) {
-  // Use the actual center PPoint to derive start/end positions.
-  // For profile tracing to work, arcs need to share PPoints with other edges.
-  // We create lightweight point-like proxies that the tracer can use.
   const sp = arc.startPt;
   const ep = arc.endPt;
   return {
@@ -579,22 +576,24 @@ function _arcAsEdge(arc) {
     id: arc.id,
     type: 'arc',
     arc,
-    // p1/p2 must be the PPoint objects shared with connecting edges.
-    // Since arcs in this sketch system don't store endpoint PPoints directly,
-    // we need to find the nearest scene point for each endpoint.
-    p1: _findMatchingPoint(arc, sp),
-    p2: _findMatchingPoint(arc, ep),
+    p1: arc.startPoint || _findMatchingPoint(arc, sp),
+    p2: arc.endPoint || _findMatchingPoint(arc, ep),
   };
 }
 
 /** Find the point in the arc's center's parent that matches (px, py). */
 function _findMatchingPoint(arc, pt) {
-  // Return a lightweight point-like object for matching.
-  // Profile tracing compares by object identity (===), so arcs won't connect
-  // to segments unless they share actual PPoint references. For now, return
-  // a coordinate-only proxy. The profile tracer already falls back to
-  // coordinate comparison.
+  // Fall back to a coordinate proxy when legacy arc data has no endpoint points.
   return { x: pt.x, y: pt.y, _proxyFor: arc.id };
+}
+
+function _getArcTraceSweep(arc) {
+  let sweep = Number.isFinite(arc?.sweepAngle) ? arc.sweepAngle : (arc?.endAngle - arc?.startAngle);
+  if (!Number.isFinite(sweep)) return 0;
+  const fullTurn = Math.PI * 2;
+  while (sweep > fullTurn) sweep -= fullTurn;
+  while (sweep < -fullTurn) sweep += fullTurn;
+  return sweep;
 }
 
 /**
@@ -614,9 +613,7 @@ function _buildEdgeMeta(edge, forward, pointStartIndex, pointCount) {
   if (edge.type === 'arc' && edge.arc) {
     const arc = edge.arc;
     let startAngle = arc.startAngle;
-    let endAngle = arc.endAngle;
-    let sweep = endAngle - startAngle;
-    if (sweep <= 0) sweep += Math.PI * 2;
+    const sweep = _getArcTraceSweep(arc);
     meta.center = { x: arc.center.x, y: arc.center.y };
     meta.radius = arc.radius;
     meta.startAngle = forward ? startAngle : startAngle + sweep;
@@ -669,11 +666,9 @@ function _tessellateEdge(edge, forward) {
   if (edge.type === 'arc' && edge.arc) {
     // Arc: tessellate into polyline
     const arc = edge.arc;
-    const numSegs = _profileCurveSegmentsForSweep(arc.endAngle - arc.startAngle);
-    let startA = arc.startAngle;
-    let endA = arc.endAngle;
-    let sweep = endA - startA;
-    if (sweep <= 0) sweep += Math.PI * 2;
+    const startA = arc.startAngle;
+    const sweep = _getArcTraceSweep(arc);
+    const numSegs = _profileCurveSegmentsForSweep(sweep);
     const pts = [];
     for (let i = 0; i <= numSegs; i++) {
       const a = startA + (i / numSegs) * sweep;
@@ -709,7 +704,9 @@ function _profileCurveSegments() {
 }
 
 function _profileCurveSegmentsForSweep(sweep) {
-  let normalized = sweep;
-  while (normalized <= 0) normalized += Math.PI * 2;
-  return Math.max(2, Math.ceil(_profileCurveSegments() * Math.abs(normalized) / (Math.PI * 2)));
+  const fullTurn = Math.PI * 2;
+  let magnitude = Math.abs(sweep);
+  while (magnitude > fullTurn) magnitude -= fullTurn;
+  if (magnitude <= 1e-12) return 2;
+  return Math.max(2, Math.ceil(_profileCurveSegments() * magnitude / fullTurn));
 }

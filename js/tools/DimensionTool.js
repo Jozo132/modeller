@@ -3,9 +3,10 @@
 // Click any primitive (line, circle, arc, point) and the tool automatically
 // detects the appropriate dimension type:
 //   - Single line → length (alt: ΔX, ΔY)
-//   - Single circle/arc → diameter (alt: radius)
+//   - Single circle → diameter (alt: radius)
+//   - Single arc → radius (alt: diameter)
 //   - Two parallel lines → distance between them
-//   - Two non-parallel lines → angle (alt: distance)
+//   - Two non-parallel lines → angle (alt: inverted angle, distance)
 //   - Two points → distance (alt: ΔX, ΔY)
 //   - Point + line → perpendicular distance
 //   - Circles/arcs → distance between centers
@@ -62,7 +63,11 @@ export class DimensionTool extends BaseTool {
     this._selectedTypeIdx = 0;
     if (this._allDimInfos.length > 0) {
       const info = this._allDimInfos[0];
-      this._dimInfo = { ...info, sourceA: entityA, sourceB: entityB || null };
+      this._dimInfo = {
+        ...info,
+        sourceA: info.sourceA ?? entityA,
+        sourceB: info.sourceB ?? entityB ?? null,
+      };
     } else {
       this._dimInfo = null;
     }
@@ -75,8 +80,8 @@ export class DimensionTool extends BaseTool {
     const info = this._allDimInfos[idx];
     this._dimInfo = {
       ...info,
-      sourceA: this._firstEntity,
-      sourceB: this._secondEntity || null,
+      sourceA: info.sourceA ?? this._firstEntity,
+      sourceB: info.sourceB ?? this._secondEntity ?? null,
     };
   }
 
@@ -118,7 +123,11 @@ export class DimensionTool extends BaseTool {
         // Single-entity dimension — proceed to offset step
         this._allDimInfos = allTypes;
         this._selectedTypeIdx = 0;
-        this._dimInfo = { ...allTypes[0], sourceA: entity, sourceB: null };
+        this._dimInfo = {
+          ...allTypes[0],
+          sourceA: allTypes[0].sourceA ?? entity,
+          sourceB: allTypes[0].sourceB ?? null,
+        };
         this.step = 2;
         this.setStatus(`Smart Dimension [${allTypes[0].label}]: Move to set offset, click to place. Click another entity to dimension between them.`);
         return;
@@ -141,7 +150,11 @@ export class DimensionTool extends BaseTool {
         if (allTypes.length > 0) {
           this._allDimInfos = allTypes;
           this._selectedTypeIdx = 0;
-          this._dimInfo = { ...allTypes[0], sourceA: entity, sourceB: null };
+          this._dimInfo = {
+            ...allTypes[0],
+            sourceA: allTypes[0].sourceA ?? entity,
+            sourceB: allTypes[0].sourceB ?? null,
+          };
           this.step = 2;
           this.setStatus(`Smart Dimension [${allTypes[0].label}]: Move to set offset, click to place`);
           return;
@@ -333,6 +346,8 @@ export class DimensionTool extends BaseTool {
       sourceBId: info.sourceB ? info.sourceB.id : null,
       sourceA: info.sourceA || null,
       sourceB: info.sourceB || null,
+      angleEndpointAKey: info.angleEndpointAKey ?? null,
+      angleEndpointBKey: info.angleEndpointBKey ?? null,
     });
     if (info.angleStart != null) dim._angleStart = info.angleStart;
     if (info.angleSweep != null) dim._angleSweep = info.angleSweep;

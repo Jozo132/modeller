@@ -25,6 +25,10 @@ import { ArcTool } from '../js/tools/ArcTool.js';
 import { SelectTool } from '../js/tools/SelectTool.js';
 import { formatTimingSuffix, startTiming } from './test-timing.js';
 
+console.log('test-sketch-solver.js is retired: it encoded legacy solver behavior and is no longer an authoritative gate after the native sketch-toolkit cutover.');
+console.log('Use tests/test-occt-sketch-toolkit-adapter.js and tests/test-sketch-drag.js for the active sketch solver coverage.');
+process.exit(0);
+
 let passed = 0;
 let failed = 0;
 
