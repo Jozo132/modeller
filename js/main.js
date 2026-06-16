@@ -44,6 +44,7 @@ import { chamferSketchCorner, filletSketchCorner, union } from './cad/Operations
 import { motionAnalysis } from './motion.js';
 import { setFlag } from './featureFlags.js';
 import { loadOcctKernelModule } from './cad/occt/index.js';
+import { ensureOcctGeometryResidentFromCheckpoint, getOcctSketchModelingPlanarFaceWires } from './cad/occt/OcctSketchModeling.js';
 import { loadSketchToolkit } from './cad/occt/SketchToolkitLoader.js';
 import { WorkerDispatcher, OCCT_BLEND_WORKER_PATH } from './workers/index.js';
 import { traceImageDataContours } from './image/trace-raster.js';
@@ -73,6 +74,7 @@ import {
   CAM_SIMULATION_DEFAULT_RESOLUTION,
   boundsFromGeometry,
   buildToolpathMotionTimeline,
+  createCamFaceSourceResolver,
   createDefaultCamConfig,
   downloadGCode,
   generateToolpaths,
@@ -1865,7 +1867,11 @@ class App {
 
     // Click
     canvas.addEventListener('click', (e) => {
-      if (movedSinceDown && this.activeTool.name === 'select' && !this._awaitingSketchPlane) {
+      const suppressClickAfterDrag = this._workspaceMode !== 'cam'
+        && movedSinceDown
+        && this.activeTool.name === 'select'
+        && !this._awaitingSketchPlane;
+      if (suppressClickAfterDrag) {
         movedSinceDown = false;
         return;
       }
@@ -9022,6 +9028,25 @@ class App {
     return Math.max(1e-6, Math.min(...values));
   }
 
+  _camFaceSourceResolver() {
+    return createCamFaceSourceResolver({
+      getReferenceGeometry: () => this._getCamReferenceGeometry(),
+      getReferenceTolerance: (geometry) => this._getCamReferenceTolerance(geometry),
+      getRenderedFaces: () => this._renderer3d?.getAllFaces?.() || [],
+      getExactPlanarFaceWires: ({ geometry, faceRef }) => {
+        if (!geometry || !faceRef || typeof faceRef !== 'object') return null;
+        const resident = ensureOcctGeometryResidentFromCheckpoint(geometry) || null;
+        const handle = Number(resident?.occtShapeHandle || geometry?.occtShapeHandle) || 0;
+        if (!(handle > 0)) return null;
+        return getOcctSketchModelingPlanarFaceWires(handle, faceRef);
+      },
+      computeGroupBoundaryLoops: (faceVertArrays) => this._computeGroupBoundaryLoops(faceVertArrays),
+      logEvent: (event, payload) => {
+        debug('[CAM PICK RESOLVER]', event, payload);
+      },
+    });
+  }
+
   _normalizeCamPanelStage(stage) {
     if (stage === 'geometry' || stage === 'operations' || stage === 'plan' || stage === 'tools') return 'toolpaths';
     return stage || 'toolpaths';
@@ -9088,6 +9113,7 @@ class App {
 
   _buildCamStockSection(camConfig, options = {}) {
     const section = this._createCamSection(options.title || 'Stock and Origin');
+    const isPickModeActive = (mode) => this._camPickMode?.mode === mode;
     section.appendChild(this._createParamRow('Stock Enabled', 'checkbox', camConfig.stock.enabled, (value) => {
       this._updateCamConfig((draft) => { draft.stock.enabled = value; });
     }));
@@ -9111,6 +9137,9 @@ class App {
       const actions = this._createCamActionRow();
       const fitButton = this._createCamButton('Fit Stock To Model', () => this._resetCamStockFromModel());
       actions.appendChild(fitButton);
+      actions.appendChild(this._createCamButton('Pick Stock Surface', () => this._startCamPickMode('stock-top-surface'), {
+        active: isPickModeActive('stock-top-surface'),
+      }));
       section.appendChild(actions);
     }
     return section;
@@ -9256,6 +9285,11 @@ class App {
         : `Pass ${activeOperationState.sequenceIndex + 1} of ${Math.max(1, generation.toolpaths.length)}. Removed about ${this._formatCamVolume(activeOperationState.removedVolume, camConfig.units)}; remaining about ${this._formatCamVolume(activeOperationState.remainingVolume, camConfig.units)}.`;
       section.appendChild(planNote);
     }
+    const operationActions = this._createCamActionRow();
+    operationActions.appendChild(this._createCamButton('Remove Operation', () => this._removeCamOperation(activeOperation.id), {
+      title: 'Remove the active CAM operation',
+    }));
+    section.appendChild(operationActions);
     section.appendChild(this._createParamRow('Name', 'text', activeOperation.name, (value) => this._setActiveCamOperationField('name', value)));
     section.appendChild(this._createParamRow('Enabled', 'checkbox', activeOperation.enabled, (value) => this._setActiveCamOperationField('enabled', value)));
     section.appendChild(this._createParamRow('Visible in Viewport', 'checkbox', activeOperation.visible !== false, (value) => this._setActiveCamOperationField('visible', value)));
@@ -10120,20 +10154,41 @@ class App {
 
   _startCamPickMode(mode) {
     const camConfig = this._ensureCamConfig();
-    const operation = this._getActiveCamOperation(camConfig);
-    if (!operation) {
-      this.setStatus('Add a CAM operation before picking model geometry.');
-      return;
+    let operationId = null;
+    if (mode !== 'stock-top-surface') {
+      const operation = this._getActiveCamOperation(camConfig);
+      if (!operation) {
+        this.setStatus('Add a CAM operation before picking model geometry.');
+        return;
+      }
+      operationId = operation.id;
     }
-    this._camPickMode = { mode, operationId: operation.id };
-    this._camPanelStage = 'toolpaths';
-    this._camPlanEditorFocus = 'operation';
+    this._camPickMode = { mode, operationId };
+    debug('[CAM PICK] armed', {
+      mode,
+      operationId,
+      workspaceMode: this._workspaceMode,
+    });
+    this._camPanelStage = mode === 'stock-top-surface' ? 'setup' : 'toolpaths';
+    this._camPlanEditorFocus = mode === 'stock-top-surface' ? 'stock' : 'operation';
     this._renderCamPanel();
     this.setStatus(`${this._camPickModeLabel(mode)}: click a model surface on the part.`);
   }
 
   _handleCamCanvasClick(event) {
     const hit = this._renderer3d.pickFace(event.clientX, event.clientY);
+    debug('[CAM PICK] click', {
+      mode: this._camPickMode?.mode || null,
+      operationId: this._camPickMode?.operationId || null,
+      point: { x: event.clientX, y: event.clientY },
+      hit: hit ? {
+        faceIndex: hit.faceIndex,
+        topoFaceId: hit.face?.topoFaceId ?? null,
+        faceGroup: hit.face?.faceGroup ?? null,
+        normal: hit.face?.normal || null,
+        vertexCount: Array.isArray(hit.face?.vertices) ? hit.face.vertices.length : 0,
+      } : null,
+    });
     if (!this._camPickMode) {
       if (hit) {
         this._renderer3d.selectFace(hit.faceIndex);
@@ -10147,8 +10202,8 @@ class App {
       this.setStatus(`${this._camPickModeLabel(this._camPickMode.mode)}: no face under cursor.`);
       return true;
     }
-    this._applyCamFacePick(hit, this._camPickMode);
-    this._camPickMode = null;
+    const applied = this._applyCamFacePick(hit, this._camPickMode);
+    if (applied) this._camPickMode = null;
     this._renderer3d.selectFace(hit.faceIndex);
     this._renderCamPanel();
     return true;
@@ -10156,15 +10211,93 @@ class App {
 
   _applyCamFacePick(faceHit, pickMode) {
     const targetOperationId = pickMode.operationId;
+    const resolver = this._camFaceSourceResolver();
+    debug('[CAM PICK] apply-start', {
+      mode: pickMode?.mode || null,
+      operationId: targetOperationId || null,
+      hit: {
+        faceIndex: faceHit?.faceIndex ?? null,
+        topoFaceId: faceHit?.face?.topoFaceId ?? null,
+        faceGroup: faceHit?.face?.faceGroup ?? null,
+      },
+    });
+    if (pickMode.mode === 'stock-top-surface') {
+      const sourceFaceHits = resolver.selectedCamSourceFaceHits(faceHit, this._selectedFaces);
+      const source = resolver.faceHitsToCamSource(sourceFaceHits);
+      const bounds = this._camLoopBounds(source?.loops || []);
+      const z = Number.isFinite(source?.z)
+        ? Number(source.z)
+        : sourceFaceHits.reduce((maxZ, hit) => {
+          const hitZ = resolver.faceHitZ(hit);
+          return Number.isFinite(hitZ) ? Math.max(maxZ, hitZ) : maxZ;
+        }, -Infinity);
+      this._updateCamConfig((draft) => {
+        if (bounds) {
+          draft.stock.min.x = bounds.minX;
+          draft.stock.min.y = bounds.minY;
+          draft.stock.max.x = bounds.maxX;
+          draft.stock.max.y = bounds.maxY;
+        }
+        draft.stock.max.z = z;
+        if (draft.clearanceZ < z) draft.clearanceZ = z;
+        if (draft.safeZ < z) draft.safeZ = z;
+      }, { render: false });
+      if (bounds) {
+        this.setStatus(`CAM stock top set from ${source?.label || `face ${faceHit.faceIndex}`}: bounds ${this._formatCamNumber(bounds.minX)},${this._formatCamNumber(bounds.minY)} -> ${this._formatCamNumber(bounds.maxX)},${this._formatCamNumber(bounds.maxY)} at Z${this._formatCamNumber(z)}.`);
+      } else {
+        this.setStatus(`CAM stock top surface set from face ${faceHit.faceIndex}: Z${this._formatCamNumber(z)}.`);
+      }
+      debug('[CAM PICK] apply-success', {
+        mode: pickMode.mode,
+        operationId: targetOperationId || null,
+        source: source ? {
+          label: source.label || null,
+          loopCount: Array.isArray(source.loops) ? source.loops.length : 0,
+          topoFaceId: source.topoFaceId ?? null,
+          faceGroup: source.faceGroup ?? null,
+        } : null,
+      });
+      return true;
+    }
     if (pickMode.mode === 'source-face') {
-      const sourceFaceHits = this._selectedCamSourceFaceHits(faceHit);
-      const source = this._faceHitsToCamSource(sourceFaceHits);
+      const sourceFaceHits = resolver.selectedCamSourceFaceHits(faceHit, this._selectedFaces);
+      const source = resolver.faceHitsToCamSource(sourceFaceHits);
       if (!source || !Array.isArray(source.loops) || source.loops.length === 0) {
-        this.setStatus('Selected surface does not have a usable boundary for 2.5D CAM.');
-        return;
+        warn('[CAM PICK] source-face rejected: no exact loops', {
+          mode: pickMode.mode,
+          operationId: targetOperationId || null,
+          hit: {
+            faceIndex: faceHit?.faceIndex ?? null,
+            topoFaceId: faceHit?.face?.topoFaceId ?? null,
+            faceGroup: faceHit?.face?.faceGroup ?? null,
+          },
+          sourceFaceHits: sourceFaceHits.map((hit) => ({
+            faceIndex: hit?.faceIndex ?? null,
+            topoFaceId: hit?.face?.topoFaceId ?? null,
+            faceGroup: hit?.face?.faceGroup ?? null,
+          })),
+        });
+        this.setStatus('Selected surface does not have a usable exact OCCT boundary for 2.5D CAM. Preview mesh geometry is not used as CAM source data.');
+        return false;
+      }
+      const sourcePlaneMessage = resolver.camFaceSourceSupportMessage(source);
+      if (sourcePlaneMessage) {
+        warn('[CAM PICK] source-face rejected: unsupported plane', {
+          mode: pickMode.mode,
+          operationId: targetOperationId || null,
+          source: {
+            label: source.label || null,
+            topoFaceId: source.topoFaceId ?? null,
+            faceGroup: source.faceGroup ?? null,
+            loopCount: Array.isArray(source.loops) ? source.loops.length : 0,
+            plane: source.plane || null,
+          },
+        });
+        this.setStatus(sourcePlaneMessage);
+        return false;
       }
       const inferredBottomZ = sourceFaceHits.reduce((minZ, hit) => {
-        const z = this._faceHitZ(hit);
+        const z = resolver.faceHitZ(hit);
         return Number.isFinite(z) ? Math.min(minZ, z) : minZ;
       }, Infinity);
       this._updateCamConfig((draft) => {
@@ -10174,17 +10307,36 @@ class App {
         if (Number.isFinite(source.tolerance) && source.tolerance > 0) draft.tolerance = source.tolerance;
         if (Number.isFinite(inferredBottomZ)) operation.bottomZ = inferredBottomZ;
       }, { render: false });
-      this.setStatus(`CAM source set to ${source.label || `face ${faceHit.faceIndex}`}; bottom height inferred as Z${this._formatCamNumber(Number.isFinite(inferredBottomZ) ? inferredBottomZ : this._faceHitZ(faceHit))}.`);
-      return;
+      info('[CAM PICK] source-face applied', {
+        operationId: targetOperationId || null,
+        source: {
+          label: source.label || null,
+          topoFaceId: source.topoFaceId ?? null,
+          faceGroup: source.faceGroup ?? null,
+          loopCount: Array.isArray(source.loops) ? source.loops.length : 0,
+          segmentLoopCount: Array.isArray(source.segmentLoops) ? source.segmentLoops.length : 0,
+          bottomZ: Number.isFinite(inferredBottomZ) ? inferredBottomZ : null,
+        },
+      });
+      this.setStatus(`CAM source set to ${source.label || `face ${faceHit.faceIndex}`}; bottom height inferred as Z${this._formatCamNumber(Number.isFinite(inferredBottomZ) ? inferredBottomZ : resolver.faceHitZ(faceHit))}.`);
+      return true;
     }
-    const z = this._faceHitZ(faceHit);
+    const z = resolver.faceHitZ(faceHit);
     this._updateCamConfig((draft) => {
       const operation = draft.operations.find((candidate) => candidate.id === targetOperationId);
       if (!operation) return;
       if (pickMode.mode === 'top-z') operation.topZ = z;
       else if (pickMode.mode === 'bottom-z') operation.bottomZ = z;
     }, { render: false });
+    debug('[CAM PICK] z-applied', {
+      mode: pickMode.mode,
+      operationId: targetOperationId || null,
+      z,
+      faceIndex: faceHit?.faceIndex ?? null,
+      topoFaceId: faceHit?.face?.topoFaceId ?? null,
+    });
     this.setStatus(`CAM ${pickMode.mode === 'top-z' ? 'top' : 'bottom'} height set from face ${faceHit.faceIndex}: Z${this._formatCamNumber(z)}.`);
+    return true;
   }
 
   _setActiveCamOperationSourceToStockOutline() {
@@ -10196,217 +10348,12 @@ class App {
     this.setStatus('CAM source set to stock outline.');
   }
 
-  _meshVerticesToCamLoop(vertices) {
-    if (!Array.isArray(vertices) || vertices.length < 3) return null;
-    const loop = [];
-    for (const vertex of vertices) {
-      const x = Number(vertex?.x);
-      const y = Number(vertex?.y);
-      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-      const previous = loop[loop.length - 1];
-      if (previous && Math.hypot(previous.x - x, previous.y - y) < 1e-8) continue;
-      loop.push({ x, y });
-    }
-    if (loop.length > 1) {
-      const first = loop[0];
-      const last = loop[loop.length - 1];
-      if (Math.hypot(first.x - last.x, first.y - last.y) < 1e-8) loop.pop();
-    }
-    return loop.length >= 3 ? loop : null;
-  }
-
-  _faceHitToCamLoop(faceHit) {
-    return this._meshVerticesToCamLoop(faceHit?.face?.vertices);
-  }
-
-  _selectedCamSourceFaceHits(faceHit) {
-    const selectedHits = this._selectedFaces instanceof Map ? Array.from(this._selectedFaces.values()) : [];
-    const normalizedSelectedHits = selectedHits.filter((hit) => Number.isFinite(Number(hit?.faceIndex)));
-    const useSelection = normalizedSelectedHits.length > 1
-      && normalizedSelectedHits.some((hit) => Number(hit.faceIndex) === Number(faceHit?.faceIndex));
-    const rawHits = useSelection ? normalizedSelectedHits : [faceHit];
-    const seen = new Set();
-    return rawHits.filter((hit) => {
-      const faceIndex = Number(hit?.faceIndex);
-      if (!Number.isFinite(faceIndex)) return false;
-      if (seen.has(faceIndex)) return false;
-      seen.add(faceIndex);
-      return true;
-    });
-  }
-
-  _faceHitsToCamSource(faceHits) {
-    const surfaces = (Array.isArray(faceHits) ? faceHits : [])
-      .map((faceHit) => this._faceHitToCamSourceSurface(faceHit))
-      .filter((surface) => surface && Array.isArray(surface.loops) && surface.loops.length > 0);
-    return this._combineCamSourceSurfaces(surfaces);
-  }
-
-  _combineCamSourceSurfaces(surfaces, baseSource = {}) {
-    const normalizedSurfaces = (Array.isArray(surfaces) ? surfaces : [])
-      .map((surface) => ({
-        referenceId: surface.referenceId || null,
-        label: surface.label || null,
-        faceIndex: Number.isFinite(Number(surface.faceIndex)) ? Number(surface.faceIndex) : null,
-        topoFaceId: Number.isFinite(Number(surface.topoFaceId)) ? Number(surface.topoFaceId) : null,
-        faceGroup: Number.isFinite(Number(surface.faceGroup)) ? Number(surface.faceGroup) : null,
-        edgeIndex: Number.isFinite(Number(surface.edgeIndex)) ? Number(surface.edgeIndex) : null,
-        tolerance: Number.isFinite(Number(surface.tolerance)) && Number(surface.tolerance) > 0 ? Number(surface.tolerance) : null,
-        z: Number.isFinite(Number(surface.z)) ? Number(surface.z) : null,
-        loops: Array.isArray(surface.loops) ? surface.loops : [],
-        segmentLoops: Array.isArray(surface.segmentLoops) ? surface.segmentLoops : [],
-      }))
-      .filter((surface) => surface.loops.length > 0);
-    if (normalizedSurfaces.length === 0) return null;
-
-    const faceGroup = normalizedSurfaces.length === 1 ? normalizedSurfaces[0].faceGroup : null;
-    const toleranceValues = normalizedSurfaces.map((surface) => surface.tolerance).filter((value) => Number.isFinite(value) && value > 0);
-    const primary = normalizedSurfaces[0];
-    return {
-      type: 'face',
-      referenceId: typeof baseSource.referenceId === 'string' && baseSource.referenceId
-        ? baseSource.referenceId
-        : (normalizedSurfaces.length === 1
-          ? primary.referenceId
-          : (faceGroup != null ? `facegroup-${faceGroup}` : 'face-selection')),
-      label: typeof baseSource.label === 'string' && baseSource.label
-        ? baseSource.label
-        : (normalizedSurfaces.length === 1 ? primary.label : `${normalizedSurfaces.length} surfaces`),
-      faceIndex: primary.faceIndex,
-      topoFaceId: normalizedSurfaces.length === 1 ? primary.topoFaceId : null,
-      faceGroup,
-      edgeIndex: normalizedSurfaces.length === 1 ? primary.edgeIndex : null,
-      tolerance: toleranceValues.length > 0 ? Math.min(...toleranceValues) : null,
-      loops: normalizedSurfaces.flatMap((surface) => surface.loops),
-      segmentLoops: normalizedSurfaces.flatMap((surface) => surface.segmentLoops || []),
-      surfaces: normalizedSurfaces,
-    };
-  }
-
-  _faceGroupHitToCamLoops(faceHit) {
-    return this._faceGroupHitToCamSourceGeometry(faceHit).loops;
-  }
-
-  _faceGroupHitToCamSourceGeometry(faceHit, geometry = this._getCamReferenceGeometry()) {
-    const faceGroup = Number.isFinite(Number(faceHit?.face?.faceGroup)) ? Number(faceHit.face.faceGroup) : null;
-    return this._faceGroupKeyToCamSourceGeometry(faceGroup, geometry);
-  }
-
-  _faceGroupKeyToCamSourceGeometry(faceGroup, geometry = this._getCamReferenceGeometry()) {
-    if (faceGroup == null || !this._renderer3d || typeof this._renderer3d.getAllFaces !== 'function') {
-      return { loops: [], segmentLoops: [], tolerance: this._getCamReferenceTolerance(geometry) };
-    }
-
-    const groupedFaces = (this._renderer3d.getAllFaces() || [])
-      .filter((candidate) => Number.isFinite(Number(candidate?.faceGroup)) && Number(candidate.faceGroup) === faceGroup);
-    if (groupedFaces.length === 0) {
-      return { loops: [], segmentLoops: [], tolerance: this._getCamReferenceTolerance(geometry) };
-    }
-
-    const topoFaces = typeof geometry?.topoBody?.faces === 'function' ? geometry.topoBody.faces() : [];
-    const topoFaceById = new Map((Array.isArray(topoFaces) ? topoFaces : []).map((topoFace) => [topoFace.id, topoFace]));
-    const exactLoops = [];
-    const exactSegmentLoops = [];
-    const tolerances = [];
-    const seenTopoFaceIds = new Set();
-    for (const candidate of groupedFaces) {
-      const topoFaceId = Number.isFinite(Number(candidate?.topoFaceId)) ? Number(candidate.topoFaceId) : null;
-      if (topoFaceId == null || seenTopoFaceIds.has(topoFaceId)) continue;
-      seenTopoFaceIds.add(topoFaceId);
-      const topoFace = topoFaceById.get(topoFaceId);
-      if (!topoFace) continue;
-      const tolerance = this._getCamToleranceForTopoFace(topoFace, geometry);
-      const sourceGeometry = this._topoFaceToCamSourceGeometry(topoFace, tolerance);
-      if (sourceGeometry.loops.length === 0) continue;
-      exactLoops.push(...sourceGeometry.loops);
-      if (sourceGeometry.segmentLoops.length > 0) exactSegmentLoops.push(...sourceGeometry.segmentLoops);
-      if (Number.isFinite(tolerance) && tolerance > 0) tolerances.push(tolerance);
-    }
-    if (exactLoops.length > 0) {
-      return {
-        loops: exactLoops,
-        segmentLoops: exactSegmentLoops,
-        tolerance: tolerances.length > 0 ? Math.min(...tolerances) : this._getCamReferenceTolerance(geometry),
-      };
-    }
-
-    const groupedFaceVertices = groupedFaces
-      .map((candidate) => Array.isArray(candidate?.vertices) ? candidate.vertices : [])
-      .filter((vertices) => vertices.length >= 3);
-    if (groupedFaceVertices.length === 0) {
-      return { loops: [], segmentLoops: [], tolerance: this._getCamReferenceTolerance(geometry) };
-    }
-
-    return {
-      loops: this._computeGroupBoundaryLoops(groupedFaceVertices)
-        .map((loop) => this._meshVerticesToCamLoop(loop))
-        .filter((loop) => Array.isArray(loop) && loop.length >= 3),
-      segmentLoops: [],
-      tolerance: this._getCamReferenceTolerance(geometry),
-    };
-  }
-
-  _faceHitToCamSourceSurface(faceHit) {
-    const geometry = this._getCamReferenceGeometry();
-    const faceGroup = Number.isFinite(Number(faceHit?.face?.faceGroup)) ? Number(faceHit.face.faceGroup) : null;
-    const groupSourceGeometry = this._faceGroupHitToCamSourceGeometry(faceHit, geometry);
-    if (groupSourceGeometry.loops.length > 0) {
-      return {
-        referenceId: faceGroup != null ? `facegroup-${faceGroup}` : `face-${faceHit.faceIndex}`,
-        label: faceGroup != null ? `Surface ${faceGroup}` : `Face ${faceHit.faceIndex}`,
-        faceIndex: faceHit.faceIndex,
-        topoFaceId: Number.isFinite(Number(faceHit?.face?.topoFaceId)) ? Number(faceHit.face.topoFaceId) : null,
-        faceGroup,
-        tolerance: groupSourceGeometry.tolerance,
-        z: this._faceHitZ(faceHit),
-        loops: groupSourceGeometry.loops,
-        segmentLoops: groupSourceGeometry.segmentLoops,
-      };
-    }
-
-    const topoFaceId = faceHit?.face?.topoFaceId;
-    if (Number.isFinite(topoFaceId) && typeof geometry?.topoBody?.faces === 'function') {
-      const topoFace = geometry.topoBody.faces().find((candidate) => candidate.id === topoFaceId);
-      const sourceGeometry = this._topoFaceToCamSourceGeometry(topoFace, this._getCamReferenceTolerance(geometry));
-      if (sourceGeometry.loops.length > 0) {
-        return {
-          referenceId: `topoface-${topoFaceId}`,
-          label: `Face ${topoFaceId}`,
-          faceIndex: faceHit.faceIndex,
-          topoFaceId,
-          faceGroup,
-          tolerance: this._getCamToleranceForTopoFace(topoFace, geometry),
-          z: this._faceHitZ(faceHit),
-          loops: sourceGeometry.loops,
-          segmentLoops: sourceGeometry.segmentLoops,
-        };
-      }
-    }
-
-    const fallbackLoop = this._faceHitToCamLoop(faceHit);
-    if (!fallbackLoop) return null;
-    return {
-      referenceId: `face-${faceHit.faceIndex}`,
-      label: `Face ${faceHit.faceIndex}`,
-      faceIndex: faceHit.faceIndex,
-      topoFaceId: Number.isFinite(Number(faceHit?.face?.topoFaceId)) ? Number(faceHit.face.topoFaceId) : null,
-      faceGroup,
-      tolerance: this._getCamReferenceTolerance(geometry),
-      z: this._faceHitZ(faceHit),
-      loops: [fallbackLoop],
-      segmentLoops: [],
-    };
-  }
-
-  _faceHitToCamSource(faceHit) {
-    return this._faceHitsToCamSource([faceHit]);
-  }
-
   _hydrateCamConfigSources(camConfig) {
     if (!camConfig || !Array.isArray(camConfig.operations)) return;
+    const resolver = this._camFaceSourceResolver();
     for (const operation of camConfig.operations) {
       if (operation?.source?.type !== 'face') continue;
-      const hydrated = this._hydrateCamFaceSource(operation.source);
+      const hydrated = resolver.hydrateCamFaceSource(operation.source);
       if (!hydrated) continue;
       operation.source = hydrated;
       if (Number.isFinite(hydrated.tolerance) && hydrated.tolerance > 0) {
@@ -10417,384 +10364,8 @@ class App {
     }
   }
 
-  _hydrateCamFaceSource(source) {
-    const sourceSurfaces = Array.isArray(source?.surfaces) && source.surfaces.length > 0 ? source.surfaces : [source];
-    const hydratedSurfaces = sourceSurfaces
-      .map((surface) => this._hydrateCamFaceSourceSurface(surface))
-      .filter((surface) => surface && Array.isArray(surface.loops) && surface.loops.length > 0);
-    if (hydratedSurfaces.length === 0) return source;
-    return this._combineCamSourceSurfaces(hydratedSurfaces, source) || source;
-  }
-
-  _hydrateCamFaceSourceSurface(surface) {
-    const geometry = this._getCamReferenceGeometry();
-    const faceGroup = Number.isFinite(Number(surface?.faceGroup))
-      ? Number(surface.faceGroup)
-      : this._camSourceFaceGroupFromReferenceId(surface?.referenceId);
-    if (faceGroup != null) {
-      const groupSourceGeometry = this._faceGroupKeyToCamSourceGeometry(faceGroup, geometry);
-      if (groupSourceGeometry.loops.length > 0) {
-        return {
-          ...surface,
-          referenceId: `facegroup-${faceGroup}`,
-          label: surface?.label || `Surface ${faceGroup}`,
-          faceGroup,
-          loops: groupSourceGeometry.loops,
-          segmentLoops: groupSourceGeometry.segmentLoops,
-          tolerance: groupSourceGeometry.tolerance,
-        };
-      }
-    }
-
-    const topoFaceId = Number.isFinite(Number(surface?.topoFaceId))
-      ? Number(surface.topoFaceId)
-      : this._camSourceTopoFaceIdFromReferenceId(surface?.referenceId);
-    if (topoFaceId != null && typeof geometry?.topoBody?.faces === 'function') {
-      const topoFace = geometry.topoBody.faces().find((candidate) => candidate.id === topoFaceId);
-      const tolerance = this._getCamToleranceForTopoFace(topoFace, geometry);
-      const sourceGeometry = this._topoFaceToCamSourceGeometry(topoFace, tolerance);
-      if (sourceGeometry.loops.length > 0) {
-        return {
-          ...surface,
-          referenceId: `topoface-${topoFaceId}`,
-          label: surface?.label || `Face ${topoFaceId}`,
-          topoFaceId,
-          loops: sourceGeometry.loops,
-          segmentLoops: sourceGeometry.segmentLoops,
-          tolerance,
-        };
-      }
-    }
-
-    return surface;
-  }
-
-  _camSourceFaceGroupFromReferenceId(referenceId) {
-    const match = typeof referenceId === 'string' ? /^facegroup-(-?\d+)$/.exec(referenceId.trim()) : null;
-    return match ? Number(match[1]) : null;
-  }
-
-  _camSourceTopoFaceIdFromReferenceId(referenceId) {
-    const match = typeof referenceId === 'string' ? /^topoface-(-?\d+)$/.exec(referenceId.trim()) : null;
-    return match ? Number(match[1]) : null;
-  }
-
-  _getCamToleranceForTopoFace(topoFace, geometry = this._getCamReferenceGeometry()) {
-    const values = [];
-    if (Number.isFinite(topoFace?.tolerance) && topoFace.tolerance > 0) values.push(topoFace.tolerance);
-    for (const loop of topoFace?.allLoops?.() || []) {
-      for (const coedge of loop?.coedges || []) {
-        if (Number.isFinite(coedge?.edge?.tolerance) && coedge.edge.tolerance > 0) values.push(coedge.edge.tolerance);
-      }
-    }
-    if (values.length === 0) return this._getCamReferenceTolerance(geometry);
-    return Math.max(1e-6, Math.min(...values));
-  }
-
-  _topoFaceToCamSourceGeometry(topoFace, tolerance) {
-    if (!topoFace || typeof topoFace.allLoops !== 'function') return { loops: [], segmentLoops: [] };
-    const loops = [];
-    const segmentLoops = [];
-    const tol = Number.isFinite(tolerance) && tolerance > 0 ? tolerance : 0.001;
-    for (const loop of topoFace.allLoops()) {
-      const points = [];
-      const segments = [];
-      let hasExactLoop = true;
-      for (const coedge of loop?.coedges || []) {
-        const coedgeGeometry = this._sampleCamCoedgeGeometry(coedge, tol);
-        for (let index = 0; index < coedgeGeometry.points.length; index++) {
-          const point = coedgeGeometry.points[index];
-          if (!Number.isFinite(point?.x) || !Number.isFinite(point?.y)) continue;
-          const previous = points[points.length - 1];
-          if (previous && Math.hypot(previous.x - point.x, previous.y - point.y) <= Math.max(tol, 1e-8)) continue;
-          points.push({ x: point.x, y: point.y });
-        }
-        if (hasExactLoop) {
-          if (!Array.isArray(coedgeGeometry.exactSegments) || coedgeGeometry.exactSegments.length === 0) {
-            hasExactLoop = false;
-          } else {
-            segments.push(...coedgeGeometry.exactSegments);
-          }
-        }
-      }
-      if (points.length > 1) {
-        const first = points[0];
-        const last = points[points.length - 1];
-        if (Math.hypot(first.x - last.x, first.y - last.y) <= Math.max(tol, 1e-8)) points.pop();
-      }
-      if (points.length >= 3) {
-        loops.push(points);
-        if (hasExactLoop && segments.length > 0) segmentLoops.push(segments);
-      }
-    }
-    return { loops, segmentLoops };
-  }
-
-  _topoFaceToCamLoops(topoFace, tolerance) {
-    return this._topoFaceToCamSourceGeometry(topoFace, tolerance).loops;
-  }
-
-  _sampleCamCoedgeGeometry(coedge, tolerance) {
-    const MIN_CURVE_DOMAIN_RANGE = 1e-12;
-    const start = coedge?.startVertex?.()?.point;
-    const end = coedge?.endVertex?.()?.point;
-    const edgeCurve = coedge?.edge?.curve;
-    if (!edgeCurve || typeof edgeCurve.evaluate !== 'function') {
-      const lineSegment = this._lineSegmentFromCamPoints(start, end);
-      return {
-        points: [start, end].filter(Boolean),
-        exactSegments: lineSegment ? [lineSegment] : [],
-      };
-    }
-    let curve = edgeCurve;
-    if (coedge?.sameSense === false && typeof edgeCurve.reversed === 'function') {
-      curve = edgeCurve.reversed();
-    }
-    const domainStart = Number.isFinite(curve.uMin) ? curve.uMin : curve.knots?.[0];
-    const domainEnd = Number.isFinite(curve.uMax) ? curve.uMax : curve.knots?.[curve.knots.length - 1];
-    if (!Number.isFinite(domainStart) || !Number.isFinite(domainEnd) || Math.abs(domainEnd - domainStart) <= MIN_CURVE_DOMAIN_RANGE) {
-      const lineSegment = this._lineSegmentFromCamPoints(start, end);
-      return {
-        points: [start, end].filter(Boolean),
-        exactSegments: lineSegment ? [lineSegment] : [],
-      };
-    }
-    return {
-      points: this._sampleCamCurve(curve, domainStart, domainEnd, tolerance),
-      exactSegments: this._curveToCamSegments(curve, tolerance),
-    };
-  }
-
-  _sampleCamCoedge(coedge, tolerance) {
-    return this._sampleCamCoedgeGeometry(coedge, tolerance).points;
-  }
-
-  _sampleCamCurve(curve, tStart, tEnd, tolerance) {
-    const MIN_SEGMENT_LENGTH_SQUARED = 1e-24;
-    const pStart = curve.evaluate(tStart);
-    const pEnd = curve.evaluate(tEnd);
-    const points = [pStart];
-    const maxDepth = 12;
-    const tol = Math.max(1e-6, Number(tolerance) || 0.001);
-    const distancePointToSegment = (point, a, b) => {
-      const abx = b.x - a.x;
-      const aby = b.y - a.y;
-      const abz = b.z - a.z;
-      const apx = point.x - a.x;
-      const apy = point.y - a.y;
-      const apz = point.z - a.z;
-      const denom = abx * abx + aby * aby + abz * abz;
-      if (denom <= MIN_SEGMENT_LENGTH_SQUARED) return Math.hypot(apx, apy, apz);
-      const ratio = Math.max(0, Math.min(1, (apx * abx + apy * aby + apz * abz) / denom));
-      const px = a.x + abx * ratio;
-      const py = a.y + aby * ratio;
-      const pz = a.z + abz * ratio;
-      return Math.hypot(point.x - px, point.y - py, point.z - pz);
-    };
-    const append = (aT, aP, bT, bP, depth) => {
-      const midT = (aT + bT) * 0.5;
-      const midP = curve.evaluate(midT);
-      if (depth < maxDepth && distancePointToSegment(midP, aP, bP) > tol) {
-        append(aT, aP, midT, midP, depth + 1);
-        append(midT, midP, bT, bP, depth + 1);
-        return;
-      }
-      points.push(bP);
-    };
-    append(tStart, pStart, tEnd, pEnd, 0);
-    return points;
-  }
-
-  _curveToCamSegments(curve, tolerance) {
-    const spans = this._splitCamCurveIntoBezierSpans(curve);
-    if (!Array.isArray(spans) || spans.length === 0) return null;
-    const segments = [];
-    for (const span of spans) {
-      const segment = this._curveSpanToCamSegment(span, tolerance);
-      if (!segment) return null;
-      segments.push(segment);
-    }
-    return segments;
-  }
-
-  _splitCamCurveIntoBezierSpans(curve) {
-    if (!curve || typeof curve !== 'object') return null;
-    const spans = [curve];
-    const knots = Array.isArray(curve.knots) ? curve.knots : [];
-    const domainStart = Number.isFinite(curve.uMin) ? curve.uMin : knots[0];
-    const domainEnd = Number.isFinite(curve.uMax) ? curve.uMax : knots[knots.length - 1];
-    if (!Number.isFinite(domainStart) || !Number.isFinite(domainEnd)) return null;
-    const splitParameters = [];
-    for (const knot of knots) {
-      const value = Number(knot);
-      if (!Number.isFinite(value) || value <= domainStart + 1e-10 || value >= domainEnd - 1e-10) continue;
-      if (splitParameters.every((candidate) => Math.abs(candidate - value) > 1e-10)) splitParameters.push(value);
-    }
-    splitParameters.sort((left, right) => left - right);
-    for (const parameter of splitParameters) {
-      for (let index = 0; index < spans.length; index++) {
-        const span = spans[index];
-        const spanStart = Number.isFinite(span.uMin) ? span.uMin : span.knots?.[0];
-        const spanEnd = Number.isFinite(span.uMax) ? span.uMax : span.knots?.[span.knots.length - 1];
-        if (!(parameter > spanStart + 1e-10 && parameter < spanEnd - 1e-10)) continue;
-        const split = typeof span.splitAt === 'function' ? span.splitAt(parameter) : null;
-        if (!Array.isArray(split) || split.length !== 2) return null;
-        spans.splice(index, 1, split[0], split[1]);
-        break;
-      }
-    }
-    return spans;
-  }
-
-  _curveSpanToCamSegment(curve, tolerance) {
-    if (this._isStraightCamCurve(curve)) {
-      const start = this._camPoint2(curve?.evaluate?.(curve.uMin) || curve?.controlPoints?.[0]);
-      const end = this._camPoint2(curve?.evaluate?.(curve.uMax) || curve?.controlPoints?.[curve.controlPoints.length - 1]);
-      return this._lineSegmentFromCamPoints(start, end);
-    }
-
-    const cubicSegment = this._curveSpanToCamCubicSegment(curve, tolerance);
-    if (cubicSegment) return cubicSegment;
-
-    const arcSegment = this._curveSpanToCamArcSegment(curve, tolerance);
-    if (arcSegment) return arcSegment;
-
-    return null;
-  }
-
-  _curveSpanToCamArcSegment(curve, tolerance) {
-    if (!curve || curve.degree !== 2 || !Array.isArray(curve.controlPoints) || curve.controlPoints.length !== 3) return null;
-    if (!this._looksLikeCircularArcSpan(curve)) return null;
-    const start3 = curve.evaluate(curve.uMin);
-    const end3 = curve.evaluate(curve.uMax);
-    const mid3 = curve.evaluate((curve.uMin + curve.uMax) * 0.5);
-    const start = this._camPoint2(start3);
-    const end = this._camPoint2(end3);
-    const mid = this._camPoint2(mid3);
-    if (!start || !end || !mid) return null;
-    const center = this._camCircumcenter(start, mid, end);
-    if (!center) return null;
-    const radius = Math.hypot(start.x - center.x, start.y - center.y);
-    const checkTolerance = Math.max(1e-5, Number(tolerance) || 0.001, radius * 1e-5);
-    for (const sampleT of [0.25, 0.5, 0.75]) {
-      const samplePoint = this._camPoint2(curve.evaluate(curve.uMin + (curve.uMax - curve.uMin) * sampleT));
-      if (!samplePoint) return null;
-      const sampleRadius = Math.hypot(samplePoint.x - center.x, samplePoint.y - center.y);
-      if (Math.abs(sampleRadius - radius) > checkTolerance) return null;
-    }
-    const sweep = (start.x - center.x) * (end.y - center.y) - (start.y - center.y) * (end.x - center.x);
-    if (Math.abs(sweep) <= 1e-9) return null;
-    return {
-      type: 'arc',
-      start,
-      end,
-      center,
-      clockwise: sweep < 0,
-    };
-  }
-
-  _curveSpanToCamCubicSegment(curve, tolerance) {
-    if (!curve || curve.degree !== 3 || !Array.isArray(curve.controlPoints) || curve.controlPoints.length !== 4) return null;
-    if (!this._curveHasUnitWeights(curve)) return null;
-    if (!this._camPointsSharePlane(curve.controlPoints, tolerance)) return null;
-    const start = this._camPoint2(curve.controlPoints[0]);
-    const control1 = this._camPoint2(curve.controlPoints[1]);
-    const control2 = this._camPoint2(curve.controlPoints[2]);
-    const end = this._camPoint2(curve.controlPoints[3]);
-    if (!start || !control1 || !control2 || !end) return null;
-    return {
-      type: 'cubic',
-      start,
-      control1,
-      control2,
-      end,
-    };
-  }
-
-  _lineSegmentFromCamPoints(start, end) {
-    const a = this._camPoint2(start);
-    const b = this._camPoint2(end);
-    if (!a || !b) return null;
-    if (Math.hypot(a.x - b.x, a.y - b.y) <= 1e-9) return null;
-    return { type: 'line', start: a, end: b };
-  }
-
-  _camPoint2(point) {
-    const x = Number(point?.x);
-    const y = Number(point?.y);
-    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
-    return { x, y };
-  }
-
-  _camPointsSharePlane(points, tolerance) {
-    const values = (Array.isArray(points) ? points : []).map((point) => Number(point?.z)).filter((value) => Number.isFinite(value));
-    if (values.length <= 1) return true;
-    const min = Math.min(...values);
-    const max = Math.max(...values);
-    return Math.abs(max - min) <= Math.max(1e-6, Number(tolerance) || 0.001);
-  }
-
-  _curveHasUnitWeights(curve) {
-    const weights = Array.isArray(curve?.weights) ? curve.weights : [];
-    if (weights.length === 0) return true;
-    return weights.every((weight) => Math.abs((Number(weight) || 1) - 1) <= 1e-8);
-  }
-
-  _looksLikeCircularArcSpan(curve) {
-    const weights = Array.isArray(curve?.weights) ? curve.weights.map((weight) => Number(weight)) : [];
-    if (weights.length !== 3 || weights.some((weight) => !Number.isFinite(weight) || Math.abs(weight) <= 1e-12)) return false;
-    const normalizedMid = weights[1] / weights[0];
-    const normalizedEnd = weights[2] / weights[0];
-    return Math.abs(normalizedEnd - 1) <= 1e-6 && Math.abs(normalizedMid - 1) > 1e-6;
-  }
-
-  _isStraightCamCurve(curve) {
-    if (!curve) return true;
-    if (curve.degree === 1 && curve.controlPoints && curve.controlPoints.length === 2) return true;
-    const points = Array.isArray(curve.controlPoints) ? curve.controlPoints : [];
-    if (points.length < 2) return true;
-    const start = points[0];
-    const end = points[points.length - 1];
-    const dx = end.x - start.x;
-    const dy = end.y - start.y;
-    const dz = (Number(end.z) || 0) - (Number(start.z) || 0);
-    const length = Math.hypot(dx, dy, dz);
-    if (length < 1e-12) return true;
-    for (let index = 1; index < points.length - 1; index++) {
-      const point = points[index];
-      const px = point.x - start.x;
-      const py = point.y - start.y;
-      const pz = (Number(point.z) || 0) - (Number(start.z) || 0);
-      const cx = dy * pz - dz * py;
-      const cy = dz * px - dx * pz;
-      const cz = dx * py - dy * px;
-      if (Math.hypot(cx, cy, cz) / length > 1e-6) return false;
-    }
-    return true;
-  }
-
-  _camCircumcenter(a, b, c) {
-    const d = 2 * (a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y));
-    if (Math.abs(d) <= 1e-12) return null;
-    const aSq = a.x * a.x + a.y * a.y;
-    const bSq = b.x * b.x + b.y * b.y;
-    const cSq = c.x * c.x + c.y * c.y;
-    return {
-      x: (aSq * (b.y - c.y) + bSq * (c.y - a.y) + cSq * (a.y - b.y)) / d,
-      y: (aSq * (c.x - b.x) + bSq * (a.x - c.x) + cSq * (b.x - a.x)) / d,
-    };
-  }
-
-  _faceHitZ(faceHit) {
-    const vertices = faceHit?.face?.vertices;
-    if (Array.isArray(vertices) && vertices.length > 0) {
-      const zValues = vertices.map((vertex) => Number(vertex.z)).filter(Number.isFinite);
-      if (zValues.length > 0) return zValues.reduce((sum, z) => sum + z, 0) / zValues.length;
-    }
-    return Number(faceHit?.point?.z) || 0;
-  }
-
   _camPickModeLabel(mode) {
+    if (mode === 'stock-top-surface') return 'Pick stock top surface';
     if (mode === 'source-face') return 'Pick operation source surface';
     if (mode === 'top-z') return 'Pick tool start/top surface';
     if (mode === 'bottom-z') return 'Pick tool end/bottom surface';
@@ -10805,6 +10376,26 @@ class App {
     const number = Number(value);
     if (!Number.isFinite(number)) return '0';
     return number.toFixed(3).replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1');
+  }
+
+  _camLoopBounds(loops) {
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const loop of Array.isArray(loops) ? loops : []) {
+      for (const point of Array.isArray(loop) ? loop : []) {
+        const x = Number(point?.x);
+        const y = Number(point?.y);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x);
+        maxY = Math.max(maxY, y);
+      }
+    }
+    if (![minX, minY, maxX, maxY].every(Number.isFinite)) return null;
+    return { minX, minY, maxX, maxY };
   }
 
   _restoreSessionState(sessionState, orbitHint) {

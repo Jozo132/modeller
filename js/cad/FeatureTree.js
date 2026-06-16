@@ -128,14 +128,30 @@ export class FeatureTree {
     return !!entry && entry.version === expectedVersion;
   }
 
+  _readSerializedOcctCheckpoint(entry) {
+    if (!entry || typeof entry !== 'object') return null;
+    if (entry.occt && typeof entry.occt === 'object') return entry.occt;
+    if (typeof entry.brep === 'string' && entry.brep.length > 0) return entry;
+    if (typeof entry.payload === 'string' && entry.payload.length > 0) {
+      return {
+        brep: entry.payload,
+        hash: typeof entry.hash === 'string' ? entry.hash : null,
+        version: typeof entry.version === 'string' ? entry.version : null,
+        revision: entry.revision && typeof entry.revision === 'object' ? entry.revision : null,
+      };
+    }
+    return null;
+  }
+
   _hasOcctCheckpoint(entry) {
-    return !!entry?.occt &&
-      typeof entry.occt === 'object' &&
-      typeof entry.occt.brep === 'string' &&
-      entry.occt.brep.length > 0;
+    const checkpoint = this._readSerializedOcctCheckpoint(entry);
+    return !!checkpoint &&
+      typeof checkpoint.brep === 'string' &&
+      checkpoint.brep.length > 0;
   }
 
   _getOcctCheckpointMeta(checkpoint) {
+    checkpoint = this._readSerializedOcctCheckpoint(checkpoint) || checkpoint;
     const revision = checkpoint?.revision && typeof checkpoint.revision === 'object'
       ? checkpoint.revision
       : null;
@@ -555,18 +571,19 @@ export class FeatureTree {
   }
 
   _buildSolidResultFromSerializedCheckpoint(featureId, feature, entry, deps, cbrepCacheVersion = null) {
-    if (this._hasOcctCheckpoint(entry)) {
+    const checkpoint = this._readSerializedOcctCheckpoint(entry);
+    if (checkpoint) {
       if (entry.mesh && Array.isArray(entry.mesh.faces) && entry.mesh.faces.length > 0) {
         return this._buildSolidResultFromCheckpointMesh(
           featureId,
-          entry.occt,
+          checkpoint,
           entry.mesh,
           cbrepCacheVersion,
         );
       }
       return this._buildSolidResultFromOcctCheckpoint(
         featureId,
-        entry.occt,
+        checkpoint,
         deps,
         cbrepCacheVersion,
         entry.mesh || null,
@@ -1660,10 +1677,11 @@ export class FeatureTree {
       if (!result || result.type !== 'solid') continue;
 
       if (this._hasOcctCheckpoint(entry)) {
-        const checkpointMeta = this._getOcctCheckpointMeta(entry.occt);
+        const checkpoint = this._readSerializedOcctCheckpoint(entry);
+        const checkpointMeta = this._getOcctCheckpointMeta(checkpoint);
         const liveTopologyHash = result.occtTopologyHash || result._occtModeling?.topology?.topologyHash || result.geometry?._occtModeling?.topology?.topologyHash || null;
         if (!liveTopologyHash || !checkpointMeta.topologyHash || liveTopologyHash === checkpointMeta.topologyHash) {
-          this._rememberOcctCheckpoint(result, entry.occt);
+          this._rememberOcctCheckpoint(result, checkpoint);
         }
       }
     }

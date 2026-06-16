@@ -45,6 +45,7 @@
     "test:tess-sweep": "node tests/test-tess-dihedral-sweep.js",
     "lint:evaluator": "node tools/check-evaluator-bypass.js",
     "cli": "node tools/cad-cli.mjs",
+    "refresh:cmod": "node tools/refresh-cmod-metadata.mjs",
     "render:cmod": "node tools/render-cmod.js",
     "asbuild:debug": "asc assembly/index.ts --target debug",
     "asbuild:release": "asc assembly/index.ts --target release",

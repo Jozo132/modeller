@@ -259,6 +259,8 @@ function _extractTopoBodyFromSelectionContext(selectionContext) {
   if (!selectionContext) return null;
   if (selectionContext.body) return selectionContext.body;
   if (selectionContext.solid?.body) return selectionContext.solid.body;
+  if (selectionContext.geometry?.topoBody) return selectionContext.geometry.topoBody;
+  if (selectionContext.solid?.geometry?.topoBody) return selectionContext.solid.geometry.topoBody;
   if (selectionContext.brep?.shells) return selectionContext.brep;
   return null;
 }

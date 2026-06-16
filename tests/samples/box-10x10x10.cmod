@@ -1,6 +1,6 @@
 {
   "format": "CAD Modeller Open Design",
-  "version": 1,
+  "version": 2,
   "scene": null,
   "layers": [
     {
@@ -53,7 +53,8 @@
                   "color": null,
                   "x": 0,
                   "y": 0,
-                  "fixed": false
+                  "fixed": false,
+                  "standalone": false
                 },
                 {
                   "id": 2,
@@ -62,7 +63,8 @@
                   "color": null,
                   "x": 10,
                   "y": 0,
-                  "fixed": false
+                  "fixed": false,
+                  "standalone": false
                 },
                 {
                   "id": 4,
@@ -71,7 +73,8 @@
                   "color": null,
                   "x": 10,
                   "y": 10,
-                  "fixed": false
+                  "fixed": false,
+                  "standalone": false
                 },
                 {
                   "id": 6,
@@ -80,7 +83,8 @@
                   "color": null,
                   "x": 0,
                   "y": 10,
-                  "fixed": false
+                  "fixed": false,
+                  "standalone": false
                 }
               ],
               "segments": [
@@ -119,9 +123,13 @@
               ],
               "circles": [],
               "arcs": [],
+              "splines": [],
+              "beziers": [],
               "constraints": [],
+              "images": [],
               "texts": [],
               "dimensions": [],
+              "groups": [],
               "variables": {}
             }
           },
@@ -168,11 +176,2514 @@
           "symmetric": false,
           "operation": "new",
           "extrudeType": "distance",
+          "targetFaceRef": null,
+          "surfaceOffset": 0,
           "taper": false,
           "taperAngle": 5,
           "taperInward": true
         }
-      ]
+      ],
+      "checkpoints": {
+        "feature_2": {
+          "occt": {
+            "checkpointSchemaVersion": 1,
+            "brep": "DBRep_DrawableShape\n\nCASCADE Topology V3, (c) Open Cascade\nLocations 2\n1\n              1               0               0               0 \n              0               1               0               0 \n              0               0               1              10 \n2  1 -1 0\nCurve2ds 0\nCurves 8\n1 0 0 0 0 0 1 \n1 10 0 0 0 0 1 \n1 0 0 0 1 0 0 \n1 10 10 0 0 0 1 \n1 10 0 0 0 1 0 \n1 0 10 0 0 0 1 \n1 10 10 0 -1 0 0 \n1 0 10 0 0 -1 0 \nPolygon3D 0\nPolygonOnTriangulations 20\n2 1 2 \np 0.00845727933383241 1 0 10 \n2 4 3 \np 0.00845727933383241 1 0 10 \n2 4 3 \np 0.00845727933383241 1 0 10 \n2 1 2 \np 0.00845727933383241 1 0 10 \n2 1 4 \np 0.00845727933383241 1 0 10 \n2 1 2 \np 0.00845727933383241 1 0 10 \n2 2 3 \np 0.00845727933383241 1 0 10 \n2 4 3 \np 0.00845727933383241 1 0 10 \n2 1 2 \np 0.00845727933383241 1 0 10 \n2 1 4 \np 0.00845727933383241 1 0 10 \n2 2 3 \np 0.00845727933383241 1 0 10 \n2 2 3 \np 0.00845727933383241 1 0 10 \n2 4 3 \np 0.00845727933383241 1 0 10 \n2 1 2 \np 0.00845727933383241 1 0 10 \n2 1 4 \np 0.00845727933383241 1 0 10 \n2 3 4 \np 0.00845727933383241 1 0 10 \n2 2 3 \np 0.00845727933383241 1 0 10 \n2 1 4 \np 0.00845727933383241 1 0 10 \n2 4 1 \np 0.00845727933383241 1 0 10 \n2 2 3 \np 0.00845727933383241 1 0 10 \nSurfaces 5\n1 0 0 0 0 1 0 1 0 0 0 0 -1 \n1 10 0 0 -1 0 0 0 1 0 0 0 -1 \n1 10 10 0 0 -1 0 -1 0 0 -0 -0 -1 \n1 0 10 0 1 0 -0 0 -1 0 0 -0 -1 \n1 0 0 0 0 0 1 1 0 0 0 1 0 \nTriangulations 5\n4 2 1 0 0\n0 0 0 0 0 10 10 0 10 10 0 0 0 0 0 -10 10 -10 10 0 4 1 2 4 2 3 \n4 2 1 0 8.88178419700125e-16\n0 10 0 0 10 10 0 0 10 0 0 0 0 0 0 -10 10 -10 10 0 4 1 2 4 2 3 \n4 2 1 0 0\n10 0 0 10 0 10 10 10 10 10 10 0 0 0 0 -10 10 -10 10 0 4 1 2 4 2 3 \n4 2 1 0 0\n0 0 0 10 0 0 10 10 0 0 10 0 0 0 10 0 10 10 0 10 3 1 2 3 4 1 \n4 2 1 0 8.88178419700125e-16\n10 10 0 10 10 10 0 10 10 0 10 0 0 0 0 -10 10 -10 10 0 4 1 2 4 2 3 \n\nTShapes 24\nVe\n1e-07\n0 0 0\n0 0\n\n0101101\n*\nEd\n 1e-07 1 1 0\n1  1 0 0 10\n6  1 1 0\n6  2 2 0\n0\n\n0101000\n+24 0 -24 1 *\nVe\n1e-07\n10 0 0\n0 0\n\n0101101\n*\nEd\n 1e-07 1 1 0\n1  2 0 0 10\n6  3 1 0\n6  4 3 0\n0\n\n0101000\n+22 0 -22 1 *\nEd\n 1e-07 1 1 0\n1  3 0 0 10\n6  5 1 0\n6  6 4 0\n6  7 1 2\n0\n\n0101000\n+24 0 -22 0 *\nWi\n\n0101100\n+23 0 -21 0 -20 0 +20 1 *\nFa\n0  1e-07 1 0\n2  1\n0111000\n+19 0 *\nVe\n1e-07\n10 10 0\n0 0\n\n0101101\n*\nEd\n 1e-07 1 1 0\n1  4 0 0 10\n6  8 3 0\n6  9 5 0\n0\n\n0101000\n+17 0 -17 1 *\nEd\n 1e-07 1 1 0\n1  5 0 0 10\n6  10 3 0\n6  11 4 0\n6  12 3 2\n0\n\n0101000\n+22 0 -17 0 *\nWi\n\n0101100\n+21 0 -16 0 -15 0 +15 1 *\nFa\n0  1e-07 2 0\n2  3\n0111000\n+14 0 *\nVe\n1e-07\n0 10 0\n0 0\n\n0101101\n*\nEd\n 1e-07 1 1 0\n1  6 0 0 10\n6  13 5 0\n6  14 2 0\n0\n\n0101000\n+12 0 -12 1 *\nEd\n 1e-07 1 1 0\n1  7 0 0 10\n6  15 5 0\n6  16 4 0\n6  17 5 2\n0\n\n0101000\n+17 0 -12 0 *\nWi\n\n0101100\n+16 0 -11 0 -10 0 +10 1 *\nFa\n0  1e-07 3 0\n2  5\n0111000\n+9 0 *\nEd\n 1e-07 1 1 0\n1  8 0 0 10\n6  18 2 0\n6  19 4 0\n6  20 2 2\n0\n\n0101000\n+12 0 -24 0 *\nWi\n\n0101100\n+11 0 -23 0 -7 0 +7 1 *\nFa\n0  1e-07 4 0\n2  2\n0111000\n+6 0 *\nWi\n\n0101100\n+20 0 +15 0 +10 0 +7 0 *\nFa\n0  1e-07 5 0\n2  4\n0111000\n+4 0 *\nSh\n\n0101100\n+18 0 +13 0 +8 0 +5 0 +3 0 -3 1 *\nSo\n\n1100000\n-2 0 *\n\n+1 0 ",
+            "revision": {
+              "revisionId": "rev_7e3247945bcbabdc",
+              "operationId": "op_d2ab27ea9ce46385",
+              "sourceFeatureId": "op_d2ab27ea9ce46385",
+              "operationType": "extrudeProfile",
+              "operandRevisionIds": [],
+              "parameterHash": "P:b2cf96dbce24a97f",
+              "topologyHash": "T:6e1855476e4645e2",
+              "historySchemaVersion": 1,
+              "createdFromCheckpoint": false,
+              "entityStatus": "generated",
+              "identityStatus": "generated",
+              "historyWarnings": [],
+              "deletedEntities": [],
+              "faceStableHashes": [
+                "F:5cd4c3c97225f4a9",
+                "F:5cd4c0c97225ef90",
+                "F:5cd4c1c97225f143",
+                "F:5cd4c6c97225f9c2",
+                "F:5cd4c7c97225fb75",
+                "F:5cd4c4c97225f65c"
+              ],
+              "edgeStableHashes": [
+                "E:0ad9531b1d552395",
+                "E:0ad9501b1d551e7c",
+                "E:0ad9511b1d55202f",
+                "E:0ad94e1b1d551b16",
+                "E:0ad94f1b1d551cc9",
+                "E:0ad94c1b1d5517b0",
+                "E:0ad94d1b1d551963",
+                "E:0ad95a1b1d552f7a",
+                "E:0ad95b1b1d55312d",
+                "E:c46bdc12d7ab915f",
+                "E:c46bdb12d7ab8fac",
+                "E:c46bde12d7ab94c5"
+              ],
+              "vertexStableHashes": [
+                "V:bf3eedf3a1f55e7e",
+                "V:bf3eecf3a1f55ccb",
+                "V:bf3eebf3a1f55b18",
+                "V:bf3ef2f3a1f566fd",
+                "V:bf3ef1f3a1f5654a",
+                "V:bf3ef0f3a1f56397",
+                "V:bf3eeff3a1f561e4",
+                "V:bf3ee6f3a1f55299"
+              ]
+            }
+          },
+          "mesh": {
+            "faces": [
+              {
+                "vertices": [
+                  {
+                    "x": 10,
+                    "y": 0,
+                    "z": 0
+                  },
+                  {
+                    "x": 0,
+                    "y": 0,
+                    "z": 10
+                  },
+                  {
+                    "x": 0,
+                    "y": 0,
+                    "z": 0
+                  }
+                ],
+                "normal": {
+                  "x": 0,
+                  "y": -1,
+                  "z": 0
+                },
+                "vertexNormals": [
+                  {
+                    "x": 0,
+                    "y": -1,
+                    "z": 0
+                  },
+                  {
+                    "x": 0,
+                    "y": -1,
+                    "z": 0
+                  },
+                  {
+                    "x": 0,
+                    "y": -1,
+                    "z": 0
+                  }
+                ],
+                "faceGroup": 0,
+                "topoFaceId": 1,
+                "faceType": "occt-triangle",
+                "source": "occt",
+                "stableHash": "F:5cd4c3c97225f4a9",
+                "shared": {
+                  "sourceFeatureId": "op_d2ab27ea9ce46385"
+                },
+                "isCurved": false
+              },
+              {
+                "vertices": [
+                  {
+                    "x": 10,
+                    "y": 0,
+                    "z": 0
+                  },
+                  {
+                    "x": 10,
+                    "y": 0,
+                    "z": 10
+                  },
+                  {
+                    "x": 0,
+                    "y": 0,
+                    "z": 10
+                  }
+                ],
+                "normal": {
+                  "x": 0,
+                  "y": -1,
+                  "z": 0
+                },
+                "vertexNormals": [
+                  {
+                    "x": 0,
+                    "y": -1,
+                    "z": 0
+                  },
+                  {
+                    "x": 0,
+                    "y": -1,
+                    "z": 0
+                  },
+                  {
+                    "x": 0,
+                    "y": -1,
+                    "z": 0
+                  }
+                ],
+                "faceGroup": 0,
+                "topoFaceId": 1,
+                "faceType": "occt-triangle",
+                "source": "occt",
+                "stableHash": "F:5cd4c3c97225f4a9",
+                "shared": {
+                  "sourceFeatureId": "op_d2ab27ea9ce46385"
+                },
+                "isCurved": false
+              },
+              {
+                "vertices": [
+                  {
+                    "x": 10,
+                    "y": 10,
+                    "z": 0
+                  },
+                  {
+                    "x": 10,
+                    "y": 0,
+                    "z": 10
+                  },
+                  {
+                    "x": 10,
+                    "y": 0,
+                    "z": 0
+                  }
+                ],
+                "normal": {
+                  "x": 1,
+                  "y": 0,
+                  "z": 0
+                },
+                "vertexNormals": [
+                  {
+                    "x": 1,
+                    "y": 0,
+                    "z": 0
+                  },
+                  {
+                    "x": 1,
+                    "y": 0,
+                    "z": 0
+                  },
+                  {
+                    "x": 1,
+                    "y": 0,
+                    "z": 0
+                  }
+                ],
+                "faceGroup": 2,
+                "topoFaceId": 2,
+                "faceType": "occt-triangle",
+                "source": "occt",
+                "stableHash": "F:5cd4c0c97225ef90",
+                "shared": {
+                  "sourceFeatureId": "op_d2ab27ea9ce46385"
+                },
+                "isCurved": false
+              },
+              {
+                "vertices": [
+                  {
+                    "x": 10,
+                    "y": 10,
+                    "z": 0
+                  },
+                  {
+                    "x": 10,
+                    "y": 10,
+                    "z": 10
+                  },
+                  {
+                    "x": 10,
+                    "y": 0,
+                    "z": 10
+                  }
+                ],
+                "normal": {
+                  "x": 1,
+                  "y": 0,
+                  "z": 0
+                },
+                "vertexNormals": [
+                  {
+                    "x": 1,
+                    "y": 0,
+                    "z": 0
+                  },
+                  {
+                    "x": 1,
+                    "y": 0,
+                    "z": 0
+                  },
+                  {
+                    "x": 1,
+                    "y": 0,
+                    "z": 0
+                  }
+                ],
+                "faceGroup": 2,
+                "topoFaceId": 2,
+                "faceType": "occt-triangle",
+                "source": "occt",
+                "stableHash": "F:5cd4c0c97225ef90",
+                "shared": {
+                  "sourceFeatureId": "op_d2ab27ea9ce46385"
+                },
+                "isCurved": false
+              },
+              {
+                "vertices": [
+                  {
+                    "x": 0,
+                    "y": 10,
+                    "z": 0
+                  },
+                  {
+                    "x": 10,
+                    "y": 10,
+                    "z": 10
+                  },
+                  {
+                    "x": 10,
+                    "y": 10,
+                    "z": 0
+                  }
+                ],
+                "normal": {
+                  "x": 0,
+                  "y": 1,
+                  "z": 0
+                },
+                "vertexNormals": [
+                  {
+                    "x": 0,
+                    "y": 1,
+                    "z": 0
+                  },
+                  {
+                    "x": 0,
+                    "y": 1,
+                    "z": 0
+                  },
+                  {
+                    "x": 0,
+                    "y": 1,
+                    "z": 0
+                  }
+                ],
+                "faceGroup": 4,
+                "topoFaceId": 3,
+                "faceType": "occt-triangle",
+                "source": "occt",
+                "stableHash": "F:5cd4c1c97225f143",
+                "shared": {
+                  "sourceFeatureId": "op_d2ab27ea9ce46385"
+                },
+                "isCurved": false
+              },
+              {
+                "vertices": [
+                  {
+                    "x": 0,
+                    "y": 10,
+                    "z": 0
+                  },
+                  {
+                    "x": 0,
+                    "y": 10,
+                    "z": 10
+                  },
+                  {
+                    "x": 10,
+                    "y": 10,
+                    "z": 10
+                  }
+                ],
+                "normal": {
+                  "x": 0,
+                  "y": 1,
+                  "z": 0
+                },
+                "vertexNormals": [
+                  {
+                    "x": 0,
+                    "y": 1,
+                    "z": 0
+                  },
+                  {
+                    "x": 0,
+                    "y": 1,
+                    "z": 0
+                  },
+                  {
+                    "x": 0,
+                    "y": 1,
+                    "z": 0
+                  }
+                ],
+                "faceGroup": 4,
+                "topoFaceId": 3,
+                "faceType": "occt-triangle",
+                "source": "occt",
+                "stableHash": "F:5cd4c1c97225f143",
+                "shared": {
+                  "sourceFeatureId": "op_d2ab27ea9ce46385"
+                },
+                "isCurved": false
+              },
+              {
+                "vertices": [
+                  {
+                    "x": 0,
+                    "y": 0,
+                    "z": 0
+                  },
+                  {
+                    "x": 0,
+                    "y": 10,
+                    "z": 10
+                  },
+                  {
+                    "x": 0,
+                    "y": 10,
+                    "z": 0
+                  }
+                ],
+                "normal": {
+                  "x": -1,
+                  "y": 0,
+                  "z": 0
+                },
+                "vertexNormals": [
+                  {
+                    "x": -1,
+                    "y": 0,
+                    "z": 0
+                  },
+                  {
+                    "x": -1,
+                    "y": 0,
+                    "z": 0
+                  },
+                  {
+                    "x": -1,
+                    "y": 0,
+                    "z": 0
+                  }
+                ],
+                "faceGroup": 6,
+                "topoFaceId": 4,
+                "faceType": "occt-triangle",
+                "source": "occt",
+                "stableHash": "F:5cd4c6c97225f9c2",
+                "shared": {
+                  "sourceFeatureId": "op_d2ab27ea9ce46385"
+                },
+                "isCurved": false
+              },
+              {
+                "vertices": [
+                  {
+                    "x": 0,
+                    "y": 0,
+                    "z": 0
+                  },
+                  {
+                    "x": 0,
+                    "y": 0,
+                    "z": 10
+                  },
+                  {
+                    "x": 0,
+                    "y": 10,
+                    "z": 10
+                  }
+                ],
+                "normal": {
+                  "x": -1,
+                  "y": 0,
+                  "z": 0
+                },
+                "vertexNormals": [
+                  {
+                    "x": -1,
+                    "y": 0,
+                    "z": 0
+                  },
+                  {
+                    "x": -1,
+                    "y": 0,
+                    "z": 0
+                  },
+                  {
+                    "x": -1,
+                    "y": 0,
+                    "z": 0
+                  }
+                ],
+                "faceGroup": 6,
+                "topoFaceId": 4,
+                "faceType": "occt-triangle",
+                "source": "occt",
+                "stableHash": "F:5cd4c6c97225f9c2",
+                "shared": {
+                  "sourceFeatureId": "op_d2ab27ea9ce46385"
+                },
+                "isCurved": false
+              },
+              {
+                "vertices": [
+                  {
+                    "x": 10,
+                    "y": 10,
+                    "z": 0
+                  },
+                  {
+                    "x": 10,
+                    "y": 0,
+                    "z": 0
+                  },
+                  {
+                    "x": 0,
+                    "y": 0,
+                    "z": 0
+                  }
+                ],
+                "normal": {
+                  "x": 0,
+                  "y": 0,
+                  "z": -1
+                },
+                "vertexNormals": [
+                  {
+                    "x": 0,
+                    "y": 0,
+                    "z": -1
+                  },
+                  {
+                    "x": 0,
+                    "y": 0,
+                    "z": -1
+                  },
+                  {
+                    "x": 0,
+                    "y": 0,
+                    "z": -1
+                  }
+                ],
+                "faceGroup": 8,
+                "topoFaceId": 5,
+                "faceType": "occt-triangle",
+                "source": "occt",
+                "stableHash": "F:5cd4c7c97225fb75",
+                "shared": {
+                  "sourceFeatureId": "op_d2ab27ea9ce46385"
+                },
+                "isCurved": false
+              },
+              {
+                "vertices": [
+                  {
+                    "x": 10,
+                    "y": 10,
+                    "z": 0
+                  },
+                  {
+                    "x": 0,
+                    "y": 0,
+                    "z": 0
+                  },
+                  {
+                    "x": 0,
+                    "y": 10,
+                    "z": 0
+                  }
+                ],
+                "normal": {
+                  "x": 0,
+                  "y": 0,
+                  "z": -1
+                },
+                "vertexNormals": [
+                  {
+                    "x": 0,
+                    "y": 0,
+                    "z": -1
+                  },
+                  {
+                    "x": 0,
+                    "y": 0,
+                    "z": -1
+                  },
+                  {
+                    "x": 0,
+                    "y": 0,
+                    "z": -1
+                  }
+                ],
+                "faceGroup": 8,
+                "topoFaceId": 5,
+                "faceType": "occt-triangle",
+                "source": "occt",
+                "stableHash": "F:5cd4c7c97225fb75",
+                "shared": {
+                  "sourceFeatureId": "op_d2ab27ea9ce46385"
+                },
+                "isCurved": false
+              },
+              {
+                "vertices": [
+                  {
+                    "x": 10,
+                    "y": 10,
+                    "z": 10
+                  },
+                  {
+                    "x": 0,
+                    "y": 0,
+                    "z": 10
+                  },
+                  {
+                    "x": 10,
+                    "y": 0,
+                    "z": 10
+                  }
+                ],
+                "normal": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 1
+                },
+                "vertexNormals": [
+                  {
+                    "x": 0,
+                    "y": 0,
+                    "z": 1
+                  },
+                  {
+                    "x": 0,
+                    "y": 0,
+                    "z": 1
+                  },
+                  {
+                    "x": 0,
+                    "y": 0,
+                    "z": 1
+                  }
+                ],
+                "faceGroup": 10,
+                "topoFaceId": 6,
+                "faceType": "occt-triangle",
+                "source": "occt",
+                "stableHash": "F:5cd4c4c97225f65c",
+                "shared": {
+                  "sourceFeatureId": "op_d2ab27ea9ce46385"
+                },
+                "isCurved": false
+              },
+              {
+                "vertices": [
+                  {
+                    "x": 10,
+                    "y": 10,
+                    "z": 10
+                  },
+                  {
+                    "x": 0,
+                    "y": 10,
+                    "z": 10
+                  },
+                  {
+                    "x": 0,
+                    "y": 0,
+                    "z": 10
+                  }
+                ],
+                "normal": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 1
+                },
+                "vertexNormals": [
+                  {
+                    "x": 0,
+                    "y": 0,
+                    "z": 1
+                  },
+                  {
+                    "x": 0,
+                    "y": 0,
+                    "z": 1
+                  },
+                  {
+                    "x": 0,
+                    "y": 0,
+                    "z": 1
+                  }
+                ],
+                "faceGroup": 10,
+                "topoFaceId": 6,
+                "faceType": "occt-triangle",
+                "source": "occt",
+                "stableHash": "F:5cd4c4c97225f65c",
+                "shared": {
+                  "sourceFeatureId": "op_d2ab27ea9ce46385"
+                },
+                "isCurved": false
+              }
+            ],
+            "edges": [
+              {
+                "start": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 0
+                },
+                "end": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 10
+                },
+                "source": "occt",
+                "faceIndices": [
+                  1,
+                  4
+                ],
+                "normals": [
+                  {
+                    "x": 0,
+                    "y": -1,
+                    "z": 0
+                  },
+                  {
+                    "x": 0,
+                    "y": 1,
+                    "z": 0
+                  }
+                ],
+                "topoFaceIds": [
+                  1,
+                  4
+                ],
+                "stableHash": "E:0ad9531b1d552395"
+              },
+              {
+                "start": {
+                  "x": 10,
+                  "y": 0,
+                  "z": 0
+                },
+                "end": {
+                  "x": 10,
+                  "y": 0,
+                  "z": 10
+                },
+                "source": "occt",
+                "faceIndices": [
+                  1,
+                  2
+                ],
+                "normals": [
+                  {
+                    "x": 0,
+                    "y": -1,
+                    "z": 0
+                  },
+                  {
+                    "x": 1,
+                    "y": 0,
+                    "z": 0
+                  }
+                ],
+                "topoFaceIds": [
+                  1,
+                  2
+                ],
+                "stableHash": "E:0ad9501b1d551e7c"
+              },
+              {
+                "start": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 0
+                },
+                "end": {
+                  "x": 10,
+                  "y": 0,
+                  "z": 0
+                },
+                "source": "occt",
+                "faceIndices": [
+                  1,
+                  5
+                ],
+                "normals": [
+                  {
+                    "x": 0,
+                    "y": -1,
+                    "z": 0
+                  },
+                  {
+                    "x": 0,
+                    "y": 1,
+                    "z": 0
+                  }
+                ],
+                "topoFaceIds": [
+                  1,
+                  5
+                ],
+                "stableHash": "E:0ad9511b1d55202f"
+              },
+              {
+                "start": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 10
+                },
+                "end": {
+                  "x": 10,
+                  "y": 0,
+                  "z": 10
+                },
+                "source": "occt",
+                "faceIndices": [
+                  1,
+                  6
+                ],
+                "normals": [
+                  {
+                    "x": 0,
+                    "y": -1,
+                    "z": 0
+                  },
+                  {
+                    "x": -1,
+                    "y": 0,
+                    "z": 0
+                  }
+                ],
+                "topoFaceIds": [
+                  1,
+                  6
+                ],
+                "stableHash": "E:0ad94e1b1d551b16"
+              },
+              {
+                "start": {
+                  "x": 10,
+                  "y": 10,
+                  "z": 0
+                },
+                "end": {
+                  "x": 10,
+                  "y": 10,
+                  "z": 10
+                },
+                "source": "occt",
+                "faceIndices": [
+                  2,
+                  3
+                ],
+                "normals": [
+                  {
+                    "x": 1,
+                    "y": 0,
+                    "z": 0
+                  }
+                ],
+                "topoFaceIds": [
+                  2,
+                  3
+                ],
+                "stableHash": "E:0ad94f1b1d551cc9"
+              },
+              {
+                "start": {
+                  "x": 10,
+                  "y": 0,
+                  "z": 0
+                },
+                "end": {
+                  "x": 10,
+                  "y": 10,
+                  "z": 0
+                },
+                "source": "occt",
+                "faceIndices": [
+                  2,
+                  5
+                ],
+                "normals": [
+                  {
+                    "x": 1,
+                    "y": 0,
+                    "z": 0
+                  },
+                  {
+                    "x": 0,
+                    "y": 1,
+                    "z": 0
+                  }
+                ],
+                "topoFaceIds": [
+                  2,
+                  5
+                ],
+                "stableHash": "E:0ad94c1b1d5517b0"
+              },
+              {
+                "start": {
+                  "x": 10,
+                  "y": 0,
+                  "z": 10
+                },
+                "end": {
+                  "x": 10,
+                  "y": 10,
+                  "z": 10
+                },
+                "source": "occt",
+                "faceIndices": [
+                  2,
+                  6
+                ],
+                "normals": [
+                  {
+                    "x": 1,
+                    "y": 0,
+                    "z": 0
+                  },
+                  {
+                    "x": -1,
+                    "y": 0,
+                    "z": 0
+                  }
+                ],
+                "topoFaceIds": [
+                  2,
+                  6
+                ],
+                "stableHash": "E:0ad94d1b1d551963"
+              },
+              {
+                "start": {
+                  "x": 0,
+                  "y": 10,
+                  "z": 0
+                },
+                "end": {
+                  "x": 0,
+                  "y": 10,
+                  "z": 10
+                },
+                "source": "occt",
+                "faceIndices": [
+                  3,
+                  4
+                ],
+                "normals": [
+                  {
+                    "x": 1,
+                    "y": 0,
+                    "z": 0
+                  },
+                  {
+                    "x": 0,
+                    "y": 1,
+                    "z": 0
+                  }
+                ],
+                "topoFaceIds": [
+                  3,
+                  4
+                ],
+                "stableHash": "E:0ad95a1b1d552f7a"
+              },
+              {
+                "start": {
+                  "x": 10,
+                  "y": 10,
+                  "z": 0
+                },
+                "end": {
+                  "x": 0,
+                  "y": 10,
+                  "z": 0
+                },
+                "source": "occt",
+                "faceIndices": [
+                  3,
+                  5
+                ],
+                "normals": [
+                  {
+                    "x": 1,
+                    "y": 0,
+                    "z": 0
+                  },
+                  {
+                    "x": 0,
+                    "y": 1,
+                    "z": 0
+                  }
+                ],
+                "topoFaceIds": [
+                  3,
+                  5
+                ],
+                "stableHash": "E:0ad95b1b1d55312d"
+              },
+              {
+                "start": {
+                  "x": 10,
+                  "y": 10,
+                  "z": 10
+                },
+                "end": {
+                  "x": 0,
+                  "y": 10,
+                  "z": 10
+                },
+                "source": "occt",
+                "faceIndices": [
+                  3,
+                  6
+                ],
+                "normals": [
+                  {
+                    "x": 1,
+                    "y": 0,
+                    "z": 0
+                  },
+                  {
+                    "x": -1,
+                    "y": 0,
+                    "z": 0
+                  }
+                ],
+                "topoFaceIds": [
+                  3,
+                  6
+                ],
+                "stableHash": "E:c46bdc12d7ab915f"
+              },
+              {
+                "start": {
+                  "x": 0,
+                  "y": 10,
+                  "z": 0
+                },
+                "end": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 0
+                },
+                "source": "occt",
+                "faceIndices": [
+                  4,
+                  5
+                ],
+                "normals": [
+                  {
+                    "x": 0,
+                    "y": 1,
+                    "z": 0
+                  }
+                ],
+                "topoFaceIds": [
+                  4,
+                  5
+                ],
+                "stableHash": "E:c46bdb12d7ab8fac"
+              },
+              {
+                "start": {
+                  "x": 0,
+                  "y": 10,
+                  "z": 10
+                },
+                "end": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 10
+                },
+                "source": "occt",
+                "faceIndices": [
+                  4,
+                  6
+                ],
+                "normals": [
+                  {
+                    "x": 0,
+                    "y": 1,
+                    "z": 0
+                  },
+                  {
+                    "x": -1,
+                    "y": 0,
+                    "z": 0
+                  }
+                ],
+                "topoFaceIds": [
+                  4,
+                  6
+                ],
+                "stableHash": "E:c46bde12d7ab94c5"
+              }
+            ],
+            "paths": [
+              {
+                "edgeIndices": [
+                  0
+                ],
+                "isClosed": false
+              },
+              {
+                "edgeIndices": [
+                  1
+                ],
+                "isClosed": false
+              },
+              {
+                "edgeIndices": [
+                  2
+                ],
+                "isClosed": false
+              },
+              {
+                "edgeIndices": [
+                  3
+                ],
+                "isClosed": false
+              },
+              {
+                "edgeIndices": [
+                  4
+                ],
+                "isClosed": false
+              },
+              {
+                "edgeIndices": [
+                  5
+                ],
+                "isClosed": false
+              },
+              {
+                "edgeIndices": [
+                  6
+                ],
+                "isClosed": false
+              },
+              {
+                "edgeIndices": [
+                  7
+                ],
+                "isClosed": false
+              },
+              {
+                "edgeIndices": [
+                  8
+                ],
+                "isClosed": false
+              },
+              {
+                "edgeIndices": [
+                  9
+                ],
+                "isClosed": false
+              },
+              {
+                "edgeIndices": [
+                  10
+                ],
+                "isClosed": false
+              },
+              {
+                "edgeIndices": [
+                  11
+                ],
+                "isClosed": false
+              }
+            ],
+            "visualEdges": [],
+            "_selectionCompatEdges": [
+              {
+                "start": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 0
+                },
+                "end": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 10
+                },
+                "source": "occt",
+                "faceIndices": [
+                  1,
+                  4
+                ],
+                "normals": [
+                  {
+                    "x": 0,
+                    "y": -1,
+                    "z": 0
+                  },
+                  {
+                    "x": 0,
+                    "y": 1,
+                    "z": 0
+                  }
+                ],
+                "topoFaceIds": [
+                  1,
+                  4
+                ],
+                "stableHash": "E:0ad9531b1d552395"
+              },
+              {
+                "start": {
+                  "x": 10,
+                  "y": 0,
+                  "z": 0
+                },
+                "end": {
+                  "x": 10,
+                  "y": 0,
+                  "z": 10
+                },
+                "source": "occt",
+                "faceIndices": [
+                  1,
+                  2
+                ],
+                "normals": [
+                  {
+                    "x": 0,
+                    "y": -1,
+                    "z": 0
+                  },
+                  {
+                    "x": 1,
+                    "y": 0,
+                    "z": 0
+                  }
+                ],
+                "topoFaceIds": [
+                  1,
+                  2
+                ],
+                "stableHash": "E:0ad9501b1d551e7c"
+              },
+              {
+                "start": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 0
+                },
+                "end": {
+                  "x": 10,
+                  "y": 0,
+                  "z": 0
+                },
+                "source": "occt",
+                "faceIndices": [
+                  1,
+                  5
+                ],
+                "normals": [
+                  {
+                    "x": 0,
+                    "y": -1,
+                    "z": 0
+                  },
+                  {
+                    "x": 0,
+                    "y": 1,
+                    "z": 0
+                  }
+                ],
+                "topoFaceIds": [
+                  1,
+                  5
+                ],
+                "stableHash": "E:0ad9511b1d55202f"
+              },
+              {
+                "start": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 10
+                },
+                "end": {
+                  "x": 10,
+                  "y": 0,
+                  "z": 10
+                },
+                "source": "occt",
+                "faceIndices": [
+                  1,
+                  6
+                ],
+                "normals": [
+                  {
+                    "x": 0,
+                    "y": -1,
+                    "z": 0
+                  },
+                  {
+                    "x": -1,
+                    "y": 0,
+                    "z": 0
+                  }
+                ],
+                "topoFaceIds": [
+                  1,
+                  6
+                ],
+                "stableHash": "E:0ad94e1b1d551b16"
+              },
+              {
+                "start": {
+                  "x": 10,
+                  "y": 10,
+                  "z": 0
+                },
+                "end": {
+                  "x": 10,
+                  "y": 10,
+                  "z": 10
+                },
+                "source": "occt",
+                "faceIndices": [
+                  2,
+                  3
+                ],
+                "normals": [
+                  {
+                    "x": 1,
+                    "y": 0,
+                    "z": 0
+                  }
+                ],
+                "topoFaceIds": [
+                  2,
+                  3
+                ],
+                "stableHash": "E:0ad94f1b1d551cc9"
+              },
+              {
+                "start": {
+                  "x": 10,
+                  "y": 0,
+                  "z": 0
+                },
+                "end": {
+                  "x": 10,
+                  "y": 10,
+                  "z": 0
+                },
+                "source": "occt",
+                "faceIndices": [
+                  2,
+                  5
+                ],
+                "normals": [
+                  {
+                    "x": 1,
+                    "y": 0,
+                    "z": 0
+                  },
+                  {
+                    "x": 0,
+                    "y": 1,
+                    "z": 0
+                  }
+                ],
+                "topoFaceIds": [
+                  2,
+                  5
+                ],
+                "stableHash": "E:0ad94c1b1d5517b0"
+              },
+              {
+                "start": {
+                  "x": 10,
+                  "y": 0,
+                  "z": 10
+                },
+                "end": {
+                  "x": 10,
+                  "y": 10,
+                  "z": 10
+                },
+                "source": "occt",
+                "faceIndices": [
+                  2,
+                  6
+                ],
+                "normals": [
+                  {
+                    "x": 1,
+                    "y": 0,
+                    "z": 0
+                  },
+                  {
+                    "x": -1,
+                    "y": 0,
+                    "z": 0
+                  }
+                ],
+                "topoFaceIds": [
+                  2,
+                  6
+                ],
+                "stableHash": "E:0ad94d1b1d551963"
+              },
+              {
+                "start": {
+                  "x": 0,
+                  "y": 10,
+                  "z": 0
+                },
+                "end": {
+                  "x": 0,
+                  "y": 10,
+                  "z": 10
+                },
+                "source": "occt",
+                "faceIndices": [
+                  3,
+                  4
+                ],
+                "normals": [
+                  {
+                    "x": 1,
+                    "y": 0,
+                    "z": 0
+                  },
+                  {
+                    "x": 0,
+                    "y": 1,
+                    "z": 0
+                  }
+                ],
+                "topoFaceIds": [
+                  3,
+                  4
+                ],
+                "stableHash": "E:0ad95a1b1d552f7a"
+              },
+              {
+                "start": {
+                  "x": 10,
+                  "y": 10,
+                  "z": 0
+                },
+                "end": {
+                  "x": 0,
+                  "y": 10,
+                  "z": 0
+                },
+                "source": "occt",
+                "faceIndices": [
+                  3,
+                  5
+                ],
+                "normals": [
+                  {
+                    "x": 1,
+                    "y": 0,
+                    "z": 0
+                  },
+                  {
+                    "x": 0,
+                    "y": 1,
+                    "z": 0
+                  }
+                ],
+                "topoFaceIds": [
+                  3,
+                  5
+                ],
+                "stableHash": "E:0ad95b1b1d55312d"
+              },
+              {
+                "start": {
+                  "x": 10,
+                  "y": 10,
+                  "z": 10
+                },
+                "end": {
+                  "x": 0,
+                  "y": 10,
+                  "z": 10
+                },
+                "source": "occt",
+                "faceIndices": [
+                  3,
+                  6
+                ],
+                "normals": [
+                  {
+                    "x": 1,
+                    "y": 0,
+                    "z": 0
+                  },
+                  {
+                    "x": -1,
+                    "y": 0,
+                    "z": 0
+                  }
+                ],
+                "topoFaceIds": [
+                  3,
+                  6
+                ],
+                "stableHash": "E:c46bdc12d7ab915f"
+              },
+              {
+                "start": {
+                  "x": 0,
+                  "y": 10,
+                  "z": 0
+                },
+                "end": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 0
+                },
+                "source": "occt",
+                "faceIndices": [
+                  4,
+                  5
+                ],
+                "normals": [
+                  {
+                    "x": 0,
+                    "y": 1,
+                    "z": 0
+                  }
+                ],
+                "topoFaceIds": [
+                  4,
+                  5
+                ],
+                "stableHash": "E:c46bdb12d7ab8fac"
+              },
+              {
+                "start": {
+                  "x": 0,
+                  "y": 10,
+                  "z": 10
+                },
+                "end": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 10
+                },
+                "source": "occt",
+                "faceIndices": [
+                  4,
+                  6
+                ],
+                "normals": [
+                  {
+                    "x": 0,
+                    "y": 1,
+                    "z": 0
+                  },
+                  {
+                    "x": -1,
+                    "y": 0,
+                    "z": 0
+                  }
+                ],
+                "topoFaceIds": [
+                  4,
+                  6
+                ],
+                "stableHash": "E:c46bde12d7ab94c5"
+              }
+            ],
+            "_selectionCompatPaths": [
+              {
+                "edgeIndices": [
+                  0
+                ],
+                "isClosed": false
+              },
+              {
+                "edgeIndices": [
+                  1
+                ],
+                "isClosed": false
+              },
+              {
+                "edgeIndices": [
+                  2
+                ],
+                "isClosed": false
+              },
+              {
+                "edgeIndices": [
+                  3
+                ],
+                "isClosed": false
+              },
+              {
+                "edgeIndices": [
+                  4
+                ],
+                "isClosed": false
+              },
+              {
+                "edgeIndices": [
+                  5
+                ],
+                "isClosed": false
+              },
+              {
+                "edgeIndices": [
+                  6
+                ],
+                "isClosed": false
+              },
+              {
+                "edgeIndices": [
+                  7
+                ],
+                "isClosed": false
+              },
+              {
+                "edgeIndices": [
+                  8
+                ],
+                "isClosed": false
+              },
+              {
+                "edgeIndices": [
+                  9
+                ],
+                "isClosed": false
+              },
+              {
+                "edgeIndices": [
+                  10
+                ],
+                "isClosed": false
+              },
+              {
+                "edgeIndices": [
+                  11
+                ],
+                "isClosed": false
+              }
+            ],
+            "_selectionCompatOcctFeatureEdges": [
+              {
+                "start": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 0
+                },
+                "end": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 10
+                },
+                "source": "occt",
+                "faceIndices": [
+                  1,
+                  4
+                ],
+                "normals": [
+                  {
+                    "x": 0,
+                    "y": -1,
+                    "z": 0
+                  },
+                  {
+                    "x": 0,
+                    "y": 1,
+                    "z": 0
+                  }
+                ],
+                "topoFaceIds": [
+                  1,
+                  4
+                ],
+                "stableHash": "E:0ad9531b1d552395"
+              },
+              {
+                "start": {
+                  "x": 10,
+                  "y": 0,
+                  "z": 0
+                },
+                "end": {
+                  "x": 10,
+                  "y": 0,
+                  "z": 10
+                },
+                "source": "occt",
+                "faceIndices": [
+                  1,
+                  2
+                ],
+                "normals": [
+                  {
+                    "x": 0,
+                    "y": -1,
+                    "z": 0
+                  },
+                  {
+                    "x": 1,
+                    "y": 0,
+                    "z": 0
+                  }
+                ],
+                "topoFaceIds": [
+                  1,
+                  2
+                ],
+                "stableHash": "E:0ad9501b1d551e7c"
+              },
+              {
+                "start": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 0
+                },
+                "end": {
+                  "x": 10,
+                  "y": 0,
+                  "z": 0
+                },
+                "source": "occt",
+                "faceIndices": [
+                  1,
+                  5
+                ],
+                "normals": [
+                  {
+                    "x": 0,
+                    "y": -1,
+                    "z": 0
+                  },
+                  {
+                    "x": 0,
+                    "y": 1,
+                    "z": 0
+                  }
+                ],
+                "topoFaceIds": [
+                  1,
+                  5
+                ],
+                "stableHash": "E:0ad9511b1d55202f"
+              },
+              {
+                "start": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 10
+                },
+                "end": {
+                  "x": 10,
+                  "y": 0,
+                  "z": 10
+                },
+                "source": "occt",
+                "faceIndices": [
+                  1,
+                  6
+                ],
+                "normals": [
+                  {
+                    "x": 0,
+                    "y": -1,
+                    "z": 0
+                  },
+                  {
+                    "x": -1,
+                    "y": 0,
+                    "z": 0
+                  }
+                ],
+                "topoFaceIds": [
+                  1,
+                  6
+                ],
+                "stableHash": "E:0ad94e1b1d551b16"
+              },
+              {
+                "start": {
+                  "x": 10,
+                  "y": 10,
+                  "z": 0
+                },
+                "end": {
+                  "x": 10,
+                  "y": 10,
+                  "z": 10
+                },
+                "source": "occt",
+                "faceIndices": [
+                  2,
+                  3
+                ],
+                "normals": [
+                  {
+                    "x": 1,
+                    "y": 0,
+                    "z": 0
+                  }
+                ],
+                "topoFaceIds": [
+                  2,
+                  3
+                ],
+                "stableHash": "E:0ad94f1b1d551cc9"
+              },
+              {
+                "start": {
+                  "x": 10,
+                  "y": 0,
+                  "z": 0
+                },
+                "end": {
+                  "x": 10,
+                  "y": 10,
+                  "z": 0
+                },
+                "source": "occt",
+                "faceIndices": [
+                  2,
+                  5
+                ],
+                "normals": [
+                  {
+                    "x": 1,
+                    "y": 0,
+                    "z": 0
+                  },
+                  {
+                    "x": 0,
+                    "y": 1,
+                    "z": 0
+                  }
+                ],
+                "topoFaceIds": [
+                  2,
+                  5
+                ],
+                "stableHash": "E:0ad94c1b1d5517b0"
+              },
+              {
+                "start": {
+                  "x": 10,
+                  "y": 0,
+                  "z": 10
+                },
+                "end": {
+                  "x": 10,
+                  "y": 10,
+                  "z": 10
+                },
+                "source": "occt",
+                "faceIndices": [
+                  2,
+                  6
+                ],
+                "normals": [
+                  {
+                    "x": 1,
+                    "y": 0,
+                    "z": 0
+                  },
+                  {
+                    "x": -1,
+                    "y": 0,
+                    "z": 0
+                  }
+                ],
+                "topoFaceIds": [
+                  2,
+                  6
+                ],
+                "stableHash": "E:0ad94d1b1d551963"
+              },
+              {
+                "start": {
+                  "x": 0,
+                  "y": 10,
+                  "z": 0
+                },
+                "end": {
+                  "x": 0,
+                  "y": 10,
+                  "z": 10
+                },
+                "source": "occt",
+                "faceIndices": [
+                  3,
+                  4
+                ],
+                "normals": [
+                  {
+                    "x": 1,
+                    "y": 0,
+                    "z": 0
+                  },
+                  {
+                    "x": 0,
+                    "y": 1,
+                    "z": 0
+                  }
+                ],
+                "topoFaceIds": [
+                  3,
+                  4
+                ],
+                "stableHash": "E:0ad95a1b1d552f7a"
+              },
+              {
+                "start": {
+                  "x": 10,
+                  "y": 10,
+                  "z": 0
+                },
+                "end": {
+                  "x": 0,
+                  "y": 10,
+                  "z": 0
+                },
+                "source": "occt",
+                "faceIndices": [
+                  3,
+                  5
+                ],
+                "normals": [
+                  {
+                    "x": 1,
+                    "y": 0,
+                    "z": 0
+                  },
+                  {
+                    "x": 0,
+                    "y": 1,
+                    "z": 0
+                  }
+                ],
+                "topoFaceIds": [
+                  3,
+                  5
+                ],
+                "stableHash": "E:0ad95b1b1d55312d"
+              },
+              {
+                "start": {
+                  "x": 10,
+                  "y": 10,
+                  "z": 10
+                },
+                "end": {
+                  "x": 0,
+                  "y": 10,
+                  "z": 10
+                },
+                "source": "occt",
+                "faceIndices": [
+                  3,
+                  6
+                ],
+                "normals": [
+                  {
+                    "x": 1,
+                    "y": 0,
+                    "z": 0
+                  },
+                  {
+                    "x": -1,
+                    "y": 0,
+                    "z": 0
+                  }
+                ],
+                "topoFaceIds": [
+                  3,
+                  6
+                ],
+                "stableHash": "E:c46bdc12d7ab915f"
+              },
+              {
+                "start": {
+                  "x": 0,
+                  "y": 10,
+                  "z": 0
+                },
+                "end": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 0
+                },
+                "source": "occt",
+                "faceIndices": [
+                  4,
+                  5
+                ],
+                "normals": [
+                  {
+                    "x": 0,
+                    "y": 1,
+                    "z": 0
+                  }
+                ],
+                "topoFaceIds": [
+                  4,
+                  5
+                ],
+                "stableHash": "E:c46bdb12d7ab8fac"
+              },
+              {
+                "start": {
+                  "x": 0,
+                  "y": 10,
+                  "z": 10
+                },
+                "end": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 10
+                },
+                "source": "occt",
+                "faceIndices": [
+                  4,
+                  6
+                ],
+                "normals": [
+                  {
+                    "x": 0,
+                    "y": 1,
+                    "z": 0
+                  },
+                  {
+                    "x": -1,
+                    "y": 0,
+                    "z": 0
+                  }
+                ],
+                "topoFaceIds": [
+                  4,
+                  6
+                ],
+                "stableHash": "E:c46bde12d7ab94c5"
+              }
+            ],
+            "_selectionCompatOcctFeaturePaths": [
+              {
+                "edgeIndices": [
+                  0
+                ],
+                "isClosed": false
+              },
+              {
+                "edgeIndices": [
+                  1
+                ],
+                "isClosed": false
+              },
+              {
+                "edgeIndices": [
+                  2
+                ],
+                "isClosed": false
+              },
+              {
+                "edgeIndices": [
+                  3
+                ],
+                "isClosed": false
+              },
+              {
+                "edgeIndices": [
+                  4
+                ],
+                "isClosed": false
+              },
+              {
+                "edgeIndices": [
+                  5
+                ],
+                "isClosed": false
+              },
+              {
+                "edgeIndices": [
+                  6
+                ],
+                "isClosed": false
+              },
+              {
+                "edgeIndices": [
+                  7
+                ],
+                "isClosed": false
+              },
+              {
+                "edgeIndices": [
+                  8
+                ],
+                "isClosed": false
+              },
+              {
+                "edgeIndices": [
+                  9
+                ],
+                "isClosed": false
+              },
+              {
+                "edgeIndices": [
+                  10
+                ],
+                "isClosed": false
+              },
+              {
+                "edgeIndices": [
+                  11
+                ],
+                "isClosed": false
+              }
+            ],
+            "_occtModeling": {
+              "authoritative": true,
+              "operation": "extrude",
+              "acceptedInvalidShape": false,
+              "topology": {
+                "revisionId": "rev_7e3247945bcbabdc",
+                "operationId": "op_d2ab27ea9ce46385",
+                "sourceFeatureId": "op_d2ab27ea9ce46385",
+                "operationType": "extrudeProfile",
+                "operandRevisionIds": [],
+                "parameterHash": "P:b2cf96dbce24a97f",
+                "topologyHash": "T:6e1855476e4645e2",
+                "historySchemaVersion": 1,
+                "createdFromCheckpoint": false,
+                "shapeType": "solid",
+                "identityStatus": "generated",
+                "historyWarnings": [],
+                "solidCount": 1,
+                "shellCount": 1,
+                "wireCount": 6,
+                "faceCount": 6,
+                "edgeCount": 12,
+                "vertexCount": 8,
+                "boundingBox": {
+                  "xMin": 0,
+                  "yMin": 0,
+                  "zMin": 0,
+                  "xMax": 10,
+                  "yMax": 10,
+                  "zMax": 10
+                },
+                "isValid": true,
+                "solids": [
+                  {
+                    "id": 1,
+                    "shellIds": [
+                      1
+                    ],
+                    "status": "generated"
+                  }
+                ],
+                "shells": [
+                  {
+                    "id": 1,
+                    "solidIds": [
+                      1
+                    ],
+                    "faceIds": [
+                      1,
+                      2,
+                      3,
+                      4,
+                      5,
+                      6
+                    ],
+                    "status": "generated"
+                  }
+                ],
+                "wires": [
+                  {
+                    "id": 1,
+                    "edgeIds": [
+                      1,
+                      2,
+                      3,
+                      4
+                    ],
+                    "topoFaceIds": [
+                      1
+                    ],
+                    "status": "generated"
+                  },
+                  {
+                    "id": 2,
+                    "edgeIds": [
+                      2,
+                      5,
+                      6,
+                      7
+                    ],
+                    "topoFaceIds": [
+                      2
+                    ],
+                    "status": "generated"
+                  },
+                  {
+                    "id": 3,
+                    "edgeIds": [
+                      5,
+                      8,
+                      9,
+                      10
+                    ],
+                    "topoFaceIds": [
+                      3
+                    ],
+                    "status": "generated"
+                  },
+                  {
+                    "id": 4,
+                    "edgeIds": [
+                      8,
+                      1,
+                      11,
+                      12
+                    ],
+                    "topoFaceIds": [
+                      4
+                    ],
+                    "status": "generated"
+                  },
+                  {
+                    "id": 5,
+                    "edgeIds": [
+                      3,
+                      6,
+                      9,
+                      11
+                    ],
+                    "topoFaceIds": [
+                      5
+                    ],
+                    "status": "generated"
+                  },
+                  {
+                    "id": 6,
+                    "edgeIds": [
+                      4,
+                      7,
+                      10,
+                      12
+                    ],
+                    "topoFaceIds": [
+                      6
+                    ],
+                    "status": "generated"
+                  }
+                ],
+                "faces": [
+                  {
+                    "id": 1,
+                    "stableHash": "F:5cd4c3c97225f4a9",
+                    "role": "unknown",
+                    "sourceFeatureId": "op_d2ab27ea9ce46385",
+                    "generatedFrom": [],
+                    "modifiedFrom": [],
+                    "retainedFrom": [],
+                    "status": "generated",
+                    "shared": {
+                      "sourceFeatureId": "op_d2ab27ea9ce46385"
+                    }
+                  },
+                  {
+                    "id": 2,
+                    "stableHash": "F:5cd4c0c97225ef90",
+                    "role": "unknown",
+                    "sourceFeatureId": "op_d2ab27ea9ce46385",
+                    "generatedFrom": [],
+                    "modifiedFrom": [],
+                    "retainedFrom": [],
+                    "status": "generated",
+                    "shared": {
+                      "sourceFeatureId": "op_d2ab27ea9ce46385"
+                    }
+                  },
+                  {
+                    "id": 3,
+                    "stableHash": "F:5cd4c1c97225f143",
+                    "role": "unknown",
+                    "sourceFeatureId": "op_d2ab27ea9ce46385",
+                    "generatedFrom": [],
+                    "modifiedFrom": [],
+                    "retainedFrom": [],
+                    "status": "generated",
+                    "shared": {
+                      "sourceFeatureId": "op_d2ab27ea9ce46385"
+                    }
+                  },
+                  {
+                    "id": 4,
+                    "stableHash": "F:5cd4c6c97225f9c2",
+                    "role": "unknown",
+                    "sourceFeatureId": "op_d2ab27ea9ce46385",
+                    "generatedFrom": [],
+                    "modifiedFrom": [],
+                    "retainedFrom": [],
+                    "status": "generated",
+                    "shared": {
+                      "sourceFeatureId": "op_d2ab27ea9ce46385"
+                    }
+                  },
+                  {
+                    "id": 5,
+                    "stableHash": "F:5cd4c7c97225fb75",
+                    "role": "unknown",
+                    "sourceFeatureId": "op_d2ab27ea9ce46385",
+                    "generatedFrom": [],
+                    "modifiedFrom": [],
+                    "retainedFrom": [],
+                    "status": "generated",
+                    "shared": {
+                      "sourceFeatureId": "op_d2ab27ea9ce46385"
+                    }
+                  },
+                  {
+                    "id": 6,
+                    "stableHash": "F:5cd4c4c97225f65c",
+                    "role": "unknown",
+                    "sourceFeatureId": "op_d2ab27ea9ce46385",
+                    "generatedFrom": [],
+                    "modifiedFrom": [],
+                    "retainedFrom": [],
+                    "status": "generated",
+                    "shared": {
+                      "sourceFeatureId": "op_d2ab27ea9ce46385"
+                    }
+                  }
+                ],
+                "edges": [
+                  {
+                    "id": 1,
+                    "stableHash": "E:0ad9531b1d552395",
+                    "topoFaceIds": [
+                      1,
+                      4
+                    ],
+                    "generatedFrom": [],
+                    "modifiedFrom": [],
+                    "retainedFrom": [],
+                    "status": "generated"
+                  },
+                  {
+                    "id": 2,
+                    "stableHash": "E:0ad9501b1d551e7c",
+                    "topoFaceIds": [
+                      1,
+                      2
+                    ],
+                    "generatedFrom": [],
+                    "modifiedFrom": [],
+                    "retainedFrom": [],
+                    "status": "generated"
+                  },
+                  {
+                    "id": 3,
+                    "stableHash": "E:0ad9511b1d55202f",
+                    "topoFaceIds": [
+                      1,
+                      5
+                    ],
+                    "generatedFrom": [],
+                    "modifiedFrom": [],
+                    "retainedFrom": [],
+                    "status": "generated"
+                  },
+                  {
+                    "id": 4,
+                    "stableHash": "E:0ad94e1b1d551b16",
+                    "topoFaceIds": [
+                      1,
+                      6
+                    ],
+                    "generatedFrom": [],
+                    "modifiedFrom": [],
+                    "retainedFrom": [],
+                    "status": "generated"
+                  },
+                  {
+                    "id": 5,
+                    "stableHash": "E:0ad94f1b1d551cc9",
+                    "topoFaceIds": [
+                      2,
+                      3
+                    ],
+                    "generatedFrom": [],
+                    "modifiedFrom": [],
+                    "retainedFrom": [],
+                    "status": "generated"
+                  },
+                  {
+                    "id": 6,
+                    "stableHash": "E:0ad94c1b1d5517b0",
+                    "topoFaceIds": [
+                      2,
+                      5
+                    ],
+                    "generatedFrom": [],
+                    "modifiedFrom": [],
+                    "retainedFrom": [],
+                    "status": "generated"
+                  },
+                  {
+                    "id": 7,
+                    "stableHash": "E:0ad94d1b1d551963",
+                    "topoFaceIds": [
+                      2,
+                      6
+                    ],
+                    "generatedFrom": [],
+                    "modifiedFrom": [],
+                    "retainedFrom": [],
+                    "status": "generated"
+                  },
+                  {
+                    "id": 8,
+                    "stableHash": "E:0ad95a1b1d552f7a",
+                    "topoFaceIds": [
+                      3,
+                      4
+                    ],
+                    "generatedFrom": [],
+                    "modifiedFrom": [],
+                    "retainedFrom": [],
+                    "status": "generated"
+                  },
+                  {
+                    "id": 9,
+                    "stableHash": "E:0ad95b1b1d55312d",
+                    "topoFaceIds": [
+                      3,
+                      5
+                    ],
+                    "generatedFrom": [],
+                    "modifiedFrom": [],
+                    "retainedFrom": [],
+                    "status": "generated"
+                  },
+                  {
+                    "id": 10,
+                    "stableHash": "E:c46bdc12d7ab915f",
+                    "topoFaceIds": [
+                      3,
+                      6
+                    ],
+                    "generatedFrom": [],
+                    "modifiedFrom": [],
+                    "retainedFrom": [],
+                    "status": "generated"
+                  },
+                  {
+                    "id": 11,
+                    "stableHash": "E:c46bdb12d7ab8fac",
+                    "topoFaceIds": [
+                      4,
+                      5
+                    ],
+                    "generatedFrom": [],
+                    "modifiedFrom": [],
+                    "retainedFrom": [],
+                    "status": "generated"
+                  },
+                  {
+                    "id": 12,
+                    "stableHash": "E:c46bde12d7ab94c5",
+                    "topoFaceIds": [
+                      4,
+                      6
+                    ],
+                    "generatedFrom": [],
+                    "modifiedFrom": [],
+                    "retainedFrom": [],
+                    "status": "generated"
+                  }
+                ],
+                "vertices": [
+                  {
+                    "id": 1,
+                    "stableHash": "V:bf3eedf3a1f55e7e",
+                    "status": "generated"
+                  },
+                  {
+                    "id": 2,
+                    "stableHash": "V:bf3eecf3a1f55ccb",
+                    "status": "generated"
+                  },
+                  {
+                    "id": 3,
+                    "stableHash": "V:bf3eebf3a1f55b18",
+                    "status": "generated"
+                  },
+                  {
+                    "id": 4,
+                    "stableHash": "V:bf3ef2f3a1f566fd",
+                    "status": "generated"
+                  },
+                  {
+                    "id": 5,
+                    "stableHash": "V:bf3ef1f3a1f5654a",
+                    "status": "generated"
+                  },
+                  {
+                    "id": 6,
+                    "stableHash": "V:bf3ef0f3a1f56397",
+                    "status": "generated"
+                  },
+                  {
+                    "id": 7,
+                    "stableHash": "V:bf3eeff3a1f561e4",
+                    "status": "generated"
+                  },
+                  {
+                    "id": 8,
+                    "stableHash": "V:bf3ee6f3a1f55299",
+                    "status": "generated"
+                  }
+                ],
+                "deletedEntities": []
+              }
+            },
+            "_occt": {
+              "positionCount": 72,
+              "normalCount": 72,
+              "indexCount": 36,
+              "edgeSegmentCount": 0,
+              "hasStableFaceMap": true,
+              "hasStableHashes": true,
+              "featureEdgeChainCount": 12
+            },
+            "_tessellator": "occt"
+          }
+        }
+      }
     },
     "originPlanes": {
       "XY": {
@@ -196,6 +2707,12 @@
       "x": 0,
       "y": 0,
       "z": 0
+    },
+    "tessellationConfig": {
+      "curveSegments": 64,
+      "surfaceSegments": 16,
+      "edgeSegments": 64,
+      "adaptiveSubdivision": true
     }
   },
   "orbit": null,
@@ -203,13 +2720,13 @@
   "sessionState": null,
   "metadata": {
     "createdWith": "CAD Modeller Open Design",
-    "exportedAt": "2026-03-22T23:06:14.542Z",
+    "exportedAt": "2026-06-16T22:52:21.481Z",
     "featureCount": 2,
     "featureTypes": [
       "sketch",
       "extrude"
     ],
-    "faceCount": 6,
+    "faceCount": 12,
     "volume": 1000,
     "surfaceArea": 600,
     "boundingBox": {
@@ -231,10 +2748,12 @@
     "pathCount": 12,
     "bodyCount": 1,
     "bodySizes": [
-      6
+      12
     ],
     "minWallThickness": 10,
     "maxWallThickness": 10,
-    "description": "Simple 10x10x10 box: rectangle sketch on XY plane, extruded 10 units"
-  }
+    "invertedFaceCount": 0
+  },
+  "scenes": [],
+  "cam": null
 }

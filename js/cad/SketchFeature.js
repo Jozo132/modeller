@@ -593,6 +593,14 @@ function _getArcTraceSweep(arc) {
   const fullTurn = Math.PI * 2;
   while (sweep > fullTurn) sweep -= fullTurn;
   while (sweep < -fullTurn) sweep += fullTurn;
+  const usesLegacyImplicitEndpoints = arc?._legacyImplicitEndpoints === true;
+  const hasExplicitEndpoints = !!(arc?.startPoint && arc?.endPoint) && !usesLegacyImplicitEndpoints;
+  if (!hasExplicitEndpoints && Math.abs(Math.abs(sweep) - Math.PI) <= 1e-9) {
+    // Legacy arc records omitted endpoint references for half-turn arcs,
+    // which makes the intended side ambiguous. Those files stored the
+    // opposite sweep from the one current tracing expects.
+    sweep = -sweep;
+  }
   return sweep;
 }
 

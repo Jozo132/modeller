@@ -1,5 +1,6 @@
 import { getOperationLoops, getOperationSegmentLoops, getOperationSourceSurfaces, normalizeCamConfig } from './model.js';
 import { cleanLoop, offsetPolygon, polygonArea } from './geometry/polygonOffset.js';
+import { isWorldZAlignedPlane, normalizeCamPlane } from './plane.js';
 
 const EPSILON = 1e-9;
 const MAX_POCKET_SCAN_LEVELS = 10000;
@@ -17,6 +18,11 @@ export function generateToolpaths(camConfig) {
     const tool = toolById.get(operation.toolId);
     if (!tool) {
       warnings.push({ operationId: operation.id, message: `Missing tool ${operation.toolId || '(none)'}` });
+      continue;
+    }
+    const sourcePlaneError = unsupportedSourcePlaneError(operation);
+    if (sourcePlaneError) {
+      warnings.push({ operationId: operation.id, ...sourcePlaneError });
       continue;
     }
     const loops = getOperationLoops(operation);
@@ -41,6 +47,33 @@ export function generateToolpaths(camConfig) {
   }
 
   return { config, toolpaths, warnings };
+}
+
+function unsupportedSourcePlaneError(operation) {
+  const source = operation?.source;
+  if (source?.type !== 'face') return null;
+  const planes = collectSourcePlanes(source);
+  if (planes.length === 0) return null;
+  return planes.every((plane) => isWorldZAlignedPlane(plane))
+    ? null
+    : {
+      severity: 'error',
+      code: 'unsupported-face-source-plane',
+      message: 'Current 2.5D CAM only supports planar face sources that are parallel to the XY machining plane.',
+    };
+}
+
+function collectSourcePlanes(source) {
+  const planes = [];
+  const pushPlane = (plane) => {
+    const normalized = normalizeCamPlane(plane);
+    if (normalized) planes.push(normalized);
+  };
+  pushPlane(source?.plane);
+  for (const surface of Array.isArray(source?.surfaces) ? source.surfaces : []) {
+    pushPlane(surface?.plane);
+  }
+  return planes;
 }
 
 export function generateFaceToolpath(operation, tool, loops = getOperationLoops(operation), stock = null) {

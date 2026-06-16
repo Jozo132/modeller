@@ -8,6 +8,7 @@
 import { Feature } from './Feature.js';
 import { expandPathEdgeKeys, makeEdgeKey } from './EdgeAnalysis.js';
 import { calculateMeshVolume, calculateBoundingBox } from './toolkit/MeshAnalysis.js';
+import { EdgeSampler } from './Tessellator2/EdgeSampler.js';
 import { ensureOcctGeometryResidentFromCheckpoint, tryBuildOcctChamferMetadataSync } from './occt/OcctSketchModeling.js';
 import {
   buildSelectionKeyMap,
@@ -23,6 +24,8 @@ import {
 function isPlainObject(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
+
+const _legacyTopoEdgeSampler = new EdgeSampler();
 
 function cloneJsonLike(value) {
   if (Array.isArray(value)) return value.map((entry) => cloneJsonLike(entry));
@@ -305,6 +308,43 @@ function legacyKeyMatchesEdge(key, edge, tolerance = 1e-3) {
     && pointDistanceSquared(parsed.end, edge.start) <= tolSq;
 }
 
+function sampleTopoEdgePoints(edge, segments = 64) {
+  if (!edge) return [];
+  const curve = edge.curve || null;
+  const isLinear = !curve || (
+    curve.degree === 1
+    && Array.isArray(curve.controlPoints)
+    && curve.controlPoints.length === 2
+  );
+  const sampleCount = isLinear ? 1 : segments;
+  return _legacyTopoEdgeSampler.sampleEdge(edge, sampleCount).map((point) => ({
+    x: Number(point.x),
+    y: Number(point.y),
+    z: Number(point.z),
+  }));
+}
+
+function legacyKeyMatchesTopoEdge(key, edge, tolerance = 5e-2) {
+  const parsed = parseLegacyEdgeKey(key);
+  if (!parsed) return false;
+
+  const samples = sampleTopoEdgePoints(edge, 64);
+  if (samples.length < 2) return false;
+
+  return pointLiesOnSampledEdge(parsed.start, samples, tolerance)
+    && pointLiesOnSampledEdge(parsed.end, samples, tolerance);
+}
+
+function pointLiesOnSampledEdge(point, samples, tolerance = 5e-2) {
+  if (!point || !Array.isArray(samples) || samples.length < 2) return false;
+  for (let index = 0; index < samples.length - 1; index += 1) {
+    if (pointLiesOnEdge(point, { start: samples[index], end: samples[index + 1] }, tolerance)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function pointLiesOnEdge(point, edge, tolerance = 1e-3) {
   if (!point || !edge?.start || !edge?.end) return false;
   const tolSq = tolerance * tolerance;
@@ -494,6 +534,16 @@ function resolveOcctFeatureChainRefs(selectionContext, fallbackEdgeKeys) {
     const ref = toOcctEdgeRef(edge);
     if (!ref || !legacyKey || !wanted.has(legacyKey)) continue;
     refs.push(ref);
+  }
+
+  if (refs.length === 0) {
+    for (const edge of topoBodyEdges(selectionContext)) {
+      const ref = toOcctEdgeRef(edge);
+      if (!ref) continue;
+      const matched = fallbackEdgeKeys.some((legacyKey) => legacyKeyMatchesTopoEdge(legacyKey, edge));
+      if (!matched) continue;
+      refs.push(ref);
+    }
   }
 
   return uniqueOcctEdgeRefs(refs);

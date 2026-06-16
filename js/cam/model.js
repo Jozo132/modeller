@@ -1,3 +1,5 @@
+import { normalizeCamPlane } from './plane.js';
+
 export const CAM_CONFIG_VERSION = 1;
 
 export const CAM_TOOL_TYPES = Object.freeze(['endmill', 'ball', 'cone', 'drill']);
@@ -201,6 +203,7 @@ export function getOperationSourceSurfaces(operation) {
     faceGroup: source.faceGroup,
     edgeIndex: source.edgeIndex,
     tolerance: source.tolerance,
+    plane: source.plane,
     z: numberOr(operation.bottomZ, NaN),
     loops: source.loops,
     segmentLoops: source.segmentLoops,
@@ -315,6 +318,7 @@ function normalizeSource(input = {}) {
     faceGroup: integerOrNull(data.faceGroup),
     edgeIndex: integerOrNull(data.edgeIndex),
     tolerance: positiveNumberOrNull(data.tolerance),
+    plane: normalizeCamPlane(data.plane),
     loops: loops.map(normalizeLoop).filter((loop) => loop.length >= 3),
     segmentLoops: normalizeSegmentLoops(data.segmentLoops),
     surfaces: Array.isArray(data.surfaces)
@@ -334,6 +338,7 @@ function normalizeSourceSurface(input = {}) {
     faceGroup: integerOrNull(data.faceGroup),
     edgeIndex: integerOrNull(data.edgeIndex),
     tolerance: positiveNumberOrNull(data.tolerance),
+    plane: normalizeCamPlane(data.plane),
     z: numberOr(data.z, NaN),
     loops: loops.map(normalizeLoop).filter((loop) => loop.length >= 3),
     segmentLoops: normalizeSegmentLoops(data.segmentLoops),

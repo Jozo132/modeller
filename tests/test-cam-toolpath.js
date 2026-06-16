@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { startTiming, formatTimingSuffix } from './test-timing.js';
-import { depthPasses, generateToolpaths, normalizeCamConfig, offsetPolygon } from '../js/cam/index.js';
+import { createCamFaceSourceResolver, depthPasses, generateToolpaths, normalizeCamConfig, offsetPolygon } from '../js/cam/index.js';
+import { buildTopoBody, resetTopoIds, SurfaceType } from '../js/cad/BRepTopology.js';
 import { parseCMOD } from '../js/cmod.js';
+import { NurbsCurve } from '../js/cad/NurbsCurve.js';
+import { NurbsSurface } from '../js/cad/NurbsSurface.js';
 
 function test(name, fn) {
   const startedAt = startTiming();
@@ -17,12 +20,371 @@ const rect = [
   { x: 0, y: 5 },
 ];
 
+function createFaceSourceResolver(overrides = {}) {
+  return createCamFaceSourceResolver({
+    getReferenceGeometry: overrides.getReferenceGeometry || (() => null),
+    getReferenceTolerance: overrides.getReferenceTolerance || (() => 0.001),
+    getRenderedFaces: overrides.getRenderedFaces || (() => []),
+    getExactPlanarFaceWires: overrides.getExactPlanarFaceWires || (() => null),
+    computeGroupBoundaryLoops: overrides.computeGroupBoundaryLoops || (() => []),
+  });
+}
+
+function buildPlanarTopoBody(loopVerticesList) {
+  resetTopoIds();
+  return buildTopoBody(loopVerticesList.map((vertices) => ({
+    surface: NurbsSurface.createPlane(
+      vertices[0],
+      {
+        x: vertices[1].x - vertices[0].x,
+        y: vertices[1].y - vertices[0].y,
+        z: vertices[1].z - vertices[0].z,
+      },
+      {
+        x: vertices[3].x - vertices[0].x,
+        y: vertices[3].y - vertices[0].y,
+        z: vertices[3].z - vertices[0].z,
+      },
+    ),
+    surfaceType: SurfaceType.PLANE,
+    sameSense: true,
+    vertices,
+    edgeCurves: vertices.map((vertex, index) => NurbsCurve.createLine(vertex, vertices[(index + 1) % vertices.length])),
+    shared: null,
+  })));
+}
+
+function assertPoint3Close(actual, expected, tolerance = 1e-9) {
+  assert.ok(Math.abs(actual.x - expected.x) <= tolerance, `expected x=${expected.x}, got ${actual.x}`);
+  assert.ok(Math.abs(actual.y - expected.y) <= tolerance, `expected y=${expected.y}, got ${actual.y}`);
+  assert.ok(Math.abs(actual.z - expected.z) <= tolerance, `expected z=${expected.z}, got ${actual.z}`);
+}
+
 test('polygon offset grows and shrinks a rectangle by tool radius', () => {
   const outside = offsetPolygon(rect, 1);
   const inside = offsetPolygon(rect, -1);
   assert.deepEqual(outside[0], { x: -1, y: -1 });
   assert.deepEqual(inside[0], { x: 1, y: 1 });
   assert.deepEqual(offsetPolygon(rect, -6), []);
+});
+
+test('face source resolver prefers explicit multi-face selections', () => {
+  const resolver = createFaceSourceResolver();
+  const selectedFaces = new Map([
+    [2, { faceIndex: 2 }],
+    [5, { faceIndex: 5 }],
+  ]);
+
+  assert.deepEqual(
+    resolver.selectedCamSourceFaceHits({ faceIndex: 5 }, selectedFaces).map((hit) => hit.faceIndex),
+    [2, 5],
+  );
+  assert.deepEqual(
+    resolver.selectedCamSourceFaceHits({ faceIndex: 9 }, selectedFaces).map((hit) => hit.faceIndex),
+    [9],
+  );
+});
+
+test('face source resolver keeps single-surface plane metadata', () => {
+  const resolver = createFaceSourceResolver();
+  const plane = {
+    origin: { x: 0, y: 0, z: 0 },
+    normal: { x: 0, y: 0, z: 1 },
+    xAxis: { x: 1, y: 0, z: 0 },
+    yAxis: { x: 0, y: 1, z: 0 },
+  };
+
+  const source = resolver.combineCamSourceSurfaces([{
+    referenceId: 'topoface-7',
+    label: 'Face 7',
+    faceIndex: 3,
+    topoFaceId: 7,
+    faceGroup: 3,
+    tolerance: 0.01,
+    plane,
+    z: 0,
+    loops: [rect],
+    segmentLoops: [],
+  }]);
+
+  assert.equal(source.type, 'face');
+  assert.deepEqual(source.plane, plane);
+});
+
+test('face source resolver reports unsupported source planes', () => {
+  const resolver = createFaceSourceResolver();
+  const horizontalPlane = {
+    origin: { x: 0, y: 0, z: 0 },
+    normal: { x: 0, y: 0, z: 1 },
+    xAxis: { x: 1, y: 0, z: 0 },
+    yAxis: { x: 0, y: 1, z: 0 },
+  };
+  const tiltedPlane = {
+    origin: { x: 0, y: 0, z: 0 },
+    normal: { x: 0, y: 1, z: 0 },
+    xAxis: { x: 1, y: 0, z: 0 },
+    yAxis: { x: 0, y: 0, z: 1 },
+  };
+
+  assert.match(
+    resolver.camFaceSourceSupportMessage({ surfaces: [{ plane: null }] }),
+    /planar OCCT face/i,
+  );
+  assert.match(
+    resolver.camFaceSourceSupportMessage({ surfaces: [{ plane: tiltedPlane }] }),
+    /parallel to the XY machining plane/i,
+  );
+  assert.equal(
+    resolver.camFaceSourceSupportMessage({ surfaces: [{ plane: horizontalPlane }] }),
+    null,
+  );
+});
+
+test('face source resolver uses exact OCCT plane data instead of preview mesh drift', () => {
+  const rect3d = [
+    { x: 0, y: 0, z: 3 },
+    { x: 10, y: 0, z: 3 },
+    { x: 10, y: 5, z: 3 },
+    { x: 0, y: 5, z: 3 },
+  ];
+  const body = buildPlanarTopoBody([rect3d]);
+  const topoFace = body.faces()[0];
+  const resolver = createFaceSourceResolver({
+    getReferenceGeometry: () => ({ topoBody: body }),
+  });
+
+  const source = resolver.faceHitToCamSource({
+    faceIndex: 0,
+    point: { x: 1, y: 1, z: 2.9 },
+    face: {
+      topoFaceId: topoFace.id,
+      faceGroup: 7,
+      isCurved: false,
+      normal: { x: 0.12, y: -0.08, z: 0.98 },
+      vertices: rect3d.map((vertex, index) => ({
+        x: vertex.x + (index % 2 === 0 ? 0.02 : -0.02),
+        y: vertex.y + (index < 2 ? 0.015 : -0.015),
+        z: vertex.z + 0.03,
+      })),
+    },
+  });
+
+  assert.ok(source);
+  assert.equal(source.loops.length, 1);
+  assertPoint3Close(source.plane.origin, { x: 0, y: 0, z: 3 });
+  assertPoint3Close(source.plane.normal, { x: 0, y: 0, z: 1 });
+  assertPoint3Close(source.plane.xAxis, { x: 1, y: 0, z: 0 });
+  assertPoint3Close(source.plane.yAxis, { x: 0, y: 1, z: 0 });
+});
+
+test('face source resolver prefers exact planar wire API when available', () => {
+  const rect3d = [
+    { x: 0, y: 0, z: 3 },
+    { x: 10, y: 0, z: 3 },
+    { x: 10, y: 5, z: 3 },
+    { x: 0, y: 5, z: 3 },
+  ];
+  const body = buildPlanarTopoBody([rect3d]);
+  const topoFace = body.faces()[0];
+  const exactCalls = [];
+  const resolver = createFaceSourceResolver({
+    getReferenceGeometry: () => ({ topoBody: body, occtShapeHandle: 42 }),
+    getExactPlanarFaceWires: ({ faceRef }) => {
+      exactCalls.push(faceRef);
+      return {
+        face: faceRef,
+        surfaceType: 'plane',
+        plane: {
+          origin: [2, 4, 7],
+          normal: [0, 0, 1],
+          xDirection: [1, 0, 0],
+        },
+        domain: { u: [0, 10], v: [0, 5] },
+        wires: [{
+          kind: 'outer',
+          segments: [
+            { planarCurve: { curveType: 'line', startPoint: [2, 4], midPoint: [7, 4], endPoint: [12, 4], line: { origin: [2, 4], direction: [1, 0] } } },
+            { planarCurve: { curveType: 'line', startPoint: [12, 4], midPoint: [12, 6.5], endPoint: [12, 9], line: { origin: [12, 4], direction: [0, 1] } } },
+            { planarCurve: { curveType: 'line', startPoint: [12, 9], midPoint: [7, 9], endPoint: [2, 9], line: { origin: [12, 9], direction: [-1, 0] } } },
+            { planarCurve: { curveType: 'line', startPoint: [2, 9], midPoint: [2, 6.5], endPoint: [2, 4], line: { origin: [2, 9], direction: [0, -1] } } },
+          ],
+        }],
+      };
+    },
+  });
+
+  const source = resolver.faceHitToCamSource({
+    faceIndex: 0,
+    point: { x: 1, y: 1, z: 2.9 },
+    face: {
+      topoFaceId: topoFace.id,
+      faceGroup: 7,
+      isCurved: false,
+      normal: { x: 0, y: 0, z: 1 },
+      vertices: rect3d,
+    },
+  });
+
+  assert.equal(exactCalls.length, 1);
+  assert.deepEqual(exactCalls[0], { topoId: topoFace.id });
+  assert.equal(source.loops.length, 1);
+  assert.deepEqual(source.loops[0], [
+    { x: 2, y: 4 },
+    { x: 12, y: 4 },
+    { x: 12, y: 9 },
+    { x: 2, y: 9 },
+  ]);
+  assert.equal(source.segmentLoops.length, 1);
+  assert.ok(source.segmentLoops[0].every((segment) => segment.type === 'line'));
+  assertPoint3Close(source.plane.origin, { x: 2, y: 4, z: 7 });
+});
+
+test('face source resolver refuses preview-mesh-only CAM sources', () => {
+  const resolver = createFaceSourceResolver();
+
+  const source = resolver.faceHitToCamSource({
+    faceIndex: 0,
+    face: {
+      faceGroup: 4,
+      isCurved: false,
+      normal: { x: 0, y: 0, z: 1 },
+      vertices: [
+        { x: 0, y: 0, z: 0 },
+        { x: 10, y: 0, z: 0 },
+        { x: 10, y: 5, z: 0 },
+        { x: 0, y: 5, z: 0 },
+      ],
+    },
+  });
+
+  assert.equal(source, null);
+});
+
+test('grouped planar face selections are deduplicated by face group', () => {
+  const leftRect3d = [
+    { x: 0, y: 0, z: 0 },
+    { x: 4, y: 0, z: 0 },
+    { x: 4, y: 4, z: 0 },
+    { x: 0, y: 4, z: 0 },
+  ];
+  const rightRect3d = [
+    { x: 6, y: 0, z: 0 },
+    { x: 10, y: 0, z: 0 },
+    { x: 10, y: 4, z: 0 },
+    { x: 6, y: 4, z: 0 },
+  ];
+  const body = buildPlanarTopoBody([leftRect3d, rightRect3d]);
+  const topoFaces = body.faces();
+  const renderedFaces = [
+    { faceGroup: 55, topoFaceId: topoFaces[0].id, vertices: leftRect3d, normal: { x: 0, y: 0, z: 1 }, isCurved: false },
+    { faceGroup: 55, topoFaceId: topoFaces[1].id, vertices: rightRect3d, normal: { x: 0, y: 0, z: 1 }, isCurved: false },
+  ];
+  const resolver = createFaceSourceResolver({
+    getReferenceGeometry: () => ({ topoBody: body }),
+    getRenderedFaces: () => renderedFaces,
+  });
+
+  const source = resolver.faceHitsToCamSource([
+    { faceIndex: 0, face: renderedFaces[0] },
+    { faceIndex: 1, face: renderedFaces[1] },
+  ]);
+
+  assert.equal(source.referenceId, 'facegroup-55');
+  assert.equal(source.surfaces.length, 1);
+  assert.equal(source.loops.length, 2);
+  assert.equal(source.segmentLoops.length, 2);
+});
+
+test('face source resolver preserves exact OCCT segment loops during hydration', () => {
+  const rect3d = [
+    { x: 0, y: 0, z: 0 },
+    { x: 10, y: 0, z: 0 },
+    { x: 10, y: 5, z: 0 },
+    { x: 0, y: 5, z: 0 },
+  ];
+  const body = buildPlanarTopoBody([rect3d]);
+  const topoFace = body.faces()[0];
+  const resolver = createFaceSourceResolver({
+    getReferenceGeometry: () => ({ topoBody: body }),
+  });
+
+  const source = resolver.hydrateCamFaceSource({
+    type: 'face',
+    referenceId: `topoface-${topoFace.id}`,
+  });
+
+  assert.equal(source.referenceId, `topoface-${topoFace.id}`);
+  assert.equal(source.loops.length, 1);
+  assert.equal(source.segmentLoops.length, 1);
+  assert.equal(source.segmentLoops[0].length, 4);
+  assert.ok(source.segmentLoops[0].every((segment) => segment.type === 'line'));
+});
+
+test('face source resolver tolerates one-based mesh topo face ids against zero-based exact topology', () => {
+  const rect3d = [
+    { x: 0, y: 0, z: 10 },
+    { x: 10, y: 0, z: 10 },
+    { x: 10, y: 10, z: 10 },
+    { x: 0, y: 10, z: 10 },
+  ];
+  const body = buildPlanarTopoBody([rect3d]);
+  const topoFace = body.faces()[0];
+  assert.equal(topoFace.id, 0);
+  const resolver = createFaceSourceResolver({
+    getReferenceGeometry: () => ({ topoBody: body }),
+  });
+
+  const source = resolver.faceHitToCamSource({
+    faceIndex: 10,
+    point: { x: 5, y: 5, z: 10 },
+    face: {
+      topoFaceId: 1,
+      faceGroup: 10,
+      isCurved: false,
+      normal: { x: 0, y: 0, z: 1 },
+      vertices: rect3d,
+    },
+  });
+
+  assert.ok(source);
+  assert.equal(source.topoFaceId, 1);
+  assert.equal(source.loops.length, 1);
+  assertPoint3Close(source.plane.origin, { x: 0, y: 0, z: 10 });
+  assertPoint3Close(source.plane.normal, { x: 0, y: 0, z: 1 });
+});
+
+test('face source fallback preserves loops for planar non-XY faces before support rejection', () => {
+  const verticalRect3d = [
+    { x: 4, y: 0, z: 0 },
+    { x: 4, y: 10, z: 0 },
+    { x: 4, y: 10, z: 6 },
+    { x: 4, y: 0, z: 6 },
+  ];
+  const body = buildPlanarTopoBody([verticalRect3d]);
+  const topoFace = body.faces()[0];
+  const resolver = createFaceSourceResolver({
+    getReferenceGeometry: () => ({ topoBody: body }),
+    getExactPlanarFaceWires: () => null,
+  });
+
+  const source = resolver.faceHitToCamSource({
+    faceIndex: 0,
+    point: { x: 4, y: 5, z: 3 },
+    face: {
+      topoFaceId: topoFace.id,
+      faceGroup: 12,
+      isCurved: false,
+      normal: { x: 1, y: 0, z: 0 },
+      vertices: verticalRect3d,
+    },
+  });
+
+  assert.ok(source);
+  assert.equal(source.loops.length, 1);
+  assert.match(
+    resolver.camFaceSourceSupportMessage(source),
+    /parallel to the XY machining plane/i,
+  );
 });
 
 test('profile toolpaths offset outside contours and cut requested depth passes', () => {
@@ -422,6 +784,60 @@ test('face-surface pockets re-evaluate active sub-pockets at each depth', () => 
 
   assert.equal(shallowStarts.length, 2, 'expected the shallower depth to machine both active surface pockets');
   assert.equal(deepStarts.length, 1, 'expected only the deeper inner relief to remain active at the second depth');
+});
+
+test('face source planes are preserved for horizontal pocket sources', () => {
+  const plane = {
+    origin: { x: 0, y: 0, z: 0 },
+    normal: { x: 0, y: 0, z: 1 },
+    xAxis: { x: 1, y: 0, z: 0 },
+    yAxis: { x: 0, y: 1, z: 0 },
+  };
+  const cam = normalizeCamConfig({
+    tools: [{ id: 'tool-a', type: 'endmill', diameter: 2 }],
+    operations: [{
+      id: 'face-plane-pocket',
+      type: 'pocket',
+      toolId: 'tool-a',
+      source: { type: 'face', plane, loops: [rect] },
+      topZ: 0,
+      bottomZ: -1,
+      stepDown: 1,
+    }],
+  });
+
+  assert.deepEqual(cam.operations[0].source.plane, plane);
+  const { toolpaths, warnings } = generateToolpaths(cam);
+  assert.equal(warnings.length, 0);
+  assert.equal(toolpaths.length, 1);
+});
+
+test('non-horizontal face source planes are rejected for current 2.5D CAM', () => {
+  const cam = normalizeCamConfig({
+    tools: [{ id: 'tool-a', type: 'endmill', diameter: 2 }],
+    operations: [{
+      id: 'tilted-face-pocket',
+      type: 'pocket',
+      toolId: 'tool-a',
+      source: {
+        type: 'face',
+        plane: {
+          origin: { x: 0, y: 0, z: 0 },
+          normal: { x: 0, y: 1, z: 0 },
+          xAxis: { x: 1, y: 0, z: 0 },
+          yAxis: { x: 0, y: 0, z: 1 },
+        },
+        loops: [rect],
+      },
+      topZ: 0,
+      bottomZ: -1,
+      stepDown: 1,
+    }],
+  });
+
+  const { toolpaths, warnings } = generateToolpaths(cam);
+  assert.equal(toolpaths.length, 0);
+  assert.ok(warnings.some((warning) => warning.code === 'unsupported-face-source-plane' && warning.severity === 'error'));
 });
 
 test('sample contour pocket uses contour shells when exact face geometry is available', () => {

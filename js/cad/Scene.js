@@ -25,6 +25,15 @@ import {
 const MERGE_TOLERANCE = 1e-4; // world units — points closer than this auto-merge
 const ADD_CONSTRAINT_SOLVE_OPTIONS = Object.freeze({ maxIter: 1200, relaxation: 1, tolerance: 1e-4 });
 
+function findPointByCoords(pointMap, x, y, tolerance = MERGE_TOLERANCE) {
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  for (const point of pointMap.values()) {
+    if (!point || typeof point.x !== 'number' || typeof point.y !== 'number') continue;
+    if (Math.hypot(point.x - x, point.y - y) < tolerance) return point;
+  }
+  return null;
+}
+
 function mapSceneSolveOptions(opts = {}) {
   const maxIterations = Number.isFinite(opts?.maxIter) ? Math.max(1, Math.trunc(opts.maxIter)) : undefined;
   const residualTolerance = Number.isFinite(opts?.tolerance) ? Math.max(0, Number(opts.tolerance)) : undefined;
@@ -649,10 +658,28 @@ export class Scene {
     for (const d of (data.arcs || [])) {
       const center = ptMap.get(d.center);
       if (!center) continue;
-      const startPoint = d.startPoint != null ? ptMap.get(d.startPoint) : null;
-      const endPoint = d.endPoint != null ? ptMap.get(d.endPoint) : null;
+      const radius = Number(d.radius);
+      const startAngle = Number(d.startAngle);
+      const endAngle = Number(d.endAngle);
+      const startPoint = d.startPoint != null
+        ? ptMap.get(d.startPoint)
+        : findPointByCoords(
+          ptMap,
+          center.x + radius * Math.cos(startAngle),
+          center.y + radius * Math.sin(startAngle),
+        );
+      const endPoint = d.endPoint != null
+        ? ptMap.get(d.endPoint)
+        : findPointByCoords(
+          ptMap,
+          center.x + radius * Math.cos(endAngle),
+          center.y + radius * Math.sin(endAngle),
+        );
       const a = new PArc(center, d.radius, d.startAngle, d.endAngle, startPoint, endPoint);
       a.id = d.id;
+      if (d.startPoint == null || d.endPoint == null) {
+        a._legacyImplicitEndpoints = true;
+      }
       a.layer = d.layer || '0';
       a.color = d.color || null;
       if (d.construction) a.construction = true;

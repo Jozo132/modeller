@@ -1430,6 +1430,18 @@ export class OcctKernelAdapter {
     return parseJson(result, 'evaluateFace');
   }
 
+  getPlanarFaceWires(shapeHandle, faceRef) {
+    const kernel = this.requireReady();
+    if (typeof kernel.getPlanarFaceWires !== 'function') {
+      throw new Error('OCCT getPlanarFaceWires is unavailable in this build');
+    }
+    const normalizedFace = normalizeFaceRef(faceRef) || faceRef || {};
+    const result = this._usesWrapperApi
+      ? kernel.getPlanarFaceWires({ shape: this._shapeHandleObject(shapeHandle), face: normalizedFace })
+      : kernel.getPlanarFaceWires(shapeHandle, JSON.stringify(normalizedFace));
+    return parseJson(result, 'getPlanarFaceWires');
+  }
+
   createCheckpoint(shapeHandle) {
     const kernel = this.requireReady();
     if (typeof kernel.createCheckpoint !== 'function') {

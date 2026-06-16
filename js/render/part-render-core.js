@@ -371,8 +371,11 @@ function buildSilhouetteCandidates(faces) {
 
 export function buildMeshRenderData(geometry) {
   const faces = geometry.faces || [];
-  const topoFaceById = typeof geometry.topoBody?.faces === 'function'
-    ? new Map(geometry.topoBody.faces().map((face) => [face.id, face]))
+  const topoFaces = typeof geometry.topoBody?.faces === 'function'
+    ? geometry.topoBody.faces()
+    : null;
+  const topoFaceById = topoFaces
+    ? new Map(topoFaces.map((face) => [face.id, face]))
     : null;
   const geometryDiag = computeGeometryDiagonal(faces);
   const featureEdgeSegments = buildFeatureEdgeSegmentSet(geometry.edges || []);
@@ -386,10 +389,15 @@ export function buildMeshRenderData(geometry) {
     return dot < -1e-5;
   };
 
-  const meshFaces = faces.map((face, idx) => ({
+  const meshFaces = faces.map((face, idx) => {
+    const fallbackFaceIndex = Number.isInteger(face?.faceGroup) ? face.faceGroup : idx;
+    const fallbackTopoFaceId = face?.topoFaceId != null
+      ? face.topoFaceId
+      : (topoFaces && fallbackFaceIndex >= 0 && fallbackFaceIndex < topoFaces.length ? topoFaces[fallbackFaceIndex].id : null);
+    return {
     index: idx,
     faceGroup: face.faceGroup != null ? face.faceGroup : idx,
-    topoFaceId: face.topoFaceId != null ? face.topoFaceId : null,
+    topoFaceId: fallbackTopoFaceId,
     faceType: face.faceType || 'unknown',
     isCurved: !!face.isCurved,
     isInverted: isInvertedFace(face),
@@ -397,7 +405,8 @@ export function buildMeshRenderData(geometry) {
     shared: face.shared || null,
     vertices: face.vertices || [],
     vertexCount: (face.vertices || []).length,
-  }));
+    };
+  });
 
   const smoothNormals = new Map();
   const precision = 6;

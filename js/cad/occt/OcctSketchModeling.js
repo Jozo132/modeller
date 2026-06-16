@@ -1899,6 +1899,16 @@ export function getOcctSketchModelingTopology(handle) {
   return sharedAdapter.getTopology(handle);
 }
 
+export function getOcctSketchModelingPlanarFaceWires(handle, faceRef) {
+  const adapter = getSharedAdapterSync();
+  if (!adapter || !Number.isInteger(handle) || handle <= 0 || !faceRef || typeof faceRef !== 'object') return null;
+  try {
+    return adapter.getPlanarFaceWires(handle, faceRef);
+  } catch {
+    return null;
+  }
+}
+
 export function createOcctSketchModelingCheckpoint(handle) {
   const adapter = getSharedAdapterSync();
   if (!adapter || !Number.isInteger(handle) || handle <= 0) return null;
