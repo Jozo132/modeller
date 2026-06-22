@@ -5,6 +5,10 @@ import { debug, warn } from './logger.js';
 
 const SNAP_RADIUS = 15; // screen pixels
 
+function _isFinitePoint(point) {
+  return !!point && Number.isFinite(point.x) && Number.isFinite(point.y);
+}
+
 // --- Spatial hash for snap points ---
 // Rebuilt lazily when entity count changes. World-space grid
 // lets findSnap check only nearby snap points instead of all entities.
@@ -66,6 +70,9 @@ export function findSnap(sx, sy, viewport) {
   }
 
   const world = viewport.screenToWorld(sx, sy);
+  if (!_isFinitePoint(world) || !Number.isFinite(viewport.zoom) || viewport.zoom <= 0) {
+    return null;
+  }
   // Convert snap radius to world coordinates for grid query
   const worldRadius = SNAP_RADIUS / viewport.zoom;
 
@@ -89,6 +96,7 @@ export function findSnap(sx, sy, viewport) {
         const dy = snap.y - world.y;
         if (dx > worldRadius || dx < -worldRadius || dy > worldRadius || dy < -worldRadius) continue;
         const s = viewport.worldToScreen(snap.x, snap.y);
+        if (!_isFinitePoint(s)) continue;
         const dist = Math.hypot(s.x - sx, s.y - sy);
         if (dist < SNAP_RADIUS && dist < bestDist) {
           bestDist = dist;
@@ -100,10 +108,12 @@ export function findSnap(sx, sy, viewport) {
 
   // Origin snap — always available as a high-priority snap
   const originScreen = viewport.worldToScreen(0, 0);
-  const originDist = Math.hypot(originScreen.x - sx, originScreen.y - sy);
-  if (originDist < SNAP_RADIUS && originDist < bestDist) {
-    bestDist = originDist;
-    bestSnap = { x: 0, y: 0, type: 'origin' };
+  if (_isFinitePoint(originScreen)) {
+    const originDist = Math.hypot(originScreen.x - sx, originScreen.y - sy);
+    if (originDist < SNAP_RADIUS && originDist < bestDist) {
+      bestDist = originDist;
+      bestSnap = { x: 0, y: 0, type: 'origin' };
+    }
   }
 
   if (bestSnap) return bestSnap;
@@ -113,6 +123,7 @@ export function findSnap(sx, sy, viewport) {
     const edgeSnap = _edgeSnapForEntity(entity, world.x, world.y);
     if (!edgeSnap) continue;
     const s = viewport.worldToScreen(edgeSnap.x, edgeSnap.y);
+    if (!_isFinitePoint(s)) continue;
     const dist = Math.hypot(s.x - sx, s.y - sy);
     if (dist < SNAP_RADIUS && dist < bestDist) {
       bestDist = dist;
@@ -128,6 +139,7 @@ export function findSnap(sx, sy, viewport) {
     const gx = Math.round(world.x / gs) * gs;
     const gy = Math.round(world.y / gs) * gs;
     const gs_screen = viewport.worldToScreen(gx, gy);
+    if (!_isFinitePoint(gs_screen)) return null;
     const gridDist = Math.hypot(gs_screen.x - sx, gs_screen.y - sy);
     if (gridDist < SNAP_RADIUS) {
       return { x: gx, y: gy, type: 'grid' };
@@ -195,6 +207,7 @@ export function getSnappedPosition(sx, sy, viewport, basePoint = null) {
     world = { x: snap.x, y: snap.y };
   } else {
     world = viewport.screenToWorld(sx, sy);
+    if (!_isFinitePoint(world)) return { world: null, snap: null };
   }
   if (basePoint && state.orthoEnabled) {
     const ortho = applyOrtho(basePoint.x, basePoint.y, world.x, world.y);

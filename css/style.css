@@ -488,6 +488,17 @@ body.sketch-on-plane .toolbar-row-sketch {
   color: #fff;
 }
 
+#toolbar .toolbar-select {
+  width: 48px;
+  height: 26px;
+  background: #252526;
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-size: 11px;
+  padding: 0 3px;
+}
+
 #toolbar button#btn-construction.active {
   background: rgba(144,238,144,0.25);
   border-color: #90EE90;

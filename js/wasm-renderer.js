@@ -1495,12 +1495,33 @@ export class WasmRenderer {
     this._orbitDirty = true;
   }
 
+  _panSketchViewByScreenDelta(dx, dy) {
+    const s0 = this.sketchToScreen(0, 0);
+    const sx = this.sketchToScreen(1, 0);
+    const sy = this.sketchToScreen(0, 1);
+    if (!s0 || !sx || !sy) return false;
+
+    const ax = sx.x - s0.x;
+    const ay = sx.y - s0.y;
+    const bx = sy.x - s0.x;
+    const by = sy.y - s0.y;
+    const det = ax * by - ay * bx;
+    if (!Number.isFinite(det) || Math.abs(det) < 1e-10) return false;
+
+    const localDx = (dx * by - dy * bx) / det;
+    const localDy = (ax * dy - ay * dx) / det;
+    if (!Number.isFinite(localDx) || !Number.isFinite(localDy)) return false;
+
+    this._translateOrbitTargetInSketchPlane(-localDx, -localDy);
+    return true;
+  }
+
   _panSketchViewBetweenScreenPoints(fromX, fromY, toX, toY) {
     const pd = this._sketchPlaneDef;
     if (!pd) return false;
     const before = this.rayToPlane(fromX, fromY, pd);
     const after = this.rayToPlane(toX, toY, pd);
-    if (!before || !after) return false;
+    if (!before || !after) return this._panSketchViewByScreenDelta(toX - fromX, toY - fromY);
     this._translateOrbitTargetInSketchPlane(before.x - after.x, before.y - after.y);
     return true;
   }

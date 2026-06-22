@@ -1584,8 +1584,26 @@ class App {
       const d = Math.hypot(s1.x - s0.x, s1.y - s0.y);
       if (d > 1e-6) effectiveZoom = d;
     }
+    const fallbackScreenToWorld = (sx, sy) => {
+      const origin = renderer.sketchToScreen(0, 0);
+      const xAxis = renderer.sketchToScreen(1, 0);
+      const yAxis = renderer.sketchToScreen(0, 1);
+      if (!origin || !xAxis || !yAxis) return null;
+      const ax = xAxis.x - origin.x;
+      const ay = xAxis.y - origin.y;
+      const bx = yAxis.x - origin.x;
+      const by = yAxis.y - origin.y;
+      const det = ax * by - ay * bx;
+      if (!Number.isFinite(det) || Math.abs(det) < 1e-10) return null;
+      const dx = sx - origin.x;
+      const dy = sy - origin.y;
+      return {
+        x: (dx * by - dy * bx) / det,
+        y: (ax * dy - ay * dx) / det,
+      };
+    };
     return {
-      screenToWorld: (sx, sy) => renderer.rayToPlane(sx, sy, planeDef),
+      screenToWorld: (sx, sy) => renderer.rayToPlane(sx, sy, planeDef) || fallbackScreenToWorld(sx, sy),
       worldToScreen: (wx, wy) => renderer.sketchToScreen(wx, wy),
       zoom: effectiveZoom,
     };
@@ -2849,6 +2867,17 @@ class App {
       e.currentTarget.classList.toggle('active', state.snapEnabled);
       document.getElementById('status-snap').classList.toggle('active', state.snapEnabled);
     });
+    const gridDensitySelect = document.getElementById('grid-density-select');
+    if (gridDensitySelect) {
+      gridDensitySelect.value = String(state.gridSize);
+      gridDensitySelect.addEventListener('change', (e) => {
+        const size = Number(e.currentTarget.value);
+        if (!Number.isFinite(size) || size <= 0) return;
+        state.gridSize = size;
+        this._recorder.settingChanged?.('gridSize', size);
+        this._scheduleRender();
+      });
+    }
     // Auto-connect coincidences
     document.getElementById('btn-autocoincidence-toggle').addEventListener('click', (e) => {
       state.autoCoincidence = !state.autoCoincidence;
